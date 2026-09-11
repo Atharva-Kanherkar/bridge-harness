@@ -387,7 +387,7 @@ function ProviderDetail({ provider, snapshot, adapter, activeLogin, onStartLogin
   </section>;
 }
 
-function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider; label: string; onClose: () => void }) {
+export function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider; label: string; onClose: () => void }) {
   const [output, setOutput] = useState("");
   const [entry, setEntry] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -410,7 +410,7 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
         if (!alive || exit.sessionId !== "provider-login" || exit.terminalId !== provider) return;
         closeRef.current();
       });
-      if (!alive) return;
+      if (!alive) { unlistenOutput?.(); unlistenExit?.(); return; }
       try {
         await bridgeApi.startProviderLogin(provider);
       } catch {

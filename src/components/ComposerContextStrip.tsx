@@ -24,7 +24,7 @@ export type ComposerContextStripProps = {
 };
 
 const HOSTS: { id: "local" | "cloud" | "ssh"; label: string; icon: LucideIcon; disabled: boolean }[] = [
-  { id: "local", label: "This Mac", icon: Laptop, disabled: false },
+  { id: "local", label: "This computer", icon: Laptop, disabled: false },
   { id: "cloud", label: "Cloud", icon: Cloud, disabled: true },
   { id: "ssh", label: "SSH", icon: Terminal, disabled: true },
 ];
@@ -178,15 +178,15 @@ export function ComposerContextStrip({
       <button
         type="button"
         ref={hostMenu.triggerRef}
-        aria-label="Agent host: This Mac"
+        aria-label="Agent host: This computer"
         aria-haspopup="menu"
         aria-expanded={hostMenu.open}
-        title="This Mac"
+        title="This computer"
         onClick={hostMenu.toggle}
         className={cn(CHIP, "ml-auto shrink-0", hostMenu.open && "bg-accent text-foreground")}
       >
         <Laptop size={13} strokeWidth={1.7} aria-hidden="true" />
-        <span className="hidden @xl/composer-context:inline">This Mac</span>
+        <span className="hidden @xl/composer-context:inline">This computer</span>
         <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
       </button>
       <MenuPanel controller={hostMenu} label="Agent host">

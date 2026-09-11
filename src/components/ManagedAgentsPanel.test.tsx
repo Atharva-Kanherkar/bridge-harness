@@ -116,7 +116,7 @@ describe("the runtime list", () => {
     ];
     for (const [overrides, expected] of cases) {
       const view = await render([agent(overrides)]);
-      expect(view.buttons(), `state ${overrides.state}`).toEqual(expected);
+      expect(view.buttons(), `state ${overrides.state}`).toEqual(overrides.state === "not_installed" ? expected : [...expected, "Sign in"]);
       await view.unmount();
     }
   });

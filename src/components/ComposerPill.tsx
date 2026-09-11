@@ -16,6 +16,7 @@ export type ComposerPillProps = {
   /// Present when this surface accepts image attachments; renders the preview
   /// chips above the input and lets Enter send with no text at all.
   attachments?: ComposerAttachment[];
+  onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
   placeholder?: string;
   disabled?: boolean;
@@ -83,6 +84,7 @@ export function ComposerPill({
   onKeyDown,
   onPaste,
   attachments,
+  onAttachFiles,
   onRemoveAttachment,
   placeholder = "Ask Bridge…",
   disabled,
@@ -125,6 +127,7 @@ export function ComposerPill({
     const textarea = textareaRef.current;
     if (overlay && textarea) overlay.scrollTop = textarea.scrollTop;
   };
+  const attachmentInput = useRef<HTMLInputElement>(null);
   const isHero = layout === "hero";
   // A working agent is exactly when supervision is worth the most, so a turn in
   // flight no longer locks the composer. Where an active turn cannot take input
@@ -267,6 +270,14 @@ export function ComposerPill({
 
             <div className="flex items-center gap-1">
               {trailing}
+              {onAttachFiles && <>
+                <input ref={attachmentInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="hidden" aria-label="Choose images" onChange={event => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = "";
+                  if (files.length) onAttachFiles(files);
+                }} />
+                <button type="button" disabled={locked} aria-label="Attach images" title="Attach images" onClick={() => attachmentInput.current?.click()} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><Paperclip className="h-4 w-4" aria-hidden="true" /></button>
+              </>}
               <button
                 type="button"
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
