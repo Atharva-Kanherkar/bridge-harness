@@ -6,6 +6,7 @@ import type {
   ManagedAgentOperationResult,
   ManagedAgentStatus,
 } from "../protocol/generated/protocol";
+import type { AdapterDescriptor } from "../types";
 import { HarnessMark } from "./harnessMarks";
 import {
   GhostButton, SettingsGroup, SettingsRow, StatusPill, TextButton, type PillTone,
@@ -84,7 +85,7 @@ export type ManagedAgents = {
   confirmation: ReactNode;
 };
 
-export function useManagedAgents(initialAgents?: ManagedAgentStatus[]): ManagedAgents {
+export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged?: () => void): ManagedAgents {
   const [agents, setAgents] = useState<ManagedAgentStatus[] | null>(initialAgents ?? null);
   // Keyed by agent id: two runtimes can be working at once, and a single slot
   // let one completion clear another's busy state while its call was still in
@@ -122,6 +123,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[]): ManagedA
     setErrors(current => { const next = { ...current }; delete next[agentId]; return next; });
     try {
       applyResult(await operation(agentId));
+      onChanged?.();
     } catch (error) {
       setErrors(current => ({
         ...current,
@@ -132,7 +134,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[]): ManagedA
       // own busy state.
       setBusy(current => { const next = { ...current }; delete next[agentId]; return next; });
     }
-  }, [applyResult]);
+  }, [applyResult, onChanged]);
 
   const closeConfirm = useCallback(() => setConfirming(null), []);
 
@@ -164,6 +166,10 @@ export function isAbsent(agent: ManagedAgentStatus): boolean {
   return agent.state === "not_installed" && agent.backing === "none";
 }
 
+export function agentAuthState(agentId: string, adapters: AdapterDescriptor[]): AdapterDescriptor["authState"] | null {
+  return adapters.find(adapter => adapter.id === agentId)?.authState ?? null;
+}
+
 function needsRepair(agent: ManagedAgentStatus): boolean {
   return agent.state === "repairable" || agent.state === "broken";
 }
@@ -185,7 +191,12 @@ function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: Managed
 }
 
 /** The Installed / Available groups of the Harnesses list. */
-export function ManagedAgentRows({ state, onOpen }: { state: ManagedAgents; onOpen?: (agentId: string) => void }) {
+export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticationChanged }: {
+  state: ManagedAgents;
+  adapters?: AdapterDescriptor[];
+  onOpen?: (agentId: string) => void;
+  onAuthenticationChanged?: () => void;
+}) {
   const [login, setLogin] = useState<string | null>(null);
   const groups = useMemo(() => {
     const agents = state.agents ?? [];
@@ -209,7 +220,9 @@ export function ManagedAgentRows({ state, onOpen }: { state: ManagedAgents; onOp
 
   return <>
     {groups.map(group => <SettingsGroup key={group.label} label={group.label} note={group.note}>
-      {group.agents.map(agent => <div key={agent.agentId} data-testid={`agent-card-${agent.agentId}`}>
+      {group.agents.map(agent => {
+        const authState = agentAuthState(agent.agentId, adapters);
+        return <div key={agent.agentId} data-testid={`agent-card-${agent.agentId}`}>
         <SettingsRow
           lead={<HarnessMark harness={agent.agentId} size={14} />}
           label={agent.label}
@@ -221,17 +234,19 @@ export function ManagedAgentRows({ state, onOpen }: { state: ManagedAgents; onOp
               <span data-testid={`agent-state-${agent.agentId}`}>{stateLabel(agent)}</span>
             </StatusPill>
             <RowAction agent={agent} state={state} />
-            {!isAbsent(agent) && ["claude", "codex", "cursor", "opencode"].includes(agent.agentId) && <GhostButton onClick={() => setLogin(agent.agentId)}>Sign in</GhostButton>}
+            {!isAbsent(agent) && authState === "signed_in" && <span className="text-[11px] font-medium text-success" data-testid={`agent-auth-${agent.agentId}`}>Signed in</span>}
+            {!isAbsent(agent) && authState === "signed_out" && <GhostButton onClick={() => setLogin(agent.agentId)}>Sign in</GhostButton>}
+            {!isAbsent(agent) && authState === "unknown" && <span className="text-[11px] text-muted-foreground" data-testid={`agent-auth-${agent.agentId}`}>Sign-in status unknown</span>}
           </>}
         />
-        {login === agent.agentId && <div className="px-3.5 pb-3"><ProviderLoginPane provider={agent.agentId as UsageProvider} label={agent.label} onClose={() => { setLogin(null); state.reload(); }} /></div>}
+        {login === agent.agentId && <div className="px-3.5 pb-3"><ProviderLoginPane provider={agent.agentId as UsageProvider} label={agent.label} onClose={() => { setLogin(null); state.reload(); onAuthenticationChanged?.(); }} /></div>}
         {agent.vendorMessage && <p className="px-3.5 pb-2.5 text-[12px] text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
           {agent.vendorMessage}
         </p>}
         {state.errors[agent.agentId] && <p role="alert" className="px-3.5 pb-2.5 text-[12px] text-destructive">
           {state.errors[agent.agentId]}
         </p>}
-      </div>)}
+      </div>})}
     </SettingsGroup>)}
   </>;
 }
@@ -290,13 +305,15 @@ export function ManagedAgentDetail({ state, agentId }: { state: ManagedAgents; a
 }
 
 /** The list on its own, for callers that want the runtimes and nothing else. */
-export function ManagedAgentsPanel({ initialAgents, onOpen }: {
+export function ManagedAgentsPanel({ initialAgents, adapters, onOpen, onChanged }: {
   initialAgents?: ManagedAgentStatus[];
+  adapters?: AdapterDescriptor[];
   onOpen?: (agentId: string) => void;
+  onChanged?: () => void;
 }) {
-  const state = useManagedAgents(initialAgents);
+  const state = useManagedAgents(initialAgents, onChanged);
   return <div className="space-y-[26px]">
-    <ManagedAgentRows state={state} onOpen={onOpen} />
+    <ManagedAgentRows state={state} adapters={adapters} onOpen={onOpen} onAuthenticationChanged={onChanged} />
     {state.confirmation}
   </div>;
 }

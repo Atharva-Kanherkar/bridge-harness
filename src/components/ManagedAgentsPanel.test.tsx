@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { ManagedAgentStatus } from "../protocol/generated/protocol";
+import type { AdapterDescriptor } from "../types";
 import { ManagedAgentDetail, ManagedAgentsPanel, useManagedAgents } from "./ManagedAgentsPanel";
 
 function agent(overrides: Partial<ManagedAgentStatus> = {}): ManagedAgentStatus {
@@ -20,6 +21,13 @@ function agent(overrides: Partial<ManagedAgentStatus> = {}): ManagedAgentStatus 
     consecutiveFailures: 0,
     ...overrides,
   } as ManagedAgentStatus;
+}
+
+function adapter(authState: AdapterDescriptor["authState"] = "signed_in"): AdapterDescriptor {
+  return {
+    id: "codex", label: "Codex", available: true, authState, version: "0.147.0",
+    capabilities: [], models: [], unavailableReason: null,
+  };
 }
 
 /** The runtime block of a harness detail page, over one fixed agent list. */
@@ -50,11 +58,16 @@ function view(host: HTMLElement, root: { unmount: () => void }) {
 }
 
 /** The list, with a fixed agent list, bypassing the initial fetch. */
-async function render(agents: ManagedAgentStatus[], onOpen?: (agentId: string) => void) {
+async function render(
+  agents: ManagedAgentStatus[],
+  onOpen?: (agentId: string) => void,
+  adapters: AdapterDescriptor[] = [adapter()],
+  onChanged?: () => void,
+) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
-  await act(async () => { root.render(<ManagedAgentsPanel initialAgents={agents} onOpen={onOpen} />); });
+  await act(async () => { root.render(<ManagedAgentsPanel initialAgents={agents} adapters={adapters} onOpen={onOpen} onChanged={onChanged} />); });
   return view(host, root);
 }
 
@@ -116,9 +129,36 @@ describe("the runtime list", () => {
     ];
     for (const [overrides, expected] of cases) {
       const view = await render([agent(overrides)]);
-      expect(view.buttons(), `state ${overrides.state}`).toEqual(overrides.state === "not_installed" ? expected : [...expected, "Sign in"]);
+      expect(view.buttons(), `state ${overrides.state}`).toEqual(expected);
       await view.unmount();
     }
+  });
+
+  it("shows authentication actions only when the provider is known to be signed out", async () => {
+    const signedIn = await render([agent()]);
+    expect(signedIn.text()).toContain("Signed in");
+    expect(signedIn.button("Sign in")).toBeNull();
+    await signedIn.unmount();
+
+    const signedOut = await render([agent()], undefined, [adapter("signed_out")]);
+    expect(signedOut.button("Sign in")).not.toBeNull();
+    expect(signedOut.text()).not.toContain("Signed in");
+    await signedOut.unmount();
+
+    const unknown = await render([agent()], undefined, [adapter("unknown")]);
+    expect(unknown.text()).toContain("Sign-in status unknown");
+    expect(unknown.button("Sign in")).toBeNull();
+    await unknown.unmount();
+  });
+
+  it("refreshes authoritative auth state when a sign-in pane closes", async () => {
+    const changed = vi.fn();
+    vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: "codex" });
+    const view = await render([agent()], undefined, [adapter("signed_out")], changed);
+    await view.click(view.button("Sign in"));
+    await view.click(view.button("Cancel"));
+    expect(changed).toHaveBeenCalledTimes(1);
+    await view.unmount();
   });
 
   it("a row opens its harness detail page", async () => {
