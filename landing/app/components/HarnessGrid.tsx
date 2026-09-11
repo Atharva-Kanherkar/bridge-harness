@@ -3,16 +3,14 @@ import SectionHeader from "./SectionHeader";
 
 /*
  * The harnesses Bridge drives, as a logo grid. Marks are the vendors' own, drawn from
- * `app/HarnessMark` which mirrors the app's `harnessMarks.tsx`. Grok ships as a wordmark
- * because Bridge has no authentic mark for it yet — a wordmark is the honest cell, not a
- * guessed glyph.
+ * `app/HarnessMark`, which mirrors the app's `harnessMarks.tsx`.
  */
 const harnesses = [
   { id: "codex", name: "Codex" },
   { id: "claude", name: "Claude Code" },
   { id: "cursor", name: "Cursor" },
   { id: "opencode", name: "OpenCode" },
-  { id: "grok", name: "Grok", wordmark: true },
+  { id: "grok", name: "Grok" },
 ];
 
 /** The corner ticks a technical drawing wears. */
@@ -50,21 +48,14 @@ export default function HarnessGrid() {
                 key={harness.id}
                 className="group flex min-h-36 flex-col items-center justify-center gap-2.5 bg-background px-4 py-8 transition-colors duration-300 hover:bg-card"
               >
-                {harness.wordmark ? (
-                  <span className="font-display text-[26px] font-semibold leading-none tracking-[-0.03em] text-foreground">
-                    {harness.name}
-                  </span>
-                ) : (
-                  <>
-                    <HarnessMark harness={harness.id} size={30} className="transition-transform duration-300 group-hover:scale-110" />
-                    <span className="text-[15px] font-medium text-foreground">{harness.name}</span>
-                  </>
-                )}
+                <HarnessMark harness={harness.id} size={30} className="transition-transform duration-300 group-hover:scale-110" />
+                <span className="text-[15px] font-medium text-foreground">{harness.name}</span>
               </div>
             ))}
           </div>
         </div>
 
+        <p className="reveal mt-6 text-center text-[13px] text-faint">And many more harnesses coming soon.</p>
       </div>
     </section>
   );
