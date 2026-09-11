@@ -318,3 +318,33 @@ settle window; other cases cover Unicode, scoped Weekly rows, loading redraws,
 prompt refusal, deadlines, output caps and process reaping. A shutdown-fence test
 quits during an active capture and verifies the process is gone and further
 launches are rejected. These checks do not contact a live account.
+
+### Installed Overview milestone
+
+`d46c3ed` was built in release mode, Developer ID signed and installed at the
+existing preview path. Strict/deep verification succeeds outside the sandbox
+(the sandbox cannot evaluate the signing trust chain). The executable matches
+the signed build, SHA-256
+`ce314d2280a64c8cf6dfe23230bd7c78003efe7e47b6795e52de3b4cbc8e40db`.
+The preceding app is preserved as a timestamped backup. Final desktop/daemon
+checks passed, including 89 desktop tests and 19 daemon integration tests.
+
+The actual installed menu passed these accessibility checks:
+
+- Overview opens first and contains quota/freshness rows for all enabled
+  providers, with no daily chart or cost rows.
+- Cursor exposes Total, Cursor and Third Party at 100% used/0% left, and its
+  detail tab shows $70 plan usage against $70 allowance and $0 on-demand spend.
+- Codex exposes the live weekly limit, the provider-reported `gpt-reserve`
+  weekly pool and Spark 5-hour/weekly pools. No general 5-hour/session window
+  is invented when the account does not report one.
+- Selecting a Codex history day changes its exact tokens and model rows while
+  the menu stays open. Missing aggregate cost remains unavailable when some
+  model usage is unpriced; individual priced models retain their estimates.
+- Menu Bar Settings opens the correct settings page. The used status label
+  and two-line layout save successfully; the layout's JSON controls are present.
+
+Live verification also identified follow-up work: Claude's manual CLI probe
+timed out on the installed CLI's startup presentation, and Cursor has no local
+token history. These were not reported as passing account reads. Follow-up
+collector changes must be verified and installed before claiming those details.
