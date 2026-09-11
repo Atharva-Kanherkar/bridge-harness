@@ -8,11 +8,11 @@ import SectionHeader from "./SectionHeader";
  * guessed glyph.
  */
 const harnesses = [
-  { id: "codex", name: "Codex", via: "app-server JSON-RPC" },
-  { id: "claude", name: "Claude Code", via: "Agent SDK sidecar" },
-  { id: "cursor", name: "Cursor", via: "agent CLI" },
-  { id: "opencode", name: "OpenCode", via: "headless server" },
-  { id: "grok", name: "Grok", via: "ACP over stdio", wordmark: true },
+  { id: "codex", name: "Codex" },
+  { id: "claude", name: "Claude Code" },
+  { id: "cursor", name: "Cursor" },
+  { id: "opencode", name: "OpenCode" },
+  { id: "grok", name: "Grok", wordmark: true },
 ];
 
 /** The corner ticks a technical drawing wears. */
@@ -29,13 +29,12 @@ export default function HarnessGrid() {
     <section className="border-t border-border">
       <div className="mx-auto max-w-6xl px-6 py-24">
         <SectionHeader
-          eyebrow="Harnesses"
           title={
             <>
               Bring your own <em className="not-italic text-muted-foreground">sub.</em>
             </>
           }
-          text="Bridge drives the agent CLIs you already pay for. One adapter per provider turns its native process and event protocol into a single event model, so messages, reasoning, tool calls, approvals, and diffs look the same whoever produced them."
+          text="Bridge drives the agent CLIs you already pay for."
           align="center"
         />
 
@@ -61,16 +60,11 @@ export default function HarnessGrid() {
                     <span className="text-[15px] font-medium text-foreground">{harness.name}</span>
                   </>
                 )}
-                <span className="font-mono text-[10.5px] text-faint">{harness.via}</span>
               </div>
             ))}
           </div>
         </div>
 
-        <p className="reveal mx-auto mt-6 max-w-2xl text-center text-[13px] leading-6 text-faint">
-          Each adapter reports its availability before a session starts. A missing CLI shows as unavailable instead of blocking
-          startup, and the harness id space is open — a fifth provider needs an adapter, not a rewrite.
-        </p>
       </div>
     </section>
   );
