@@ -155,7 +155,7 @@ The old preview process was stopped before replacement. The installed bundle
 passes strict/deep signature verification, and its executable matches the signed
 build artifact byte for byte. The Mach-O minimum OS is 12.0 and its runtime search
 path includes `/usr/lib/swift`. The executable SHA-256 is
-`11f3c676c12a59b0f96883bab7a7c44f460bf736342fd6ca92ccc16f02df1341`.
+`728b8339ba04b5b22b68786c4482fe17c386d7ce45cb320e326ac45bd02dcd7f`.
 
 The installed preview also includes the app-logo correction: the native menu
 uses the exact foreground rectangles from `assets/bridge-icon.svg`, preserving
@@ -165,9 +165,44 @@ The existing native Swift checks passed, an enlarged native rendering was
 visually checked against the app mark, and the rebuilt/installed bundle passed
 strict/deep signing verification again.
 
-Interactive verification is pending because macOS is locked and the desktop tool
-could not unlock it. The expanded provider UI, live Claude/Cursor account reads,
-and the OpenCode sign-in round trip have not yet been verified in this installed
-build. Once the Mac is unlocked, verify the native switcher, provider status,
-settings persistence, and OpenCode connection. The normal release signing,
-notarization, and macOS 12 runtime gates from the original milestone still apply.
+### Provider interaction and menu tracking
+
+During the unlocked session, the installed preview loaded and its native menu
+and General → Menu Bar settings were exercised through accessibility:
+
+- All four provider controls and native switcher segments are present. Claude,
+  Cursor and OpenCode were enabled in the isolated preview.
+- Codex returned its account/plan, weekly quota and reset, recorded tokens and
+  model breakdown. Unpriced totals remained unavailable.
+- Cursor returned its signed-in account, billing-cycle quota/reset, plan usage,
+  allowance and on-demand amount. Local token history remained unavailable,
+  explicitly labelled as not imported.
+- Claude reported an expired Claude Code session requiring sign-in again.
+- OpenCode reported that a Zen workspace connection is needed; absent local
+  history stayed unavailable. No new sign-in or credential entry was performed.
+
+The check exposed an open-menu switching bug: the selected segment could change
+while the card still showed the preceding provider until menu dismissal. The
+user's local CodexBar checkout was then reviewed at `928166f899471bbdcb72210641cdec91324d0154`;
+its tracking/default-mode one-shot scheduler was adapted for Bridge's Rust-to-Swift
+delivery. Model submenus now refresh for provider changes and read the latest
+snapshot when opened. See the [architecture and adaptation notes](menu-bar-codexbar-study.md).
+
+The final native checks pass for tracking-mode delivery, default-mode fallback,
+exactly-once execution in either order, and delivery from a worker through the
+C ABI onto the main thread. Existing fixture, quota/formatting and icon checks
+also pass. The source type-checks for x86_64 with a macOS 12 target. Production
+frontend and release-mode packaged builds succeeded; the fixed preview was
+Developer ID signed, installed, and passed strict/deep signature verification.
+The installed executable matches the build artifact; its hash is recorded above.
+The restored working source is now in `.worktrees/menu-bar-providers` because
+the temporary worktree and caches were removed again.
+
+The Mac locked again during the rebuild, preventing the final live recheck of
+the corrected open-menu behavior and restart persistence. Screen capture had
+also returned blank/unavailable images and a ScreenCaptureKit error during the
+unlocked session, so the exact menu-bar icon appearance is not visually verified
+on screen. The native rendered alpha mask was checked separately as described
+above. OpenCode's complete sign-in round trip and a current Claude account read
+still require authenticated sessions. The normal release signing, notarization,
+and macOS 12 runtime gates from the original milestone still apply.

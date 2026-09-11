@@ -14,6 +14,7 @@ final class MenuController: NSObject, NSMenuDelegate {
     let refresh = NSMenuItem(title: "Refresh usage", action: #selector(refreshUsage), keyEquivalent: "r")
     let breakdown = NSMenuItem(title: "Model & token breakdown", action: nil, keyEquivalent: "")
     var tracking = false
+    var trackedBreakdown: NSMenu?
 
     init(callback: @escaping @convention(c) (Int32) -> Void) {
         self.callback = callback
@@ -87,7 +88,19 @@ final class MenuController: NSObject, NSMenuDelegate {
         scroll.contentView.scroll(to: NSPoint(x: 0, y: view.isFlipped ? 0 : max(0, height - scroll.contentView.bounds.height)))
         scroll.reflectScrolledClipView(scroll.contentView)
         card.view = scroll
+        rebuildBreakdown()
+    }
+
+    func rebuildBreakdown() {
         let details = NSMenu()
+        details.delegate = self
+        populateBreakdown(details)
+        breakdown.submenu = details
+        breakdown.isHidden = state.presentation.settings.enabledProviders.isEmpty || !state.presentation.settings.showTokens
+    }
+
+    func populateBreakdown(_ details: NSMenu) {
+        details.removeAllItems()
         let usage = state.presentation.selectedUsage
         let showCost = state.presentation.settings.showCost
         for (title, period) in [("Today", usage?.today), ("Last 30 days", usage?.month)] {
@@ -109,11 +122,10 @@ final class MenuController: NSObject, NSMenuDelegate {
             }
             if title == "Today" { details.addItem(.separator()) }
         }
-        breakdown.submenu = details
-        breakdown.isHidden = state.presentation.settings.enabledProviders.isEmpty || !state.presentation.settings.showTokens
     }
 
     func update(_ presentation: Presentation) {
+        let providerChanged = state.presentation.settings.activeProvider != presentation.settings.activeProvider
         state.presentation = presentation
         item.isVisible = presentation.settings.enabled || tracking
         refresh.isEnabled = !presentation.settings.enabledProviders.isEmpty && !presentation.refreshing
@@ -142,17 +154,33 @@ final class MenuController: NSObject, NSMenuDelegate {
         // Avoid structural changes during menu tracking; data updates in place.
         if !tracking { rebuildCard() }
         else if let scroll = card.view as? NSScrollView, let view = scroll.documentView as? NSHostingView<MenuCard> {
+            if providerChanged {
+                trackedBreakdown?.cancelTracking()
+                trackedBreakdown = nil
+                rebuildBreakdown()
+            }
             view.layoutSubtreeIfNeeded()
             view.setFrameSize(NSSize(width: 350, height: view.fittingSize.height))
         }
     }
 
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === breakdown.submenu { populateBreakdown(menu) }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
+        if menu === breakdown.submenu { trackedBreakdown = menu; return }
+        guard menu === self.menu else { return }
         rebuildCard()
         tracking = true
         callback(4)
     }
-    func menuDidClose(_ menu: NSMenu) { tracking = false; item.isVisible = state.presentation.settings.enabled }
+    func menuDidClose(_ menu: NSMenu) {
+        if menu === trackedBreakdown { trackedBreakdown = nil; return }
+        guard menu === self.menu else { return }
+        tracking = false
+        item.isVisible = state.presentation.settings.enabled
+    }
     @objc func refreshUsage() { callback(1) }
     @objc func openSettings() { callback(2) }
     @objc func openBridge() { callback(3) }

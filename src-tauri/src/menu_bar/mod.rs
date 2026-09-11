@@ -141,7 +141,7 @@ fn publish(app: &tauri::AppHandle, presentation: &Presentation) {
         }
     }
     #[cfg(target_os = "macos")]
-    let _ = app.run_on_main_thread(move || {
+    bridge_menu_bar::run_on_main_thread(move || {
         let result = diagnostics::native_boundary(|| unsafe { bridge_menu_bar::update(&bytes) });
         if !matches!(result, Ok(true)) {
             diagnostics::record("Menu Bar rejected a presentation snapshot");

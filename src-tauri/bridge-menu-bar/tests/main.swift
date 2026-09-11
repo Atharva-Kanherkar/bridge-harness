@@ -47,6 +47,37 @@ switched.settings.claudeEnabled = false
 switched.settings.opencodeEnabled = true
 check(switched.selectedUsage?.provider == "opencode", "OpenCode can be the only enabled provider")
 
+// An open NSMenu must receive Rust snapshots without waiting for dismissal.
+// The fallback block must not run the operation twice or release its context twice.
+var deliveries = 0
+MenuRunLoop.schedule { deliveries += 1 }
+CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
+check(deliveries == 1, "Snapshot delivery must run in the menu tracking loop")
+CFRunLoopRunInMode(.defaultMode, 0.1, true)
+check(deliveries == 1, "The default-mode fallback must not repeat a tracking delivery")
+MenuRunLoop.schedule { deliveries += 1 }
+CFRunLoopRunInMode(.defaultMode, 0.1, true)
+check(deliveries == 2, "A closed menu must still receive snapshots")
+CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
+check(deliveries == 2, "Opening a menu later must not replay an old snapshot")
+
+let callbackCount = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+callbackCount.initialize(to: 0)
+let queued = DispatchSemaphore(value: 0)
+Thread {
+    scheduleMenuBarTask({ context in
+        check(Thread.isMainThread, "The worker callback must execute on AppKit's main thread")
+        context.assumingMemoryBound(to: Int.self).pointee += 1
+    }, UnsafeMutableRawPointer(callbackCount))
+    queued.signal()
+}.start()
+check(queued.wait(timeout: .now() + 2) == .success, "A worker must enqueue without waiting for the main thread")
+CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
+CFRunLoopRunInMode(.defaultMode, 0.1, true)
+check(callbackCount.pointee == 1, "The C ABI context must be delivered once from a worker")
+callbackCount.deinitialize(count: 1)
+callbackCount.deallocate()
+
 let image = MenuController.templateIcon()
 check(image.isTemplate, "Menu icon must be a system template")
 check(image.size == NSSize(width: 18, height: 18), "Menu icon uses point dimensions")
@@ -65,4 +96,4 @@ for y in 0..<representation.pixelsHigh {
 }
 check(clear > 0 && ink > 0, "Icon must contain an alpha mask and visible ink")
 check(representation.colorAt(x: 0, y: 0)!.alphaComponent == 0, "Icon background must be transparent")
-print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, template flag, alpha mask, monochrome pixels")
+print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, tracking-loop delivery, template flag, alpha mask, monochrome pixels")
