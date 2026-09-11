@@ -47,6 +47,43 @@ switched.settings.claudeEnabled = false
 switched.settings.opencodeEnabled = true
 check(switched.selectedUsage?.provider == "opencode", "OpenCode can be the only enabled provider")
 
+// A provider snapshot arriving while the breakdown is open must preserve the
+// tracked menu and its model children. Exercise native menu objects without
+// creating a status item, displaying a menu, or reading a live provider.
+var breakdownPresentation = fixture
+breakdownPresentation.settings.cursorEnabled = true
+breakdownPresentation.settings.opencodeEnabled = true
+for index in breakdownPresentation.usage!.providers.indices {
+    let provider = breakdownPresentation.usage!.providers[index].provider
+    breakdownPresentation.usage!.providers[index].today.models[0].model = "\(provider)-model"
+}
+let breakdownState = MenuState()
+breakdownState.presentation = breakdownPresentation
+let breakdown = ModelBreakdownMenu(state: breakdownState)
+let parentMenu = NSMenu()
+parentMenu.addItem(breakdown.item)
+let trackedMenu = breakdown.menu
+let trackedModel = trackedMenu.items[1]
+let trackedValues = trackedModel.submenu!
+check(trackedModel.title == "codex-model", "The breakdown initially uses the selected provider")
+breakdown.menuWillOpen(trackedMenu)
+breakdownState.presentation.settings.selectedProvider = "cursor"
+breakdown.update()
+check(breakdown.item.submenu === trackedMenu && trackedMenu.items[1] === trackedModel,
+      "A provider switch must preserve the tracked breakdown and its model rows")
+check(trackedModel.submenu === trackedValues && trackedModel.title == "codex-model",
+      "The currently open model submenu must remain intact")
+breakdownState.presentation.settings.selectedProvider = "opencode"
+breakdownState.presentation.settings.showCost = false
+breakdown.update()
+breakdown.menuDidClose(trackedMenu)
+check(trackedMenu.items[1] === trackedModel, "The close callback must not mutate menu structure")
+breakdown.menuNeedsUpdate(trackedMenu)
+check(parentMenu.items[0] === breakdown.item && breakdown.item.submenu === trackedMenu,
+      "Refreshing the child must preserve the parent menu's structure")
+check(trackedMenu.items[1].title == "opencode-model", "Reopening must read the latest provider, skipping superseded snapshots")
+check(trackedMenu.items[1].submenu!.items.count == 4, "Reopening must apply the latest cost visibility preference")
+
 // An open NSMenu must receive Rust snapshots without waiting for dismissal.
 // The fallback block must not run the operation twice or release its context twice.
 var deliveries = 0
@@ -96,4 +133,4 @@ for y in 0..<representation.pixelsHigh {
 }
 check(clear > 0 && ink > 0, "Icon must contain an alpha mask and visible ink")
 check(representation.colorAt(x: 0, y: 0)!.alphaComponent == 0, "Icon background must be transparent")
-print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, tracking-loop delivery, template flag, alpha mask, monochrome pixels")
+print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, submenu tracking deferral, tracking-loop delivery, template flag, alpha mask, monochrome pixels")

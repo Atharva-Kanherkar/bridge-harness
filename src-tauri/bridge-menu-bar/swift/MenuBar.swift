@@ -5,6 +5,63 @@ import SwiftUI
 // Rust supplies data and handles all outward actions through the callback.
 private var controller: MenuController?
 
+final class ModelBreakdownMenu: NSObject, NSMenuDelegate {
+    let item = NSMenuItem(title: "Model & token breakdown", action: nil, keyEquivalent: "")
+    let menu = NSMenu()
+    let state: MenuState
+    private var tracking = false
+
+    init(state: MenuState) {
+        self.state = state
+        super.init()
+        menu.delegate = self
+        item.submenu = menu
+        update()
+    }
+
+    func update() {
+        // Cancelling a child NSMenu also ends its parent's tracking session.
+        // Keep the open child intact; menuNeedsUpdate reads the latest state on
+        // its next open. No menu structure changes from open/close callbacks.
+        guard !tracking else { return }
+        item.isHidden = state.presentation.settings.enabledProviders.isEmpty || !state.presentation.settings.showTokens
+        menu.removeAllItems()
+        let usage = state.presentation.selectedUsage
+        let showCost = state.presentation.settings.showCost
+        for (title, period) in [("Today", usage?.today), ("Last 30 days", usage?.month)] {
+            menu.addItem(withTitle: title, action: nil, keyEquivalent: "").isEnabled = false
+            if let period = period, !period.models.isEmpty {
+                for model in period.models {
+                    let row = NSMenuItem(title: model.model, action: nil, keyEquivalent: "")
+                    let values = NSMenu()
+                    for (label, metric) in [("Total tokens", model.totalTokens), ("Input", model.inputTokens),
+                        ("Output", model.outputTokens), ("Cache", model.cacheTokens)] {
+                        values.addItem(withTitle: "\(label): \(countLabel(metric))", action: nil, keyEquivalent: "").isEnabled = false
+                    }
+                    if showCost { values.addItem(withTitle: "Cost: \(moneyLabel(model.costMicrousd))", action: nil, keyEquivalent: "").isEnabled = false }
+                    row.submenu = values
+                    menu.addItem(row)
+                }
+            } else {
+                menu.addItem(withTitle: "No recorded usage", action: nil, keyEquivalent: "").isEnabled = false
+            }
+            if title == "Today" { menu.addItem(.separator()) }
+        }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === self.menu { update() }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        if menu === self.menu { tracking = true }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        if menu === self.menu { tracking = false }
+    }
+}
+
 final class MenuController: NSObject, NSMenuDelegate {
     let state = MenuState()
     let item: NSStatusItem
@@ -12,9 +69,8 @@ final class MenuController: NSObject, NSMenuDelegate {
     let callback: @convention(c) (Int32) -> Void
     let card = NSMenuItem()
     let refresh = NSMenuItem(title: "Refresh usage", action: #selector(refreshUsage), keyEquivalent: "r")
-    let breakdown = NSMenuItem(title: "Model & token breakdown", action: nil, keyEquivalent: "")
+    lazy var breakdown = ModelBreakdownMenu(state: state)
     var tracking = false
-    var trackedBreakdown: NSMenu?
 
     init(callback: @escaping @convention(c) (Int32) -> Void) {
         self.callback = callback
@@ -33,7 +89,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
         menu.addItem(card)
-        menu.addItem(breakdown)
+        menu.addItem(breakdown.item)
         menu.addItem(.separator())
         refresh.target = self
         menu.addItem(refresh)
@@ -88,40 +144,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         scroll.contentView.scroll(to: NSPoint(x: 0, y: view.isFlipped ? 0 : max(0, height - scroll.contentView.bounds.height)))
         scroll.reflectScrolledClipView(scroll.contentView)
         card.view = scroll
-        rebuildBreakdown()
-    }
-
-    func rebuildBreakdown() {
-        let details = NSMenu()
-        details.delegate = self
-        populateBreakdown(details)
-        breakdown.submenu = details
-        breakdown.isHidden = state.presentation.settings.enabledProviders.isEmpty || !state.presentation.settings.showTokens
-    }
-
-    func populateBreakdown(_ details: NSMenu) {
-        details.removeAllItems()
-        let usage = state.presentation.selectedUsage
-        let showCost = state.presentation.settings.showCost
-        for (title, period) in [("Today", usage?.today), ("Last 30 days", usage?.month)] {
-            details.addItem(withTitle: title, action: nil, keyEquivalent: "").isEnabled = false
-            if let period = period, !period.models.isEmpty {
-                for model in period.models {
-                    let row = NSMenuItem(title: model.model, action: nil, keyEquivalent: "")
-                    let values = NSMenu()
-                    for (label, metric) in [("Total tokens", model.totalTokens), ("Input", model.inputTokens),
-                        ("Output", model.outputTokens), ("Cache", model.cacheTokens)] {
-                        values.addItem(withTitle: "\(label): \(countLabel(metric))", action: nil, keyEquivalent: "").isEnabled = false
-                    }
-                    if showCost { values.addItem(withTitle: "Cost: \(moneyLabel(model.costMicrousd))", action: nil, keyEquivalent: "").isEnabled = false }
-                    row.submenu = values
-                    details.addItem(row)
-                }
-            } else {
-                details.addItem(withTitle: "No recorded usage", action: nil, keyEquivalent: "").isEnabled = false
-            }
-            if title == "Today" { details.addItem(.separator()) }
-        }
+        breakdown.update()
     }
 
     func update(_ presentation: Presentation) {
@@ -155,28 +178,20 @@ final class MenuController: NSObject, NSMenuDelegate {
         if !tracking { rebuildCard() }
         else if let scroll = card.view as? NSScrollView, let view = scroll.documentView as? NSHostingView<MenuCard> {
             if providerChanged {
-                trackedBreakdown?.cancelTracking()
-                trackedBreakdown = nil
-                rebuildBreakdown()
+                breakdown.update()
             }
             view.layoutSubtreeIfNeeded()
             view.setFrameSize(NSSize(width: 350, height: view.fittingSize.height))
         }
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        if menu === breakdown.submenu { populateBreakdown(menu) }
-    }
-
     func menuWillOpen(_ menu: NSMenu) {
-        if menu === breakdown.submenu { trackedBreakdown = menu; return }
         guard menu === self.menu else { return }
         rebuildCard()
         tracking = true
         callback(4)
     }
     func menuDidClose(_ menu: NSMenu) {
-        if menu === trackedBreakdown { trackedBreakdown = nil; return }
         guard menu === self.menu else { return }
         tracking = false
         item.isVisible = state.presentation.settings.enabled

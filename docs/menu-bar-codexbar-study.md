@@ -38,11 +38,16 @@ Bridge adapts that scheduler in `MenuRunLoop.swift`. The Rust host now uses it
 for presentation delivery while retaining its existing Objective-C and Rust
 exception boundary. The owned callback context is released once. Provider
 changes refresh the model submenu, and opening that submenu reads the current
-snapshot instead of retaining another provider's breakdown.
+snapshot instead of retaining another provider's breakdown. If that child is
+already open, Bridge defers structural changes until its next opening. AppKit's
+`cancelTracking()` ends the entire menu session even when called on a child, so
+Bridge does not use it to reconcile an in-flight provider update.
 
 The native regression check exercises delivery during tracking, normal-mode
-fallback, and exactly-once behavior with either mode first. The fixture, quota
-semantics and template-icon checks run alongside it.
+fallback, and exactly-once behavior with either mode first. A separate native
+menu regression exercises multiple updates while the breakdown is open and
+checks that reopening uses the latest provider and visibility preferences.
+The fixture, quota semantics and template-icon checks run alongside it.
 
 ## Compatibility and scope
 
