@@ -1,4 +1,7 @@
+"use client";
+
 import HarnessMark from "../app/HarnessMark";
+import { useInView } from "./useInView";
 
 /*
  * The feature visuals. Each one is the mechanism running rather than a photograph of it:
@@ -6,18 +9,19 @@ import HarnessMark from "../app/HarnessMark";
  * thing happening. Markup and type scale are lifted from the app, and every value is
  * deterministic so the server and the client draw the same frame.
  *
- * `ill-part` is the scroll-timeline utility in globals.css. Where it is unsupported the
- * parts simply render in their finished state.
+ * A `.stage` part animates when its panel scrolls into view, staggered by `--i`, and replays
+ * if you scroll back. Without JavaScript the parts render plainly.
  */
 const frame = "relative overflow-hidden rounded-xl border border-border-card bg-background shadow-[0_0_0_1px_#000,0_30px_90px_-30px_rgba(0,0,0,0.9)]";
 
 /** A model list that opens, moves its tick from Codex to Claude, and updates the composer. */
 export function SwitchHarness() {
+  const { ref, play } = useInView<HTMLDivElement>();
   const codex = ["GPT Luna", "GPT Terra", "GPT Sol"];
   const claude = ["Claude Sonnet", "Claude Opus", "Claude Haiku"];
 
   return (
-    <div className={`${frame} flex h-[380px] flex-col justify-end p-4 sm:h-[440px]`} aria-hidden="true">
+    <div ref={ref} data-play={play} className={`${frame} flex h-[380px] flex-col justify-end p-4 sm:h-[440px]`} aria-hidden="true">
       <div className="flex flex-col gap-3 px-1 pb-4 opacity-60">
         <p className="text-[13px] leading-6 text-body">Rotating on read means two concurrent reads can both mint a token.</p>
         <div className="ml-auto w-fit rounded-2xl border border-border bg-accent/70 px-3.5 py-2 text-[13px] text-foreground">
@@ -28,7 +32,7 @@ export function SwitchHarness() {
       <div className="relative">
         <div
           style={{ "--i": 0, "--ill": "rise" } as React.CSSProperties}
-          className="ill-part absolute bottom-12 left-0 z-10 w-[280px] overflow-hidden rounded-xl border border-border bg-popover shadow-2xl shadow-black/60"
+          className="stage absolute bottom-12 left-0 z-10 w-[280px] overflow-hidden rounded-xl border border-border bg-popover shadow-2xl shadow-black/60"
         >
           <div className="border-b border-border px-3 py-2 text-[12px] text-muted-foreground">Search models</div>
 
@@ -41,7 +45,7 @@ export function SwitchHarness() {
               <div key={model} className={`flex h-7 items-center justify-between rounded-md px-1.5 text-[12.5px] ${i === 0 ? "text-muted-foreground" : "text-muted-foreground"}`}>
                 {model}
                 {i === 0 && (
-                  <span style={{ "--i": 2, "--ill": "light" } as React.CSSProperties} className="ill-part text-[11px] text-faint [animation-direction:reverse]">
+                  <span style={{ "--i": 2, "--ill": "light" } as React.CSSProperties} className="stage text-[11px] text-faint [animation-direction:reverse]">
                     ✓
                   </span>
                 )}
@@ -57,7 +61,7 @@ export function SwitchHarness() {
                 key={model}
                 style={i === 1 ? ({ "--i": 3, "--ill": "light" } as React.CSSProperties) : undefined}
                 className={`flex h-7 items-center justify-between rounded-md px-1.5 text-[12.5px] ${
-                  i === 1 ? "ill-part bg-accent font-medium text-foreground" : "text-muted-foreground"
+                  i === 1 ? "stage bg-accent font-medium text-foreground" : "text-muted-foreground"
                 }`}
               >
                 {model}
@@ -66,14 +70,14 @@ export function SwitchHarness() {
             ))}
           </div>
 
-          <p style={{ "--i": 4, "--ill": "rise" } as React.CSSProperties} className="ill-part border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+          <p style={{ "--i": 4, "--ill": "rise" } as React.CSSProperties} className="stage border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
             Switching restarts the provider session. History stays.
           </p>
         </div>
 
         <div className="flex items-center gap-2 rounded-xl border border-border-card bg-card px-3 py-2.5">
           <span className="flex-1 text-[13px] text-muted-foreground">Send a follow-up…</span>
-          <span style={{ "--i": 5, "--ill": "light" } as React.CSSProperties} className="ill-part inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[12px] text-foreground">
+          <span style={{ "--i": 5, "--ill": "light" } as React.CSSProperties} className="stage inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[12px] text-foreground">
             <HarnessMark harness="claude" size={12} />
             Claude Code · Claude Opus
           </span>
@@ -85,6 +89,7 @@ export function SwitchHarness() {
 
 /** The append-only ledger, filling row by row. */
 export function SessionStorage() {
+  const { ref, play } = useInView<HTMLDivElement>();
   const rows = [
     ["message.completed", "completed"],
     ["plan.updated", "inProgress"],
@@ -97,7 +102,7 @@ export function SessionStorage() {
   ];
 
   return (
-    <div className={frame} aria-hidden="true">
+    <div ref={ref} data-play={play} className={frame} aria-hidden="true">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
         <span className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[12px] text-foreground">{"{ }"} Transcript</span>
         <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-[12px] text-foreground">Stream</span>
@@ -110,7 +115,7 @@ export function SessionStorage() {
           <div
             key={i}
             style={{ "--i": i, "--ill": "rise" } as React.CSSProperties}
-            className="ill-part flex items-center gap-3 border-b border-border/60 py-2 last:border-b-0"
+            className="stage flex items-center gap-3 border-b border-border/60 py-2 last:border-b-0"
           >
             <span className="w-5 tabular-nums text-faint-2">{i + 1}</span>
             <span className="flex-1 text-foreground">{kind}</span>
@@ -121,7 +126,7 @@ export function SessionStorage() {
       </div>
 
       <div className="flex items-center justify-between border-t border-border px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
-        <span style={{ "--i": 8, "--ill": "light" } as React.CSSProperties} className="ill-part">
+        <span style={{ "--i": 8, "--ill": "light" } as React.CSSProperties} className="stage">
           8 of 8 events
         </span>
         <span className="text-faint">session-1</span>
@@ -132,6 +137,7 @@ export function SessionStorage() {
 
 /** Marketplace rows landing one at a time, with an install completing. */
 export function Agents() {
+  const { ref, play } = useInView<HTMLDivElement>();
   const agents = [
     { id: "claude", name: "Claude Code", note: "Anthropic's coding agent · 0.3.209", installed: true },
     { id: "codex", name: "Codex", note: "OpenAI's coding agent · 0.147.0" },
@@ -140,7 +146,7 @@ export function Agents() {
   ];
 
   return (
-    <div className={`${frame} p-4`} aria-hidden="true">
+    <div ref={ref} data-play={play} className={`${frame} p-4`} aria-hidden="true">
       <div className="px-1 pb-3">
         <h4 className="font-display text-[20px] font-semibold tracking-[-0.02em] text-foreground">Agents</h4>
         <p className="text-[12px] text-muted-foreground">Install and manage coding agents.</p>
@@ -151,7 +157,7 @@ export function Agents() {
           <div
             key={agent.id}
             style={{ "--i": i, "--ill": "rise" } as React.CSSProperties}
-            className="ill-part flex items-center gap-3 border-b border-border bg-card px-3.5 py-3 last:border-b-0"
+            className="stage flex items-center gap-3 border-b border-border bg-card px-3.5 py-3 last:border-b-0"
           >
             <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border bg-background">
               <HarnessMark harness={agent.id} size={15} />
@@ -162,7 +168,7 @@ export function Agents() {
             </span>
             <span
               style={{ "--i": i + 4, "--ill": "light" } as React.CSSProperties}
-              className={`ill-part inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-[12px] ${
+              className={`stage inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-[12px] ${
                 agent.installed ? "border border-border text-muted-foreground" : "bg-primary text-primary-foreground"
               }`}
             >
@@ -172,7 +178,7 @@ export function Agents() {
         ))}
       </div>
 
-      <p style={{ "--i": 8, "--ill": "rise" } as React.CSSProperties} className="ill-part mt-3 px-1 text-[11.5px] text-faint">
+      <p style={{ "--i": 8, "--ill": "rise" } as React.CSSProperties} className="stage mt-3 px-1 text-[11.5px] text-faint">
         Plugins and skills install the same way, and your own roles route beside them.
       </p>
     </div>
@@ -199,6 +205,7 @@ function path(points: number[], close: boolean) {
 
 /** The usage screen: a total that counts, harness shares, and three series drawing in. */
 export function Usage() {
+  const { ref, play } = useInView<HTMLDivElement>();
   const stats = [
     ["Processed tokens", "10.4B"],
     ["Cached input", "10.1B"],
@@ -212,16 +219,16 @@ export function Usage() {
   ];
 
   return (
-    <div className={`${frame} p-4`} aria-hidden="true">
+    <div ref={ref} data-play={play} className={`${frame} p-4`} aria-hidden="true">
       <div className="grid gap-3 lg:grid-cols-[minmax(0,210px)_minmax(0,1fr)]">
         <div className="rounded-lg border border-border-card bg-card p-3.5">
-          <div style={{ "--i": 0, "--ill": "rise" } as React.CSSProperties} className="ill-part font-heading text-[26px] leading-none tracking-[-0.02em] text-foreground tabular-nums">
+          <div style={{ "--i": 0, "--ill": "rise" } as React.CSSProperties} className="stage font-heading text-[26px] leading-none tracking-[-0.02em] text-foreground tabular-nums">
             $7,237.52
           </div>
           <p className="mt-1.5 text-[10.5px] text-muted-foreground">61,176 requests · API estimate</p>
           <div className="mt-3 flex flex-col gap-2.5">
             {harnesses.map((harness, i) => (
-              <div key={harness.id} style={{ "--i": i + 1, "--ill": "rise" } as React.CSSProperties} className="ill-part">
+              <div key={harness.id} style={{ "--i": i + 1, "--ill": "rise" } as React.CSSProperties} className="stage">
                 <div className="flex items-center gap-1.5 text-[12px]">
                   <HarnessMark harness={harness.id} size={11} />
                   <span className="text-foreground">{harness.name}</span>
@@ -241,10 +248,10 @@ export function Usage() {
             ))}
             {series.map((s, i) => (
               <g key={s.id}>
-                <path d={path(s.points, true)} className={`ill-part ${s.fill}`} style={{ "--i": i + 1, "--ill": "light" } as React.CSSProperties} />
+                <path d={path(s.points, true)} className={`stage ${s.fill}`} style={{ "--i": i + 1, "--ill": "light" } as React.CSSProperties} />
                 <path
                   d={path(s.points, false)}
-                  className={`ill-part ${s.stroke}`}
+                  className={`stage ${s.stroke}`}
                   style={{ "--i": i, "--ill": "draw", "--draw": 900, strokeDasharray: 900 } as React.CSSProperties}
                   strokeWidth="1.5"
                   vectorEffect="non-scaling-stroke"
@@ -265,7 +272,7 @@ export function Usage() {
           <div
             key={label}
             style={{ "--i": i + 4, "--ill": "rise" } as React.CSSProperties}
-            className="ill-part rounded-lg border border-border-card bg-card px-3 py-2"
+            className="stage rounded-lg border border-border-card bg-card px-3 py-2"
           >
             <div className="truncate text-[10px] text-muted-foreground">{label}</div>
             <div className="mt-0.5 text-[14px] tabular-nums text-foreground">{value}</div>

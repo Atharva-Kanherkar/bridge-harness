@@ -119,76 +119,6 @@
       opacity: 0;
     }
   }
-
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translateY(18px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes draw {
-    from {
-      stroke-dashoffset: var(--draw, 400);
-    }
-    to {
-      stroke-dashoffset: 0;
-    }
-  }
-
-  @keyframes pop {
-    from {
-      opacity: 0;
-      transform: scale(0.6);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-
-  @keyframes grow-x {
-    from {
-      transform: scaleX(0);
-    }
-    to {
-      transform: scaleX(1);
-    }
-  }
-
-  @keyframes light {
-    from {
-      opacity: 0.25;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  @keyframes ticker {
-    from {
-      transform: translateX(0);
-    }
-    to {
-      transform: translateX(-50%);
-    }
-  }
-
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 0.55;
-      transform: translate(-50%, 0) scale(1);
-    }
-    50% {
-      opacity: 0.85;
-      transform: translate(-50%, 0) scale(1.06);
-    }
-  }
 }
 
 /* Load-time entrance for above-the-fold content. Staggered with --i. */
@@ -207,19 +137,6 @@
       animation: rise linear both;
       animation-timeline: view();
       animation-range: entry 5% entry 45%;
-    }
-  }
-}
-
-/* Illustration parts animate as the card scrolls into view; --i staggers, final state is the resting state. */
-@utility ill-part {
-  @supports (animation-timeline: view()) {
-    @media (prefers-reduced-motion: no-preference) {
-      animation-name: var(--ill, pop);
-      animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
-      animation-fill-mode: both;
-      animation-timeline: view();
-      animation-range: entry calc(20% + var(--i, 0) * 8%) entry calc(60% + var(--i, 0) * 8%);
     }
   }
 }
@@ -267,6 +184,75 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--color-faint);
+}
+
+/* Keyframes the components reference by name. They live outside `@theme` on purpose:
+ * Tailwind only emits a themed keyframe when a utility references it, so a keyframe used
+ * from hand-written CSS has to be declared here or it never reaches the stylesheet. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes draw {
+  from {
+    opacity: 1;
+    stroke-dashoffset: var(--draw, 400);
+  }
+  to {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes light {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translate(-50%, 0) scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: translate(-50%, 0) scale(1.06);
+  }
 }
 
 @layer base {
@@ -412,5 +398,27 @@
   }
   .doc-prose img {
     border-radius: 0.5rem;
+  }
+}
+
+@layer components {
+  /* Staged panel parts. A descendant selector is the point: one observer on the panel drives
+   * every part inside it, so this is a deliberate exception to utilities-first styling, the
+   * same one `.doc-prose` takes. Without JavaScript no `data-play` is written and the parts
+   * render plainly. */
+  [data-play] .stage {
+    opacity: 0;
+  }
+
+  [data-play="true"] .stage {
+    animation: var(--ill, rise) 640ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+    animation-delay: calc(var(--i, 0) * 110ms);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-play] .stage {
+      animation: none;
+      opacity: 1;
+    }
   }
 }
