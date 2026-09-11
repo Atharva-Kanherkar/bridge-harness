@@ -202,12 +202,12 @@ export default function AppDemo() {
           ref={listRef}
           role="tablist"
           aria-label="What Bridge does"
-          className="relative flex h-10 w-max shrink-0 items-center rounded-full border border-foreground/15 bg-foreground/10 p-1 shadow-[0_8px_32px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.18)] backdrop-blur-xl motion-safe:animate-[entry-in_600ms_ease-out]"
+          className="relative flex h-10 w-max shrink-0 items-center rounded-full border border-border-card bg-card/50 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl motion-safe:animate-[entry-in_600ms_ease-out]"
         >
           {/* The slider the labels ride on. */}
           <span
             aria-hidden="true"
-            className="absolute inset-y-1 rounded-full bg-foreground shadow-[0_3px_12px_rgba(0,0,0,0.25)] transition-[transform,width] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
+            className="absolute inset-y-1 rounded-full bg-linear-to-r from-teal-400/20 via-blue-500/20 to-purple-500/20 ring-1 ring-inset ring-foreground/15 transition-[transform,width] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
             style={slider ? { width: slider.width, transform: `translateX(${slider.left}px)`, left: 0 } : { opacity: 0 }}
           />
 
@@ -228,7 +228,7 @@ export default function AppDemo() {
                 onKeyDown={event => onKeyDown(event, i)}
                 style={{ animationDelay: `${100 + i * 90}ms` }}
                 className={`group relative z-10 flex h-full items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-[12.5px] font-semibold transition-colors duration-300 motion-safe:animate-[rise_500ms_ease-out_backwards] ${
-                  selected ? "text-[#5b6ee0]" : "text-foreground/75 hover:text-foreground"
+                  selected ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <span
