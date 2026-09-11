@@ -155,7 +155,7 @@ The old preview process was stopped before replacement. The installed bundle
 passes strict/deep signature verification, and its executable matches the signed
 build artifact byte for byte. The Mach-O minimum OS is 12.0 and its runtime search
 path includes `/usr/lib/swift`. The executable SHA-256 is
-`728b8339ba04b5b22b68786c4482fe17c386d7ce45cb320e326ac45bd02dcd7f`.
+`0d16ce37defb1cc0216e8a5457f99129da6e5c6e2d673278769d9b97378f0f68`.
 
 The installed preview also includes the app-logo correction: the native menu
 uses the exact foreground rectangles from `assets/bridge-icon.svg`, preserving
@@ -188,6 +188,13 @@ its tracking/default-mode one-shot scheduler was adapted for Bridge's Rust-to-Sw
 delivery. Model submenus now refresh for provider changes and read the latest
 snapshot when opened. See the [architecture and adaptation notes](menu-bar-codexbar-study.md).
 
+Review also caught that calling `cancelTracking()` on an open child menu would
+end the parent menu session. Commit `9cdb247` preserves the tracked child and
+defers its structural refresh until the next opening. A native regression
+checks the retained menu/row identities, multiple queued provider changes,
+and the latest provider and cost visibility when reopened. It passes together
+with the existing Swift checks and the x86_64 macOS 12 type check.
+
 The final native checks pass for tracking-mode delivery, default-mode fallback,
 exactly-once execution in either order, and delivery from a worker through the
 C ABI onto the main thread. Existing fixture, quota/formatting and icon checks
@@ -198,11 +205,33 @@ The installed executable matches the build artifact; its hash is recorded above.
 The restored working source is now in `.worktrees/menu-bar-providers` because
 the temporary worktree and caches were removed again.
 
-The Mac locked again during the rebuild, preventing the final live recheck of
-the corrected open-menu behavior and restart persistence. Screen capture had
-also returned blank/unavailable images and a ScreenCaptureKit error during the
-unlocked session, so the exact menu-bar icon appearance is not visually verified
-on screen. The native rendered alpha mask was checked separately as described
-above. OpenCode's complete sign-in round trip and a current Claude account read
-still require authenticated sessions. The normal release signing, notarization,
-and macOS 12 runtime gates from the original milestone still apply.
+After the user unlocked the Mac, a temporary one-hour `caffeinate -diu` assertion
+kept it awake during the resumed verification. No persistent lock or security
+settings were changed. The corrected installed preview passed these live checks:
+
+- With the native menu continuously open, switching Codex → Claude → Cursor →
+  OpenCode → Codex updated both the card and its model submenu to the selected
+  provider. The previous provider's account and models did not remain visible.
+- Opening Model & token breakdown after the switch exposed the selected
+  provider's models and each model's exact input, output, cache and total tokens,
+  plus its estimated or unavailable cost.
+- The native settings action opened General → Menu Bar. All four provider
+  switches were enabled, and provider selection agreed with the native menu.
+- Cursor was deliberately saved before quitting the preview and installing the
+  build containing `9cdb247`. After relaunch, Cursor was still selected and all
+  four providers remained enabled. Switching providers and opening nested model
+  details passed again in this final signed build. Codex was then restored as
+  the selected provider, with all four providers still enabled.
+- Connect OpenCode opened the dedicated window and reached the OpenAuth page
+  at `auth.opencode.ai`, showing Continue with GitHub and Continue with Google.
+  The login page and settings were inspected in screenshots. The login window
+  was closed without entering credentials or creating an account.
+- No Bridge-named crash report was present in the user's DiagnosticReports
+  directory after the final installed-app pass.
+
+The capture tool still does not return an image of the native menu or status
+item, so the exact on-screen menu-bar icon appearance is not visually verified.
+The native rendered alpha mask was checked separately as described above.
+OpenCode's complete sign-in round trip and a current Claude account read still
+require authenticated sessions. The normal release signing, notarization, and
+macOS 12 runtime gates from the original milestone still apply.
