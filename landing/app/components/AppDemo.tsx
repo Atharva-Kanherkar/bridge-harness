@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, Paperclip, PanelRight, Search } from "lucide-react";
+import { ArrowUp, BadgeCheck, GitBranch, LayoutGrid, Paperclip, PanelRight, Search, ShieldCheck } from "lucide-react";
 import ChangesDock from "./app/ChangesDock";
 import MissionGrid from "./app/MissionGrid";
 import Sidebar from "./app/Sidebar";
@@ -12,6 +12,14 @@ const TYPE_MS = 1200;
 const STEP_MS = 900;
 const HOLD_MS = 3200;
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+/** One glyph per scene, so the strip reads as a place rather than a row of words. */
+const sceneIcon: Record<string, typeof GitBranch> = {
+  worktrees: GitBranch,
+  mission: LayoutGrid,
+  policy: ShieldCheck,
+  verify: BadgeCheck,
+};
 
 /** Steps a scene needs before it hands over: the prompt, then one per entry. */
 function stepCount(scene: Scene) {
@@ -175,10 +183,11 @@ export default function AppDemo() {
         <div
           role="tablist"
           aria-label="What Bridge does"
-          className="inline-flex w-max shrink-0 items-center gap-0.5 rounded-xl border border-border-card bg-card/60 p-1 backdrop-blur"
+          className="inline-flex w-max shrink-0 items-center gap-0.5 rounded-full border border-border/80 bg-card/40 p-1 backdrop-blur-md"
         >
           {scenes.map((item, i) => {
             const selected = i === active;
+            const Icon = sceneIcon[item.id];
             return (
               <button
                 key={item.id}
@@ -191,11 +200,24 @@ export default function AppDemo() {
                 tabIndex={selected ? 0 : -1}
                 onClick={() => setActive(i)}
                 onKeyDown={event => onKeyDown(event, i)}
-                className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] transition-colors duration-200 ${
-                  selected ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
-                }`}
+                className="relative whitespace-nowrap rounded-full px-3.5 py-1.5"
               >
-                {item.label}
+                {/* The active chip carries the button's gradient at a whisper, so the accent
+                    is one language across the page rather than two. */}
+                <span
+                  aria-hidden="true"
+                  className={`absolute inset-0 rounded-full bg-linear-to-r from-teal-400/15 via-blue-500/15 to-purple-500/15 ring-1 ring-inset ring-foreground/10 transition-opacity duration-300 ${
+                    selected ? "opacity-100" : "opacity-0"
+                  }`}
+                />
+                <span
+                  className={`relative flex items-center gap-1.5 text-[12.5px] tracking-[-0.005em] transition-colors duration-300 ${
+                    selected ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {Icon && <Icon size={13} className={selected ? "text-foreground/80" : "text-faint"} aria-hidden="true" />}
+                  {item.label}
+                </span>
               </button>
             );
           })}
