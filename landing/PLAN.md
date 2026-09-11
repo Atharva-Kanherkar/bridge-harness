@@ -8,7 +8,7 @@ Modeled on onorca.dev (Orca by Stably: Next.js, Motion, dark chrome, real-DOM mo
 |---|---|---|---|
 | 1 | Sticky nav: logo, Docs, Changelog, Enterprise, Discord, X, GitHub star count, Download | Bridge, Docs, Changelog, GitHub, Download. No star count while the repo is private. | Done |
 | 2 | Hero: "Backed by Y Combinator" badge, "Ship 100x with the agent IDE", one concrete subhead, Download for Mac + "Also for Intel · Windows · Linux", View on GitHub | Eyebrow "macOS 12 or later · Apple Silicon · v0.5.5", "Delegate the coding. Keep the judgment.", subhead, Download for Mac, View on GitHub | Done |
-| 3 | Tabbed real-DOM app mockup, 5 tabs | Five real captures of the app in content/hero.ts driving HeroFrame | Done |
+| 3 | Tabbed real-DOM app mockup, 5 tabs | Six animated scenes in content/appScenes.ts driving AppDemo | Done |
 | 4 | "Used by engineers at" logo strip | Skip until real logos exist | Never fabricate |
 | 5 | "Your dev loop, agentified." vertical tabs (Workspaces, Orchestration, Browser, Terminal, Tasks, Editor, Notes, Ship with AI), each with a mini mock | "Your dev loop, supervised." Six vertical tabs: Workspaces, Delegation, Conversation, Work board, Terminal and browser, Ship | Done |
 | 6 | "Bring your own agent / subscription", 27 agent logos | "Bring your own harness": three cards for Codex, Claude Code, OpenCode with harness tints | Done |
@@ -34,7 +34,7 @@ Built as SiteHeader, HarnessSection, FeatureGrid, CallToAction, SiteFooter, and 
 
 ## Phase 2: depth sections (done)
 
-1. "Your dev loop, supervised." Vertical tab list on the left, heading plus two sentences plus a mini mock on the right, built from the entry primitives in MockEntry. Data in content/loop.ts. Same keyboard model as the hero capability strip in HeroFrame.
+1. "Your dev loop, supervised." Vertical tab list on the left, heading plus two sentences plus a mini mock on the right, built from the entry primitives in MockEntry. Data in content/loop.ts. Same keyboard model as the hero scene strip in AppDemo.
 2. Comparison table, eight rows. Built with two verdict columns rather than the planned three, because naming two rival categories separately would have meant claims about products that change weekly. A caption says the right column generalizes across a category.
 3. "Three rules" section in the testimonial slot: the three hierarchies stay separate; learning and routing can rank but never grant; history is appended, never rewritten. One sentence each, lifted from docs/.
 4. FAQ: What is Bridge? How is it different from running claude or codex in a terminal? Which agents does it support? Do I need API keys? Is it macOS only? Is it open source? What is a session forest? What does the policy engine gate? Can CI use it? Where does my data live?

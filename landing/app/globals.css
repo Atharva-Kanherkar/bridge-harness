@@ -33,6 +33,11 @@
   --selection: #242424;
   --selection-foreground: #e4e4e4;
   --sidebar-border: #161616;
+  --cursor-facet-darkest: #4a4a4a;
+  --cursor-facet-mid: #6f6f6f;
+  --cursor-facet-light: #8f8f8f;
+  --cursor-facet-lighter: #cfcfcf;
+  --cursor-facet-lightest: #ededed;
 }
 
 @theme inline {
@@ -114,76 +119,6 @@
       opacity: 0;
     }
   }
-
-  @keyframes rise {
-    from {
-      opacity: 0;
-      transform: translateY(18px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes draw {
-    from {
-      stroke-dashoffset: var(--draw, 400);
-    }
-    to {
-      stroke-dashoffset: 0;
-    }
-  }
-
-  @keyframes pop {
-    from {
-      opacity: 0;
-      transform: scale(0.6);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-
-  @keyframes grow-x {
-    from {
-      transform: scaleX(0);
-    }
-    to {
-      transform: scaleX(1);
-    }
-  }
-
-  @keyframes light {
-    from {
-      opacity: 0.25;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  @keyframes ticker {
-    from {
-      transform: translateX(0);
-    }
-    to {
-      transform: translateX(-50%);
-    }
-  }
-
-  @keyframes breathe {
-    0%,
-    100% {
-      opacity: 0.55;
-      transform: translate(-50%, 0) scale(1);
-    }
-    50% {
-      opacity: 0.85;
-      transform: translate(-50%, 0) scale(1.06);
-    }
-  }
 }
 
 /* Load-time entrance for above-the-fold content. Staggered with --i. */
@@ -206,43 +141,26 @@
   }
 }
 
-/* Illustration parts animate as the card scrolls into view; --i staggers, final state is the resting state. */
-@utility ill-part {
-  @supports (animation-timeline: view()) {
-    @media (prefers-reduced-motion: no-preference) {
-      animation-name: var(--ill, pop);
-      animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
-      animation-fill-mode: both;
-      animation-timeline: view();
-      animation-range: entry calc(20% + var(--i, 0) * 8%) entry calc(60% + var(--i, 0) * 8%);
-    }
-  }
+/* Hero backdrop: hairline paths that trace themselves once on load. `--len` is the path
+ * length, `--i` staggers the branches. */
+@utility bg-dots {
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-foreground) 22%, transparent) 1px, transparent 1.5px);
+  background-size: 22px 22px;
 }
 
-/* Sparse starfield: three offset layers of single-pixel radial dots. */
-@utility bg-stars {
-  background-image:
-    radial-gradient(1.6px 1.6px at 12% 18%, color-mix(in srgb, var(--color-foreground) 70%, transparent) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 78% 8%, color-mix(in srgb, var(--color-foreground) 60%, transparent) 50%, transparent 51%),
-    radial-gradient(2.2px 2.2px at 33% 62%, color-mix(in srgb, var(--color-foreground) 55%, transparent) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 61% 41%, color-mix(in srgb, var(--color-foreground) 45%, transparent) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 90% 70%, color-mix(in srgb, var(--color-foreground) 65%, transparent) 50%, transparent 51%),
-    radial-gradient(2.2px 2.2px at 6% 84%, color-mix(in srgb, var(--color-foreground) 40%, transparent) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 47% 12%, color-mix(in srgb, var(--color-foreground) 50%, transparent) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 24% 38%, color-mix(in srgb, var(--color-foreground) 35%, transparent) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 70% 88%, color-mix(in srgb, var(--color-foreground) 55%, transparent) 50%, transparent 51%),
-    radial-gradient(1.6px 1.6px at 95% 25%, color-mix(in srgb, var(--color-foreground) 45%, transparent) 50%, transparent 51%);
-  background-size:
-    520px 380px,
-    640px 460px,
-    720px 540px,
-    460px 340px,
-    820px 600px,
-    580px 420px,
-    380px 300px,
-    900px 660px,
-    660px 480px,
-    440px 360px;
+/* The lattice as a stencil. Two mask layers intersect: the dot grid, and a soft circle at
+ * the pointer — so a gradient laid underneath shows through only the dots near the cursor. */
+@utility dot-spot {
+  -webkit-mask-image: radial-gradient(circle, black 1px, transparent 1.5px),
+    radial-gradient(260px 260px at var(--mx) var(--my), black 0%, transparent 70%);
+  -webkit-mask-size: 22px 22px, 100% 100%;
+  -webkit-mask-repeat: repeat, no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-image: radial-gradient(circle, black 1px, transparent 1.5px),
+    radial-gradient(260px 260px at var(--mx) var(--my), black 0%, transparent 70%);
+  mask-size: 22px 22px, 100% 100%;
+  mask-repeat: repeat, no-repeat;
+  mask-composite: intersect;
 }
 
 @utility bg-grid {
@@ -266,6 +184,75 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--color-faint);
+}
+
+/* Keyframes the components reference by name. They live outside `@theme` on purpose:
+ * Tailwind only emits a themed keyframe when a utility references it, so a keyframe used
+ * from hand-written CSS has to be declared here or it never reaches the stylesheet. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes draw {
+  from {
+    opacity: 1;
+    stroke-dashoffset: var(--draw, 400);
+  }
+  to {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes light {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translate(-50%, 0) scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: translate(-50%, 0) scale(1.06);
+  }
 }
 
 @layer base {
@@ -411,5 +398,27 @@
   }
   .doc-prose img {
     border-radius: 0.5rem;
+  }
+}
+
+@layer components {
+  /* Staged panel parts. A descendant selector is the point: one observer on the panel drives
+   * every part inside it, so this is a deliberate exception to utilities-first styling, the
+   * same one `.doc-prose` takes. Without JavaScript no `data-play` is written and the parts
+   * render plainly. */
+  [data-play] .stage {
+    opacity: 0;
+  }
+
+  [data-play="true"] .stage {
+    animation: var(--ill, rise) 640ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+    animation-delay: calc(var(--i, 0) * 110ms);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-play] .stage {
+      animation: none;
+      opacity: 1;
+    }
   }
 }

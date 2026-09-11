@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { blogPath, changelogPath, docsPath, downloadPath, issuesUrl, latestVersion, platformLabel, repoUrl } from "../content/site";
+import { blogPath, changelogPath, docsPath, downloadPath, issuesUrl, repoUrl } from "../content/site";
 
 const columns = [
   {
@@ -50,10 +50,6 @@ export default function SiteFooter() {
             </ul>
           </nav>
         ))}
-      </div>
-      <div className="mx-auto max-w-6xl border-t border-border px-6 py-6 text-[12px] text-faint">
-        v{latestVersion} · {platformLabel}
-      </div>
-    </footer>
+      </div>    </footer>
   );
 }

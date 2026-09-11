@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import ActionButton from "./ActionButton";
 import { useEffect, useState } from "react";
 import { blogPath, changelogPath, docsPath, downloadPath } from "../content/site";
 
@@ -32,9 +33,7 @@ export default function SiteHeader() {
           <Link href={blogPath} className="hidden hover:text-foreground sm:inline">
             Blog
           </Link>
-          <Link href={downloadPath} className="rounded-full bg-foreground px-3.5 py-1.5 text-background transition-colors hover:bg-foreground/90">
-            Download
-          </Link>
+          <ActionButton href={downloadPath} label="Download" size="sm" />
         </nav>
       </div>
     </header>

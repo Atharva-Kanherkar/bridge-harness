@@ -13,6 +13,11 @@
   <sub>macOS 12+ · Apple Silicon · Early-stage, under active development</sub>
 </p>
 
+
+<p align="center">
+  <img src="docs/media/mission-control.webp" alt="Bridge Mission Control: four live agent conversations side by side, each with its own transcript and composer" width="900" />
+</p>
+
 ---
 
 ## What is Bridge?
@@ -35,17 +40,53 @@ Use your existing agent subscriptions. Your code and your credentials stay on yo
 ### Work with any of your agents
 Chat with Codex, Claude Code, or OpenCode in a clean native UI — messages, reasoning, plans, tool calls, diffs, and approvals rendered properly instead of crammed into a terminal.
 
+<p align="center">
+  <img src="docs/media/switch-harness.webp" alt="The model picker open inside a chat, listing Codex and Claude Code models together" width="900" />
+</p>
+
+<p align="center"><sub>Switch model or provider inside one conversation. The provider session restarts; your history stays.</sub></p>
+
+<p align="center">
+  <img src="docs/media/agent-fleet.webp" alt="Agent Fleet: a shell split into a grid alongside Claude Code, Codex, and OpenCode terminals" width="900" />
+</p>
+
+<p align="center"><sub>Agent Fleet runs the CLIs themselves, split into one terminal grid per checkout.</sub></p>
+
 ### Keep tasks safely separated
 Spin up a task workspace per piece of work. Agents work in their own branch and folder; your main checkout stays clean. Run a second opinion in parallel when it matters.
 
 ### Stay in control of risky actions
 Commands, file writes, and delegation requests outside the agreed scope pause for your approval. Review the exact diff before anything lands.
 
+<p align="center">
+  <img src="docs/media/review-diffs.webp" alt="An inline diff in the transcript beside the changes dock listing four changed files with risk labels" width="900" />
+</p>
+
+<p align="center"><sub>Every change is reviewable where it happened, ranked by blast radius.</sub></p>
+
+<p align="center">
+  <img src="docs/media/verification.webp" alt="A verification record showing two checks passed, Claude scrutiny running, and Codex user testing pending, above Adopt and Discard" width="900" />
+</p>
+
+<p align="center"><sub>A completion gate can demand a second harness family before you adopt anything.</sub></p>
+
 ### Never lose a thread
 Every session is stored locally and stays inspectable. Go back to an earlier point, fork the conversation to try a different approach, or resume after a restart — without losing what the agent already figured out.
 
+<p align="center">
+  <img src="docs/media/session-forest.webp" alt="The transcript pane streaming message, plan, tool, and delegation events beside a conversation" width="900" />
+</p>
+
+<p align="center"><sub>An append-only ledger of what actually happened, filterable and forkable.</sub></p>
+
 ### See costs and limits up front
 Per-provider usage, rate-limit status, and context pressure are visible in the app, so you can switch models or wrap up before quality degrades.
+
+<p align="center">
+  <img src="docs/media/usage.webp" alt="The usage screen with cost per harness, a daily cost chart, token totals, and cache savings" width="900" />
+</p>
+
+<p align="center"><sub>Cost per harness and per model, with what the cache saved you.</sub></p>
 
 ### Give agents your login — safely, temporarily
 Let an agent use a web page you're already logged into (Chrome or Safari) through a tab you explicitly approve. No passwords or cookies are copied anywhere.
