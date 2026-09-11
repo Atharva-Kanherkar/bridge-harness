@@ -2647,6 +2647,9 @@ pub fn start_provider_login(
     }
     let mut command = provider_login_command(core, provider)?;
     command.env("TERM", "xterm-256color");
+    if let Some(path) = binary::hydrated_command_path() {
+        command.env("PATH", path);
+    }
     if let Some(home) = std::env::var_os("HOME") {
         command.cwd(home);
     }
@@ -2729,6 +2732,21 @@ pub fn start_provider_login(
         workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
         terminal_id: provider.into(),
     })
+}
+
+/// Abandon `provider`'s login flow. Killing the vendor process (rather than
+/// just unmounting the pane) is what keeps a retry usable: the existing-runtime
+/// branch of [`start_provider_login`] never replays the URL and prompts a
+/// closed pane missed, so a surviving process would leave the next attempt
+/// staring at an empty terminal. The reader thread publishes the usual
+/// `TerminalExited` and re-probes availability as the process ends.
+pub fn cancel_provider_login(core: &Arc<BridgeCore>, provider: &str) -> Result<(), BridgeError> {
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+    let removed = core.runtimes.lock().unwrap().remove(&runtime_id);
+    if let Some(mut runtime) = removed {
+        let _ = runtime.child.kill();
+    }
+    Ok(())
 }
 
 // --- slash commands ------------------------------------------------------------
