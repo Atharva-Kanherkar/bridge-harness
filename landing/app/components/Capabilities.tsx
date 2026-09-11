@@ -41,7 +41,6 @@ const more = [
   ["Generated protocol", "Schemas and the TypeScript client come from one source. Drift fails the build, not a session."],
   ["Authenticated browser bridge", "One approved tab in your own browser. No profile copied, no cookies exported, lease ends with the tab."],
   ["Managed runtimes", "Pinned npm closures for each harness, verified by receipt. Vendor credentials are never touched."],
-  ["Agent Fleet", "A terminal grid per checkout. Agent CLIs split into the same screen and drag into place; layout and scrollback persist."],
   ["Mission Control", "Every active chat live in one grid, each tile a real conversation with its own composer and approvals."],
   ["Work board and terminal", "Diffs, policy checks, and approvals in one pane. A separate terminal keeps shell work out of the transcript."],
 ];

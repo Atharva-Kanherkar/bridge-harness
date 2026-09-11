@@ -5,7 +5,7 @@ import Comparison from "./components/Comparison";
 import Faq from "./components/Faq";
 import HarnessSection from "./components/HarnessSection";
 import HeroBackdrop from "./components/HeroBackdrop";
-import HeroFrame from "./components/HeroFrame";
+import AppDemo from "./components/AppDemo";
 import HowItWorks from "./components/HowItWorks";
 import LoopSection from "./components/LoopSection";
 import Principles from "./components/Principles";
@@ -54,7 +54,7 @@ export default function Home() {
           </div>
 
           <div style={{ "--i": 3 } as React.CSSProperties} className="enter mt-10 sm:mt-12">
-            <HeroFrame />
+            <AppDemo />
           </div>
         </div>
       </main>

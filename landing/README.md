@@ -14,8 +14,8 @@ bun run lint
 ## Layout
 
 - `app/page.tsx` — hero, feature tabs, claims ticker, how-it-works, harnesses, loop, capabilities, principles, comparison, FAQ, CTA, footer
-- `public/screens/` — real captures of the app for the hero, listed in `app/content/hero.ts`
-- `app/components/HeroFrame.tsx` — the capability strip and app frame that cycles mockup scenes
+- `app/components/AppDemo.tsx` — the animated product demo: real app chrome, six scenes from `app/content/appScenes.ts`
+- `app/components/app/` — the chrome pieces (sidebar, transcript, changes dock, Mission Control grid, usage)
 - `app/content/site.ts` — external links and the advertised release
 
 ## Styling
