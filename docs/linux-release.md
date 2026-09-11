@@ -1,12 +1,12 @@
 # Linux release candidates
 
-The `Linux release candidates` workflow builds x86_64 Debian and AppImage artifacts on Ubuntu 22.04. A second job verifies their SHA-256 checksums and repackages the Debian payload with an Arch PKGBUILD. Artifacts are retained on the workflow run; this workflow neither publishes a release nor uploads to AUR.
+The `Linux release candidates` workflow builds x86_64 Debian and AppImage artifacts on Ubuntu 24.04. A second job verifies their SHA-256 checksums and repackages the Debian payload with an Arch PKGBUILD. Artifacts are retained on the workflow run; this workflow neither publishes a release nor uploads to AUR.
 
-The Linux Tauri overlay selects Linux bundles without changing the macOS signing configuration. Both native helpers and the Claude and terminal-state sidecars are staged by the existing build hook. Node.js and Git are runtime requirements; Debian and Arch declare them as package dependencies. AppImage users must install Node.js 18+ and Git separately. Systems without FUSE can extract an AppImage with `--appimage-extract` and run `squashfs-root/AppRun`.
+The Linux Tauri overlay selects Linux bundles without changing the macOS signing configuration. Both native helpers and the Claude and terminal-state sidecars are staged by the existing build hook. Node.js 18+, npm, and Git are runtime requirements; Debian and Arch declare them as package dependencies. AppImage users must install Node.js 18+, npm, and Git separately. Systems without FUSE can extract an AppImage with `--appimage-extract` and run `squashfs-root/AppRun`.
 
 ## Build
 
-On Ubuntu 22.04 or later, install Rust, Bun, Node.js, Git, and the dependencies listed in `.github/workflows/release-linux.yml`, then run:
+On Ubuntu 24.04 or later, install Rust, Bun, Node.js, Git, and the dependencies listed in `.github/workflows/release-linux.yml`, then run:
 
 ```sh
 bun install --frozen-lockfile
@@ -14,6 +14,8 @@ bun run build
 bun run test
 bun run tauri build --config src-tauri/tauri.linux.conf.json --ci
 ```
+
+The Linux binaries target Ubuntu 24.04 (glibc 2.39) and newer compatible distributions; AppImage packaging does not remove that libc requirement.
 
 The Arch recipe is a CI packaging template. CI adds the exact local artifact name and checksums; it is not a published AUR package.
 

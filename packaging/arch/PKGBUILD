@@ -7,7 +7,7 @@ pkgdesc='Supervise coding agents from one desktop window'
 arch=('x86_64')
 url='https://github.com/Atharva-Kanherkar/bridge-harness'
 license=('MIT')
-depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'nodejs' 'git')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'nodejs>=18' 'npm' 'git')
 provides=('bridge')
 conflicts=('bridge')
 

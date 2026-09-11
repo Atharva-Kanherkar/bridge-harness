@@ -36,3 +36,5 @@ This contract records the requested scope during final review; initial implement
 - Installed Debian and extracted AppImage runtimes resolve both sidecars from `usr/lib/bridge-deck`, independent of build-machine paths.
 - The Rust CI job installs the Node sidecar dependencies its terminal tests exercise.
 - Linux read-only workers remain fail-closed; a verified Linux isolation implementation is a stable-release blocker. No unconfined fallback is permitted.
+
+- Linux packaging targets Ubuntu 24.04+ and current Arch. Debian and Arch dependencies include Node.js 18+ and npm; installation is checked through the native package manager.
