@@ -24,7 +24,7 @@ const questions = [
   },
   {
     q: "Is it open source?",
-    a: "Not yet. The application is all rights reserved unless the maintainers publish a license.",
+    a: "Yes. Bridge is MIT licensed, so you can read it, fork it, and ship your own build. Third-party code inside it keeps its own terms.",
   },
   {
     q: "What is the session forest?",

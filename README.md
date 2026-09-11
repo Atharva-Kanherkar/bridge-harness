@@ -160,4 +160,6 @@ Keep changes focused, follow [AGENTS.md](AGENTS.md) (Tailwind CSS v4 only, coloc
 
 ## License
 
-No license file is currently included in the repository. Treat the project as all rights reserved unless the maintainers provide separate written permission.
+Bridge is open source under the [MIT License](LICENSE). Use it, fork it, ship it.
+
+Third-party code carries its own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

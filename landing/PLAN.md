@@ -54,7 +54,7 @@ The blog and docs routes were added beyond the original table: `/blog` with thre
 ## Honesty gates, owner decisions
 
 - No testimonials, customer logos, or star counts until they are real.
-- No "open source" wording until a license is published. The README says all rights reserved.
+- Open-source wording is now accurate: the repository carries an MIT LICENSE.
 - Three harnesses, macOS on Apple Silicon, no mobile app, no SSH worktrees. Never imply otherwise.
 - Domain for metadataBase and the Docs link target (docs-site is not deployed yet).
 
