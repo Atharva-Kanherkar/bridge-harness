@@ -173,6 +173,13 @@
         "provider": {
           "type": "string"
         },
+        "quotaSource": {
+          "description": "Public collector name, not an account identity or authentication token.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "schemaVersion": {
           "format": "uint32",
           "minimum": 0.0,

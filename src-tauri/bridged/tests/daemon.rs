@@ -168,6 +168,9 @@ fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
     let mut settings = initial["result"].clone();
     assert_eq!(settings["schemaVersion"], 1);
     settings["displayMode"] = json!("used");
+    settings["quotaDisplayMode"] = json!("remaining");
+    settings["statusLayout"] = json!([["icon", "space", "fiveHourUsed"], ["weeklyRemaining"]]);
+    settings["openToOverview"] = json!(true);
     settings["enabled"] = json!(false);
     settings["claudeEnabled"] = json!(true);
     settings["cursorEnabled"] = json!(true);
@@ -183,8 +186,7 @@ fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
     assert!(rejected.get("error").is_some());
     let (usage, _) = client.call(4, "usage/get_usage_overview", None);
     assert_eq!(usage["result"]["schemaVersion"], 1);
-    assert_eq!(usage["result"]["windows"][0]["usedPercent"]["status"], "unavailable");
-    assert!(usage["result"]["windows"][0]["usedPercent"]["value"].is_null());
+    assert_eq!(usage["result"]["windows"], json!([]), "No observation must not create a fictitious session limit");
     assert!(usage["result"]["today"]["costMicrousd"]["value"].is_null());
     let (group, _) = client.call(6, "usage/get_provider_usage_overviews", None);
     assert!(group.get("error").is_none());

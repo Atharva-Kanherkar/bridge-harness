@@ -85,6 +85,7 @@ pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError>
         provider: "codex".into(),
         account: cache.quota.as_ref().and_then(|q| q.account.clone()),
         plan: cache.quota.as_ref().and_then(|q| q.plan.clone()),
+        quota_source: None,
         observed_at: cache.quota.as_ref().map(|q| q.observed_at),
         windows: windows(cache.quota.as_ref(), cache.error.is_some(), now.timestamp()),
         account_metrics: vec![],
@@ -629,6 +630,7 @@ pub fn provider_snapshots(
             provider: provider.id().into(),
             account: quota.account,
             plan: quota.plan,
+            quota_source: quota.source,
             observed_at: (quota.observed_at > 0).then_some(quota.observed_at),
             windows: quota.windows,
             account_metrics: quota.metrics,
@@ -674,15 +676,20 @@ fn refresh_provider(
     provider: bridge_protocol::messages::MenuBarProvider,
     settings: &bridge_protocol::messages::MenuBarSettings,
     index: usize,
+    interactive: bool,
 ) -> Result<(), BridgeError> {
     let mut last = core.usage_overview.providers[index]
         .lock()
         .map_err(|_| BridgeError::Invalid("Provider refresh unavailable".into()))?;
-    if last.is_some_and(|v| v.elapsed().as_secs() < 15) {
+    if !interactive && last.is_some_and(|v| v.elapsed().as_secs() < 15) {
         return Ok(());
     }
     let prior = load_provider(&core.db.lock().unwrap(), provider.id())?;
-    let cache = match crate::provider_usage::read(provider, settings) {
+    let cache = match if interactive {
+        crate::provider_usage::read_interactive(core, provider, settings)
+    } else {
+        crate::provider_usage::read(provider, settings)
+    } {
         Ok(usage) => CachedProvider {
             usage: Some(usage),
             error: None,
@@ -728,7 +735,38 @@ pub fn refresh_providers(
                     if p == MenuBarProvider::Codex {
                         refresh(core).map(|_| ())
                     } else {
-                        refresh_provider(core, p, settings, index - 1)
+                        refresh_provider(core, p, settings, index - 1, false)
+                    }
+                })
+            })
+            .collect();
+        for job in jobs {
+            job.join().map_err(|_| {
+                BridgeError::Invalid("Provider collector stopped unexpectedly".into())
+            })??;
+        }
+        Ok(())
+    })?;
+    provider_snapshots(core)
+}
+
+pub fn refresh_providers_interactive(
+    core: &BridgeCore,
+) -> Result<bridge_protocol::messages::ProviderUsageOverviews, BridgeError> {
+    use bridge_protocol::messages::MenuBarProvider;
+    let settings = crate::menu_bar::load(&core.db.lock().unwrap())?;
+    std::thread::scope(|scope| -> Result<(), BridgeError> {
+        let jobs: Vec<_> = MenuBarProvider::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|(_, provider)| settings.provider_enabled(*provider))
+            .map(|(index, provider)| {
+                let settings = &settings;
+                scope.spawn(move || {
+                    if provider == MenuBarProvider::Codex {
+                        refresh(core).map(|_| ())
+                    } else {
+                        refresh_provider(core, provider, settings, index - 1, true)
                     }
                 })
             })

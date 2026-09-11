@@ -17,6 +17,7 @@ use tauri::{Emitter, Listener, Manager};
 enum Work {
     Refresh,
     Select(MenuBarProvider),
+    RefreshInterval(u64),
     Opened,
     SettingsChanged,
     Snapshot,
@@ -67,6 +68,10 @@ fn call_with_params(
                 ),
                 MethodName::RefreshProviderUsageOverviews => serde_json::to_value(
                     bridge_core::api::refresh_provider_usage_overviews(&core)
+                        .map_err(|e| e.to_string())?,
+                ),
+                MethodName::RefreshProviderUsageOverviewsInteractive => serde_json::to_value(
+                    bridge_core::api::refresh_provider_usage_overviews_interactive(&core)
                         .map_err(|e| e.to_string())?,
                 ),
                 MethodName::SaveOpencodeUsageSession => {
@@ -125,6 +130,10 @@ extern "C" fn action(action: i32) {
             let _ = native
                 .send
                 .try_send(Work::Select(MenuBarProvider::ALL[(action - 100) as usize]));
+        }
+        200..=204 => {
+            let seconds = [0, 60, 300, 900, 1800][(action - 200) as usize];
+            let _ = native.send.try_send(Work::RefreshInterval(seconds));
         }
         _ => {}
     }
@@ -223,10 +232,15 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                         }
                         Err(error) => Some(error),
                     };
-                    if let Work::Select(provider) = next {
-                        if presentation.settings.provider_enabled(provider) {
+                    if matches!(next, Work::Select(_) | Work::RefreshInterval(_)) {
+                        let selected = match next { Work::Select(provider) => Some(provider), _ => None };
+                        if selected.is_none_or(|provider| presentation.settings.provider_enabled(provider)) {
                             let mut settings = presentation.settings.clone();
-                            settings.selected_provider = provider;
+                            match next {
+                                Work::Select(provider) => settings.selected_provider = provider,
+                                Work::RefreshInterval(seconds) => settings.refresh_seconds = seconds,
+                                _ => {}
+                            }
                             match call_with_params(
                                 &handle,
                                 &host,
@@ -268,10 +282,14 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                     let should_snapshot = should_refresh
                         || presentation.usage.is_none()
                         || last_snapshot.elapsed().as_secs() >= 30
-                        || matches!(next, Work::Opened | Work::SettingsChanged | Work::Select(_));
+                        || matches!(next, Work::Opened | Work::SettingsChanged | Work::Select(_) | Work::RefreshInterval(_));
                     if should_snapshot {
                         let method = if should_refresh {
-                            MethodName::RefreshProviderUsageOverviews
+                            if matches!(next, Work::Refresh) {
+                                MethodName::RefreshProviderUsageOverviewsInteractive
+                            } else {
+                                MethodName::RefreshProviderUsageOverviews
+                            }
                         } else {
                             MethodName::GetProviderUsageOverviews
                         };

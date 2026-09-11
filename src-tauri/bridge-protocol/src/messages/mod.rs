@@ -294,6 +294,7 @@ typed_methods![
     (SaveOpencodeUsageSession, SaveOpencodeUsageSessionParams, UnitResult),
     (GetProviderUsageOverviews, _, ProviderUsageOverviews),
     (RefreshProviderUsageOverviews, _, ProviderUsageOverviews),
+    (RefreshProviderUsageOverviewsInteractive, _, ProviderUsageOverviews),
     (GetUsageOverview, _, UsageOverviewSnapshot),
     (RefreshUsageOverview, _, UsageOverviewSnapshot),
     (GetMenuBarSettings, _, MenuBarSettings),

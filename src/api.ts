@@ -1200,7 +1200,7 @@ export const bridgeApi = {
     ? call("usage/get_provider_usage_overviews") : Promise.resolve(null),
   refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
     if (!isTauri()) return null;
-    const snapshot = await call("usage/refresh_provider_usage_overviews");
+    const snapshot = await call("usage/refresh_provider_usage_overviews_interactive");
     const { emit } = await import("@tauri-apps/api/event");
     await emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined);
     await emit("bridge-menu-bar-settings-changed").catch(() => undefined);

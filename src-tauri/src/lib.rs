@@ -845,6 +845,12 @@ async fn refresh_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> 
 }
 
 #[tauri::command]
+async fn refresh_provider_usage_overviews_interactive(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Refresh provider usage interactively", move || api::refresh_provider_usage_overviews_interactive(&core)).await
+}
+
+#[tauri::command]
 async fn get_usage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     let core = state.inner().clone();
     blocking("Usage overview", move || api::get_usage_overview(&core)).await
@@ -2369,6 +2375,7 @@ pub fn run() -> i32 {
             save_opencode_usage_session,
             get_provider_usage_overviews,
             refresh_provider_usage_overviews,
+            refresh_provider_usage_overviews_interactive,
             get_usage_overview,
             refresh_usage_overview,
             get_menu_bar_settings,
@@ -2589,6 +2596,7 @@ pub fn run() -> i32 {
         }
         if matches!(event, tauri::RunEvent::Exit) {
             menu_bar::shutdown();
+            bridge_core::provider_usage::shutdown();
             if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
                 runtime.shutdown();
             }

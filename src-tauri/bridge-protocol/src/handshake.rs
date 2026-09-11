@@ -59,7 +59,9 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// Reject older daemons that cannot preserve these fields.
 /// **1.10 adds independent quota bars, Overview, and status layout preferences.**
 /// A stale daemon must not reject or discard the saved menu customization.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 10 };
+/// **1.11 separates explicit user refresh from background collection.**
+/// The interactive method may use the signed-in provider CLI for recovery.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 11 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +173,11 @@ mod tests {
         let older = ProtocolVersion { major: 1, minor: 9 };
         assert!(!older.accepts(PROTOCOL_VERSION));
         assert!(PROTOCOL_VERSION.accepts(older));
+    }
+
+    #[test]
+    fn manual_refresh_client_rejects_daemon_without_interaction_boundary() {
+        assert!(!ProtocolVersion { major: 1, minor: 10 }.accepts(PROTOCOL_VERSION));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

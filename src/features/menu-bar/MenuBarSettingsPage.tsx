@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { MenuBarSettings, ProviderUsageOverviews } from "../../protocol/generated/protocol";
 import { SettingsPage, SettingsGroup, SettingsRow, Select, Switch } from "../../components/settings/kit";
+import { MenuBarLayoutEditor } from "./MenuBarLayoutEditor";
 
 const providers = [
   { id: "codex", name: "Codex", key: "codexEnabled", description: "Uses Codex sign-in. Manage the account in Harnesses." },
@@ -18,6 +19,9 @@ export function MenuBarSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [connection, setConnection] = useState<string | null>(null);
+  const confirmedSettings = useRef<MenuBarSettings | null>(null);
+  const saves = useRef<Promise<void>>(Promise.resolve());
+  const pendingSaves = useRef(0);
   const enabled = providers.filter(provider => settings?.[provider.key]);
 
   useEffect(() => {
@@ -26,7 +30,7 @@ export function MenuBarSettingsPage() {
     const subscribe = (promise: Promise<() => void>) => { void promise.then(off => { if (active) subscriptions.push(off); else off(); }).catch(error => { if (active) setError(String(error)); }); };
     // A failed usage read must not prevent disabling or changing the menu.
     void bridgeApi.getMenuBarSettings().then(settings => {
-      if (active) setSettings(settings);
+      if (active) { confirmedSettings.current = settings; setSettings(settings); }
     }).catch(error => { if (active) setError(String(error)); });
     void bridgeApi.getProviderUsageOverviews().then(usage => {
       if (active) setUsage(usage);
@@ -34,17 +38,26 @@ export function MenuBarSettingsPage() {
     subscribe(bridgeApi.onProviderUsageOverviews(value => { if (active) setUsage(value); }));
     subscribe(bridgeApi.onMenuBarConnection(message => { if (active) setConnection(message); }));
     subscribe(bridgeApi.onMenuBarSettingsChanged(() => {
-      void bridgeApi.getMenuBarSettings().then(value => { if (active) setSettings(value); }).catch(error => { if (active) setError(String(error)); });
+      void bridgeApi.getMenuBarSettings().then(value => { if (active && pendingSaves.current === 0) { confirmedSettings.current = value; setSettings(value); } }).catch(error => { if (active) setError(String(error)); });
     }));
     return () => { active = false; subscriptions.forEach(off => off()); };
   }, []);
 
   async function save(patch: Partial<MenuBarSettings>) {
-    if (!settings || busy) return;
+    if (!confirmedSettings.current) return;
+    pendingSaves.current += 1;
     setBusy(true); setError(null); setSaved(false);
-    try { setSettings(await bridgeApi.saveMenuBarSettings({ ...settings, ...patch })); setSaved(true); }
-    catch (error) { setError(String(error)); }
-    finally { setBusy(false); }
+    const operation = saves.current.then(async () => {
+      try {
+        const value = await bridgeApi.saveMenuBarSettings({ ...confirmedSettings.current!, ...patch });
+        confirmedSettings.current = value;
+        setSettings(value);
+        if (pendingSaves.current === 1) setSaved(true);
+      } catch (error) { setError(String(error)); setSaved(false); }
+      finally { pendingSaves.current -= 1; if (pendingSaves.current === 0) setBusy(false); }
+    });
+    saves.current = operation;
+    await operation;
   }
 
   async function refresh() {
@@ -57,7 +70,7 @@ export function MenuBarSettingsPage() {
   return <SettingsPage title="Menu Bar" description="Account limits, tokens, and spend at a glance."
     action={<button type="button" disabled={busy || enabled.length === 0} onClick={() => void refresh()}
       className="flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-40">
-      <RefreshCw size={12} aria-hidden="true" className={busy ? "animate-spin" : ""} />Refresh usage
+      <RefreshCw size={12} aria-hidden="true" />Refresh usage
     </button>}>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {connection && <p role="status" className="text-xs text-muted-foreground">{connection}</p>}
@@ -67,21 +80,35 @@ export function MenuBarSettingsPage() {
       <SettingsGroup label="Display">
         <SettingsRow label="Show in menu bar" description="The Bridge symbol follows your macOS appearance."
           control={<Switch label="Show in menu bar" checked={settings.enabled} disabled={busy} onChange={enabled => void save({ enabled })} />} />
-        <SettingsRow label="Beside the icon" description="Choose the information that stays visible."
+        <SettingsRow label="Open to Overview" description="See every enabled provider’s current quota together. Details stay in provider tabs."
+          control={<Switch label="Open to Overview" checked={settings.openToOverview ?? true} disabled={busy} onChange={openToOverview => void save({ openToOverview })} />} />
+        <SettingsRow label="Quota bars" description="Used fills the bar as you consume your allowance. The opposite percentage appears below."
+          control={<Select label="Quota bars" value={settings.quotaDisplayMode ?? "used"} disabled={busy}
+            options={[{ value: "used", label: "Show used" }, { value: "remaining", label: "Show remaining" }]}
+            onChange={value => void save({ quotaDisplayMode: value as MenuBarSettings["quotaDisplayMode"] })} />} />
+        <SettingsRow label="Menu icon" description="Both icons use a transparent template that follows macOS appearance."
+          control={<Select label="Menu icon" value={settings.iconStyle ?? "bridge"} disabled={busy}
+            options={[{ value: "bridge", label: "Bridge logo" }, { value: "meter", label: "Quota meters" }]}
+            onChange={value => void save({ iconStyle: value as MenuBarSettings["iconStyle"] })} />} />
+        <SettingsRow label="Beside the icon" description="Standard display. A custom layout below takes precedence."
           control={<Select label="Beside the icon" value={settings.displayMode} disabled={busy} options={[
             { value: "icon", label: "Icon only" }, { value: "remaining", label: "Quota remaining" },
             { value: "used", label: "Quota used" }, { value: "cost", label: "Today's spend" },
           ]} onChange={displayMode => void save({ displayMode: displayMode as MenuBarSettings["displayMode"] })} />} />
         <SettingsRow label="Quota window" description="Automatic uses the provider’s first available limit, including billing cycles."
           control={<Select label="Quota window" value={settings.quotaWindow} disabled={busy}
-          options={[{ value: "auto", label: "Automatic" }, { value: "session", label: "Session" }, { value: "weekly", label: "Weekly" }]}
+          options={[{ value: "auto", label: "Automatic" }, { value: "session", label: "5-hour / rolling" }, { value: "weekly", label: "Weekly" }]}
           onChange={quotaWindow => void save({ quotaWindow: quotaWindow as MenuBarSettings["quotaWindow"] })} />} />
+      </SettingsGroup>
+      <SettingsGroup label="Menu icon layout">
+        <MenuBarLayoutEditor key={JSON.stringify(settings.statusLayout ?? [])} layout={settings.statusLayout ?? []} busy={busy}
+          onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
       <SettingsGroup label="Providers & accounts">
         {providers.map(provider => {
           const account = usage?.providers.find(value => value.provider === provider.id);
           return <SettingsRow key={provider.id} label={provider.name}
-            description={account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ?? provider.description}
+            description={account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ?? (account?.quotaSource ? `Usage via ${account.quotaSource}` : provider.description)}
             control={<Switch label={`Show ${provider.name}`} checked={settings[provider.key] ?? false} disabled={busy}
               onChange={value => void save({ [provider.key]: value })} />} />;
         })}
@@ -101,6 +128,8 @@ export function MenuBarSettingsPage() {
           onChange={showAccount => void save({ showAccount })} />} />
       </SettingsGroup>
       <SettingsGroup label="Usage & spend">
+        <SettingsRow label="Daily history" description="A 30-day chart and day-by-day model details in provider tabs. Overview always shows quotas only."
+          control={<Switch label="Daily history" checked={settings.showHistory ?? true} disabled={busy} onChange={showHistory => void save({ showHistory })} />} />
         <SettingsRow label="Tokens and models" description="Recorded input, output, and cache tokens on this Mac."
           control={<Switch label="Tokens and models" checked={settings.showTokens} disabled={busy} onChange={showTokens => void save({ showTokens })} />} />
         <SettingsRow label="Show spend" description="Today and the last 30 days. Estimated costs are labelled; missing prices stay unavailable."

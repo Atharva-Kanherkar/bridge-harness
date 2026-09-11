@@ -274,6 +274,7 @@ impl Daemon {
     pub fn shutdown(&self, drain_timeout: Duration) {
         self.state.ready.store(false, Ordering::SeqCst);
         self.state.shutting_down.store(true, Ordering::SeqCst);
+        bridge_core::provider_usage::shutdown();
         let deadline = Instant::now() + drain_timeout;
         while self.state.connections.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));

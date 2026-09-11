@@ -37,6 +37,12 @@ struct UsagePeriod: Decodable {
     var models: [ModelUsage]
 }
 
+struct UsageDay: Decodable, Identifiable {
+    var day: String
+    var usage: UsagePeriod
+    var id: String { day }
+}
+
 struct AccountMetric: Decodable, Identifiable {
     var id: String
     var label: String
@@ -56,14 +62,17 @@ struct UsageOverview: Decodable {
     var account: String?
     var plan: String?
     var observedAt: Int64?
+    var quotaSource: String? = nil
     var windows: [QuotaWindow]
     var accountMetrics: [AccountMetric]?
     var today: UsagePeriod
     var month: UsagePeriod
+    var daily: [UsageDay]? = nil
     var coverage: String
     var error: String?
 
     func menuWindow(_ preference: String, now: Int64) -> QuotaWindow? {
+        if preference == "fiveHour" { return windows.first { $0.windowMinutes == 300 } }
         if preference != "auto" { return windows.first { $0.id == preference } }
         return windows.first { $0.usedPercent.current != nil && ($0.resetsAt.map { $0 > now } ?? true) }
             ?? windows.first
@@ -84,13 +93,18 @@ struct MenuSettings: Decodable {
     }
     var activeProvider: String? { enabledProviders.contains(selectedProvider) ? selectedProvider : enabledProviders.first }
     var displayMode: String
+    var quotaDisplayMode: String? = nil
+    var openToOverview: Bool? = nil
+    var iconStyle: String? = nil
+    var statusLayout: [[String]]? = nil
     var quotaWindow: String
     var showAccount: Bool
     var showTokens: Bool
     var showCost: Bool
+    var showHistory: Bool? = nil
     var refreshSeconds: UInt64
     static let initial = MenuSettings(schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: nil,
-        displayMode: "remaining", quotaWindow: "auto", showAccount: true,
+        displayMode: "used", quotaWindow: "auto", showAccount: true,
         showTokens: true, showCost: true, refreshSeconds: 300)
 }
 
@@ -104,7 +118,72 @@ struct Presentation: Decodable {
 
 final class MenuState: ObservableObject {
     var selectProvider: (String) -> Void = { _ in }
+    var surfaceChanged: () -> Void = { }
+    var contentChanged: () -> Void = { }
+    @Published var showingOverview = true
     @Published var presentation = Presentation(settings: .initial, usage: nil, refreshing: false, error: nil)
+
+    func select(_ id: String) {
+        showingOverview = id == "overview"
+        if !showingOverview { selectProvider(id) }
+        surfaceChanged()
+    }
+}
+
+// Keep legacy wire IDs for other Bridge consumers, while using the provider's
+// actual rolling-window duration in this independent menu presentation.
+func quotaLabel(_ window: QuotaWindow, provider: String) -> String {
+    if window.id == "session" && window.windowMinutes == 300 { return "5-hour" }
+    if provider == "codex" && window.label == "Session" { return "Rolling" }
+    return window.label
+}
+
+// CodexBar's uniform-time pace model: reserve is the gap between elapsed
+// allowance and actual use, not extra credits or a separate token allowance.
+func quotaPace(_ window: QuotaWindow, used: Double?, now: Date) -> String? {
+    guard let used = used, used < 100, let minutes = window.windowMinutes, minutes > 0,
+          let reset = window.resetsAt else { return nil }
+    let duration = Double(minutes) * 60
+    let remaining = Double(reset) - now.timeIntervalSince1970
+    guard remaining > 0 && remaining <= duration else { return nil }
+    let expected = (duration - remaining) / duration * 100
+    guard expected >= 3 else { return nil }
+    let delta = max(0, used) - expected
+    if abs(delta) <= 2 { return "On pace" }
+    return String(format: "%.0f%% in %@", abs(delta), delta < 0 ? "reserve" : "deficit")
+}
+
+struct QuotaDisplay {
+    let used: Double?
+    let fill: Double?
+    let valueLabel: String
+    let counterpart: String?
+    let expired: Bool
+
+    init(_ window: QuotaWindow, usage: UsageOverview, mode: String, now: Date, failed: Bool) {
+        expired = window.resetsAt.map { Double($0) <= now.timeIntervalSince1970 } ?? false
+        let old = usage.observedAt.map { now.timeIntervalSince1970 - Double($0) >= 600 || Double($0) > now.timeIntervalSince1970 } ?? true
+        used = !failed && usage.error == nil && !expired && !old ? window.usedPercent.current : nil
+        if let used = used {
+            let remaining = max(0, 100 - used)
+            let showRemaining = mode == "remaining"
+            fill = min(100, max(0, showRemaining ? remaining : used)) / 100
+            valueLabel = "\(quotaPercentLabel(showRemaining ? remaining : used)) \(showRemaining ? "left" : "used")"
+            counterpart = "\(quotaPercentLabel(showRemaining ? used : remaining)) \(showRemaining ? "used" : "left")"
+        } else {
+            fill = nil
+            let recorded = window.usedPercent.value != nil && window.usedPercent.status != "unavailable"
+            valueLabel = recorded ? "Stale" : "Unavailable"
+            counterpart = nil
+        }
+    }
+}
+
+func quotaPercentLabel(_ value: Double) -> String {
+    if value > 0 && value < 0.01 { return "<0.01%" }
+    if value > 99.99 && value < 100 { return ">99.99%" }
+    if (value > 0 && value < 1) || (value > 99 && value < 100) { return String(format: "%.2f%%", value) }
+    return String(format: "%.0f%%", value)
 }
 
 func countLabel(_ metric: Metric) -> String {

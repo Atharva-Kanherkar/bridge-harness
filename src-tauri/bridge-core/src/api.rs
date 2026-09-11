@@ -3748,6 +3748,11 @@ pub fn refresh_provider_usage_overviews(core: &Arc<BridgeCore>) -> Result<wire::
     crate::usage_overview::refresh_providers(core)
 }
 
+/// Explicit user action only; scheduled collectors use the noninteractive method.
+pub fn refresh_provider_usage_overviews_interactive(core: &Arc<BridgeCore>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    crate::usage_overview::refresh_providers_interactive(core)
+}
+
 pub fn get_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     crate::usage_overview::snapshot(core)
 }

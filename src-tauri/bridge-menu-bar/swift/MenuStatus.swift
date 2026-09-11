@@ -30,13 +30,13 @@ struct MenuStatus {
             }
         } else {
             let window = usage?.menuWindow(settings.quotaWindow, now: now)
-            let label = window?.label ?? "Quota"
+            let label = window.map { quotaLabel($0, provider: usage?.provider ?? "") } ?? "Quota"
             let fresh = presentation.error == nil && usage?.error == nil
                 && usage?.observedAt.map { now >= $0 && now - $0 < 600 } == true
                 && (window?.resetsAt.map { $0 > now } ?? true)
             if let used = window?.usedPercent.current, fresh {
                 let remaining = settings.displayMode != "used"
-                title = String(format: "%.0f%%", remaining ? max(0, 100 - used) : used)
+                title = quotaPercentLabel(remaining ? max(0, 100 - used) : used)
                 accessibilityTitle = "\(prefix), \(label), \(title) \(remaining ? "remaining" : "used")"
             } else {
                 title = "—"

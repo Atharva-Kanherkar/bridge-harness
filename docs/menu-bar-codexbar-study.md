@@ -96,3 +96,30 @@ Additional references inspected: `docs/architecture.md`, `docs/ui.md`,
 `StatusItemController+MenuRefreshScheduling.swift`,
 `StatusItemController+MenuTracking.swift`, and
 `Tests/CodexBarTests/StatusMenuSwitcherTrackingTests.swift`.
+
+## Overview, quota direction, and status layout
+
+The follow-up Sol source review used CodexBar's menu-card/overview presentation,
+`MenuBarLayout.swift`, `MenuBarLayoutRenderer.swift`, `MenuBarLayoutEditor.swift`,
+`StatusItemController+MenuBarLayout.swift`, and `CodexBarCore/UsagePace.swift`.
+Bridge adapts the independent used/remaining preference and the native token
+compositor. Its bounded layout supports two lines, provider/window percentages,
+reset, cost, space, separator and icon tokens, with presets and JSON copy/paste.
+Stacked or inline images and text become a single AppKit alpha template so
+highlighted and accessibility appearances recolor the complete status item.
+
+Bridge's Overview deliberately contains only quota and freshness information.
+Daily token/cost history and per-model details belong to provider tabs. Cursor
+preserves its distinct total, Cursor and third-party lanes and billing amounts.
+Codex limits use reported durations and named pools. The pace estimate compares
+elapsed window time with usage; reserve wording describes that estimate, not an
+additional pool of tokens. Bridge does not import CodexBar's expression language,
+notifications, iCloud, plugins, hooks or updater.
+
+Claude manual recovery follows `ClaudeStatusProbe.swift` and the TTY runner's
+bounded `/usage` capture pattern. Bridge uses its existing Rust PTY dependency,
+keeps provider collection in core, and refuses prompt consent or account
+substitution. The probe runs only for a user-initiated refresh when default
+credentials cannot be read; background refresh retains the direct collection
+path. CLI-only snapshots explicitly identify their source and do not invent
+account names, plans or reset times.

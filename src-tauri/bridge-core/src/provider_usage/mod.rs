@@ -1,9 +1,14 @@
 //! Read-only account collectors. Authentication and transport stay out of both UIs.
 mod claude;
+mod claude_cli;
 pub mod credentials;
 mod cursor;
 mod http;
 mod opencode;
+
+pub fn shutdown() {
+    claude_cli::shutdown();
+}
 
 use bridge_protocol::messages::{
     MenuBarProvider, MenuBarSettings, UsageAccountMetric, UsageMetric, UsageMetricSource,
@@ -12,13 +17,26 @@ use bridge_protocol::messages::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(crate) struct AccountUsage {
     pub account: Option<String>,
     pub plan: Option<String>,
     pub observed_at: i64,
     pub windows: Vec<UsageQuotaWindow>,
     pub metrics: Vec<UsageAccountMetric>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+pub(crate) fn read_interactive(
+    core: &crate::BridgeCore,
+    provider: MenuBarProvider,
+    settings: &MenuBarSettings,
+) -> Result<AccountUsage, String> {
+    match provider {
+        MenuBarProvider::Claude => claude::read_interactive(core),
+        _ => read(provider, settings),
+    }
 }
 
 pub(crate) fn read(

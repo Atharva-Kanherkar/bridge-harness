@@ -80,3 +80,39 @@ it("refreshes the provider group and opens the explicit OpenCode connection flow
   expect(connect).toHaveBeenCalledOnce();
   expect(container.textContent).toContain("Complete sign-in");
 });
+
+it("composes a two-line icon layout without saving until Apply", async () => {
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Two limits")!.click());
+  expect(save).not.toHaveBeenCalled();
+  expect(container.querySelector("pre")?.textContent).toBe("▥ 5h 42%\n7d 74%");
+  await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Apply layout")!.click());
+  expect(save).toHaveBeenCalledWith({ ...settings, statusLayout: [["icon", "space", "fiveHourUsed"], ["weeklyUsed"]] });
+});
+
+it("defaults Overview on while preserving the separate status display choice", async () => {
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const overview = container.querySelector<HTMLButtonElement>('[aria-label="Open to Overview"]')!;
+  expect(overview.getAttribute("aria-checked")).toBe("true");
+  await act(async () => overview.click());
+  expect(save).toHaveBeenCalledWith({ ...settings, openToOverview: false });
+});
+
+it("serializes rapid provider changes against the last confirmed settings", async () => {
+  const finishes: ((value: MenuBarSettings) => void)[] = [];
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(() => new Promise(resolve => finishes.push(resolve)));
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>('[aria-label="Show Claude"]')!.click();
+    container.querySelector<HTMLButtonElement>('[aria-label="Show Cursor"]')!.click();
+  });
+  expect(save).toHaveBeenCalledTimes(1);
+  await act(async () => finishes[0]({ ...settings, claudeEnabled: true }));
+  expect(save).toHaveBeenCalledTimes(2);
+  expect(save).toHaveBeenLastCalledWith({ ...settings, claudeEnabled: true, cursorEnabled: true });
+  await act(async () => finishes[1]({ ...settings, claudeEnabled: true, cursorEnabled: true }));
+  expect(container.querySelector('[aria-label="Show Claude"]')!.getAttribute("aria-checked")).toBe("true");
+  expect(container.querySelector('[aria-label="Show Cursor"]')!.getAttribute("aria-checked")).toBe("true");
+});

@@ -7,6 +7,8 @@ func check(_ condition: @autoclosure () -> Bool, _ message: String) {
 }
 
 let zero = Metric(value: 0, source: "reported", status: "current")
+check(quotaPercentLabel(0.36) == "0.36%" && quotaPercentLabel(99.64) == "99.64%", "Fractional Cursor usage must not look empty or exhausted")
+check(quotaPercentLabel(0.001) == "<0.01%", "A small positive percentage must not become reported zero")
 check(countLabel(zero) == "0", "Reported zero must remain zero")
 check(countLabel(Metric(value: 27_933_293, source: "measured", status: "current")) == "27,933,293", "Large token counts must be readable")
 check(moneyLabel(zero) == "$0.00", "A reported zero cost is valid")
@@ -55,7 +57,7 @@ statusPresentation.usage!.providers[0].observedAt = 100
 statusPresentation.usage!.providers[0].windows[0].resetsAt = 3_700
 statusPresentation.settings.quotaWindow = "session"
 var status = MenuStatus(statusPresentation, now: 100)
-check(status.title == "100%" && status.accessibilityTitle.contains("Codex, Session, 100% remaining"),
+check(status.title == "100%" && status.accessibilityTitle.contains("Codex, 5-hour, 100% remaining"),
       "Zero used must be announced as all quota remaining")
 statusPresentation.settings.displayMode = "used"
 status = MenuStatus(statusPresentation, now: 100)
@@ -131,6 +133,7 @@ check(unflippedScroll.contentView.bounds.minY == 450, "Unflipped documents must 
 // Exercise the production SwiftUI document too: a same-width observed update
 // must be measured in this delivery, not after closing and reopening the menu.
 let hostedState = MenuState()
+hostedState.showingOverview = false
 let hostedDocument = NSHostingView(rootView: MenuCard(state: hostedState))
 let hostedScroll = MenuCardScrollView(document: hostedDocument, width: 350, maximumHeight: 1_000)
 let loadingHeight = hostedScroll.frame.height
@@ -172,6 +175,7 @@ for index in breakdownPresentation.usage!.providers.indices {
     breakdownPresentation.usage!.providers[index].today.models[0].model = "\(provider)-model"
 }
 let breakdownState = MenuState()
+breakdownState.showingOverview = false
 breakdownState.presentation = breakdownPresentation
 let breakdown = ModelBreakdownMenu(state: breakdownState)
 let parentMenu = NSMenu()
@@ -228,6 +232,78 @@ CFRunLoopRunInMode(.defaultMode, 0.1, true)
 check(callbackCount.pointee == 1, "The C ABI context must be delivered once from a worker")
 callbackCount.deinitialize(count: 1)
 callbackCount.deallocate()
+
+// Used-first bars are independent of status-item text and must distinguish
+// exhausted quota, real zero, missing observations, and stale provider data.
+var quotaUsage = fixture.selectedUsage!
+quotaUsage.observedAt = 100
+quotaUsage.error = nil
+var quotaWindow = quotaUsage.windows[0]
+quotaWindow.resetsAt = 9_100
+quotaWindow.windowMinutes = 300
+quotaWindow.usedPercent = Metric(value: 100, source: "reported", status: "current")
+var quotaDisplay = QuotaDisplay(quotaWindow, usage: quotaUsage, mode: "used", now: Date(timeIntervalSince1970: 100), failed: false)
+check(quotaDisplay.fill == 1 && quotaDisplay.valueLabel == "100% used" && quotaDisplay.counterpart == "0% left", "Exhausted quota must fill the entire used bar")
+quotaDisplay = QuotaDisplay(quotaWindow, usage: quotaUsage, mode: "remaining", now: Date(timeIntervalSince1970: 100), failed: false)
+check(quotaDisplay.fill == 0 && quotaDisplay.valueLabel == "0% left", "Remaining mode deliberately empties an exhausted bar")
+quotaWindow.usedPercent = zero
+quotaDisplay = QuotaDisplay(quotaWindow, usage: quotaUsage, mode: "used", now: Date(timeIntervalSince1970: 100), failed: false)
+check(quotaDisplay.fill == 0 && quotaDisplay.counterpart == "100% left", "Reported zero stays an observed empty used bar")
+quotaWindow.usedPercent = .unavailable
+check(QuotaDisplay(quotaWindow, usage: quotaUsage, mode: "used", now: Date(timeIntervalSince1970: 100), failed: false).fill == nil, "Unavailable must not masquerade as zero")
+quotaWindow.usedPercent = Metric(value: 42, source: "reported", status: "current")
+check(QuotaDisplay(quotaWindow, usage: quotaUsage, mode: "used", now: Date(timeIntervalSince1970: 800), failed: false).valueLabel == "Stale", "Old values stay stale independently of bar direction")
+quotaUsage.error = "Account unavailable"
+check(QuotaDisplay(quotaWindow, usage: quotaUsage, mode: "used", now: Date(timeIntervalSince1970: 100), failed: false).fill == nil, "Provider errors must suppress current-looking quota")
+check(quotaPace(quotaWindow, used: 25, now: Date(timeIntervalSince1970: 100)) == "25% in reserve", "Reserve is elapsed-time allowance less usage, not credits")
+check(quotaPace(quotaWindow, used: 75, now: Date(timeIntervalSince1970: 100)) == "25% in deficit", "Ahead-of-time consumption is a pace deficit")
+check(quotaPace(quotaWindow, used: nil, now: Date(timeIntervalSince1970: 100)) == nil, "Unknown or stale values must have no forecast")
+check(quotaPace(quotaWindow, used: 100, now: Date(timeIntervalSince1970: 100)) == nil, "An exhausted quota must not suggest reserve")
+
+var layoutPresentation = fixture
+layoutPresentation.usage!.providers[0].observedAt = 100
+layoutPresentation.usage!.providers[0].windows[0] = quotaWindow
+layoutPresentation.usage!.providers[0].windows[1].usedPercent = Metric(value: 74, source: "reported", status: "current")
+layoutPresentation.usage!.providers[0].windows[1].resetsAt = 172_800
+layoutPresentation.settings.statusLayout = [["icon", "space", "fiveHourUsed"], ["weeklyRemaining"]]
+var statusLayout = StatusLayout(layoutPresentation, now: 100)
+check(statusLayout.visibleText == "\u{fffc} 5h 42%\n7d 26%", "Two-line layouts preserve order and spaces")
+check(statusLayout.accessibilityTitle.contains("42% used") && statusLayout.accessibilityTitle.contains("26% remaining"), "Custom visible percentages must retain spoken semantics")
+check(statusLayout.attributedTitle(icon: MenuController.templateIcon()).attribute(.attachment, at: 0, effectiveRange: nil) != nil, "The icon token must render an actual template attachment")
+statusLayout = StatusLayout(layoutPresentation, now: 900)
+check(statusLayout.visibleText.contains("5h —") && statusLayout.accessibilityTitle.contains("stale"), "Custom layouts must not present stale quota as current")
+layoutPresentation.settings.statusLayout = [["todayCost"]]
+layoutPresentation.usage!.providers[0].error = "Expired account"
+check(StatusLayout(layoutPresentation, now: 100).visibleText == "≈$1.20", "Account failures must not invalidate local ledger cost in a layout")
+layoutPresentation.settings.statusLayout = [["space", "dot"]]
+check(!StatusLayout(layoutPresentation, now: 100).hasContent, "A whitespace-only layout must fall back to a visible status item")
+
+let overviewState = MenuState()
+overviewState.presentation = fixture
+let overviewBreakdown = ModelBreakdownMenu(state: overviewState)
+check(overviewBreakdown.item.isHidden, "Overview must omit cost/model breakdown actions")
+overviewState.showingOverview = false
+overviewBreakdown.update()
+check(!overviewBreakdown.item.isHidden, "Provider details retain the model breakdown")
+let visibleBeforeTracking = overviewBreakdown.item.isHidden
+let childBeforeTracking = overviewBreakdown.menu.items[1]
+overviewBreakdown.parentTracking = true
+overviewState.showingOverview = true
+overviewBreakdown.update()
+check(overviewBreakdown.item.isHidden == visibleBeforeTracking && !overviewBreakdown.item.isEnabled, "Switching to Overview must not remove a root row during tracking")
+check(overviewBreakdown.menu.items[1] === childBeforeTracking, "Root tracking must also defer submenu reconstruction")
+overviewBreakdown.parentTracking = false
+overviewBreakdown.update()
+check(overviewBreakdown.item.isHidden, "The next closed-menu update can remove the unused breakdown row")
+layoutPresentation.settings.statusLayout = [["icon", "space", "used"]]
+let leadingLayout = StatusLayout(layoutPresentation, now: 100)
+check(leadingLayout.hasLeadingIcon && !leadingLayout.requiresTemplateImage, "Single-line leading icons stay in AppKit's native image slot")
+check(leadingLayout.attributedTitle(icon: MenuController.templateIcon(), omitLeadingIcon: true).attribute(.attachment, at: 0, effectiveRange: nil) == nil, "A leading icon must not be duplicated as a text attachment")
+layoutPresentation.settings.statusLayout = [["icon", "space", "fiveHourUsed"], ["weeklyUsed"]]
+let stackedImage = StatusLayout(layoutPresentation, now: 100).templateImage(icon: MenuController.templateIcon())
+check(stackedImage.isTemplate && stackedImage.size.height <= 22, "Stacked text and inline icons must tint as one status-bar-sized alpha mask")
+let meterImage = MenuController.meterIcon(layoutPresentation)
+check(meterImage.isTemplate && meterImage.size == NSSize(width: 18, height: 18), "Quota icon customization must preserve the template contract")
 
 let image = MenuController.templateIcon()
 check(image.isTemplate, "Menu icon must be a system template")

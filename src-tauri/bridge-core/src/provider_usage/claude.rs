@@ -42,8 +42,7 @@ fn decode_credentials(content: &str, now_ms: i64) -> Result<(String, Option<Stri
         .ok_or("Sign in through Claude Code to read account limits.")?;
     Ok((token.into(), public_text(&oauth["subscriptionType"])))
 }
-pub(super) fn read() -> Result<AccountUsage, String> {
-    let (token, plan) = credentials()?;
+fn read_with_credentials(token: String, plan: Option<String>) -> Result<AccountUsage, String> {
     let client = http::client()?;
     let auth = format!("Bearer {token}");
     let usage = http::json(
@@ -78,6 +77,31 @@ pub(super) fn read() -> Result<AccountUsage, String> {
         }
     }
     Ok(parsed)
+}
+pub(super) fn read() -> Result<AccountUsage, String> {
+    let (token, plan) = credentials()?;
+    read_with_credentials(token, plan)
+}
+
+pub(super) fn read_interactive(core: &crate::BridgeCore) -> Result<AccountUsage, String> {
+    // Explicit credentials identify an account chosen by the caller. Never
+    // replace that identity with whichever account the global CLI is using.
+    if !cli_fallback_allowed(
+        std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some(),
+        std::env::var_os("CLAUDE_CONFIG_DIR").is_some(),
+    ) {
+        return read();
+    }
+    match credentials() {
+        Ok((token, plan)) => read_with_credentials(token, plan),
+        Err(direct_error) => super::claude_cli::read(core).map_err(|cli_error| {
+            format!("{direct_error} Manual Claude CLI fallback failed: {cli_error}")
+        }),
+    }
+}
+
+fn cli_fallback_allowed(environment_token: bool, configured_directory: bool) -> bool {
+    !environment_token && !configured_directory
 }
 fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
     let mut result = AccountUsage {
@@ -157,5 +181,12 @@ mod tests {
             1000
         )
         .is_err());
+    }
+    #[test]
+    fn interactive_fallback_never_substitutes_for_explicit_credentials() {
+        assert!(cli_fallback_allowed(false, false));
+        assert!(!cli_fallback_allowed(true, false));
+        assert!(!cli_fallback_allowed(false, true));
+        assert!(!cli_fallback_allowed(true, true));
     }
 }

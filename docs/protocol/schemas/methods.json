@@ -793,6 +793,13 @@
       "resultSchema": "provider-usage-overviews.json"
     },
     {
+      "command": "refresh_provider_usage_overviews_interactive",
+      "domain": "usage",
+      "method": "usage/refresh_provider_usage_overviews_interactive",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
       "command": "get_usage_overview",
       "domain": "usage",
       "method": "usage/get_usage_overview",
@@ -1341,7 +1348,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 10
+    "minor": 11
   },
   "reserved": {
     "cancel": "$/cancel",

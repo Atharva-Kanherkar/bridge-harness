@@ -285,3 +285,36 @@ no overlaps, and the final coverage row reachable in the 280-point viewport.
 They do not represent native menu chrome, translucent glass,
 status-item highlighting, VoiceOver speech, or keyboard tracking. Those live
 appearance/input checks and the prior release/macOS 12 gates remain open.
+
+## Overview and customization · 2026-09-11
+
+The quota/provider contract and persisted customization settings are committed
+as `65131a2`. Native Overview is quota-only; provider details include sparse daily
+history and all recorded model rows. Tests cover independent bar direction,
+full consumption, fractional percentages near zero/100, unknown and stale
+values, Codex duration labels, named quota pools, Cursor's three lanes, token
+layout bounds, two-line template rendering and tracked menu lifetime.
+
+The production TypeScript/Vite build passes. The full frontend run passed 2,053
+tests in 167 files before the last settings regressions; all 11 focused layout
+and settings tests pass after those additions. The full Rust core run passed
+2,297 tests with 11 ignored. All 19 daemon integration tests pass after replacing
+the obsolete assertion that missing quota creates a Session row. Protocol checks
+pass with the versioned interactive-refresh method and source provenance. Swift
+checks and the x86_64 macOS 12 type check pass, including the two-line status
+image's 22-point height bound, native template tinting, nested menu tracking,
+daily selection resizing and rapid serialized preference saves.
+
+Synthetic production-card renders cover Overview, Codex and Cursor in light,
+dark and both high-contrast appearances, including capped viewports. Overview,
+Codex details and Cursor details were visually inspected; all five tabs fit and
+Cursor's 100% used lane is full. These are offscreen fixture renders, not live
+account screenshots or proof of native menu glass/highlight appearance. The
+packaged and account-specific checks below are tracked separately.
+
+The manual Claude recovery checks pass: 10 provider/CLI tests plus seven usage
+snapshot tests. A fake PTY panel delays Weekly by 700 ms to verify the two-second
+settle window; other cases cover Unicode, scoped Weekly rows, loading redraws,
+prompt refusal, deadlines, output caps and process reaping. A shutdown-fence test
+quits during an active capture and verifies the process is gone and further
+launches are rejected. These checks do not contact a live account.

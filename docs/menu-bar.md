@@ -98,3 +98,40 @@ Swift application, provider authentication stack, or updater.
 
 See [validation notes](menu-bar-validation.md) for completed checks and the
 remaining native parity gates before retiring the legacy meter.
+
+## Overview and customization
+
+Protocol 1.10 adds independent `quotaDisplayMode` (defaults to used),
+`openToOverview`, `iconStyle`, a bounded `statusLayout`, and `showHistory`.
+Existing icon-text preferences survive migration; quota bars no longer inherit
+the icon-text display mode. A fully consumed allowance is a full used bar, with
+remaining percentage below. Sub-1% values retain precision rather than becoming
+zero. All stale/unavailable protections still apply.
+
+Overview is the first native tab and the default opening surface. It shows only
+provider headers, quota bars, reset countdowns, freshness and connection errors.
+Provider tabs contain billing amounts, today/month totals, sparse daily history,
+and selectable per-day token/model/cost details. Missing days and unpriced costs
+stay unknown. Codex rolling limits use their reported duration (`5-hour`); named
+additional pools retain provider labels. Pace is an elapsed-time estimate,
+explicitly distinct from a separate quota or credit inventory.
+
+General → Menu Bar includes a status layout editor inspired by CodexBar's token
+compositor. Users add and reorder icon, provider, used/remaining percentages,
+5-hour/weekly percentages, reset, cost, spaces and separators across two lines.
+Presets and JSON copy/paste use the same bounded, non-executable token contract
+(two lines, twelve items per line, one icon). A standard display remains
+available. The Bridge logo and quota-meter icon are both macOS alpha templates.
+Refresh interval is also available directly in the native menu. Open Bridge and
+Menu Bar Settings remain the navigation actions; there is no CodexBar app,
+updater, animation system, notification system, or iCloud dependency.
+
+Protocol 1.11 separates user-initiated provider refresh from background refresh.
+When default Claude Code credentials are unavailable or expired, a manual Refresh
+can read `/usage` through the installed Claude CLI in Bridge's private probe
+directory. The probe disables tools, hooks, plugins, and MCP, has a bounded
+capture deadline, and never answers login, trust, or permission prompts. Explicit
+OAuth tokens and custom Claude configuration directories remain authoritative;
+they are never replaced by another CLI account. Background collection does not
+launch this fallback. CLI observations are labelled `Claude CLI`; absent account,
+plan and reset information remain unavailable.

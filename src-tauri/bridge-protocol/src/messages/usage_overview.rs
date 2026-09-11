@@ -94,6 +94,9 @@ pub struct UsageOverviewSnapshot {
     pub account: Option<String>,
     pub plan: Option<String>,
     pub observed_at: Option<i64>,
+    /// Public collector name, not an account identity or authentication token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_source: Option<String>,
     pub windows: Vec<UsageQuotaWindow>,
     /// Provider-reported account amounts, separate from the device ledger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

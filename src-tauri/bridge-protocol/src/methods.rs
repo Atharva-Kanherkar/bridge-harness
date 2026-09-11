@@ -171,6 +171,7 @@ methods![
     (SaveOpencodeUsageSession, "usage", "save_opencode_usage_session"),
     (GetProviderUsageOverviews, "usage", "get_provider_usage_overviews"),
     (RefreshProviderUsageOverviews, "usage", "refresh_provider_usage_overviews"),
+    (RefreshProviderUsageOverviewsInteractive, "usage", "refresh_provider_usage_overviews_interactive"),
     (GetUsageOverview, "usage", "get_usage_overview"),
     (RefreshUsageOverview, "usage", "refresh_usage_overview"),
     (GetMenuBarSettings, "menu_bar", "get_menu_bar_settings"),
