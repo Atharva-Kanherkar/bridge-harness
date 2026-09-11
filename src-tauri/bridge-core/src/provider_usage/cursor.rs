@@ -1,7 +1,19 @@
 use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use bridge_protocol::messages::{UsageDailyOverview, UsageModelOverview, UsagePeriodOverview};
+use chrono::TimeZone;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
-use std::{path::Path, time::Duration};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    time::{Duration, Instant},
+};
+
+const HISTORY_PAGE_SIZE: usize = 1_000;
+const HISTORY_MAX_PAGES: usize = 50;
+const HISTORY_DEADLINE: Duration = Duration::from_secs(20);
 
 fn access_token(path: &Path) -> Result<String, String> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -114,7 +126,432 @@ pub(super) fn read() -> Result<AccountUsage, String> {
     )?;
     let mut result = parse(&usage, now)?;
     result.account = public_text(&me["email"]).or_else(|| public_text(&me["sub"]));
+    // History is optional enrichment. A failure must not discard current account quotas,
+    // and no previous account's rows are retained because this result replaces the cache.
+    match fetch_history(&client, &cookie, &subject, now) {
+        Ok(history) => result.history = Some(history),
+        Err(error) => result.history_error = Some(error),
+    }
     Ok(result)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CursorEvent {
+    timestamp_ms: i64,
+    model: String,
+    input: i64,
+    output: i64,
+    cache_write: i64,
+    cache_read: i64,
+    total_cents: Option<f64>,
+    cost_invalid: bool,
+}
+
+fn finite_number(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .filter(|v| v.is_finite())
+}
+fn nonnegative_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .filter(|v| (0..=1_000_000_000_000_000).contains(v))
+}
+fn token_count(tokens: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
+    match tokens.get(key) {
+        None | Some(Value::Null) => Some(0),
+        Some(value) => nonnegative_i64(value),
+    }
+}
+fn event(value: &Value) -> Result<Option<CursorEvent>, String> {
+    let timestamp_ms = value["timestamp"]
+        .as_i64()
+        .or_else(|| value["timestamp"].as_str().and_then(|v| v.parse().ok()))
+        .ok_or("Cursor history event has an invalid timestamp")?;
+    if timestamp_ms <= 0 {
+        return Err("Cursor history event has an invalid timestamp".into());
+    }
+    let Some(tokens) = value.get("tokenUsage").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let input = token_count(tokens, "inputTokens")
+        .ok_or("Cursor history event has invalid input tokens")?;
+    let output = token_count(tokens, "outputTokens")
+        .ok_or("Cursor history event has invalid output tokens")?;
+    let cache_write = token_count(tokens, "cacheWriteTokens")
+        .ok_or("Cursor history event has invalid cache-write tokens")?;
+    let cache_read = token_count(tokens, "cacheReadTokens")
+        .ok_or("Cursor history event has invalid cache-read tokens")?;
+    let total = input
+        .checked_add(output)
+        .and_then(|value| value.checked_add(cache_write))
+        .and_then(|value| value.checked_add(cache_read))
+        .ok_or("Cursor history event token total overflowed")?;
+    if total == 0 {
+        return Ok(None);
+    }
+    let cost_value = tokens.get("totalCents");
+    let total_cents = cost_value
+        .and_then(finite_number)
+        .filter(|v| (0.0..=1_000_000_000.0).contains(v));
+    let cost_invalid = cost_value.is_some_and(|v| !v.is_null()) && total_cents.is_none();
+    Ok(Some(CursorEvent {
+        timestamp_ms,
+        model: public_text(&value["model"]).unwrap_or_else(|| "unknown".into()),
+        input,
+        output,
+        cache_write,
+        cache_read,
+        total_cents,
+        cost_invalid,
+    }))
+}
+
+fn page(value: Value) -> Result<(Option<usize>, Vec<Value>), String> {
+    let object = value
+        .as_object()
+        .ok_or("Cursor history returned an unrecognized response")?;
+    if object.is_empty() {
+        return Ok((Some(0), vec![]));
+    }
+    let count = match object.get("totalUsageEventsCount") {
+        Some(value) => Some(
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|v| v.parse().ok()))
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or("Cursor history returned an invalid event count")?,
+        ),
+        None => None,
+    };
+    let events = match object.get("usageEventsDisplay") {
+        Some(Value::Array(events)) => events.clone(),
+        None if count.is_some() => vec![],
+        _ => return Err("Cursor history returned an unrecognized response".into()),
+    };
+    Ok((count, events))
+}
+
+fn boundary_overlap(previous: &[Value], current: &[Value]) -> usize {
+    (1..=previous.len().min(current.len()))
+        .rev()
+        .find(|count| previous[previous.len() - count..] == current[..*count])
+        .unwrap_or(0)
+}
+
+fn reconcile_pages(
+    pages: Vec<Vec<Value>>,
+    expected: Option<usize>,
+    completed: bool,
+) -> Result<Vec<Value>, String> {
+    let raw_count: usize = pages.iter().map(Vec::len).sum();
+    if !completed || expected.is_some_and(|total| raw_count < total) {
+        return Err("Cursor history pagination was incomplete".into());
+    }
+    let Some(expected) = expected else {
+        return Ok(pages.into_iter().flatten().collect());
+    };
+    if raw_count == expected {
+        return Ok(pages.into_iter().flatten().collect());
+    }
+    let mut removals = raw_count.saturating_sub(expected);
+    let mut result = pages.first().cloned().unwrap_or_default();
+    for index in 1..pages.len() {
+        let remove = boundary_overlap(&pages[index - 1], &pages[index]).min(removals);
+        result.extend(pages[index].iter().skip(remove).cloned());
+        removals -= remove;
+    }
+    if removals != 0 || result.len() != expected {
+        return Err("Cursor history pagination was inconsistent".into());
+    }
+    Ok(result)
+}
+
+fn events_in_window(raw: &[Value], start: i64, end: i64) -> Result<Vec<CursorEvent>, String> {
+    let mut events = Vec::new();
+    for value in raw {
+        let timestamp = value["timestamp"]
+            .as_i64()
+            .or_else(|| value["timestamp"].as_str().and_then(|v| v.parse().ok()));
+        if timestamp.is_some_and(|at| at < start || at > end) {
+            continue;
+        }
+        if let Some(row) = event(value)? {
+            events.push(row);
+        }
+    }
+    Ok(events)
+}
+
+fn fetch_history(
+    client: &reqwest::blocking::Client,
+    cookie: &str,
+    subject: &str,
+    now: i64,
+) -> Result<AccountHistory, String> {
+    let zone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
+    let tz: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
+    let now_dt =
+        chrono::DateTime::from_timestamp(now, 0).ok_or("Cursor history clock is unavailable")?;
+    let today = now_dt.with_timezone(&tz).date_naive();
+    let start_day = today - chrono::Duration::days(29);
+    let start = tz
+        .from_local_datetime(&start_day.and_hms_opt(0, 0, 0).unwrap())
+        .earliest()
+        .ok_or("Cursor history time zone is unavailable")?
+        .timestamp_millis();
+    let end = now_dt.timestamp_millis();
+    let started = Instant::now();
+    let mut pages = Vec::new();
+    let mut expected = None;
+    let mut completed = false;
+    for page_number in 1..=HISTORY_MAX_PAGES {
+        let remaining = HISTORY_DEADLINE.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err("Cursor history request timed out".into());
+        }
+        let request = client.post("https://cursor.com/api/dashboard/get-filtered-usage-events")
+            .timeout(remaining)
+            .header("Origin", "https://cursor.com")
+            .json(&json!({"page": page_number, "pageSize": HISTORY_PAGE_SIZE, "startDate": start.to_string(), "endDate": end.to_string()}));
+        let value = http::json(http::secret(request, true, cookie)?, "Cursor")?;
+        let (count, rows) = page(value)?;
+        if let Some(count) = count {
+            if expected.is_some_and(|old| old != count) {
+                return Err("Cursor history pagination was inconsistent".into());
+            }
+            expected = Some(count);
+        }
+        let short = rows.len() < HISTORY_PAGE_SIZE;
+        pages.push(rows);
+        if short {
+            completed = true;
+            break;
+        }
+    }
+    let raw = reconcile_pages(pages, expected, completed)?;
+    let events = events_in_window(&raw, start, end)?;
+    Ok(history(events, subject, today, tz, now))
+}
+
+#[derive(Default)]
+struct Aggregate {
+    input: i64,
+    output: i64,
+    cache: i64,
+    cost_cents: f64,
+    cost_known: bool,
+    unpriced: bool,
+    invalid: bool,
+}
+impl Aggregate {
+    fn add(&mut self, event: &CursorEvent) {
+        let Some(input) = self.input.checked_add(event.input) else {
+            self.invalid = true;
+            return;
+        };
+        let Some(output) = self.output.checked_add(event.output) else {
+            self.invalid = true;
+            return;
+        };
+        let Some(cache) = self
+            .cache
+            .checked_add(event.cache_read)
+            .and_then(|v| v.checked_add(event.cache_write))
+        else {
+            self.invalid = true;
+            return;
+        };
+        self.input = input;
+        self.output = output;
+        self.cache = cache;
+        if event.cost_invalid || event.total_cents.is_none() {
+            self.unpriced = true;
+        }
+        if let Some(cents) = event.total_cents {
+            let next = self.cost_cents + cents;
+            if !next.is_finite() || next * 10_000.0 > i64::MAX as f64 {
+                self.unpriced = true;
+            } else {
+                self.cost_cents = next;
+                self.cost_known = true;
+            }
+        }
+    }
+    fn period(&self, models: Vec<UsageModelOverview>) -> UsagePeriodOverview {
+        let known = |value| UsageMetric::known(value as f64, UsageMetricSource::Reported);
+        UsagePeriodOverview {
+            tokens: if self.invalid {
+                UsageMetric::unavailable()
+            } else {
+                self.input
+                    .checked_add(self.output)
+                    .and_then(|v| v.checked_add(self.cache))
+                    .map(known)
+                    .unwrap_or_else(UsageMetric::unavailable)
+            },
+            cost_microusd: if self.invalid || self.unpriced || !self.cost_known {
+                UsageMetric::unavailable()
+            } else {
+                UsageMetric::known(
+                    (self.cost_cents * 10_000.0).round(),
+                    UsageMetricSource::Reported,
+                )
+            },
+            models,
+        }
+    }
+    fn merge(&mut self, other: &Aggregate) {
+        self.invalid |= other.invalid;
+        let Some(input) = self.input.checked_add(other.input) else {
+            self.invalid = true;
+            return;
+        };
+        let Some(output) = self.output.checked_add(other.output) else {
+            self.invalid = true;
+            return;
+        };
+        let Some(cache) = self.cache.checked_add(other.cache) else {
+            self.invalid = true;
+            return;
+        };
+        let cost = self.cost_cents + other.cost_cents;
+        if !cost.is_finite() || cost * 10_000.0 > i64::MAX as f64 {
+            self.invalid = true;
+            return;
+        }
+        self.input = input;
+        self.output = output;
+        self.cache = cache;
+        self.cost_cents = cost;
+        self.cost_known |= other.cost_known;
+        self.unpriced |= other.unpriced;
+    }
+}
+
+fn history(
+    events: Vec<CursorEvent>,
+    subject: &str,
+    today: chrono::NaiveDate,
+    tz: chrono_tz::Tz,
+    now: i64,
+) -> AccountHistory {
+    let mut grouped: BTreeMap<String, BTreeMap<String, Aggregate>> = BTreeMap::new();
+    let mut month_models: BTreeMap<String, Aggregate> = BTreeMap::new();
+    for event in &events {
+        let Some(at) = chrono::DateTime::from_timestamp_millis(event.timestamp_ms) else {
+            continue;
+        };
+        let day = at.with_timezone(&tz).date_naive().to_string();
+        grouped
+            .entry(day)
+            .or_default()
+            .entry(event.model.clone())
+            .or_default()
+            .add(event);
+        month_models
+            .entry(event.model.clone())
+            .or_default()
+            .add(event);
+    }
+    let mut daily = Vec::new();
+    let mut month = Aggregate::default();
+    let mut today_total = Aggregate::default();
+    let mut found_today = false;
+    for (day, models) in grouped {
+        let mut day_total = Aggregate::default();
+        let mut model_rows = Vec::new();
+        for (model, aggregate) in models {
+            model_rows.push(model_row(model, &aggregate));
+            day_total.merge(&aggregate);
+        }
+        model_rows.sort_by(|a, b| {
+            b.total_tokens
+                .value
+                .partial_cmp(&a.total_tokens.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if day == today.to_string() {
+            found_today = true;
+            today_total = Aggregate {
+                input: day_total.input,
+                output: day_total.output,
+                cache: day_total.cache,
+                cost_cents: day_total.cost_cents,
+                cost_known: day_total.cost_known,
+                unpriced: day_total.unpriced,
+                invalid: day_total.invalid,
+            };
+        }
+        month.merge(&day_total);
+        daily.push(UsageDailyOverview {
+            day,
+            usage: day_total.period(model_rows),
+        });
+    }
+    let empty = events.is_empty();
+    if empty {
+        month.cost_known = true;
+    }
+    if !found_today {
+        today_total.cost_known = true;
+    }
+    let month_rows = month_models
+        .into_iter()
+        .map(|(model, aggregate)| model_row(model, &aggregate))
+        .collect();
+    let mut hasher = Sha256::new();
+    hasher.update(subject.as_bytes());
+    AccountHistory {
+        account_scope: format!("{:x}", hasher.finalize()),
+        observed_at: now,
+        through_day: today.to_string(),
+        today: today_total.period(
+            daily
+                .iter()
+                .find(|d| d.day == today.to_string())
+                .map(|d| d.usage.models.clone())
+                .unwrap_or_default(),
+        ),
+        month: month.period(month_rows),
+        daily,
+        coverage: if empty {
+            "Cursor dashboard account history · confirmed empty for the last 30 days".into()
+        } else {
+            "Cursor dashboard account history · last 30 days · API-rate cost, distinct from actual plan billing".into()
+        },
+    }
+}
+
+fn model_row(model: String, aggregate: &Aggregate) -> UsageModelOverview {
+    let metric = |value| {
+        if aggregate.invalid {
+            UsageMetric::unavailable()
+        } else {
+            UsageMetric::known(value as f64, UsageMetricSource::Reported)
+        }
+    };
+    let total = aggregate
+        .input
+        .checked_add(aggregate.output)
+        .and_then(|v| v.checked_add(aggregate.cache));
+    UsageModelOverview {
+        model,
+        input_tokens: metric(aggregate.input),
+        output_tokens: metric(aggregate.output),
+        cache_tokens: metric(aggregate.cache),
+        total_tokens: total.map(metric).unwrap_or_else(UsageMetric::unavailable),
+        cost_microusd: if aggregate.invalid || aggregate.unpriced || !aggregate.cost_known {
+            UsageMetric::unavailable()
+        } else {
+            UsageMetric::known(
+                (aggregate.cost_cents * 10_000.0).round(),
+                UsageMetricSource::Reported,
+            )
+        },
+    }
 }
 fn ratio(used: Option<f64>, limit: Option<f64>) -> Option<f64> {
     used.zip(limit)
@@ -261,6 +698,99 @@ mod tests {
         assert_eq!(row.windows[0].used_percent.value, Some(0.441025641025641));
         assert_eq!(row.windows[1].used_percent.value, Some(0.36));
         assert_eq!(row.windows[2].used_percent.value, Some(0.7111111111111111));
+    }
+    #[test]
+    fn account_history_groups_models_and_keeps_unpriced_cost_unavailable() {
+        let tz = chrono_tz::UTC;
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+        let at = chrono::DateTime::parse_from_rfc3339("2026-09-10T12:00:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let priced = event(&json!({"timestamp":at.to_string(),"model":"cursor-model","tokenUsage":{"inputTokens":"10","outputTokens":2,"cacheReadTokens":3,"cacheWriteTokens":4,"totalCents":"1.25"}})).unwrap().unwrap();
+        let unpriced = event(&json!({"timestamp":at,"model":"other","tokenUsage":{"inputTokens":1,"outputTokens":1}})).unwrap().unwrap();
+        let report = history(
+            vec![priced, unpriced],
+            "auth0|account-a",
+            today,
+            tz,
+            at / 1000,
+        );
+        assert_eq!(report.daily.len(), 1);
+        assert_eq!(report.today.tokens.value, Some(21.0));
+        assert_eq!(report.month.models.len(), 2);
+        assert_eq!(
+            report.month.cost_microusd.value, None,
+            "a mixed priced/unpriced total is not a lower bound"
+        );
+        assert_eq!(
+            report.daily[0]
+                .usage
+                .models
+                .iter()
+                .find(|m| m.model == "cursor-model")
+                .unwrap()
+                .cost_microusd
+                .value,
+            Some(12_500.0)
+        );
+        let other = history(vec![], "auth0|account-b", today, tz, at / 1000);
+        assert_ne!(report.account_scope, other.account_scope);
+        assert_eq!(other.today.tokens.value, Some(0.0));
+        assert_eq!(other.today.cost_microusd.value, Some(0.0));
+    }
+
+    #[test]
+    fn pagination_requires_completion_and_reconciles_only_proven_boundary_overlap() {
+        let a = json!({"timestamp":"1"});
+        let b = json!({"timestamp":"2"});
+        let c = json!({"timestamp":"3"});
+        assert_eq!(
+            reconcile_pages(
+                vec![vec![a.clone(), b.clone()], vec![b, c.clone()]],
+                Some(3),
+                true
+            )
+            .unwrap()
+            .len(),
+            3
+        );
+        assert!(reconcile_pages(vec![vec![a.clone()]], Some(2), true).is_err());
+        assert!(reconcile_pages(vec![vec![a]], Some(1), false).is_err());
+        assert!(page(json!({"error":"unauthorized"})).is_err());
+        assert_eq!(page(json!({})).unwrap(), (Some(0), vec![]));
+    }
+
+    #[test]
+    fn malformed_or_negative_event_numbers_are_not_presented_as_usage() {
+        assert!(event(&json!({"timestamp":1,"model":"x","tokenUsage":{"inputTokens":-1,"outputTokens":2,"totalCents":1}})).is_err());
+        let row = event(
+            &json!({"timestamp":1,"model":"x","tokenUsage":{"inputTokens":1,"totalCents":"bad"}}),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(row.cost_invalid);
+        assert_eq!(row.total_cents, None);
+    }
+
+    #[test]
+    fn history_filters_outside_window_and_rounds_fractional_cost_once() {
+        let row = |timestamp, cents| json!({"timestamp":timestamp,"model":"x","tokenUsage":{"inputTokens":1,"totalCents":cents}});
+        let events = events_in_window(
+            &[
+                row(99, 0.00004),
+                row(100, 0.00004),
+                row(101, 0.00004),
+                row(102, 0.00004),
+            ],
+            100,
+            101,
+        )
+        .unwrap();
+        assert_eq!(events.len(), 2);
+        let today = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+        let report = history(events, "subject", today, chrono_tz::UTC, 1);
+        assert_eq!(report.month.tokens.value, Some(2.0));
+        assert_eq!(report.month.cost_microusd.value, Some(1.0));
     }
     #[test]
     fn auth_reads_text_and_blob_without_mutating_database() {

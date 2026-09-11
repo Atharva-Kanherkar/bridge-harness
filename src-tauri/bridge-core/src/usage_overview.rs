@@ -368,6 +368,72 @@ fn daily(rows: &[&UsageBucket]) -> Vec<UsageDailyOverview> {
         .collect()
 }
 
+fn confirmed_empty_account_period() -> UsagePeriodOverview {
+    UsagePeriodOverview {
+        tokens: UsageMetric::known(0.0, Source::Reported),
+        cost_microusd: UsageMetric::known(0.0, Source::Reported),
+        models: vec![],
+    }
+}
+
+fn unavailable_account_period() -> UsagePeriodOverview {
+    UsagePeriodOverview {
+        tokens: UsageMetric::unavailable(),
+        cost_microusd: UsageMetric::unavailable(),
+        models: vec![],
+    }
+}
+
+fn stale_period(period: &mut UsagePeriodOverview) {
+    for metric in [&mut period.tokens, &mut period.cost_microusd] {
+        if metric.value.is_some() {
+            metric.status = Status::Stale;
+        }
+    }
+    for model in &mut period.models {
+        for metric in [
+            &mut model.input_tokens,
+            &mut model.output_tokens,
+            &mut model.cache_tokens,
+            &mut model.total_tokens,
+            &mut model.cost_microusd,
+        ] {
+            if metric.value.is_some() {
+                metric.status = Status::Stale;
+            }
+        }
+    }
+}
+
+fn project_account_history(
+    mut history: crate::provider_usage::AccountHistory,
+    today: chrono::NaiveDate,
+    now: i64,
+) -> crate::provider_usage::AccountHistory {
+    let crossed_day = history.through_day != today.to_string();
+    history.today = if crossed_day {
+        unavailable_account_period()
+    } else {
+        history
+            .daily
+            .iter()
+            .find(|day| day.day == today.to_string())
+            .map(|day| day.usage.clone())
+            .unwrap_or_else(confirmed_empty_account_period)
+    };
+    if crossed_day || now < history.observed_at || now - history.observed_at >= 600 {
+        stale_period(&mut history.today);
+        stale_period(&mut history.month);
+        for day in &mut history.daily {
+            stale_period(&mut day.usage);
+        }
+        history
+            .coverage
+            .push_str(" · stale; refresh for current account history");
+    }
+    history
+}
+
 fn cost(rows: &[&UsageBucket]) -> UsageMetric {
     if rows
         .iter()
@@ -609,6 +675,7 @@ pub fn provider_snapshots(
     for provider in MenuBarProvider::ALL.into_iter().skip(1) {
         let cache = load_provider(&db, provider.id())?;
         let mut quota = cache.usage.unwrap_or_default();
+        let history_error = quota.history_error.clone();
         expire_provider(&mut quota, cache.error.is_some(), now.timestamp());
         let rows: Vec<_> = summary
             .buckets
@@ -624,6 +691,33 @@ pub fn provider_snapshots(
             .sources
             .iter()
             .any(|s| s.agent == provider.id() && s.coverage_state != "complete");
+        let mut account_history = (provider == MenuBarProvider::Cursor)
+            .then(|| quota.history.take())
+            .flatten();
+        let (today_usage, month_usage, daily_usage, coverage) = if let Some(history) =
+            account_history.take()
+        {
+            let history = project_account_history(history, today, now.timestamp());
+            (
+                history.today,
+                history.month,
+                history.daily,
+                history.coverage,
+            )
+        } else {
+            (
+                period(&todays),
+                period(&rows),
+                daily(&rows),
+                if provider == MenuBarProvider::Cursor {
+                    format!("Cursor dashboard history unavailable{} · local stores contain no token counts", history_error.as_deref().map(|e| format!(": {e}")).unwrap_or_default())
+                } else if partial {
+                    "Recorded on this Mac · history import is incomplete".into()
+                } else {
+                    "Recorded on this Mac · may include multiple accounts".into()
+                },
+            )
+        };
         providers.push(UsageOverviewSnapshot {
             schema_version: 1,
             generated_at: now.timestamp(),
@@ -634,17 +728,10 @@ pub fn provider_snapshots(
             observed_at: (quota.observed_at > 0).then_some(quota.observed_at),
             windows: quota.windows,
             account_metrics: quota.metrics,
-            today: period(&todays),
-            month: period(&rows),
-            daily: daily(&rows),
-            coverage: if provider == MenuBarProvider::Cursor {
-                "Recorded by Bridge on this Mac · Cursor history is not imported"
-            } else if partial {
-                "Recorded on this Mac · history import is incomplete"
-            } else {
-                "Recorded on this Mac · may include multiple accounts"
-            }
-            .into(),
+            today: today_usage,
+            month: month_usage,
+            daily: daily_usage,
+            coverage,
             error: cache.error,
         });
     }
@@ -698,6 +785,7 @@ fn refresh_provider(
             usage: prior.usage.map(|mut q| {
                 q.account = None;
                 q.plan = None;
+                q.history = None;
                 q
             }),
             error: Some(error),
@@ -784,6 +872,29 @@ pub fn refresh_providers_interactive(
 #[cfg(test)]
 mod provider_tests {
     use super::*;
+
+    #[test]
+    fn cursor_history_does_not_roll_yesterdays_snapshot_into_today() {
+        let yesterday = chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+        let today = yesterday.succ_opt().unwrap();
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-09-10T23:59:00Z")
+            .unwrap()
+            .timestamp();
+        let history = crate::provider_usage::AccountHistory {
+            account_scope: "scope".into(),
+            observed_at,
+            through_day: yesterday.to_string(),
+            today: confirmed_empty_account_period(),
+            month: confirmed_empty_account_period(),
+            daily: vec![],
+            coverage: "Cursor dashboard account history".into(),
+        };
+        let projected = project_account_history(history, today, observed_at + 120);
+        assert_eq!(projected.today.tokens.value, None);
+        assert_eq!(projected.today.tokens.status, Status::Unavailable);
+        assert_eq!(projected.month.tokens.status, Status::Stale);
+    }
+
     #[test]
     fn failures_and_passed_resets_expire_account_amounts_independently() {
         let mut q = crate::provider_usage::AccountUsage {

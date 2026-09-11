@@ -39,12 +39,12 @@ struct MenuCard: View {
                 if settings.showTokens || settings.showCost {
                     Divider()
                     HStack {
-                        Text("Today").fontWeight(.semibold)
+                        Text(usage.provider == "cursor" && settings.showCost ? "Today · API-rate cost" : "Today").fontWeight(.semibold)
                         Spacer()
                         if settings.showCost { Text(moneyLabel(usage.today.costMicrousd)).monospacedDigit() }
                     }
                     if settings.showTokens { detail("Tokens", countLabel(usage.today.tokens)) }
-                    if settings.showCost { detail("Last 30 days", moneyLabel(usage.month.costMicrousd)) }
+                    if settings.showCost { detail(usage.provider == "cursor" ? "30 days · API-rate cost" : "Last 30 days", moneyLabel(usage.month.costMicrousd)) }
                     if settings.showTokens { detail("30-day tokens", countLabel(usage.month.tokens)) }
                     if settings.showHistory ?? true {
                         DailyUsageView(usage: usage, showCost: settings.showCost, showTokens: settings.showTokens, onResize: state.contentChanged).id(usage.provider)

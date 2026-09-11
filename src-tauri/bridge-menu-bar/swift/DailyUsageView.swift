@@ -59,7 +59,7 @@ struct DailyUsageView: View {
                     ForEach(days.reversed()) { day in Text(day.day).tag(day.day) }
                 }.font(.system(size: 11))
                 if showTokens { detail("Tokens", countLabel(selected.tokens)) }
-                if showCost { detail("Cost", moneyLabel(selected.costMicrousd)) }
+                if showCost { detail(usage.provider == "cursor" ? "API-rate cost" : "Cost", moneyLabel(selected.costMicrousd)) }
                 if showTokens { ModelUsageRows(models: selected.models, showCost: showCost) }
                 Text("Recorded days only · missing history is not zero usage")
                     .font(.system(size: 9)).foregroundColor(.secondary)

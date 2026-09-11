@@ -130,7 +130,7 @@ export function MenuBarSettingsPage() {
       <SettingsGroup label="Usage & spend">
         <SettingsRow label="Daily history" description="A 30-day chart and day-by-day model details in provider tabs. Overview always shows quotas only."
           control={<Switch label="Daily history" checked={settings.showHistory ?? true} disabled={busy} onChange={showHistory => void save({ showHistory })} />} />
-        <SettingsRow label="Tokens and models" description="Recorded input, output, and cache tokens on this Mac."
+        <SettingsRow label="Tokens and models" description="Account dashboard tokens and models when available; otherwise recorded on this Mac."
           control={<Switch label="Tokens and models" checked={settings.showTokens} disabled={busy} onChange={showTokens => void save({ showTokens })} />} />
         <SettingsRow label="Show spend" description="Today and the last 30 days. Estimated costs are labelled; missing prices stay unavailable."
           control={<Switch label="Show spend" checked={settings.showCost} disabled={busy} onChange={showCost => void save({ showCost })} />} />

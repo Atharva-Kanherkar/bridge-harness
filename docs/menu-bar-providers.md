@@ -9,10 +9,13 @@ for the main window. A grouped versioned snapshot supplies the native switcher.
 
 - Codex: existing bounded account/rate-limit probe and local usage ledger.
 - Claude: Claude Code OAuth credentials, read-only usage/profile endpoints,
-  session/weekly/scoped limits, and the existing local history ledger.
+  5-hour/weekly/scoped limits, and the existing local history ledger. Manual
+  Refresh can use the installed Claude CLI's `/usage` when default credentials
+  are unavailable, without replacing an explicitly configured account.
 - Cursor: read-only Cursor desktop authentication, dashboard usage-summary,
-  billing-cycle limits, and reported plan/on-demand amounts. Recorded Bridge
-  tokens remain a separate local ledger; missing Cursor history is not zero.
+  billing-cycle limits, reported plan/on-demand amounts, and a bounded dashboard
+  event window for daily model/token details. Dashboard account history remains
+  separate from the device-local ledger and the main Usage screen.
 - OpenCode: existing local history importer for models/tokens/cost. An optional
   connected Zen web account supplies rolling/weekly quota or monthly spend and
   prepaid balance. Local model API keys do not imply a Zen subscription.
@@ -32,7 +35,25 @@ New providers are disabled by default when migrating existing preferences.
 Enable them individually in General → Menu Bar. Cursor uses its desktop session;
 Bridge does not scrape browser cookies. Claude reads its explicit OAuth token,
 configured credential file, or the Claude Code Keychain item without background
-authentication prompts. Expired credentials require sign-in again.
+authentication prompts. Background collection reports expired credentials
+without attempting interactive repair.
+
+An explicit Refresh can probe Claude Code with tools, hooks, plugins and MCP
+disabled. It waits for the CLI's normal prompt before sending only `/usage`,
+aborts authentication/trust/permission prompts, and terminates/reaps its process
+on completion, timeout or Bridge shutdown. Scheduled refreshes do not launch
+this fallback. CLI observations identify their source and omit unavailable
+identity/reset metadata. Bridge neither rewrites nor mints Claude credentials.
+
+Cursor history uses the same verified desktop session as its quota request.
+Complete, bounded pagination is required before totals are published. Exact
+adjacent-page duplicates are reconciled only against the provider's event count.
+`tokenUsage.totalCents` is provider-reported API-rate value, distinct from
+`chargedCents` deducted from the plan; the UI keeps account billing separate.
+Unpriced/invalid records cannot turn a partial sum into a complete cost. Account
+changes cannot reuse another account's history, and missing history stays
+unavailable. The local Cursor importer remains Unsupported because its local
+stores do not report token counts.
 
 Connect OpenCode opens a separate HTTPS sign-in window with no Bridge IPC
 capabilities. Only first-party auth cookies from an opened workspace are saved
@@ -57,5 +78,12 @@ Reviewed CodexBar at `7fdc17636f161ab410d8a6a0e8f45b6a595cf8d2`:
 
 Provider transport and parsing were adapted from the referenced MIT-licensed
 implementation. Its [license notice](third-party/CodexBar-LICENSE.txt) is retained.
+
+The dashboard history follow-up was reviewed against the user's local CodexBar
+revision `928166f899471bbdcb72210641cdec91324d0154`, especially
+`Sources/CodexBarCore/Providers/Cursor/CursorUsageEventsFetcher.swift`. Claude
+terminal readiness and bounded collection were checked against
+`Sources/CodexBarCore/Providers/Claude/ClaudeStatusProbe.swift` and the installed
+CLI's screen-reader output.
 
 Implementation validation is recorded in `menu-bar-validation.md`.

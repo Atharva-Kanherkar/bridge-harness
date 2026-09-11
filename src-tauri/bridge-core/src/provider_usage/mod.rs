@@ -11,8 +11,8 @@ pub fn shutdown() {
 }
 
 use bridge_protocol::messages::{
-    MenuBarProvider, MenuBarSettings, UsageAccountMetric, UsageMetric, UsageMetricSource,
-    UsageQuotaWindow,
+    MenuBarProvider, MenuBarSettings, UsageAccountMetric, UsageDailyOverview, UsageMetric,
+    UsageMetricSource, UsagePeriodOverview, UsageQuotaWindow,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,6 +26,23 @@ pub(crate) struct AccountUsage {
     pub metrics: Vec<UsageAccountMetric>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Remote account history stays separate from the device-local usage ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<AccountHistory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AccountHistory {
+    pub account_scope: String,
+    pub observed_at: i64,
+    #[serde(default)]
+    pub through_day: String,
+    pub today: UsagePeriodOverview,
+    pub month: UsagePeriodOverview,
+    pub daily: Vec<UsageDailyOverview>,
+    pub coverage: String,
 }
 
 pub(crate) fn read_interactive(
