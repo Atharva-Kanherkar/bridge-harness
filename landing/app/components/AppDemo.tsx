@@ -174,7 +174,7 @@ export default function AppDemo() {
       <div
         role="tablist"
         aria-label="What Bridge does"
-        className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3 [scrollbar-width:none] sm:mx-0 sm:grid sm:grid-cols-2 sm:overflow-visible sm:px-0 lg:grid-cols-4 [&::-webkit-scrollbar]:hidden"
+        className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-4 [scrollbar-width:none] sm:mx-0 sm:grid sm:grid-cols-2 sm:overflow-visible sm:px-0 lg:grid-cols-4 [&::-webkit-scrollbar]:hidden"
       >
         {scenes.map((item, i) => {
           const selected = i === active;
@@ -190,15 +190,12 @@ export default function AppDemo() {
               tabIndex={selected ? 0 : -1}
               onClick={() => setActive(i)}
               onKeyDown={event => onKeyDown(event, i)}
-              className={`group relative flex w-[200px] shrink-0 flex-col overflow-hidden rounded-lg border px-3.5 pb-3.5 pt-3 text-left transition-colors duration-300 sm:w-auto ${
+              className={`group relative flex w-[190px] shrink-0 items-center overflow-hidden rounded-lg border px-3.5 py-2.5 text-left transition-colors duration-300 sm:w-auto ${
                 selected ? "border-border-card bg-card" : "border-transparent hover:bg-card/60"
               }`}
             >
-              <span className={`text-[13px] font-medium leading-5 transition-colors ${selected ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"}`}>
+              <span className={`truncate text-[13px] font-medium leading-5 transition-colors ${selected ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"}`}>
                 {item.label}
-              </span>
-              <span className={`mt-1 line-clamp-2 text-[12px] leading-[1.35] transition-colors ${selected ? "text-muted-foreground" : "text-faint"}`}>
-                {item.title}
               </span>
               <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-px bg-border">
                 {selected && <span key={`${item.id}:${replay}`} className="block h-full w-full origin-left bg-foreground" />}
@@ -207,11 +204,6 @@ export default function AppDemo() {
           );
         })}
       </div>
-
-      <p key={scene.id} className="min-h-10 pb-4 text-[13px] leading-5 text-muted-foreground animate-fade-up motion-reduce:animate-none">
-        <span className="font-medium text-foreground">{scene.title}. </span>
-        {scene.text}
-      </p>
 
       <div
         id="scene-panel"

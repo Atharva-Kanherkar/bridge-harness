@@ -112,8 +112,6 @@ export type Tile = {
 export type Scene = {
   id: string;
   label: string;
-  title: string;
-  text: string;
   /** Which body the frame renders. The chrome around it never changes. */
   view: "chat" | "mission";
   toolbar?: { title: string; subtitle: string };
@@ -132,8 +130,6 @@ export const scenes: Scene[] = [
   {
     id: "mission",
     label: "Mission Control",
-    title: "Every live chat, in motion",
-    text: "All active conversations at once. Each tile is the real chat with its transcript, approvals, and composer, resized into a grid you can rearrange.",
     view: "mission",
     tiles: [
       {
@@ -199,8 +195,6 @@ export const scenes: Scene[] = [
   {
     id: "worktrees",
     label: "Isolated worktrees",
-    title: "Every worker in its own tree",
-    text: "Parallel agents never share a dirty tree. The diff, per-file risk, and the changes dock all read from the worker's own worktree, and you adopt or discard the result.",
     view: "chat",
     toolbar: { title: "Worktree lifecycle inventory", subtitle: "bridge-harness · feat/worktree-lifecycle" },
     prompt: "Run the usage rollup refactor in parallel with the lifecycle fix.",
@@ -249,8 +243,6 @@ export const scenes: Scene[] = [
   {
     id: "policy",
     label: "Policy owns the gates",
-    title: "Nothing widens without you",
-    text: "Write scope, capability tier, isolation, budgets, approvals. When a worker proposes paths you never granted, Bridge stops and asks for a one-time authorization.",
     view: "chat",
     toolbar: { title: "Streaming chart regression", subtitle: "rimo-frontend · rimo/chart-regression" },
     prompt: "Let the worker touch the sidebar too, and push to main once tests pass.",
@@ -289,8 +281,6 @@ export const scenes: Scene[] = [
   {
     id: "verify",
     label: "Verify across harnesses",
-    title: "No worker closes its own task",
-    text: "A completion gate can demand deterministic checks plus scrutiny from a different harness family. The evidence is recorded before the merge ever waits on you.",
     view: "chat",
     toolbar: { title: "Worktree lifecycle inventory", subtitle: "bridge-harness · feat/worktree-lifecycle" },
     prompt: "Don't merge until a different harness has verified it.",
