@@ -214,6 +214,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     origin: "live",
     key: liveKey(kind, itemId, raw.id),
     causalAnchor: raw.causalAnchor,
+    adapter: stringValue(raw.providerMeta.adapter),
     providerData: data,
   };
   const tool = (surface: ToolSurface): ToolCallDisplay =>
@@ -295,7 +296,10 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     return { type: "branch.summary", envelope, title: "Branch summary", text: text || stringValue(data.summary) || "", status };
   }
   if (kind === "error" || kind === "runtime.failed") {
-    return { type: "error", envelope, title, text, status: status ?? "failed" };
+    // Same fallback the durable twin reads (`errorText` below), so a live
+    // failure and its replay say the same words. They have no provider item id
+    // to be recognised by, so their text is what the merge matches them on.
+    return { type: "error", envelope, title, text: text || errorText({ text, data }), status: status ?? "failed" };
   }
   if (kind === "turn.started") return { type: "turn.started", envelope };
   if (kind.startsWith("turn.")) return { type: "turn.completed", envelope, status };
@@ -488,6 +492,9 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
     createdAt: entry.createdAt,
     origin: "durable",
     key: `entry:${entry.id}`,
+    // `store::session_event_in_transaction` writes the live event's
+    // `providerMeta` into the stored payload, so replay knows the runtime too.
+    adapter: stringValue(objectValue(payload.providerMeta).adapter),
     // The stored wrapper is flattened here so a replayed row renders like the
     // live one it is a twin of. Card-shaped entries keep their envelope below.
     providerData: flat,

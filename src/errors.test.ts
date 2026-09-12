@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyErrorKind, describeError, errorMessage, providerFromText, usageResetHint } from "./errors";
+import { authModeFromText, classifyErrorKind, describeError, errorMessage, providerFromText, upstreamFromText, usageHeadroomHint, usageResetHint } from "./errors";
 import type { UsageSnapshot } from "./usage";
 
 const snapshot = (usedPercent: number, resetsInSeconds?: number, label = "Weekly"): UsageSnapshot => ({
@@ -11,15 +11,34 @@ const snapshot = (usedPercent: number, resetsInSeconds?: number, label = "Weekly
 describe("classifyErrorKind", () => {
   it("detects usage/quota exhaustion in real-world phrasings", () => {
     for (const text of [
-      "Error: rate limit exceeded",
       "You have hit your weekly usage limit",
-      "429 Too Many Requests",
       "insufficient_quota: you exceeded your current quota",
       "Usage limit reached for this plan",
       "You're out of credits",
+      "Your credit balance is too low to run this request",
     ]) {
       expect(classifyErrorKind(text)).toBe("usage-limit");
     }
+  });
+
+  // A throttle and a spent plan are different facts with different repairs,
+  // and one regex used to answer for both — so a 429 that a retry would have
+  // cleared told the user their subscription was gone.
+  it("keeps throttling separate from exhaustion", () => {
+    for (const text of [
+      "Error: rate limit exceeded",
+      "Rate limit reached for requests per minute",
+      "You exceeded your rate limit",
+      "429 Too Many Requests",
+      "Request failed: 429 (retry-after: 30)",
+      "You are sending requests too quickly: 60 requests per minute",
+    ]) {
+      expect(classifyErrorKind(text)).toBe("rate-limit");
+    }
+  });
+
+  it("reads a frame that says both as exhaustion", () => {
+    expect(classifyErrorKind("429: monthly quota exceeded for this organization")).toBe("usage-limit");
   });
 
   it("detects auth and network problems", () => {
@@ -42,6 +61,28 @@ describe("providerFromText", () => {
     expect(providerFromText("anthropic: overloaded")).toBe("Claude");
     expect(providerFromText("openai rate limit")).toBe("Codex");
     expect(providerFromText("something generic")).toBeUndefined();
+  });
+
+  it("prefers the runtime over the model vendor it relays", () => {
+    expect(providerFromText("opencode: openai returned 429")).toBe("OpenCode");
+  });
+});
+
+describe("upstreamFromText", () => {
+  it("names the model vendor a bring-your-own-key runtime was calling", () => {
+    expect(upstreamFromText("opencode: openai returned 429")).toBe("OpenAI");
+    expect(upstreamFromText("anthropic overloaded_error")).toBe("Anthropic");
+    expect(upstreamFromText("the tool call failed")).toBeUndefined();
+  });
+});
+
+describe("authModeFromText", () => {
+  it("tells an API key apart from a subscription sign-in", () => {
+    expect(authModeFromText("401 invalid api key provided")).toBe("api-key");
+    expect(authModeFromText("OPENAI_API_KEY is not set")).toBe("api-key");
+    expect(authModeFromText("You are not logged in. Run /login.")).toBe("subscription");
+    expect(authModeFromText("session has expired, please sign in")).toBe("subscription");
+    expect(authModeFromText("403 Forbidden")).toBe("unknown");
   });
 });
 
@@ -96,12 +137,65 @@ describe("errorMessage", () => {
 
 describe("describeError", () => {
   it("names the provider and reset time for usage limits", () => {
-    const result = describeError("rate limit exceeded", { provider: "Claude", snapshot: snapshot(100, 7200) });
+    const result = describeError("You've hit your usage limit.", { provider: "Claude", snapshot: snapshot(100, 7200) });
     expect(result.kind).toBe("usage-limit");
     expect(result.title).toBe("Claude usage limit reached");
-    expect(result.message).toContain("your Claude plan's");
+    expect(result.message).toContain("Claude reports that this account has reached its usage limit");
     expect(result.message).toContain("resets in 2h");
     expect(result.message).toContain("Switch to another model or provider");
+  });
+
+  // The report that started this: a 429 arrived, Bridge said the plan was
+  // spent, and the user went looking for a subscription to top up.
+  it("does not call a rate limit an exhausted plan", () => {
+    const result = describeError("429 Too Many Requests", { provider: "Codex", snapshot: snapshot(12, 7200) });
+    expect(result.kind).toBe("rate-limit");
+    expect(result.title).toBe("Codex is rate limiting");
+    expect(result.message).toContain("throttling requests");
+    expect(result.message).toContain("not evidence that the plan's usage is spent");
+    expect(result.message).toContain("Weekly window is 12% used");
+    expect(result.message).not.toMatch(/out of usage|reached its usage limit/);
+  });
+
+  it("claims no headroom it cannot see", () => {
+    const bare = describeError("429 Too Many Requests", { provider: "Codex" });
+    expect(bare.message).not.toContain("usage left");
+    const full = describeError("429 Too Many Requests", { provider: "Codex", snapshot: snapshot(100, 600) });
+    expect(full.message).not.toContain("usage left");
+  });
+
+  // Switching a chat to OpenCode does not hand OpenCode the bill for an
+  // OpenAI account it was merely calling on the user's key.
+  it("attributes an upstream vendor's limit upstream", () => {
+    const result = describeError("opencode: openai returned 429 usage limit reached", { provider: "OpenCode" });
+    expect(result.kind).toBe("usage-limit");
+    expect(result.message).toContain("the upstream OpenAI account it calls");
+    expect(result.message).not.toContain("OpenCode plan");
+  });
+
+  it("reads a Codex OpenAI limit as the account Codex signs into", () => {
+    const result = describeError("openai: you exceeded your current quota", { provider: "Codex" });
+    expect(result.message).toContain("this account");
+    expect(result.message).not.toContain("upstream");
+  });
+
+  it("prescribes /login only for a subscription sign-in", () => {
+    const subscription = describeError("You are not logged in. Run /login.", { provider: "Codex" });
+    expect(subscription.authMode).toBe("subscription");
+    expect(subscription.title).toBe("Sign in to Codex");
+    expect(subscription.message).toContain("/login");
+
+    const key = describeError("401 invalid api key provided", { provider: "Codex" });
+    expect(key.kind).toBe("auth");
+    expect(key.authMode).toBe("api-key");
+    expect(key.title).toBe("Codex rejected its API key");
+    expect(key.message).toContain("rejected the API key");
+    expect(key.message).toContain("a different credential");
+
+    const unclear = describeError("403 Forbidden", { provider: "OpenCode" });
+    expect(unclear.authMode).toBe("unknown");
+    expect(unclear.message).toContain("if it uses an API key");
+    expect(unclear.message).toContain("sign in again");
   });
 
   it("falls back to sniffed provider and stays graceful without a snapshot", () => {

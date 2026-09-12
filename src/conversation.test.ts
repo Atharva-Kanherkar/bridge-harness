@@ -147,6 +147,55 @@ describe("normalized conversation reducer",()=>{
     expect(assistant[0].text).toBe("Hi — what would you like to work on in Bridge?");
     expect(assistant[0].entryId).toBe("e2");
   });
+  /**
+   * One failure, read twice.
+   *
+   * An error frame carries no provider item id, so its live row keys on the
+   * event id and its durable twin on the forest entry — ids from two different
+   * spaces that can never agree. Once the forest caught up, every usage limit
+   * and every sign-in failure was drawn a second time, which is how a single
+   * exhausted provider came to look like a provider failing on a loop.
+   */
+  it("draws one failure once across the two projections",()=>{
+    const text = "You've hit your usage limit. Try again at Sep 7th, 11:35 AM.";
+    const live = reduceConversation([event(9,"error",{status:"failed",title:"Agent error",text,providerMeta:{adapter:"codex"}})]);
+    const durable = projectSessionConversation([
+      entry("e9",null,"error",{title:"Agent error",text,status:"failed",providerMeta:{adapter:"codex"}},9),
+    ], "e9");
+    expect(live.filter(item=>item.type==="error")).toHaveLength(1);
+    expect(durable.filter(item=>item.type==="error")).toHaveLength(1);
+    const merged = mergeConversationProjections(durable, live).filter(item=>item.type==="error");
+    expect(merged).toHaveLength(1);
+    // The durable row is the survivor: it is the one the reader can branch from.
+    expect(merged[0].entryId).toBe("e9");
+    expect(merged[0].harness).toBe("codex");
+  });
+  it("keeps two distinct failures that happen to say the same thing",()=>{
+    const text = "429 Too Many Requests";
+    const live = reduceConversation([
+      event(9,"error",{status:"failed",text}),
+      event(11,"error",{status:"failed",text}),
+    ]);
+    const durable = projectSessionConversation([entry("e9",null,"error",{text,status:"failed"},9)], "e9");
+    // One is the durable row's twin; the second retry is its own failure.
+    expect(mergeConversationProjections(durable, live).filter(item=>item.type==="error")).toHaveLength(2);
+  });
+  it("keeps a failure the forest has not caught up with yet",()=>{
+    const live = reduceConversation([event(9,"error",{status:"failed",text:"boom"})]);
+    expect(mergeConversationProjections([], live).filter(item=>item.type==="error")).toHaveLength(1);
+  });
+  it("keeps a new identical failure after the old live event leaves the window",()=>{
+    const text = "429 Too Many Requests";
+    const durable = projectSessionConversation([entry("e9",null,"error",{text,status:"failed"},9)], "e9");
+    const live = reduceConversation([event(11,"error",{status:"failed",text})]);
+    expect(mergeConversationProjections(durable, live).filter(item=>item.type==="error")).toHaveLength(2);
+  });
+  it("stamps an error row with the runtime that raised it",()=>{
+    const items = reduceConversation([
+      event(9,"error",{status:"failed",text:"429 Too Many Requests",providerMeta:{adapter:"opencode"}}),
+    ]);
+    expect(items[0].harness).toBe("opencode");
+  });
   it("keeps two completed assistant replies that happen to share wording",()=>{
     const live = reduceConversation([
       event(1,"message.completed",{itemId:"m1",role:"assistant",status:"completed",text:"Done."}),

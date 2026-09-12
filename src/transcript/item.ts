@@ -59,6 +59,13 @@ export interface ConversationItem {
    */
   identity?: string;
   /**
+   * The runtime that produced the frame this row was created from, when the
+   * backend stamped one. Held per row, not per session: a chat switched from
+   * Codex to OpenCode still contains the Codex rows it was switched away from,
+   * and they must not be re-attributed to the harness now selected.
+   */
+  harness?: string;
+  /**
    * The tool call this row describes, read once at ingestion rather than
    * re-derived on every render. Present on rows that came from a tool
    * lifecycle; `toolCallDisplay` falls back to deriving one for items built by
@@ -83,6 +90,7 @@ export function itemSignature(item: ConversationItem): string {
     item.identity ?? item.key,
     item.type,
     item.status ?? "",
+    item.harness ?? "",
     item.text.length,
     item.title ?? "",
     // Every frame the reducer folds into a row restamps this, which is what
