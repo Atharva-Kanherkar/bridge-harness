@@ -450,9 +450,10 @@ No new Bridge crash report was present after launch.
 Live checks confirmed the default tabs, arrow navigation to OpenCode, selection
 without closing the menu, disconnected Cursor with no cached account details,
 favorite swapping and saving, and the corrected Settings link. Default favorites
-and Show used mode survived relaunch. Manual Claude refresh recovered current
-5-hour and Weekly values via Claude CLI; no separate Fable limit was returned
-in this observation. Fable parsing is fixture-verified, not claimed live-visible.
+and Show used mode survived relaunch. The final manual Claude refresh recovered
+live 5-hour (0% used), Weekly (4% used), and a distinct Weekly · Fable only
+(0% used) via Claude CLI. All three appeared together in the installed Overview;
+the percentages are an observation, not a permanent account state.
 Claude's expired stored OAuth session still makes background refresh stale;
 manual Refresh can recover CLI usage without silently repairing credentials.
 Cursor collection remains off pending the previously requested authorization.
