@@ -374,7 +374,8 @@ fn parse(text: &str) -> Result<AccountUsage, ParseError> {
         &["current week", "weekly"],
     );
     let weekly = weekly_percent(&clean);
-    if session.is_none() && weekly.is_none() {
+    let scoped = scoped_weekly_windows(&clean);
+    if session.is_none() && weekly.is_none() && scoped.is_empty() {
         return if lower.contains("loading") || lower.contains("/usage") {
             Err(ParseError::Loading)
         } else {
@@ -396,7 +397,114 @@ fn parse(text: &str) -> Result<AccountUsage, ParseError> {
             .windows
             .push(window("weekly", "Weekly", Some(percent), None, Some(10080)));
     }
+    usage.windows.extend(scoped);
     Ok(usage)
+}
+
+fn scoped_weekly_windows(text: &str) -> Vec<bridge_protocol::messages::UsageQuotaWindow> {
+    let lines: Vec<&str> = text.lines().collect();
+    let label = regex::Regex::new(r"(?i)current\s*week\s*\(([^)]+)\)")
+        .expect("valid scoped weekly label regex");
+    let percent = regex::Regex::new(r"(?i)([0-9]{1,3}(?:\.[0-9]+)?)\s*%\s*used")
+        .expect("valid percent regex");
+    let mut windows: Vec<bridge_protocol::messages::UsageQuotaWindow> = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        let Some(captures) = label.captures(line) else {
+            continue;
+        };
+        let raw_model = captures
+            .get(1)
+            .map(|value| value.as_str().trim())
+            .unwrap_or("");
+        // Reject hostile or ambiguous labels rather than truncating two long
+        // names into the same persisted-looking id.
+        if raw_model.chars().count() > 160 || raw_model.chars().any(char::is_control) {
+            continue;
+        }
+        let model = raw_model;
+        let normalized = normalized_model(model);
+        if normalized.is_empty() || is_all_models(&normalized) {
+            continue;
+        }
+        let id = format!("weekly-scoped-{}", slug(model));
+        // The newest occurrence owns this model even when it is incomplete: a
+        // redraw replacing `12% used` with `loading` removes the stale value.
+        let existing_index = windows.iter().position(|candidate| candidate.id == id);
+
+        // Claude redraws /usage incrementally. Keep each scoped percentage inside
+        // its own label section so an all-model or sibling-model value can never
+        // be borrowed while the next row is still arriving.
+        let section = lines[index..]
+            .iter()
+            .take(14)
+            .enumerate()
+            .take_while(|(offset, candidate)| *offset == 0 || !is_usage_section_boundary(candidate))
+            .map(|(_, candidate)| candidate);
+        let value = section
+            .filter_map(|candidate| percent.captures(candidate))
+            .filter_map(|captures| captures.get(1))
+            .filter_map(|value| value.as_str().parse::<f64>().ok())
+            .find(|value| value.is_finite() && (0.0..=100.0).contains(value));
+        let Some(value) = value else {
+            if let Some(existing_index) = existing_index {
+                windows.remove(existing_index);
+            }
+            continue;
+        };
+        let title = if normalized.ends_with("only") {
+            format!("Weekly · {model}")
+        } else {
+            format!("Weekly · {model} only")
+        };
+        let parsed = window(&id, &title, Some(value), None, Some(10080));
+        if let Some(existing_index) = existing_index {
+            windows[existing_index] = parsed;
+        } else if windows.len() < 32 {
+            windows.push(parsed);
+        }
+    }
+    windows
+}
+
+fn is_usage_section_boundary(line: &str) -> bool {
+    let normalized = line
+        .trim_start()
+        .trim_start_matches(|character: char| !character.is_alphanumeric())
+        .to_ascii_lowercase()
+        .replace(['-', '_'], " ");
+    normalized.starts_with("current ")
+        || normalized.starts_with("weekly")
+        || normalized.starts_with("five hour")
+        || normalized.starts_with("5 hour")
+        || normalized.starts_with("extra usage")
+}
+
+fn normalized_model(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn is_all_models(value: &str) -> bool {
+    value == "allmodels"
+}
+
+fn slug(value: &str) -> String {
+    let mut result = String::new();
+    let mut dash = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            result.push(character);
+            dash = false;
+        } else if !dash && !result.is_empty() {
+            result.push('-');
+            dash = true;
+        }
+    }
+    result.trim_end_matches('-').to_string()
 }
 
 fn percent_in_latest_section(text: &str, labels: &[&str], other_labels: &[&str]) -> Option<f64> {
@@ -514,10 +622,84 @@ mod tests {
         assert_eq!(partial_redraw.windows[0].label, "5-hour");
         let scoped_after_total =
             parse("Current week (all models) 42% used\nCurrent week (Sonnet) 7% used").unwrap();
-        assert_eq!(scoped_after_total.windows.len(), 1);
+        assert_eq!(scoped_after_total.windows.len(), 2);
         assert_eq!(scoped_after_total.windows[0].used_percent.value, Some(42.0));
+        assert_eq!(scoped_after_total.windows[1].id, "weekly-scoped-sonnet");
+        assert_eq!(scoped_after_total.windows[1].used_percent.value, Some(7.0));
+        let fable_after_total = parse(
+            "Current session 3% used\nCurrent week (all models) 42% used\nCurrent week (Fable)\n7.5% used",
+        )
+        .unwrap();
+        assert_eq!(fable_after_total.windows.len(), 3);
+        assert_eq!(fable_after_total.windows[1].used_percent.value, Some(42.0));
+        assert_eq!(fable_after_total.windows[2].id, "weekly-scoped-fable");
+        assert_eq!(fable_after_total.windows[2].label, "Weekly · Fable only");
+        assert_eq!(fable_after_total.windows[2].used_percent.value, Some(7.5));
+        assert!(fable_after_total.windows[2].resets_at.is_none());
+        let incomplete_fable = parse(
+            "Current week (all models) 42% used\nCurrent week (Fable) loading\nCurrent week (Iris) 8% used",
+        )
+        .unwrap();
+        assert_eq!(incomplete_fable.windows.len(), 2);
+        assert_eq!(incomplete_fable.windows[1].id, "weekly-scoped-iris");
+        assert_eq!(incomplete_fable.windows[1].used_percent.value, Some(8.0));
         let long_unicode = format!("Current session {}✨ 9% used", "x".repeat(790));
         let _ = parse(&long_unicode);
+    }
+
+    #[test]
+    fn latest_redraw_owns_scoped_rows_and_unknown_values_stay_absent() {
+        let usage = parse(
+            "Current week (all models) 11% used\nCurrent week (Fable) 12% used\x1b[2JCurrent week (all models) 21% used\nCurrent week (Fable) --\nCurrent week (Iris only) 4.25% used",
+        )
+        .unwrap();
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].used_percent.value, Some(21.0));
+        assert_eq!(usage.windows[1].id, "weekly-scoped-iris-only");
+        assert_eq!(usage.windows[1].label, "Weekly · Iris only");
+        assert_eq!(usage.windows[1].used_percent.value, Some(4.25));
+    }
+
+    #[test]
+    fn scoped_sections_stop_at_every_usage_boundary_and_latest_unknown_removes_old_value() {
+        let bounded = parse(
+            "Current week (all models) 21% used\nCurrent week (Fable) loading\nCurrent session 12% used",
+        )
+        .unwrap();
+        assert_eq!(bounded.windows.len(), 2);
+        assert!(bounded
+            .windows
+            .iter()
+            .all(|window| window.id != "weekly-scoped-fable"));
+
+        let duplicate = parse(
+            "Current week (all models) 21% used\nCurrent week (Fable) 12% used\nCurrent week (Fable) loading",
+        )
+        .unwrap();
+        assert_eq!(duplicate.windows.len(), 1);
+        assert_eq!(duplicate.windows[0].id, "weekly");
+    }
+
+    #[test]
+    fn scoped_only_panels_include_named_models_and_stay_bounded() {
+        let usage = parse("Current week (Fable) 7.5% used\nCurrent week (Opus) 8% used").unwrap();
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].id, "weekly-scoped-fable");
+        assert_eq!(usage.windows[1].id, "weekly-scoped-opus");
+
+        let long_name = "x".repeat(220);
+        let mut panel = format!("Current week ({long_name}) 1% used\n");
+        for index in 0..40 {
+            panel.push_str(&format!("Current week (Model {index}) 2% used\n"));
+        }
+        panel.push_str("Current week (Model 0) loading\n");
+        let bounded = parse(&panel).unwrap();
+        assert_eq!(bounded.windows.len(), 31);
+        assert!(bounded
+            .windows
+            .iter()
+            .all(|window| window.id != "weekly-scoped-model-0"));
+        assert!(bounded.windows[0].label.chars().count() <= "Weekly ·  only".chars().count() + 160);
     }
 
     #[cfg(unix)]
@@ -528,7 +710,7 @@ mod tests {
         let binary = directory.path().join("claude-fake");
         let pid_file = directory.path().join("pid");
         std::fs::write(&binary, format!(
-            "#!/bin/sh\nprintf '%s' $$ > '{}'\nprintf '>\\n'\nIFS= read -r command\nprintf '\\033[2JCurrent session 27%% used\\rCurrent week (all models) 63%% used\\n'\nwhile :; do :; done\n",
+            "#!/bin/sh\nprintf '%s' $$ > '{}'\nprintf '>\\n'\nIFS= read -r command\nprintf '\\033[2JCurrent session 27%% used\\rCurrent week (all models) 63%% used\\rCurrent week (Fable) 6.5%% used\\n'\nwhile :; do :; done\n",
             pid_file.display()
         )).unwrap();
         let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
@@ -538,6 +720,8 @@ mod tests {
         let usage = capture(&binary, directory.path(), Duration::from_secs(4), 16 * 1024).unwrap();
         assert_eq!(usage.windows[0].used_percent.value, Some(27.0));
         assert_eq!(usage.windows[1].used_percent.value, Some(63.0));
+        assert_eq!(usage.windows[2].id, "weekly-scoped-fable");
+        assert_eq!(usage.windows[2].used_percent.value, Some(6.5));
         let pid: i32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
         assert_eq!(
             unsafe { libc::kill(pid, 0) },

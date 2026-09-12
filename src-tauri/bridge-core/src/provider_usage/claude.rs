@@ -189,4 +189,56 @@ mod tests {
         assert!(!cli_fallback_allowed(false, true));
         assert!(!cli_fallback_allowed(true, true));
     }
+
+    #[test]
+    fn parses_fable_from_the_generic_scoped_limits_array() {
+        let data = parse(
+            &json!({
+                "five_hour": {"utilization": 1.25, "resets_at": "2026-09-12T00:00:00Z"},
+                "seven_day": {"utilization": 20},
+                "limits": [
+                    {
+                        "kind": "weekly_scoped",
+                        "group": "weekly",
+                        "percent": 37.5,
+                        "resets_at": "2026-09-15T00:00:00Z",
+                        "scope": {"model": {"id": "claude-fable", "display_name": "Fable"}},
+                        "is_active": true
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "group": "weekly",
+                        "percent": 99,
+                        "scope": {"model": {"display_name": "Expired promotion"}},
+                        "is_active": false
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "group": "weekly",
+                        "scope": {"model": {"display_name": "Unknown"}},
+                        "is_active": true
+                    }
+                ]
+            }),
+            10,
+        )
+        .unwrap();
+        let fable = data
+            .windows
+            .iter()
+            .find(|window| window.label == "Weekly · Fable")
+            .unwrap();
+        assert_eq!(fable.used_percent.value, Some(37.5));
+        assert_eq!(fable.resets_at, Some(1_789_430_400));
+        assert!(data
+            .windows
+            .iter()
+            .all(|window| window.label != "Weekly · Expired promotion"));
+        let unknown = data
+            .windows
+            .iter()
+            .find(|window| window.label == "Weekly · Unknown")
+            .unwrap();
+        assert_eq!(unknown.used_percent.value, None);
+    }
 }
