@@ -41,13 +41,16 @@ check(switched.selectedUsage?.provider == "cursor", "The selected provider owns 
 check(switched.selectedUsage?.menuWindow("auto", now: 100)?.usedPercent.current == 0.36, "Cursor percentages must not be multiplied by 100")
 check(moneyLabel(switched.selectedUsage!.accountMetrics![0].value) == "$1.00", "Account money shares micro-USD units")
 switched.settings.cursorEnabled = false
-check(switched.selectedUsage?.provider == "codex", "Disabling the selected provider falls back to an enabled provider")
+check(switched.settings.activeProvider == "cursor" && switched.selectedUsage == nil,
+      "A pinned disconnected selection stays visible without exposing cached usage")
 switched.settings.codexEnabled = false
-check(switched.selectedUsage == nil, "All providers disabled hides usage")
+check(switched.selectedUsage == nil, "All providers disabled hides cached usage")
 switched.settings.claudeEnabled = true
+switched.settings.selectedProvider = "claude"
 check(switched.selectedUsage?.provider == "claude", "Claude can be the only enabled provider")
 switched.settings.claudeEnabled = false
 switched.settings.opencodeEnabled = true
+switched.settings.selectedProvider = "opencode"
 check(switched.selectedUsage?.provider == "opencode", "OpenCode can be the only enabled provider")
 
 // The spoken status must describe the same provider/value as the visible text,
@@ -86,7 +89,8 @@ statusPresentation.settings.displayMode = "icon"
 check(MenuStatus(statusPresentation, now: 100).accessibilityTitle == "Bridge usage menu, Cursor", "Icon-only status must still identify the selected provider")
 statusPresentation.settings.codexEnabled = false
 statusPresentation.settings.cursorEnabled = false
-check(MenuStatus(statusPresentation, now: 100).accessibilityTitle.contains("no providers enabled"), "Disabled providers must not leave old accessibility text")
+check(MenuStatus(statusPresentation, now: 100).title == "" && MenuStatus(statusPresentation, now: 100).accessibilityTitle.contains("disconnected"),
+      "A disabled pinned provider must not leave old status data or connectivity text")
 
 // A short loading card must expand with its data while the same menu row stays
 // attached. Clamp real scroll origins when content shrinks or the screen changes.
@@ -324,37 +328,75 @@ for y in 0..<representation.pixelsHigh {
 check(clear > 0 && ink > 0, "Icon must contain an alpha mask and visible ink")
 check(representation.colorAt(x: 0, y: 0)!.alphaComponent == 0, "Icon background must be transparent")
 
-// The actual AppKit buttons must fit the five-tab menu, retain their frames
-// across selection, and dispatch Cursor's ID rather than a display index.
+// Favorites remain bounded while the independent native strip handles a future
+// provider catalog without inventing adapters or expanding the menu card.
 var allProviders = fixture.settings
 allProviders.claudeEnabled = true
 allProviders.cursorEnabled = true
 allProviders.opencodeEnabled = true
 check(allProviders.enabledProviders == ["codex", "claude", "cursor", "opencode"],
       "Cursor appears immediately after Claude in both switcher and Overview")
+allProviders.pinnedProviders = ["cursor", "codex", "cursor", "claude", "opencode"]
+check(allProviders.normalizedPinnedProviders == ["cursor", "codex", "claude"], "Favorites are unique and capped at three")
+check(allProviders.visibleProviders == ["cursor", "codex", "claude", "opencode"], "Favorites lead enabled overflow providers")
+var legacySettings = fixture.settings
+legacySettings.pinnedProviders = nil
+check(legacySettings.visibleProviders.prefix(3) == ["codex", "claude", "cursor"], "Old payloads show the default favorite three including Cursor")
+var emptyFavorites = fixture.settings
+emptyFavorites.pinnedProviders = []
+emptyFavorites.codexEnabled = false
+check(emptyFavorites.visibleProviders.isEmpty && emptyFavorites.activeProvider == nil, "Empty favorites and disabled providers leave Overview as the only surface")
+
 var pickedProvider = ""
-let switcher = ProviderSwitcherView(providers: allProviders.enabledProviders, selection: "overview") { pickedProvider = $0 }
+let manyProviders = (1...69).map { "provider-\($0)" }
+let switcher = ProviderSwitcherView(providers: manyProviders, selection: "overview") { pickedProvider = $0 }
 switcher.layoutSubtreeIfNeeded()
-check(switcher.buttons.map(\.title) == ["Overview", "Codex", "Claude", "Cursor", "OpenCode"], "All five titles remain visible")
-let initialFrames = switcher.buttons.map(\.frame)
-for (index, button) in switcher.buttons.enumerated() {
-    let textWidth = (button.title as NSString).size(withAttributes: [.font: button.font!]).width
-    check(button.frame.width >= textWidth + 8, "Each provider title has breathing room")
-    check(button.frame.minX >= 0 && button.frame.maxX <= switcher.bounds.width, "Provider tabs stay within the menu")
-    if index > 0 {
-        check(button.frame.minX - switcher.buttons[index - 1].frame.maxX >= 1, "Provider tabs never overlap")
-        check(button.frame.width == switcher.buttons[index - 1].frame.width, "Provider tabs have uniform widths")
-    }
-}
-switcher.buttons[3].performClick(nil)
-check(pickedProvider == "cursor" && switcher.buttons.filter { $0.state == .on }.map(\.title) == ["Cursor"],
-      "Clicking Cursor selects exactly its provider")
-switcher.update(providers: allProviders.enabledProviders, selection: "cursor") { pickedProvider = $0 }
-switcher.layoutSubtreeIfNeeded()
-check(switcher.buttons.map(\.frame) == initialFrames, "Selecting a provider must not shift the row")
-switcher.update(providers: ["codex", "cursor"], selection: "cursor") { pickedProvider = $0 }
-switcher.layoutSubtreeIfNeeded()
-switcher.buttons[1].performClick(nil)
-check(pickedProvider == "codex", "Toggling provider visibility must not leave stale selection callbacks")
+check(switcher.frame.width == 350 && switcher.intrinsicContentSize.width == 350, "Overflow never expands the 350pt widget")
+check(switcher.buttons.count == 70 && switcher.buttons[0].title == "Overview", "Overview stays fixed ahead of all 69 synthetic names")
+check(switcher.buttons.dropFirst().allSatisfy { $0.frame.width >= ProviderSwitcherView.minimumProviderWidth }, "Provider titles retain a comfortable minimum width")
+let longNameSwitcher = ProviderSwitcherView(
+    providers: ["codex", "claude", "cursor", "a-provider-name-that-must-never-widen-the-default-slots"],
+    selection: "overview") { _ in }
+longNameSwitcher.layoutSubtreeIfNeeded()
+let defaultProviderFrames = Array(longNameSwitcher.buttons.dropFirst().prefix(3)).map(\.frame)
+check(defaultProviderFrames.count == 3 && defaultProviderFrames.last!.maxX <= longNameSwitcher.testViewportWidth,
+      "Codex, Claude, and Cursor fit fully before overflow arrows")
+check(Set(defaultProviderFrames.map(\.width)).count == 1 && longNameSwitcher.buttons.last?.toolTip != nil,
+      "A later long provider truncates with a tooltip instead of widening the three default slots")
+check(switcher.testMaximumOffset > 0 && !switcher.testArrowState.previous && switcher.testArrowState.next, "Overflow starts clamped with only the forward arrow enabled")
+switcher.testScrollBackward()
+check(switcher.testScrollOffset == 0, "The back arrow is a no-op at the beginning")
+for _ in 0..<100 { switcher.testScrollForward() }
+check(switcher.testScrollOffset == switcher.testMaximumOffset && switcher.testArrowState.previous && !switcher.testArrowState.next, "Repeated arrows reach and clamp at the end")
+switcher.testScrollForward()
+check(switcher.testScrollOffset == switcher.testMaximumOffset, "The forward arrow is a no-op at the end")
+switcher.update(providers: manyProviders, selection: "provider-69") { pickedProvider = $0 }
+check(switcher.testScrollOffset == switcher.testMaximumOffset, "Selecting an offscreen provider reveals the final segment")
+let preservedOffset = switcher.testMaximumOffset / 2
+switcher.testSetScrollOffset(preservedOffset)
+switcher.testScrollByWheelDelta(12)
+check(abs(switcher.testScrollOffset - (preservedOffset - 12)) < 0.5, "A positive native wheel delta scrolls toward the leading providers")
+switcher.testScrollByWheelDelta(-12)
+check(abs(switcher.testScrollOffset - preservedOffset) < 0.5, "A negative native wheel delta scrolls toward later providers")
+switcher.update(providers: manyProviders, selection: "provider-69") { pickedProvider = $0 }
+check(abs(switcher.testScrollOffset - preservedOffset) < 0.5, "Repeated polling snapshots preserve manual horizontal scroll")
+switcher.buttons[69].performClick(nil)
+check(pickedProvider == "provider-69", "Synthetic overflow selection dispatches the provider ID")
+
+var disconnected = fixture
+disconnected.settings.pinnedProviders = ["cursor"]
+disconnected.settings.selectedProvider = "cursor"
+disconnected.settings.cursorEnabled = false
+check(disconnected.selectedUsage == nil, "A hostile cached disconnected provider exposes no quota, account, cost, or token model")
+check(MenuStatus(disconnected, now: 100).accessibilityTitle.contains("disconnected"), "Disconnected status is explicit")
+disconnected.settings.statusLayout = [["todayCost", "space", "used"]]
+check(StatusLayout(disconnected, now: 100).usage == nil && StatusLayout(disconnected, now: 100).visibleText.contains("—")
+      && StatusLayout(disconnected, now: 100).accessibilityTitle.contains("disconnected"),
+      "Custom status layouts consume no cached disconnected data and announce connectivity")
+let disconnectedState = MenuState()
+var settingsActions = 0
+disconnectedState.openSettings = { settingsActions += 1 }
+disconnectedState.openSettings()
+check(settingsActions == 1, "The disconnected card settings action is independently wired")
 try renderMenuCardFixtures(fixture)
-print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, dynamic status accessibility, viewport resizing and scroll clamping, appearance propagation, submenu tracking deferral, tracking-loop delivery, template flag, alpha mask, monochrome pixels")
+print("Menu Bar Swift checks passed: wire fixture, disabled-data isolation, favorite defaults, 69-provider bounded overflow, selection reveal, scroll preservation, countdowns, status accessibility, viewport resizing, appearance, submenu tracking, template mask")

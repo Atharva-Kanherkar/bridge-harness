@@ -1,10 +1,9 @@
 import AppKit
 import SwiftUI
 
-// CodexBar's text-only switcher, adapted for Bridge's four-provider snapshot.
-// Source: StatusItemController+SwitcherViews.swift and ProviderSwitcherButtons.swift
-// at 928166f. Copyright (c) 2026 Peter Steinberger.
-// See docs/third-party/CodexBar-LICENSE.txt. No provider collection lives here.
+// CodexBar's text-only switcher styling, adapted to a bounded Bridge strip.
+// Source: StatusItemController+SwitcherViews.swift at 928166f.
+// Copyright (c) 2026 Peter Steinberger. See the bundled MIT notice.
 struct ProviderSwitcher: NSViewRepresentable {
     let providers: [String]
     let selection: String
@@ -13,47 +12,103 @@ struct ProviderSwitcher: NSViewRepresentable {
     func makeNSView(context: Context) -> ProviderSwitcherView {
         ProviderSwitcherView(providers: providers, selection: selection, onSelect: onSelect)
     }
-
     func updateNSView(_ view: ProviderSwitcherView, context: Context) {
         view.update(providers: providers, selection: selection, onSelect: onSelect)
     }
 }
 
 private final class PaddedProviderButton: NSButton {
+    var hoverChanged: ((Bool) -> Void)?
+    private var hoverArea: NSTrackingArea?
     override var intrinsicContentSize: NSSize {
         let size = super.intrinsicContentSize
         return NSSize(width: size.width + 14, height: size.height + 8)
     }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea = hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { hoverChanged?(true) }
+    override func mouseExited(with event: NSEvent) { hoverChanged?(false) }
+}
+
+private final class HorizontalProviderScrollView: NSScrollView {
+    var scrollRequested: ((CGFloat) -> Void)?
+    override func scrollWheel(with event: NSEvent) {
+        let delta = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY) ? event.scrollingDeltaX : event.scrollingDeltaY
+        guard delta != 0 else { return }
+        scrollRequested?(delta)
+    }
 }
 
 final class ProviderSwitcherView: NSView {
+    static let fixedWidth: CGFloat = 350
+    static let rowHeight: CGFloat = 30
+    static let minimumProviderWidth: CGFloat = 70
+    private static let overviewWidth: CGFloat = 82
+    private static let arrowWidth: CGFloat = 18
+    private static let gap: CGFloat = 2
+
     private var ids: [String] = []
     private(set) var buttons: [NSButton] = []
+    private let scrollView = HorizontalProviderScrollView()
+    private let providerDocument = NSView()
+    private let previousButton = NSButton()
+    private let nextButton = NSButton()
     private var onSelect: (String) -> Void
+    private var pendingReveal: String?
     private var hoveredIndex: Int?
-    private var hoverTrackingArea: NSTrackingArea?
 
     init(providers: [String], selection: String, onSelect: @escaping (String) -> Void) {
         self.onSelect = onSelect
-        super.init(frame: NSRect(x: 0, y: 0, width: 350, height: 30))
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.fixedWidth, height: Self.rowHeight))
         setAccessibilityElement(false)
         setAccessibilityLabel("Usage provider")
+        scrollView.drawsBackground = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.verticalScrollElasticity = .none
+        scrollView.documentView = providerDocument
+        scrollView.scrollRequested = { [weak self] delta in
+            self?.scrollByWheelDelta(delta)
+        }
+        addSubview(scrollView)
+        configureArrow(previousButton, symbol: "chevron.left", action: #selector(scrollBackward))
+        configureArrow(nextButton, symbol: "chevron.right", action: #selector(scrollForward))
         update(providers: providers, selection: selection, onSelect: onSelect)
     }
 
     required init?(coder: NSCoder) { nil }
-    override var intrinsicContentSize: NSSize { NSSize(width: 350, height: 30) }
+    override var intrinsicContentSize: NSSize { NSSize(width: Self.fixedWidth, height: Self.rowHeight) }
+
+    private func configureArrow(_ button: NSButton, symbol: String, action: Selector) {
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageOnly
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.controlSize = .mini
+        button.target = self
+        button.action = action
+        button.contentTintColor = .secondaryLabelColor
+        button.setAccessibilityLabel(symbol == "chevron.left" ? "Previous providers" : "More providers")
+        addSubview(button)
+    }
 
     func update(providers: [String], selection: String, onSelect: @escaping (String) -> Void) {
         self.onSelect = onSelect
-        let next = ["overview"] + providers
-        if ids != next {
+        let uniqueProviders = providers.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        let next = ["overview"] + uniqueProviders
+        let listChanged = ids != next
+        let previousSelection = buttons.first { $0.state == .on }.flatMap { ids.indices.contains($0.tag) ? ids[$0.tag] : nil }
+        if listChanged {
             buttons.forEach { $0.removeFromSuperview() }
             ids = next
-            hoveredIndex = nil
             buttons = ids.enumerated().map { index, id in
-                let button = PaddedProviderButton(title: id == "overview" ? "Overview" : providerName(id),
-                    target: self, action: #selector(selectProvider(_:)))
+                let button = PaddedProviderButton(title: id == "overview" ? "Overview" : providerName(id), target: self, action: #selector(selectProvider(_:)))
                 button.tag = index
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
@@ -61,73 +116,94 @@ final class ProviderSwitcherView: NSView {
                 button.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
                 button.setButtonType(.toggle)
                 button.alignment = .center
+                button.cell?.lineBreakMode = .byTruncatingTail
                 button.wantsLayer = true
                 button.layer?.cornerRadius = 6
                 button.setAccessibilityIdentifier("menu-provider-\(id)")
-                addSubview(button)
+                button.hoverChanged = { [weak self] hovering in
+                    self?.hoveredIndex = hovering ? index : nil
+                    self?.updateStyles()
+                }
+                (id == "overview" ? self : providerDocument).addSubview(button)
                 return button
             }
         }
         for button in buttons { button.state = ids[button.tag] == selection ? .on : .off }
+        if listChanged || previousSelection != selection { pendingReveal = selection }
         needsLayout = true
+        layoutSubtreeIfNeeded()
         updateStyles()
     }
 
     override func layout() {
         super.layout()
-        guard !buttons.isEmpty else { return }
-        // Measure both toggle states so switching never changes spacing.
-        let desired = buttons.map { button -> CGFloat in
-            let state = button.state
-            defer { button.state = state }
-            button.state = .off
-            let off = button.intrinsicContentSize.width
-            button.state = .on
-            return ceil(max(off, button.intrinsicContentSize.width))
-        }.max() ?? 0
-        let evenDesired = ceil(desired / 2) * 2
-        let count = CGFloat(buttons.count)
-        let minimumGap: CGFloat = 1
-        let gaps = CGFloat(max(0, buttons.count - 1))
-        func allowed(_ padding: CGFloat) -> CGFloat {
-            floor(max(0, bounds.width - padding * 2 - minimumGap * gaps) / count / 2) * 2
+        guard let overview = buttons.first else { return }
+        overview.frame = NSRect(x: 0, y: 0, width: Self.overviewWidth, height: Self.rowHeight)
+        let providerButtons = Array(buttons.dropFirst())
+        let available = bounds.width - Self.overviewWidth - Self.gap
+        // Reserve exactly three comfortable provider slots. A long future name
+        // truncates inside its own slot rather than widening every provider.
+        let arrowAllowance = Self.arrowWidth * 2 + Self.gap
+        let threeSlotViewport = available - arrowAllowance
+        let segmentWidth = max(Self.minimumProviderWidth, floor((threeSlotViewport - Self.gap * 2) / 3))
+        let contentWidth = providerButtons.isEmpty ? 0 : CGFloat(providerButtons.count) * segmentWidth + CGFloat(max(0, providerButtons.count - 1)) * Self.gap
+        let overflows = contentWidth > available
+        let arrowsWidth = overflows ? arrowAllowance : 0
+        let viewportWidth = max(0, available - arrowsWidth)
+        scrollView.frame = NSRect(x: Self.overviewWidth + Self.gap, y: 0, width: viewportWidth, height: Self.rowHeight)
+        providerDocument.frame = NSRect(x: 0, y: 0, width: max(viewportWidth, contentWidth), height: Self.rowHeight)
+        for (index, button) in providerButtons.enumerated() {
+            button.frame = NSRect(x: CGFloat(index) * (segmentWidth + Self.gap), y: 0, width: segmentWidth, height: Self.rowHeight)
+            button.toolTip = button.intrinsicContentSize.width > segmentWidth ? button.title : nil
         }
-        // CodexBar preserves the 16pt content grid, then relaxes to 10 or 6
-        // only when the longest title needs more space (not smaller text).
-        let padding: CGFloat = [CGFloat(16), 10, 6].first { allowed($0) >= evenDesired } ?? 6
-        let width = min(evenDesired, allowed(padding))
-        let gap = gaps > 0 ? max(minimumGap, (bounds.width - padding * 2 - width * count) / gaps) : 0
-        for (index, button) in buttons.enumerated() {
-            let x = buttons.count == 1 ? (bounds.width - width) / 2 : padding + CGFloat(index) * (width + gap)
-            button.frame = NSRect(x: x, y: 0, width: width, height: 30)
+        previousButton.isHidden = !overflows
+        nextButton.isHidden = !overflows
+        previousButton.frame = NSRect(x: scrollView.frame.maxX + Self.gap, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
+        nextButton.frame = NSRect(x: previousButton.frame.maxX, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
+        clampScrollOffset()
+        if let selection = pendingReveal {
+            reveal(selection)
+            pendingReveal = nil
         }
+        updateArrowState()
     }
+
+    private var maximumOffset: CGFloat { max(0, providerDocument.frame.width - scrollView.contentView.bounds.width) }
+    private func setOffset(_ proposed: CGFloat) {
+        let offset = min(max(0, proposed), maximumOffset)
+        scrollView.contentView.scroll(to: NSPoint(x: offset, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        updateArrowState()
+    }
+    private func clampScrollOffset() { setOffset(scrollView.contentView.bounds.origin.x) }
+    private func scrollByWheelDelta(_ delta: CGFloat) {
+        // AppKit reports positive deltas toward the leading edge.
+        setOffset(scrollView.contentView.bounds.origin.x - delta)
+    }
+    private func reveal(_ id: String) {
+        guard id != "overview", let index = ids.firstIndex(of: id), index > 0 else { return }
+        let frame = buttons[index].frame
+        let visible = scrollView.contentView.bounds
+        if frame.minX < visible.minX { setOffset(frame.minX) }
+        else if frame.maxX > visible.maxX { setOffset(frame.maxX - visible.width) }
+    }
+    private func updateArrowState() {
+        let offset = scrollView.contentView.bounds.origin.x
+        previousButton.isEnabled = offset > 0.5
+        nextButton.isEnabled = offset < maximumOffset - 0.5
+    }
+    @objc private func scrollBackward() { setOffset(scrollView.contentView.bounds.origin.x - scrollView.contentView.bounds.width) }
+    @objc private func scrollForward() { setOffset(scrollView.contentView.bounds.origin.x + scrollView.contentView.bounds.width) }
 
     @objc private func selectProvider(_ sender: NSButton) {
         guard ids.indices.contains(sender.tag) else { return }
         for button in buttons { button.state = button === sender ? .on : .off }
         updateStyles()
+        reveal(ids[sender.tag])
         onSelect(ids[sender.tag])
     }
 
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateStyles() }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking = hoverTrackingArea { removeTrackingArea(tracking) }
-        let tracking = NSTrackingArea(rect: .zero,
-            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved], owner: self)
-        addTrackingArea(tracking)
-        hoverTrackingArea = tracking
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        hoveredIndex = buttons.first { $0.frame.contains(point) }?.tag
-        updateStyles()
-    }
-    override func mouseExited(with event: NSEvent) { hoveredIndex = nil; updateStyles() }
-
     private func updateStyles() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin()
@@ -142,4 +218,14 @@ final class ProviderSwitcherView: NSView {
             }
         }
     }
+
+    // Native control probes keep overflow behavior testable without live providers.
+    var testScrollOffset: CGFloat { scrollView.contentView.bounds.origin.x }
+    var testMaximumOffset: CGFloat { maximumOffset }
+    var testArrowState: (previous: Bool, next: Bool) { (previousButton.isEnabled, nextButton.isEnabled) }
+    var testViewportWidth: CGFloat { scrollView.contentView.bounds.width }
+    func testScrollForward() { scrollForward() }
+    func testScrollBackward() { scrollBackward() }
+    func testSetScrollOffset(_ offset: CGFloat) { setOffset(offset) }
+    func testScrollByWheelDelta(_ delta: CGFloat) { scrollByWheelDelta(delta) }
 }

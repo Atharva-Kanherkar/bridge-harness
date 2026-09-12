@@ -135,3 +135,29 @@ OAuth tokens and custom Claude configuration directories remain authoritative;
 they are never replaced by another CLI account. Background collection does not
 launch this fallback. CLI observations are labelled `Claude CLI`; absent account,
 plan and reset information remain unavailable.
+
+## Favorite providers and overflow
+
+Protocol 1.12 persists `pinnedProviders`: up to three unique provider IDs in
+display order, defaulting to Codex, Claude, and Cursor. General → Menu Bar lets
+users choose each position. Selecting an existing favorite swaps its position;
+choosing None removes it. The backend validates the list and older clients do
+not pair with a daemon that would discard the preference.
+
+Overview stays fixed beside a horizontally scrollable provider strip. Three
+providers fit at once; arrow buttons and horizontal scrolling reveal additional
+providers without increasing the 350-point menu width. Favorites lead the list,
+followed by other enabled providers. The currently supported collectors remain
+Codex, Claude, Cursor, and OpenCode; scroll capacity does not imply new adapters.
+
+Favorites and account connections are independent. A favorite remains visible
+while disconnected, with a Settings action. It never renders cached quota or
+account history until its account usage is enabled. Pinning, selecting, and
+scrolling do not enable collectors. Existing disabled choices survive migration.
+
+Claude model-specific weekly limits are distinct from its all-model weekly
+quota. The API's active `limits[]` records provide the model display name,
+used percentage, and reset. The manual CLI fallback reads `Current week
+(<model>)` sections, including Fable, with strict section/redraw boundaries.
+Only reported limits are shown; a missing Fable row is not manufactured from
+Opus usage or treated as zero.

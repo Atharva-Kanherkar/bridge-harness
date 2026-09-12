@@ -58,13 +58,23 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
         ("high-contrast-dark", .accessibilityHighContrastDarkAqua),
     ]
     for (name, appearanceName) in appearances {
-      for surface in ["overview", "codex", "cursor"] {
+      for surface in ["overview", "overview-default", "codex", "cursor", "cursor-disconnected"] {
         for (sizeName, maximumHeight) in [("full", CGFloat(1_000)), ("compact", CGFloat(280))] {
             let appearance = NSAppearance(named: appearanceName)!
             let state = MenuState()
             state.presentation = snapshot
-            state.showingOverview = surface == "overview"
-            if surface != "overview" { state.presentation.settings.selectedProvider = surface }
+            state.showingOverview = surface.hasPrefix("overview")
+            if surface == "overview-default" {
+                state.presentation.settings.pinnedProviders = nil
+                state.presentation.settings.claudeEnabled = false
+                state.presentation.settings.cursorEnabled = false
+                state.presentation.settings.opencodeEnabled = false
+            } else if surface == "cursor-disconnected" {
+                state.presentation.settings.selectedProvider = "cursor"
+                state.presentation.settings.cursorEnabled = false
+            } else if !state.showingOverview {
+                state.presentation.settings.selectedProvider = surface
+            }
             let hosting = NSHostingView(rootView: MenuCard(state: state))
             hosting.appearance = appearance
             let scroll = MenuCardScrollView(document: hosting, width: 350, maximumHeight: maximumHeight)
@@ -99,8 +109,47 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
                 manifest += "\(bottomFile): scrolled to the final content row\n"
             }
         }
-    }
       }
+      let overflow = ProviderSwitcherView(providers: (1...69).map { "provider-\($0)" }, selection: "provider-69") { _ in }
+      overflow.appearance = NSAppearance(named: appearanceName)!
+      let overflowCanvas = FixtureCanvas(frame: overflow.frame)
+      overflowCanvas.appearance = overflow.appearance
+      overflowCanvas.addSubview(overflow)
+      let overflowWindow = NSWindow(contentRect: overflowCanvas.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+      overflowWindow.isReleasedWhenClosed = false
+      overflowWindow.appearance = overflow.appearance
+      overflowWindow.contentView = overflowCanvas
+      overflow.layoutSubtreeIfNeeded()
+      check(!overflowWindow.isVisible, "Overflow fixture window must never be shown")
+      let overflowBitmap = overflowCanvas.bitmapImageRepForCachingDisplay(in: overflowCanvas.bounds)!
+      overflowCanvas.cacheDisplay(in: overflowCanvas.bounds, to: overflowBitmap)
+      let overflowFile = "menu-provider-overflow-\(name).png"
+      try overflowBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(overflowFile))
+      manifest += "\(overflowFile): 350×30pt, selected final provider, Overview fixed\n"
+      overflowWindow.contentView = nil
+      overflowWindow.close()
+
+      let longOverflow = ProviderSwitcherView(
+          providers: ["codex", "claude", "cursor", "a-provider-name-that-must-truncate-without-widening"],
+          selection: "overview") { _ in }
+      longOverflow.appearance = NSAppearance(named: appearanceName)!
+      let longCanvas = FixtureCanvas(frame: longOverflow.frame)
+      longCanvas.appearance = longOverflow.appearance
+      longCanvas.addSubview(longOverflow)
+      let longWindow = NSWindow(contentRect: longCanvas.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+      longWindow.isReleasedWhenClosed = false
+      longWindow.appearance = longOverflow.appearance
+      longWindow.contentView = longCanvas
+      longOverflow.layoutSubtreeIfNeeded()
+      check(!longWindow.isVisible, "Long-name overflow fixture window must never be shown")
+      let longBitmap = longCanvas.bitmapImageRepForCachingDisplay(in: longCanvas.bounds)!
+      longCanvas.cacheDisplay(in: longCanvas.bounds, to: longBitmap)
+      let longFile = "menu-provider-default-three-long-overflow-\(name).png"
+      try longBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(longFile))
+      manifest += "\(longFile): 350×30pt, full default three before long-name overflow\n"
+      longWindow.contentView = nil
+      longWindow.close()
+    }
     try manifest.write(to: output.appendingPathComponent("README.txt"), atomically: true, encoding: .utf8)
     print("Synthetic menu card renders written to \(output.path)")
 }

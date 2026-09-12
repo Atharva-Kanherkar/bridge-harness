@@ -29,7 +29,9 @@ struct StatusLayout {
     func text(_ token: String) -> (String, String) {
         switch token {
         case "icon": return ("\u{fffc}", "Bridge")
-        case "provider": let label = usage.map { providerName($0.provider) } ?? "Bridge"; return (label, label)
+        case "provider":
+            let label = presentation.settings.activeProvider.map(providerName) ?? "Bridge"
+            return (label, label)
         case "used", "remaining": return quota(presentation.settings.quotaWindow, remaining: token == "remaining")
         case "weeklyUsed", "weeklyRemaining":
             let value = quota("weekly", remaining: token == "weeklyRemaining"); return ("7d \(value.0)", value.1)
@@ -53,7 +55,12 @@ struct StatusLayout {
     }
 
     var visibleText: String { lines.map { $0.map { text($0).0 }.joined() }.joined(separator: "\n") }
-    var accessibilityTitle: String { "Bridge usage menu, " + lines.joined().map { text($0).1 }.filter { !$0.isEmpty }.joined(separator: ", ") }
+    var accessibilityTitle: String {
+        if let provider = presentation.settings.activeProvider, !presentation.settings.isProviderEnabled(provider) {
+            return "Bridge usage menu, \(providerName(provider)), disconnected"
+        }
+        return "Bridge usage menu, " + lines.joined().map { text($0).1 }.filter { !$0.isEmpty }.joined(separator: ", ")
+    }
 
     func attributedTitle(icon: NSImage, omitLeadingIcon: Bool = false, monochrome: Bool = false) -> NSAttributedString {
         let stacked = lines.count > 1

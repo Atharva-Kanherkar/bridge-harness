@@ -87,11 +87,22 @@ struct MenuSettings: Decodable {
     var cursorEnabled: Bool
     var opencodeEnabled: Bool
     var selectedProvider: String
+    var pinnedProviders: [String]? = nil
     var opencodeWorkspace: String?
     var enabledProviders: [String] {
         [("codex", codexEnabled), ("claude", claudeEnabled), ("cursor", cursorEnabled), ("opencode", opencodeEnabled)].filter { $0.1 }.map { $0.0 }
     }
-    var activeProvider: String? { enabledProviders.contains(selectedProvider) ? selectedProvider : enabledProviders.first }
+    var normalizedPinnedProviders: [String] {
+        let requested = pinnedProviders ?? ["codex", "claude", "cursor"]
+        return requested.reduce(into: [String]()) { result, provider in
+            if result.count < 3 && !provider.isEmpty && !result.contains(provider) { result.append(provider) }
+        }
+    }
+    var visibleProviders: [String] {
+        normalizedPinnedProviders + enabledProviders.filter { !normalizedPinnedProviders.contains($0) }
+    }
+    var activeProvider: String? { visibleProviders.contains(selectedProvider) ? selectedProvider : visibleProviders.first }
+    func isProviderEnabled(_ provider: String) -> Bool { enabledProviders.contains(provider) }
     var displayMode: String
     var quotaDisplayMode: String? = nil
     var openToOverview: Bool? = nil
@@ -111,13 +122,17 @@ struct MenuSettings: Decodable {
 struct Presentation: Decodable {
     var settings: MenuSettings
     var usage: ProviderOverviews?
-    var selectedUsage: UsageOverview? { usage?.providers.first { $0.provider == settings.activeProvider } }
+    var selectedUsage: UsageOverview? {
+        guard let provider = settings.activeProvider, settings.isProviderEnabled(provider) else { return nil }
+        return usage?.providers.first { $0.provider == provider }
+    }
     var refreshing: Bool
     var error: String?
 }
 
 final class MenuState: ObservableObject {
     var selectProvider: (String) -> Void = { _ in }
+    var openSettings: () -> Void = { }
     var surfaceChanged: () -> Void = { }
     var contentChanged: () -> Void = { }
     @Published var showingOverview = true
@@ -206,4 +221,8 @@ func moneyLabel(_ metric: Metric) -> String {
     return metric.status == "stale" ? "\(qualified) · stale" : qualified
 }
 
-func providerName(_ id: String) -> String { ["codex": "Codex", "claude": "Claude", "cursor": "Cursor", "opencode": "OpenCode"][id] ?? id }
+func providerName(_ id: String) -> String {
+    if let known = ["codex": "Codex", "claude": "Claude", "cursor": "Cursor", "opencode": "OpenCode"][id] { return known }
+    let readable = id.replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
+    return readable.split(separator: " ").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+}

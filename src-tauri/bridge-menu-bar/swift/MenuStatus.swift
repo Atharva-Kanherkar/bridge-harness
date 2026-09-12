@@ -14,6 +14,11 @@ struct MenuStatus {
             return
         }
         let prefix = "Bridge usage menu, \(providerName(provider))"
+        guard settings.isProviderEnabled(provider) else {
+            title = settings.displayMode == "icon" ? "" : "—"
+            accessibilityTitle = "\(prefix), disconnected"
+            return
+        }
         let usage = presentation.selectedUsage
         if settings.displayMode == "icon" {
             title = ""

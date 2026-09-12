@@ -25,9 +25,9 @@ final class ModelBreakdownMenu: NSObject, NSMenuDelegate {
         // Keep the open child intact; menuNeedsUpdate reads the latest state on
         // its next open. No menu structure changes from open/close callbacks.
         guard !tracking else { return }
-        item.isEnabled = !state.showingOverview && state.presentation.settings.showTokens
+        item.isEnabled = !state.showingOverview && state.presentation.selectedUsage != nil && state.presentation.settings.showTokens
         guard !parentTracking else { return }
-        item.isHidden = state.showingOverview || state.presentation.settings.enabledProviders.isEmpty || !state.presentation.settings.showTokens
+        item.isHidden = state.showingOverview || state.presentation.selectedUsage == nil || !state.presentation.settings.showTokens
         rebuildContents()
     }
 
@@ -90,6 +90,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             guard let index = ["codex", "claude", "cursor", "opencode"].firstIndex(of: id) else { return }
             self?.callback(Int32(100 + index))
         }
+        state.openSettings = { [weak self] in self?.callback(2) }
         state.surfaceChanged = { [weak self] in
             guard let self = self else { return }
             self.breakdown.update()
@@ -191,6 +192,7 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     func update(_ presentation: Presentation) {
         let providerChanged = state.presentation.settings.activeProvider != presentation.settings.activeProvider
+        let usageAvailabilityChanged = (state.presentation.selectedUsage == nil) != (presentation.selectedUsage == nil)
         state.presentation = presentation
         item.isVisible = presentation.settings.enabled || tracking
         refresh.isEnabled = !presentation.settings.enabledProviders.isEmpty && !presentation.refreshing
@@ -226,7 +228,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         // Avoid structural changes during menu tracking; data updates in place.
         if !tracking { rebuildCard() }
         else if let scroll = card.view as? MenuCardScrollView {
-            if providerChanged {
+            if providerChanged || usageAvailabilityChanged {
                 breakdown.update()
             }
             scroll.updateSize(maximumHeight: cardMaximumHeight, resetScroll: providerChanged)

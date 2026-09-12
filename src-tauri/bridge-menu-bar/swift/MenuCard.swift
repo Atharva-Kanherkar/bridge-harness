@@ -13,17 +13,22 @@ struct MenuCard: View {
                 Spacer()
                 Text(presentation.refreshing ? "Refreshing…" : "Bridge").font(.system(size: 11)).foregroundColor(.secondary)
             }
-            if !settings.enabledProviders.isEmpty {
-                ProviderSwitcher(providers: settings.enabledProviders,
-                    selection: state.showingOverview ? "overview" : settings.activeProvider ?? "codex",
-                    onSelect: state.select)
-                    .frame(width: 350, height: 30).padding(.horizontal, -16)
-            }
-            if settings.enabledProviders.isEmpty {
+            ProviderSwitcher(providers: settings.visibleProviders,
+                selection: state.showingOverview ? "overview" : settings.activeProvider ?? "overview",
+                onSelect: state.select)
+                .frame(width: 350, height: 30).padding(.horizontal, -16)
+            if state.showingOverview && settings.visibleProviders.isEmpty {
                 Text("No providers enabled").font(.headline)
                 Text("Enable a provider in Menu Bar settings to see its usage.").foregroundColor(.secondary)
+                settingsButton
             } else if state.showingOverview {
                 overview(presentation)
+            } else if let provider = settings.activeProvider, !settings.isProviderEnabled(provider) {
+                Divider()
+                Text(providerName(provider)).font(.system(size: 20, weight: .semibold))
+                Text("Disconnected").font(.headline)
+                Text("Enable \(providerName(provider)) in Menu Bar settings to see its usage.").foregroundColor(.secondary)
+                settingsButton
             } else if let usage = presentation.selectedUsage {
                 Divider()
                 providerHeader(usage, compact: false)
@@ -67,10 +72,27 @@ struct MenuCard: View {
         .frame(width: 350, alignment: .leading)
     }
 
+    private var settingsButton: some View {
+        Button("Open Menu Bar Settings…", action: state.openSettings)
+            .buttonStyle(.link)
+            .accessibilityIdentifier("menu-open-settings")
+    }
+
     @ViewBuilder func overview(_ presentation: Presentation) -> some View {
-        ForEach(presentation.settings.enabledProviders, id: \.self) { provider in
+        ForEach(presentation.settings.visibleProviders, id: \.self) { provider in
             Divider()
-            if let usage = presentation.usage?.providers.first(where: { $0.provider == provider }) {
+            if !presentation.settings.isProviderEnabled(provider) {
+                Button(action: { state.select(provider) }) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(providerName(provider)).fontWeight(.semibold)
+                            Text("Disconnected · enable in Menu Bar settings").foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 10)).foregroundColor(.secondary)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel("Show disconnected \(providerName(provider)) details")
+            } else if let usage = presentation.usage?.providers.first(where: { $0.provider == provider }) {
                 Button(action: { state.select(provider) }) {
                     HStack {
                         providerHeader(usage, compact: true)
