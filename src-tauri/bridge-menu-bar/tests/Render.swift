@@ -118,7 +118,7 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
             let file = "menu-\(surface)-\(name)-\(sizeName).png"
             try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(file))
             manifest += "\(file): \(Int(canvas.frame.width))×\(Int(canvas.frame.height))pt, scroller=\(scroll.hasVerticalScroller)\n"
-            if scroll.hasVerticalScroller {
+            if hosting.frame.height > scroll.contentView.bounds.height {
                 let bottom = max(0, hosting.frame.height - scroll.contentView.bounds.height)
                 scroll.contentView.scroll(to: NSPoint(x: 0, y: hosting.isFlipped ? bottom : 0))
                 scroll.reflectScrolledClipView(scroll.contentView)

@@ -10,6 +10,7 @@ final class MenuCardScrollView: NSScrollView {
     private var scheduled = false
     private var scheduledMaximumHeight: CGFloat?
     private var scheduledResetScroll = false
+    private var scheduledTransition = false
 
     init(document: NSView, width: CGFloat, maximumHeight: CGFloat) {
         cardWidth = width
@@ -17,8 +18,8 @@ final class MenuCardScrollView: NSScrollView {
         borderType = .noBorder
         drawsBackground = false
         hasHorizontalScroller = false
-        autohidesScrollers = true
-        scrollerStyle = .overlay
+        hasVerticalScroller = false
+        document.wantsLayer = true
         documentView = document
         updateSize(maximumHeight: maximumHeight, resetScroll: true)
     }
@@ -59,7 +60,6 @@ final class MenuCardScrollView: NSScrollView {
         let size = NSSize(width: cardWidth, height: min(documentHeight, max(1, maximumHeight)))
         let sizeChanged = viewportSize != size
         viewportSize = size
-        hasVerticalScroller = documentHeight > size.height
         if sizeChanged {
             setFrameSize(size)
             invalidateIntrinsicContentSize()
@@ -72,9 +72,10 @@ final class MenuCardScrollView: NSScrollView {
         reflectScrolledClipView(contentView)
     }
 
-    func scheduleUpdateSize(maximumHeight: CGFloat, resetScroll: Bool = false) {
+    func scheduleUpdateSize(maximumHeight: CGFloat, resetScroll: Bool = false, animateTransition: Bool = false) {
         scheduledMaximumHeight = maximumHeight
         scheduledResetScroll = scheduledResetScroll || resetScroll
+        scheduledTransition = scheduledTransition || animateTransition
         guard !scheduled else { return }
         scheduled = true
         MenuRunLoop.schedule { [weak self] in
@@ -82,10 +83,29 @@ final class MenuCardScrollView: NSScrollView {
             self.scheduled = false
             let maximumHeight = self.scheduledMaximumHeight ?? maximumHeight
             let resetScroll = self.scheduledResetScroll
+            let animateTransition = self.scheduledTransition
             self.scheduledMaximumHeight = nil
             self.scheduledResetScroll = false
+            self.scheduledTransition = false
             self.updateSize(maximumHeight: maximumHeight, resetScroll: resetScroll)
+            if animateTransition { self.animateDocumentTransition() }
         }
+    }
+
+    private func animateDocumentTransition() {
+        guard window != nil, let layer = documentView?.layer else { return }
+        let key = "providerTransition"
+        layer.removeAnimation(forKey: key)
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        // CodexBar uses layer opacity for layout-neutral menu fades. Keep the
+        // model layer fully visible and never animate NSMenu geometry or retain
+        // outgoing SwiftUI cards during fitting-size measurement.
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.82
+        fade.toValue = 1.0
+        fade.duration = 0.12
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(fade, forKey: key)
     }
 }
 

@@ -64,7 +64,7 @@ check(available.menuWindow("session", now: 100)?.usedPercent.current == nil, "Ex
 var switched = fixture
 switched.settings.cursorEnabled = true
 switched.settings.selectedProvider = "cursor"
-check(switched.selectedUsage?.provider == "cursor", "The selected provider owns the card and status item")
+check(switched.selectedUsage?.provider == "cursor" && switched.statusUsage?.provider == "codex", "Detail selection must not change the first favorite's status usage")
 check(switched.selectedUsage?.menuWindow("auto", now: 100)?.usedPercent.current == 0.36, "Cursor percentages must not be multiplied by 100")
 check(moneyLabel(switched.selectedUsage!.accountMetrics![0].value) == "$1.00", "Account money shares micro-USD units")
 switched.settings.cursorEnabled = false
@@ -113,11 +113,57 @@ check(status.title == "—" && status.accessibilityTitle.contains("cost unavaila
 statusPresentation.settings.cursorEnabled = true
 statusPresentation.settings.selectedProvider = "cursor"
 statusPresentation.settings.displayMode = "icon"
-check(MenuStatus(statusPresentation, now: 100).accessibilityTitle == "Bridge usage menu, Cursor", "Icon-only status must still identify the selected provider")
+check(MenuStatus(statusPresentation, now: 100).accessibilityTitle == "Bridge usage menu, Codex", "Icon-only status must identify the first favorite independently of the selected tab")
 statusPresentation.settings.codexEnabled = false
 statusPresentation.settings.cursorEnabled = false
 check(MenuStatus(statusPresentation, now: 100).title == "" && MenuStatus(statusPresentation, now: 100).accessibilityTitle.contains("disconnected"),
       "A disabled pinned provider must not leave old status data or connectivity text")
+
+// Every status renderer uses the first favorite, even while another tab is open.
+var pinnedStatus = fixture
+pinnedStatus.settings.cursorEnabled = true
+pinnedStatus.settings.displayMode = "used"
+pinnedStatus.settings.statusLayout = [["provider", "space", "used", "space", "todayCost"]]
+pinnedStatus.usage!.providers[0].observedAt = 100
+pinnedStatus.usage!.providers[0].windows[0].resetsAt = 3_700
+let originalStatus = MenuStatus(pinnedStatus, now: 100)
+let originalLayout = StatusLayout(pinnedStatus, now: 100).visibleText
+pinnedStatus.settings.selectedProvider = "cursor"
+check(pinnedStatus.selectedUsage?.provider == "cursor" && pinnedStatus.statusUsage?.provider == "codex",
+      "The detail card can change without changing status data ownership")
+check(MenuStatus(pinnedStatus, now: 100).title == originalStatus.title
+      && MenuStatus(pinnedStatus, now: 100).accessibilityTitle == originalStatus.accessibilityTitle
+      && StatusLayout(pinnedStatus, now: 100).visibleText == originalLayout,
+      "Plain text, accessibility and custom status layouts remain pinned across tab switches")
+pinnedStatus.settings.pinnedProviders = ["cursor", "codex"]
+check(pinnedStatus.statusUsage?.provider == "cursor" && StatusLayout(pinnedStatus, now: 100).text("provider").0 == "Cursor",
+      "Changing the first favorite updates status ownership")
+pinnedStatus.settings.cursorEnabled = false
+check(pinnedStatus.statusUsage == nil && MenuStatus(pinnedStatus, now: 100).accessibilityTitle.contains("Cursor, disconnected"),
+      "A disconnected first favorite never substitutes another enabled account")
+pinnedStatus.settings.pinnedProviders = []
+check(pinnedStatus.settings.statusProvider == "codex", "Without favorites, the first enabled provider owns status")
+pinnedStatus.settings.codexEnabled = false
+check(pinnedStatus.settings.statusProvider == nil && MenuStatus(pinnedStatus, now: 100).title.isEmpty,
+      "Without favorites or enabled providers, no quota is displayed")
+
+var meterStatus = fixture
+meterStatus.settings.cursorEnabled = true
+let meterNow = Int64(Date().timeIntervalSince1970)
+for providerIndex in meterStatus.usage!.providers.indices {
+    meterStatus.usage!.providers[providerIndex].observedAt = meterNow
+    for windowIndex in meterStatus.usage!.providers[providerIndex].windows.indices {
+        meterStatus.usage!.providers[providerIndex].windows[windowIndex].resetsAt = meterNow + 3_600
+        meterStatus.usage!.providers[providerIndex].windows[windowIndex].usedPercent = Metric(value: providerIndex == 0 ? 20 : 80, source: "reported", status: "current")
+    }
+}
+let pinnedMeter = MenuController.meterIcon(meterStatus).tiffRepresentation!
+meterStatus.settings.selectedProvider = "cursor"
+check(MenuController.meterIcon(meterStatus).tiffRepresentation! == pinnedMeter,
+      "Template meter pixels stay pinned when the detail tab changes")
+meterStatus.settings.pinnedProviders = ["cursor", "codex"]
+check(MenuController.meterIcon(meterStatus).tiffRepresentation! != pinnedMeter,
+      "Template meter pixels update when the first favorite changes")
 
 // A short loading card must expand with its data while the same menu row stays
 // attached. Clamp real scroll origins when content shrinks or the screen changes.
@@ -133,8 +179,10 @@ check(scroll.frame.height == 80 && scroll.intrinsicContentSize.height == 80 && !
       "Short content must not reserve a scroll gutter or oversized native row")
 document.measuredHeight = 720
 scroll.updateSize(maximumHeight: 300)
-check(scroll.frame.height == 300 && scroll.fittingSize.height == 300 && document.frame.height == 720 && scroll.hasVerticalScroller,
-      "A loaded card must expand both the document and the bounded menu viewport")
+check(scroll.frame.height == 300 && scroll.fittingSize.height == 300 && document.frame.height == 720 && !scroll.hasVerticalScroller,
+      "A loaded card must expand inside its bounded viewport without showing a scrollbar")
+scroll.contentView.scroll(to: NSPoint(x: 0, y: 420))
+check(scroll.contentView.bounds.maxY == document.frame.maxY, "Hidden scroll indicators must not prevent reaching the final row")
 scroll.contentView.scroll(to: NSPoint(x: 0, y: 150))
 document.measuredHeight = 900
 scroll.updateSize(maximumHeight: 300)
@@ -207,7 +255,7 @@ coalescedScroll.scheduleUpdateSize(maximumHeight: 260)
 coalescedScroll.scheduleUpdateSize(maximumHeight: 180, resetScroll: true)
 check(coalescedScroll.frame.height == 80, "A scheduled resize must not reenter the current SwiftUI update")
 CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
-check(coalescedScroll.frame.height == 180 && coalescedScroll.hasVerticalScroller,
+check(coalescedScroll.frame.height == 180 && !coalescedScroll.hasVerticalScroller,
       "Coalesced menu-tracking resize applies the latest bound once")
 
 let appearanceRoot = NSMenu()

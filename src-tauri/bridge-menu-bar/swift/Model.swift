@@ -102,6 +102,10 @@ struct MenuSettings: Decodable {
         normalizedPinnedProviders + enabledProviders.filter { !normalizedPinnedProviders.contains($0) }
     }
     var activeProvider: String? { visibleProviders.contains(selectedProvider) ? selectedProvider : visibleProviders.first }
+    // The status item belongs to the first favorite, independently of which
+    // detail tab is open. A disconnected favorite must not expose cached data
+    // or silently substitute another account; no favorites uses the first enabled.
+    var statusProvider: String? { visibleProviders.first }
     func isProviderEnabled(_ provider: String) -> Bool { enabledProviders.contains(provider) }
     var displayMode: String
     var quotaDisplayMode: String? = nil
@@ -124,6 +128,10 @@ struct Presentation: Decodable {
     var usage: ProviderOverviews?
     var selectedUsage: UsageOverview? {
         guard let provider = settings.activeProvider, settings.isProviderEnabled(provider) else { return nil }
+        return usage?.providers.first { $0.provider == provider }
+    }
+    var statusUsage: UsageOverview? {
+        guard let provider = settings.statusProvider, settings.isProviderEnabled(provider) else { return nil }
         return usage?.providers.first { $0.provider == provider }
     }
     var refreshing: Bool

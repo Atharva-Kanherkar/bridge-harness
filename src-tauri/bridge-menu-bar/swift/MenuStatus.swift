@@ -8,7 +8,7 @@ struct MenuStatus {
 
     init(_ presentation: Presentation, now: Int64) {
         let settings = presentation.settings
-        guard let provider = settings.activeProvider else {
+        guard let provider = settings.statusProvider else {
             title = ""
             accessibilityTitle = "Bridge usage menu, no providers enabled"
             return
@@ -19,7 +19,7 @@ struct MenuStatus {
             accessibilityTitle = "\(prefix), disconnected"
             return
         }
-        let usage = presentation.selectedUsage
+        let usage = presentation.statusUsage
         if settings.displayMode == "icon" {
             title = ""
             accessibilityTitle = prefix

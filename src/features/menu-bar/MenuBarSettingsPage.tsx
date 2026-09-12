@@ -111,7 +111,7 @@ export function MenuBarSettingsPage() {
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
       <SettingsGroup label="Favorite providers">
-        <p className="px-4 py-3 text-xs text-muted-foreground">Choose your top three in order. Overview stays fixed; scroll horizontally or use the arrows for more providers. Favorites stay visible while disconnected.</p>
+        <p className="px-4 py-3 text-xs text-muted-foreground">Your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Scroll horizontally or use the arrows for more providers. Favorites stay visible while disconnected.</p>
         {[0, 1, 2].map(position => <SettingsRow key={position} label={`Favorite ${position + 1}`}
           control={<Select label={`Favorite provider ${position + 1}`} value={favorites[position] ?? ""} disabled={busy}
             options={[{ value: "", label: "None" }, ...providers.map(provider => ({ value: provider.id, label: provider.name }))]}
@@ -126,10 +126,8 @@ export function MenuBarSettingsPage() {
             control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
               onChange={value => void save({ [provider.key]: value })} />} />;
         })}
-        <SettingsRow label="Provider beside the icon" description="Also changes when you switch providers in the menu."
-          control={<Select label="Provider beside the icon" value={visible.some(p => p.id === settings.selectedProvider) ? settings.selectedProvider ?? "codex" : visible[0]?.id ?? "codex"}
-            disabled={busy || visible.length === 0} options={visible.map(p => ({ value: p.id, label: p.name }))}
-            onChange={value => void save({ selectedProvider: value as MenuBarSettings["selectedProvider"] })} />} />
+        <SettingsRow label="Provider beside the icon" description="Uses your first favorite, or the first enabled provider when no favorites are set."
+          control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{visible[0]?.name ?? "None"}</span>} />
         <SettingsRow label="OpenCode Zen account" description="Sign in and open a workspace. Bridge saves that session in macOS Keychain."
           control={<button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
             onClick={() => { setConnection("Complete sign-in in the OpenCode window and open your workspace."); void bridgeApi.connectMenuBarOpenCode().catch(error => setError(String(error))); }}>Connect OpenCode</button>} />

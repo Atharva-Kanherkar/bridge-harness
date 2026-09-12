@@ -169,3 +169,12 @@ it("saves a favorite replacement without changing enabled accounts", async () =>
   expect(save).toHaveBeenCalledWith({ ...settings, pinnedProviders: ["codex", "claude", "opencode"] });
   expect(container.querySelector('[aria-label="Read OpenCode usage"]')!.getAttribute("aria-checked")).toBe("false");
 });
+
+it("shows the first favorite beside the icon independently of the selected detail tab", async () => {
+  vi.mocked(bridgeApi.getMenuBarSettings).mockResolvedValue({ ...settings, selectedProvider: "cursor", pinnedProviders: ["claude", "codex", "cursor"] });
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const statusProvider = container.querySelector('[aria-label="Provider beside the icon"]')!;
+  expect(statusProvider.textContent).toBe("Claude");
+  expect(statusProvider.tagName).toBe("SPAN");
+  expect(container.textContent).toContain("Switching tabs only changes the open menu");
+});

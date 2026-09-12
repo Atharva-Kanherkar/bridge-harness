@@ -6,7 +6,7 @@ struct StatusLayout {
     let lines: [[String]]
     let presentation: Presentation
     let now: Int64
-    var usage: UsageOverview? { presentation.selectedUsage }
+    var usage: UsageOverview? { presentation.statusUsage }
     var custom: Bool { !lines.isEmpty }
     var hasContent: Bool { lines.joined().contains { $0 != "space" && $0 != "dot" } }
     var hasLeadingIcon: Bool { lines.count == 1 && lines.first?.first == "icon" }
@@ -30,7 +30,7 @@ struct StatusLayout {
         switch token {
         case "icon": return ("\u{fffc}", "Bridge")
         case "provider":
-            let label = presentation.settings.activeProvider.map(providerName) ?? "Bridge"
+            let label = presentation.settings.statusProvider.map(providerName) ?? "Bridge"
             return (label, label)
         case "used", "remaining": return quota(presentation.settings.quotaWindow, remaining: token == "remaining")
         case "weeklyUsed", "weeklyRemaining":
@@ -56,7 +56,7 @@ struct StatusLayout {
 
     var visibleText: String { lines.map { $0.map { text($0).0 }.joined() }.joined(separator: "\n") }
     var accessibilityTitle: String {
-        if let provider = presentation.settings.activeProvider, !presentation.settings.isProviderEnabled(provider) {
+        if let provider = presentation.settings.statusProvider, !presentation.settings.isProviderEnabled(provider) {
             return "Bridge usage menu, \(providerName(provider)), disconnected"
         }
         return "Bridge usage menu, " + lines.joined().map { text($0).1 }.filter { !$0.isEmpty }.joined(separator: ", ")

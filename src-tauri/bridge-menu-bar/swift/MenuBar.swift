@@ -94,7 +94,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         state.surfaceChanged = { [weak self] in
             guard let self = self else { return }
             self.breakdown.update()
-            (self.card.view as? MenuCardScrollView)?.scheduleUpdateSize(maximumHeight: self.cardMaximumHeight, resetScroll: true)
+            (self.card.view as? MenuCardScrollView)?.scheduleUpdateSize(maximumHeight: self.cardMaximumHeight, resetScroll: true, animateTransition: true)
         }
         state.contentChanged = { [weak self] in
             guard let self = self else { return }
@@ -156,7 +156,7 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     static func meterIcon(_ presentation: Presentation) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
-            let usage = presentation.selectedUsage
+            let usage = presentation.statusUsage
             for index in 0..<2 {
                 let rect = NSRect(x: 1, y: 3 + index * 7, width: 16, height: 5)
                 NSColor.black.withAlphaComponent(0.25).setFill()
@@ -249,7 +249,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             if providerChanged || usageAvailabilityChanged {
                 breakdown.update()
             }
-            scroll.scheduleUpdateSize(maximumHeight: cardMaximumHeight, resetScroll: providerChanged)
+            scroll.scheduleUpdateSize(maximumHeight: cardMaximumHeight, resetScroll: providerChanged, animateTransition: providerChanged)
         }
     }
 

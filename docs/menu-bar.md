@@ -165,6 +165,14 @@ followed by other enabled providers. The currently supported collectors remain
 Codex, Claude, Cursor, and OpenCode; scroll capacity does not imply new adapters.
 Navigation arrows sit at opposite edges with matching 6-point outer gutters and
 4-point gaps beside the tab group; three equal provider slots fit between them.
+The menu card scrolls vertically without a visible scrollbar. Provider changes
+use a brief layer opacity fade after the deferred layout update, respecting
+macOS Reduce Motion without animating menu geometry or replacing the open menu.
+
+The status item's usage, custom layout, and template meter always belong to the
+first favorite. Detail-tab selection is independent. With no favorites, the
+first enabled provider supplies status; a disconnected first favorite remains
+explicitly disconnected rather than silently showing another account's usage.
 
 Favorites and account connections are independent. A favorite remains visible
 while disconnected, with a Settings action. It never renders cached quota or
