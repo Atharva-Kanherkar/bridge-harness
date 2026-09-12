@@ -366,6 +366,15 @@ check(meterImage.isTemplate && meterImage.size == NSSize(width: 18, height: 18),
 let image = MenuController.templateIcon()
 check(image.isTemplate, "Menu icon must be a system template")
 check(image.size == NSSize(width: 18, height: 18), "Menu icon uses point dimensions")
+let refreshMenuIcon = MenuController.menuSymbol("arrow.clockwise")
+let intervalMenuIcon = MenuController.menuSymbol("clock")
+check(refreshMenuIcon?.isTemplate == true && refreshMenuIcon?.size == NSSize(width: 16, height: 16),
+      "Refresh uses a standard 16pt template icon")
+check(intervalMenuIcon?.isTemplate == true && intervalMenuIcon?.size == NSSize(width: 16, height: 16),
+      "Refresh interval uses a standard 16pt template icon")
+let bridgeMenuIcon = MenuController.menuBridgeIcon()
+check(bridgeMenuIcon.isTemplate && bridgeMenuIcon.size == NSSize(width: 16, height: 16),
+      "Open Bridge uses the transparent Bridge template mark at menu size")
 let representation = NSBitmapImageRep(data: image.tiffRepresentation!)!
 var clear = 0
 var ink = 0

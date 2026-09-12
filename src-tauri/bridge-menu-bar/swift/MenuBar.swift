@@ -112,8 +112,10 @@ final class MenuController: NSObject, NSMenuDelegate {
         menu.addItem(breakdown.item)
         menu.addItem(.separator())
         refresh.target = self
+        refresh.image = Self.menuSymbol("arrow.clockwise")
         menu.addItem(refresh)
         let interval = NSMenuItem(title: "Refresh interval", action: nil, keyEquivalent: "")
+        interval.image = Self.menuSymbol("clock")
         for (index, title) in ["Manually", "Every minute", "Every 5 minutes", "Every 15 minutes", "Every 30 minutes"].enumerated() {
             let row = NSMenuItem(title: title, action: #selector(changeRefreshInterval(_:)), keyEquivalent: "")
             row.tag = 200 + index
@@ -123,7 +125,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         interval.submenu = refreshOptions
         menu.addItem(interval)
         addAction("Menu Bar Settings…", #selector(openSettings), key: ",")
-        addAction("Open Bridge", #selector(openBridge))
+        addAction("Open Bridge", #selector(openBridge)).image = Self.menuBridgeIcon()
         menu.addItem(.separator())
         addAction("Quit Bridge", #selector(quit), key: "q")
         item.menu = menu
@@ -174,10 +176,26 @@ final class MenuController: NSObject, NSMenuDelegate {
         return image
     }
 
-    func addAction(_ title: String, _ action: Selector, key: String = "") {
+    static func menuSymbol(_ name: String) -> NSImage? {
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return nil }
+        image.isTemplate = true
+        image.size = NSSize(width: 16, height: 16)
+        return image
+    }
+
+    static func menuBridgeIcon() -> NSImage {
+        let image = templateIcon().copy() as! NSImage
+        image.size = NSSize(width: 16, height: 16)
+        image.isTemplate = true
+        return image
+    }
+
+    @discardableResult
+    func addAction(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
         let row = NSMenuItem(title: title, action: action, keyEquivalent: key)
         row.target = self
         menu.addItem(row)
+        return row
     }
 
     func rebuildCard() {
