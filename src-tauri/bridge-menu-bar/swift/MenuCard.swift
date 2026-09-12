@@ -183,6 +183,7 @@ struct QuotaRow: View {
                     .help("Estimate relative to evenly distributed use across this quota window; not an additional allowance.")
             }
         }.accessibilityElement(children: .combine)
+            .accessibilityHint("Bar markers at 50 and 75 percent")
     }
 }
 

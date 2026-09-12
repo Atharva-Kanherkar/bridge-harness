@@ -48,8 +48,10 @@ final class ProviderSwitcherView: NSView {
     static let fixedWidth: CGFloat = 350
     static let rowHeight: CGFloat = 30
     static let minimumProviderWidth: CGFloat = 70
-    private static let overviewWidth: CGFloat = 82
-    private static let arrowWidth: CGFloat = 18
+    private static let overviewWidth: CGFloat = 76
+    private static let arrowWidth: CGFloat = 16
+    private static let outerInset: CGFloat = 6
+    private static let arrowGap: CGFloat = 4
     private static let gap: CGFloat = 2
 
     private var ids: [String] = []
@@ -139,17 +141,17 @@ final class ProviderSwitcherView: NSView {
         super.layout()
         guard let overview = buttons.first else { return }
         let providerButtons = Array(buttons.dropFirst())
-        let available = bounds.width - Self.overviewWidth - Self.gap
+        let available = bounds.width - Self.outerInset * 2 - Self.overviewWidth - Self.gap
         // Reserve exactly three comfortable provider slots. A long future name
         // truncates inside its own slot rather than widening every provider.
-        let arrowAllowance = (Self.arrowWidth + Self.gap) * 2
+        let arrowAllowance = (Self.arrowWidth + Self.arrowGap) * 2
         let threeSlotViewport = available - arrowAllowance
         let segmentWidth = max(Self.minimumProviderWidth, floor((threeSlotViewport - Self.gap * 2) / 3))
         let contentWidth = providerButtons.isEmpty ? 0 : CGFloat(providerButtons.count) * segmentWidth + CGFloat(max(0, providerButtons.count - 1)) * Self.gap
         let overflows = contentWidth > available
         let arrowsWidth = overflows ? arrowAllowance : 0
         let viewportWidth = max(0, available - arrowsWidth)
-        let leadingInset = overflows ? Self.arrowWidth + Self.gap : 0
+        let leadingInset = Self.outerInset + (overflows ? Self.arrowWidth + Self.arrowGap : 0)
         overview.frame = NSRect(x: leadingInset, y: 0, width: Self.overviewWidth, height: Self.rowHeight)
         scrollView.frame = NSRect(x: overview.frame.maxX + Self.gap, y: 0, width: viewportWidth, height: Self.rowHeight)
         providerDocument.frame = NSRect(x: 0, y: 0, width: max(viewportWidth, contentWidth), height: Self.rowHeight)
@@ -159,8 +161,8 @@ final class ProviderSwitcherView: NSView {
         }
         previousButton.isHidden = !overflows
         nextButton.isHidden = !overflows
-        previousButton.frame = NSRect(x: 0, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
-        nextButton.frame = NSRect(x: bounds.width - Self.arrowWidth, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
+        previousButton.frame = NSRect(x: Self.outerInset, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
+        nextButton.frame = NSRect(x: bounds.width - Self.outerInset - Self.arrowWidth, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
         clampScrollOffset()
         if let selection = pendingReveal {
             reveal(selection)
@@ -225,6 +227,9 @@ final class ProviderSwitcherView: NSView {
     var testMaximumOffset: CGFloat { maximumOffset }
     var testArrowState: (previous: Bool, next: Bool) { (previousButton.isEnabled, nextButton.isEnabled) }
     var testViewportWidth: CGFloat { scrollView.contentView.bounds.width }
+    var testNavigationFrames: (previous: NSRect, overview: NSRect, viewport: NSRect, next: NSRect) {
+        (previousButton.frame, buttons[0].frame, scrollView.frame, nextButton.frame)
+    }
     func testScrollForward() { scrollForward() }
     func testScrollBackward() { scrollBackward() }
     func testSetScrollOffset(_ offset: CGFloat) { setOffset(offset) }

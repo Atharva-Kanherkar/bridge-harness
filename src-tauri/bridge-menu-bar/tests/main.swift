@@ -7,6 +7,16 @@ func check(_ condition: @autoclosure () -> Bool, _ message: String) {
 }
 
 let zero = Metric(value: 0, source: "reported", status: "current")
+for scale: CGFloat in [1, 2] {
+    let markers = ProviderProgressBar.markerFrames(size: CGSize(width: 318, height: 6), scale: scale)
+    check(markers.count == 2, "Quota bars have only the requested two guide markers")
+    for (marker, fraction) in zip(markers, [CGFloat(0.5), CGFloat(0.75)]) {
+        check(abs(marker.stripe.midX - 318 * fraction) <= 0.5 / scale,
+              "50/75 markers align to the nearest display pixel")
+        check(marker.punch.width == 5 && marker.stripe.width == 1 && marker.punch.contains(marker.stripe),
+              "Guide markers keep the CodexBar slot and neutral stripe widths")
+    }
+}
 check(quotaPercentLabel(0.36) == "0.36%" && quotaPercentLabel(99.64) == "99.64%", "Fractional Cursor usage must not look empty or exhausted")
 check(quotaPercentLabel(0.001) == "<0.01%", "A small positive percentage must not become reported zero")
 check(countLabel(zero) == "0", "Reported zero must remain zero")
@@ -407,6 +417,15 @@ check(defaultProviderFrames.count == 3 && defaultProviderFrames.last!.maxX <= lo
       "Codex, Claude, and Cursor fit fully before overflow arrows")
 check(Set(defaultProviderFrames.map(\.width)).count == 1 && longNameSwitcher.buttons.last?.toolTip != nil,
       "A later long provider truncates with a tooltip instead of widening the three default slots")
+let navigation = longNameSwitcher.testNavigationFrames
+check(navigation.previous.minX == 6 && 350 - navigation.next.maxX == 6,
+      "Navigation arrows have matching outer gutters")
+check(navigation.overview.minX - navigation.previous.maxX == 4 && navigation.next.minX - navigation.viewport.maxX == 4,
+      "Both arrows have equal space beside the tab group")
+check(navigation.viewport.minX - navigation.overview.maxX == 2 && defaultProviderFrames.allSatisfy { $0.width == 72 },
+      "Three equal provider slots and the Overview gap fit between padded arrows")
+check(longNameSwitcher.buttons[0].intrinsicContentSize.width <= navigation.overview.width,
+      "The Overview title fits its padded segment without truncation")
 check(switcher.testMaximumOffset > 0 && !switcher.testArrowState.previous && switcher.testArrowState.next, "Overflow starts clamped with only the forward arrow enabled")
 switcher.testScrollBackward()
 check(switcher.testScrollOffset == 0, "The back arrow is a no-op at the beginning")

@@ -41,7 +41,13 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
         QuotaWindow(id: "total", label: "Total", usedPercent: Metric(value: 100, source: "reported", status: "current"), resetsAt: now + 259_200, windowMinutes: nil),
         QuotaWindow(id: "cursor", label: "Cursor", usedPercent: Metric(value: 62, source: "reported", status: "current"), resetsAt: now + 259_200, windowMinutes: nil),
         QuotaWindow(id: "third-party", label: "Third Party", usedPercent: Metric(value: 100, source: "reported", status: "current"), resetsAt: now + 259_200, windowMinutes: nil),
+        QuotaWindow(id: "cursor-grok-bot", label: "Grok Bot", usedPercent: Metric(value: 35, source: "reported", status: "current"), resetsAt: now + 25_200, windowMinutes: 10080),
     ]
+    let claude = snapshot.usage!.providers.firstIndex { $0.provider == "claude" }!
+    snapshot.usage!.providers[claude].windows.append(
+        QuotaWindow(id: "weekly", label: "Weekly", usedPercent: Metric(value: 62, source: "reported", status: "current"), resetsAt: now + 172_800, windowMinutes: 10080))
+    snapshot.usage!.providers[claude].windows.append(
+        QuotaWindow(id: "claude-weekly-scoped-claude-fable", label: "Weekly · Fable only", usedPercent: Metric(value: 37.5, source: "reported", status: "current"), resetsAt: now + 172_800, windowMinutes: 10080))
     var days: [UsageDay] = []
     for index in 1...14 {
         var period = snapshot.usage!.providers[0].today
@@ -68,7 +74,7 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
         ("high-contrast-dark", .accessibilityHighContrastDarkAqua),
     ]
     for (name, appearanceName) in appearances {
-      for surface in ["overview", "overview-default", "codex", "codex-day", "cursor", "cursor-disconnected"] {
+      for surface in ["overview", "overview-default", "codex", "codex-day", "claude", "cursor", "cursor-disconnected"] {
         for (sizeName, maximumHeight) in [("full", CGFloat(1_000)), ("compact", CGFloat(280))] {
             let appearance = NSAppearance(named: appearanceName)!
             let state = MenuState()
