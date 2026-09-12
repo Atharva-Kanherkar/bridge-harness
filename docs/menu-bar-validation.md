@@ -645,3 +645,32 @@ image of the transient menu, so visual fade timing and the live scroll offset
 remain unverified; deterministic native probes cover scroll geometry and status
 rendering. No fresh Bridge/WebKit crash report or extra process startup appeared
 during these checks.
+
+### Visible provider animations · 2026-09-12
+
+`5994f22d` adds explicit 160ms tab-selection background fades, 180ms eased arrow
+paging, and a stronger 200ms content fade. Paging updates the real clip origin so
+visible tabs and click targets remain aligned, while menu and viewport frames
+stay fixed. Trackpad input, provider clicks, list changes, and view detachment
+cancel paging. Reduce Motion disables motion. Selecting the current tab does
+not replay the fade, and a provider change waits for its new snapshot rather
+than fading the old card first.
+
+A GPT-5.6 Sol subagent inspected CodexBar's explicit layer animation approach and
+reviewed the final implementation with no actionable findings. Native checks
+passed, including event-tracking timer delivery, paging completion, wheel/click
+interruption, detached-view cleanup, unchanged status ownership, and no duplicate
+surface fades. The initial 50ms integration wait was too brittle in the AppKit
+test process; the check now services tracking until progress/completion or a
+bounded deadline. The Intel macOS 12 type check and production app build passed.
+
+The signed preview was installed at
+`/Users/yashaf/Applications/Bridge Menu Bar Preview.app`, executable SHA-256
+`b349c4ae48ac68b9d87d164a955a746c99e4cbc2cac1392bbd65c41d266d1ed7`.
+Signature verification and staged/installed byte matching passed. The prior
+preview is retained as `Bridge Menu Bar Preview.previous-20260912-180605.app`.
+The installed app launched and its native Overview opened. The first automated
+arrow attempt reported an offscreen control; after reopening, computer use
+reported that macOS was locked. Final live animation timing and arrow interaction
+therefore remain unverified. No fresh Bridge/WebKit crash report or additional
+process startup was found after the launch.
