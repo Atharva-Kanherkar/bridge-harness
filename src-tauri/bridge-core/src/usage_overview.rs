@@ -10,16 +10,34 @@ use bridge_protocol::messages::{
     UsageDailyOverview, UsageMetric, UsageMetricSource as Source, UsageMetricStatus as Status,
     UsageModelOverview, UsageOverviewSnapshot, UsagePeriodOverview, UsageQuotaWindow,
 };
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Mutex, time::Instant};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 #[derive(Default)]
 pub struct UsageOverviewService {
     refresh: Mutex<Option<Instant>>,
     providers: [Mutex<Option<Instant>>; 3],
+    history: Mutex<Option<CachedSummary>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SummaryKey {
+    total_changes: u64,
+    data_version: i64,
+    today: NaiveDate,
+    time_zone: String,
+}
+
+struct CachedSummary {
+    key: SummaryKey,
+    summary: Arc<usage_summary::UsageSummary>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -45,26 +63,64 @@ fn load_cache(db: &Connection) -> Result<CachedQuota, BridgeError> {
         .map(|v| v.unwrap_or_default())
 }
 
-pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError> {
-    let now = Utc::now();
-    let zone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
-    let tz: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
-    let today = now.with_timezone(&tz).date_naive();
-    let db = core.db.lock().unwrap();
-    let cache = load_cache(&db)?;
-    let summary = usage_summary::summarize(
-        &db,
+fn summary_key(
+    db: &Connection,
+    today: NaiveDate,
+    time_zone: &str,
+) -> Result<SummaryKey, BridgeError> {
+    Ok(SummaryKey {
+        total_changes: db.total_changes(),
+        data_version: db.query_row("PRAGMA data_version", [], |row| row.get(0))?,
+        today,
+        time_zone: time_zone.to_owned(),
+    })
+}
+
+fn menu_summary(
+    service: &UsageOverviewService,
+    db: &Connection,
+    today: NaiveDate,
+    time_zone: &str,
+) -> Result<Arc<usage_summary::UsageSummary>, BridgeError> {
+    let before = summary_key(db, today, time_zone)?;
+    if let Some(cached) = service.history.lock().unwrap().as_ref() {
+        if cached.key == before {
+            return Ok(Arc::clone(&cached.summary));
+        }
+    }
+    let summary = Arc::new(usage_summary::summarize(
+        db,
         &UsageSummaryRequest {
             since_day: (today - Duration::days(29)).to_string(),
             until_day: today.to_string(),
             resolution: UsageResolution::Day,
-            time_zone: Some(tz.to_string()),
+            time_zone: Some(time_zone.to_owned()),
             workspace_id: None,
             include_imported: true,
             since_time: None,
             until_time: None,
         },
-    )?;
+    )?);
+    // Another SQLite connection can commit while the read-only aggregation is
+    // running. Return that valid result, but do not let it become a cache hit:
+    // the next caller must observe the newer database version.
+    let after = summary_key(db, today, time_zone)?;
+    if before == after {
+        *service.history.lock().unwrap() = Some(CachedSummary {
+            key: after,
+            summary: Arc::clone(&summary),
+        });
+    }
+    Ok(summary)
+}
+
+fn codex_snapshot(
+    cache: CachedQuota,
+    summary: &usage_summary::UsageSummary,
+    now: chrono::DateTime<Utc>,
+    today: NaiveDate,
+) -> UsageOverviewSnapshot {
+    let today_string = today.to_string();
     let rows: Vec<_> = summary
         .buckets
         .iter()
@@ -73,13 +129,13 @@ pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError>
     let today_rows: Vec<_> = rows
         .iter()
         .copied()
-        .filter(|b| b.day == today.to_string())
+        .filter(|b| b.day == today_string)
         .collect();
     let partial = summary
         .sources
         .iter()
         .any(|s| s.agent == "codex" && s.coverage_state != "complete");
-    Ok(UsageOverviewSnapshot {
+    UsageOverviewSnapshot {
         schema_version: 1,
         generated_at: now.timestamp(),
         provider: "codex".into(),
@@ -99,10 +155,26 @@ pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError>
         }
         .into(),
         error: cache.error,
-    })
+    }
+}
+
+pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError> {
+    let now = Utc::now();
+    let zone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
+    let tz: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
+    let today = now.with_timezone(&tz).date_naive();
+    let db = core.db.lock().unwrap();
+    let cache = load_cache(&db)?;
+    let summary = menu_summary(&core.usage_overview, &db, today, &tz.to_string())?;
+    Ok(codex_snapshot(cache, &summary, now, today))
 }
 
 pub fn refresh(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError> {
+    refresh_codex(core)?;
+    snapshot(core)
+}
+
+fn refresh_codex(core: &BridgeCore) -> Result<(), BridgeError> {
     // One central owner coalesces menu, settings and desktop requests. Never
     // hold the database while waiting for the provider process/network.
     // Concurrent callers join the active refresh instead of returning an old
@@ -113,7 +185,7 @@ pub fn refresh(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError> 
         .lock()
         .map_err(|_| BridgeError::Invalid("Usage refresh is unavailable".into()))?;
     if last.is_some_and(|last| last.elapsed().as_secs() < 15) {
-        return snapshot(core);
+        return Ok(());
     }
     let prior = load_cache(&core.db.lock().unwrap())?;
     let cache = match crate::codex_adapter::account::read() {
@@ -151,7 +223,7 @@ pub fn refresh(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError> 
         let _ = crate::usage_history::scan_history(core, &env, Some(10_000), Some(&ids));
     }
     *last = Some(Instant::now());
-    snapshot(core)
+    Ok(())
 }
 
 fn number(value: &Value, camel: &str, snake: &str) -> Option<f64> {
@@ -654,24 +726,12 @@ pub fn provider_snapshots(
 ) -> Result<bridge_protocol::messages::ProviderUsageOverviews, BridgeError> {
     use bridge_protocol::messages::{MenuBarProvider, ProviderUsageOverviews};
     let now = Utc::now();
-    let mut providers = vec![snapshot(core)?];
     let zone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
     let tz: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
     let today = now.with_timezone(&tz).date_naive();
     let db = core.db.lock().unwrap();
-    let summary = usage_summary::summarize(
-        &db,
-        &UsageSummaryRequest {
-            since_day: (today - Duration::days(29)).to_string(),
-            until_day: today.to_string(),
-            resolution: UsageResolution::Day,
-            time_zone: Some(tz.to_string()),
-            workspace_id: None,
-            include_imported: true,
-            since_time: None,
-            until_time: None,
-        },
-    )?;
+    let summary = menu_summary(&core.usage_overview, &db, today, &tz.to_string())?;
+    let mut providers = vec![codex_snapshot(load_cache(&db)?, &summary, now, today)];
     for provider in MenuBarProvider::ALL.into_iter().skip(1) {
         let cache = load_provider(&db, provider.id())?;
         let mut quota = cache.usage.unwrap_or_default();
@@ -821,7 +881,7 @@ pub fn refresh_providers(
                 let settings = &settings;
                 scope.spawn(move || {
                     if p == MenuBarProvider::Codex {
-                        refresh(core).map(|_| ())
+                        refresh_codex(core)
                     } else {
                         refresh_provider(core, p, settings, index - 1, false)
                     }
@@ -852,7 +912,7 @@ pub fn refresh_providers_interactive(
                 let settings = &settings;
                 scope.spawn(move || {
                     if provider == MenuBarProvider::Codex {
-                        refresh(core).map(|_| ())
+                        refresh_codex(core)
                     } else {
                         refresh_provider(core, provider, settings, index - 1, true)
                     }
@@ -872,6 +932,149 @@ pub fn refresh_providers_interactive(
 #[cfg(test)]
 mod provider_tests {
     use super::*;
+
+    fn test_day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 9, 12).unwrap()
+    }
+
+    fn seed_live_usage(db: &Connection) {
+        db.execute(
+            "INSERT INTO usage_ledger(workspace_id,uncached_input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,harness,model,source,created_at)
+             VALUES('w',1000,0,0,100,'codex','cache-test-model','provider.codex','2026-09-12T12:00:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn mark_cached(summary: &mut Option<CachedSummary>) {
+        Arc::make_mut(&mut summary.as_mut().unwrap().summary).scan_duration_ms = -123;
+    }
+
+    #[test]
+    fn menu_summary_reuses_one_entry_until_owned_usage_or_pricing_changes() {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        let service = UsageOverviewService::default();
+        seed_live_usage(&db);
+
+        let first = menu_summary(&service, &db, test_day(), "UTC").unwrap();
+        assert_eq!(first.buckets[0].cost_microusd, 0);
+        assert_eq!(first.buckets[0].unpriced_records, 1);
+        mark_cached(&mut service.history.lock().unwrap());
+        assert_eq!(
+            menu_summary(&service, &db, test_day(), "UTC")
+                .unwrap()
+                .scan_duration_ms,
+            -123,
+            "an unchanged menu install must reuse its aggregate"
+        );
+
+        db.execute(
+            "INSERT INTO usage_price_overrides(model,input_microusd_per_mtok,output_microusd_per_mtok,cache_read_microusd_per_mtok,cache_write_microusd_per_mtok,updated_at)
+             VALUES('cache-test-model',1000000,2000000,100000,1000000,'now')",
+            [],
+        )
+        .unwrap();
+        let repriced = menu_summary(&service, &db, test_day(), "UTC").unwrap();
+        assert_ne!(repriced.scan_duration_ms, -123);
+        assert_eq!(repriced.buckets[0].cost_microusd, 1200);
+        assert_eq!(repriced.buckets[0].unpriced_records, 0);
+
+        db.execute("DELETE FROM usage_ledger", []).unwrap();
+        assert!(menu_summary(&service, &db, test_day(), "UTC")
+            .unwrap()
+            .buckets
+            .is_empty());
+    }
+
+    #[test]
+    fn menu_summary_invalidates_for_other_connections_and_calendar_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("usage-cache.db");
+        let db = crate::store::open(&path).unwrap();
+        let service = UsageOverviewService::default();
+        seed_live_usage(&db);
+        menu_summary(&service, &db, test_day(), "UTC").unwrap();
+        mark_cached(&mut service.history.lock().unwrap());
+
+        let other = Connection::open(&path).unwrap();
+        other
+            .execute(
+                "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at)
+                 VALUES('cache-test','external','{}','now','now')",
+                [],
+            )
+            .unwrap();
+        assert_ne!(
+            menu_summary(&service, &db, test_day(), "UTC")
+                .unwrap()
+                .scan_duration_ms,
+            -123,
+            "PRAGMA data_version must catch commits made by another connection"
+        );
+
+        mark_cached(&mut service.history.lock().unwrap());
+        let tomorrow = test_day().succ_opt().unwrap();
+        assert_ne!(
+            menu_summary(&service, &db, tomorrow, "UTC")
+                .unwrap()
+                .scan_duration_ms,
+            -123
+        );
+        mark_cached(&mut service.history.lock().unwrap());
+        assert_ne!(
+            menu_summary(&service, &db, tomorrow, "America/Los_Angeles")
+                .unwrap()
+                .scan_duration_ms,
+            -123
+        );
+    }
+
+    #[test]
+    fn cached_history_does_not_freeze_snapshot_time_or_quota_expiry() {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        let service = UsageOverviewService::default();
+        seed_live_usage(&db);
+        let summary = menu_summary(&service, &db, test_day(), "UTC").unwrap();
+        let reused = menu_summary(&service, &db, test_day(), "UTC").unwrap();
+        assert!(Arc::ptr_eq(&summary, &reused));
+
+        let quota = AccountQuota {
+            account: Some("fixture@example.com".into()),
+            plan: Some("fixture".into()),
+            observed_at: 100,
+            limits: serde_json::json!({
+                "primary": {
+                    "usedPercent": 42,
+                    "resetsAt": 150,
+                    "windowDurationMins": 300
+                }
+            }),
+            rate_limits_by_limit_id: BTreeMap::new(),
+        };
+        let cache = || CachedQuota {
+            quota: Some(quota.clone()),
+            error: None,
+        };
+        let before = codex_snapshot(
+            cache(),
+            &reused,
+            chrono::DateTime::from_timestamp(120, 0).unwrap(),
+            test_day(),
+        );
+        let after = codex_snapshot(
+            cache(),
+            &reused,
+            chrono::DateTime::from_timestamp(151, 0).unwrap(),
+            test_day(),
+        );
+
+        assert_eq!(before.generated_at, 120);
+        assert_eq!(after.generated_at, 151);
+        assert_eq!(before.windows[0].used_percent.status, Status::Current);
+        assert_eq!(after.windows[0].used_percent.status, Status::Stale);
+        assert_eq!(after.windows[0].used_percent.value, Some(42.0));
+        assert_eq!(before.daily, after.daily);
+    }
 
     #[test]
     fn cursor_history_does_not_roll_yesterdays_snapshot_into_today() {
