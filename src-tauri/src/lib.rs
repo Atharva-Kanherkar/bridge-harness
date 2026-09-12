@@ -1645,11 +1645,12 @@ async fn search_session_entries(
     session_id: String,
     query: String,
     limit: Option<u32>,
+    offset: Option<u32>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Session recall", move || {
-        api::search_session_entries(&core, &session_id, &query, limit)
+        api::search_session_entries(&core, &session_id, &query, limit, offset)
     })
     .await
 }

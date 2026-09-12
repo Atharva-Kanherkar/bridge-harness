@@ -2760,12 +2760,15 @@ export interface CompactSessionParams {
 
 export interface SearchSessionEntriesParams {
   limit?: number | null;
+  offset?: number | null;
   query: string;
   sessionId: string;
 }
 
 export interface SearchSessionEntriesResult {
+  hasMore?: boolean;
   hits: SessionRecallHit[];
+  offset?: number;
   query: string;
   sessionId: string;
 }

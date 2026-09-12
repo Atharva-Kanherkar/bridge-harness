@@ -499,6 +499,10 @@ pub struct SearchSessionEntriesParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 50))]
     pub limit: Option<u32>,
+    /// How many ranked hits to skip. The next page of a long forest; omitted
+    /// requests start at the first hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
 }
 
 /// Which part of the forest `sessions/export_session_transcript` writes.
@@ -575,6 +579,15 @@ pub struct SearchSessionEntriesResult {
     pub session_id: String,
     pub query: String,
     pub hits: Vec<SessionRecallHit>,
+    /// Where this page started, echoed so a caller paging through a long
+    /// forest does not have to remember what it asked for.
+    #[serde(default)]
+    pub offset: u32,
+    /// Whether a further page exists. Answered by asking the database for one
+    /// more row than the page needs, so it is a fact rather than the guess
+    /// "the page came back full".
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 /// Mirrors `bridge_core::secret_interception::SecretInterception` — one

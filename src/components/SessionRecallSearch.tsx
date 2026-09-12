@@ -5,19 +5,25 @@ import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
 
 export type SessionRecallSearchProps = {
   sessionId: string;
-  search?: (sessionId: string, query: string) => Promise<SearchSessionEntriesResult>;
+  search?: (sessionId: string, query: string, limit?: number | null, offset?: number | null) => Promise<SearchSessionEntriesResult>;
   onClose: () => void;
   onJump: (entryId: string) => void;
 };
 
+/** One page. A long forest is paged rather than truncated, so a match late in
+ *  a thousand-turn session is reachable instead of merely absent. */
+export const RECALL_PAGE_SIZE = 20;
+
 export function SessionRecallSearch({
   sessionId,
-  search = (id, query) => bridgeApi.searchSessionEntries(id, query),
+  search = (id, query, limit, offset) => bridgeApi.searchSessionEntries(id, query, limit, offset),
   onClose,
   onJump,
 }: SessionRecallSearchProps) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SessionRecallHit[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -33,6 +39,7 @@ export function SessionRecallSearch({
     const trimmed = query.trim();
     if (!trimmed) {
       setHits([]);
+      setHasMore(false);
       setStatus("idle");
       setError(null);
       return;
@@ -40,16 +47,20 @@ export function SessionRecallSearch({
     let cancelled = false;
     setStatus("loading");
     const handle = window.setTimeout(() => {
-      void search(sessionId, trimmed)
+      void search(sessionId, trimmed, RECALL_PAGE_SIZE, 0)
         .then(result => {
           if (cancelled) return;
           setHits(result.hits);
+          // An older daemon does not send the flag; no flag means no further
+          // page, which is exactly the behavior before paging existed.
+          setHasMore(result.hasMore ?? false);
           setStatus("ready");
           setError(null);
         })
         .catch(cause => {
           if (cancelled) return;
           setHits([]);
+          setHasMore(false);
           setStatus("error");
           setError(cause instanceof Error ? cause.message : String(cause));
         });
@@ -106,6 +117,28 @@ export function SessionRecallSearch({
               </li>
             ))}
           </ul>
+        )}
+        {hasMore && (
+          <button
+            type="button"
+            disabled={loadingMore}
+            onClick={() => {
+              setLoadingMore(true);
+              void search(sessionId, query.trim(), RECALL_PAGE_SIZE, hits.length)
+                .then(result => {
+                  // Append rather than replace: paging is reading further, not
+                  // searching again.
+                  setHits(current => [...current, ...result.hits]);
+                  setHasMore(result.hasMore ?? false);
+                })
+                .catch(cause => {
+                  setStatus("error");
+                  setError(cause instanceof Error ? cause.message : String(cause));
+                })
+                .finally(() => setLoadingMore(false));
+            }}
+            className="self-start rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          >{loadingMore ? "Loading…" : "Show more"}</button>
         )}
       </div>
     </div>

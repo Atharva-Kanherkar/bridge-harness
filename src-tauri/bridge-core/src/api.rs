@@ -1307,9 +1307,10 @@ pub fn search_session_entries(
     session_id: &str,
     query: &str,
     limit: Option<u32>,
+    offset: Option<u32>,
 ) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
     let db = core.db.lock().unwrap();
-    session_recall::search(&db, session_id, query, limit)
+    session_recall::search_page(&db, session_id, query, limit, offset)
 }
 
 /// Write one session's durable record out as JSONL.

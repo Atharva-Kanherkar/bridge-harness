@@ -1617,9 +1617,14 @@ export const bridgeApi = {
     forest.reasons.unshift({ id: nextEventId++, source: "compaction", kind: "compaction.completed", entityId: sessionId, body: "manual", createdAt: new Date().toISOString() });
     emitState();
   },
-  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null): Promise<SearchSessionEntriesResult> => {
+  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null, offset?: number | null): Promise<SearchSessionEntriesResult> => {
     if (isTauri()) {
-      return call("sessions/search_session_entries", limit != null ? { sessionId, query, limit } : { sessionId, query });
+      return call("sessions/search_session_entries", {
+        sessionId,
+        query,
+        ...(limit != null ? { limit } : {}),
+        ...(offset ? { offset } : {}),
+      });
     }
     if (!sessionId.trim()) throw new Error("Recall needs a session id; search cannot run across a workspace");
     const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -1632,7 +1637,6 @@ export const bridgeApi = {
         const body = `${entry.payload.text ?? ""} ${entry.payload.title ?? ""} ${entry.payload.summary ?? ""}`.toLowerCase();
         return tokens.every(token => body.includes(token));
       })
-      .slice(0, limit ?? 20)
       .map(entry => ({
         entryId: entry.id,
         kind: entry.kind,
@@ -1640,7 +1644,11 @@ export const bridgeApi = {
         snippet: String(entry.payload.text ?? entry.payload.summary ?? entry.payload.title ?? ""),
         createdAt: entry.createdAt,
       }));
-    return { sessionId, query, hits };
+    // Page the mock the same way the server does, so the Show more affordance
+    // is exercised by `bun run dev` and not only by the desktop app.
+    const size = limit ?? 20;
+    const start = offset ?? 0;
+    return { sessionId, query, hits: hits.slice(start, start + size), offset: start, hasMore: hits.length > start + size };
   },
   /**
    * Write one session's durable record out as JSONL.

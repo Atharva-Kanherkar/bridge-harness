@@ -264,6 +264,7 @@ pub fn dispatch(
                 &p.session_id,
                 &p.query,
                 p.limit,
+                p.offset,
             ))
         }
         MethodName::ExportSessionTranscript => {
