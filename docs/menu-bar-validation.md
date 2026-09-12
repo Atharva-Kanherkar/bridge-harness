@@ -610,3 +610,38 @@ Claude CLI. This response omitted Fable, so live Fable display is not claimed.
 The OAuth scoped mapper and CLI Fable-only cases are covered by tests; no absent
 allowance is manufactured. No fresh Bridge crash report or extra process startup
 was present after the installed checks.
+
+### Pinned status usage and quieter navigation · 2026-09-12
+
+`77911027` keeps plain status text, custom layouts, and the template meter on the
+first favorite while detail tabs continue to switch independently. Settings
+display that provider instead of offering a conflicting selection control.
+With no favorites, status uses the first enabled provider; a disconnected first
+favorite stays explicitly disconnected. The native card hides its scrollbar
+while retaining document scrolling, bounded height, and offset clamping.
+Provider changes use a 120ms layer opacity fade after the coalesced layout pass;
+Reduce Motion disables the fade, and menu geometry is never animated.
+
+A GPT-5.6 Sol subagent inspected CodexBar `928166f` before implementation and
+reviewed the diff with no actionable findings. Native checks passed, including
+status text/accessibility/custom-layout pinning, actual template-meter pixels,
+favorite reorder and disconnected cases, and reaching the final row with hidden
+scroll indicators. All 18 Menu Bar frontend tests, the Intel macOS 12 type check,
+and the production frontend/native app build passed.
+
+The signed preview was installed at
+`/Users/yashaf/Applications/Bridge Menu Bar Preview.app` with executable SHA-256
+`481f28bd07ca3e397d5b7dca4c426e6afff1c27ba7a382faebc676443a7c2b83`.
+Strict/deep signature checks and staged/installed byte matching passed; the
+preceding preview is retained as
+`Bridge Menu Bar Preview.previous-20260912-174218.app`.
+
+Live accessibility checks confirmed no native scrollbar control and successive
+Codex, Cursor, Claude, and Cursor selections within the same open menu. Cursor's
+Cost history choice survived the provider changes; it was then restored to its
+original Tokens display. After opening Cursor, Settings still showed Codex as
+Favorite 1 and Provider beside the icon. The capture tool could not supply an
+image of the transient menu, so visual fade timing and the live scroll offset
+remain unverified; deterministic native probes cover scroll geometry and status
+rendering. No fresh Bridge/WebKit crash report or extra process startup appeared
+during these checks.
