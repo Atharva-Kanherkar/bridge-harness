@@ -8,6 +8,7 @@ export const downloadPath = "/download";
 export const macDownloadPath = `${downloadPath}/macos`;
 export const linuxDownloadPath = `${downloadPath}/linux`;
 export const changelogPath = "/changelog";
+export const comparePath = "/compare";
 export const nodeRequirement = "Claude models need Node 18 or newer on your PATH.";
 export const signingIdentity = "Developer ID Application: Yashaswi Kumar (3VN4X827YF)";
 
