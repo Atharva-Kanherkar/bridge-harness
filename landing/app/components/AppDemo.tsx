@@ -148,11 +148,12 @@ export default function AppDemo() {
   const held = useRef(false);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
-  const [slider, setSlider] = useState<{ left: number; width: number } | null>(null);
+  const [slider, setSlider] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const scene = scenes[active];
 
   // The indicator is measured rather than fractioned, so it fits each label instead of
-  // forcing four columns to the width of the longest one.
+  // forcing four columns to the width of the longest one. Measuring top too means the
+  // indicator still tracks correctly when the tab list wraps onto a second row on mobile.
   useIsomorphicLayoutEffect(() => {
     const measure = () => {
       const tab = tabRefs.current[active];
@@ -160,7 +161,7 @@ export default function AppDemo() {
       if (!tab || !list) return;
       const a = tab.getBoundingClientRect();
       const b = list.getBoundingClientRect();
-      setSlider({ left: a.left - b.left, width: a.width });
+      setSlider({ left: a.left - b.left, top: a.top - b.top, width: a.width, height: a.height });
     };
     measure();
     window.addEventListener("resize", measure);
@@ -197,18 +198,18 @@ export default function AppDemo() {
       onFocusCapture={() => { held.current = true; }}
       onBlurCapture={() => { held.current = false; }}
     >
-      <div className="-mx-4 mb-5 flex justify-center overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="-mx-4 mb-5 flex justify-center px-4 sm:overflow-x-auto sm:[scrollbar-width:none] sm:[&::-webkit-scrollbar]:hidden">
         <div
           ref={listRef}
           role="tablist"
           aria-label="What Bridge does"
-          className="relative flex h-10 w-max shrink-0 items-center rounded-full border border-border-card bg-card/50 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl motion-safe:animate-[entry-in_600ms_ease-out]"
+          className="relative flex w-full max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-border-card bg-card/50 p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl motion-safe:animate-[entry-in_600ms_ease-out] sm:h-10 sm:w-max sm:shrink-0 sm:flex-nowrap sm:justify-start sm:gap-0 sm:rounded-full sm:p-1"
         >
           {/* The slider the labels ride on. */}
           <span
             aria-hidden="true"
-            className="absolute inset-y-1 rounded-full bg-foreground/12 ring-1 ring-inset ring-foreground/20 transition-[transform,width] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
-            style={slider ? { width: slider.width, transform: `translateX(${slider.left}px)`, left: 0 } : { opacity: 0 }}
+            className="absolute left-0 top-0 rounded-full bg-foreground/12 ring-1 ring-inset ring-foreground/20 transition-[transform,width,height] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
+            style={slider ? { width: slider.width, height: slider.height, transform: `translate(${slider.left}px, ${slider.top}px)` } : { opacity: 0 }}
           />
 
           {scenes.map((item, i) => {
@@ -227,7 +228,7 @@ export default function AppDemo() {
                 onClick={() => setActive(i)}
                 onKeyDown={event => onKeyDown(event, i)}
                 style={{ animationDelay: `${100 + i * 90}ms` }}
-                className={`group relative z-10 flex h-full items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-[12.5px] font-semibold transition-colors duration-300 motion-safe:animate-[rise_500ms_ease-out_backwards] ${
+                className={`group relative z-10 flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-[12.5px] font-semibold transition-colors duration-300 motion-safe:animate-[rise_500ms_ease-out_backwards] sm:h-full ${
                   selected ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                 }`}
               >

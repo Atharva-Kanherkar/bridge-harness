@@ -7,6 +7,17 @@ export type ReleaseEntry = {
 
 export const releases: ReleaseEntry[] = [
   {
+    version: "0.5.6",
+    date: "September 11, 2026",
+    headline: "Images, agent setup, and Linux builds",
+    bullets: [
+      "Paste or upload an image straight into a Codex, OpenCode, or image-capable Cursor session.",
+      "Setup can install an agent and run its provider sign-in, and a recovered login keeps the draft you were writing.",
+      "Work shows only connected integration activity from the past 24 hours, timed by the source rather than by a cache refresh.",
+      "Debian, AppImage, and Arch candidates build alongside the signed macOS disk image.",
+    ],
+  },
+  {
     version: "0.5.5",
     date: "September 8, 2026",
     headline: "The Span app icon",

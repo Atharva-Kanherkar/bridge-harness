@@ -13,7 +13,7 @@
 // advanced JSON are text, so they dirty the page and go through the save bar.
 
 import { useMemo } from "react";
-import type { HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
+import type { AdapterDescriptor, HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../ManagedAgentsPanel";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "../OpenCodeHarnessSettings";
@@ -34,6 +34,7 @@ export type HarnessDraft = {
 export type ModelOption = { adapter: string; id: string; label: string };
 
 type Shared = {
+  adapters: AdapterDescriptor[];
   harnesses: HarnessConfig[];
   modelOptions: ModelOption[];
   managed: ManagedAgents;
@@ -47,6 +48,7 @@ type Shared = {
   onResetHarness: (id: string) => Promise<void>;
   onCatalog: (catalog: OpenCodeCatalog) => void;
   onError: (message: string) => void;
+  onAuthenticationChanged: () => void;
 };
 
 export function HarnessesPage(props: Shared & {
@@ -54,7 +56,7 @@ export function HarnessesPage(props: Shared & {
   onOpenDetail: (id: string) => void;
   onCloseDetail: () => void;
 }) {
-  const { harnesses, managed, detailId, onOpenDetail, onCloseDetail } = props;
+  const { harnesses, managed, adapters, detailId, onOpenDetail, onCloseDetail, onAuthenticationChanged } = props;
   const detail = detailId ? harnesses.find(item => item.id === detailId) : undefined;
   if (detail) return <HarnessDetail {...props} harness={detail} onBack={onCloseDetail} />;
 
@@ -63,7 +65,7 @@ export function HarnessesPage(props: Shared & {
     title="Harnesses"
     description="The runtimes Bridge can start. Defaults apply to new sessions; provider credentials stay in each harness's own store."
   >
-    <ManagedAgentRows state={managed} onOpen={onOpenDetail} />
+    <ManagedAgentRows state={managed} adapters={adapters} onOpen={onOpenDetail} onAuthenticationChanged={onAuthenticationChanged} />
     {bridge && <SettingsGroup label="Defaults" note="Bridge's own routing">
       <SettingsRow
         lead={<HarnessMark harness="bridge" size={14} />}

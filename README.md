@@ -2,11 +2,15 @@
 
 <p align="center">
   <strong>The control room for coding agents.</strong><br/>
-  Run Codex, Claude Code, and OpenCode side by side — safely, on your Mac, with your own subscriptions.
+  Run Codex, Claude Code, OpenCode, Cursor, and Grok side by side — safely, on your Mac, with your own subscriptions.
 </p>
 
 <p align="center">
-  <a href="https://github.com/Atharva-Kanherkar/bridge-harness/releases"><strong>Download for macOS</strong></a>
+  <a href="https://bridge.agentclash.dev/download"><strong>Download for macOS</strong></a>
+  ·
+  <a href="https://bridge.agentclash.dev">Website</a>
+  ·
+  <a href="https://bridge.agentclash.dev/changelog">Changelog</a>
 </p>
 
 <p align="center">
@@ -28,7 +32,8 @@ Use your existing agent subscriptions. Your code and your credentials stay on yo
 
 ## Why Bridge?
 
-- **One place for every agent.** Start Codex, Claude Code, or OpenCode sessions from the same window and switch between them freely.
+- **One place for every agent.** Start Codex, Claude Code, OpenCode, Cursor, or Grok sessions from the same window and switch between them freely.
+- **Set up in one screen.** First launch finds the agents you already have, installs the ones you want, and runs each provider's own sign-in.
 - **Experiment without fear.** Each task gets its own isolated workspace, so agents can try things without touching your main branch.
 - **Nothing gets lost.** Conversations are saved automatically. Rewind, fork, or resume a session days later — right where you left off.
 - **You're always in charge.** Agents ask before running anything risky. You approve or decline in one click.
@@ -37,8 +42,13 @@ Use your existing agent subscriptions. Your code and your credentials stay on yo
 
 ## What you can do with it
 
+### Start with the agents you already have
+
+Open Bridge for the first time and it scans your machine before asking you for anything. Agents it finds are marked **Detected**; ones you're already signed in to are simply **Signed in** — no second login, no setup you've already done twice. Anything missing can be installed in place, and sign-in runs in a quiet pane with a direct link to the provider's own page rather than a raw terminal.
+
 ### Work with any of your agents
-Chat with Codex, Claude Code, or OpenCode in a clean native UI — messages, reasoning, plans, tool calls, diffs, and approvals rendered properly instead of crammed into a terminal.
+
+Chat in a clean native UI — messages, reasoning, plans, tool calls, diffs, and approvals rendered properly instead of crammed into a terminal.
 
 <p align="center">
   <img src="docs/media/switch-harness.webp" alt="The model picker open inside a chat, listing Codex and Claude Code models together" width="900" />
@@ -53,9 +63,11 @@ Chat with Codex, Claude Code, or OpenCode in a clean native UI — messages, rea
 <p align="center"><sub>Agent Fleet runs the CLIs themselves, split into one terminal grid per checkout.</sub></p>
 
 ### Keep tasks safely separated
+
 Spin up a task workspace per piece of work. Agents work in their own branch and folder; your main checkout stays clean. Run a second opinion in parallel when it matters.
 
 ### Stay in control of risky actions
+
 Commands, file writes, and delegation requests outside the agreed scope pause for your approval. Review the exact diff before anything lands.
 
 <p align="center">
@@ -71,6 +83,7 @@ Commands, file writes, and delegation requests outside the agreed scope pause fo
 <p align="center"><sub>A completion gate can demand a second harness family before you adopt anything.</sub></p>
 
 ### Never lose a thread
+
 Every session is stored locally and stays inspectable. Go back to an earlier point, fork the conversation to try a different approach, or resume after a restart — without losing what the agent already figured out.
 
 <p align="center">
@@ -80,6 +93,7 @@ Every session is stored locally and stays inspectable. Go back to an earlier poi
 <p align="center"><sub>An append-only ledger of what actually happened, filterable and forkable.</sub></p>
 
 ### See costs and limits up front
+
 Per-provider usage, rate-limit status, and context pressure are visible in the app, so you can switch models or wrap up before quality degrades.
 
 <p align="center">
@@ -88,40 +102,46 @@ Per-provider usage, rate-limit status, and context pressure are visible in the a
 
 <p align="center"><sub>Cost per harness and per model, with what the cache saved you.</sub></p>
 
-### Give agents your login — safely, temporarily
-Let an agent use a web page you're already logged into (Chrome or Safari) through a tab you explicitly approve. No passwords or cookies are copied anywhere.
+### Read a page without leaving the app
+
+The dock's browser pane is a plain in-app browser — URL bar, back, forward, reload — for docs, a dashboard, or the PR you're discussing. Pages that refuse to be framed open in your system browser instead.
 
 ### Keep project knowledge
+
 Store the preferences, conventions, and decisions agents should follow. Recall them in any session, on any workspace.
 
 ### Stay connected to GitHub
+
 Browse issues and pull requests, open work from a task, and keep the conversation tied to the code under review.
 
 ## Works with your subscriptions
 
-| Agent | What you need |
-| --- | --- |
-| Codex | Install the `codex` CLI and sign in |
-| Claude Code | Install the `claude` CLI and sign in (needs Node.js 18+) |
-| OpenCode | Install the `opencode` CLI and sign in |
+| Agent | CLI | Bridge can install it |
+| --- | --- | --- |
+| Codex | `codex` | Yes |
+| Claude Code | `claude` (needs Node.js 18+) | Yes |
+| OpenCode | `opencode` | Yes |
+| Cursor | `cursor-agent` | Yes |
+| Grok | `grok` | Install it yourself |
 
-Missing something? That agent simply shows as unavailable — Bridge still starts and everything else keeps working. Bridge never collects or stores your provider credentials.
+Sign-in always runs the vendor's own login command. Bridge never collects, stores, or logs your provider credentials.
 
-> [!TIP]
-> Bridge can also install and manage these agent runtimes for you, so you don't have to set them up by hand. Your own installs always take precedence.
+Missing an agent? It simply shows as unavailable — Bridge still starts and everything else keeps working. Your own installs always take precedence over the ones Bridge manages.
 
-## Get started in 60 seconds
+## Get started
 
-1. **Download Bridge** from [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — open the `.dmg`, drag **Bridge** into Applications, and launch it.
-2. **Add a project** — pick a local Git repository.
-3. **Start working** — create a workspace, pick your agent and model, and send your first message.
+1. **Download Bridge** from [the download page](https://bridge.agentclash.dev/download) or [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — open the `.dmg`, drag **Bridge** into Applications, and launch it.
+2. **Pick your agents** — first launch shows what's already on your machine and installs or signs in to the rest.
+3. **Add a project** — pick a local Git repository.
+4. **Start working** — create a workspace, pick your agent and model, and send your first message.
 
-That's it. Approvals, history, and usage tracking are on from the start.
+Approvals, history, and usage tracking are on from the start.
 
 ## Download
 
-- **Release builds:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_*.dmg`
+- **Release builds:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_*.dmg`, signed with a Developer ID, notarized, and stapled
 - **Requirements:** macOS 12 or later (Apple Silicon), Git, and Node.js 18+ (only needed for Claude sessions)
+- **Linux:** Debian, AppImage, and Arch packages build in CI as release candidates. They are not published downloads yet — see [docs/linux-release.md](docs/linux-release.md).
 - **Updates:** in-app auto-update isn't in this release yet — grab new builds from Releases. See the [CHANGELOG](CHANGELOG.md) for what's new.
 
 > [!NOTE]
@@ -133,11 +153,13 @@ That's it. Approvals, history, and usage tracking are on from the start.
 - [docs/session-forest.md](docs/session-forest.md) — how history, rewind, and resume behave
 - [docs/delegation-policy.md](docs/delegation-policy.md) — how supervised multi-agent work stays bounded
 - [docs/compaction-and-resume.md](docs/compaction-and-resume.md) — checkpoints and session restoration
-- [docs/authenticated-browser-bridge.md](docs/authenticated-browser-bridge.md) — the approved-tab browser model
+- [docs/managed-agent-runtimes.md](docs/managed-agent-runtimes.md) — how Bridge installs and verifies agent runtimes
+- [docs/worktree-lifecycle.md](docs/worktree-lifecycle.md) — how task workspaces are created and reclaimed
+- [docs/protocol/README.md](docs/protocol/README.md) — the RPC contract between the app and the runtime
 - [docs/work-brief.md](docs/work-brief.md) — the daily work briefing
 
 <details>
-<summary><strong>Building from source & contributing</strong></summary>
+<summary><strong>Building from source &amp; contributing</strong></summary>
 
 ```sh
 git clone https://github.com/Atharva-Kanherkar/bridge-harness.git

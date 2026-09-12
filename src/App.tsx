@@ -15,7 +15,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, medi
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -31,6 +31,7 @@ import { ChatModelControl, modelDisplayName } from "./components/ChatModelContro
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
+import { SimpleBrowser } from "./components/SimpleBrowser";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
@@ -39,7 +40,6 @@ import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
-import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { TerminalActivity } from "./components/TerminalPane";
 import { TasksPane } from "./components/TasksPane";
 import { workerStatus } from "./components/workerStatus";
@@ -55,7 +55,6 @@ import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
-import { BrowserSurface } from "./components/BrowserSurface";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
@@ -67,7 +66,8 @@ import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
-import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
+import { resolveProfileOption } from "./modelProfiles";
+import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { pickGreeting } from "./greetings";
@@ -165,6 +165,7 @@ function AppContent() {
     workBoardQueryError, refetchWorkBoard, followWorkBriefing, acceptModelSetup, invalidateHealth,
   } = useBridgeServerState();
   const [state, setState] = useState<BridgeState>(emptyState);
+  const [stateLoaded, setStateLoaded] = useState(false);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<AppView>("workspace");
@@ -220,7 +221,6 @@ function AppContent() {
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
   const [recallOpen, setRecallOpen] = useState(false);
@@ -237,6 +237,12 @@ function AppContent() {
   // Cleared on success, restored on failure — a refused send must not eat the
   // user's clipboard work.
   const [loginProvider, setLoginProvider] = useState<UsageProvider | null>(null);
+  const [agentOnboardingComplete, setAgentOnboardingComplete] = useState(readAgentOnboardingComplete);
+  const finishAgentOnboarding = useCallback((setup?: ModelSetupState) => {
+    writeAgentOnboardingComplete();
+    setAgentOnboardingComplete(true);
+    if (setup) acceptModelSetup(setup);
+  }, [acceptModelSetup]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
@@ -293,6 +299,7 @@ function AppContent() {
   const reload = useMemo(() => createCoalescedRefresh(async () => {
     const [nextState, config] = await Promise.all([bridgeApi.state(), bridgeApi.configState()]);
     setState(nextState);
+    setStateLoaded(true);
     // Re-read with the state it was published alongside: `save_permission_policy`
     // publishes StateChanged precisely so the badge repaints, and another window
     // flipping the switch has to reach this one too.
@@ -509,7 +516,7 @@ function AppContent() {
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
-    { id: "browser", label: "Browser", icon: Monitor, available: true, alert: browserSupervision?.attention || undefined },
+    { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
@@ -2170,8 +2177,15 @@ function AppContent() {
 
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
-  if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
-  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
+  if (!health || !modelSetup || !stateLoaded) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
+  const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;
+  if (shouldShowAgentOnboarding(modelSetup, agentOnboardingComplete, hasExistingBridgeData)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard
+    adapters={health.adapters}
+    onHealthChange={invalidateHealth}
+    onComplete={finishAgentOnboarding}
+    onSkip={() => finishAgentOnboarding()}
+    onError={setError}
+  />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
@@ -2296,7 +2310,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
@@ -2595,7 +2609,6 @@ function AppContent() {
                     onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
-                    plusIcon="paperclip"
                     leading={usageRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
@@ -2646,11 +2659,7 @@ function AppContent() {
                 onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
-              if (pane === "browser") return <BrowserSurface
-                visible={dock.open && dock.pane === "browser" && !fullscreen}
-                onError={setError}
-                onSupervisionChange={setBrowserSupervision}
-              />;
+              if (pane === "browser") return <SimpleBrowser />;
               if (pane === "transcript") return <TranscriptPane
                 key={session.id}
                 sessionId={session.id}
@@ -2716,6 +2725,7 @@ function AppContent() {
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
         onNewWorkspace={() => void createWorkspaceFromFolder()}
+        onHealthChange={invalidateHealth}
       />}
     </main>
     </div>
@@ -2803,7 +2813,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2814,6 +2824,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   canStartChat: boolean;
   onStartChat: (text?: string, attachments?: ComposerAttachment[]) => Promise<boolean>;
   onNewWorkspace: () => void;
+  onHealthChange: () => void;
   workspaces: Workspace[];
   workspace: Workspace | null;
   /** Owning project name for the hero — resolved from `workspace.projectId`,
@@ -2870,7 +2881,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
     {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-6 rounded-xl border border-border bg-card p-4">
       <h2 className="text-sm font-medium">Connect your first agent</h2>
       <p className="mt-1 mb-3 text-[13px] text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
-      <ManagedAgentsPanel />
+      <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
     </div>}
     <p className="mb-3 text-[12px] font-medium text-muted-foreground">Your workspace, ready.</p>
     <h1 className="mb-3 max-w-2xl font-display text-[28px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[34px]">

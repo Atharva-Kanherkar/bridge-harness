@@ -79,6 +79,19 @@ describe("provider sign-in inside a composer form", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  // Regression: Cancel used to only unmount the pane, leaving the vendor login
+  // PTY alive. `start_provider_login` then reattached to that runtime without
+  // replaying the URL and prompts the closed pane missed, so the retry showed
+  // an empty, unusable terminal.
+  it("stops the provider login process when the pane is cancelled", async () => {
+    const cancel = vi.spyOn(bridgeApi, "cancelProviderLogin").mockResolvedValue();
+    await openLogin(vi.fn());
+    click(buttonByText("Cancel"));
+    await flush();
+    expect(cancel).toHaveBeenCalledWith("cursor");
+    expect(document.querySelector('input[aria-label="Reply to the Cursor sign-in prompt"]')).toBeNull();
+  });
+
   it("renders no nested form element in the login pane", async () => {
     const input = await openLogin(vi.fn());
     // The pane must not reintroduce a <form>; the outer test form is the only one.

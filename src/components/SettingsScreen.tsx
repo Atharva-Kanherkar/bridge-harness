@@ -32,7 +32,7 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onHealthChange = () => undefined, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onError: (message: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
   const [query, setQuery] = useState("");
   const [config, setConfig] = useState<ConfigState>();
@@ -56,7 +56,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const [saved, setSaved] = useState(false);
   // One copy of the runtime list, read by both the Harnesses list and a single
   // harness's detail page, so an install never has to be reported twice.
-  const managed = useManagedAgents();
+  const managed = useManagedAgents(undefined, onHealthChange);
 
   useEffect(() => {
     let active = true;
@@ -271,6 +271,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       />}
 
       {section === "harnesses" && config && <HarnessesPage
+        adapters={adapters}
         harnesses={config.harnesses}
         modelOptions={modelOptions}
         managed={managed}
@@ -287,6 +288,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         onResetHarness={resetHarness}
         onCatalog={catalog => { setOpenCodeCatalog(catalog); setOpenCodeDiscoveryError(undefined); }}
         onError={message => { setOpenCodeDiscoveryError(message); onError(message); }}
+        onAuthenticationChanged={onHealthChange}
       />}
 
       {section === "models" && modelSetup && <ModelsPage

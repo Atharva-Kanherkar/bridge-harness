@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, ChevronDown, Gauge, Layers, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, ExternalLink, Gauge, Layers, LoaderCircle, ShieldCheck, Terminal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
@@ -11,6 +11,7 @@ import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, typ
 import type { AdapterDescriptor } from "../types";
 import { useContextBreakdown } from "../contextBreakdown";
 import { ContextBreakdownPanel } from "./ContextBreakdown";
+import { plainProviderLoginOutput, providerLoginUrl } from "../providerLoginPresentation";
 
 /** Details panel padding; inner cards use panel radius minus this so the arcs share a center. */
 const PANEL_PAD = "p-2.5";
@@ -431,31 +432,62 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
     void bridgeApi.writeTerminal("provider-login", provider, `${entry}\r`);
     setEntry("");
   };
-  return <div className="mt-2 grid gap-1.5">
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-caption font-semibold uppercase tracking-[0.13em] text-muted-foreground">{label} sign-in</span>
-      <span className="text-caption text-muted-foreground">Follow {label}'s sign-in prompts to connect your account.</span>
-      <button type="button" onClick={onClose} className="ml-auto min-h-7 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Hide</button>
+  // Cancel abandons the sign-in, so the vendor process has to go with it.
+  // `start_provider_login` reattaches to a live runtime without replaying the
+  // URL and prompts this pane already dropped, so leaving it running would
+  // hand the next attempt an empty terminal.
+  const cancel = () => {
+    void bridgeApi.cancelProviderLogin(provider).catch(() => undefined);
+    onClose();
+  };
+  const cleanOutput = plainProviderLoginOutput(output);
+  const loginUrl = providerLoginUrl(output);
+  return <section className="u-glass-soft mt-3 overflow-hidden rounded-xl border border-border-card" aria-label={`${label} sign-in`}>
+    <header className="flex items-center gap-3 border-b border-border-card px-4 py-3">
+      <span className="grid size-9 shrink-0 place-items-center rounded-xl border border-border-card bg-background text-foreground">
+        <ShieldCheck size={17} aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <h3 className="text-[13px] font-medium text-foreground">Connect {label}</h3>
+        <p className="mt-0.5 text-[11px] text-muted-foreground">{label} handles authentication; Bridge does not store your credentials.</p>
+      </div>
+      <button type="button" onClick={cancel} className="min-h-7 rounded-lg px-2.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
+    </header>
+    <div className="grid gap-3 px-4 py-4">
+      {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">{error}</div> : <div className="flex items-start gap-3">
+        <LoaderCircle className="mt-0.5 shrink-0 animate-spin text-muted-foreground" size={16} aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[13px] font-medium text-foreground">Finish in your browser</p>
+          <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{loginUrl ? "The provider is ready for authorization. Bridge will detect completion automatically." : `Waiting for ${label} to open its secure sign-in page…`}</p>
+          {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-8 items-center gap-2 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">
+            Open sign-in page <ExternalLink size={12} aria-hidden="true" />
+          </a>}
+        </div>
+      </div>}
+
+      <details className="group rounded-lg border border-border-card bg-background/60">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+          <Terminal size={13} aria-hidden="true" /> Troubleshooting details
+          <ChevronDown className="ml-auto transition-transform group-open:rotate-180" size={13} aria-hidden="true" />
+        </summary>
+        <div className="border-t border-border-card p-2.5">
+          <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground">{cleanOutput || "Starting secure sign-in…"}</pre>
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Only use this field when {label} asks for a code or response.</p>
+          <div className="mt-2 flex gap-1.5">
+            <input
+              value={entry}
+              onChange={event => setEntry(event.target.value)}
+              onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); send(); } }}
+              placeholder="Code or response"
+              aria-label={`Reply to the ${label} sign-in prompt`}
+              className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-caption text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-caption font-medium text-foreground transition-colors hover:bg-accent">Send</button>
+          </div>
+        </div>
+      </details>
     </div>
-    <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-caption leading-relaxed text-foreground">{output || "Starting…"}</pre>
-    {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
-    {/* Deliberately not a <form>. This pane renders through the composer's
-        `leading` slot — inside the composer's own <form> — and a nested
-        form's submit event still bubbles, so an Enter here would also invoke
-        the composer's onSubmit and send the draft. A plain row with an
-        explicit Enter handler keeps the reply local to the provider terminal. */}
-    <div className="flex gap-1.5">
-      <input
-        value={entry}
-        onChange={event => setEntry(event.target.value)}
-        onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); send(); } }}
-        placeholder="Type a response or paste a code / URL, press Enter"
-        aria-label={`Reply to the ${label} sign-in prompt`}
-        className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-caption text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-      />
-      <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-caption font-medium text-foreground transition-colors hover:bg-accent">Send</button>
-    </div>
-  </div>;
+  </section>;
 }
 
 function HistoryRow({ entry }: { entry: UsageHistoryEntry }) {

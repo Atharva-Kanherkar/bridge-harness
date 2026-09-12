@@ -492,7 +492,9 @@ describe("the dock in the session view", () => {
     await settle(2);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
     await click(dockToggle()!);
-    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "Connect your browser once");
+    // The extension-based BrowserSurface is paused; the dock's "browser" pane
+    // now renders the plain iframe-based SimpleBrowser.
+    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "No page open");
     const before = surface();
     expect(before).toBeTruthy();
 
@@ -510,28 +512,7 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
-    expect(dockAside()!.textContent).toContain("Connect your browser once");
-  });
-
-  it("raises waiting_for_you onto the switcher while another pane is active", async () => {
-    const waiting = {
-      transportConnected: true, extensionId: "ext", extensionPath: "/ext",
-      nativeHostInstalled: true, nativeHostManifestPath: "/m",
-      tabs: [{ id: 1, title: "Example", domain: "example.com", url: "https://example.com", attached: true }],
-      lease: { id: "lease-1", tabId: 1, domain: "example.com", permission: "read_only", grantedAt: "now", expiresAt: null },
-      status: "waiting_for_you", captureActive: false, captureError: null, screenshot: null,
-      screenshotRedactedRegions: 0, elements: [], viewport: null, promptInjectionSuspected: false,
-      tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
-      promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
-    };
-    const spy = vi.spyOn(bridgeApi, "browserBridgeState").mockResolvedValue(waiting as unknown as Awaited<ReturnType<typeof bridgeApi.browserBridgeState>>);
-    await mountApp();
-    await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit4", key: "4" });
-    await settle(3);
-    await key({ ...chord, code: "Digit1", key: "1" });
-    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
-    spy.mockRestore();
+    expect(dockAside()!.textContent).toContain("No page open");
   });
 
   // Contract: testing/feat-dock-terminal.md §4.

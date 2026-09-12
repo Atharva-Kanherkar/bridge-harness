@@ -129,6 +129,7 @@ methods![
     (ResolveQuestion, "approvals", "resolve_question"),
     // auth — provider sign-in
     (StartProviderLogin, "auth", "start_provider_login"),
+    (CancelProviderLogin, "auth", "cancel_provider_login"),
     // terminal
     (OpenTerminal, "terminal", "open_terminal"),
     (WriteTerminal, "terminal", "write_terminal"),

@@ -12,6 +12,12 @@ fn fallback_directories(home: Option<&Path>) -> Vec<PathBuf> {
     if let Some(home) = home {
         directories.extend([
             home.join(".local/bin"),
+            home.join(".bun/bin"),
+            home.join(".volta/bin"),
+            home.join(".local/share/pnpm"),
+            home.join("Library/pnpm"),
+            home.join(".asdf/shims"),
+            home.join(".local/share/mise/shims"),
             home.join(".cargo/bin"),
             home.join("bin"),
         ]);
@@ -22,6 +28,16 @@ fn fallback_directories(home: Option<&Path>) -> Vec<PathBuf> {
         PathBuf::from("/usr/bin"),
     ]);
     directories
+}
+
+/// The PATH Bridge gives child processes when launched from a desktop shell.
+/// `portable_pty::CommandBuilder` is not a `std::process::Command`, so login
+/// PTYs need this value directly to share normal adapters' reachability.
+pub(crate) fn hydrated_command_path() -> Option<OsString> {
+    hydrated_path_from(
+        env::var_os("PATH").as_deref(),
+        env::var_os("HOME").as_deref().map(Path::new),
+    )
 }
 
 fn hydrated_path_from(existing: Option<&OsStr>, home: Option<&Path>) -> Option<OsString> {
@@ -39,10 +55,7 @@ fn hydrated_path_from(existing: Option<&OsStr>, home: Option<&Path>) -> Option<O
 /// Give provider children the same executable reachability Bridge uses itself.
 /// Existing PATH order wins; standard GUI-missing locations are appended once.
 pub fn hydrate_command_path(command: &mut Command) {
-    if let Some(path) = hydrated_path_from(
-        env::var_os("PATH").as_deref(),
-        env::var_os("HOME").as_deref().map(Path::new),
-    ) {
+    if let Some(path) = hydrated_command_path() {
         command.env("PATH", path);
     }
 }
@@ -112,7 +125,20 @@ pub fn version(name: &str) -> Option<String> {
 /// Separate from [`version`] so a caller that already chose which copy to launch
 /// reports that copy's version rather than whatever happens to be on PATH.
 pub fn version_at(binary: &Path) -> Option<String> {
-    let output = Command::new(binary).arg("--version").output().ok()?;
+    version_at_with_environment(
+        binary,
+        env::var_os("PATH").as_deref(),
+        env::var_os("HOME").as_deref().map(Path::new),
+    )
+}
+
+fn version_at_with_environment(binary: &Path, existing_path: Option<&OsStr>, home: Option<&Path>) -> Option<String> {
+    let mut command = Command::new(binary);
+    command.arg("--version");
+    if let Some(path) = hydrated_path_from(existing_path, home) {
+        command.env("PATH", path);
+    }
+    let output = command.output().ok()?;
     output
         .status
         .success()
@@ -175,6 +201,46 @@ mod tests {
         assert_eq!(directories[0], PathBuf::from("/bin"));
         assert!(directories.contains(&PathBuf::from("/usr/local/bin")));
         assert!(directories.contains(&PathBuf::from("/usr/bin")));
+    }
+
+    #[test]
+    fn fallbacks_include_common_user_package_manager_bins() {
+        let directories = fallback_directories(Some(Path::new("/Users/test")));
+        for expected in [
+            "/Users/test/.bun/bin",
+            "/Users/test/.volta/bin",
+            "/Users/test/.local/share/pnpm",
+            "/Users/test/Library/pnpm",
+            "/Users/test/.asdf/shims",
+            "/Users/test/.local/share/mise/shims",
+        ] {
+            assert!(directories.contains(&PathBuf::from(expected)), "missing {expected}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_uses_the_hydrated_gui_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        // Mirrors npm's Codex launcher: the executable resolves, but its
+        // env-based interpreter does not exist on a desktop app's sparse PATH.
+        let node = bin.join("node");
+        fs::write(&node, "#!/bin/sh\nprintf 'codex-cli 1.2.3\\n'\n").unwrap();
+        let launcher = home.path().join("codex");
+        fs::write(&launcher, "#!/usr/bin/env node\n").unwrap();
+        for executable in [&node, &launcher] {
+            let mut permissions = fs::metadata(executable).unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(executable, permissions).unwrap();
+        }
+
+        assert_eq!(
+            version_at_with_environment(&launcher, Some(OsStr::new("/usr/bin:/bin")), Some(home.path())).as_deref(),
+            Some("codex-cli 1.2.3")
+        );
     }
 
     #[cfg(unix)]

@@ -24,7 +24,8 @@ describe("server state wiring", () => {
 
   it("writes successful model setup changes to the shared cache", () => {
     expect(SERVER_STATE).toContain("queryClient.setQueryData(queryKeys.modelSetup, setup)");
-    expect(APP).toContain("onComplete={acceptModelSetup}");
+    expect(APP).toContain("onComplete={finishAgentOnboarding}");
+    expect(APP).toContain("if (setup) acceptModelSetup(setup)");
     expect(APP).toContain("onModelSetupChange={acceptModelSetup}");
   });
 });
