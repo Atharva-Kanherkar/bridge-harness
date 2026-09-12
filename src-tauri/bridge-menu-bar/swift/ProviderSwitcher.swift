@@ -138,19 +138,20 @@ final class ProviderSwitcherView: NSView {
     override func layout() {
         super.layout()
         guard let overview = buttons.first else { return }
-        overview.frame = NSRect(x: 0, y: 0, width: Self.overviewWidth, height: Self.rowHeight)
         let providerButtons = Array(buttons.dropFirst())
         let available = bounds.width - Self.overviewWidth - Self.gap
         // Reserve exactly three comfortable provider slots. A long future name
         // truncates inside its own slot rather than widening every provider.
-        let arrowAllowance = Self.arrowWidth * 2 + Self.gap
+        let arrowAllowance = (Self.arrowWidth + Self.gap) * 2
         let threeSlotViewport = available - arrowAllowance
         let segmentWidth = max(Self.minimumProviderWidth, floor((threeSlotViewport - Self.gap * 2) / 3))
         let contentWidth = providerButtons.isEmpty ? 0 : CGFloat(providerButtons.count) * segmentWidth + CGFloat(max(0, providerButtons.count - 1)) * Self.gap
         let overflows = contentWidth > available
         let arrowsWidth = overflows ? arrowAllowance : 0
         let viewportWidth = max(0, available - arrowsWidth)
-        scrollView.frame = NSRect(x: Self.overviewWidth + Self.gap, y: 0, width: viewportWidth, height: Self.rowHeight)
+        let leadingInset = overflows ? Self.arrowWidth + Self.gap : 0
+        overview.frame = NSRect(x: leadingInset, y: 0, width: Self.overviewWidth, height: Self.rowHeight)
+        scrollView.frame = NSRect(x: overview.frame.maxX + Self.gap, y: 0, width: viewportWidth, height: Self.rowHeight)
         providerDocument.frame = NSRect(x: 0, y: 0, width: max(viewportWidth, contentWidth), height: Self.rowHeight)
         for (index, button) in providerButtons.enumerated() {
             button.frame = NSRect(x: CGFloat(index) * (segmentWidth + Self.gap), y: 0, width: segmentWidth, height: Self.rowHeight)
@@ -158,8 +159,8 @@ final class ProviderSwitcherView: NSView {
         }
         previousButton.isHidden = !overflows
         nextButton.isHidden = !overflows
-        previousButton.frame = NSRect(x: scrollView.frame.maxX + Self.gap, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
-        nextButton.frame = NSRect(x: previousButton.frame.maxX, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
+        previousButton.frame = NSRect(x: 0, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
+        nextButton.frame = NSRect(x: bounds.width - Self.arrowWidth, y: 0, width: Self.arrowWidth, height: Self.rowHeight)
         clampScrollOffset()
         if let selection = pendingReveal {
             reveal(selection)
