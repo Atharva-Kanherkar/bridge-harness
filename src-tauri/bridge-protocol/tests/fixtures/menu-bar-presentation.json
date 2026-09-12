@@ -13,6 +13,7 @@
     "cursorEnabled": false,
     "opencodeEnabled": false,
     "selectedProvider": "codex",
+    "pinnedProviders": ["codex", "claude", "cursor"],
     "opencodeWorkspace": null,
     "quotaDisplayMode": "used",
     "openToOverview": true,

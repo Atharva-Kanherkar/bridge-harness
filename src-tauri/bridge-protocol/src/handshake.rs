@@ -61,7 +61,8 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// A stale daemon must not reject or discard the saved menu customization.
 /// **1.11 separates explicit user refresh from background collection.**
 /// The interactive method may use the signed-in provider CLI for recovery.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 11 };
+/// **1.12 persists the ordered Menu Bar favorites without enabling collectors.**
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 12 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +179,11 @@ mod tests {
     #[test]
     fn manual_refresh_client_rejects_daemon_without_interaction_boundary() {
         assert!(!ProtocolVersion { major: 1, minor: 10 }.accepts(PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn favorites_client_rejects_daemon_that_cannot_persist_provider_order() {
+        assert!(!ProtocolVersion { major: 1, minor: 11 }.accepts(PROTOCOL_VERSION));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

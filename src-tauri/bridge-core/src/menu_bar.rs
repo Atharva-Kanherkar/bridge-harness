@@ -23,6 +23,15 @@ pub fn load(db: &Connection) -> Result<MenuBarSettings, BridgeError> {
 }
 
 fn validate(settings: &MenuBarSettings) -> Result<(), BridgeError> {
+    if settings.pinned_providers.len() > 3
+        || settings.pinned_providers.iter().enumerate().any(|(index, provider)| {
+            settings.pinned_providers[..index].contains(provider)
+        })
+    {
+        return Err(BridgeError::Invalid(
+            "Choose up to three different favorite providers".into(),
+        ));
+    }
     if settings.status_layout.len() > 2
         || settings.status_layout.iter().any(|line| line.len() > 12)
         || settings
@@ -76,6 +85,27 @@ pub fn save(db: &Connection, settings: &MenuBarSettings) -> Result<MenuBarSettin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn favorites_preserve_order_without_enabling_collectors() {
+        use bridge_protocol::messages::MenuBarProvider::{Claude, Codex, Cursor, OpenCode};
+        let temp = tempfile::tempdir().unwrap();
+        let db = crate::store::open(&temp.path().join("favorites.db")).unwrap();
+        let mut settings = load(&db).unwrap();
+        assert_eq!(settings.pinned_providers, vec![Codex, Claude, Cursor]);
+        assert!(!settings.cursor_enabled && !settings.claude_enabled);
+        settings.pinned_providers = vec![Cursor, OpenCode, Claude];
+        let saved = save(&db, &settings).unwrap();
+        assert_eq!(saved.pinned_providers, vec![Cursor, OpenCode, Claude]);
+        assert!(!saved.cursor_enabled && !saved.opencode_enabled);
+        settings.pinned_providers = vec![Cursor, Cursor];
+        assert!(save(&db, &settings).is_err());
+        settings.pinned_providers = vec![Codex, Claude, Cursor, OpenCode];
+        assert!(save(&db, &settings).is_err());
+        assert_eq!(load(&db).unwrap(), saved);
+        settings.pinned_providers.clear();
+        assert!(save(&db, &settings).unwrap().pinned_providers.is_empty());
+    }
+
     #[test]
     fn persists_settings_and_rejects_invalid_changes_without_overwriting() {
         let temp = tempfile::tempdir().unwrap();

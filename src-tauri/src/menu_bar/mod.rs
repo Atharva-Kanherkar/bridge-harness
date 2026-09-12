@@ -234,7 +234,7 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                     };
                     if matches!(next, Work::Select(_) | Work::RefreshInterval(_)) {
                         let selected = match next { Work::Select(provider) => Some(provider), _ => None };
-                        if selected.is_none_or(|provider| presentation.settings.provider_enabled(provider)) {
+                        if selected.is_none_or(|provider| presentation.settings.provider_visible(provider)) {
                             let mut settings = presentation.settings.clone();
                             match next {
                                 Work::Select(provider) => settings.selected_provider = provider,

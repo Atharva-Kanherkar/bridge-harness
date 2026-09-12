@@ -4,11 +4,12 @@ import { bridgeApi } from "../../api";
 import type { MenuBarSettings, ProviderUsageOverviews } from "../../protocol/generated/protocol";
 import { SettingsPage, SettingsGroup, SettingsRow, Select, Switch } from "../../components/settings/kit";
 import { MenuBarLayoutEditor } from "./MenuBarLayoutEditor";
+import { chooseFavorite, defaultFavorites } from "./favorites";
 
 const providers = [
   { id: "codex", name: "Codex", key: "codexEnabled", description: "Uses Codex sign-in. Manage the account in Harnesses." },
   { id: "claude", name: "Claude", key: "claudeEnabled", description: "Uses Claude Code sign-in for session and weekly limits." },
-  { id: "cursor", name: "Cursor", key: "cursorEnabled", description: "Sign in to Cursor desktop to read billing cycle usage." },
+  { id: "cursor", name: "Cursor", key: "cursorEnabled", description: "Uses your Cursor desktop sign-in to read account usage, token/model history, and cost from cursor.com." },
   { id: "opencode", name: "OpenCode", key: "opencodeEnabled", description: "Local tokens and costs. Connect a Zen workspace for account billing and limits." },
 ] as const;
 
@@ -23,6 +24,9 @@ export function MenuBarSettingsPage() {
   const saves = useRef<Promise<void>>(Promise.resolve());
   const pendingSaves = useRef(0);
   const enabled = providers.filter(provider => settings?.[provider.key]);
+  const favorites = settings?.pinnedProviders ?? defaultFavorites;
+  const visibleIds = [...favorites, ...enabled.map(provider => provider.id).filter(id => !favorites.includes(id))];
+  const visible = visibleIds.flatMap(id => providers.filter(provider => provider.id === id));
 
   useEffect(() => {
     let active = true;
@@ -104,17 +108,25 @@ export function MenuBarSettingsPage() {
         <MenuBarLayoutEditor key={JSON.stringify(settings.statusLayout ?? [])} layout={settings.statusLayout ?? []} busy={busy}
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
+      <SettingsGroup label="Favorite providers">
+        <p className="px-4 py-3 text-xs text-muted-foreground">Choose your top three in order. Overview stays fixed; scroll horizontally or use the arrows for more providers. Favorites stay visible while disconnected.</p>
+        {[0, 1, 2].map(position => <SettingsRow key={position} label={`Favorite ${position + 1}`}
+          control={<Select label={`Favorite provider ${position + 1}`} value={favorites[position] ?? ""} disabled={busy}
+            options={[{ value: "", label: "None" }, ...providers.map(provider => ({ value: provider.id, label: provider.name }))]}
+            onChange={value => void save({ pinnedProviders: chooseFavorite(favorites, position, value as (typeof favorites)[number] | "") })} />} />)}
+      </SettingsGroup>
       <SettingsGroup label="Providers & accounts">
+        <p className="px-4 py-3 text-xs text-muted-foreground">Enable account usage for each provider. Choosing a favorite does not connect its account.</p>
         {providers.map(provider => {
           const account = usage?.providers.find(value => value.provider === provider.id);
           return <SettingsRow key={provider.id} label={provider.name}
-            description={account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ?? (account?.quotaSource ? `Usage via ${account.quotaSource}` : provider.description)}
-            control={<Switch label={`Show ${provider.name}`} checked={settings[provider.key] ?? false} disabled={busy}
+            description={!settings[provider.key] ? provider.description : account?.account ? `${account.account}${account.plan ? ` · ${account.plan}` : ""}` : account?.error ?? (account?.quotaSource ? `Usage via ${account.quotaSource}` : provider.description)}
+            control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
               onChange={value => void save({ [provider.key]: value })} />} />;
         })}
         <SettingsRow label="Provider beside the icon" description="Also changes when you switch providers in the menu."
-          control={<Select label="Provider beside the icon" value={enabled.some(p => p.id === settings.selectedProvider) ? settings.selectedProvider ?? "codex" : enabled[0]?.id ?? "codex"}
-            disabled={busy || enabled.length === 0} options={enabled.map(p => ({ value: p.id, label: p.name }))}
+          control={<Select label="Provider beside the icon" value={visible.some(p => p.id === settings.selectedProvider) ? settings.selectedProvider ?? "codex" : visible[0]?.id ?? "codex"}
+            disabled={busy || visible.length === 0} options={visible.map(p => ({ value: p.id, label: p.name }))}
             onChange={value => void save({ selectedProvider: value as MenuBarSettings["selectedProvider"] })} />} />
         <SettingsRow label="OpenCode Zen account" description="Sign in and open a workspace. Bridge saves that session in macOS Keychain."
           control={<button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"

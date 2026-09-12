@@ -103,6 +103,18 @@
         "null"
       ]
     },
+    "pinnedProviders": {
+      "default": [
+        "codex",
+        "claude",
+        "cursor"
+      ],
+      "description": "Up to three favorites, in display order. Pinning never enables account collection.",
+      "items": {
+        "$ref": "#/definitions/MenuBarProvider"
+      },
+      "type": "array"
+    },
     "quotaDisplayMode": {
       "allOf": [
         {

@@ -203,6 +203,10 @@ pub enum MenuBarLayoutToken {
 
 fn default_true() -> bool { true }
 
+fn default_pinned_providers() -> Vec<MenuBarProvider> {
+    vec![MenuBarProvider::Codex, MenuBarProvider::Claude, MenuBarProvider::Cursor]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MenuBarSettings {
@@ -217,6 +221,9 @@ pub struct MenuBarSettings {
     pub opencode_enabled: bool,
     #[serde(default)]
     pub selected_provider: MenuBarProvider,
+    /// Up to three favorites, in display order. Pinning never enables account collection.
+    #[serde(default = "default_pinned_providers")]
+    pub pinned_providers: Vec<MenuBarProvider>,
     #[serde(default)]
     pub opencode_workspace: Option<String>,
     pub display_mode: MenuBarDisplayMode,
@@ -250,6 +257,7 @@ impl Default for MenuBarSettings {
             cursor_enabled: false,
             opencode_enabled: false,
             selected_provider: MenuBarProvider::Codex,
+            pinned_providers: default_pinned_providers(),
             opencode_workspace: None,
             display_mode: MenuBarDisplayMode::Used,
             quota_display_mode: MenuBarQuotaDisplayMode::Used,
@@ -267,6 +275,10 @@ impl Default for MenuBarSettings {
 }
 
 impl MenuBarSettings {
+    pub fn provider_visible(&self, provider: MenuBarProvider) -> bool {
+        self.pinned_providers.contains(&provider) || self.provider_enabled(provider)
+    }
+
     pub fn provider_enabled(&self, provider: MenuBarProvider) -> bool {
         match provider {
             MenuBarProvider::Codex => self.codex_enabled,
@@ -295,9 +307,12 @@ mod tests {
         assert_eq!(settings.display_mode, MenuBarDisplayMode::Used);
         assert_eq!(settings.refresh_seconds, 900);
         assert_eq!(settings.selected_provider, MenuBarProvider::Codex);
+        assert_eq!(settings.pinned_providers, vec![MenuBarProvider::Codex, MenuBarProvider::Claude, MenuBarProvider::Cursor]);
         for provider in MenuBarProvider::ALL.into_iter().skip(1) {
             assert!(!settings.provider_enabled(provider));
         }
+        assert!(settings.provider_visible(MenuBarProvider::Cursor));
+        assert!(!settings.provider_visible(MenuBarProvider::OpenCode));
         assert!(settings.opencode_workspace.is_none());
         assert_eq!(settings.quota_display_mode, MenuBarQuotaDisplayMode::Used);
         assert!(settings.open_to_overview && settings.show_history);

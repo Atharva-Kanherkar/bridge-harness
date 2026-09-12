@@ -64,9 +64,9 @@ it("enables Claude without changing the other provider preferences", async () =>
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));
   for (const provider of ["Codex", "Claude", "Cursor", "OpenCode"]) {
-    expect(container.querySelector(`[aria-label="Show ${provider}"]`)).not.toBeNull();
+    expect(container.querySelector(`[aria-label="Read ${provider} usage"]`)).not.toBeNull();
   }
-  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show Claude"]')!.click());
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Read Claude usage"]')!.click());
   expect(save).toHaveBeenCalledWith({ ...settings, claudeEnabled: true });
 });
 
@@ -105,14 +105,38 @@ it("serializes rapid provider changes against the last confirmed settings", asyn
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(() => new Promise(resolve => finishes.push(resolve)));
   await act(async () => root.render(<MenuBarSettingsPage />));
   await act(async () => {
-    container.querySelector<HTMLButtonElement>('[aria-label="Show Claude"]')!.click();
-    container.querySelector<HTMLButtonElement>('[aria-label="Show Cursor"]')!.click();
+    container.querySelector<HTMLButtonElement>('[aria-label="Read Claude usage"]')!.click();
+    container.querySelector<HTMLButtonElement>('[aria-label="Read Cursor usage"]')!.click();
   });
   expect(save).toHaveBeenCalledTimes(1);
   await act(async () => finishes[0]({ ...settings, claudeEnabled: true }));
   expect(save).toHaveBeenCalledTimes(2);
   expect(save).toHaveBeenLastCalledWith({ ...settings, claudeEnabled: true, cursorEnabled: true });
   await act(async () => finishes[1]({ ...settings, claudeEnabled: true, cursorEnabled: true }));
-  expect(container.querySelector('[aria-label="Show Claude"]')!.getAttribute("aria-checked")).toBe("true");
-  expect(container.querySelector('[aria-label="Show Cursor"]')!.getAttribute("aria-checked")).toBe("true");
+  expect(container.querySelector('[aria-label="Read Claude usage"]')!.getAttribute("aria-checked")).toBe("true");
+  expect(container.querySelector('[aria-label="Read Cursor usage"]')!.getAttribute("aria-checked")).toBe("true");
+});
+
+it("defaults to Codex, Claude and Cursor favorites without connecting their accounts", async () => {
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  for (const [index, name] of ["Codex", "Claude", "Cursor"].entries()) {
+    expect(container.querySelector(`[aria-label="Favorite provider ${index + 1}"]`)?.textContent).toBe(name);
+  }
+  expect(container.querySelector('[aria-label="Read Cursor usage"]')!.getAttribute("aria-checked")).toBe("false");
+  expect(save).not.toHaveBeenCalled();
+});
+
+it("saves a favorite replacement without changing enabled accounts", async () => {
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Favorite provider 3"]')!.click());
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "OpenCode")!;
+  expect(option).toBeDefined();
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    option.click();
+  });
+  expect(save).toHaveBeenCalledWith({ ...settings, pinnedProviders: ["codex", "claude", "opencode"] });
+  expect(container.querySelector('[aria-label="Read OpenCode usage"]')!.getAttribute("aria-checked")).toBe("false");
 });
