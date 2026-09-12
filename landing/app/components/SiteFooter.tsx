@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { blogPath, changelogPath, docsPath, downloadPath, issuesUrl, repoUrl } from "../content/site";
+import { blogPath, changelogPath, comparePath, docsPath, downloadPath, issuesUrl, repoUrl } from "../content/site";
 
 const columns = [
   {
     title: "Product",
     links: [
       { label: "Download", href: downloadPath },
+      { label: "Compare", href: comparePath },
       { label: "Changelog", href: changelogPath },
       { label: "Docs", href: docsPath },
       { label: "Blog", href: blogPath },
