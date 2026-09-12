@@ -3931,10 +3931,6 @@ pub fn session_event(
     Ok(stored)
 }
 
-/// Append a durable agent event inside a caller-owned transaction.
-///
-/// Callers that update related session state use this helper so the state
-/// change, audit records, and durable notification history commit together.
 fn error_forest_identity(entry_id: &str, kind: &str, provider_meta: &serde_json::Value) -> serde_json::Value {
     if !matches!(kind, "error" | "runtime.failed") { return provider_meta.clone(); }
     let mut meta = provider_meta.as_object().cloned().unwrap_or_default();
@@ -3942,6 +3938,10 @@ fn error_forest_identity(entry_id: &str, kind: &str, provider_meta: &serde_json:
     serde_json::Value::Object(meta)
 }
 
+/// Append a durable agent event inside a caller-owned transaction.
+///
+/// Callers that update related session state use this helper so the state
+/// change, audit records, and durable notification history commit together.
 pub(crate) fn session_event_in_transaction(
     transaction: &Transaction<'_>,
     session_id: &str,
