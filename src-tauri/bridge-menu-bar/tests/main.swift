@@ -323,5 +323,38 @@ for y in 0..<representation.pixelsHigh {
 }
 check(clear > 0 && ink > 0, "Icon must contain an alpha mask and visible ink")
 check(representation.colorAt(x: 0, y: 0)!.alphaComponent == 0, "Icon background must be transparent")
+
+// The actual AppKit buttons must fit the five-tab menu, retain their frames
+// across selection, and dispatch Cursor's ID rather than a display index.
+var allProviders = fixture.settings
+allProviders.claudeEnabled = true
+allProviders.cursorEnabled = true
+allProviders.opencodeEnabled = true
+check(allProviders.enabledProviders == ["codex", "claude", "cursor", "opencode"],
+      "Cursor appears immediately after Claude in both switcher and Overview")
+var pickedProvider = ""
+let switcher = ProviderSwitcherView(providers: allProviders.enabledProviders, selection: "overview") { pickedProvider = $0 }
+switcher.layoutSubtreeIfNeeded()
+check(switcher.buttons.map(\.title) == ["Overview", "Codex", "Claude", "Cursor", "OpenCode"], "All five titles remain visible")
+let initialFrames = switcher.buttons.map(\.frame)
+for (index, button) in switcher.buttons.enumerated() {
+    let textWidth = (button.title as NSString).size(withAttributes: [.font: button.font!]).width
+    check(button.frame.width >= textWidth + 8, "Each provider title has breathing room")
+    check(button.frame.minX >= 0 && button.frame.maxX <= switcher.bounds.width, "Provider tabs stay within the menu")
+    if index > 0 {
+        check(button.frame.minX - switcher.buttons[index - 1].frame.maxX >= 1, "Provider tabs never overlap")
+        check(button.frame.width == switcher.buttons[index - 1].frame.width, "Provider tabs have uniform widths")
+    }
+}
+switcher.buttons[3].performClick(nil)
+check(pickedProvider == "cursor" && switcher.buttons.filter { $0.state == .on }.map(\.title) == ["Cursor"],
+      "Clicking Cursor selects exactly its provider")
+switcher.update(providers: allProviders.enabledProviders, selection: "cursor") { pickedProvider = $0 }
+switcher.layoutSubtreeIfNeeded()
+check(switcher.buttons.map(\.frame) == initialFrames, "Selecting a provider must not shift the row")
+switcher.update(providers: ["codex", "cursor"], selection: "cursor") { pickedProvider = $0 }
+switcher.layoutSubtreeIfNeeded()
+switcher.buttons[1].performClick(nil)
+check(pickedProvider == "codex", "Toggling provider visibility must not leave stale selection callbacks")
 try renderMenuCardFixtures(fixture)
 print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, dynamic status accessibility, viewport resizing and scroll clamping, appearance propagation, submenu tracking deferral, tracking-loop delivery, template flag, alpha mask, monochrome pixels")

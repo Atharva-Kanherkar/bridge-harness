@@ -14,10 +14,10 @@ struct MenuCard: View {
                 Text(presentation.refreshing ? "Refreshing…" : "Bridge").font(.system(size: 11)).foregroundColor(.secondary)
             }
             if !settings.enabledProviders.isEmpty {
-                Picker("Provider", selection: Binding(get: { state.showingOverview ? "overview" : settings.activeProvider ?? "codex" }, set: { state.select($0) })) {
-                    Text("Overview").tag("overview")
-                    ForEach(settings.enabledProviders, id: \.self) { id in Text(providerName(id)).tag(id) }
-                }.pickerStyle(.segmented).controlSize(.small).font(.system(size: 11)).labelsHidden().accessibilityLabel("Usage provider")
+                ProviderSwitcher(providers: settings.enabledProviders,
+                    selection: state.showingOverview ? "overview" : settings.activeProvider ?? "codex",
+                    onSelect: state.select)
+                    .frame(width: 350, height: 30).padding(.horizontal, -16)
             }
             if settings.enabledProviders.isEmpty {
                 Text("No providers enabled").font(.headline)
@@ -136,20 +136,13 @@ struct QuotaRow: View {
     let showPace: Bool
     var body: some View {
         let display = QuotaDisplay(window, usage: usage, mode: mode, now: date, failed: failed)
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(quotaLabel(window, provider: usage.provider)).fontWeight(.semibold)
                 Spacer()
                 Text(display.valueLabel).foregroundColor(.secondary).monospacedDigit()
             }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.10))
-                    if let fill = display.fill {
-                        Capsule().fill(Color.primary.opacity(0.8)).frame(width: geometry.size.width * fill)
-                    }
-                }
-            }.frame(height: 5).accessibilityHidden(true)
+            ProviderProgressBar(fill: display.fill, provider: usage.provider)
             HStack(alignment: .top) {
                 if let reset = window.resetsAt {
                     Text(display.expired ? "Reset passed · refresh for current limits" : "Resets in \(countdown(reset, now: date))")

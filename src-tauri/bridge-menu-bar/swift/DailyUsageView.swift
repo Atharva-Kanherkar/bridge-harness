@@ -38,7 +38,7 @@ struct DailyUsageView: View {
                                 Spacer(minLength: 0)
                                 if let value = value {
                                     RoundedRectangle(cornerRadius: 2)
-                                        .fill(Color.primary.opacity(selectedDay == day.day ? 0.9 : 0.45))
+                                        .fill(ProviderStyle.accent(usage.provider).opacity(selectedDay == day.day ? 1 : 0.65))
                                         .frame(height: max(2, 64 * min(1, value / maximum)))
                                 } else {
                                     Text("–").font(.system(size: 8)).foregroundColor(.secondary)

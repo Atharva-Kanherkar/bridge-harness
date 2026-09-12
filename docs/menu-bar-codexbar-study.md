@@ -123,3 +123,28 @@ substitution. The probe runs only for a user-initiated refresh when default
 credentials cannot be read; background refresh retains the direct collection
 path. CLI-only snapshots explicitly identify their source and do not invent
 account names, plans or reset times.
+## Provider colors and text switcher · 2026-09-12
+
+The native menu now adapts CodexBar's text-only switcher from
+`StatusItemController+SwitcherViews.swift` and `ProviderSwitcherButtons.swift`
+at `928166f`: 30-point buttons, 6-point corners, system accent selection,
+secondary unselected labels, uniform widths measured in both toggle states,
+and a minimum one-point gap. Its 16-point outer grid relaxes to 10 or 6 only
+when needed for the full five-tab row. Bridge's fixed provider order is
+Overview, Codex, Claude, Cursor, OpenCode; disabled providers remain hidden.
+The host owns callbacks and accessibility, while the provider snapshot remains
+the only data authority. The adaptation includes the existing MIT notice.
+
+`ProviderStyle.swift` uses the exact descriptor palette: Codex #49A3B0,
+Claude #CC7C5E, Cursor #00BFA5, OpenCode #3B82F6. Quota track/fill drawing is
+adapted from `UsageProgressBar.swift` and `MenuHighlightStyle.swift`, using a
+single static Canvas and a six-point rounded bar. Detail charts use the same
+provider accents. Status-item artwork remains an alpha template for macOS
+tinting. Bridge retains used/remaining settings, fractional precision, and
+unknown/stale semantics; no CodexBar account store or collector is imported.
+
+The native regression suite checks the real AppKit button layout, visible
+labels, equal widths, non-overlap, Cursor selection, stable frames across
+selection, and changed provider lists. Synthetic production-card renders were
+inspected in light and dark appearances with all providers enabled, including
+Cursor's full used bars. These use fixture data and are not live account reads.
