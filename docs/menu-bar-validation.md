@@ -379,3 +379,24 @@ user was asked for that approval. Cursor collection is disabled in the final
 preview while the answer is pending, so neither startup nor manual refresh
 performs that unapproved request. The feature is committed and covered by
 fake-response tests; it is not claimed as live-verified.
+
+### CodexBar colors and provider spacing · 2026-09-12
+
+`ad7d696` adapts the reference provider palette, static progress drawing, and
+text-only AppKit switcher. Native checks pass, including the real five-button
+layout, minimum title room, equal widths, non-overlap, Cursor's position after
+Claude, selection dispatch, and stable geometry after selection/visibility
+changes. Production-card fixtures were inspected in light/dark appearances;
+Cursor's full used lane is mint, Claude is terracotta, Codex is teal, and
+OpenCode is blue. The x86_64 macOS 12 type check and production frontend/native
+release build pass. No backend or authentication code changed.
+
+The signed preview was installed with executable SHA-256
+`a070a0ab32e00d194749bc2ed3bc30a21e551e231bc7ad057948c7aa4ac6bcf1`.
+Strict/deep signing verification and staged/installed executable matching pass.
+The previous app is preserved as
+`Bridge Menu Bar Preview.previous-20260912-140415.app`.
+The installed app opens Overview, exposes the new native toggle buttons,
+and switches to Claude's detail card without dismissing the menu. No new
+Bridge crash report was present. The five-provider spacing/color render uses
+fixture data; Cursor remains disabled pending explicit credential-use approval.
