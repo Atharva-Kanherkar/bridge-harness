@@ -90,7 +90,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             guard let index = ["codex", "claude", "cursor", "opencode"].firstIndex(of: id) else { return }
             self?.callback(Int32(100 + index))
         }
-        state.openSettings = { [weak self] in self?.callback(2) }
+        state.openSettings = { [weak self] in self?.openSettingsFromCard() }
         state.surfaceChanged = { [weak self] in
             guard let self = self else { return }
             self.breakdown.update()
@@ -252,6 +252,13 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
     @objc func refreshUsage() { callback(1) }
     @objc func changeRefreshInterval(_ sender: NSMenuItem) { callback(Int32(sender.tag)) }
+    func openSettingsFromCard() {
+        // A SwiftUI button inside a hosted menu view does not end AppKit's
+        // tracking session automatically. Dismiss it before Bridge activates
+        // the Settings window, matching CodexBar's hosted-action boundary.
+        menu.cancelTrackingWithoutAnimation()
+        callback(2)
+    }
     @objc func openSettings() { callback(2) }
     @objc func openBridge() { callback(3) }
     @objc func quit() { callback(5) }
