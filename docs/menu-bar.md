@@ -110,8 +110,9 @@ zero. All stale/unavailable protections still apply.
 
 Overview is the first native tab and the default opening surface. It shows only
 provider headers, quota bars, reset countdowns, freshness and connection errors.
-Provider tabs contain billing amounts, today/month totals, sparse daily history,
-and selectable per-day token/model/cost details. Missing days and unpriced costs
+Provider tabs contain billing amounts, compact Today and Last 30 days token/cost
+summaries, and sparse daily history with selectable per-day totals. Detailed
+model breakdowns stay in their submenu. Missing days and unpriced costs
 stay unknown. Codex rolling limits use their reported duration (`5-hour`); named
 additional pools retain provider labels. Pace is an elapsed-time estimate,
 explicitly distinct from a separate quota or credit inventory.
@@ -121,10 +122,20 @@ compositor. Users add and reorder icon, provider, used/remaining percentages,
 5-hour/weekly percentages, reset, cost, spaces and separators across two lines.
 Presets and JSON copy/paste use the same bounded, non-executable token contract
 (two lines, twelve items per line, one icon). A standard display remains
-available. The Bridge logo and quota-meter icon are both macOS alpha templates.
+available. While a custom layout is active, the standard display selector says
+Custom layout. Choosing a standard display clears that layout immediately;
+Use standard display in the editor restores the saved standard choice.
+The Bridge logo and quota-meter icon are both macOS alpha templates.
 Refresh interval is also available directly in the native menu. Open Bridge and
 Menu Bar Settings remain the navigation actions; there is no CodexBar app,
 updater, animation system, notification system, or iCloud dependency.
+
+Daily history keeps its metric and selected day independently for each provider,
+including when switching tabs or reopening the menu. Metric changes reuse the
+loaded snapshot within a fixed-height chart; native menu measurements are deferred
+and coalesced outside SwiftUI updates. The backend caches the shared history
+aggregate until database contents, local date, or timezone changes. Snapshot time,
+quota expiry, and freshness are still computed on every presentation update.
 
 Protocol 1.11 separates user-initiated provider refresh from background refresh.
 When default Claude Code credentials are unavailable or expired, a manual Refresh

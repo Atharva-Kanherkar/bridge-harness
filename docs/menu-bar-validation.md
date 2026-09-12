@@ -457,3 +457,76 @@ the percentages are an observation, not a permanent account state.
 Claude's expired stored OAuth session still makes background refresh stale;
 manual Refresh can recover CLI usage without silently repairing credentials.
 Cursor collection remains off pending the previously requested authorization.
+
+### Icon display precedence and stable daily history · 2026-09-12
+
+The saved icon/space/used custom layout took precedence over a standard Cost
+display while Settings still showed Today's spend. `0779ecee` makes the active
+custom mode explicit; selecting a standard display clears its override. The
+editor also offers Use standard display and retains the current layout on a
+failed save.
+
+`dad314f4`, `e54262cc`, and `136b6ad9` retain each provider's selected history
+metric/day in MenuState, eliminate synchronous menu sizing from chart selection,
+and defer/coalesce snapshot and provider measurements in the menu tracking loop.
+Today and Last 30 days each occupy one compact token/cost row. Selected-day totals
+use one additional row; model/pricing details stay in their submenu. Synthetic
+production-card renders were inspected, including a selected day, unavailable
+cost, and light/dark appearances. These are fixture data, not account readings.
+
+The old installed build lost its vertical scroll controls during a Tokens/Cost
+switch while retaining long content. A full process crash was not reproduced;
+a process sample was waiting normally in AppKit's menu tracking loop. A separate
+macOS resource diagnostic reported 2.1 GB of temporary writes over 33 minutes,
+with SQLite aggregation on both provider-snapshot and Codex-snapshot paths.
+`e3ba8317` removes that duplicate aggregation and caches the shared history
+summary. Invalidation observes both same-connection and external database
+changes, local date, and timezone. This conservatively includes unrelated writes.
+Current snapshot timestamps and quota freshness/expiry remain uncached. No
+authentication, persistence schema, or protocol changes are introduced here.
+
+Validation:
+
+- Production frontend build and all 2,060 frontend tests pass, including 17
+  focused Menu Bar tests covering custom/standard precedence and failed saves.
+- All 11 usage overview tests pass, including shared cache reuse, pricing and
+  ledger changes, external writes, date/timezone invalidation, and quota expiry
+  while reusing the same history aggregate.
+- All 89 desktop library tests pass. Native Swift checks and the x86_64 macOS 12
+  type check pass, including retained history selection, no synchronous resizing
+  on metric changes, compact/unavailable/stale summary labels, and expired-day
+  selection without substituting month totals.
+
+GPT-5.6 Sol subagents inspected CodexBar `928166f` before implementation and
+reviewed the resulting native presentation and cache. The native final review's
+stale-token label finding was corrected and checked before packaging.
+
+The rebuilt preview was signed, verified with strict/deep checks, and atomically
+installed at `/Users/yashaf/Applications/Bridge Menu Bar Preview.app`. Its
+executable SHA-256 is
+`76285d0eb067f5fb5425bb4eddd3574f3e4a8787dd2d571defafdb27f4c2d4af`;
+the previous app is retained as
+`Bridge Menu Bar Preview.previous-20260912-155135.app`.
+
+Installed-app checks through computer use confirmed:
+
+- The existing custom icon/space/used layout is identified as Custom layout.
+  Selecting Today's spend clears it, shows Standard display is active, and
+  survives a deliberate app relaunch. The capture tool did not expose the
+  status-item title itself; that rendering is covered by the native checks.
+- Repeated Codex Tokens/Cost toggles retain the open menu and its controls.
+  Selecting September 8 shows one compact day total and retains that selection
+  in cost mode, across Claude/Codex switches, and after reopening the menu.
+  Claude has an independent history selection. No account refresh is triggered
+  by those selection actions.
+- The new Today/Last 30 days rows are present without the previous inline model
+  list. Unknown aggregate cost stays unavailable while known individual days
+  remain selectable.
+
+No additional process startup was logged during the toggle/provider tests, and
+no fresh Bridge crash report was present. A later explicit main-window close
+exited the app through the existing shell behavior; the preview was relaunched
+and the saved spend preference checked again. This main-window close behavior
+is separate from native menu dismissal. Intermittent computer-use capture errors
+required refreshing accessibility state; direct menu interactions then resumed.
+Cursor collection remains disabled as before.
