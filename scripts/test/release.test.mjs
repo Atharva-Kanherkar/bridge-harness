@@ -175,7 +175,7 @@ printf '%s' 'new target build' > "$ALTERNATE_APP/build-marker"
   const events = join(dir, "events");
   writeFileSync(events, "");
   const out = spawnSync("/bin/sh", [join(scripts, "release-dmg.sh")], {
-    env: { ...env, BRIDGE_RELEASE_ENV: join(dir, "no-release-env"), APPLE_ID: "example@test.invalid", APPLE_PASSWORD: "FIXTURE", APPLE_TEAM_ID: "TESTTEAM", ALTERNATE_APP: join(dir, "other-target/Bridge.app"), EVENTS: events, TMPDIR: dir }, encoding: "utf8",
+    env: { ...env, BRIDGE_RELEASE_ENV: join(dir, "no-release-env"), APPLE_ID: "example@test.invalid", APPLE_PASSWORD: "FIXTURE", APPLE_TEAM_ID: "TESTTEAM", TAURI_SIGNING_PRIVATE_KEY: "fixture-key", ALTERNATE_APP: join(dir, "other-target/Bridge.app"), EVENTS: events, TMPDIR: dir }, encoding: "utf8",
   });
   assert.notEqual(out.status, 0);
   assert.match(out.stderr, /did not produce the expected Bridge.app/);
@@ -190,6 +190,10 @@ test("GitHub release remains a draft if uploading its verified assets fails", (t
   const script = step.split("        run: |\n")[1].split("\n").map(line => line.replace(/^          /, "")).join("\n");
   mkdirSync(join(dir, "src-tauri"));
   writeFileSync(join(dir, "src-tauri/tauri.conf.json"), '{"version":"0.5.2"}');
+  const arch = process.arch === "arm64" ? "aarch64" : "x64";
+  const dmgDir = join(dir, "src-tauri/target/release/bundle/dmg");
+  mkdirSync(dmgDir, { recursive: true });
+  writeFileSync(join(dmgDir, `Bridge_0.5.2_${arch}.app.tar.gz.sig`), "fixture-signature");
   const events = join(dir, "events");
   executable(join(dir, "bin/gh"), `#!/usr/bin/env node
 const fs = require("fs"), args = process.argv.slice(2);

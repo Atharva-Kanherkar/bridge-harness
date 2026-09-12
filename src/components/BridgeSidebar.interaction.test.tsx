@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
 import { CHAT_VIEW_KEY } from "./sidebarChats";
+import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 
 // The static suite covers what the rail renders. This one covers what it does:
 // folding a group and following the chat that just opened.
@@ -40,12 +41,14 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   activeSessionId: undefined,
   projectsActive: false,
   marketplaceActive: false,
+  agentFleetActive: false,
   missionControlActive: false,
   settingsActive: false,
   accountName: "cestercian",
   onOpenNewChat: noop,
   onOpenProjects: noop,
   onOpenMarketplace: noop,
+  onOpenAgentFleet: noop,
   onOpenMissionControl: noop,
   onOpenWorkBoard: noop,
   onOpenMemory: noop,
@@ -178,6 +181,19 @@ describe("BridgeSidebar account actions", () => {
 });
 
 describe("BridgeSidebar action rows", () => {
+  it("exports idle chats for Mission Control without opening the chat", () => {
+    const onOpenSession = vi.fn();
+    mount({ onOpenSession });
+    const row = container.querySelector<HTMLButtonElement>("button[title^='Japan relocation']")!;
+    expect(row.draggable).toBe(true);
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "none" };
+    const event = new Event("dragstart", { bubbles: true });
+    Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+    act(() => row.dispatchEvent(event));
+    expect(dataTransfer.setData).toHaveBeenCalledWith(SIDEBAR_CHAT_DRAG, "plain");
+    expect(dataTransfer.effectAllowed).toBe("copy");
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
   it("fires the matching handler from each action row", () => {
     const onOpenNewChat = vi.fn();
     const onOpenMarketplace = vi.fn();
@@ -191,9 +207,9 @@ describe("BridgeSidebar action rows", () => {
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("does not render Mission Control or Work board rows (#457, #458)", () => {
+  it("renders Agent Fleet and keeps the Work board hidden", () => {
     mount();
-    expect(container.querySelector('button[aria-label="Mission Control"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Work board"]')).toBeNull();
   });
 

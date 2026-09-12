@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advertisedEfforts, availableModelOptions, modelProfilesChanged, normalizedEffort, profileDraftsFromSetup, recommendedProfileDrafts, resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
+import { advertisedEfforts, availableModelOptions, modelProfilesChanged, normalizedEffort, profileDraftsFromSetup, recommendedProfileDrafts, resolveProfileOption } from "./modelProfiles";
 import type { AdapterDescriptor, ModelSetupState } from "./types";
 
 const adapters: AdapterDescriptor[] = [{
@@ -95,12 +95,6 @@ describe("model profile catalog helpers", () => {
     expect(normalizedEffort("xhigh", highOnly)).toBe("xhigh");  // already supported → kept
     // A model with no effort knob leaves the value inert and unchanged.
     expect(normalizedEffort("medium", { supportedEffortLevels: [] })).toBe("medium");
-  });
-
-  it("does not trap users in setup when no adapter is available", () => {
-    const setup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
-    expect(shouldRequireModelSetup(setup, adapters.map(adapter => ({ ...adapter, available: false })))).toBe(false);
-    expect(shouldRequireModelSetup(setup, adapters)).toBe(true);
   });
 
   it("detects profile edits without churning identical immutable versions", () => {

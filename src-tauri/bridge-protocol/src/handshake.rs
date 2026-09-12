@@ -53,16 +53,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.7 adds worker prompt proposal grants and attributed prompt revisions.**
 /// A new client must not pair with an older daemon that silently discards
 /// `workerPromptProposalRoles` when saving the permission policy.
-/// **1.8 adds the versioned usage overview and Menu Bar preferences.** A
-/// desktop that needs these methods must reject a daemon that predates them.
-/// **1.9 adds grouped provider usage and provider selection preferences.**
-/// Reject older daemons that cannot preserve these fields.
-/// **1.10 adds independent quota bars, Overview, and status layout preferences.**
-/// A stale daemon must not reject or discard the saved menu customization.
-/// **1.11 separates explicit user refresh from background collection.**
-/// The interactive method may use the signed-in provider CLI for recovery.
-/// **1.12 persists the ordered Menu Bar favorites without enabling collectors.**
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 12 };
+/// **1.8 adds persistent terminal workspaces, snapshots and sequenced frames.**
+///
+/// **1.13 integrates native Menu Bar usage, provider collection and preferences.**
+/// Menu Bar previews independently used versions 1.8 through 1.12 without the
+/// terminal workspace contract. The integrated client must reject both the
+/// mainline 1.8 daemon and those preview daemons, rather than accepting a
+/// numerically newer preview that is missing terminal methods.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 13 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -186,6 +184,14 @@ mod tests {
         assert!(!ProtocolVersion { major: 1, minor: 11 }.accepts(PROTOCOL_VERSION));
     }
 
+    #[test]
+    fn integrated_client_rejects_both_pre_menu_and_pre_terminal_daemons() {
+        for older in [ProtocolVersion { major: 1, minor: 8 }, ProtocolVersion { major: 1, minor: 12 }] {
+            assert!(!older.accepts(PROTOCOL_VERSION));
+            assert!(PROTOCOL_VERSION.accepts(older));
+        }
+    }
+
     fn request(major: u32, minor: u32) -> HandshakeRequest {
         HandshakeRequest {
             protocol_version: ProtocolVersion { major, minor },
@@ -221,6 +227,13 @@ mod tests {
             );
             assert!(data["clientProtocolVersion"].is_object());
         }
+    }
+
+    #[test]
+    fn persistent_terminal_clients_reject_daemons_without_snapshot_recovery() {
+        let before_terminal_history = ProtocolVersion { major: 1, minor: 7 };
+        assert!(!before_terminal_history.accepts(PROTOCOL_VERSION));
+        assert!(PROTOCOL_VERSION.accepts(before_terminal_history));
     }
 
     #[test]

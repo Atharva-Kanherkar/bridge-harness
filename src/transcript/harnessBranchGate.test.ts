@@ -88,8 +88,6 @@ function everyComponent(): string[] {
  * belongs on the normalized item instead, and is never listed here.
  */
 const HARNESS_BRANCH_ALLOWLIST: Record<string, string> = {
-  "../components/MissionControl.tsx":
-    "skips `shell` sessions in the worker roster: a session-kind rule, and the roster draws no conversation items",
   "../components/GitHubPane.tsx":
     "`bugbot` names a code-review provider on a pull request, not a harness that produces a transcript",
   "../components/settings/PresetsPage.tsx":

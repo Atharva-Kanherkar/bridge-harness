@@ -105,6 +105,7 @@ pub mod slash;
 pub mod store;
 pub mod usage_import;
 pub mod suggestion_engine;
+pub mod terminal_workspace;
 pub mod switch_summary;
 pub mod verification_pipeline;
 pub mod usage;

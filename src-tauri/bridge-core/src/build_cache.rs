@@ -154,15 +154,19 @@ pub fn variables_in(
 /// creation is best effort: a cache that cannot be created is not worth failing
 /// a session over, and every tool here creates its own directory anyway.
 pub fn apply(command: &mut Command, cwd: &Path) -> Option<PathBuf> {
-    let variables = env_for(cwd);
-    if variables.is_empty() {
-        return None;
-    }
-    for (key, value) in &variables {
-        let _ = std::fs::create_dir_all(value);
+    apply_in(command, &root()?, cwd, |key| std::env::var_os(key).is_some())
+}
+
+fn apply_in(command: &mut Command, root: &Path, cwd: &Path, already_set: impl Fn(&str) -> bool) -> Option<PathBuf> {
+    let cache = repository_cache_in(root, cwd)?;
+    let variables: Vec<_> = REDIRECTED.iter().filter(|(key, _)| !already_set(key)).collect();
+    if variables.is_empty() { return None; }
+    for (key, directory) in variables {
+        let value = cache.join(directory);
+        let _ = std::fs::create_dir_all(&value);
         command.env(key, value);
     }
-    repository_cache(cwd)
+    Some(cache)
 }
 
 #[cfg(test)]
@@ -313,44 +317,29 @@ mod tests {
         assert!(keys.contains(&"BUN_INSTALL_CACHE_DIR"), "{keys:?}");
     }
 
-    /// The one test that exercises the global registration and the real
-    /// environment, so `apply` itself is covered end to end. Serialized against
-    /// the other global user rather than run in parallel with it.
+    /// Explicit roots avoid racing other BridgeCore instances in the suite.
+    /// The injected environment covers both a fresh install and a host that
+    /// already sets every cache variable (including Bridge itself).
     #[test]
     fn apply_sets_the_variables_and_creates_the_directories() {
-        static GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = GLOBAL.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        register_root(root_for(&dir));
+        let root = root_for(&dir);
         let (repo, _) = repo_with_worktree(dir.path(), "alpha");
-
         let mut command = Process::new("true");
-        let applied = apply(&mut command, &repo).expect("a cache is applied");
-        assert_eq!(applied, repository_cache_in(&root_for(&dir), &repo).unwrap());
+        let applied = apply_in(&mut command, &root, &repo, nothing_set).expect("a cache is applied");
+        assert_eq!(applied, repository_cache_in(&root, &repo).unwrap());
         for (_, directory) in REDIRECTED {
-            // Any variable the surrounding environment already sets is skipped
-            // by design, so only assert on the ones that were applied.
-            if std::env::var_os(
-                REDIRECTED
-                    .iter()
-                    .find(|(_, sub)| sub == directory)
-                    .map(|(key, _)| *key)
-                    .unwrap(),
-            )
-            .is_none()
-            {
-                assert!(
-                    applied.join(directory).is_dir(),
-                    "{directory} was not created",
-                );
-            }
+            assert!(applied.join(directory).is_dir());
         }
+        let mut already_configured = Process::new("true");
+        assert!(apply_in(&mut already_configured, &root, &repo, |_| true).is_none());
+        assert_eq!(already_configured.get_envs().count(), 0);
 
         let scratch = dir.path().join("scratch");
         std::fs::create_dir_all(&scratch).unwrap();
         let mut outside = Process::new("true");
         assert!(
-            apply(&mut outside, &scratch).is_none(),
+            apply_in(&mut outside, &root, &scratch, nothing_set).is_none(),
             "and nothing is applied outside a repository",
         );
     }

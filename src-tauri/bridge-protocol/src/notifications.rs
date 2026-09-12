@@ -77,6 +77,7 @@ notifications![
     (MemoryChanged, "memory-changed", Transient),
     // Explicitly transient streams: worthless once stale, never replayed.
     (SessionOutput, "session-output", Transient),
+    (TerminalFrame, "terminal-frame", Transient),
     // One shell ended — by exit, by kill, or by close. Transient like the
     // bytes: a client that missed it re-lists the workspace's terminals.
     (TerminalExited, "terminal-exited", Transient),

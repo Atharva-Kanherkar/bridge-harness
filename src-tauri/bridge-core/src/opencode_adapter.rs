@@ -713,13 +713,18 @@ impl AdapterRuntime for OpenCodeRuntime {
         text: &str,
         context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
-        let body = prompt_body(
+        self.send_turn_with_images(text, context, &[])
+    }
+    fn supports_images(&self) -> bool { true }
+    fn send_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        let mut body = prompt_body(
             self.model.as_ref(),
             self.variant.as_deref(),
             self.instructions.as_deref(),
             text,
             context,
         );
+        append_images(&mut body, images);
         self.request(
             reqwest::Method::POST,
             &format!("/session/{}/prompt_async", self.session_id),
@@ -809,6 +814,12 @@ impl AdapterRuntime for OpenCodeRuntime {
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();
     }
+}
+
+fn append_images(body: &mut Value, images: &[bridge_protocol::messages::TurnImage]) {
+    body["parts"].as_array_mut().expect("prompt parts array").extend(images.iter().map(|image| {
+        json!({"type": "file", "mime": image.media_type, "url": format!("data:{};base64,{}", image.media_type, image.base64_data)})
+    }));
 }
 
 fn prompt_body(
@@ -1494,6 +1505,20 @@ fn auth_state_from_data_dir(dir: Option<PathBuf>) -> AuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_attachments_keep_native_shapes_and_order() {
+        let images = vec![
+            bridge_protocol::messages::TurnImage { media_type: "image/png".into(), base64_data: "cG5n".into() },
+            bridge_protocol::messages::TurnImage { media_type: "image/jpeg".into(), base64_data: "anBlZw==".into() },
+        ];
+        let mut payload = prompt_body(None, None, Some("trusted instructions"), "describe", TurnContext::default());
+        append_images(&mut payload, &images);
+        assert_eq!(payload["system"], "trusted instructions");
+        assert_eq!(payload["parts"][0]["text"], "describe");
+        assert_eq!(payload["parts"][1], json!({"type":"file", "mime":"image/png", "url":"data:image/png;base64,cG5n"}));
+        assert_eq!(payload["parts"][2]["mime"], "image/jpeg");
+    }
+
     use crate::context_inventory::ContextObservationProvenance;
 
     /// G9: the turn's `system` value must be a function of the launch alone.

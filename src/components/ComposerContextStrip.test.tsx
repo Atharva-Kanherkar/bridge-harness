@@ -56,24 +56,31 @@ function mount(overrides: Partial<Parameters<typeof ComposerContextStrip>[0]> = 
 }
 
 describe("ComposerContextStrip", () => {
-  it("shows repo, branch, worktree, and This Mac", () => {
+  it("shows repo, branch, worktree, and This computer", () => {
     mount();
     const text = container.textContent ?? "";
     expect(text).toContain("bridge-harness");
     expect(text).toContain("feat/cursor-sidebar-dev");
     expect(text).toContain("Work on branch");
-    expect(text).toContain("This Mac");
+    expect(text).toContain("This computer");
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
+  });
+
+  it("uses the same type size on every context chip", () => {
+    mount();
+    const buttons = [...container.querySelector('[aria-label="Chat context"]')!.querySelectorAll("button")];
+    expect(buttons).toHaveLength(4);
+    expect(buttons.every(button => button.className.includes("text-[12px]"))).toBe(true);
   });
 
   it("explains host availability without offering an unsupported switch", () => {
     mount();
-    const host = container.querySelector<HTMLButtonElement>('[aria-label="Agent host: This Mac"]')!;
+    const host = container.querySelector<HTMLButtonElement>('[aria-label="Agent host: This computer"]')!;
     act(() => host.click());
     const menu = document.querySelector('[role="menu"][aria-label="Agent host"]')!;
     expect(menu.textContent).toContain("Cloud and SSH hosts are not available yet");
     const options = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
-    expect(options.filter(option => !option.disabled).map(option => option.textContent)).toEqual(["This Mac"]);
+    expect(options.filter(option => !option.disabled).map(option => option.textContent)).toEqual(["This computer"]);
     act(() => options[0].click());
     expect(document.querySelector('[role="menu"][aria-label="Agent host"]')).toBeNull();
   });

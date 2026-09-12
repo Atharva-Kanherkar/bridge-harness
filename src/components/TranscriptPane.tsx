@@ -109,7 +109,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
   }, [entries, head?.activeEntryId]);
 
   return <div className="flex h-full flex-col">
-    <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border px-2.5">
+    <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border px-2">
       <div className="u-segmented">
         {(["stream", "entries"] as const).map(option => <button
           key={option}
@@ -146,9 +146,9 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
             .then(page => setLoaded(current => mergeRaw(current, page)))
             .finally(() => setLoading(false));
         }}
-        className="block w-full border-b border-border px-2.5 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        className="block w-full border-b border-border px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
       >{loading ? "Loading…" : "Load earlier events"}</button>}
-      {visible.length === 0 && !loading && <p className="px-2.5 py-4 text-muted-foreground">
+      {visible.length === 0 && !loading && <p className="px-2 py-4 text-muted-foreground">
         {stream.length === 0 ? "No events recorded for this session yet." : "Nothing matches the filter."}
       </p>}
       {visible.map(event => <div key={event.id} className="border-b border-border/50">
@@ -156,14 +156,14 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
           type="button"
           onClick={() => setSelectedId(current => current === event.id ? undefined : event.id)}
           aria-expanded={selectedId === event.id}
-          className={cn("flex w-full items-baseline gap-2 px-2.5 text-left transition-colors hover:bg-accent", selectedId === event.id && "bg-code")}
+          className={cn("flex w-full items-baseline gap-2 px-2 text-left transition-colors hover:bg-accent", selectedId === event.id && "bg-code")}
         >
-          <span className="w-10 shrink-0 text-right text-muted-foreground">{event.sequence}</span>
+          <span className="w-7 shrink-0 tabular-nums text-muted-foreground">{event.sequence}</span>
           <span className="w-[42%] min-w-0 shrink-0 truncate text-foreground">{readWireKind(event.kind)}</span>
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{event.status ?? event.title ?? event.text ?? ""}</span>
-          <span className="shrink-0 text-muted-foreground">{eventTime(event.createdAt)}</span>
+          <span className="shrink-0 tabular-nums text-muted-foreground">{eventTime(event.createdAt)}</span>
         </button>
-        {selected?.id === event.id && <div className="border-t border-border bg-code px-2.5 py-1.5">
+        {selected?.id === event.id && <div className="border-t border-border bg-code px-2 py-1.5">
           <div className="flex items-center gap-2">
             <span className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Raw event</span>
             <span className="ml-auto"><CopyJson value={event} label={`Copy event ${event.sequence} as JSON`} /></span>
@@ -174,8 +174,8 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
     </div>}
 
     {view === "entries" && <div className="min-h-0 flex-1 overflow-y-auto font-mono text-[11px] leading-[1.9]">
-      {entries.length === 0 && <p className="px-2.5 py-4 text-muted-foreground">No forest entries for this session yet.</p>}
-      {entries.map(entry => <div key={entry.id} className="group flex items-baseline gap-2 border-b border-border/50 px-2.5 transition-colors hover:bg-accent">
+      {entries.length === 0 && <p className="px-2 py-4 text-muted-foreground">No forest entries for this session yet.</p>}
+      {entries.map(entry => <div key={entry.id} className="group flex items-baseline gap-2 border-b border-border/50 px-2 transition-colors hover:bg-accent">
         <span className={cn("w-1.5 shrink-0 self-stretch", activePath.has(entry.id) ? "bg-success/60" : "bg-transparent")} aria-hidden="true" />
         <span className="w-16 shrink-0 truncate text-muted-foreground">{shortId(entry.id)}</span>
         <span className="min-w-0 flex-1 truncate text-foreground">{entry.kind}</span>
@@ -195,7 +195,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
       </div>)}
     </div>}
 
-    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2.5 font-mono text-[11px] text-muted-foreground">
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2 font-mono text-[11px] text-muted-foreground">
       <span>{view === "stream" ? `${visible.length} of ${stream.length} events` : `${entries.length} entries`}</span>
       <span className="ml-auto truncate">{sessionId}</span>
     </div>

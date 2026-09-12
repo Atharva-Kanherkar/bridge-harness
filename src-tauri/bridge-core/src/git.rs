@@ -1113,6 +1113,23 @@ pub fn safe_remove_worker_worktree(
     remove_worktree(repo, worker_worktree)
 }
 
+/// Remove a worktree a person chose to delete despite what it holds:
+/// uncommitted changes, or commits that exist nowhere else. The inactive
+/// check is not optional here — a worktree a live session still owns is never
+/// something a "force" flag may touch, only the dirty-tree guard is skipped.
+pub fn force_remove_worker_worktree(
+    repo: &Path,
+    worker_worktree: &Path,
+    worker_session_active: bool,
+) -> Result<(), BridgeError> {
+    ensure_inactive(worker_session_active, "remove worker worktree")?;
+    run(
+        repo,
+        ["worktree", "remove", "--force", &worker_worktree.to_string_lossy()],
+    )?;
+    Ok(())
+}
+
 fn ensure_inactive(active: bool, operation: &str) -> Result<(), BridgeError> {
     if active {
         return Err(BridgeError::Invalid(format!(

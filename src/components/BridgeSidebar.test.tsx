@@ -38,12 +38,14 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   activeSessionId: undefined,
   projectsActive: false,
   marketplaceActive: false,
+  agentFleetActive: false,
   missionControlActive: false,
   settingsActive: false,
   accountName: "cestercian",
   onOpenNewChat: noop,
   onOpenProjects: noop,
   onOpenMarketplace: noop,
+  onOpenAgentFleet: noop,
   onOpenMissionControl: noop,
   onOpenWorkBoard: noop,
   onOpenMemory: noop,
@@ -460,9 +462,9 @@ describe("BridgeSidebar action rows", () => {
     expect(html).not.toContain("Needs you");
   });
 
-  it("hides Mission Control and Work board from the nav for now (#457, #458)", () => {
+  it("offers Agent Fleet while keeping the Work board hidden", () => {
     const html = render();
-    expect(html).not.toContain("Mission Control");
+    expect(html).toContain("Agent Fleet");
     expect(html).not.toContain("Work board");
   });
 

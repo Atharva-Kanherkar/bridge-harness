@@ -30,10 +30,13 @@ that preserves the existing quota presentation.
 
 ## Data contract
 
-Protocol 1.8 adds `usage/get_usage_overview`, `usage/refresh_usage_overview`,
+Protocol 1.13 includes `usage/get_usage_overview`, `usage/refresh_usage_overview`,
 `menu_bar/get_menu_bar_settings` and `menu_bar/save_menu_bar_settings`.
 Both snapshots and settings carry `schemaVersion: 1`. Older daemons fail the
 handshake before a menu attempts to use missing methods.
+The integrated contract also includes mainline terminal workspaces. Earlier
+Menu Bar preview daemons advertised up to 1.12 without those terminal methods;
+1.13 rejects both preview and pre-Menu Bar daemon lineages.
 
 Numeric metrics carry independent value, source and status fields:
 
@@ -101,7 +104,7 @@ remaining native parity gates before retiring the legacy meter.
 
 ## Overview and customization
 
-Protocol 1.10 adds independent `quotaDisplayMode` (defaults to used),
+Settings include independent `quotaDisplayMode` (defaults to used),
 `openToOverview`, `iconStyle`, a bounded `statusLayout`, and `showHistory`.
 Existing icon-text preferences survive migration; quota bars no longer inherit
 the icon-text display mode. A fully consumed allowance is a full used bar, with
@@ -152,7 +155,7 @@ plan and reset information remain unavailable.
 
 ## Favorite providers and overflow
 
-Protocol 1.12 persists `pinnedProviders`: up to three unique provider IDs in
+Protocol 1.13 persists `pinnedProviders`: up to three unique provider IDs in
 display order, defaulting to Codex, Claude, and Cursor. General → Menu Bar lets
 users choose each position. Selecting an existing favorite swaps its position;
 choosing None removes it. The backend validates the list and older clients do

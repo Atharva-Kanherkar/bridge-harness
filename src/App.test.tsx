@@ -92,7 +92,7 @@ describe("shell flags", () => {
     expect(source).toContain("WindowHistoryChevrons");
     expect(source).toContain("WindowPanelButton");
     expect(source).toContain("sidebarHidden={sidebarCollapsed}");
-    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Mission Control"');
+    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Agent Fleet"');
     expect(source).toContain("showWindowNav");
     expect(source).toContain("flex h-[100dvh] flex-row");
   });
@@ -492,7 +492,9 @@ describe("the dock in the session view", () => {
     await settle(2);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
     await click(dockToggle()!);
-    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "Connect your browser once");
+    // The extension-based BrowserSurface is paused; the dock's "browser" pane
+    // now renders the plain iframe-based SimpleBrowser.
+    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "No page open");
     const before = surface();
     expect(before).toBeTruthy();
 
@@ -510,28 +512,7 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
-    expect(dockAside()!.textContent).toContain("Connect your browser once");
-  });
-
-  it("raises waiting_for_you onto the switcher while another pane is active", async () => {
-    const waiting = {
-      transportConnected: true, extensionId: "ext", extensionPath: "/ext",
-      nativeHostInstalled: true, nativeHostManifestPath: "/m",
-      tabs: [{ id: 1, title: "Example", domain: "example.com", url: "https://example.com", attached: true }],
-      lease: { id: "lease-1", tabId: 1, domain: "example.com", permission: "read_only", grantedAt: "now", expiresAt: null },
-      status: "waiting_for_you", captureActive: false, captureError: null, screenshot: null,
-      screenshotRedactedRegions: 0, elements: [], viewport: null, promptInjectionSuspected: false,
-      tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
-      promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
-    };
-    const spy = vi.spyOn(bridgeApi, "browserBridgeState").mockResolvedValue(waiting as unknown as Awaited<ReturnType<typeof bridgeApi.browserBridgeState>>);
-    await mountApp();
-    await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit4", key: "4" });
-    await settle(3);
-    await key({ ...chord, code: "Digit1", key: "1" });
-    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
-    spy.mockRestore();
+    expect(dockAside()!.textContent).toContain("No page open");
   });
 
   // Contract: testing/feat-dock-terminal.md §4.
@@ -672,7 +653,9 @@ describe("the dock in the session view", () => {
     const promote = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
     await click(promote);
     expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
-    expect(container.querySelector("h1")!.textContent).toContain("is the plan sound?");
+    // The browser mock has no native title resolver. Keep its placeholder rather
+    // than treating the full first message as an explicitly chosen chat name.
+    expect(container.querySelector("h1")!.textContent).toBe("New aside");
   });
 
   // Contract: testing/fix-side-chat-model.md. A side chat begins on a resolved
@@ -699,7 +682,8 @@ describe("the dock in the session view", () => {
     await type("$codex sanity check");
     const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
     expect(aside).not.toBeNull();
-    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", expect.anything());
+    // The prompt is conversation content, not a permanent user-chosen title.
+    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", null);
   });
 
   // Contract: testing/fix-side-chat-model.md. The header picker switches the
@@ -898,10 +882,11 @@ describe("the dock in the session view", () => {
   // shell — rail, title bar, session chrome, or the keymap/menu table —
   // may offer a way into them. Sidebar-only tests would miss a later
   // title-bar, menu, or chord entry point.
-  it("exposes no Mission Control or Work board navigation control in the shell", async () => {
+  it("exposes Agent Fleet while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    const hiddenNav = /^(Mission Control|Work board)$/;
+    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
+    const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
         .filter(node => hiddenNav.test((node.getAttribute("aria-label") ?? node.textContent ?? "").trim()));
@@ -916,6 +901,6 @@ describe("the dock in the session view", () => {
     // The sheet and the native menu both read this table; a new chord or
     // menu item for either screen has to land here first.
     expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
-    expect(SHORTCUTS.some(shortcut => /Mission Control|Work board/i.test(shortcut.label))).toBe(false);
+    expect(SHORTCUTS.some(shortcut => /Agent Fleet|Work board/i.test(shortcut.label))).toBe(false);
   });
 });

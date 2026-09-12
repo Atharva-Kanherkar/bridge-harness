@@ -69,6 +69,11 @@ pub struct WorktreeUsage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReclaimWorktreeParams {
     pub worktree_id: String,
+    /// Remove it even if the sweep would refuse: uncommitted changes, or a
+    /// checkout git cannot vouch for. Never overrides a checkout Bridge did
+    /// not create, one outside its namespace, or one a live session owns.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// What an explicit reclaim did, or why it did not. Mirrors

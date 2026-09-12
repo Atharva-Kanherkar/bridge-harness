@@ -674,3 +674,19 @@ arrow attempt reported an offscreen control; after reopening, computer use
 reported that macOS was locked. Final live animation timing and arrow interaction
 therefore remain unverified. No fresh Bridge/WebKit crash report or additional
 process startup was found after the launch.
+
+### Pull request integration with current main · 2026-09-12
+
+Integrated main `b25b421b` while preserving application/workspace version 0.5.6,
+the terminal-state sidecar tests, and the native Menu Bar test target. Protocol
+1.13 resolves the independent version histories: mainline 1.8 has terminal
+workspaces, whereas installed Menu Bar previews through 1.12 do not. The new
+client rejects both older daemon lineages, with an explicit regression test.
+Schemas and TypeScript types were regenerated from the merged Rust contract.
+
+The production build and complete repository test script passed: 2,149 frontend
+tests, 2,677 Rust tests (13 ignored), 16 release-script tests, 12 Python tests,
+50 Claude sidecar tests (one skipped), 12 terminal-state sidecar tests, and the
+native Swift checks. Bun failed before executing either package script with
+`CouldntReadCurrentDirectory`; npm ran the identical package.json build/test
+commands successfully. These are local results; hosted CI is reported separately.

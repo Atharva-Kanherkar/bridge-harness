@@ -555,6 +555,13 @@
       "resultSchema": "start-provider-login-result.json"
     },
     {
+      "command": "cancel_provider_login",
+      "domain": "auth",
+      "method": "auth/cancel_provider_login",
+      "paramsSchema": "cancel-provider-login-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "open_terminal",
       "domain": "terminal",
       "method": "terminal/open_terminal",
@@ -588,6 +595,41 @@
       "method": "terminal/list_terminals",
       "paramsSchema": "list-terminals-params.json",
       "resultSchema": "list-terminals-result.json"
+    },
+    {
+      "command": "create_terminal",
+      "domain": "terminal",
+      "method": "terminal/create_terminal",
+      "paramsSchema": "create-terminal-params.json",
+      "resultSchema": "terminal-record.json"
+    },
+    {
+      "command": "get_terminal_snapshot",
+      "domain": "terminal",
+      "method": "terminal/get_terminal_snapshot",
+      "paramsSchema": "get-terminal-snapshot-params.json",
+      "resultSchema": "terminal-snapshot.json"
+    },
+    {
+      "command": "get_terminal_workspace",
+      "domain": "terminal",
+      "method": "terminal/get_terminal_workspace",
+      "paramsSchema": "get-terminal-workspace-params.json",
+      "resultSchema": "terminal-workspace.json"
+    },
+    {
+      "command": "save_terminal_workspace",
+      "domain": "terminal",
+      "method": "terminal/save_terminal_workspace",
+      "paramsSchema": "save-terminal-workspace-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "rename_terminal",
+      "domain": "terminal",
+      "method": "terminal/rename_terminal",
+      "paramsSchema": "rename-terminal-params.json",
+      "resultSchema": "terminal-record.json"
     },
     {
       "command": "list_slash_commands",
@@ -1348,7 +1390,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 12
+    "minor": 13
   },
   "reserved": {
     "cancel": "$/cancel",

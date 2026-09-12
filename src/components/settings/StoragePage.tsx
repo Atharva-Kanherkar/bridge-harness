@@ -1,11 +1,9 @@
 // Storage: what Bridge's worktrees cost, and the only place a person can act on
 // one.
 //
-// The page is built around a single honest distinction — a checkout Bridge can
-// prove is expendable, and one it cannot. So a row either offers Reclaim or
-// says, in words, why nothing may touch it. There is no disabled button with a
-// tooltip: the reason *is* the control's replacement, because "at risk" without
-// "uncommitted changes" tells a person nothing they can act on.
+// Reclaim follows the safety assessment. Explicit Delete lets a person
+// discard uncertain contents after confirmation; live use and pending worker
+// output remain protected by the backend.
 //
 // Sizes are the last measurement, not a live figure. Measuring means walking a
 // directory that can hold a few hundred thousand files, which is the sweep's
@@ -13,10 +11,78 @@
 // pretending to be current.
 
 import { useCallback, useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
-import { GhostButton, Select, SettingsGroup, SettingsPage, StatusPill, type PillTone } from "./kit";
+import { GhostButton, Select, SettingsGroup, SettingsPage, StatusPill, TextButton, type PillTone } from "./kit";
+import { harnessChartDot, harnessChartText } from "../harnessMarks";
 import { Search, RefreshCw, HardDrive, ShieldCheck } from "lucide-react";
+
+// Repositories have no harness of their own, so the breakdown chart borrows
+// the same validated four-hue chart palette the usage board series wear,
+// cycling by rank rather than by identity — the one categorical palette this
+// codebase has signed off on, reused rather than a second one invented here.
+const PALETTE = ["codex", "cursor", "claude", "opencode"] as const;
+const swatch = (index: number) => PALETTE[index % PALETTE.length];
+
+/** A segmented meter bar across repositories, each wearing a palette hue,
+ *  with a hover tooltip — the same reveal-once-on-mount motion as the meter's
+ *  own bars, applied per segment instead of per window. */
+function RepoBreakdown({ repositories, totalBytes, onSelect }: {
+  repositories: WorktreeUsage["repositories"];
+  totalBytes: number;
+  onSelect: (repoRoot: string) => void;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const sorted = [...repositories].sort((a, b) => b.sizeBytes - a.sizeBytes);
+  if (sorted.length === 0 || totalBytes <= 0) return null;
+  // Raising tiny slivers to a visible minimum can push the total past 100%;
+  // rescale everything back down so the bar's widths still sum to 100% and
+  // large segments keep their true proportion instead of getting squeezed by
+  // flex-shrink.
+  const raw = sorted.map(repo => Math.max((repo.sizeBytes / totalBytes) * 100, repo.sizeBytes > 0 ? 0.5 : 0));
+  const rawTotal = raw.reduce((sum, value) => sum + value, 0);
+  const scale = rawTotal > 100 ? 100 / rawTotal : 1;
+  return <div className="border-t border-border/60 px-4 py-3">
+    <div className="relative flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
+      {sorted.map((repo, index) => {
+        const width = raw[index] * scale;
+        return <button
+          key={repo.repoRoot}
+          type="button"
+          aria-label={`${repoName(repo.repoRoot)}: ${bytes(repo.sizeBytes)}`}
+          onMouseEnter={() => setHover(index)}
+          onMouseLeave={() => setHover(current => (current === index ? null : current))}
+          onFocus={() => setHover(index)}
+          onBlur={() => setHover(current => (current === index ? null : current))}
+          onClick={() => onSelect(repo.repoRoot)}
+          className={cn("h-full origin-left cursor-pointer outline-none motion-safe:animate-[meter-fill_600ms_ease-out] first:rounded-l-full last:rounded-r-full", harnessChartDot(swatch(index)), hover === index && "brightness-110")}
+          style={{ width: `${width}%` }}
+        />;
+      })}
+    </div>
+    {hover !== null && sorted[hover] && <div role="tooltip" className="u-glass-popover mt-2 inline-flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-caption">
+      <span className={cn("size-2 shrink-0 rounded-[3px]", harnessChartDot(swatch(hover)))} />
+      <span className="font-medium text-foreground">{repoName(sorted[hover].repoRoot)}</span>
+      <span className="tabular-nums text-muted-foreground">{sorted[hover].count} · {bytes(sorted[hover].sizeBytes)}{sorted[hover].overBudget ? " · Over limit" : ""}</span>
+    </div>}
+    <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+      {sorted.map((repo, index) => <li key={repo.repoRoot}>
+        <button
+          type="button"
+          onClick={() => onSelect(repo.repoRoot)}
+          onMouseEnter={() => setHover(index)}
+          onMouseLeave={() => setHover(current => (current === index ? null : current))}
+          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
+        >
+          <span className={cn("size-2 shrink-0 rounded-[3px]", harnessChartDot(swatch(index)))} />
+          <span className={cn("truncate font-mono", harnessChartText(swatch(index)))} title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
+          <span className="shrink-0 tabular-nums text-muted-foreground">{repo.count} · {bytes(repo.sizeBytes)}{repo.overBudget ? " · Over limit" : ""}</span>
+        </button>
+      </li>)}
+    </ul>
+  </div>;
+}
 
 function bytes(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
@@ -41,6 +107,11 @@ function age(seconds: number): string {
 
 /** Only two dispositions can be acted on; the rest exist to be explained. */
 const RECLAIMABLE = new Set(["reclaimable", "pushed_unmerged"]);
+
+/** Dispositions a person may override for a checkout they can see and chose
+ *  themselves — never `retained`, which already means something else has a
+ *  stake in it. Mirrors `is_removable`'s `force` branch in worktree_registry.rs. */
+const FORCIBLE = new Set(["at_risk", "unverifiable"]);
 
 const DISPOSITION_TONE: Record<string, PillTone> = {
   reclaimable: "success",
@@ -74,7 +145,7 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
   const [filter, setFilter] = useState("all");
   const [repository, setRepository] = useState("");
   const [sort, setSort] = useState("size");
-  const [confirming, setConfirming] = useState<WorktreeInventoryEntry | "sweep" | null>(null);
+  const [confirming, setConfirming] = useState<{ entry: WorktreeInventoryEntry; force: boolean } | "sweep" | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(undefined);
@@ -90,14 +161,14 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
 
   useEffect(() => { void load(); }, [load]);
 
-  const reclaim = async (entry: WorktreeInventoryEntry) => {
+  const reclaim = async (entry: WorktreeInventoryEntry, force: boolean) => {
     setConfirming(null); setError(undefined);
     setBusy(entry.id);
     setNote(null);
     try {
-      const result = await api.reclaimWorktree(entry.id);
+      const result = await api.reclaimWorktree(entry.id, force);
       setNote(result.reclaimed
-        ? `Reclaimed ${bytes(result.bytesFreed)} from ${repoName(entry.path)}.`
+        ? `${force ? "Deleted" : "Reclaimed"} ${bytes(result.bytesFreed)} from ${repoName(entry.path)}.`
         : result.detail ?? "Nothing was reclaimed.");
       await load();
     } catch (error) {
@@ -132,6 +203,8 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
   // Comparing the two labelled two 6 GiB repositories as over a 10 GiB limit
   // when neither was, and said nothing about a repository over the *count* cap.
   // The backend already decides this per repository.
+  const externalCount = entries.filter(entry => entry.state === "external").length;
+  const unmeasuredCount = entries.filter(entry => entry.sizeBytes === null).length;
   const overBudget = usage?.repositories.some(repo => repo.overBudget) ?? false;
   const visible = entries.filter(entry => {
     if (repository && entry.repoRoot !== repository) return false;
@@ -152,13 +225,17 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
     {loading && <p role="status" className="text-xs text-muted-foreground">Loading storage inventory...</p>}
     {usage && <SettingsGroup
       label="Worktrees"
-      note={`Bridge keeps at most ${usage.maxPerRepo} worktrees and ${bytes(usage.maxTotalBytes)} per repository. Over either limit it reclaims the least recently used checkouts it can prove are expendable, and reports the rest rather than forcing them.`}
+      note={`Automatic cleanup targets at most ${usage.maxPerRepo} Bridge-owned worktrees and ${bytes(usage.maxTotalBytes)} per repository. Over either limit it reclaims the least recently used checkouts it can prove are expendable, and reports the rest rather than forcing them.`}
     >
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 px-4 py-3">
         <HardDrive size={20} className="self-center text-muted-foreground" /><span className="text-3xl font-semibold tabular-nums text-foreground">{bytes(usage.totalBytes)}</span>
         <span className="text-xs text-muted-foreground">
           across {usage.totalCount} checkout{usage.totalCount === 1 ? "" : "s"}
+          {externalCount > 0 && `, including ${externalCount} external`}
         </span>
+        {unmeasuredCount > 0 && <span className="text-xs text-muted-foreground">
+          {unmeasuredCount} checkout{unmeasuredCount === 1 ? "" : "s"} not yet measured; total includes measured sizes only
+        </span>}
         {usage.reclaimableBytes > 0 && <span className="text-xs text-success">
           {bytes(usage.reclaimableBytes)} reclaimable
         </span>}
@@ -167,22 +244,26 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
         </span>}
         {overBudget && <StatusPill tone="warning">Over the limit</StatusPill>}
       </div>
-      {usage.repositories.length > 0 && <ul className="border-t border-border/60">
-        {usage.repositories.map(repo => <li key={repo.repoRoot} className="flex items-center justify-between gap-4 px-4 py-2 text-xs">
-          <span className="truncate font-mono text-muted-foreground" title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
-          <span className="shrink-0 tabular-nums text-muted-foreground">
-            {repo.count} · {bytes(repo.sizeBytes)}{repo.overBudget ? " · Over limit" : ""}
-          </span>
-        </li>)}
-      </ul>}
+      <RepoBreakdown repositories={usage.repositories} totalBytes={usage.totalBytes} onSelect={repo => setRepository(current => (current === repo ? "" : repo))} />
     </SettingsGroup>}
 
-    <p className="flex gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck size={15} className="shrink-0" />External checkouts are never removed. Dirty files, local-only commits, live sessions and unadopted worker output remain protected.</p>
+    <p className="flex gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck size={15} className="shrink-0" />External checkouts are never removed or counted against retention limits. Sweep protects dirty files and local-only commits. Confirmed Delete can discard dirty or unreadable checkouts. Live sessions and unadopted worker output remain protected.</p>
     {note && <p role="status" className="px-1 text-xs text-muted-foreground">{note}</p>}
     {confirming && <section aria-label="Confirm cleanup" className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-semibold">{confirming === "sweep" ? "Run safe cleanup?" : `Reclaim ${confirming.branch ?? repoName(confirming.path)}?`}</h3>
-      <p className="mt-2 break-words text-xs leading-relaxed text-muted-foreground">{confirming === "sweep" ? "Reassess checkouts and remove only those allowed by retention limits. Protected work stays." : `${confirming.path}. This removes the checkout and its ignored build files, not chat history. Safety is checked again before removal.`}</p>
-      <div className="mt-3 flex gap-2"><GhostButton onClick={() => setConfirming(null)}>Cancel</GhostButton><GhostButton disabled={busy !== null} onClick={() => confirming === "sweep" ? void sweep() : void reclaim(confirming)}>Confirm cleanup</GhostButton></div>
+      <h3 className="text-sm font-semibold">{confirming === "sweep" ? "Run safe cleanup?" : confirming.force ? `Delete ${confirming.entry.branch ?? repoName(confirming.entry.path)}?` : `Reclaim ${confirming.entry.branch ?? repoName(confirming.entry.path)}?`}</h3>
+      <p className="mt-2 break-words text-xs leading-relaxed text-muted-foreground">
+        {confirming === "sweep"
+          ? "Reassess checkouts and remove only those allowed by retention limits. Protected work stays."
+          : confirming.force
+            ? `${confirming.entry.path}. Bridge could not prove this checkout is safe to remove (${confirming.entry.retainedReason ?? "uncommitted or unproven work"}). Deleting it anyway discards anything not saved elsewhere.`
+            : `${confirming.entry.path}. This removes the checkout and its ignored build files, not chat history. Safety is checked again before removal.`}
+      </p>
+      <div className="mt-3 flex gap-2">
+        <GhostButton onClick={() => setConfirming(null)}>Cancel</GhostButton>
+        {confirming !== "sweep" && confirming.force
+          ? <TextButton tone="destructive" disabled={busy !== null} onClick={() => void reclaim(confirming.entry, true)}>Delete anyway</TextButton>
+          : <GhostButton disabled={busy !== null} onClick={() => confirming === "sweep" ? void sweep() : void reclaim(confirming.entry, false)}>Confirm cleanup</GhostButton>}
+      </div>
     </section>}
     <div className="flex flex-wrap gap-2">
       <label className="flex min-w-48 flex-1 items-center gap-2 rounded-lg border border-border bg-card px-3"><Search size={14} className="text-muted-foreground" /><input type="search" aria-label="Search worktrees" placeholder="Branch, path, or reason" value={query} onChange={event => setQuery(event.target.value)} className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none" /></label>
@@ -198,6 +279,11 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
           const external = entry.state === "external";
           const disposition = entry.disposition ?? (external ? "retained" : "");
           const actionable = !external && RECLAIMABLE.has(disposition);
+          // Bridge cannot prove these safe, but a person looking at the row
+          // can decide for themselves — never offered for a live session, an
+          // unadopted worker output, or a checkout Bridge did not create,
+          // since those stay "retained" and are never forcible.
+          const forcible = !external && !actionable && FORCIBLE.has(disposition);
           return <li key={entry.id} className="flex flex-col gap-1 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="flex min-w-0 items-center gap-2">
@@ -223,12 +309,20 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
                   : entry.retainedReason ?? entry.path}
               </span>
               {actionable && <GhostButton
-                onClick={() => setConfirming(entry)}
+                onClick={() => setConfirming({ entry, force: false })}
                 disabled={busy !== null}
                 ariaLabel={`Reclaim ${entry.branch ?? entry.path}`}
               >
                 {busy === entry.id ? "Reclaiming…" : "Reclaim"}
               </GhostButton>}
+              {forcible && <TextButton
+                tone="destructive"
+                onClick={() => setConfirming({ entry, force: true })}
+                disabled={busy !== null}
+                ariaLabel={`Delete ${entry.branch ?? entry.path}`}
+              >
+                {busy === entry.id ? "Deleting…" : "Delete"}
+              </TextButton>}
             </div>
           </li>;
         })}

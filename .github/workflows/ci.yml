@@ -55,6 +55,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Rust terminal integration tests launch the Node history sidecar.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - run: bun install --frozen-lockfile
+
       # Compiling the tauri shell on Linux pulls its gtk/webkit2gtk sys-crates,
       # whose build scripts need the system dev headers (glib-2.0 and friends).
       # macOS never sees these paths, so this is invisible to local check/test.

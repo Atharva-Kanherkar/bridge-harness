@@ -1,3 +1,6 @@
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "./components/ui/dialog";
+import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
+import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -12,7 +15,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, medi
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -28,13 +31,15 @@ import { ChatModelControl, modelDisplayName } from "./components/ChatModelContro
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
+import { SimpleBrowser } from "./components/SimpleBrowser";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { UpdateToast } from "./components/UpdateToast";
+import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
-import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { TerminalActivity } from "./components/TerminalPane";
 import { TasksPane } from "./components/TasksPane";
 import { workerStatus } from "./components/workerStatus";
@@ -43,26 +48,27 @@ import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
-import { MissionControl } from "./components/MissionControl";
+const AgentFleet = lazy(() => import("./components/AgentFleet").then(module => ({ default: module.AgentFleet })));
+const MissionControl = lazy(() => import("./components/MissionControl").then(module => ({ default: module.MissionControl })));
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { overviewUsage } from "./usageOverview";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
-import { BrowserSurface } from "./components/BrowserSurface";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
-import { UsageWidget } from "./components/UsageWidget";
+import { UsageWidget, ProviderLoginPane } from "./components/UsageWidget";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
-import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
+import { resolveProfileOption } from "./modelProfiles";
+import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { pickGreeting } from "./greetings";
@@ -160,9 +166,12 @@ function AppContent() {
     workBoardQueryError, refetchWorkBoard, followWorkBriefing, acceptModelSetup, invalidateHealth,
   } = useBridgeServerState();
   const [state, setState] = useState<BridgeState>(emptyState);
+  const [stateLoaded, setStateLoaded] = useState(false);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<AppView>("workspace");
+  const loginSessionRef = useRef<{ id: string; harness: string } | undefined>();
+  loginSessionRef.current = state.sessions.find(item => item.id === selectedSessionId);
   const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
     stack: [{ view: "workspace", sessionId: null, paradigm: "single" }],
     index: 0,
@@ -175,7 +184,7 @@ function AppContent() {
   const [workBriefingError, setWorkBriefingError] = useState<string>();
   const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
-  // Mission Control grid where every live agent is its own window at once.
+  // Agent Fleet grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [dockSectionWidth, setDockSectionWidth] = useState(1280);
   // Fullscreen only squares the native frame. The sidebar and canvas keep the
@@ -213,7 +222,6 @@ function AppContent() {
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
   const [recallOpen, setRecallOpen] = useState(false);
@@ -229,6 +237,13 @@ function AppContent() {
   // Image attachments pasted into the composer, waiting to ride the next send.
   // Cleared on success, restored on failure — a refused send must not eat the
   // user's clipboard work.
+  const [loginProvider, setLoginProvider] = useState<UsageProvider | null>(null);
+  const [agentOnboardingComplete, setAgentOnboardingComplete] = useState(readAgentOnboardingComplete);
+  const finishAgentOnboarding = useCallback((setup?: ModelSetupState) => {
+    writeAgentOnboardingComplete();
+    setAgentOnboardingComplete(true);
+    if (setup) acceptModelSetup(setup);
+  }, [acceptModelSetup]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
@@ -284,6 +299,7 @@ function AppContent() {
   const reload = useMemo(() => createCoalescedRefresh(async () => {
     const [nextState, config] = await Promise.all([bridgeApi.state(), bridgeApi.configState()]);
     setState(nextState);
+    setStateLoaded(true);
     // Re-read with the state it was published alongside: `save_permission_policy`
     // publishes StateChanged precisely so the badge repaints, and another window
     // flipping the switch has to reach this one too.
@@ -333,7 +349,14 @@ function AppContent() {
       timeout: (callback, ms) => window.setTimeout(callback, ms),
       cancelTimeout: id => window.clearTimeout(id),
     });
-    void bridgeApi.onAgentEvent(display.push).then(fn => {
+    void bridgeApi.onAgentEvent(event => {
+      display.push(event);
+      const target = loginSessionRef.current;
+      if (active && target?.id === event.sessionId) {
+        const provider = providerSignInForEvent(target.harness, event);
+        if (provider) setLoginProvider(current => current ?? provider);
+      }
+    }).then(fn => {
       if (!active) { fn(); return; }
       offAgent = fn;
     });
@@ -436,13 +459,13 @@ function AppContent() {
 
   const adapters = health?.adapters ?? [];
   const adaptersReady = adapters.some(adapter => adapter.available);
-  // Everything a human may meet. Filtered once, here, because the rail, Mission Control
+  // Everything a human may meet. Filtered once, here, because the rail, Agent Fleet
   // and default selection disagreeing about what exists is how a briefing run ends up
   // on a grid nobody can focus.
   const visibleSessions = useMemo(() => state.sessions.filter(s => !isHiddenSession(s)), [state.sessions]);
   const topSessions = useMemo(() => visibleSessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [visibleSessions]);
   // Resolve across every session, not just top-level ones: a worker can be
-  // opened directly (from Mission Control or a blocked-approval link) so its own
+  // opened directly (from Agent Fleet or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
   // Selection changes before the history effect runs. Never paint the prior
@@ -496,7 +519,7 @@ function AppContent() {
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
-    { id: "browser", label: "Browser", icon: Monitor, available: true, alert: browserSupervision?.attention || undefined },
+    { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
@@ -585,6 +608,14 @@ function AppContent() {
       setGithubToasts(current => current.some(item => item.key === key) ? current : [...current.slice(-3), { key, payload }]);
     }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
     return () => { active = false; off?.(); };
+  }, []);
+
+  // ── App update notification ────────────────────────────────────────────────
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo>();
+  useEffect(() => {
+    let active = true;
+    void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); });
+    return () => { active = false; };
   }, []);
 
   // The fallback hint is a pointer, not a state — it fades on its own.
@@ -1037,7 +1068,7 @@ function AppContent() {
   }, [adaptersReady, asideSession?.id, asideSession?.harness]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
-  // worker from Mission Control) must reveal its conversation and approval card,
+  // worker from Agent Fleet) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) {
     setView("workspace");
@@ -1351,8 +1382,9 @@ function AppContent() {
     setError(undefined);
     setAsideLifecycle({ sourceSessionId: carryFromSessionId, phase: "creating" });
     try {
-      const title = text.length > 64 ? `${text.slice(0, 63).trimEnd()}…` : text;
-      const result = await bridgeApi.createAsideChat(carryFromSessionId, adapter.id as Harness, model, title);
+      // Let the shared naming pipeline choose a concise title after the turn.
+      // Passing the prompt here would mark it as a user-chosen, permanent name.
+      const result = await bridgeApi.createAsideChat(carryFromSessionId, adapter.id as Harness, model, null);
       setAsideLifecycle({
         sourceSessionId: result.sourceSessionId,
         sessionId: result.sessionId,
@@ -1701,6 +1733,9 @@ function AppContent() {
     const files = imageFilesFromClipboard(items);
     if (files.length === 0) return;
     event.preventDefault();
+    attachComposerFiles(files);
+  };
+  const attachComposerFiles = (files: Array<{ type: string; size?: number }>) => {
     if (files.some(isPasteTooLarge)) {
       setError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
       return;
@@ -1854,7 +1889,15 @@ function AppContent() {
         await reload();
       }
     }
-    catch (e) { setComposer(retryText); setAttachments(sentAttachments); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
+    catch (e) {
+      setComposer(retryText);
+      setAttachments(sentAttachments);
+      setPending(current => current.filter(item => item.key !== key));
+      const message = errorMessage(e);
+      const provider = needsProviderSignIn(target.harness, message);
+      if (provider) setLoginProvider(provider);
+      setError(message);
+    }
   }
   // Rethrow without also raising the global corner alert: the approval/question
   // card renders the failure itself.
@@ -2124,6 +2167,7 @@ function AppContent() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || (event.target instanceof HTMLElement && event.target.closest("[data-terminal-workspace]"))) return;
       const match = matchShortcut(event, isTypingTarget(event.target));
       if (match) {
         event.preventDefault();
@@ -2176,9 +2220,16 @@ function AppContent() {
 
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
-  if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
-  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Activity" : session?.title || session?.label || "New Chat";
+  if (!health || !modelSetup || !stateLoaded) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
+  const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;
+  if (shouldShowAgentOnboarding(modelSetup, agentOnboardingComplete, hasExistingBridgeData)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard
+    adapters={health.adapters}
+    onHealthChange={invalidateHealth}
+    onComplete={finishAgentOnboarding}
+    onSkip={() => finishAgentOnboarding()}
+    onError={setError}
+  />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
+  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2219,7 +2270,8 @@ function AppContent() {
       memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
-      missionControlActive={view === "workspace" && paradigm === "grid"}
+      agentFleetActive={view === "agent-fleet"}
+      missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
       settingsActive={view === "settings"}
       accountName={localAccountName(health.database, workspace?.path)}
@@ -2228,7 +2280,8 @@ function AppContent() {
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
-      onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
+      onOpenAgentFleet={() => { setView("agent-fleet"); setParadigm("single"); }}
+      onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
       onOpenUsage={() => setView("usage")}
@@ -2300,18 +2353,18 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+        workspaces={state.workspaces}
+        initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
+        onOpenProjects={() => setView("projects")}
+      /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Mission Control…"/>}><MissionControl
         sessions={visibleSessions}
-        runtimes={forest?.workerRuntimes ?? []}
-        reasons={forest?.reasons ?? []}
+        workspaces={state.workspaces}
         events={agentEvents}
         activeSessionId={session?.id}
-        fullscreen={fullscreen}
-        onToggleFullscreen={toggleLayoutFullscreen}
         onFocusSession={openSession}
-        onSteer={steerWorker}
         onStopWorker={stopWorker}
-      /> : session ? <>
+      /></Suspense> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
           projectName={workspace?.title}
@@ -2579,6 +2632,7 @@ function AppContent() {
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     onPaste={handleComposerPaste}
+                    onAttachFiles={attachComposerFiles}
                     attachments={attachments}
                     onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
                     autocomplete={agentShortcutOpen ? {
@@ -2598,7 +2652,6 @@ function AppContent() {
                     onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
-                    plusIcon="paperclip"
                     leading={usageRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
@@ -2649,11 +2702,7 @@ function AppContent() {
                 onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
-              if (pane === "browser") return <BrowserSurface
-                visible={dock.open && dock.pane === "browser" && !fullscreen}
-                onError={setError}
-                onSupervisionChange={setBrowserSupervision}
-              />;
+              if (pane === "browser") return <SimpleBrowser />;
               if (pane === "transcript") return <TranscriptPane
                 key={session.id}
                 sessionId={session.id}
@@ -2719,6 +2768,7 @@ function AppContent() {
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
         onNewWorkspace={() => void createWorkspaceFromFolder()}
+        onHealthChange={invalidateHealth}
       />}
     </main>
     </div>
@@ -2745,7 +2795,21 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
+    {availableUpdate && (
+      <UpdateToast
+        update={availableUpdate}
+        onInstall={installUpdateAndRestart}
+        onDismiss={() => setAvailableUpdate(undefined)}
+      />
+    )}
 
+    <Dialog open={loginProvider !== null} onOpenChange={open => { if (!open) setLoginProvider(null); }}>
+      <DialogContent>
+        <DialogTitle>Sign in to continue</DialogTitle>
+        <DialogDescription>Your conversation is kept. Complete sign-in, then retry your message.</DialogDescription>
+        {loginProvider && <ProviderLoginPane provider={loginProvider} label={harnessLabel(loginProvider)} onClose={() => { setLoginProvider(null); void invalidateHealth(); }} />}
+      </DialogContent>
+    </Dialog>
     <OrchestratorCreateDialog
       open={modal === "orchestrator"}
       workspaceTitle={state.workspaces.find(item => item.id === pendingWorkspaceId)?.title ?? "workspace"}
@@ -2792,7 +2856,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2803,6 +2867,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   canStartChat: boolean;
   onStartChat: (text?: string, attachments?: ComposerAttachment[]) => Promise<boolean>;
   onNewWorkspace: () => void;
+  onHealthChange: () => void;
   workspaces: Workspace[];
   workspace: Workspace | null;
   /** Owning project name for the hero — resolved from `workspace.projectId`,
@@ -2838,6 +2903,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
     const files = imageFilesFromClipboard(items);
     if (files.length === 0) return;
     event.preventDefault();
+    attachFiles(files);
+  };
+  const attachFiles = (files: Array<{ type: string; size?: number }>) => {
     if (files.some(isPasteTooLarge)) {
       setComposerError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
       return;
@@ -2853,6 +2921,11 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   };
   return <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-8 sm:px-10 animate-page-enter">
     <div className="mx-auto my-auto w-full max-w-3xl py-8">
+    {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-6 rounded-xl border border-border bg-card p-4">
+      <h2 className="text-sm font-medium">Connect your first agent</h2>
+      <p className="mt-1 mb-3 text-[13px] text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
+      <ManagedAgentsPanel adapters={adapters} onChanged={onHealthChange} />
+    </div>}
     <p className="mb-3 text-[12px] font-medium text-muted-foreground">Your workspace, ready.</p>
     <h1 className="mb-3 max-w-2xl font-display text-[28px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[34px]">
       {greeting.parts.length > 1
@@ -2869,6 +2942,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       onSubmit={submit}
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
       onPaste={handlePaste}
+      onAttachFiles={attachFiles}
       attachments={attachments}
       onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
       placeholder={canStartChat ? "Ask Bridge, or paste a repo to open it…" : "Paste a repo to open it, or install a model adapter to chat…"}

@@ -14,8 +14,8 @@
 //!    developer's own worktree is not Bridge's to collect.
 //! 2. **Doubt retains.** Classification must *prove* a checkout is expendable.
 //!    Dirty trees, local-only commits, unadopted worker output, and checkouts
-//!    git can no longer read are retained with a recorded reason. There is no
-//!    force path.
+//!    git can no longer read are retained with a recorded reason. Explicit
+//!    deletion may override uncertain contents, never ownership or live use.
 //! 3. **Git runs off the database lock.** Reconcile and sweep read rows under
 //!    the mutex, do their filesystem and subprocess work without it, then write
 //!    outcomes back — the shape [`crate::worktree_coordinator`] already uses.
@@ -530,6 +530,19 @@ fn classification_facts(
 /// Decide what may be done with one checkout. Pure apart from git reads; takes
 /// its database facts as a value so it can run without the lock.
 fn classify_with(record: &WorktreeRecord, facts: &ClassificationFacts) -> Disposition {
+    let disposition = classify_contents(record, facts);
+    // A pending adoption is only expendable when proven empty. Dirty or
+    // unreadable output must not become deletable merely because its Git
+    // checks returned before the ahead-of-base adoption guard.
+    if facts.unadopted && matches!(disposition, Disposition::AtRisk(_) | Disposition::Unverifiable(_)) {
+        return Disposition::Retained(
+            "a worker's output here has not been adopted or discarded yet".into(),
+        );
+    }
+    disposition
+}
+
+fn classify_contents(record: &WorktreeRecord, facts: &ClassificationFacts) -> Disposition {
     if record.state == STATE_EXTERNAL {
         return Disposition::Retained("outside Bridge's worktree namespace".into());
     }
@@ -711,6 +724,7 @@ pub fn usage(
                 && matches!(record.disposition.as_deref(), Some("pushed_unmerged")))
     };
     let mut repositories: HashMap<String, WorktreeRepositoryUsage> = HashMap::new();
+    let mut managed: HashMap<String, (u64, usize)> = HashMap::new();
     let mut total = WorktreeUsage {
         total_count: 0,
         total_bytes: 0,
@@ -729,7 +743,7 @@ pub fn usage(
         let counts_against_cap = record.state != STATE_EXTERNAL;
         total.total_count += 1;
         total.total_bytes += bytes;
-        if reclaimable(&record) {
+        if counts_against_cap && reclaimable(&record) {
             total.reclaimable_count += 1;
             total.reclaimable_bytes += bytes;
         } else if counts_against_cap {
@@ -744,18 +758,22 @@ pub fn usage(
                 reclaimable_bytes: 0,
                 over_budget: false,
             });
+        rollup.size_bytes += bytes;
+        if counts_against_cap && reclaimable(&record) {
+            rollup.reclaimable_bytes += bytes;
+        }
+        rollup.count += 1;
         if counts_against_cap {
-            rollup.count += 1;
-            rollup.size_bytes += bytes;
-            if reclaimable(&record) {
-                rollup.reclaimable_bytes += bytes;
-            }
+            let budget = managed.entry(record.repo_root.clone()).or_default();
+            budget.0 += bytes as u64;
+            budget.1 += 1;
         }
     }
     let mut repositories = repositories.into_values().collect::<Vec<_>>();
     for rollup in &mut repositories {
-        rollup.over_budget = rollup.size_bytes as u64 >= retention.max_total_bytes
-            || rollup.count as usize >= retention.max_per_repo;
+        let (bytes, count) = managed.get(&rollup.repo_root).copied().unwrap_or_default();
+        rollup.over_budget = bytes >= retention.max_total_bytes
+            || count >= retention.max_per_repo;
     }
     repositories.sort_by(|left, right| {
         right
@@ -865,7 +883,10 @@ pub fn reconcile(
     namespace_root: &Path,
 ) -> Result<ReconcileOutcome, BridgeError> {
     let mut outcome = ReconcileOutcome::default();
-    let known = { candidates(&db.lock().unwrap())? };
+    let known = records(&db.lock().unwrap())?
+        .into_iter()
+        .filter(|record| record.state != STATE_REMOVED)
+        .collect::<Vec<_>>();
 
     // Every repository worth asking git about. Seeded from the repositories
     // Bridge already knows — its projects and workspaces — not only from rows
@@ -891,7 +912,8 @@ pub fn reconcile(
         if !repos.contains(&repo) {
             repos.push(repo);
         }
-        if record.as_path().is_dir() {
+        // A permission or IO failure is not proof that the directory is gone.
+        if !matches!(record.as_path().try_exists(), Ok(false)) {
             continue;
         }
         db.lock()
@@ -1261,13 +1283,20 @@ struct Assessed {
 
 /// Whether a disposition authorizes removal under this policy. The single place
 /// that answers it, so the plan and the re-check at deletion time cannot drift.
-fn is_removable(disposition: &Disposition, retention: &WorktreeRetention) -> bool {
+/// `force` overrides only a caller's judgment about their *own* checkout:
+/// uncommitted changes (`AtRisk`) or a checkout git cannot vouch for
+/// (`Unverifiable`). It never overrides `Retained` — that disposition already
+/// covers everything Bridge did not create, everything outside its namespace,
+/// a live session, and a worker's output still awaiting an adopt-or-discard
+/// decision, and none of those are this caller's alone to decide.
+fn is_removable(disposition: &Disposition, retention: &WorktreeRetention, force: bool) -> bool {
     match disposition {
         Disposition::Reclaimable => true,
         Disposition::PushedUnmerged => {
             retention.pushed_unmerged == PushedUnmergedPolicy::Delete
         }
-        _ => false,
+        Disposition::AtRisk(_) | Disposition::Unverifiable(_) => force,
+        Disposition::Retained(_) => false,
     }
 }
 
@@ -1349,7 +1378,7 @@ pub fn sweep(
         // useful checkout goes first.
         items.sort_by_key(|item| std::cmp::Reverse(item.record.idle_seconds()));
 
-        let removable = |item: &Assessed| is_removable(&item.disposition, retention);
+        let removable = |item: &Assessed| is_removable(&item.disposition, retention, false);
 
         // The running plan's view of what would remain. Only used to decide
         // what to attempt; the outcome is measured afterwards.
@@ -1390,7 +1419,7 @@ pub fn sweep(
         let mut removed: Vec<usize> = Vec::new();
         for index in &planned {
             let item = &items[*index];
-            match remove_recorded_worktree(db, namespace_root, &item.record, item.bytes, retention) {
+            match remove_recorded_worktree(db, namespace_root, &item.record, item.bytes, retention, false) {
                 Ok(true) => {
                     outcome.removed += 1;
                     outcome.removed_bytes += item.bytes;
@@ -1439,6 +1468,7 @@ fn remove_recorded_worktree(
     record: &WorktreeRecord,
     bytes: u64,
     retention: &WorktreeRetention,
+    force: bool,
 ) -> Result<bool, BridgeError> {
     let path = record.as_path();
     if !path.is_dir() {
@@ -1465,7 +1495,7 @@ fn remove_recorded_worktree(
         (fresh, facts)
     };
     let disposition = classify_with(&fresh, &facts);
-    if !is_removable(&disposition, retention) {
+    if !is_removable(&disposition, retention, force) {
         let reason = disposition
             .reason()
             .map(str::to_owned)
@@ -1478,7 +1508,12 @@ fn remove_recorded_worktree(
 
     let repo = PathBuf::from(&record.repo_root);
     let head = git::head_commit(path).unwrap_or_else(|| "unknown".to_owned());
-    if let Err(error) = git::safe_remove_worker_worktree(&repo, path, false) {
+    let removal = if force {
+        remove_selected_checkout(namespace_root, &fresh)
+    } else {
+        git::safe_remove_worker_worktree(&repo, path, false)
+    };
+    if let Err(error) = removal {
         let db = db.lock().unwrap();
         set_retained_reason(&db, &record.id, &error.to_string())?;
         let _ = store::event(
@@ -1517,6 +1552,60 @@ fn remove_recorded_worktree(
         ),
     );
     Ok(true)
+}
+
+/// Explicit deletion can also remove an orphan whose Git registration was
+/// lost. Keep this fallback here, behind inventory ownership and fresh-use
+/// checks, rather than in the general Git removal helper.
+fn remove_selected_checkout(namespace_root: &Path, record: &WorktreeRecord) -> Result<(), BridgeError> {
+    let path = record.as_path();
+    let repo = Path::new(&record.repo_root);
+    let refuse = || BridgeError::Invalid(
+        "cannot delete this unregistered directory: it is not a verified Bridge checkout location".into(),
+    );
+    if !record.is_candidate() || !inside_namespace(path, namespace_root) {
+        return Err(refuse());
+    }
+    let registered = git::list_worktrees(repo)?;
+    if registered.iter().any(|entry| canonical_key(&entry.path) == canonical_key(path)) {
+        // Preserve Git's errors (locks, permissions, etc.); they are never an
+        // excuse to fall back to deleting files behind Git's back.
+        return git::force_remove_worker_worktree(repo, path, false);
+    }
+
+    let namespace = PathBuf::from(canonical_key(namespace_root));
+    let relative = path.strip_prefix(&namespace).map_err(|_| refuse())?;
+    let components = relative.components().collect::<Vec<_>>();
+    let Some((directory, _)) = KIND_DIRECTORIES.iter().find(|(_, kind)| *kind == record.kind) else {
+        return Err(refuse());
+    };
+    if components.len() != kind_depth(&record.kind) + 1
+        || components.first().map(|part| part.as_os_str()) != Some(std::ffi::OsStr::new(directory)) {
+        return Err(refuse());
+    }
+    // Validate every slot component, not just the final directory: a replaced
+    // parent must not redirect deletion into another checkout's contents.
+    let mut current = namespace;
+    for component in components {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(refuse());
+        }
+        current.push(component);
+        if !std::fs::symlink_metadata(&current)?.file_type().is_dir() {
+            return Err(refuse());
+        }
+    }
+    match std::fs::symlink_metadata(path.join(".git")) {
+        Ok(metadata) if !metadata.file_type().is_file() => return Err(refuse()),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    // A readable repository (including a bare one) is not an orphan.
+    if git::list_worktrees(path).is_ok() {
+        return Err(refuse());
+    }
+    std::fs::remove_dir_all(path)?;
+    Ok(())
 }
 
 /// Settle any unadopted worker binding on this path as `empty`.
@@ -1589,11 +1678,19 @@ pub struct ArchiveChatResult {
 /// Reclaim on a row that says so has been told what they are discarding. The
 /// sweep has nobody to tell. Nothing unique to this disk is removed on either
 /// path.
+///
+/// `force` extends that same idea one step further, to a row a person can
+/// *see* but the sweep would never touch: uncommitted changes or a checkout
+/// git cannot vouch for. It still cannot make Bridge remove a checkout it did
+/// not create, one outside its namespace, or one a live session still owns —
+/// those two checks above run before disposition is even considered, and
+/// `is_removable` refuses `Retained` regardless of `force`.
 pub fn reclaim(
     db: &Mutex<Connection>,
     namespace_root: &Path,
     worktree_id: &str,
     retention: &WorktreeRetention,
+    force: bool,
 ) -> Result<WorktreeReclaimResult, BridgeError> {
     let record = {
         let db = db.lock().unwrap();
@@ -1627,7 +1724,7 @@ pub fn reclaim(
     };
     let facts = { classification_facts(&db.lock().unwrap(), &record)? };
     let disposition = classify_with(&record, &facts);
-    if !is_removable(&disposition, &explicit) {
+    if !is_removable(&disposition, &explicit, force) {
         let detail = disposition
             .reason()
             .map(str::to_owned)
@@ -1651,7 +1748,7 @@ pub fn reclaim(
     };
     // `remove_recorded_worktree` re-decides for itself, so a race between the
     // classification above and this call still cannot destroy work.
-    let reclaimed = remove_recorded_worktree(db, namespace_root, &record, bytes, &explicit)?;
+    let reclaimed = remove_recorded_worktree(db, namespace_root, &record, bytes, &explicit, force)?;
     let detail = if reclaimed {
         None
     } else {
@@ -2609,6 +2706,7 @@ mod tests {
             &planned,
             0,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(!removed, "a stale plan does not authorize a deletion");
@@ -2747,6 +2845,7 @@ mod tests {
             &fixture.namespace,
             &id,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(!outcome.reclaimed);
@@ -2755,6 +2854,8 @@ mod tests {
             "the refusal says why",
         );
         assert!(outside.is_dir());
+        assert!(!reclaim(&fixture.db, &fixture.namespace, &id, &WorktreeRetention::default(), true).unwrap().reclaimed);
+        assert!(outside.join("base.txt").exists());
     }
 
     #[test]
@@ -2769,6 +2870,7 @@ mod tests {
             &fixture.namespace,
             &id,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(!outcome.reclaimed);
@@ -2804,6 +2906,7 @@ mod tests {
             &fixture.namespace,
             &id,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(outcome.reclaimed, "{outcome:?}");
@@ -2819,6 +2922,7 @@ mod tests {
             &fixture.namespace,
             "no-such-id",
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap_err();
         assert!(matches!(error, BridgeError::Invalid(_)), "{error:?}");
@@ -2842,6 +2946,158 @@ mod tests {
             STATE_ORPHANED,
             "the pass adopted it before deciding anything about it",
         );
+    }
+
+    #[test]
+    fn confirmed_delete_removes_a_checkout_with_missing_git_registration() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        std::fs::remove_dir_all(fixture.repo.join(".git/worktrees/child")).unwrap();
+        let id = record(&fixture, &path).id;
+        let retention = WorktreeRetention::default();
+        assert!(!reclaim(&fixture.db, &fixture.namespace, &id, &retention, false).unwrap().reclaimed);
+        assert_eq!(sweep(&fixture.db, &fixture.namespace, &retention).unwrap().removed, 0);
+        let result = reclaim(&fixture.db, &fixture.namespace, &id, &retention, true).unwrap();
+        assert!(result.reclaimed, "{result:?}");
+        assert!(result.bytes_freed > 0);
+        assert!(!path.exists());
+        assert_eq!(record(&fixture, &path).state, STATE_REMOVED);
+        let db = fixture.db.lock().unwrap();
+        assert!(inventory(&db).unwrap().is_empty());
+        assert_eq!(usage(&db, &retention).unwrap().total_bytes, 0);
+        let events: i64 = db.query_row("SELECT count(*) FROM events WHERE kind='worktree.reclaimed'", [], |row| row.get(0)).unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn confirmed_delete_still_removes_registered_dirty_worktrees() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        std::fs::write(path.join("unsaved.txt"), "work").unwrap();
+        let result = reclaim(&fixture.db, &fixture.namespace, &record(&fixture, &path).id, &WorktreeRetention::default(), true).unwrap();
+        assert!(result.reclaimed, "{result:?}");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn confirmed_delete_retains_dirty_and_unreadable_pending_worker_output() {
+        for unreadable in [false, true] {
+            let fixture = fixture();
+            let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+            record_pending_adoption(&fixture, &path, "bridge/task-worker-child");
+            std::fs::write(path.join("worker-output.txt"), "work").unwrap();
+            if unreadable {
+                std::fs::remove_dir_all(fixture.repo.join(".git/worktrees/child")).unwrap();
+            }
+            let result = reclaim(&fixture.db, &fixture.namespace, &record(&fixture, &path).id, &WorktreeRetention::default(), true).unwrap();
+            assert!(!result.reclaimed, "{result:?}");
+            assert_eq!(result.disposition, "retained");
+            assert!(path.join("worker-output.txt").exists());
+        }
+    }
+
+    #[test]
+    fn confirmed_delete_retains_an_unregistered_checkout_with_a_live_session() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        std::fs::remove_dir_all(fixture.repo.join(".git/worktrees/child")).unwrap();
+        fixture.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,depth) VALUES('live','w','codex','Live','working','reported',?1,0)",
+            params![path.to_string_lossy()],
+        ).unwrap();
+        let result = reclaim(&fixture.db, &fixture.namespace, &record(&fixture, &path).id, &WorktreeRetention::default(), true).unwrap();
+        assert!(!result.reclaimed);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn reconcile_forgets_missing_external_checkouts_without_repeated_observations() {
+        let fixture = fixture();
+        let path = fixture._dir.path().join("external");
+        git_cmd(&fixture.repo, &["worktree", "add", "-q", "-b", "external", path.to_str().unwrap()]);
+        reconcile(&fixture.db, &fixture.namespace).unwrap();
+        assert!(reconcile(&fixture.db, &fixture.namespace).unwrap().is_quiet());
+        git_cmd(&fixture.repo, &["worktree", "remove", path.to_str().unwrap()]);
+        assert_eq!(reconcile(&fixture.db, &fixture.namespace).unwrap().marked_removed, 1);
+        assert!(inventory(&fixture.db.lock().unwrap()).unwrap().is_empty());
+        assert!(reconcile(&fixture.db, &fixture.namespace).unwrap().is_quiet());
+    }
+
+    #[test]
+    fn usage_counts_external_checkouts_but_does_not_charge_their_budget() {
+        let fixture = fixture();
+        let owned = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        let outside = fixture._dir.path().join("external");
+        git_cmd(&fixture.repo, &["worktree", "add", "-q", "-b", "external", outside.to_str().unwrap()]);
+        reconcile(&fixture.db, &fixture.namespace).unwrap();
+        let owned_id = record(&fixture, &owned).id;
+        let external_id = record(&fixture, &outside).id;
+        let db = fixture.db.lock().unwrap();
+        record_size(&db, &owned_id, 1).unwrap();
+        record_size(&db, &external_id, 100).unwrap();
+        let retention = WorktreeRetention { max_per_repo: 2, max_total_bytes: 50, ..WorktreeRetention::default() };
+        let usage = usage(&db, &retention).unwrap();
+        assert_eq!(usage.total_count, 2);
+        assert_eq!(usage.repositories[0].count, 2);
+        assert_eq!(usage.repositories[0].size_bytes, usage.total_bytes);
+        assert!(!usage.repositories[0].over_budget);
+        assert!(has_capacity(&db, fixture.repo.to_str().unwrap(), &retention).unwrap());
+    }
+
+    #[test]
+    fn orphan_fallback_refuses_namespace_groups_standalone_repos_and_symlinks() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        let original = record(&fixture, &path);
+        std::fs::remove_dir_all(fixture.repo.join(".git/worktrees/child")).unwrap();
+        for forbidden in [&fixture.namespace, path.parent().unwrap()] {
+            let mut row = original.clone();
+            row.path = forbidden.to_string_lossy().into_owned();
+            assert!(remove_selected_checkout(&fixture.namespace, &row).is_err());
+            assert!(path.join("base.txt").exists());
+        }
+        let outside = fixture._dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), "keep").unwrap();
+        let symlink = path.parent().unwrap().join("link");
+        std::os::unix::fs::symlink(&outside, &symlink).unwrap();
+        let mut row = original.clone();
+        row.path = symlink.to_string_lossy().into_owned();
+        assert!(remove_selected_checkout(&fixture.namespace, &row).is_err());
+        assert!(outside.join("keep.txt").exists());
+        let bare = path.parent().unwrap().join("standalone.git");
+        git_cmd(&fixture.repo, &["init", "-q", "--bare", bare.to_str().unwrap()]);
+        row.path = bare.to_string_lossy().into_owned();
+        assert!(remove_selected_checkout(&fixture.namespace, &row).is_err());
+        assert!(bare.join("HEAD").exists());
+        std::fs::remove_file(path.join(".git")).unwrap();
+        git_cmd(&path, &["init", "-q", "-b", "main"]);
+        assert!(remove_selected_checkout(&fixture.namespace, &original).is_err());
+        assert!(path.join("base.txt").exists());
+    }
+
+    #[test]
+    fn orphan_fallback_does_not_follow_a_symlinked_parent_inside_the_namespace() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        let mut row = record(&fixture, &path);
+        std::fs::remove_dir_all(fixture.repo.join(".git/worktrees/child")).unwrap();
+        let alias = fixture.namespace.join("workers/alias");
+        std::os::unix::fs::symlink(path.parent().unwrap(), &alias).unwrap();
+        row.path = alias.join("child").to_string_lossy().into_owned();
+        assert!(remove_selected_checkout(&fixture.namespace, &row).is_err());
+        assert!(path.join("base.txt").exists());
+    }
+
+    #[test]
+    fn confirmed_delete_does_not_fall_back_after_a_registered_worktree_error() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        git_cmd(&fixture.repo, &["worktree", "lock", path.to_str().unwrap()]);
+        let result = reclaim(&fixture.db, &fixture.namespace, &record(&fixture, &path).id, &WorktreeRetention::default(), true).unwrap();
+        assert!(!result.reclaimed);
+        assert!(result.detail.unwrap().contains("locked"));
+        assert!(path.join("base.txt").exists());
     }
 
     // --- capacity -------------------------------------------------------------
@@ -2871,11 +3127,7 @@ mod tests {
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
         age(&fixture, &path, 30);
         sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
-        let usage = usage(
-            &fixture.db.lock().unwrap(),
-            &WorktreeRetention::default(),
-        )
-        .unwrap();
+        let usage = usage(&fixture.db.lock().unwrap(), &WorktreeRetention::default()).unwrap();
         assert_eq!(usage.total_count, 1);
         assert_eq!(usage.reclaimable_count, 1);
         assert!(usage.total_bytes > 0, "the sweep measured it");

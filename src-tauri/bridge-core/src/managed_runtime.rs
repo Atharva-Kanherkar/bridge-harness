@@ -465,6 +465,7 @@ fn prepare_into(
             // against its recorded integrity. That is the supply-chain check for
             // this source kind; the tree digest below is drift detection.
             let mut command = Command::new("npm");
+            crate::binary::hydrate_command_path(&mut command);
             command
                 .args([
                     "ci",

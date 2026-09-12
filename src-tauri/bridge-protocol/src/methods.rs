@@ -129,12 +129,18 @@ methods![
     (ResolveQuestion, "approvals", "resolve_question"),
     // auth — provider sign-in
     (StartProviderLogin, "auth", "start_provider_login"),
+    (CancelProviderLogin, "auth", "cancel_provider_login"),
     // terminal
     (OpenTerminal, "terminal", "open_terminal"),
     (WriteTerminal, "terminal", "write_terminal"),
     (ResizeTerminal, "terminal", "resize_terminal"),
     (CloseTerminal, "terminal", "close_terminal"),
     (ListTerminals, "terminal", "list_terminals"),
+    (CreateTerminal, "terminal", "create_terminal"),
+    (GetTerminalSnapshot, "terminal", "get_terminal_snapshot"),
+    (GetTerminalWorkspace, "terminal", "get_terminal_workspace"),
+    (SaveTerminalWorkspace, "terminal", "save_terminal_workspace"),
+    (RenameTerminal, "terminal", "rename_terminal"),
     // slash commands
     (ListSlashCommands, "slash", "list_slash_commands"),
     (ResolveSlashCommand, "slash", "resolve_slash_command"),

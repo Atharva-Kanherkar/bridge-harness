@@ -242,6 +242,9 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     const files = imageFilesFromClipboard(items);
     if (files.length === 0) return;
     event.preventDefault();
+    attachFiles(files);
+  };
+  const attachFiles = (files: Array<{ type: string; size?: number }>) => {
     if (files.some(isPasteTooLarge)) {
       setComposerError("That image is too large to paste (over 8 MB).");
       return;
@@ -427,6 +430,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               onSubmit={() => void send()}
               onKeyDown={onComposerKeyDown}
               onPaste={handlePaste}
+              onAttachFiles={attachFiles}
               attachments={attachments}
               onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
               autocomplete={mentionOpen ? {

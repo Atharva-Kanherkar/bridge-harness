@@ -248,12 +248,18 @@ typed_methods![
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),
     // auth — provider sign-in
     (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),
+    (CancelProviderLogin, CancelProviderLoginParams, UnitResult),
     // terminal
     (OpenTerminal, OpenTerminalParams, UnitResult),
     (WriteTerminal, WriteTerminalParams, UnitResult),
     (ResizeTerminal, ResizeTerminalParams, UnitResult),
     (CloseTerminal, CloseTerminalParams, UnitResult),
     (ListTerminals, ListTerminalsParams, ListTerminalsResult),
+    (CreateTerminal, CreateTerminalParams, TerminalRecord),
+    (GetTerminalSnapshot, GetTerminalSnapshotParams, TerminalSnapshot),
+    (GetTerminalWorkspace, GetTerminalWorkspaceParams, TerminalWorkspace),
+    (SaveTerminalWorkspace, SaveTerminalWorkspaceParams, UnitResult),
+    (RenameTerminal, RenameTerminalParams, TerminalRecord),
     // slash commands
     (ListSlashCommands, ListSlashCommandsParams, SlashCommandsResult),
     (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),

@@ -1,3 +1,5 @@
+import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
+import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -529,6 +531,14 @@ let mockWorktrees: WorktreeInventoryEntry[] = [
     assessedAt: now, sizeBytes: 33_554_432, sizeMeasuredAt: now,
     createdAt: now, lastUsedAt: now, idleSeconds: 5 * 24 * 3_600,
   },
+  {
+    id: "wt-4", kind: "worker", repoRoot: "/tmp/bridge/scratch",
+    path: "/tmp/bridge/worker-scratch", branch: "bridge/worker-scratch",
+    ownerSessionId: "session-scratch", ownerWorkspaceId: "demo-1", state: "idle",
+    disposition: "at_risk", retainedReason: "uncommitted changes",
+    assessedAt: now, sizeBytes: 20_971_520, sizeMeasuredAt: now,
+    createdAt: now, lastUsedAt: now, idleSeconds: 2 * 3_600,
+  },
 ];
 // Usage roll-up for the browser host: three harnesses over the last week, with
 // one unpriced Codex model so the screen's provenance notes have something to
@@ -654,13 +664,14 @@ function mockUsageInsights(params: InsightsParams): UsageInsightsResult {
   return structuredClone(mockInsights);
 }
 const mockWorktreeUsage: WorktreeUsage = {
-  totalCount: 3, totalBytes: 2_759_852_032,
+  totalCount: 4, totalBytes: 2_780_823_552,
   reclaimableCount: 1, reclaimableBytes: 2_684_354_560, retainedCount: 1,
   maxTotalBytes: 10 * 1024 * 1024 * 1024, maxPerRepo: 12,
   workerIdleTtlSeconds: 86_400, orchestratorIdleTtlSeconds: 604_800, githubIdleTtlSeconds: 604_800,
   repositories: [
     { repoRoot: "/tmp/bridge/demo", count: 1, sizeBytes: 2_684_354_560, reclaimableBytes: 2_684_354_560, overBudget: false },
     { repoRoot: "/tmp/bridge/session-supervisor", count: 1, sizeBytes: 41_943_040, reclaimableBytes: 0, overBudget: false },
+    { repoRoot: "/tmp/bridge/scratch", count: 1, sizeBytes: 20_971_520, reclaimableBytes: 0, overBudget: false },
   ],
 };
 
@@ -1591,15 +1602,18 @@ export const bridgeApi = {
   },
   // A refusal is a result, not a thrown error: the caller renders "no, and
   // here is why" next to the row it asked about.
-  reclaimWorktree: async (worktreeId: string): Promise<WorktreeReclaimResult> => {
-    if (isTauri()) return call("worktrees/reclaim_worktree", { worktreeId });
+  reclaimWorktree: async (worktreeId: string, force = false): Promise<WorktreeReclaimResult> => {
+    if (isTauri()) return call("worktrees/reclaim_worktree", { worktreeId, force });
     const entry = mockWorktrees.find(item => item.id === worktreeId);
     if (!entry) throw new Error(`no worktree ${worktreeId} is recorded`);
-    if (entry.disposition !== "reclaimable" && entry.disposition !== "pushed_unmerged") {
+    // Mirrors is_removable: force overrides only at_risk/unverifiable, never
+    // retained (external, live session, unadopted output).
+    const forcible = force && (entry.disposition === "at_risk" || entry.disposition === "unverifiable");
+    if (entry.disposition !== "reclaimable" && entry.disposition !== "pushed_unmerged" && !forcible) {
       return { reclaimed: false, bytesFreed: 0, disposition: entry.disposition ?? "retained", detail: entry.retainedReason };
     }
     mockWorktrees = mockWorktrees.filter(item => item.id !== worktreeId);
-    return { reclaimed: true, bytesFreed: entry.sizeBytes ?? 0, disposition: entry.disposition, detail: null };
+    return { reclaimed: true, bytesFreed: entry.sizeBytes ?? 0, disposition: entry.disposition ?? "reclaimable", detail: null };
   },
   sweepWorktrees: async (): Promise<WorktreeSweepResult> => {
     if (isTauri()) return call("worktrees/sweep_worktrees");
@@ -2037,10 +2051,19 @@ export const bridgeApi = {
   },
   startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
     isTauri() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
+  cancelProviderLogin: (provider: string): Promise<void> =>
+    isTauri() ? unit(call("auth/cancel_provider_login", { provider })) : Promise.resolve(),
+  createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => isTauri() ? call("terminal/create_terminal", { ...params, restart: params.restart ?? false }) : mockCreateTerminal(params),
+  terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => isTauri() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
+  terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => isTauri() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),
+  saveTerminalLayout: async (workspaceId: string, layout: unknown): Promise<void> => isTauri() ? unit(call("terminal/save_terminal_workspace", { workspaceId, layout })) : mockSaveLayout(workspaceId, layout),
+  renameTerminal: async (workspaceId: string, terminalId: string, title: string): Promise<TerminalRecord> => isTauri() ? call("terminal/rename_terminal", { workspaceId, terminalId, title }) : mockRenameTerminal(workspaceId, terminalId, title),
+  onTerminalFrame: async (handler: (frame: TerminalFrame) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalFrame>("terminal-frame", handler) : () => undefined,
+  onTerminalLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
   openTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
   writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
-  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(),
+  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(mockCloseTerminal(workspaceId, terminalId)),
   listTerminals: async (workspaceId: string): Promise<string[]> => {
     if (isTauri()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
     return [];

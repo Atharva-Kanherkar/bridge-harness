@@ -849,6 +849,16 @@ impl AdapterRuntime for CursorRuntime {
         text: &str,
         context: crate::adapters::TurnContext<'_>,
     ) -> Result<(), BridgeError> {
+        self.send_turn_with_images(text, context, &[])
+    }
+
+    fn supports_images(&self) -> bool { self.session.capabilities().prompt_images }
+
+    fn send_turn_with_images(&self, text: &str, context: crate::adapters::TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        if !images.is_empty() && !self.supports_images() {
+            return Err(BridgeError::Invalid("This Cursor runtime does not accept image attachments".into()));
+        }
+        let images = images.to_vec();
         if self.session.is_closed() {
             return Err(self.closed());
         }
@@ -878,7 +888,7 @@ impl AdapterRuntime for CursorRuntime {
                 // Backpressure must not park send_turn while its caller holds
                 // the adapter map: the reader may need that map to drain.
                 if events.send_durable(encode_event(&started)).is_err() { return; }
-                if let Err(error) = session.prompt(&text) {
+                if let Err(error) = session.prompt_with_images(&text, &images) {
                     let reason = redact(&error.to_string(), configured_key().as_deref());
                     let event = crate::acp_events::runtime_failed_event(error.code(), &reason);
                     drop(events.send_durable(encode_event(&event)));
@@ -1610,10 +1620,8 @@ const RESUME_UNAVAILABLE: &str =
 /// conformance test compares the two. `history` is here because the agent
 /// advertises `session/load`, and `interrupt` because a cancel is a real
 /// protocol notification the runtime sends. `steering` is not, because a
-/// second prompt against a live turn would be a second turn. Image attachments
-/// are absent for the same kind of reason: the agent accepts them, and the
-/// shared client sends a text content block, so advertising them would route
-/// an image turn into a refusal.
+/// second prompt against a live turn would be a second turn. Images are sent
+/// through the shared client only when the session advertises image support.
 const CAPABILITIES: &[&str] = crate::builtin_compatibility::CURSOR_CAPABILITIES;
 
 #[cfg(test)]

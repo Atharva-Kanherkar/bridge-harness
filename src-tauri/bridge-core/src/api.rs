@@ -2474,13 +2474,13 @@ fn terminal_runtime_id(workspace_id: &str, terminal_id: &str) -> String {
 
 /// One counter across every shell ever spawned: equality is all the reader
 /// threads need, and a global sidesteps per-key bookkeeping.
-static TERMINAL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+pub(crate) static TERMINAL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The login shell for new terminals: zsh where it exists (the macOS default
 /// this app was built around), else the user's `$SHELL`, else bash. Linux
 /// servers and CI runners frequently ship neither zsh nor a spawnable `$SHELL`
 /// value, so a hardcoded zsh would make terminals unopenable there.
-fn login_shell() -> String {
+pub(crate) fn login_shell() -> String {
     for candidate in ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh"] {
         if Path::new(candidate).exists() {
             return candidate.to_owned();
@@ -2495,107 +2495,18 @@ fn login_shell() -> String {
     "/bin/bash".to_owned()
 }
 
-pub fn open_terminal(
-    core: &Arc<BridgeCore>,
-    workspace_id: &str,
-    terminal_id: &str,
-) -> Result<(), BridgeError> {
-    let runtime_id = terminal_runtime_id(workspace_id, terminal_id);
-    core.workspace_path(workspace_id)?;
-    let workspace_operation = core.workspace_operation(workspace_id);
-    let _workspace_operation = workspace_operation.lock().unwrap();
-    // Exclusive across the whole check → spawn → insert window: two
-    // concurrent opens would otherwise both pass the check, and the second
-    // insert would overwrite the first entry and orphan its PTY child.
-    let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal open")?;
-    if core.runtimes.lock().unwrap().contains_key(&runtime_id) {
-        return Ok(());
-    }
-    let db = core.db.lock().unwrap();
-    let path: String = db.query_row(
-        "SELECT path FROM workspaces WHERE id=?1",
-        params![workspace_id],
-        |r| r.get(0),
-    )?;
-    drop(db);
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 32,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let mut command = CommandBuilder::new(login_shell());
-    command.args(["-l"]);
-    command.cwd(&path);
-    command.env("TERM", "xterm-256color");
-    command.env("BRIDGE_WORKSPACE_ID", workspace_id);
-    let child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let epoch = TERMINAL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    core.runtimes.lock().unwrap().insert(
-        runtime_id.clone(),
-        RuntimeSession {
-            writer,
-            master: pair.master,
-            child,
-            epoch,
-        },
-    );
-    let core_reader = Arc::clone(core);
-    let workspace_reader = workspace_id.to_owned();
-    let terminal_reader = terminal_id.to_owned();
-    let runtime_reader = runtime_id;
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    core_reader.events.publish(CoreEvent::SessionOutput {
-                        session_id: workspace_reader.clone(),
-                        terminal_id: terminal_reader.clone(),
-                        data,
-                    });
-                }
-            }
-        }
-        {
-            let mut sessions = core_reader.runtimes.lock().unwrap();
-            match sessions.get(&runtime_reader) {
-                Some(entry) if entry.epoch == epoch => {
-                    sessions.remove(&runtime_reader);
-                }
-                Some(_) => {
-                    // A newer shell took this key while we drained. It is
-                    // alive and it is not ours: removing it would orphan its
-                    // PTY, and announcing an exit would mark it dead.
-                    return;
-                }
-                None => {}
-            }
-        }
-        // The exit outlives the bytes: whoever is not looking still learns
-        // that this shell is gone.
-        core_reader.events.publish(CoreEvent::TerminalExited {
-            session_id: workspace_reader,
-            terminal_id: terminal_reader,
-        });
-    });
-    Ok(())
+// Both desktop transports expose this shared API seam; the terminal module
+// owns the implementation and its PTY/checkpoint lifecycle.
+pub use crate::terminal_workspace::{
+    create as create_terminal, rename as rename_terminal,
+    save_layout as save_terminal_workspace, snapshot as get_terminal_snapshot,
+    workspace as get_terminal_workspace,
+};
+
+pub fn open_terminal(core: &Arc<BridgeCore>, workspace_id: &str, terminal_id: &str) -> Result<(), BridgeError> {
+    crate::terminal_workspace::create(core, &wire::CreateTerminalParams {
+        workspace_id: workspace_id.into(), terminal_id: terminal_id.into(), agent_id: None, cwd: None, restart: true,
+    }).map(|_| ())
 }
 
 pub fn close_terminal(
@@ -2607,14 +2518,14 @@ pub fn close_terminal(
     // The same claim open takes, so a close racing an open of the same key
     // settles into a definite order instead of interleaving.
     let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal close")?;
-    let mut sessions = core.runtimes.lock().unwrap();
-    let Some(mut runtime) = sessions.remove(&runtime_id) else {
-        return Ok(());
-    };
-    drop(sessions);
-    // Killing the child ends the reader loop, which publishes the exit; the
-    // entry is already gone, so the loop's cleanup remove is a no-op.
-    let _ = runtime.child.kill();
+    // Persist the close before ending the process, including an already-ended
+    // pane. Provider login terminals deliberately have no history record.
+    if workspace_id != PROVIDER_LOGIN_WORKSPACE_ID {
+        crate::terminal_workspace::closed(core, workspace_id, terminal_id)?;
+    }
+    let runtime = core.runtimes.lock().unwrap().remove(&runtime_id);
+    if let Some(mut runtime) = runtime { let _ = runtime.child.kill(); }
+
     Ok(())
 }
 
@@ -2646,30 +2557,8 @@ pub fn write_terminal(
     Ok(())
 }
 
-pub fn resize_terminal(
-    core: &Arc<BridgeCore>,
-    workspace_id: &str,
-    terminal_id: &str,
-    rows: u16,
-    cols: u16,
-) -> Result<(), BridgeError> {
-    if let Some(runtime) = core
-        .runtimes
-        .lock()
-        .unwrap()
-        .get_mut(&terminal_runtime_id(workspace_id, terminal_id))
-    {
-        runtime
-            .master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| BridgeError::Pty(e.to_string()))?
-    }
-    Ok(())
+pub fn resize_terminal(core: &Arc<BridgeCore>, workspace_id: &str, terminal_id: &str, rows: u16, cols: u16) -> Result<(), BridgeError> {
+    crate::terminal_workspace::resized(core, workspace_id, terminal_id, rows, cols)
 }
 
 // --- provider sign-in ---------------------------------------------------------
@@ -2692,14 +2581,16 @@ pub struct ProviderLogin {
 /// launches the process — any browser handoff is started by the vendor
 /// command itself, and Bridge never reads, stores, or logs the credential it
 /// produces.
-fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError> {
+fn provider_login_command(core: &Arc<BridgeCore>, provider: &str) -> Result<CommandBuilder, BridgeError> {
     match provider {
-        // Bare and interactive: Claude Code's own first-run flow prompts for
-        // login when no credential is present, with no separate subcommand.
+        // Run the dedicated flow even when an existing credential has expired.
         "claude" => {
-            let binary = binary::resolve("claude")
+            let binary = crate::managed_runtime::managed_entrypoint("claude")
+                .or_else(|| binary::resolve("claude"))
                 .ok_or_else(|| BridgeError::Invalid("Claude binary is not installed".into()))?;
-            Ok(CommandBuilder::new(binary))
+            let mut command = CommandBuilder::new(binary);
+            command.args(["auth", "login"]);
+            Ok(command)
         }
         "codex" => {
             let binary = crate::codex_adapter::resolve_runtime()
@@ -2727,8 +2618,8 @@ fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError>
             Ok(command)
         }
         "opencode" => {
-            let binary = binary::resolve("opencode")
-                .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;
+            let settings = core.adapter_registry.opencode_settings()?;
+            let binary = crate::opencode_adapter::resolve_executable(&settings)?;
             let mut command = CommandBuilder::new(binary);
             command.args(["auth", "login"]);
             Ok(command)
@@ -2754,8 +2645,11 @@ pub fn start_provider_login(
             terminal_id: provider.into(),
         });
     }
-    let mut command = provider_login_command(provider)?;
+    let mut command = provider_login_command(core, provider)?;
     command.env("TERM", "xterm-256color");
+    if let Some(path) = binary::hydrated_command_path() {
+        command.env("PATH", path);
+    }
     if let Some(home) = std::env::var_os("HOME") {
         command.cwd(home);
     }
@@ -2838,6 +2732,21 @@ pub fn start_provider_login(
         workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
         terminal_id: provider.into(),
     })
+}
+
+/// Abandon `provider`'s login flow. Killing the vendor process (rather than
+/// just unmounting the pane) is what keeps a retry usable: the existing-runtime
+/// branch of [`start_provider_login`] never replays the URL and prompts a
+/// closed pane missed, so a surviving process would leave the next attempt
+/// staring at an empty terminal. The reader thread publishes the usual
+/// `TerminalExited` and re-probes availability as the process ends.
+pub fn cancel_provider_login(core: &Arc<BridgeCore>, provider: &str) -> Result<(), BridgeError> {
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+    let removed = core.runtimes.lock().unwrap().remove(&runtime_id);
+    if let Some(mut runtime) = removed {
+        let _ = runtime.child.kill();
+    }
+    Ok(())
 }
 
 // --- slash commands ------------------------------------------------------------
@@ -3907,6 +3816,7 @@ pub fn archive_chat(
             &core.worktrees,
             &record.id,
             &worktree_registry::WorktreeRetention::default(),
+            false,
         )?),
         None => None,
     };
@@ -3947,15 +3857,24 @@ pub fn archive_chat(
 
 /// Reclaim one checkout because a person asked. A refusal comes back in the
 /// result, with its reason, rather than as an error.
+///
+/// `force` is the one place a client can widen what "asked" covers: it lets a
+/// person remove a checkout the sweep would never touch on its own —
+/// uncommitted changes, or one git cannot vouch for — because they can see it
+/// and have decided for themselves. It changes nothing about what Bridge
+/// still refuses unconditionally: a checkout it did not create, one outside
+/// its namespace, or one a live session owns.
 pub fn reclaim_worktree(
     core: &Arc<BridgeCore>,
     worktree_id: &str,
+    force: bool,
 ) -> Result<worktree_registry::WorktreeReclaimResult, BridgeError> {
     let outcome = worktree_registry::reclaim(
         &core.db,
         &core.worktrees,
         worktree_id,
         &worktree_registry::WorktreeRetention::default(),
+        force,
     )?;
     if outcome.reclaimed {
         core.events.publish(CoreEvent::StateChanged);

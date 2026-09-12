@@ -108,7 +108,7 @@ describe("AppTitleBar", () => {
   });
 
   it("docks the actions cluster at the right edge", () => {
-    mount({ actions: <button type="button">Mission Control</button> });
-    expect(header().textContent).toContain("Mission Control");
+    mount({ actions: <button type="button">Agent Fleet</button> });
+    expect(header().textContent).toContain("Agent Fleet");
   });
 });

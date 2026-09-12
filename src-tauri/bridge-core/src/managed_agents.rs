@@ -247,6 +247,19 @@ fn system_runtime(agent_id: &str) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Terminal launches require a CLI, rather than an SDK/ACP entrypoint.
+pub(crate) fn interactive_executable(agent_id: &str) -> std::result::Result<std::path::PathBuf, crate::BridgeError> {
+    if !["codex", "claude", "opencode", "cursor", "grok"].contains(&agent_id) {
+        return Err(crate::BridgeError::Invalid("Unknown terminal agent".into()));
+    }
+    // These managed payloads are native interactive CLIs. Claude's managed
+    // entrypoint is an SDK module, so it must resolve a separate CLI on PATH.
+    if ["codex", "opencode"].contains(&agent_id) {
+        if let Some(path) = managed_runtime::managed_entrypoint(agent_id) { return Ok(path); }
+    }
+    system_runtime(agent_id).ok_or_else(|| crate::BridgeError::Invalid(format!("{agent_id} CLI is not installed on PATH. Install its interactive CLI, then try New Agent again.")))
+}
+
 fn backing_of(resolution: Option<&RuntimeResolution>) -> ManagedAgentBacking {
     match resolution {
         Some(RuntimeResolution::Managed(_)) => ManagedAgentBacking::Managed,
