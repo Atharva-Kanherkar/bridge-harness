@@ -131,10 +131,16 @@ struct Presentation: Decodable {
 }
 
 final class MenuState: ObservableObject {
+    struct HistorySelection: Equatable {
+        var day = "all"
+        var metric = "tokens"
+    }
+
     var selectProvider: (String) -> Void = { _ in }
     var openSettings: () -> Void = { }
     var surfaceChanged: () -> Void = { }
     var contentChanged: () -> Void = { }
+    private var historySelections: [String: HistorySelection] = [:]
     @Published var showingOverview = true
     @Published var presentation = Presentation(settings: .initial, usage: nil, refreshing: false, error: nil)
 
@@ -142,6 +148,26 @@ final class MenuState: ObservableObject {
         showingOverview = id == "overview"
         if !showingOverview { selectProvider(id) }
         surfaceChanged()
+    }
+
+    func historySelection(for provider: String) -> HistorySelection {
+        historySelections[provider] ?? HistorySelection()
+    }
+
+    func setHistoryDay(_ day: String, for provider: String) {
+        var selection = historySelection(for: provider)
+        guard selection.day != day else { return }
+        selection.day = day
+        objectWillChange.send()
+        historySelections[provider] = selection
+    }
+
+    func setHistoryMetric(_ metric: String, for provider: String) {
+        var selection = historySelection(for: provider)
+        guard selection.metric != metric else { return }
+        selection.metric = metric
+        objectWillChange.send()
+        historySelections[provider] = selection
     }
 }
 
@@ -212,6 +238,38 @@ func countLabel(_ metric: Metric) -> String {
     format.maximumFractionDigits = 0
     let label = format.string(from: NSNumber(value: value)) ?? "Unavailable"
     return metric.qualifier.map { "\(label) · \($0.lowercased())" } ?? label
+}
+
+func compactCountLabel(_ metric: Metric) -> String {
+    guard let value = metric.value, metric.status != "unavailable" else { return "Unavailable" }
+    let absolute = abs(value)
+    let label: String
+    if absolute >= 1_000_000_000 {
+        label = String(format: absolute >= 10_000_000_000 ? "%.0fB" : "%.1fB", value / 1_000_000_000)
+    } else if absolute >= 1_000_000 {
+        label = String(format: absolute >= 10_000_000 ? "%.0fM" : "%.1fM", value / 1_000_000)
+    } else if absolute >= 1_000 {
+        label = String(format: absolute >= 10_000 ? "%.0fK" : "%.1fK", value / 1_000)
+    } else {
+        label = String(format: "%.0f", value)
+    }
+    let cleaned = label.replacingOccurrences(of: ".0K", with: "K")
+        .replacingOccurrences(of: ".0M", with: "M")
+        .replacingOccurrences(of: ".0B", with: "B")
+    return metric.qualifier.map { "\(cleaned) · \($0.lowercased())" } ?? cleaned
+}
+
+func usageSummaryValues(_ period: UsagePeriod, showTokens: Bool, showCost: Bool) -> String {
+    var values: [String] = []
+    if showTokens {
+        let tokens = compactCountLabel(period.tokens)
+        values.append(tokens == "Unavailable" ? "Tokens unavailable" : "\(tokens) tokens")
+    }
+    if showCost {
+        let cost = moneyLabel(period.costMicrousd)
+        values.append(cost == "Unavailable" ? "Cost unavailable" : cost)
+    }
+    return values.joined(separator: " · ")
 }
 
 func moneyLabel(_ metric: Metric) -> String {

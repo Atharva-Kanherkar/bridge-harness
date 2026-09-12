@@ -94,11 +94,11 @@ final class MenuController: NSObject, NSMenuDelegate {
         state.surfaceChanged = { [weak self] in
             guard let self = self else { return }
             self.breakdown.update()
-            (self.card.view as? MenuCardScrollView)?.updateSize(maximumHeight: self.cardMaximumHeight, resetScroll: true)
+            (self.card.view as? MenuCardScrollView)?.scheduleUpdateSize(maximumHeight: self.cardMaximumHeight, resetScroll: true)
         }
         state.contentChanged = { [weak self] in
             guard let self = self else { return }
-            (self.card.view as? MenuCardScrollView)?.updateSize(maximumHeight: self.cardMaximumHeight)
+            (self.card.view as? MenuCardScrollView)?.scheduleUpdateSize(maximumHeight: self.cardMaximumHeight)
         }
         item.isVisible = false
         item.autosaveName = "BridgeMenuBar"
@@ -231,7 +231,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             if providerChanged || usageAvailabilityChanged {
                 breakdown.update()
             }
-            scroll.updateSize(maximumHeight: cardMaximumHeight, resetScroll: providerChanged)
+            scroll.scheduleUpdateSize(maximumHeight: cardMaximumHeight, resetScroll: providerChanged)
         }
     }
 

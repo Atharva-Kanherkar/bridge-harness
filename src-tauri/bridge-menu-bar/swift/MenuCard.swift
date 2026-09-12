@@ -43,22 +43,19 @@ struct MenuCard: View {
                 }
                 if settings.showTokens || settings.showCost {
                     Divider()
-                    HStack {
-                        Text(usage.provider == "cursor" && settings.showCost ? "Today · API-rate cost" : "Today").fontWeight(.semibold)
-                        Spacer()
-                        if settings.showCost { Text(moneyLabel(usage.today.costMicrousd)).monospacedDigit() }
-                    }
-                    if settings.showTokens { detail("Tokens", countLabel(usage.today.tokens)) }
-                    if settings.showCost { detail(usage.provider == "cursor" ? "30 days · API-rate cost" : "Last 30 days", moneyLabel(usage.month.costMicrousd)) }
-                    if settings.showTokens { detail("30-day tokens", countLabel(usage.month.tokens)) }
+                    usageSummary("Today", period: usage.today, settings: settings)
+                    usageSummary("Last 30 days", period: usage.month, settings: settings)
                     if settings.showHistory ?? true {
-                        DailyUsageView(usage: usage, showCost: settings.showCost, showTokens: settings.showTokens, onResize: state.contentChanged).id(usage.provider)
-                    } else if settings.showTokens {
-                        Text("Models · last 30 days").fontWeight(.semibold)
-                        ModelUsageRows(models: usage.month.models, showCost: settings.showCost)
-                    }
-                    if settings.showCost && (usage.today.costMicrousd.source == "estimated" || usage.month.costMicrousd.source == "estimated") {
-                        Text("≈ Estimated from recorded tokens and model pricing").font(.system(size: 10)).foregroundColor(.secondary)
+                        DailyUsageView(
+                            usage: usage,
+                            showCost: settings.showCost,
+                            showTokens: settings.showTokens,
+                            selectedDay: Binding(
+                                get: { state.historySelection(for: usage.provider).day },
+                                set: { state.setHistoryDay($0, for: usage.provider) }),
+                            chartMetric: Binding(
+                                get: { state.historySelection(for: usage.provider).metric },
+                                set: { state.setHistoryMetric($0, for: usage.provider) }))
                     }
                     Text(usage.coverage).font(.system(size: 10)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
@@ -70,6 +67,15 @@ struct MenuCard: View {
         .font(.system(size: 12))
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(width: 350, alignment: .leading)
+    }
+
+    private func usageSummary(_ label: String, period: UsagePeriod, settings: MenuSettings) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).fontWeight(.semibold)
+            Spacer(minLength: 8)
+            Text(usageSummaryValues(period, showTokens: settings.showTokens, showCost: settings.showCost))
+                .monospacedDigit().lineLimit(1)
+        }
     }
 
     private var settingsButton: some View {

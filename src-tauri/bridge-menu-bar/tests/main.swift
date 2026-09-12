@@ -11,10 +11,22 @@ check(quotaPercentLabel(0.36) == "0.36%" && quotaPercentLabel(99.64) == "99.64%"
 check(quotaPercentLabel(0.001) == "<0.01%", "A small positive percentage must not become reported zero")
 check(countLabel(zero) == "0", "Reported zero must remain zero")
 check(countLabel(Metric(value: 27_933_293, source: "measured", status: "current")) == "27,933,293", "Large token counts must be readable")
+check(compactCountLabel(Metric(value: 27_933_293, source: "measured", status: "current")) == "28M", "Summary token counts stay compact")
 check(moneyLabel(zero) == "$0.00", "A reported zero cost is valid")
 check(countLabel(.unavailable) == "Unavailable", "Unknown tokens must not become zero")
 check(moneyLabel(.unavailable) == "Unavailable", "Unpriced usage must not become $0")
 check(moneyLabel(Metric(value: 2_300_000, source: "estimated", status: "current")) == "≈$2.30", "Estimated costs need a qualifier")
+let compactPeriod = UsagePeriod(
+    tokens: Metric(value: 18_400, source: "measured", status: "current"),
+    costMicrousd: Metric(value: 1_240_000, source: "estimated", status: "current"),
+    models: [])
+check(usageSummaryValues(compactPeriod, showTokens: true, showCost: true) == "18K tokens · ≈$1.24",
+      "A summary combines labeled tokens and spend without repeated rows")
+check(usageSummaryValues(compactPeriod, showTokens: true, showCost: false) == "18K tokens",
+      "Token-only summaries retain their unit")
+let unavailablePeriod = UsagePeriod(tokens: .unavailable, costMicrousd: .unavailable, models: [])
+check(usageSummaryValues(unavailablePeriod, showTokens: true, showCost: true) == "Tokens unavailable · Cost unavailable",
+      "Unavailable summary values identify which metric is missing")
 check(Metric(value: 42, source: "reported", status: "stale").current == nil, "Stale quota cannot drive a current percentage")
 check(countdown(3_700, now: Date(timeIntervalSince1970: 100)) == "1h 0m", "Reset countdown uses seconds")
 check(moneyLabel(Metric(value: 0, source: "reported", status: "stale")) == "$0.00 · stale", "Historical costs retain freshness")
@@ -155,6 +167,30 @@ MenuRunLoop.schedule {
 }
 CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
 check(trackedCardMeasured, "The same snapshot delivery must resize real SwiftUI content in menu tracking mode")
+
+// History interaction belongs to the provider surface and survives replacement
+// snapshots and hosted-card reconstruction without affecting another provider.
+hostedState.setHistoryMetric("cost", for: "codex")
+hostedState.setHistoryDay("2026-09-08", for: "codex")
+hostedState.presentation = fixture
+check(hostedState.historySelection(for: "codex") == MenuState.HistorySelection(day: "2026-09-08", metric: "cost"),
+      "A provider history selection must survive a new snapshot")
+check(hostedState.historySelection(for: "cursor") == MenuState.HistorySelection(),
+      "History selection must not leak across providers")
+let reconstructedHistoryCard = NSHostingView(rootView: MenuCard(state: hostedState))
+reconstructedHistoryCard.layoutSubtreeIfNeeded()
+check(hostedState.historySelection(for: "codex").metric == "cost",
+      "Rebuilding the hosted card must preserve its provider-local metric")
+
+let coalescedDocument = MeasuredMenuDocument(frame: .zero)
+let coalescedScroll = MenuCardScrollView(document: coalescedDocument, width: 350, maximumHeight: 300)
+coalescedDocument.measuredHeight = 500
+coalescedScroll.scheduleUpdateSize(maximumHeight: 260)
+coalescedScroll.scheduleUpdateSize(maximumHeight: 180, resetScroll: true)
+check(coalescedScroll.frame.height == 80, "A scheduled resize must not reenter the current SwiftUI update")
+CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
+check(coalescedScroll.frame.height == 180 && coalescedScroll.hasVerticalScroller,
+      "Coalesced menu-tracking resize applies the latest bound once")
 
 let appearanceRoot = NSMenu()
 let appearanceChild = NSMenu()

@@ -6,6 +6,10 @@ final class MenuCardScrollView: NSScrollView {
     private let cardWidth: CGFloat
     private var viewportSize = NSSize.zero
     private var documentHeight: CGFloat = 0
+    private var measuring = false
+    private var scheduled = false
+    private var scheduledMaximumHeight: CGFloat?
+    private var scheduledResetScroll = false
 
     init(document: NSView, width: CGFloat, maximumHeight: CGFloat) {
         cardWidth = width
@@ -37,7 +41,13 @@ final class MenuCardScrollView: NSScrollView {
     }
 
     func updateSize(maximumHeight: CGFloat, resetScroll: Bool = false) {
+        guard !measuring else {
+            scheduleUpdateSize(maximumHeight: maximumHeight, resetScroll: resetScroll)
+            return
+        }
         guard let document = documentView else { return }
+        measuring = true
+        defer { measuring = false }
         let oldMaximumOffset = max(0, documentHeight - contentView.bounds.height)
         let oldTopOffset = document.isFlipped ? contentView.bounds.minY : oldMaximumOffset - contentView.bounds.minY
 
@@ -47,16 +57,35 @@ final class MenuCardScrollView: NSScrollView {
         documentHeight = max(1, ceil(document.fittingSize.height))
         document.setFrameSize(NSSize(width: cardWidth, height: documentHeight))
         let size = NSSize(width: cardWidth, height: min(documentHeight, max(1, maximumHeight)))
+        let sizeChanged = viewportSize != size
         viewportSize = size
         hasVerticalScroller = documentHeight > size.height
-        setFrameSize(size)
-        invalidateIntrinsicContentSize()
-        tile()
+        if sizeChanged {
+            setFrameSize(size)
+            invalidateIntrinsicContentSize()
+            tile()
+        }
 
         let maximumOffset = max(0, documentHeight - contentView.bounds.height)
         let topOffset = resetScroll ? 0 : min(maximumOffset, max(0, oldTopOffset))
         contentView.scroll(to: NSPoint(x: 0, y: document.isFlipped ? topOffset : maximumOffset - topOffset))
         reflectScrolledClipView(contentView)
+    }
+
+    func scheduleUpdateSize(maximumHeight: CGFloat, resetScroll: Bool = false) {
+        scheduledMaximumHeight = maximumHeight
+        scheduledResetScroll = scheduledResetScroll || resetScroll
+        guard !scheduled else { return }
+        scheduled = true
+        MenuRunLoop.schedule { [weak self] in
+            guard let self = self else { return }
+            self.scheduled = false
+            let maximumHeight = self.scheduledMaximumHeight ?? maximumHeight
+            let resetScroll = self.scheduledResetScroll
+            self.scheduledMaximumHeight = nil
+            self.scheduledResetScroll = false
+            self.updateSize(maximumHeight: maximumHeight, resetScroll: resetScroll)
+        }
     }
 }
 

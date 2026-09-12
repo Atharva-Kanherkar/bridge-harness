@@ -51,6 +51,16 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
         days.append(UsageDay(day: String(format: "2026-09-%02d", index), usage: period))
     }
     snapshot.usage!.providers[0].daily = days
+    var missingCostSnapshot = snapshot
+    for index in missingCostSnapshot.usage!.providers.indices {
+        missingCostSnapshot.usage!.providers[index].today.costMicrousd = .unavailable
+        missingCostSnapshot.usage!.providers[index].month.costMicrousd = .unavailable
+        missingCostSnapshot.usage!.providers[index].daily = missingCostSnapshot.usage!.providers[index].daily?.map { day in
+            var day = day
+            day.usage.costMicrousd = .unavailable
+            return day
+        }
+    }
     var manifest = "Synthetic production MenuCard on a plain window background; native NSMenu chrome is not rendered.\n"
     let appearances: [(String, NSAppearance.Name)] = [
         ("light", .aqua), ("dark", .darkAqua),
@@ -149,6 +159,23 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
       manifest += "\(longFile): 350×30pt, full default three before long-name overflow\n"
       longWindow.contentView = nil
       longWindow.close()
+
+      let missingState = MenuState()
+      missingState.showingOverview = false
+      missingState.presentation = missingCostSnapshot
+      missingState.setHistoryMetric("cost", for: "codex")
+      let missingHosting = NSHostingView(rootView: MenuCard(state: missingState))
+      missingHosting.appearance = NSAppearance(named: appearanceName)!
+      let missingScroll = MenuCardScrollView(document: missingHosting, width: 350, maximumHeight: 1_000)
+      let missingCanvas = FixtureCanvas(frame: missingScroll.frame)
+      missingCanvas.appearance = missingHosting.appearance
+      missingCanvas.addSubview(missingScroll)
+      missingCanvas.layoutSubtreeIfNeeded()
+      let missingBitmap = missingCanvas.bitmapImageRepForCachingDisplay(in: missingCanvas.bounds)!
+      missingCanvas.cacheDisplay(in: missingCanvas.bounds, to: missingBitmap)
+      let missingFile = "menu-cost-history-unavailable-\(name).png"
+      try missingBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(missingFile))
+      manifest += "\(missingFile): explicit unavailable state with stable history height\n"
     }
     try manifest.write(to: output.appendingPathComponent("README.txt"), atomically: true, encoding: .utf8)
     print("Synthetic menu card renders written to \(output.path)")

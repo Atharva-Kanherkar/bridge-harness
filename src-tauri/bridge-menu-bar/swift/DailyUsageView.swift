@@ -6,13 +6,13 @@ struct DailyUsageView: View {
     let usage: UsageOverview
     let showCost: Bool
     let showTokens: Bool
-    var onResize: () -> Void = { }
-    @State private var selectedDay = "all"
-    @State private var chartMetric = "tokens"
+    @Binding var selectedDay: String
+    @Binding var chartMetric: String
     var days: [UsageDay] { usage.daily ?? [] }
     var costChart: Bool { showCost && (!showTokens || chartMetric == "cost") }
     var selected: UsagePeriod { days.first { $0.day == selectedDay }?.usage ?? usage.month }
     func metric(_ day: UsageDay) -> Metric { costChart ? day.usage.costMicrousd : day.usage.tokens }
+    var chartDays: [UsageDay] { days.filter { metric($0).current != nil } }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -27,9 +27,14 @@ struct DailyUsageView: View {
             }
             if days.isEmpty {
                 Text("No daily history recorded").font(.system(size: 11)).foregroundColor(.secondary)
-                if showTokens { ModelUsageRows(models: usage.month.models, showCost: showCost) }
+                    .frame(height: 52, alignment: .center)
+            } else if chartDays.isEmpty {
+                Text(costChart ? "Cost history unavailable" : "Token history unavailable")
+                    .font(.system(size: 11, weight: .medium))
+                    .help(costChart ? "Bridge has no current cost values for the recorded days." : "Bridge has no current token totals for the recorded days.")
+                .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
             } else {
-                let maximum = max(1, days.compactMap { metric($0).current }.max() ?? 1)
+                let maximum = max(1, chartDays.compactMap { metric($0).current }.max() ?? 1)
                 HStack(alignment: .bottom, spacing: 3) {
                     ForEach(days) { day in
                         let value = metric(day).current
@@ -58,14 +63,15 @@ struct DailyUsageView: View {
                     Text("All recorded days").tag("all")
                     ForEach(days.reversed()) { day in Text(day.day).tag(day.day) }
                 }.font(.system(size: 11))
-                if showTokens { detail("Tokens", countLabel(selected.tokens)) }
-                if showCost { detail(usage.provider == "cursor" ? "API-rate cost" : "Cost", moneyLabel(selected.costMicrousd)) }
-                if showTokens { ModelUsageRows(models: selected.models, showCost: showCost) }
+                if selectedDay != "all" {
+                    if showTokens { detail("Tokens", countLabel(selected.tokens)) }
+                    if showCost { detail(usage.provider == "cursor" ? "API-rate cost" : "Cost", moneyLabel(selected.costMicrousd)) }
+                }
                 Text("Recorded days only · missing history is not zero usage")
                     .font(.system(size: 9)).foregroundColor(.secondary)
             }
         }
-        .onChange(of: selectedDay) { _ in onResize() }
-        .onChange(of: chartMetric) { _ in onResize() }
+        .frame(height: days.isEmpty ? 88 : 184, alignment: .topLeading)
+        .clipped()
     }
 }
