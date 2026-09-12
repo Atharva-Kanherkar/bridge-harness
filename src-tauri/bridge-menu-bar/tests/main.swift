@@ -24,6 +24,11 @@ check(usageSummaryValues(compactPeriod, showTokens: true, showCost: true) == "18
       "A summary combines labeled tokens and spend without repeated rows")
 check(usageSummaryValues(compactPeriod, showTokens: true, showCost: false) == "18K tokens",
       "Token-only summaries retain their unit")
+let stalePeriod = UsagePeriod(
+    tokens: Metric(value: 18_400, source: "measured", status: "stale"),
+    costMicrousd: .unavailable, models: [])
+check(usageSummaryValues(stalePeriod, showTokens: true, showCost: false) == "18K tokens · stale",
+      "Freshness follows the token unit in compact summaries")
 let unavailablePeriod = UsagePeriod(tokens: .unavailable, costMicrousd: .unavailable, models: [])
 check(usageSummaryValues(unavailablePeriod, showTokens: true, showCost: true) == "Tokens unavailable · Cost unavailable",
       "Unavailable summary values identify which metric is missing")

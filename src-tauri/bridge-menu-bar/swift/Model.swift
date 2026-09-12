@@ -240,7 +240,7 @@ func countLabel(_ metric: Metric) -> String {
     return metric.qualifier.map { "\(label) · \($0.lowercased())" } ?? label
 }
 
-func compactCountLabel(_ metric: Metric) -> String {
+func compactCountLabel(_ metric: Metric, unit: String? = nil) -> String {
     guard let value = metric.value, metric.status != "unavailable" else { return "Unavailable" }
     let absolute = abs(value)
     let label: String
@@ -256,14 +256,15 @@ func compactCountLabel(_ metric: Metric) -> String {
     let cleaned = label.replacingOccurrences(of: ".0K", with: "K")
         .replacingOccurrences(of: ".0M", with: "M")
         .replacingOccurrences(of: ".0B", with: "B")
-    return metric.qualifier.map { "\(cleaned) · \($0.lowercased())" } ?? cleaned
+    let labeled = unit.map { "\(cleaned) \($0)" } ?? cleaned
+    return metric.qualifier.map { "\(labeled) · \($0.lowercased())" } ?? labeled
 }
 
 func usageSummaryValues(_ period: UsagePeriod, showTokens: Bool, showCost: Bool) -> String {
     var values: [String] = []
     if showTokens {
-        let tokens = compactCountLabel(period.tokens)
-        values.append(tokens == "Unavailable" ? "Tokens unavailable" : "\(tokens) tokens")
+        let tokens = compactCountLabel(period.tokens, unit: "tokens")
+        values.append(tokens == "Unavailable" ? "Tokens unavailable" : tokens)
     }
     if showCost {
         let cost = moneyLabel(period.costMicrousd)
