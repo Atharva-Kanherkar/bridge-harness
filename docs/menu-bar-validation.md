@@ -556,3 +556,57 @@ the previous build is preserved as
 The exact installed app launched as PID 86759. macOS locked before the native
 menu could be reopened, so final installed arrow clicks remain unverified;
 spacing evidence comes from the synthetic production-control renders above.
+
+### Fable-only, Grok Bot, guide markers, and padded arrows · 2026-09-12
+
+`8bc9236b` matches CodexBar's model-scoped Claude quota mapper. Enforceable
+Fable limits can report `is_active: false`; these are now retained with stable
+model identity, deduplication, and a Weekly · Fable only label. Only exact
+weekly/scoped entries with a numeric percentage and named model qualify;
+all-model totals are not repeated as scoped rows. A payload containing only
+Fable's allowance is supported, including reported zero. The existing manual
+Claude CLI parser already supports Fable-only sections and remains unchanged.
+
+The same commit adds Cursor's optional Grok Bot quota request, using the existing
+Cursor session, a fixed HTTPS origin/path, disabled redirects, sensitive cookie
+headers, JSON body, and five-second timeout. The separate allowance uses its own
+reset and reported period. Missing, failed, or inapplicable Grok responses do not
+discard the ordinary Cursor/Third Party quotas. It does not derive quota from
+Grok model token counts or enable a disabled provider.
+
+`bb9070e7` adds fixed visual markers at 50% and 75%, drawn within the existing
+Canvas using CodexBar's 5-point punched slot and 1-point neutral stripe. These
+are the user's requested positions, not a copy of CodexBar's configured warning
+defaults. Both used/remaining modes share these visual positions. Arrow controls
+now have equal 6-point outer gutters and 4-point inner gaps, with three 72-point
+provider slots. Overview fits its 76-point segment without truncation.
+
+Two GPT-5.6 Sol subagents inspected CodexBar `928166f` before implementation and
+reviewed the final provider/native changes. No actionable issue remained.
+Validation includes 32 relevant Rust provider tests, 11 shared-snapshot tests,
+native Swift checks, and the Intel macOS 12 type check. Native tests verify
+marker geometry at both display scales and actual arrow/segment frames. Synthetic
+production-card renders show Claude 5-hour/Weekly/Fable only, Cursor's distinct
+Grok Bot row, and the updated marker/arrow appearance in light and dark modes.
+Those renders use fixtures and are not live account observations.
+
+The production build passed and the signed preview was installed at
+`/Users/yashaf/Applications/Bridge Menu Bar Preview.app` with executable SHA-256
+`587ad99307affef7637cfd3b720acf2a3f7212b0cd9d0cb6767a8901db514a29`.
+Strict/deep signature verification and installed byte matching passed. The
+preceding app is retained as `Bridge Menu Bar Preview.previous-20260912-162333.app`.
+
+The installed settings already had Cursor collection enabled when checked in
+this turn; that choice was preserved. Live Overview and Cursor details both
+showed Total, Cursor, Third Party, and Grok Bot (35% used, 65% left, with its own
+reset countdown). These are point-in-time observations, not permanent account
+values. The left and right navigation controls both passed a separate-call live
+retry without closing the menu; one initial automation sequence dismissed it.
+The native accessibility tree exposes the 50/75 guide marker hint, and the
+production-control renders provide the spacing and marker visual evidence.
+
+Manual Refresh recovered Claude's live 5-hour (0%) and Weekly (4%) limits via
+Claude CLI. This response omitted Fable, so live Fable display is not claimed.
+The OAuth scoped mapper and CLI Fable-only cases are covered by tests; no absent
+allowance is manufactured. No fresh Bridge crash report or extra process startup
+was present after the installed checks.

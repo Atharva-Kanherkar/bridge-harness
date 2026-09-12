@@ -106,7 +106,10 @@ Protocol 1.10 adds independent `quotaDisplayMode` (defaults to used),
 Existing icon-text preferences survive migration; quota bars no longer inherit
 the icon-text display mode. A fully consumed allowance is a full used bar, with
 remaining percentage below. Sub-1% values retain precision rather than becoming
-zero. All stale/unavailable protections still apply.
+zero. Quota bars have fixed guide breaks at 50% and 75% of their displayed
+width, using CodexBar's punched slot and neutral center stripe. These positions
+stay fixed in both used and remaining modes. All stale/unavailable protections
+still apply.
 
 Overview is the first native tab and the default opening surface. It shows only
 provider headers, quota bars, reset countdowns, freshness and connection errors.
@@ -160,6 +163,8 @@ providers fit at once; arrow buttons and horizontal scrolling reveal additional
 providers without increasing the 350-point menu width. Favorites lead the list,
 followed by other enabled providers. The currently supported collectors remain
 Codex, Claude, Cursor, and OpenCode; scroll capacity does not imply new adapters.
+Navigation arrows sit at opposite edges with matching 6-point outer gutters and
+4-point gaps beside the tab group; three equal provider slots fit between them.
 
 Favorites and account connections are independent. A favorite remains visible
 while disconnected, with a Settings action. It never renders cached quota or
@@ -167,8 +172,19 @@ account history until its account usage is enabled. Pinning, selecting, and
 scrolling do not enable collectors. Existing disabled choices survive migration.
 
 Claude model-specific weekly limits are distinct from its all-model weekly
-quota. The API's active `limits[]` records provide the model display name,
-used percentage, and reset. The manual CLI fallback reads `Current week
+quota. The API's `limits[]` records with `group: weekly` and `kind: weekly_scoped`
+provide the model identity, display name, used percentage, and reset. Following
+CodexBar, `is_active: false` does not discard a reported Fable allowance. Stable
+model IDs prevent duplicates; all-model totals and malformed entries are excluded
+from these scoped rows. A Fable-only account can show its reported limit even if
+the ordinary five-hour or weekly fields are absent. The manual CLI fallback reads `Current week
 (<model>)` sections, including Fable, with strict section/redraw boundaries.
 Only reported limits are shown; a missing Fable row is not manufactured from
 Opus usage or treated as zero.
+
+Enabled Cursor accounts also read the optional Grok Bot included allowance from
+`/api/dashboard/get-sand-usage-status`, using the existing Cursor session. This
+adds a separate Grok Bot quota and its own reset/duration when Cursor reports an
+included allowance. The request has a five-second timeout; failure or an absent
+allowance leaves the main Cursor usage available. Missing quota is never inferred
+from Grok model token history.
