@@ -7,10 +7,11 @@ export type ReleaseEntry = {
 
 export const releases: ReleaseEntry[] = [
   {
-    version: "0.5.7",
+    version: "0.5.8",
     date: "September 12, 2026",
     headline: "Worker reports reach the parent",
     bullets: [
+      "Corrects updater public-key encoding; the 0.5.7 build was rejected before publication, and the signing key is unchanged.",
       "Worker results are saved with a pending notification and delivered in full when the parent can accept its next turn.",
       "Busy or disconnected parents retain pending reports, and peek can recover a completed worker's summary, tests, and remaining work.",
       "Request throttling no longer means an exhausted subscription, and rejected API keys get key-specific guidance.",

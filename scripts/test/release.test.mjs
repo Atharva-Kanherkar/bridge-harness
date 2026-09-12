@@ -7,6 +7,17 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+test("updater public key is an encoded minisign box, not raw key bytes", () => {
+  const config = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json")));
+  const box = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(config.plugins.updater.pubkey, "base64"));
+  const [comment, key] = box.trim().split(/\r?\n/);
+  assert.match(comment, /^untrusted comment: /);
+  const bytes = Buffer.from(key, "base64");
+  assert.equal(bytes.length, 42);
+  assert.equal(bytes.subarray(0, 2).toString(), "Ed");
+  assert.equal(key, "RWT4/NpOZ0FS0jYSgOK3Tzp5hECYrogjQl7/R0U7FZ2jAtKFVR1ma3eg", "encoding repair must preserve the existing signing key");
+});
+
 const credentialNames = ["APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID", "APPLE_API_KEY", "APPLE_API_KEY_PATH", "APPLE_API_ISSUER", "APPLE_SIGNING_IDENTITY", "BRIDGE_RELEASE_ENV"];
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "bridge-release-test-"));
