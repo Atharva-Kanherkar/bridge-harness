@@ -13,6 +13,7 @@ export function MenuBarLayoutEditor({ layout, busy, onSave }: Props) {
   const [transfer, setTransfer] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const dirty = JSON.stringify(draft) !== JSON.stringify(layout);
+  const customActive = layout.flat().some(token => token !== "space" && token !== "dot");
   function append(token: MenuBarLayoutToken) {
     const lines = draft.length ? draft.map(line => [...line]) : [[]];
     if (lines[activeLine].length < 12) lines[activeLine].push(token);
@@ -28,9 +29,9 @@ export function MenuBarLayoutEditor({ layout, busy, onSave }: Props) {
     }));
   }
   return <div className="space-y-3 px-4 py-3">
-    <p className="text-xs text-muted-foreground">Choose items, spaces, and separators. Add a second line for a stacked menu icon label.</p>
+    <p className="text-xs text-muted-foreground">{customActive ? "Custom layout is active." : "Standard display is active."} Edit the items below, then Apply layout.</p>
     <div className="flex flex-wrap gap-2">
-      <button type="button" className={button} disabled={busy} onClick={() => { setDraft([]); setActiveLine(0); }}>Standard display</button>
+      <button type="button" className={button} disabled={busy || !customActive} onClick={() => void onSave([])}>Use standard display</button>
       <button type="button" className={button} disabled={busy} onClick={() => { setDraft([["icon"]]); setActiveLine(0); }}>Icon only</button>
       <button type="button" className={button} disabled={busy} onClick={() => { setDraft([["icon", "space", "used"]]); setActiveLine(0); }}>Icon + used</button>
       <button type="button" className={button} disabled={busy} onClick={() => { setDraft([["icon", "space", "fiveHourUsed"], ["weeklyUsed"]]); setActiveLine(0); }}>Two limits</button>

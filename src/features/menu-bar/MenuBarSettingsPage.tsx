@@ -27,6 +27,7 @@ export function MenuBarSettingsPage() {
   const favorites = settings?.pinnedProviders ?? defaultFavorites;
   const visibleIds = [...favorites, ...enabled.map(provider => provider.id).filter(id => !favorites.includes(id))];
   const visible = visibleIds.flatMap(id => providers.filter(provider => provider.id === id));
+  const customDisplay = settings?.statusLayout?.flat().some(token => token !== "space" && token !== "dot") ?? false;
 
   useEffect(() => {
     let active = true;
@@ -94,11 +95,12 @@ export function MenuBarSettingsPage() {
           control={<Select label="Menu icon" value={settings.iconStyle ?? "bridge"} disabled={busy}
             options={[{ value: "bridge", label: "Bridge logo" }, { value: "meter", label: "Quota meters" }]}
             onChange={value => void save({ iconStyle: value as MenuBarSettings["iconStyle"] })} />} />
-        <SettingsRow label="Beside the icon" description="Standard display. A custom layout below takes precedence."
-          control={<Select label="Beside the icon" value={settings.displayMode} disabled={busy} options={[
+        <SettingsRow label="Beside the icon" description={customDisplay ? "Custom layout is active. Choose a standard display to replace it." : "Choose what appears beside the Bridge icon."}
+          control={<Select label="Beside the icon" value={customDisplay ? "custom" : settings.displayMode} disabled={busy} options={[
+            ...(customDisplay ? [{ value: "custom", label: "Custom layout", disabled: true }] : []),
             { value: "icon", label: "Icon only" }, { value: "remaining", label: "Quota remaining" },
             { value: "used", label: "Quota used" }, { value: "cost", label: "Today's spend" },
-          ]} onChange={displayMode => void save({ displayMode: displayMode as MenuBarSettings["displayMode"] })} />} />
+          ]} onChange={displayMode => { if (displayMode !== "custom") void save({ displayMode: displayMode as MenuBarSettings["displayMode"], statusLayout: [] }); }} />} />
         <SettingsRow label="Quota window" description="Automatic uses the provider’s first available limit, including billing cycles."
           control={<Select label="Quota window" value={settings.quotaWindow} disabled={busy}
           options={[{ value: "auto", label: "Automatic" }, { value: "session", label: "5-hour / rolling" }, { value: "weekly", label: "Weekly" }]}
@@ -140,9 +142,9 @@ export function MenuBarSettingsPage() {
           onChange={showAccount => void save({ showAccount })} />} />
       </SettingsGroup>
       <SettingsGroup label="Usage & spend">
-        <SettingsRow label="Daily history" description="A 30-day chart and day-by-day model details in provider tabs. Overview always shows quotas only."
+        <SettingsRow label="Daily history" description="A 30-day chart in provider tabs. Overview shows quotas only."
           control={<Switch label="Daily history" checked={settings.showHistory ?? true} disabled={busy} onChange={showHistory => void save({ showHistory })} />} />
-        <SettingsRow label="Tokens and models" description="Account dashboard tokens and models when available; otherwise recorded on this Mac."
+        <SettingsRow label="Tokens and models" description="Show token totals. Model details are available in the breakdown submenu."
           control={<Switch label="Tokens and models" checked={settings.showTokens} disabled={busy} onChange={showTokens => void save({ showTokens })} />} />
         <SettingsRow label="Show spend" description="Today and the last 30 days. Estimated costs are labelled; missing prices stay unavailable."
           control={<Switch label="Show spend" checked={settings.showCost} disabled={busy} onChange={showCost => void save({ showCost })} />} />

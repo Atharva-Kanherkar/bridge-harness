@@ -100,6 +100,35 @@ it("defaults Overview on while preserving the separate status display choice", a
   expect(save).toHaveBeenCalledWith({ ...settings, openToOverview: false });
 });
 
+it("shows the active custom layout and lets Today's spend replace a saved used-quota layout", async () => {
+  const custom: MenuBarSettings = { ...settings, displayMode: "cost", statusLayout: [["icon", "space", "used"]] };
+  vi.mocked(bridgeApi.getMenuBarSettings).mockResolvedValue(custom);
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const display = () => container.querySelector<HTMLButtonElement>('[aria-label="Beside the icon"]')!;
+  expect(display().textContent).toBe("Custom layout");
+  await act(async () => display().click());
+  const cost = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Today's spend")!;
+  await act(async () => {
+    cost.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    cost.click();
+  });
+  expect(save).toHaveBeenCalledWith({ ...custom, displayMode: "cost", statusLayout: [] });
+  expect(display().textContent).toBe("Today's spend");
+  expect(container.textContent).toContain("Standard display is active.");
+});
+
+it("switches to standard display immediately and retains the custom layout if saving fails", async () => {
+  const custom: MenuBarSettings = { ...settings, statusLayout: [["icon", "space", "used"]] };
+  vi.mocked(bridgeApi.getMenuBarSettings).mockResolvedValue(custom);
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockRejectedValue(new Error("Save failed"));
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Use standard display")!.click());
+  expect(save).toHaveBeenCalledWith({ ...custom, statusLayout: [] });
+  expect(container.querySelector('[aria-label="Beside the icon"]')?.textContent).toBe("Custom layout");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Save failed");
+});
+
 it("serializes rapid provider changes against the last confirmed settings", async () => {
   const finishes: ((value: MenuBarSettings) => void)[] = [];
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(() => new Promise(resolve => finishes.push(resolve)));
