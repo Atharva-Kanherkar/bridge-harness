@@ -214,7 +214,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     origin: "live",
     key: liveKey(kind, itemId, raw.id),
     causalAnchor: raw.causalAnchor,
-    adapter: stringValue(raw.providerMeta.adapter),
+    adapter: stringValue(objectValue(raw.providerMeta).adapter),
     providerData: data,
   };
   const tool = (surface: ToolSurface): ToolCallDisplay =>
@@ -296,10 +296,13 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     return { type: "branch.summary", envelope, title: "Branch summary", text: text || stringValue(data.summary) || "", status };
   }
   if (kind === "error" || kind === "runtime.failed") {
-    // Same fallback the durable twin reads (`errorText` below), so a live
-    // failure and its replay say the same words. They have no provider item id
-    // to be recognised by, so their text is what the merge matches them on.
-    return { type: "error", envelope, title, text: text || errorText({ text, data }), status: status ?? "failed" };
+    // Bridge stamps the persisted forest ID on live/replayed errors. Numeric
+    // event IDs and wording are not cross-projection identities.
+    return {
+      type: "error",
+      envelope: { ...envelope, entryId: stringValue(objectValue(raw.providerMeta).bridgeEntryId) },
+      title, text: text || errorText({ text, data }), status: status ?? "failed",
+    };
   }
   if (kind === "turn.started") return { type: "turn.started", envelope };
   if (kind.startsWith("turn.")) return { type: "turn.completed", envelope, status };

@@ -8361,7 +8361,7 @@ fn peek_miss_reason(db: &Connection, parent_session_id: &str, target: &str) -> S
         .ok();
     match owned {
         Some((label, lifecycle, result_status)) if result_status == "reported" => format!(
-            "{label} has already reported its typed result ({lifecycle}); read the result you were given rather than peeking again"
+            "{label} has already reported its typed result ({lifecycle}), but no readable result was found on this parent branch; delivery to the model is not confirmed"
         ),
         Some((label, lifecycle, _)) => format!(
             "{label} is {lifecycle} and has no activity to report yet"
@@ -8385,6 +8385,34 @@ fn worker_activity_digest(
     if let Some(target) = &peek.session_id {
         workers.retain(|row| row.get("sessionId").and_then(|value| value.as_str()) == Some(target));
         if workers.is_empty() {
+            let evidence_id = db.query_row(
+                "SELECT e.id FROM session_entries e JOIN worker_runtime r ON r.session_id=?2 AND r.parent_session_id=e.session_id
+                 WHERE e.session_id=?1 AND e.kind='worker.result' AND json_extract(e.payload,'$.childSessionId')=?2
+                 ORDER BY e.sequence DESC LIMIT 1",
+                params![parent_session_id, target], |row| row.get::<_, String>(0),
+            ).ok();
+            if let Some(evidence) = evidence_id.and_then(|id| {
+                session_supervisor::SessionSupervisor::worker_evidence(db, parent_session_id, &[id])
+                    .ok().and_then(|mut results| results.pop())
+            }) {
+                let repository: Option<serde_json::Value> = db.query_row(
+                    "SELECT json_extract(payload,'$._bridgeRepoEvidence') FROM session_entries WHERE id=?1",
+                    params![evidence.evidence_id], |row| row.get::<_, Option<String>>(0),
+                ).ok().flatten().and_then(|raw| serde_json::from_str(&raw).ok());
+                return serde_json::json!({
+                    "type": "bridge-worker-result",
+                    "childSessionId": evidence.child_session_id,
+                    "evidenceId": evidence.evidence_id,
+                    "status": evidence.result.status.as_str(),
+                    "summary": evidence.result.summary,
+                    "result": evidence.result,
+                    "repository": repository,
+                    "completion": completion::latest_summary(db, parent_session_id).ok().flatten(),
+                    "recovered": true,
+                    "fleet": fleet_digest(db, parent_session_id),
+                    "instruction": "Recovered canonical worker result. Do not repeat its work. Review its tests, risks, repository adoption state and completion requirements before claiming completion. This recovery does not prove an earlier notification reached you.",
+                });
+            }
             // "Not a live worker" was one sentence covering three different
             // situations, and only one of them was a mistake. A worker that
             // finished normally is not the same answer as a session id that
@@ -9113,8 +9141,8 @@ fn verify_read_only_worker(core: &Arc<BridgeCore>, child_session_id: &str) {
     }
 }
 
-/// Deliver a framed message from a child to its parent session: send it into the
-/// parent's live turn stream and drop a marker card into the parent's transcript.
+/// Record the canonical result and its durable parent-delivery obligation.
+/// The queued-input sweep prepares metadata and sends it at a safe turn boundary.
 fn report_to_parent(
     core: &Arc<BridgeCore>,
     child_session_id: &str,
@@ -9182,37 +9210,82 @@ fn report_to_parent(
     let result = &reconciled.result;
     let report = {
         let db = state.db.lock().unwrap();
-        session_supervisor::SessionSupervisor::record_result_with_evidence(
+        match session_supervisor::SessionSupervisor::record_result_with_evidence(
             &db,
             child_session_id,
             result,
             evidence_payload.as_ref(),
-        )
-        .ok()
-        .flatten()
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                let _ = store::event(&db, "supervisor", "worker.result.record_failed", child_session_id, &error.to_string());
+                None
+            }
+        }
     };
     // `false` when the result seam was already claimed: the caller decides
     // whether that silence is acceptable. For a cancellation it is not.
-    let Some(report) = report else {
+    let Some(_report) = report else {
         return false;
     };
+    core.events.publish(CoreEvent::StateChanged);
+    true
+}
+
+// The result transaction leaves an outbox entry even if Bridge exits before
+// this sweep. Preparing metadata never requires the parent provider to exist.
+fn prepare_pending_worker_results(core: &Arc<BridgeCore>) {
+    let pending = {
+        let db = core.db.lock().unwrap();
+        db.prepare("SELECT id,payload FROM durable_outbox WHERE destination='parent' AND event_type='worker.result' AND status='pending' AND next_attempt_at<=?1 ORDER BY created_at,id LIMIT 16")
+            .and_then(|mut statement| statement.query_map(params![Utc::now().to_rfc3339()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?.collect::<Result<Vec<_>, _>>())
+            .unwrap_or_default()
+    };
+    for (id, payload) in pending {
+        let result = serde_json::from_str::<session_supervisor::WorkerResultDelivery>(&payload)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))
+            .and_then(|delivery| prepare_worker_result_delivery(core, delivery));
+        if let Err(error) = result {
+            let db = core.db.lock().unwrap();
+            let _ = db.execute(
+                "UPDATE durable_outbox SET attempt_count=attempt_count+1,last_error=?2,next_attempt_at=?3 WHERE id=?1 AND status='pending'",
+                params![id, error.to_string(), (Utc::now() + chrono::Duration::seconds(30)).to_rfc3339()],
+            );
+            let _ = store::event(&db, "supervisor", "worker.result.delivery_failed", &id, &error.to_string());
+        }
+    }
+}
+
+fn prepare_worker_result_delivery(
+    core: &Arc<BridgeCore>,
+    delivery: session_supervisor::WorkerResultDelivery,
+) -> Result<(), BridgeError> {
+    let session_supervisor::WorkerResultDelivery {
+        report, child_session_id, result, repository: evidence_payload,
+    } = delivery;
+    let state = core.clone();
+    {
+        let db = state.db.lock().unwrap();
+        let pending: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM durable_outbox WHERE id=?1 AND status='pending')",
+            params![report.evidence_id], |row| row.get(0),
+        )?;
+        if !pending { return Ok(()); }
+    }
     // A prompt-wait failure also emits a canonical worker result. Its routing
     // must obey the same parent boundary as the prompt-specific failure notice.
     let pending_prompt_proposal = (result.status == delegation::WorkerResultStatus::Failed)
-        .then(|| prompt_mutations::pending_for_session(&state.db.lock().unwrap(), child_session_id)
+        .then(|| prompt_mutations::pending_for_session(&state.db.lock().unwrap(), &child_session_id)
             .ok().and_then(|proposals| proposals.into_iter().next()).map(|proposal| proposal.id))
         .flatten();
     let direct_dispatch = spawned_turn_id(
         &state.db.lock().unwrap(),
         &report.parent_session_id,
-        child_session_id,
+        &child_session_id,
     )
     .is_some_and(|turn_id| is_direct_agent_turn(&turn_id));
-    let core = core.clone();
-    let child_session_id = child_session_id.to_owned();
-    let result = result.clone();
-    thread::spawn(move || {
-        let state = core.clone();
         let available_capabilities = live_available_capabilities(&state);
         let completion_result = {
             let db = state.db.lock().unwrap();
@@ -9287,7 +9360,9 @@ fn report_to_parent(
             fleet_digest(&db, &report.parent_session_id)
         };
         let routing_notice = serde_json::json!({
-        "type": "bridge-worker-evidence",
+        "type": "bridge-worker-result",
+        "childSessionId": child_session_id,
+        "result": result,
         "evidenceId": report.evidence_id,
         "fleet": fleet,
         "status": result.status.as_str(),
@@ -9312,21 +9387,17 @@ fn report_to_parent(
         } }
     })
     .to_string();
-        let delivered = !direct_dispatch
-            && if let Some(proposal_id) = pending_prompt_proposal.as_deref() {
-                queue_parent_prompt_notice(&core, &report.parent_session_id, proposal_id, "worker_result", &routing_notice,
-                    "The worker failed. Its prompt proposal is still reviewable in the worker conversation.")
-            } else { match state
-                .adapters
-                .lock()
-                .unwrap()
-                .get(&report.parent_session_id)
-            {
-                Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
-                None => false,
-            } };
         {
             let db = state.db.lock().unwrap();
+            let transaction = db.unchecked_transaction()?;
+            let claimed = transaction.execute(
+                "UPDATE durable_outbox SET status='delivered',delivered_at=?2 WHERE id=?1 AND status='pending'",
+                params![report.evidence_id, Utc::now().to_rfc3339()],
+            )?;
+            if claimed == 0 { return Ok(()); }
+            let queued = if direct_dispatch { None } else {
+                Some(session_input::enqueue(&transaction, &report.parent_session_id, &routing_notice, &result.summary)?)
+            };
             let result_event = agent::NormalizedEvent {
                 kind: "delegation.result".into(),
                 item_id: Some(format!("result-{}", Uuid::new_v4())),
@@ -9337,7 +9408,9 @@ fn report_to_parent(
                 data: serde_json::json!({
                     "childSessionId": child_session_id,
                     "evidenceId": report.evidence_id,
-                    "delivered": delivered,
+                    "delivered": false,
+                    "queued": queued.is_some(),
+                    "queuedInputId": queued.as_ref().map(|input| &input.id),
                     "status": result.status.as_str(),
                     "repository": evidence_payload,
                     "awaitsAdoption": awaits_adoption,
@@ -9348,21 +9421,17 @@ fn report_to_parent(
                     "canRetry": failure.is_some(),
                 }),
             };
-            if let Ok(stored) = store::session_event(
-                &db,
+            let stored = store::session_event_in_transaction(
+                &transaction,
                 &report.parent_session_id,
                 &result_event,
                 &serde_json::json!({"delegation": true}),
-            ) {
-                core.events.publish(CoreEvent::Agent(stored));
-            }
-            if delivered {
-                let _ = db.execute(
-                    "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
-                    params![report.parent_session_id],
-                );
-            }
+            )?;
+            transaction.commit()?;
+            drop(db);
+            core.events.publish(CoreEvent::Agent(stored));
         }
+        if !direct_dispatch { drain_queued_input(core, &report.parent_session_id); }
         let workspace_id = state
             .db
             .lock()
@@ -9375,10 +9444,9 @@ fn report_to_parent(
             .ok();
         core.events.publish(CoreEvent::StateChanged);
         if let Some(workspace_id) = workspace_id {
-            dispatch_next_queued_worker(&core, &workspace_id);
+            dispatch_next_queued_worker(core, &workspace_id);
         }
-    });
-    true
+    Ok(())
 }
 
 fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
@@ -11178,6 +11246,9 @@ fn mirror_interceptions(
 /// One per boundary. Two queued messages are two turns, not one turn carrying
 /// both — the second was written without knowing what the first would produce.
 pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
+    let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "queued input delivery") else {
+        return false;
+    };
     let state = core.clone();
     let queued = {
         let db = state.db.lock().unwrap();
@@ -11310,6 +11381,7 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
     }
     thread::spawn(move || loop {
         thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
+        prepare_pending_worker_results(&core);
         recover_prompt_mutation_feedback(&core);
         let sessions = {
             let db = core.db.lock().unwrap();
@@ -14996,6 +15068,148 @@ mod submit_input_tests {
             .unwrap()
     }
 
+    fn result_delivery_fixture(core: &Arc<BridgeCore>) -> delegation::WorkerResult {
+        core.db.lock().unwrap().execute("UPDATE worker_leases SET role='research' WHERE session_id='child'", []).unwrap();
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1, "status": "completed", "summary": "Traced result delivery",
+            "filesChanged": ["src/errors.ts"],
+            "tests": [{"command": "synthetic check", "status": "passed"}],
+            "decisions": ["use the durable queue"], "risks": ["live provider not exercised"],
+            "remainingWork": ["manual smoke check"], "suggestedNextAction": "finish"
+        })).unwrap()
+    }
+
+    #[test]
+    fn worker_result_delivery_waits_for_parent_boundary_and_carries_the_full_result() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let sent = attach_to(&core, "parent", false);
+        let result = result_delivery_fixture(&core);
+        assert!(report_to_parent(&core, "child", &result));
+        assert!(!report_to_parent(&core, "child", &result));
+        prepare_pending_worker_results(&core);
+        prepare_pending_worker_results(&core);
+        assert!(sent.lock().unwrap().is_empty(), "no competing turn while the parent is busy");
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 1);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='parent'", []).unwrap();
+        assert!(drain_queued_input(&core, "parent"));
+        assert!(!drain_queued_input(&core, "parent"));
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let notice: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(notice["type"], "bridge-worker-result");
+        assert_eq!(notice["childSessionId"], "child");
+        assert!(notice["evidenceId"].is_string());
+        assert_eq!(notice["result"], serde_json::to_value(result).unwrap());
+    }
+
+    #[test]
+    fn worker_result_delivery_survives_a_missing_parent_and_a_failed_send() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        // Only the committed record survives: no report_to_parent continuation.
+        session_supervisor::SessionSupervisor::record_result(&core.db.lock().unwrap(), "child", &result).unwrap();
+        prepare_pending_worker_results(&core);
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 1);
+        let (runtime, handles) = FakeRuntime::new(false);
+        core.adapters.lock().unwrap().insert("parent".into(), runtime);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='parent'", []).unwrap();
+        handles.refuse.store(true, Ordering::SeqCst);
+        assert!(!drain_queued_input(&core, "parent"));
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 1);
+        handles.refuse.store(false, Ordering::SeqCst);
+        assert!(drain_queued_input(&core, "parent"));
+        prepare_pending_worker_results(&core);
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn worker_result_delivery_rolls_back_outbox_receipt_when_queue_insert_fails() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        report_to_parent(&core, "child", &result);
+        core.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_result_queue BEFORE INSERT ON queued_session_input BEGIN SELECT RAISE(ABORT,'injected queue failure'); END;").unwrap();
+        prepare_pending_worker_results(&core);
+        let db = core.db.lock().unwrap();
+        let state: String = db.query_row("SELECT status FROM durable_outbox WHERE event_type='worker.result'", [], |row| row.get(0)).unwrap();
+        assert_eq!(state, "pending");
+        assert_eq!(session_input::pending_count(&db, "parent").unwrap(), 0);
+        db.execute_batch("DROP TRIGGER fail_result_queue; UPDATE durable_outbox SET next_attempt_at='2000-01-01' WHERE event_type='worker.result';").unwrap();
+        drop(db);
+        prepare_pending_worker_results(&core);
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 1);
+    }
+
+    #[test]
+    fn worker_result_delivery_survives_reopening_the_daemon_store() {
+        let (fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        assert!(report_to_parent(&core, "child", &result));
+        drop(core);
+        let core = Arc::new(BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        }).unwrap());
+        let sent = attach_to(&core, "parent", false);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='parent'", []).unwrap();
+        prepare_pending_worker_results(&core);
+        prepare_pending_worker_results(&core);
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        let notice: serde_json::Value = serde_json::from_str(&sent.lock().unwrap()[0]).unwrap();
+        assert_eq!(notice["result"], serde_json::to_value(result).unwrap());
+    }
+
+    #[test]
+    fn worker_result_delivery_is_recoverable_by_peek_but_not_by_a_foreign_parent() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        report_to_parent(&core, "child", &result);
+        let db = core.db.lock().unwrap();
+        let peek = delegation::PeekRequest { session_id: Some("child".into()), ..Default::default() };
+        let notice = worker_activity_digest(&db, "parent", &peek);
+        assert_eq!(notice["type"], "bridge-worker-result");
+        assert_eq!(notice["result"], serde_json::to_value(result).unwrap());
+        assert_eq!(notice["recovered"], true);
+        let foreign = worker_activity_digest(&db, "stranger", &peek);
+        assert!(foreign.get("result").is_none());
+        assert!(foreign["error"].as_str().unwrap().contains("not one of your workers"));
+    }
+
+    #[test]
+    fn worker_result_delivery_does_not_wake_a_direct_agent_proxy() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        let sent = attach_to(&core, "parent", false);
+        {
+            let db = core.db.lock().unwrap();
+            store::session_event(&db, "parent", &agent::NormalizedEvent {
+                kind: "delegation.spawned".into(),
+                data: serde_json::json!({"childSessionId":"child","turnId":"direct-agent-test"}),
+                ..agent::NormalizedEvent::new("delegation.spawned")
+            }, &serde_json::json!({})).unwrap();
+        }
+        report_to_parent(&core, "child", &result);
+        prepare_pending_worker_results(&core);
+        assert!(sent.lock().unwrap().is_empty());
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 0);
+    }
+
+    #[test]
+    fn worker_result_delivery_waits_for_another_input_lifecycle_owner() {
+        let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+        let result = result_delivery_fixture(&core);
+        let sent = attach_to(&core, "parent", false);
+        report_to_parent(&core, "child", &result);
+        prepare_pending_worker_results(&core);
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready' WHERE id='parent'", []).unwrap();
+        {
+            let _held = core.claim_session_lifecycle("parent", "concurrent user send").unwrap();
+            assert!(!drain_queued_input(&core, "parent"));
+            assert!(sent.lock().unwrap().is_empty());
+        }
+        assert!(drain_queued_input(&core, "parent"));
+    }
+
     /// The whole point of the change: a user who can see a worker going the wrong
     /// way can now say so, and the orchestrator is told rather than left to fight
     /// the new direction.
@@ -15574,18 +15788,7 @@ mod prompt_mutation_runtime_tests {
         handle_agent_value(&core, "child", &current, &serde_json::json!({
             "method":"error","params":{"error":{"message":"Unsupported model configuration"},"willRetry":false}
         }));
-        // Result routing is asynchronous. Wait for its durable transcript event
-        // before asserting that neither terminal path interrupted the parent.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let reported = core.db.lock().unwrap().query_row(
-                "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id='parent' AND kind='delegation.result')",
-                [], |row| row.get::<_, bool>(0),
-            ).unwrap();
-            if reported { break; }
-            assert!(std::time::Instant::now() < deadline, "failed result must reach the parent transcript");
-            thread::sleep(Duration::from_millis(5));
-        }
+        prepare_pending_worker_results(&core);
         assert!(parent_handles.sent.lock().unwrap().is_empty(), "neither prompt abort nor failed evidence may start a competing parent turn");
         assert!(child_handles.sent.lock().unwrap().is_empty(), "a failed worker is not resumed");
         assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap().result_status, "reported");
@@ -15602,7 +15805,7 @@ mod prompt_mutation_runtime_tests {
         assert!(stopped["instruction"].as_str().unwrap().contains("still pending and reviewable"));
         assert!(!stopped["instruction"].as_str().unwrap().contains("resolved"));
         let result: serde_json::Value = serde_json::from_str(&sent[2]).unwrap();
-        assert_eq!(result["type"], "bridge-worker-evidence");
+        assert_eq!(result["type"], "bridge-worker-result");
         assert_eq!(result["status"], "failed");
     }
 

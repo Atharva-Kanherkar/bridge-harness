@@ -3286,6 +3286,9 @@ fn session_entries_to_events(
                     .get("protocolVersion")
                     .and_then(serde_json::Value::as_i64)
                     .is_some();
+            let provider_meta = error_forest_identity(
+                &entry.id, &entry.kind, payload.get("providerMeta").unwrap_or(&serde_json::json!({})),
+            );
             Ok(AgentEvent {
                 id: entry.sequence,
                 session_id: entry.session_id,
@@ -3312,10 +3315,7 @@ fn session_entries_to_events(
                 } else {
                     payload.clone()
                 },
-                provider_meta: payload
-                    .get("providerMeta")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
+                provider_meta,
                 created_at: entry.created_at,
             })
         })
@@ -3935,6 +3935,13 @@ pub fn session_event(
 ///
 /// Callers that update related session state use this helper so the state
 /// change, audit records, and durable notification history commit together.
+fn error_forest_identity(entry_id: &str, kind: &str, provider_meta: &serde_json::Value) -> serde_json::Value {
+    if !matches!(kind, "error" | "runtime.failed") { return provider_meta.clone(); }
+    let mut meta = provider_meta.as_object().cloned().unwrap_or_default();
+    meta.insert("bridgeEntryId".into(), serde_json::Value::String(entry_id.to_owned()));
+    serde_json::Value::Object(meta)
+}
+
 pub(crate) fn session_event_in_transaction(
     transaction: &Transaction<'_>,
     session_id: &str,
@@ -4036,7 +4043,7 @@ pub(crate) fn session_event_in_transaction(
         title: event.title.clone(),
         text: event.text.clone(),
         data: event.data.clone(),
-        provider_meta: provider_meta.clone(),
+        provider_meta: error_forest_identity(&entry.id, &event.kind, provider_meta),
         created_at: entry.created_at,
     })
 }
@@ -4045,6 +4052,26 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn errors_keep_their_forest_identity_live_and_on_legacy_replay() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','codex','Chat','ready','reported')", []).unwrap();
+        let mut event = crate::agent::NormalizedEvent::new("error");
+        event.text = Some("429 Too Many Requests".into());
+        event.status = Some("failed".into());
+        let live = session_event(&db, "s", &event, &json!({"adapter":"codex"})).unwrap();
+        let entries = session_entries(&db, "s").unwrap();
+        assert_eq!(live.provider_meta["bridgeEntryId"], entries[0].id);
+        assert_eq!(live.provider_meta["adapter"], "codex");
+        // Old persisted payloads never carried the stamp. Replay derives it
+        // from the immutable forest row, not a sequence or an autoincrement.
+        assert!(entries[0].payload["providerMeta"].get("bridgeEntryId").is_none());
+        let replayed = session_entries_to_events(&db, entries).unwrap();
+        assert_eq!(replayed[0].provider_meta, live.provider_meta);
+        let second = session_event(&db, "s", &event, &json!({"adapter":"codex"})).unwrap();
+        assert_ne!(second.provider_meta["bridgeEntryId"], live.provider_meta["bridgeEntryId"]);
+    }
 
     #[test]
     fn a_native_compaction_is_durable_history() {

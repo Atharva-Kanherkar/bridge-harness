@@ -108,14 +108,6 @@ function assistantShadowText(item: ConversationItem): string | undefined {
   return item.text.trim() || undefined;
 }
 
-// Stored failures share their forest sequence with the emitted event id
-// (store::session_event_in_transaction). Text alone would hide a later retry
-// once the original live event leaves the bounded event window.
-function errorShadow(item: ConversationItem): string | undefined {
-  if (item.type !== "error") return undefined;
-  return `${item.eventId} ${item.status ?? ""} ${item.text.trim()}`;
-}
-
 export function mergeConversationProjections(durableItems: ConversationItem[], liveItems: ConversationItem[]): ConversationItem[] {
   const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
   const liveAnchors = new Map(liveItems.map(item => [item.identity ?? itemIdentity(item), item.sequence]));
@@ -128,12 +120,8 @@ export function mergeConversationProjections(durableItems: ConversationItem[], l
     // which need not be the smallest sequence in an unsorted input.
     if (text !== undefined && !liveShadows.has(text)) liveShadows.set(text, live.sequence);
   }
-  // Match failures by their persisted event identity, not just their wording.
-  const durableErrors = new Map<string, number>();
   const items = durableItems.map(item => {
     const identity = item.identity ?? itemIdentity(item);
-    const shadow = errorShadow(item);
-    if (shadow !== undefined) durableErrors.set(shadow, (durableErrors.get(shadow) ?? 0) + 1);
     const text = assistantShadowText(item);
     if (text !== undefined) durableTexts.add(text);
     const anchor = liveAnchors.get(identity) ?? (text === undefined ? undefined : liveShadows.get(text));
@@ -142,13 +130,6 @@ export function mergeConversationProjections(durableItems: ConversationItem[], l
   for (const live of liveItems) {
     const identity = live.identity ?? itemIdentity(live);
     if (durableIds.has(identity)) continue;
-    const shadow = errorShadow(live);
-    if (shadow !== undefined) {
-      const unmatched = durableErrors.get(shadow) ?? 0;
-      // The durable row wins: it is the one the reader can branch from, and it
-      // already sits at the sequence the merge ordered on.
-      if (unmatched > 0) { durableErrors.set(shadow, unmatched - 1); continue; }
-    }
     const text = assistantShadowText(live);
     if ((live.status === "streaming" || !live.itemId) && text !== undefined && durableTexts.has(text)) continue;
     items.push(live);

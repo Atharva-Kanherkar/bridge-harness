@@ -158,7 +158,7 @@ describe("normalized conversation reducer",()=>{
    */
   it("draws one failure once across the two projections",()=>{
     const text = "You've hit your usage limit. Try again at Sep 7th, 11:35 AM.";
-    const live = reduceConversation([event(9,"error",{status:"failed",title:"Agent error",text,providerMeta:{adapter:"codex"}})]);
+    const live = reduceConversation([event(999,"error",{status:"failed",title:"Agent error",text,providerMeta:{adapter:"codex",bridgeEntryId:"e9"}})]);
     const durable = projectSessionConversation([
       entry("e9",null,"error",{title:"Agent error",text,status:"failed",providerMeta:{adapter:"codex"}},9),
     ], "e9");
@@ -173,7 +173,7 @@ describe("normalized conversation reducer",()=>{
   it("keeps two distinct failures that happen to say the same thing",()=>{
     const text = "429 Too Many Requests";
     const live = reduceConversation([
-      event(9,"error",{status:"failed",text}),
+      event(9,"error",{status:"failed",text,providerMeta:{bridgeEntryId:"e9"}}),
       event(11,"error",{status:"failed",text}),
     ]);
     const durable = projectSessionConversation([entry("e9",null,"error",{text,status:"failed"},9)], "e9");

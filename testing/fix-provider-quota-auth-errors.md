@@ -57,8 +57,8 @@ durable twin get two different identities and both render.
 ### One failure renders once
 
 - `mergeConversationProjections` treats an error row read from the forest and
-  the live row it is a twin of as one row, matched on the persisted event
-  sequence, words and status (the merge is already per-session), and drops the live copy in
+  the live row it is a twin of as one row, matched on the stable forest entry
+  ID stamped by Bridge on both live and replayed errors, and drops the live copy in
   favour of the durable one.
 - Both doors read an error's text from the same places, so a failure whose
   words live in `data.error.message` is not two different rows saying two
@@ -106,3 +106,21 @@ deeper defect behind "I signed in and it still says sign in" is not:
 Fixing that means an auth-aware runtime teardown and an invalidation trigger
 for out-of-app changes. It is a backend lifecycle change that wants a live
 provider to verify, and is deliberately not attempted blind here.
+
+## Worker Result Delivery
+
+- Recording a canonical worker result atomically records a pending parent
+  notification. `reported` means stored, not received by the model.
+- The notification contains the complete typed result, child identity, evidence
+  ID, and repository/completion metadata. No raw worker transcript is forwarded.
+- Notifications wait in SQLite while the parent is busy or disconnected, and
+  use its ordinary turn-boundary queue rather than a concurrent `send_turn`.
+- A failed send remains retryable. Repeated sweeps or duplicate result reports
+  do not create duplicate parent turns. A restart before queueing does not lose
+  the result. An ambiguous in-flight write is surfaced rather than silently
+  treated as delivered.
+- Direct-agent proxy sessions retain their no-parent-notification behavior.
+- Peeking at a completed owned worker returns its canonical typed result rather
+  than claiming the parent has already received it. Foreign workers stay hidden.
+- Verify with synthetic runtimes only; no workers or authenticated provider
+  sessions may be launched for this task.
