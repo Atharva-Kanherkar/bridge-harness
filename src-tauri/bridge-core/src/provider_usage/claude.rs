@@ -136,26 +136,43 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
         }
     }
     if let Some(limits) = value["limits"].as_array() {
-        for (index, limit) in limits.iter().take(32).enumerate() {
-            if limit["is_active"].as_bool() == Some(false) {
-                continue;
-            }
+        let mut seen = std::collections::HashSet::new();
+        for limit in limits.iter().take(32) {
+            // CodexBar's ClaudeScopedWeeklyLimitMapper (928166f) deliberately
+            // keeps is_active:false: enforceable Fable limits report that value.
             if limit["group"].as_str() != Some("weekly")
-                && !limit["kind"]
-                    .as_str()
-                    .is_some_and(|k| k.starts_with("weekly"))
+                || limit["kind"].as_str() != Some("weekly_scoped")
             {
                 continue;
             }
-            if let Some(model) = public_text(&limit["scope"]["model"]["display_name"]) {
-                result.windows.push(window(
-                    &format!("scoped-{index}"),
-                    &format!("Weekly · {model}"),
-                    number(&limit["percent"]),
-                    timestamp(&limit["resets_at"]),
-                    Some(10080),
-                ));
+            let Some(percent) = number(&limit["percent"]) else {
+                continue;
+            };
+            let Some(model) = public_text(&limit["scope"]["model"]["display_name"]) else {
+                continue;
+            };
+            let model_id = public_text(&limit["scope"]["model"]["id"]);
+            let slug = scoped_slug(model_id.as_deref().unwrap_or(&model));
+            if slug.is_empty()
+                || slug == "all-models"
+                || slug.ends_with("-all-models")
+                || scoped_slug(&model) == "all-models"
+                || !seen.insert(slug.clone())
+            {
+                continue;
             }
+            let label = if model.to_lowercase().ends_with(" only") {
+                model
+            } else {
+                format!("{model} only")
+            };
+            result.windows.push(window(
+                &format!("claude-weekly-scoped-{slug}"),
+                &format!("Weekly · {label}"),
+                Some(percent),
+                timestamp(&limit["resets_at"]),
+                Some(10080),
+            ));
         }
     }
     if result.windows.is_empty() {
@@ -164,6 +181,15 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
         );
     }
     Ok(result)
+}
+
+fn scoped_slug(value: &str) -> String {
+    value
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 #[cfg(test)]
 mod tests {
@@ -203,21 +229,27 @@ mod tests {
                         "percent": 37.5,
                         "resets_at": "2026-09-15T00:00:00Z",
                         "scope": {"model": {"id": "claude-fable", "display_name": "Fable"}},
-                        "is_active": true
+                        "is_active": false
                     },
                     {
                         "kind": "weekly_scoped",
                         "group": "weekly",
                         "percent": 99,
-                        "scope": {"model": {"display_name": "Expired promotion"}},
-                        "is_active": false
+                        "scope": {"model": {"id": "claude-fable", "display_name": "Fable"}},
+                        "is_active": true
                     },
                     {
                         "kind": "weekly_scoped",
                         "group": "weekly",
                         "scope": {"model": {"display_name": "Unknown"}},
                         "is_active": true
-                    }
+                    },
+                    {"kind":"weekly_scoped", "group":"weekly", "percent":99,
+                     "scope":{"model":{"id":"claude-all-models", "display_name":"All models"}}},
+                    {"kind":"weekly_total", "group":"weekly", "percent":99,
+                     "scope":{"model":{"display_name":"Wrong kind"}}},
+                    {"kind":"weekly_scoped", "group":"daily", "percent":99,
+                     "scope":{"model":{"display_name":"Wrong group"}}}
                 ]
             }),
             10,
@@ -226,19 +258,29 @@ mod tests {
         let fable = data
             .windows
             .iter()
-            .find(|window| window.label == "Weekly · Fable")
+            .find(|window| window.label == "Weekly · Fable only")
             .unwrap();
         assert_eq!(fable.used_percent.value, Some(37.5));
         assert_eq!(fable.resets_at, Some(1_789_430_400));
-        assert!(data
-            .windows
-            .iter()
-            .all(|window| window.label != "Weekly · Expired promotion"));
-        let unknown = data
-            .windows
-            .iter()
-            .find(|window| window.label == "Weekly · Unknown")
-            .unwrap();
-        assert_eq!(unknown.used_percent.value, None);
+        assert_eq!(fable.id, "claude-weekly-scoped-claude-fable");
+        assert_eq!(data.windows.len(), 3);
+    }
+
+    #[test]
+    fn scoped_only_accounts_keep_zero_fable_usage_and_stable_identity() {
+        let fable = json!({"kind":"weekly_scoped", "group":"weekly", "percent":0,
+            "scope":{"model":{"id":"claude-fable", "display_name":"Fable"}}, "is_active":false});
+        let first = parse(
+            &json!({"five_hour":null, "seven_day":null, "limits":[fable.clone()]}),
+            10,
+        )
+        .unwrap();
+        let reordered = parse(&json!({"limits":[{"kind":"other"}, fable]}), 20).unwrap();
+        assert_eq!(first.windows.len(), 1);
+        assert_eq!(first.windows[0].label, "Weekly · Fable only");
+        assert_eq!(first.windows[0].used_percent.value, Some(0.0));
+        assert_eq!(first.windows[0].id, reordered.windows[0].id);
+        assert_eq!(first.windows[0].window_minutes, Some(10080));
+        assert!(first.windows[0].resets_at.is_none());
     }
 }

@@ -126,6 +126,9 @@ pub(super) fn read() -> Result<AccountUsage, String> {
     )?;
     let mut result = parse(&usage, now)?;
     result.account = public_text(&me["email"]).or_else(|| public_text(&me["sub"]));
+    // Grok Bot has a separate included allowance. Its optional endpoint must
+    // never discard successfully fetched Cursor/Third Party account limits.
+    result.windows.extend(fetch_grok_bot(&client, &cookie));
     // History is optional enrichment. A failure must not discard current account quotas,
     // and no previous account's rows are retained because this result replaces the cache.
     match fetch_history(&client, &cookie, &subject, now) {
@@ -133,6 +136,54 @@ pub(super) fn read() -> Result<AccountUsage, String> {
         Err(error) => result.history_error = Some(error),
     }
     Ok(result)
+}
+
+// Adapted from CodexBar's CursorSandUsage and CursorStatusProbe at 928166f.
+// Copyright (c) 2026 Peter Steinberger; see docs/third-party/CodexBar-LICENSE.txt.
+fn grok_bot_request(
+    client: &reqwest::blocking::Client,
+    cookie: &str,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    http::secret(
+        client
+            .post("https://cursor.com/api/dashboard/get-sand-usage-status")
+            .timeout(Duration::from_secs(5))
+            .header("Origin", "https://cursor.com")
+            .header("Accept", "application/json")
+            .json(&json!({})),
+        true,
+        cookie,
+    )
+}
+
+fn fetch_grok_bot(client: &reqwest::blocking::Client, cookie: &str) -> Option<UsageQuotaWindow> {
+    grok_bot_response(
+        grok_bot_request(client, cookie).and_then(|request| http::json(request, "Cursor")),
+    )
+}
+
+fn grok_bot_response(response: Result<Value, String>) -> Option<UsageQuotaWindow> {
+    let value = response.ok()?;
+    if value["hasNonZeroIncludedLimit"].as_bool() != Some(true) {
+        return None;
+    }
+    let percent = value["usagePercent"]
+        .as_f64()
+        .filter(|v| v.is_finite())?
+        .clamp(0.0, 100.0);
+    let reset = timestamp(&value["nextResetTimestampUtc"]);
+    let minutes = timestamp(&value["currentPeriodStart"])
+        .zip(reset)
+        .and_then(|(start, end)| end.checked_sub(start))
+        .map(|seconds| (seconds as f64 / 60.0).round() as i64)
+        .filter(|minutes| *minutes > 0);
+    Some(window(
+        "cursor-grok-bot",
+        "Grok Bot",
+        Some(percent),
+        reset,
+        minutes,
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -646,6 +697,73 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn grok_bot_uses_its_own_allowance_and_reset() {
+        let row = grok_bot_response(Ok(json!({
+            "currentPeriodStart":"2026-08-17T07:57:50.647Z",
+            "nextResetTimestampUtc":"2026-08-24T07:57:50.647Z",
+            "usagePercent":35, "hasAvailableUsage":false, "hasNonZeroIncludedLimit":true
+        })))
+        .unwrap();
+        assert_eq!(row.id, "cursor-grok-bot");
+        assert_eq!(row.label, "Grok Bot");
+        assert_eq!(row.used_percent.value, Some(35.0));
+        assert_eq!(row.window_minutes, Some(10080));
+        assert_eq!(row.resets_at, timestamp(&json!("2026-08-24T07:57:50.647Z")));
+        for (raw, expected) in [(0.0, 0.0), (-1.0, 0.0), (150.0, 100.0)] {
+            let row = grok_bot_response(Ok(
+                json!({"usagePercent":raw, "hasNonZeroIncludedLimit":true}),
+            ))
+            .unwrap();
+            assert_eq!(row.used_percent.value, Some(expected));
+            assert!(row.resets_at.is_none() && row.window_minutes.is_none());
+        }
+    }
+
+    #[test]
+    fn optional_grok_bot_failure_never_replaces_base_cursor_usage() {
+        for response in [
+            Err("timeout".into()),
+            Ok(json!({})),
+            Ok(json!({"usagePercent":35, "hasNonZeroIncludedLimit":false})),
+            Ok(json!({"hasNonZeroIncludedLimit":true})),
+            Ok(json!({"usagePercent":"bad", "hasNonZeroIncludedLimit":true})),
+        ] {
+            let mut base = parse(
+                &json!({"individualUsage":{"plan":{"totalPercentUsed":25}}}),
+                10,
+            )
+            .unwrap();
+            base.windows.extend(grok_bot_response(response));
+            assert_eq!(base.windows.len(), 1);
+            assert_eq!(base.windows[0].used_percent.value, Some(25.0));
+        }
+        let malformed_reset = grok_bot_response(Ok(json!({"usagePercent":35,
+            "hasNonZeroIncludedLimit":true, "currentPeriodStart":"bad", "nextResetTimestampUtc":"bad"}))).unwrap();
+        assert!(malformed_reset.resets_at.is_none() && malformed_reset.window_minutes.is_none());
+    }
+
+    #[test]
+    fn grok_bot_request_is_bounded_and_uses_the_existing_cursor_session() {
+        let request = grok_bot_request(&http::client().unwrap(), "test=session")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.url().as_str(),
+            "https://cursor.com/api/dashboard/get-sand-usage-status"
+        );
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(request.timeout(), Some(&Duration::from_secs(5)));
+        assert_eq!(request.headers()["origin"], "https://cursor.com");
+        assert_eq!(request.headers()["accept"], "application/json");
+        assert_eq!(request.headers()["content-type"], "application/json");
+        assert_eq!(request.headers()["cookie"], "test=session");
+        assert!(request.headers()["cookie"].is_sensitive());
+        assert_eq!(request.body().unwrap().as_bytes(), Some(b"{}".as_slice()));
+    }
+
     #[test]
     fn dashboard_percent_units_cents_and_shared_limits() {
         let row = parse(&json!({"individualUsage":{"plan":{"used":100,"limit":2000,"totalPercentUsed":0.36},"onDemand":{"used":0}},"teamUsage":{"pooled":{"used":500,"limit":1000}}}), 10).unwrap();
