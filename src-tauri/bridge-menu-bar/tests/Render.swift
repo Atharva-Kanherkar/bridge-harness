@@ -68,7 +68,7 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
         ("high-contrast-dark", .accessibilityHighContrastDarkAqua),
     ]
     for (name, appearanceName) in appearances {
-      for surface in ["overview", "overview-default", "codex", "cursor", "cursor-disconnected"] {
+      for surface in ["overview", "overview-default", "codex", "codex-day", "cursor", "cursor-disconnected"] {
         for (sizeName, maximumHeight) in [("full", CGFloat(1_000)), ("compact", CGFloat(280))] {
             let appearance = NSAppearance(named: appearanceName)!
             let state = MenuState()
@@ -82,6 +82,9 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
             } else if surface == "cursor-disconnected" {
                 state.presentation.settings.selectedProvider = "cursor"
                 state.presentation.settings.cursorEnabled = false
+            } else if surface == "codex-day" {
+                state.presentation.settings.selectedProvider = "codex"
+                state.setHistoryDay("2026-09-14", for: "codex")
             } else if !state.showingOverview {
                 state.presentation.settings.selectedProvider = surface
             }

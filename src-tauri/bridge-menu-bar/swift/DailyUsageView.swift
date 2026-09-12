@@ -10,7 +10,7 @@ struct DailyUsageView: View {
     @Binding var chartMetric: String
     var days: [UsageDay] { usage.daily ?? [] }
     var costChart: Bool { showCost && (!showTokens || chartMetric == "cost") }
-    var selected: UsagePeriod { days.first { $0.day == selectedDay }?.usage ?? usage.month }
+    var selected: UsagePeriod? { days.first { $0.day == selectedDay }?.usage }
     func metric(_ day: UsageDay) -> Metric { costChart ? day.usage.costMicrousd : day.usage.tokens }
     var chartDays: [UsageDay] { days.filter { metric($0).current != nil } }
     var body: some View {
@@ -63,12 +63,11 @@ struct DailyUsageView: View {
                     Text("All recorded days").tag("all")
                     ForEach(days.reversed()) { day in Text(day.day).tag(day.day) }
                 }.font(.system(size: 11))
-                if selectedDay != "all" {
-                    if showTokens { detail("Tokens", countLabel(selected.tokens)) }
-                    if showCost { detail(usage.provider == "cursor" ? "API-rate cost" : "Cost", moneyLabel(selected.costMicrousd)) }
+                if let selected = selected {
+                    Text(usageSummaryValues(selected, showTokens: showTokens, showCost: showCost))
+                        .font(.system(size: 11)).monospacedDigit()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                Text("Recorded days only · missing history is not zero usage")
-                    .font(.system(size: 9)).foregroundColor(.secondary)
             }
         }
         .frame(height: days.isEmpty ? 88 : 184, alignment: .topLeading)

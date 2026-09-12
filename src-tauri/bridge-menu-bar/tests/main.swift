@@ -181,6 +181,9 @@ let reconstructedHistoryCard = NSHostingView(rootView: MenuCard(state: hostedSta
 reconstructedHistoryCard.layoutSubtreeIfNeeded()
 check(hostedState.historySelection(for: "codex").metric == "cost",
       "Rebuilding the hosted card must preserve its provider-local metric")
+let missingHistoryDay = DailyUsageView(usage: fixture.usage!.providers[0], showCost: true, showTokens: true,
+    selectedDay: .constant("1900-01-01"), chartMetric: .constant("tokens"))
+check(missingHistoryDay.selected == nil, "An expired day selection must never substitute the whole month's totals")
 
 let coalescedDocument = MeasuredMenuDocument(frame: .zero)
 let coalescedScroll = MenuCardScrollView(document: coalescedDocument, width: 350, maximumHeight: 300)
