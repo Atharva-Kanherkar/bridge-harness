@@ -400,3 +400,59 @@ The installed app opens Overview, exposes the new native toggle buttons,
 and switches to Claude's detail card without dismissing the menu. No new
 Bridge crash report was present. The five-provider spacing/color render uses
 fixture data; Cursor remains disabled pending explicit credential-use approval.
+
+### Favorites, horizontal overflow, and Claude scoped limits · 2026-09-12
+
+`3577749` adds persisted top-three favorites and protocol 1.12; `ed8d998`
+reads Claude model-specific CLI limits; `504ac0d` adds the native scroll strip.
+Default favorites are Codex, Claude, and Cursor, independent of collection
+switches. The strip keeps Overview fixed and three equal provider slots within
+the existing 350-point width. Long overflow names truncate with tooltips.
+
+Validation at these commits:
+
+- Production frontend build and all 2,058 frontend tests pass, including 15
+  focused Menu Bar tests for layout, favorites, and settings persistence.
+- All 164 protocol unit tests and two doctests pass, including the older-daemon
+  rejection and default-favorites migration checks. Three Menu Bar store tests
+  pass for order, validation, and preserving disabled collectors.
+- Claude OAuth tests: 3 pass. Claude CLI tests: 11 pass, covering Fable alongside
+  other scoped models, incomplete sections, redraws, and bounded capture.
+- All 89 desktop library tests pass. The initial sandbox run blocked four
+  temporary Unix-socket fixtures; rerunning outside that restriction passed.
+- Native Swift checks pass for disconnected-data isolation, 69-provider
+  overflow, exact three-slot geometry with a long fourth name, wheel direction,
+  clamping, selection reveal, and preserving scroll position across snapshots.
+  The x86_64 macOS 12 type check also passes.
+- Synthetic production-card renders were inspected in light/dark appearances,
+  including the default three tabs, provider 69, and disconnected Cursor.
+  These fixtures demonstrate layout and semantics, not live account results.
+
+The reference was CodexBar `928166f`, inspected by a GPT-5.6 Sol subagent before
+implementation. The palette and button styling retain that reference; the
+fixed-width horizontal scrolling adapts it to the requested Bridge behavior.
+Current collectors remain Codex, Claude, Cursor, and OpenCode. Testing 69 tabs
+does not claim support for 69 account adapters.
+
+Installed-app checking found a hosted-button issue: the disconnected provider's
+Settings link opened the right page but left the native menu tracking above it.
+`2c31167` follows CodexBar's explicit `cancelTrackingWithoutAnimation()` before
+opening Settings. Native checks and the Intel macOS 12 type check pass again;
+the rebuilt installed app dismisses the menu correctly when this link is clicked.
+
+The final signed preview at `/Users/yashaf/Applications/Bridge Menu Bar Preview.app`
+has executable SHA-256
+`d5006d1fc100028b447d12a3bb0d2db37ff9bdf585a0875102991ee4baab65df`.
+Strict/deep signature checks and staged/installed byte matching pass. The prior
+preview is retained as `Bridge Menu Bar Preview.previous-20260912-150044.app`.
+No new Bridge crash report was present after launch.
+
+Live checks confirmed the default tabs, arrow navigation to OpenCode, selection
+without closing the menu, disconnected Cursor with no cached account details,
+favorite swapping and saving, and the corrected Settings link. Default favorites
+and Show used mode survived relaunch. Manual Claude refresh recovered current
+5-hour and Weekly values via Claude CLI; no separate Fable limit was returned
+in this observation. Fable parsing is fixture-verified, not claimed live-visible.
+Claude's expired stored OAuth session still makes background refresh stale;
+manual Refresh can recover CLI usage without silently repairing credentials.
+Cursor collection remains off pending the previously requested authorization.
