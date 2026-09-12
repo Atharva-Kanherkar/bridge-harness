@@ -1,6 +1,8 @@
 # Changelog
 
-## [0.5.7] - 2026-09-12
+## [0.5.8] - 2026-09-12
+
+- Encode the existing updater public key as the minisign text box Tauri requires. The 0.5.7 build was rejected before publication; no signing key was replaced.
 
 - Persist worker-result notifications with their canonical result and deliver the complete report at the parent's next turn boundary. Busy or disconnected parents no longer lose a one-shot notification.
 - Recover completed worker reports through peek, keep pending deliveries across restarts, and preserve parent runtimes while work or result delivery is pending.
