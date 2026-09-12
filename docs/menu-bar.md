@@ -166,8 +166,12 @@ Codex, Claude, Cursor, and OpenCode; scroll capacity does not imply new adapters
 Navigation arrows sit at opposite edges with matching 6-point outer gutters and
 4-point gaps beside the tab group; three equal provider slots fit between them.
 The menu card scrolls vertically without a visible scrollbar. Provider changes
-use a brief layer opacity fade after the deferred layout update, respecting
-macOS Reduce Motion without animating menu geometry or replacing the open menu.
+use a 200ms content fade after the deferred layout update, and selected tab
+backgrounds fade over 160ms. Arrow paging eases the real horizontal clip offset
+over 180ms so the visible tabs and click targets move together. Wheel input,
+provider selection, and detachment cancel paging; routine snapshots do not
+replay animations. All motion respects macOS Reduce Motion, without animating
+menu geometry or replacing the open menu.
 
 The status item's usage, custom layout, and template meter always belong to the
 first favorite. Detail-tab selection is independent. With no favorites, the

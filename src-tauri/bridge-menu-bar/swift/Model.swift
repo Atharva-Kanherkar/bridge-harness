@@ -153,9 +153,13 @@ final class MenuState: ObservableObject {
     @Published var presentation = Presentation(settings: .initial, usage: nil, refreshing: false, error: nil)
 
     func select(_ id: String) {
+        let previous = showingOverview ? "overview" : presentation.settings.activeProvider
+        guard previous != id else { return }
         showingOverview = id == "overview"
         if !showingOverview { selectProvider(id) }
-        surfaceChanged()
+        // A different provider fades when its snapshot arrives. Only switching
+        // Overview to/from the already loaded provider needs an immediate fade.
+        if showingOverview || presentation.settings.activeProvider == id { surfaceChanged() }
     }
 
     func historySelection(for provider: String) -> HistorySelection {

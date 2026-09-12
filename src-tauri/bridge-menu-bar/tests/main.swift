@@ -503,6 +503,61 @@ check(abs(switcher.testScrollOffset - preservedOffset) < 0.5, "Repeated polling 
 switcher.buttons[69].performClick(nil)
 check(pickedProvider == "provider-69", "Synthetic overflow selection dispatches the provider ID")
 
+// Exercise paging in the same tracking run-loop mode as an open NSMenu. Wheel
+// input and a click must cancel motion so their real hit targets never drift.
+func runTrackingUntil(timeout: TimeInterval = 1, _ complete: () -> Bool) {
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    repeat {
+        // AppKit may stop an individual run while realizing a hidden window.
+        CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.01, false)
+    } while !complete() && ProcessInfo.processInfo.systemUptime < deadline
+}
+let pagingWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 350, height: 30),
+    styleMask: [.borderless], backing: .buffered, defer: false)
+let animatedSwitcher = ProviderSwitcherView(providers: manyProviders, selection: "overview") { _ in }
+pagingWindow.contentView = animatedSwitcher
+animatedSwitcher.layoutSubtreeIfNeeded()
+animatedSwitcher.testScrollForward()
+if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+    check(animatedSwitcher.testScrollAnimating && animatedSwitcher.testScrollOffset == 0,
+          "Arrow paging starts from the actual clip origin without jumping its hit targets")
+}
+runTrackingUntil { animatedSwitcher.testScrollOffset > 0 }
+check(animatedSwitcher.testScrollOffset > 0 && animatedSwitcher.testScrollOffset <= animatedSwitcher.testViewportWidth,
+      "Arrow paging advances within its bounds during native menu tracking: offset=\(animatedSwitcher.testScrollOffset), viewport=\(animatedSwitcher.testViewportWidth), running=\(animatedSwitcher.testScrollAnimating)")
+animatedSwitcher.testScrollByWheelDelta(12)
+let interruptedOffset = animatedSwitcher.testScrollOffset
+check(!animatedSwitcher.testScrollAnimating, "Trackpad input immediately takes ownership from arrow animation")
+runTrackingUntil(timeout: 0.22) { false }
+check(animatedSwitcher.testScrollOffset == interruptedOffset, "A cancelled animation must never pull the reader back")
+animatedSwitcher.testScrollForward()
+animatedSwitcher.buttons[2].performClick(nil)
+check(!animatedSwitcher.testScrollAnimating && animatedSwitcher.buttons[2].state == .on,
+      "Clicking a provider cancels paging and leaves its actual selection intact")
+animatedSwitcher.testScrollForward()
+runTrackingUntil { !animatedSwitcher.testScrollAnimating }
+check(!animatedSwitcher.testScrollAnimating && animatedSwitcher.testScrollOffset <= animatedSwitcher.testMaximumOffset,
+      "Arrow paging completes and releases its timer without exceeding the viewport")
+animatedSwitcher.testScrollForward()
+pagingWindow.contentView = nil
+check(!animatedSwitcher.testScrollAnimating, "Detaching the menu view cancels its paging timer")
+check(!pagingWindow.isVisible, "Animation checks never show a test window")
+
+let animatedState = MenuState()
+animatedState.presentation = fixture
+var surfaceFades = 0
+var requestedProvider = ""
+animatedState.surfaceChanged = { surfaceFades += 1 }
+animatedState.selectProvider = { requestedProvider = $0 }
+animatedState.select("cursor")
+check(requestedProvider == "cursor" && surfaceFades == 0,
+      "A provider change waits for its new snapshot instead of fading old content first")
+animatedState.presentation.settings.selectedProvider = "cursor"
+animatedState.select("cursor")
+check(surfaceFades == 0, "Clicking the already selected provider must not replay the content animation")
+animatedState.select("overview")
+check(surfaceFades == 1 && animatedState.showingOverview, "Returning to Overview requests one content animation")
+
 var disconnected = fixture
 disconnected.settings.pinnedProviders = ["cursor"]
 disconnected.settings.selectedProvider = "cursor"

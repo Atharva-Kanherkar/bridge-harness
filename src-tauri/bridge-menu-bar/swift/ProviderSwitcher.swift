@@ -63,6 +63,7 @@ final class ProviderSwitcherView: NSView {
     private var onSelect: (String) -> Void
     private var pendingReveal: String?
     private var hoveredIndex: Int?
+    private let scrollAnimation = ProviderScrollAnimation()
 
     init(providers: [String], selection: String, onSelect: @escaping (String) -> Void) {
         self.onSelect = onSelect
@@ -87,6 +88,11 @@ final class ProviderSwitcherView: NSView {
     required init?(coder: NSCoder) { nil }
     override var intrinsicContentSize: NSSize { NSSize(width: Self.fixedWidth, height: Self.rowHeight) }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { scrollAnimation.cancel() }
+    }
+
     private func configureArrow(_ button: NSButton, symbol: String, action: Selector) {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         button.imagePosition = .imageOnly
@@ -107,6 +113,7 @@ final class ProviderSwitcherView: NSView {
         let listChanged = ids != next
         let previousSelection = buttons.first { $0.state == .on }.flatMap { ids.indices.contains($0.tag) ? ids[$0.tag] : nil }
         if listChanged {
+            scrollAnimation.cancel()
             buttons.forEach { $0.removeFromSuperview() }
             ids = next
             buttons = ids.enumerated().map { index, id in
@@ -172,13 +179,28 @@ final class ProviderSwitcherView: NSView {
     }
 
     private var maximumOffset: CGFloat { max(0, providerDocument.frame.width - scrollView.contentView.bounds.width) }
-    private func setOffset(_ proposed: CGFloat) {
+    private func applyOffset(_ proposed: CGFloat) {
         let offset = min(max(0, proposed), maximumOffset)
         scrollView.contentView.scroll(to: NSPoint(x: offset, y: 0))
         scrollView.reflectScrolledClipView(scrollView.contentView)
         updateArrowState()
     }
-    private func clampScrollOffset() { setOffset(scrollView.contentView.bounds.origin.x) }
+    private func setOffset(_ proposed: CGFloat, animated: Bool = false) {
+        scrollAnimation.cancel()
+        let offset = min(max(0, proposed), maximumOffset)
+        if animated && window != nil {
+            scrollAnimation.start(from: scrollView.contentView.bounds.origin.x, to: offset) { [weak self] value in
+                self?.applyOffset(value)
+            }
+        } else {
+            applyOffset(offset)
+        }
+    }
+    private func clampScrollOffset() {
+        let origin = scrollView.contentView.bounds.origin.x
+        // Snapshot restyling must not interrupt an in-flight arrow gesture.
+        if origin < 0 || origin > maximumOffset { setOffset(origin) }
+    }
     private func scrollByWheelDelta(_ delta: CGFloat) {
         // AppKit reports positive deltas toward the leading edge.
         setOffset(scrollView.contentView.bounds.origin.x - delta)
@@ -195,35 +217,54 @@ final class ProviderSwitcherView: NSView {
         previousButton.isEnabled = offset > 0.5
         nextButton.isEnabled = offset < maximumOffset - 0.5
     }
-    @objc private func scrollBackward() { setOffset(scrollView.contentView.bounds.origin.x - scrollView.contentView.bounds.width) }
-    @objc private func scrollForward() { setOffset(scrollView.contentView.bounds.origin.x + scrollView.contentView.bounds.width) }
+    @objc private func scrollBackward() { setOffset(scrollView.contentView.bounds.origin.x - scrollView.contentView.bounds.width, animated: true) }
+    @objc private func scrollForward() { setOffset(scrollView.contentView.bounds.origin.x + scrollView.contentView.bounds.width, animated: true) }
 
     @objc private func selectProvider(_ sender: NSButton) {
         guard ids.indices.contains(sender.tag) else { return }
+        scrollAnimation.cancel()
         for button in buttons { button.state = button === sender ? .on : .off }
-        updateStyles()
+        updateStyles(animated: true)
         reveal(ids[sender.tag])
         onSelect(ids[sender.tag])
     }
 
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateStyles() }
-    private func updateStyles() {
+    private func updateStyles(animated: Bool = false) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             defer { CATransaction.commit() }
             let light = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua
+            let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             for button in buttons {
                 let selected = button.state == .on
                 button.contentTintColor = selected ? .white : .secondaryLabelColor
                 let hover = light ? NSColor.black.withAlphaComponent(0.095) : NSColor.labelColor.withAlphaComponent(0.06)
-                button.layer?.backgroundColor = (selected ? NSColor.controlAccentColor : hoveredIndex == button.tag ? hover : .clear).cgColor
+                guard let layer = button.layer else { continue }
+                let color = (selected ? NSColor.controlAccentColor : hoveredIndex == button.tag ? hover : .clear).cgColor
+                let previous = layer.presentation()?.backgroundColor ?? layer.backgroundColor
+                let changed = layer.backgroundColor != color
+                layer.backgroundColor = color
+                let key = "providerSelection"
+                if reduceMotion || changed { layer.removeAnimation(forKey: key) }
+                if animated && changed && !reduceMotion && window != nil {
+                    // CodexBar's explicit presentation-layer fade avoids
+                    // animating routine snapshots or SwiftUI menu geometry.
+                    let fade = CABasicAnimation(keyPath: "backgroundColor")
+                    fade.fromValue = previous
+                    fade.toValue = color
+                    fade.duration = 0.16
+                    fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    layer.add(fade, forKey: key)
+                }
             }
         }
     }
 
     // Native control probes keep overflow behavior testable without live providers.
     var testScrollOffset: CGFloat { scrollView.contentView.bounds.origin.x }
+    var testScrollAnimating: Bool { scrollAnimation.isRunning }
     var testMaximumOffset: CGFloat { maximumOffset }
     var testArrowState: (previous: Bool, next: Bool) { (previousButton.isEnabled, nextButton.isEnabled) }
     var testViewportWidth: CGFloat { scrollView.contentView.bounds.width }

@@ -101,9 +101,9 @@ final class MenuCardScrollView: NSScrollView {
         // model layer fully visible and never animate NSMenu geometry or retain
         // outgoing SwiftUI cards during fitting-size measurement.
         let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0.82
+        fade.fromValue = 0.5
         fade.toValue = 1.0
-        fade.duration = 0.12
+        fade.duration = 0.2
         fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
         layer.add(fade, forKey: key)
     }
