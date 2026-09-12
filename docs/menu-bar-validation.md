@@ -530,3 +530,29 @@ and the saved spend preference checked again. This main-window close behavior
 is separate from native menu dismissal. Intermittent computer-use capture errors
 required refreshing accessibility state; direct menu interactions then resumed.
 Cursor collection remains disabled as before.
+
+### Provider arrows on opposite edges · 2026-09-12
+
+`ebfece9b` places Previous providers at the leading edge and More providers at
+the trailing edge: `‹ Overview Codex Claude Cursor ›`. Overview remains fixed
+while only the provider list scrolls. In overflow, both arrows have the same
+2-point inner gap; three equal 74-point provider slots fit inside the existing
+350-point width. When there is no overflow, arrows and their reserved space
+remain hidden.
+
+A GPT-5.6 Sol subagent inspected CodexBar `928166f` first. CodexBar itself uses
+adaptive rows rather than overflow arrows, so this change adapts the existing
+Bridge strip to the requested edge placement. Existing native scrolling,
+selection, clamping, three-favorite, and 69-provider checks pass, as does the
+x86_64 macOS 12 type check. Synthetic light/dark and high-contrast renders show
+the default favorites and the final overflow page with an arrow on each side.
+
+The production build passed and the signed preview was installed with
+executable SHA-256
+`b5b2da6a96446e86ea6c8f849fbfaa18af2dbba614dc81c598c59e73f7c32d58`.
+Strict/deep signature verification and staged/installed byte matching passed;
+the previous build is preserved as
+`Bridge Menu Bar Preview.previous-20260912-160300.app`.
+The exact installed app launched as PID 86759. macOS locked before the native
+menu could be reopened, so final installed arrow clicks remain unverified;
+spacing evidence comes from the synthetic production-control renders above.
