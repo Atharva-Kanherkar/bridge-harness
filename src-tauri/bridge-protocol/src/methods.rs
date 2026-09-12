@@ -96,6 +96,7 @@ methods![
     (DispatchAgentShortcut, "sessions", "dispatch_agent_shortcut"),
     (CompactSession, "sessions", "compact_session"),
     (SearchSessionEntries, "sessions", "search_session_entries"),
+    (ExportSessionTranscript, "sessions", "export_session_transcript"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),

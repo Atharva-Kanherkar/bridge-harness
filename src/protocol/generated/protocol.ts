@@ -59,6 +59,7 @@ export type BridgeMethod =
   | "sessions/dispatch_agent_shortcut"
   | "sessions/compact_session"
   | "sessions/search_session_entries"
+  | "sessions/export_session_transcript"
   | "sessions/interrupt_turn"
   | "sessions/retry_worker_task"
   | "sessions/refresh_account_usage"
@@ -251,6 +252,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/dispatch_agent_shortcut", domain: "sessions", command: "dispatch_agent_shortcut" },
   { method: "sessions/compact_session", domain: "sessions", command: "compact_session" },
   { method: "sessions/search_session_entries", domain: "sessions", command: "search_session_entries" },
+  { method: "sessions/export_session_transcript", domain: "sessions", command: "export_session_transcript" },
   { method: "sessions/interrupt_turn", domain: "sessions", command: "interrupt_turn" },
   { method: "sessions/retry_worker_task", domain: "sessions", command: "retry_worker_task" },
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
@@ -505,6 +507,7 @@ export interface BridgeMethodParams {
   "sessions/dispatch_agent_shortcut": DispatchAgentShortcutParams;
   "sessions/compact_session": CompactSessionParams;
   "sessions/search_session_entries": SearchSessionEntriesParams;
+  "sessions/export_session_transcript": ExportSessionTranscriptParams;
   "sessions/interrupt_turn": InterruptTurnParams;
   "sessions/retry_worker_task": RetryWorkerTaskParams;
   "sessions/refresh_account_usage": undefined;
@@ -699,6 +702,7 @@ export interface BridgeMethodResults {
   "sessions/dispatch_agent_shortcut": DispatchAgentShortcutResult;
   "sessions/compact_session": UnitResult;
   "sessions/search_session_entries": SearchSessionEntriesResult;
+  "sessions/export_session_transcript": ExportSessionTranscriptResult;
   "sessions/interrupt_turn": UnitResult;
   "sessions/retry_worker_task": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
@@ -1793,6 +1797,8 @@ export interface TerminalRecord {
   workspaceId: string;
 }
 
+export type TranscriptExportScope = "active_branch" | "forest";
+
 export interface TurnImage {
   base64Data: string;
   mediaType: string;
@@ -2761,6 +2767,25 @@ export interface SearchSessionEntriesParams {
 export interface SearchSessionEntriesResult {
   hits: SessionRecallHit[];
   query: string;
+  sessionId: string;
+}
+
+export interface ExportSessionTranscriptParams {
+  destinationPath?: string | null;
+  includeHidden?: boolean | null;
+  scope?: TranscriptExportScope | null;
+  sessionId: string;
+}
+
+export interface ExportSessionTranscriptResult {
+  bytes: JsSafeU64;
+  digest: string;
+  entryCount: JsSafeU64;
+  exportedAt: string;
+  lineCount: JsSafeU64;
+  path: string;
+  schemaVersion: JsSafeU64;
+  scope: TranscriptExportScope;
   sessionId: string;
 }
 

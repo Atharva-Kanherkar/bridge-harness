@@ -100,6 +100,8 @@ export type {
   SlashCommandResolve,
   SearchSessionEntriesResult,
   SessionRecallHit,
+  ExportSessionTranscriptResult,
+  TranscriptExportScope,
   MemoryRecord,
   ListMemoryRecordsResult,
   MemoryCapabilities,
