@@ -26,6 +26,9 @@ pub(crate) struct AccountUsage {
     pub metrics: Vec<UsageAccountMetric>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Internal fingerprint of a freshly verified account; never an auth token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_scope: Option<String>,
     /// Remote account history stays separate from the device-local usage ledger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<AccountHistory>,

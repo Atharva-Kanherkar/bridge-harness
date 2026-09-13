@@ -126,11 +126,12 @@ pub(super) fn read() -> Result<AccountUsage, String> {
     )?;
     let mut result = parse(&usage, now)?;
     result.account = public_text(&me["email"]).or_else(|| public_text(&me["sub"]));
+    result.account_scope = Some(account_scope(&subject));
     // Grok Bot has a separate included allowance. Its optional endpoint must
     // never discard successfully fetched Cursor/Third Party account limits.
     result.windows.extend(fetch_grok_bot(&client, &cookie));
     // History is optional enrichment. A failure must not discard current account quotas,
-    // and no previous account's rows are retained because this result replaces the cache.
+    // and the central cache can retain history only for this verified account.
     match fetch_history(&client, &cookie, &subject, now) {
         Ok(history) => result.history = Some(history),
         Err(error) => result.history_error = Some(error),
@@ -553,10 +554,8 @@ fn history(
         .into_iter()
         .map(|(model, aggregate)| model_row(model, &aggregate))
         .collect();
-    let mut hasher = Sha256::new();
-    hasher.update(subject.as_bytes());
     AccountHistory {
-        account_scope: format!("{:x}", hasher.finalize()),
+        account_scope: account_scope(subject),
         observed_at: now,
         through_day: today.to_string(),
         today: today_total.period(
@@ -574,6 +573,10 @@ fn history(
             "Cursor dashboard account history · last 30 days · API-rate cost, distinct from actual plan billing".into()
         },
     }
+}
+
+fn account_scope(subject: &str) -> String {
+    format!("{:x}", Sha256::digest(subject.as_bytes()))
 }
 
 fn model_row(model: String, aggregate: &Aggregate) -> UsageModelOverview {

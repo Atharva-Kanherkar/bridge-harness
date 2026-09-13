@@ -481,6 +481,7 @@ fn project_account_history(
     mut history: crate::provider_usage::AccountHistory,
     today: chrono::NaiveDate,
     now: i64,
+    refresh_error: Option<&str>,
 ) -> crate::provider_usage::AccountHistory {
     let crossed_day = history.through_day != today.to_string();
     history.today = if crossed_day {
@@ -493,7 +494,7 @@ fn project_account_history(
             .map(|day| day.usage.clone())
             .unwrap_or_else(confirmed_empty_account_period)
     };
-    if crossed_day || now < history.observed_at || now - history.observed_at >= 600 {
+    if refresh_error.is_some() || crossed_day || now < history.observed_at || now - history.observed_at >= 600 {
         stale_period(&mut history.today);
         stale_period(&mut history.month);
         for day in &mut history.daily {
@@ -502,6 +503,9 @@ fn project_account_history(
         history
             .coverage
             .push_str(" · stale; refresh for current account history");
+    }
+    if let Some(error) = refresh_error {
+        history.coverage.push_str(&format!(" · {error}"));
     }
     history
 }
@@ -757,7 +761,7 @@ pub fn provider_snapshots(
         let (today_usage, month_usage, daily_usage, coverage) = if let Some(history) =
             account_history.take()
         {
-            let history = project_account_history(history, today, now.timestamp());
+            let history = project_account_history(history, today, now.timestamp(), history_error.as_deref());
             (
                 history.today,
                 history.month,
@@ -818,6 +822,36 @@ fn expire_provider(quota: &mut crate::provider_usage::AccountUsage, failed: bool
         }
     }
 }
+
+fn retain_cursor_history(
+    usage: &mut crate::provider_usage::AccountUsage,
+    prior: Option<&crate::provider_usage::AccountUsage>,
+) {
+    let retryable = usage.history_error.as_deref().is_some_and(|error| {
+        error == "Cursor response could not be read"
+            || error == "Cursor history request timed out"
+            || error == "Cursor history pagination was inconsistent"
+            || error == "Cursor history pagination was incomplete"
+            || error.starts_with("Cursor usage request failed or timed out.")
+            || error.starts_with("Cursor is rate limited.")
+            || error.strip_prefix("Cursor usage is unavailable (HTTP ")
+                .and_then(|code| code.strip_suffix(")."))
+                .and_then(|code| code.parse::<u16>().ok())
+                .is_some_and(|code| code == 408 || (500..600).contains(&code))
+    });
+    if usage.history.is_some() || !retryable {
+        return;
+    }
+    // An email label is insufficient: only a freshly verified account scope
+    // can authorize reuse. Keep observation time and the refresh error so the
+    // projection marks these amounts stale even if they were fetched recently.
+    if let Some(history) = prior.and_then(|prior| prior.history.as_ref()) {
+        if usage.account_scope.as_deref() == Some(history.account_scope.as_str()) {
+            usage.history = Some(history.clone());
+        }
+    }
+}
+
 fn refresh_provider(
     core: &BridgeCore,
     provider: bridge_protocol::messages::MenuBarProvider,
@@ -837,14 +871,20 @@ fn refresh_provider(
     } else {
         crate::provider_usage::read(provider, settings)
     } {
-        Ok(usage) => CachedProvider {
-            usage: Some(usage),
-            error: None,
-        },
+        Ok(mut usage) => {
+            if provider == bridge_protocol::messages::MenuBarProvider::Cursor {
+                retain_cursor_history(&mut usage, prior.usage.as_ref());
+            }
+            CachedProvider {
+                usage: Some(usage),
+                error: None,
+            }
+        }
         Err(error) => CachedProvider {
             usage: prior.usage.map(|mut q| {
                 q.account = None;
                 q.plan = None;
+                q.account_scope = None;
                 q.history = None;
                 q
             }),
@@ -1092,10 +1132,107 @@ mod provider_tests {
             daily: vec![],
             coverage: "Cursor dashboard account history".into(),
         };
-        let projected = project_account_history(history, today, observed_at + 120);
+        let projected = project_account_history(history, today, observed_at + 120, None);
         assert_eq!(projected.today.tokens.value, None);
         assert_eq!(projected.today.tokens.status, Status::Unavailable);
         assert_eq!(projected.month.tokens.status, Status::Stale);
+    }
+
+    #[test]
+    fn cursor_history_survives_reload_and_a_same_account_transient_failure() {
+        use crate::provider_usage::{AccountHistory, AccountUsage};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.db");
+        let day = test_day();
+        let observed_at = day.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp();
+        let prior = CachedProvider {
+            usage: Some(AccountUsage {
+                history: Some(AccountHistory {
+                    account_scope: "verified-account-a".into(),
+                    observed_at,
+                    through_day: day.to_string(),
+                    today: confirmed_empty_account_period(),
+                    month: confirmed_empty_account_period(),
+                    daily: vec![],
+                    coverage: "Cursor dashboard account history".into(),
+                }),
+                ..Default::default()
+            }),
+            error: None,
+        };
+        {
+            let db = crate::store::open(&path).unwrap();
+            db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview','cursor',?1,'now','now')",
+                [serde_json::to_string(&prior).unwrap()]).unwrap();
+        }
+        let db = crate::store::open(&path).unwrap();
+        let prior = load_provider(&db, "cursor").unwrap();
+        let mut current = AccountUsage {
+            account_scope: Some("verified-account-a".into()),
+            observed_at: observed_at + 60,
+            history_error: Some("Cursor response could not be read".into()),
+            ..Default::default()
+        };
+        retain_cursor_history(&mut current, prior.usage.as_ref());
+        assert_eq!(current.observed_at, observed_at + 60);
+        assert_eq!(current.history.as_ref().unwrap().observed_at, observed_at);
+        let projected = project_account_history(current.history.unwrap(), day, observed_at + 60, current.history_error.as_deref());
+        assert_eq!(projected.month.cost_microusd.value, Some(0.0));
+        assert_eq!(projected.month.cost_microusd.status, Status::Stale);
+        assert_eq!(projected.today.tokens.status, Status::Stale);
+        assert!(projected.coverage.contains("response could not be read"));
+    }
+
+    #[test]
+    fn cursor_history_retention_requires_verified_identity_and_a_transient_error() {
+        use crate::provider_usage::{AccountHistory, AccountUsage};
+        let history = AccountHistory {
+            account_scope: "account-a".into(),
+            observed_at: 100,
+            through_day: test_day().to_string(),
+            today: confirmed_empty_account_period(),
+            month: confirmed_empty_account_period(),
+            daily: vec![],
+            coverage: "Cursor dashboard account history".into(),
+        };
+        let prior = AccountUsage { history: Some(history.clone()), ..Default::default() };
+        for (scope, error) in [
+            (None, Some("Cursor response could not be read")),
+            (Some("account-b"), Some("Cursor response could not be read")),
+            (Some("account-a"), Some("Reconnect Cursor to read account usage.")),
+            (Some("account-a"), Some("Cursor usage is unavailable (HTTP 404).")),
+            (Some("account-a"), None),
+        ] {
+            let mut current = AccountUsage {
+                account_scope: scope.map(str::to_owned),
+                history_error: error.map(str::to_owned),
+                ..Default::default()
+            };
+            retain_cursor_history(&mut current, Some(&prior));
+            assert!(current.history.is_none(), "Do not retain history for {scope:?} / {error:?}");
+        }
+        for error in [
+            "Cursor history pagination was incomplete",
+            "Cursor history pagination was inconsistent",
+            "Cursor usage is unavailable (HTTP 408).",
+            "Cursor usage is unavailable (HTTP 503).",
+            "Cursor is rate limited. Wait a few minutes before refreshing.",
+        ] {
+            let mut current = AccountUsage {
+                account_scope: Some("account-a".into()),
+                history_error: Some(error.into()),
+                ..Default::default()
+            };
+            retain_cursor_history(&mut current, Some(&prior));
+            assert_eq!(current.history.unwrap().observed_at, 100, "Retain history for {error}");
+        }
+        let mut current = AccountUsage {
+            account_scope: Some("account-a".into()),
+            history: Some(AccountHistory { observed_at: 200, ..history }),
+            ..Default::default()
+        };
+        retain_cursor_history(&mut current, Some(&prior));
+        assert_eq!(current.history.unwrap().observed_at, 200, "A confirmed-empty successful fetch replaces old history");
     }
 
     #[test]

@@ -222,6 +222,13 @@ that unpriced usage is excluded. This counts a provider with known spend without
 inventing a price for unknown models or changing its authoritative snapshot.
 Available provider totals take precedence; models are never added twice.
 
+Cursor history survives a transient dashboard failure when fresh account quota
+data verifies the same subject fingerprint as the saved history. Retained
+amounts are immediately stale and keep their original observation time. Unknown
+or changed accounts, authorization errors, and successful empty histories never
+reuse a previous account's amounts. The fingerprint is internal cache metadata;
+no credentials enter the Menu Bar contract.
+
 **Separate provider icons** is off by default. Enabling it replaces the combined
 Bridge item with each enabled favorite's template logo and standard status text.
 Its provider set and ordering follow Favorites; other enabled collectors do not
