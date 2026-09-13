@@ -1,0 +1,30 @@
+I read the thread and drafted the card.
+
+```bridge-connector-card
+{
+  "itemKey": "slack:D0BKKG51DJM:1789041929.055829",
+  "headline": "Vishal says the AI interview link arrives directly",
+  "blocks": [
+    {
+      "kind": "message",
+      "author": "Vishal Keshari",
+      "text": "direct Ai interview ka link aata hai",
+      "timestamp": "2026-09-10T12:05:29Z"
+    },
+    {
+      "kind": "context",
+      "text": "8 earlier messages in this DM about the screening round."
+    },
+    {
+      "kind": "summary",
+      "text": "He is answering your question about how many answers have to be correct: he says almost all were, and the interview link then comes through automatically."
+    },
+    { "kind": "fact", "label": "Channel", "value": "Vishal Keshari" }
+  ],
+  "suggestedReplies": [
+    "Got it — thanks.",
+    "So one wrong answer is still fine?"
+  ],
+  "harnessRendered": true
+}
+```

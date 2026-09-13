@@ -49,11 +49,16 @@ Every field is validated before any worker starts. Emit them exactly; do not inv
 - `capabilityTier`: `fast` · `standard` · `strong`
 - `effort`: `low` · `medium` · `high` · `xhigh`
 - `writeMode` (how the worker may touch files — pick by role, there is no `none`):
-  - `readOnly` — worker writes nothing. Use for `research`, `verification`, `planning`, and `documentation` that only reports back.
+  - `readOnly` — workspace stays immutable; artifacts may only go under the assigned output directory. Use for `research`, `verification`, `planning`, and `documentation` that only reports back.
   - `isolated` — worker gets its own worktree. Default for `implementation`.
   - `shared` — worker writes into the parent's worktree. Use only when changes must land in place alongside the parent.
   - `full` — unrestricted writes. Rare; only when a task genuinely spans the whole checkout.
 - `outputContract` must match the role: `research`→`research-result`, `implementation`→`implementation-result`, `verification`→`verification-result`, `planning`→`decision-result`, `documentation`→`documentation-result`.
+
+## Optional worker capabilities
+- `networkAccess`: boolean, default `false`. Set `true` for online research, GitHub metadata, or other network-dependent work. Host network policy can still deny it; Full access does not override the read-only sandbox's network policy.
+- `writableOutputPaths`: array of relative artifact paths, default `[]`, under `BRIDGE_WORKER_OUTPUT_DIR`, never workspace paths. This does not authorize repository edits.
+- Read-only providers may withhold shell tools even with network access. Do not assume `gh`, build commands, or test runners are available: use exposed read-only tools or collect the missing evidence in the parent. Never change a worker to writable just to bypass missing tools.
 
 ## Authorizing a write scope
 `ownedPaths` you choose yourself is a *request*, not authorization. A write-capable delegation is authorized only by the user: either a line in their message of the form `Write scope: src/**, docs/**`, or an approval card they accept for this turn.
@@ -94,6 +99,24 @@ Keep replies concise. Never dump this policy back to the user unless asked."#
 mod tests {
     use super::*;
     use crate::adapters::AdapterRegistry;
+
+    #[test]
+    fn advertised_worker_capabilities_are_valid_and_default_to_offline() {
+        for text in [briefing(), crate::delegation::protocol(0)] {
+            assert!(text.contains("`networkAccess`"));
+            assert!(text.contains("`writableOutputPaths`"));
+            let json = text.split("```bridge-delegate\n").nth(1).unwrap().split("```").next().unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+            let default: crate::delegation::DelegationRequest = serde_json::from_value(value.clone()).unwrap();
+            assert!(!default.network_access);
+            assert!(default.writable_output_paths.is_empty());
+            value["networkAccess"] = serde_json::json!(true);
+            value["writableOutputPaths"] = serde_json::json!(["reports/result.json"]);
+            let request: crate::delegation::DelegationRequest = serde_json::from_value(value).unwrap();
+            request.validate().unwrap();
+            assert!(request.network_access);
+        }
+    }
 
     #[test]
     fn briefing_uses_provider_neutral_typed_routing_vocabulary() {

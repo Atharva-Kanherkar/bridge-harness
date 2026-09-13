@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronRight, Copy, Eye } from "lucide-react";
-import type { AgentEvent, SessionEntry } from "../types";
-import { readWireKind } from "../transcript/wire";
+import { AlertTriangle, Check, ChevronRight, Copy, Download, Eye } from "lucide-react";
+import type { AgentEvent, ExportSessionTranscriptResult, SessionEntry } from "../types";
 import type { SessionHead } from "../protocol/generated/protocol";
+import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
+import {
+  buildTranscriptRows,
+  countFacets,
+  FACET_LABELS,
+  filterTranscriptRows,
+  TRANSCRIPT_FACETS,
+  turnNumbersAreAbsolute,
+  type TranscriptFacet,
+} from "./transcriptFacets";
 // The live view merges delta frames for readability; this pane must not —
 // the raw stream is the product. Dedupe by id, order by sequence, keep all.
 function mergeRaw(current: AgentEvent[], incoming: AgentEvent[]): AgentEvent[] {
@@ -19,6 +28,11 @@ function mergeRaw(current: AgentEvent[], incoming: AgentEvent[]): AgentEvent[] {
 // stopped for no visible reason — this is where the disagreement becomes
 // visible. It reads the same durable records the UI reads, adds no storage,
 // and changes nothing.
+//
+// A flat list of frames answers no question on its own, so every row carries
+// the bucket it belongs to, the turn it fell in, and whether it failed (see
+// `transcriptFacets.ts`). The failure count is always on screen: a failure
+// you have to go looking for is the one you ship.
 
 export const TRANSCRIPT_PAGE_SIZE = 200;
 
@@ -51,7 +65,7 @@ function CopyJson({ value, label }: { value: unknown; label: string }) {
   </button>;
 }
 
-export function TranscriptPane({ sessionId, events, entries = [], head, leaves = [], loadOlder, onRevealEntry }: {
+export function TranscriptPane({ sessionId, events, entries = [], head, leaves = [], loadOlder, onRevealEntry, exportTranscript = (id) => bridgeApi.exportSessionTranscript(id) }: {
   sessionId: string;
   /** Live events, already session-scoped. Merged with loaded pages by id. */
   events: AgentEvent[];
@@ -62,12 +76,18 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
    *  the window before beforeSequence. */
   loadOlder?: TranscriptLoader;
   onRevealEntry?: (entryId: string) => void;
+  /** Writes the whole durable record to a JSONL file and says where. */
+  exportTranscript?: (sessionId: string) => Promise<ExportSessionTranscriptResult>;
 }) {
   const [view, setView] = useState<"stream" | "entries">("stream");
   const [loaded, setLoaded] = useState<AgentEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState("");
+  const [facet, setFacet] = useState<TranscriptFacet>("all");
   const [selectedId, setSelectedId] = useState<number>();
+  const [exportState, setExportState] = useState<
+    { status: "idle" } | { status: "running" } | { status: "done"; result: ExportSessionTranscriptResult } | { status: "error"; message: string }
+  >({ status: "idle" });
   const seeded = useRef(false);
 
   useEffect(() => {
@@ -84,16 +104,16 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
   const oldest = stream[0]?.sequence;
   const canLoadEarlier = !!loadOlder && oldest !== undefined && oldest > 1;
 
-  const visible = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return stream;
-    return stream.filter(event =>
-      readWireKind(event.kind).toLowerCase().includes(needle)
-      || (event.text ?? "").toLowerCase().includes(needle)
-      || (event.title ?? "").toLowerCase().includes(needle));
-  }, [stream, filter]);
+  const rows = useMemo(() => buildTranscriptRows(stream), [stream]);
+  const counts = useMemo(() => countFacets(rows), [rows]);
+  const visible = useMemo(() => filterTranscriptRows(rows, facet, filter), [rows, facet, filter]);
+  // A window onto the newest page of a long session can only count the turns
+  // it loaded. Boundaries recorded since the ordinal was stamped carry the
+  // session's own number; where none does, the pane says the number is
+  // relative rather than quietly showing a different one from the export.
+  const absoluteTurns = useMemo(() => turnNumbersAreAbsolute(rows, !canLoadEarlier), [rows, canLoadEarlier]);
 
-  const selected = visible.find(event => event.id === selectedId);
+  const selected = visible.find(row => row.event.id === selectedId);
 
   // The active branch is the parent chain of the active entry; everything on
   // it is context the next turn can see, everything off it is history.
@@ -128,12 +148,62 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
           aria-label="Filter events"
           className="h-8 min-w-24 flex-1 rounded-md border border-border bg-background px-2 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
         />
-        <CopyJson value={visible} label="Copy the filtered stream as JSON" />
+        <CopyJson value={visible.map(row => row.event)} label="Copy the filtered stream as JSON" />
       </>}
       {view === "entries" && head && <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground">
         head {head.activeEntryId ? shortId(head.activeEntryId) : "—"} · {leaves.length} {leaves.length === 1 ? "leaf" : "leaves"}
       </span>}
+      <button
+        type="button"
+        disabled={exportState.status === "running"}
+        onClick={() => {
+          setExportState({ status: "running" });
+          void exportTranscript(sessionId)
+            .then(result => setExportState({ status: "done", result }))
+            .catch(cause => setExportState({ status: "error", message: cause instanceof Error ? cause.message : String(cause) }));
+        }}
+        title="Write the whole durable record to a JSONL file"
+        className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+      >
+        <Download size={10} aria-hidden="true" />
+        {exportState.status === "running" ? "Exporting…" : "Export JSONL"}
+      </button>
     </div>
+
+    {view === "stream" && <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
+      {TRANSCRIPT_FACETS.map(option => <button
+        key={option}
+        type="button"
+        aria-pressed={facet === option}
+        onClick={() => setFacet(option)}
+        className={cn(
+          "inline-flex min-h-6 items-center gap-1 rounded-full border px-2 font-mono text-[11px] transition-colors",
+          facet === option ? "border-foreground/30 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+          // The one place this pane is not achromatic: a failure that reads
+          // like every other chip is a failure nobody clicks.
+          option === "problems" && counts.problems > 0 && "border-destructive/40 text-destructive",
+        )}
+      >
+        {FACET_LABELS[option]}
+        <span className="tabular-nums opacity-70">{counts[option]}</span>
+      </button>)}
+    </div>}
+
+    {exportState.status === "done" && <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-code px-2 py-1.5 font-mono text-[11px]">
+      <span className="text-muted-foreground">Wrote {exportState.result.lineCount} lines</span>
+      <span className="min-w-0 flex-1 truncate text-foreground" title={exportState.result.path}>{exportState.result.path}</span>
+      <button
+        type="button"
+        onClick={() => void navigator.clipboard?.writeText(exportState.result.path)}
+        className="inline-flex h-7 shrink-0 items-center gap-1 rounded px-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <Copy size={10} aria-hidden="true" />
+        Copy path
+      </button>
+    </div>}
+    {exportState.status === "error" && <p className="shrink-0 border-b border-border px-2 py-1.5 font-mono text-[11px] text-destructive">
+      Export failed: {exportState.message}
+    </p>}
 
     {view === "stream" && <div className="min-h-0 flex-1 overflow-y-auto font-mono text-[11px] leading-[1.9]">
       {canLoadEarlier && <button
@@ -151,24 +221,32 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
       {visible.length === 0 && !loading && <p className="px-2 py-4 text-muted-foreground">
         {stream.length === 0 ? "No events recorded for this session yet." : "Nothing matches the filter."}
       </p>}
-      {visible.map(event => <div key={event.id} className="border-b border-border/50">
+      {visible.map(row => <div key={row.event.id} className="border-b border-border/50">
         <button
           type="button"
-          onClick={() => setSelectedId(current => current === event.id ? undefined : event.id)}
-          aria-expanded={selectedId === event.id}
-          className={cn("flex w-full items-baseline gap-2 px-2 text-left transition-colors hover:bg-accent", selectedId === event.id && "bg-code")}
+          onClick={() => setSelectedId(current => current === row.event.id ? undefined : row.event.id)}
+          aria-expanded={selectedId === row.event.id}
+          className={cn("flex w-full items-baseline gap-2 px-2 text-left transition-colors hover:bg-accent", selectedId === row.event.id && "bg-code")}
         >
-          <span className="w-7 shrink-0 tabular-nums text-muted-foreground">{event.sequence}</span>
-          <span className="w-[42%] min-w-0 shrink-0 truncate text-foreground">{readWireKind(event.kind)}</span>
-          <span className="min-w-0 flex-1 truncate text-muted-foreground">{event.status ?? event.title ?? event.text ?? ""}</span>
-          <span className="shrink-0 tabular-nums text-muted-foreground">{eventTime(event.createdAt)}</span>
+          <span className="w-7 shrink-0 tabular-nums text-muted-foreground">{row.event.sequence}</span>
+          <span
+            className="w-10 shrink-0 tabular-nums text-muted-foreground"
+            title={absoluteTurns
+              ? `Turn ${row.turnIndex}`
+              : `Turn ${row.turnIndex} of the loaded events — load earlier events for the session's own numbering`}
+          >{absoluteTurns ? "" : "~"}t{row.turnIndex}</span>
+          <span className={cn("w-[34%] min-w-0 shrink-0 truncate", row.problem ? "text-destructive" : "text-foreground")}>{row.kind}</span>
+          {row.problem && <AlertTriangle size={10} className="shrink-0 text-destructive" aria-label={row.problem} />}
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{row.detail}</span>
+          <span className="shrink-0 tabular-nums text-muted-foreground">{eventTime(row.event.createdAt)}</span>
         </button>
-        {selected?.id === event.id && <div className="border-t border-border bg-code px-2 py-1.5">
+        {selected?.event.id === row.event.id && <div className="border-t border-border bg-code px-2 py-1.5">
           <div className="flex items-center gap-2">
             <span className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">Raw event</span>
-            <span className="ml-auto"><CopyJson value={event} label={`Copy event ${event.sequence} as JSON`} /></span>
+            {row.problem && <span className="text-[11px] text-destructive">{row.problem}</span>}
+            <span className="ml-auto"><CopyJson value={row.event} label={`Copy event ${row.event.sequence} as JSON`} /></span>
           </div>
-          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-[1.6] text-foreground">{JSON.stringify(event, null, 2)}</pre>
+          <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-[1.6] text-foreground">{JSON.stringify(row.event, null, 2)}</pre>
         </div>}
       </div>)}
     </div>}
@@ -197,6 +275,11 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
 
     <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2 font-mono text-[11px] text-muted-foreground">
       <span>{view === "stream" ? `${visible.length} of ${stream.length} events` : `${entries.length} entries`}</span>
+      {/* Always on screen, whichever facet is selected: a reader who never
+          clicks Problems still has to learn that there are some. */}
+      {view === "stream" && <span className={cn(counts.problems > 0 && "text-destructive")}>
+        {counts.problems} {counts.problems === 1 ? "problem" : "problems"}
+      </span>}
       <span className="ml-auto truncate">{sessionId}</span>
     </div>
   </div>;

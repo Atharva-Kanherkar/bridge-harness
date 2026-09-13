@@ -60,6 +60,12 @@ methods![
     (GithubAct, "github", "github_act"),
     (GithubReview, "github", "github_review"),
     (GithubCheckout, "github", "github_checkout"),
+    // connectors — in-app surfaces over the harness's own authenticated MCP servers
+    (ConnectorList, "connectors", "connector_list"),
+    (ConnectorInbox, "connectors", "connector_inbox"),
+    (ConnectorAct, "connectors", "connector_act"),
+    (ConnectorDismiss, "connectors", "connector_dismiss"),
+    (ConnectorRefresh, "connectors", "connector_refresh"),
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),
     (ConnectWorkspaceFolder, "workspaces", "connect_workspace_folder"),
@@ -96,6 +102,7 @@ methods![
     (DispatchAgentShortcut, "sessions", "dispatch_agent_shortcut"),
     (CompactSession, "sessions", "compact_session"),
     (SearchSessionEntries, "sessions", "search_session_entries"),
+    (ExportSessionTranscript, "sessions", "export_session_transcript"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),

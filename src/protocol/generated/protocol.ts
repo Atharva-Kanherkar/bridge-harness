@@ -25,6 +25,11 @@ export type BridgeMethod =
   | "github/github_act"
   | "github/github_review"
   | "github/github_checkout"
+  | "connectors/connector_list"
+  | "connectors/connector_inbox"
+  | "connectors/connector_act"
+  | "connectors/connector_dismiss"
+  | "connectors/connector_refresh"
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
   | "workspaces/clone_workspace_repo"
@@ -59,6 +64,7 @@ export type BridgeMethod =
   | "sessions/dispatch_agent_shortcut"
   | "sessions/compact_session"
   | "sessions/search_session_entries"
+  | "sessions/export_session_transcript"
   | "sessions/interrupt_turn"
   | "sessions/retry_worker_task"
   | "sessions/refresh_account_usage"
@@ -225,6 +231,11 @@ export const BRIDGE_METHODS = [
   { method: "github/github_act", domain: "github", command: "github_act" },
   { method: "github/github_review", domain: "github", command: "github_review" },
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
+  { method: "connectors/connector_list", domain: "connectors", command: "connector_list" },
+  { method: "connectors/connector_inbox", domain: "connectors", command: "connector_inbox" },
+  { method: "connectors/connector_act", domain: "connectors", command: "connector_act" },
+  { method: "connectors/connector_dismiss", domain: "connectors", command: "connector_dismiss" },
+  { method: "connectors/connector_refresh", domain: "connectors", command: "connector_refresh" },
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
   { method: "workspaces/clone_workspace_repo", domain: "workspaces", command: "clone_workspace_repo" },
@@ -259,6 +270,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/dispatch_agent_shortcut", domain: "sessions", command: "dispatch_agent_shortcut" },
   { method: "sessions/compact_session", domain: "sessions", command: "compact_session" },
   { method: "sessions/search_session_entries", domain: "sessions", command: "search_session_entries" },
+  { method: "sessions/export_session_transcript", domain: "sessions", command: "export_session_transcript" },
   { method: "sessions/interrupt_turn", domain: "sessions", command: "interrupt_turn" },
   { method: "sessions/retry_worker_task", domain: "sessions", command: "retry_worker_task" },
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
@@ -421,6 +433,10 @@ export type BridgeNotification =
   | "session-startup"
   | "github/checks_changed"
   | "github/ci_finished"
+  | "connectors/item_arrived"
+  | "connectors/card_ready"
+  | "connectors/item_resolved"
+  | "connectors/inbox_changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -437,6 +453,10 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "session-startup", delivery: "transient" },
   { notification: "github/checks_changed", delivery: "transient" },
   { notification: "github/ci_finished", delivery: "transient" },
+  { notification: "connectors/item_arrived", delivery: "transient" },
+  { notification: "connectors/card_ready", delivery: "transient" },
+  { notification: "connectors/item_resolved", delivery: "transient" },
+  { notification: "connectors/inbox_changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -487,6 +507,11 @@ export interface BridgeMethodParams {
   "github/github_act": GithubActParams;
   "github/github_review": GithubReviewParams;
   "github/github_checkout": GithubCheckoutParams;
+  "connectors/connector_list": ConnectorListParams;
+  "connectors/connector_inbox": ConnectorInboxParams;
+  "connectors/connector_act": ConnectorActParams;
+  "connectors/connector_dismiss": ConnectorDismissParams;
+  "connectors/connector_refresh": ConnectorRefreshParams;
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
   "workspaces/clone_workspace_repo": CloneWorkspaceRepoParams;
@@ -521,6 +546,7 @@ export interface BridgeMethodParams {
   "sessions/dispatch_agent_shortcut": DispatchAgentShortcutParams;
   "sessions/compact_session": CompactSessionParams;
   "sessions/search_session_entries": SearchSessionEntriesParams;
+  "sessions/export_session_transcript": ExportSessionTranscriptParams;
   "sessions/interrupt_turn": InterruptTurnParams;
   "sessions/retry_worker_task": RetryWorkerTaskParams;
   "sessions/refresh_account_usage": undefined;
@@ -689,6 +715,11 @@ export interface BridgeMethodResults {
   "github/github_act": GithubActResult;
   "github/github_review": GithubReviewResult;
   "github/github_checkout": GithubCheckoutResult;
+  "connectors/connector_list": ConnectorListResult;
+  "connectors/connector_inbox": ConnectorInboxResult;
+  "connectors/connector_act": ConnectorActResult;
+  "connectors/connector_dismiss": ConnectorDismissResult;
+  "connectors/connector_refresh": ConnectorRefreshResult;
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
   "workspaces/clone_workspace_repo": BridgeState;
@@ -723,6 +754,7 @@ export interface BridgeMethodResults {
   "sessions/dispatch_agent_shortcut": DispatchAgentShortcutResult;
   "sessions/compact_session": UnitResult;
   "sessions/search_session_entries": SearchSessionEntriesResult;
+  "sessions/export_session_transcript": ExportSessionTranscriptResult;
   "sessions/interrupt_turn": UnitResult;
   "sessions/retry_worker_task": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
@@ -1022,6 +1054,58 @@ export interface CompletionSummary {
 }
 
 export type CompletionVerdict = "verifying" | "changes_requested" | "verified" | "waived" | "failed" | "superseded";
+
+export type ConnectorActionRequest = { kind: "reply"; text: string } | { emoji: string; kind: "react" };
+
+export type ConnectorCardBlock = { author: string; kind: "message"; text: string; timestamp?: string | null } | { kind: "context"; text: string } | { kind: "summary"; text: string } | { kind: "fact"; label: string; value: string };
+
+export interface ConnectorCardPayload {
+  blocks: ConnectorCardBlock[];
+  harnessRendered: boolean;
+  headline: string;
+  itemKey: string;
+  suggestedReplies: string[];
+}
+
+export interface ConnectorDescriptor {
+  available: boolean;
+  displayName: string;
+  explanation?: string | null;
+  family: string;
+  harness?: string | null;
+  hasInbox: boolean;
+  reason?: ConnectorUnavailableReason | null;
+  server?: string | null;
+}
+
+export interface ConnectorInboxItem {
+  author: string;
+  card?: ConnectorCardPayload | null;
+  channelId: string;
+  channelLabel: string;
+  family: string;
+  itemKey: string;
+  kind: ConnectorItemKind;
+  permalink?: string | null;
+  receivedAt: string;
+  renderRejection?: string | null;
+  resolution?: string | null;
+  state: ConnectorItemState;
+  text: string;
+}
+
+export type ConnectorItemKind = "directMessage" | "mention" | "threadReply";
+
+export type ConnectorItemState = "rendered" | "resolved" | "pending";
+
+export interface ConnectorPollStatus {
+  degraded?: string | null;
+  family: string;
+  lastAttemptAt?: string | null;
+  lastSuccessAt?: string | null;
+}
+
+export type ConnectorUnavailableReason = "unreachable" | "notConfigured" | "authRequired" | "noResolver";
 
 export interface ContextBreakdownConversation {
   contextPressure: number;
@@ -1862,6 +1946,8 @@ export interface TerminalRecord {
   workspaceId: string;
 }
 
+export type TranscriptExportScope = "active_branch" | "forest";
+
 export interface TurnImage {
   base64Data: string;
   mediaType: string;
@@ -2607,6 +2693,48 @@ export interface GithubCheckoutResult {
   workspaceId: string;
 }
 
+export interface ConnectorListParams {
+  refresh?: boolean;
+}
+
+export interface ConnectorListResult {
+  connectors: ConnectorDescriptor[];
+}
+
+export interface ConnectorInboxParams {
+  limit?: number | null;
+}
+
+export interface ConnectorInboxResult {
+  items: ConnectorInboxItem[];
+  poll: ConnectorPollStatus[];
+  unreadCount: number;
+}
+
+export interface ConnectorActParams {
+  action: ConnectorActionRequest;
+  approved?: boolean | null;
+  itemKey: string;
+}
+
+export type ConnectorActResult = { effect: string; status: "approvalRequired" } | { itemKey: string; status: "sent" } | { reason: string; status: "refused" };
+
+export interface ConnectorDismissParams {
+  itemKey: string;
+}
+
+export interface ConnectorDismissResult {
+  dismissed: boolean;
+}
+
+export interface ConnectorRefreshParams {
+  family: string;
+}
+
+export interface ConnectorRefreshResult {
+  announced: number;
+}
+
 export interface CreateWorkspaceParams {
   title: string;
 }
@@ -2884,13 +3012,35 @@ export interface CompactSessionParams {
 
 export interface SearchSessionEntriesParams {
   limit?: number | null;
+  offset?: number | null;
   query: string;
   sessionId: string;
 }
 
 export interface SearchSessionEntriesResult {
+  hasMore?: boolean;
   hits: SessionRecallHit[];
+  offset?: number;
   query: string;
+  sessionId: string;
+}
+
+export interface ExportSessionTranscriptParams {
+  destinationPath?: string | null;
+  includeHidden?: boolean | null;
+  scope?: TranscriptExportScope | null;
+  sessionId: string;
+}
+
+export interface ExportSessionTranscriptResult {
+  bytes: JsSafeU64;
+  digest: string;
+  entryCount: JsSafeU64;
+  exportedAt: string;
+  lineCount: JsSafeU64;
+  path: string;
+  schemaVersion: JsSafeU64;
+  scope: TranscriptExportScope;
   sessionId: string;
 }
 
