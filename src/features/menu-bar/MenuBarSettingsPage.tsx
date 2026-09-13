@@ -28,6 +28,7 @@ export function MenuBarSettingsPage() {
   const visibleIds = favorites;
   const nextFavorite = providers.find(provider => !favorites.includes(provider.id));
   const visible = visibleIds.flatMap(id => providers.filter(provider => provider.id === id));
+  const enabledFavorites = visible.filter(provider => settings?.[provider.key]);
   const customDisplay = !settings?.separateProviderIcons && (settings?.statusLayout?.flat().some(token => token !== "space" && token !== "dot") ?? false);
 
   useEffect(() => {
@@ -86,7 +87,7 @@ export function MenuBarSettingsPage() {
       <SettingsGroup label="Display">
         <SettingsRow label="Show in menu bar" description="The Bridge symbol follows your macOS appearance."
           control={<Switch label="Show in menu bar" checked={settings.enabled} disabled={busy} onChange={enabled => void save({ enabled })} />} />
-        <SettingsRow label="Separate provider icons" description="Show each enabled provider’s icon and usage in the macOS menu bar. Each icon opens that provider."
+        <SettingsRow label="Separate provider icons" description="Show each favorite with account usage enabled as its own icon in the macOS menu bar. Each icon opens that provider."
           control={<Switch label="Separate provider icons" checked={settings.separateProviderIcons ?? false} disabled={busy} onChange={separateProviderIcons => void save({ separateProviderIcons })} />} />
         <SettingsRow label="Open to Overview" description="See your favorite providers’ current quotas together. Details stay in provider tabs."
           control={<Switch label="Open to Overview" checked={settings.openToOverview ?? true} disabled={busy} onChange={openToOverview => void save({ openToOverview })} />} />
@@ -115,7 +116,7 @@ export function MenuBarSettingsPage() {
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
       <SettingsGroup label="Favorite providers">
-        <p className="px-4 py-3 text-xs text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Only favorites appear in the tab bar. Add more favorites below, then scroll or use the arrows. Favorites stay visible while disconnected.</p>
+        <p className="px-4 py-3 text-xs text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Favorites control the tabs, overview totals, and separate icons. Add more favorites below, then scroll or use the arrows. Disconnected favorites keep their tabs.</p>
         {favorites.map((_, position) => <SettingsRow key={position} label={`Favorite ${position + 1}`}
           control={<Select label={`Favorite provider ${position + 1}`} value={favorites[position] ?? ""} disabled={busy}
             options={[{ value: "", label: "Remove favorite" }, ...providers.map(provider => ({ value: provider.id, label: provider.name }))]}
@@ -137,8 +138,9 @@ export function MenuBarSettingsPage() {
             control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
               onChange={value => void save({ [provider.key]: value })} />} />;
         })}
-        <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each enabled provider has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}
-          control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabled.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
+        {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">For automatic Claude updates on macOS, click Refresh usage. If Keychain asks whether Bridge’s “bridged” helper can read “Claude Code-credentials,” choose Always Allow. If access is later revoked, use Refresh usage to authorize it again.</p>}
+        <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each favorite with account usage enabled has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}
+          control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabledFavorites.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
         <SettingsRow label="OpenCode Zen account" description="Sign in and open a workspace. Bridge saves that session in macOS Keychain."
           control={<button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
             onClick={() => { setConnection("Complete sign-in in the OpenCode window and open your workspace."); void bridgeApi.connectMenuBarOpenCode().catch(error => setError(String(error))); }}>Connect OpenCode</button>} />
@@ -151,7 +153,7 @@ export function MenuBarSettingsPage() {
           onChange={showAccount => void save({ showAccount })} />} />
       </SettingsGroup>
       <SettingsGroup label="Usage & spend">
-        <SettingsRow label="Overview usage & spend" description="Show a 30-day summary across enabled providers above the Overview quota bars."
+        <SettingsRow label="Overview usage & spend" description="Show a 30-day summary across favorites with account usage enabled above the Overview quota bars."
           control={<Switch label="Overview usage & spend" checked={settings.showOverviewSummary ?? true} disabled={busy} onChange={showOverviewSummary => void save({ showOverviewSummary })} />} />
         <SettingsRow label="Daily history" description="A 30-day chart in provider tabs. Overview stays compact without charts."
           control={<Switch label="Daily history" checked={settings.showHistory ?? true} disabled={busy} onChange={showHistory => void save({ showHistory })} />} />

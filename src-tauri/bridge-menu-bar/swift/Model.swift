@@ -101,6 +101,9 @@ struct MenuSettings: Decodable {
     var visibleProviders: [String] {
         normalizedPinnedProviders
     }
+    var enabledFavoriteProviders: [String] {
+        visibleProviders.filter { isProviderEnabled($0) }
+    }
     // Local detail selection for a separate icon; never changes saved favorites.
     var menuProviderOverride: String? = nil
     var activeProvider: String? { menuProviderOverride ?? (visibleProviders.contains(selectedProvider) ? selectedProvider : visibleProviders.first) }

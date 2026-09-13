@@ -36,8 +36,7 @@ final class MenuBarController {
 
     static func providerIDs(_ settings: MenuSettings) -> [String] {
         guard settings.enabled, settings.separateProviderIcons ?? false else { return [] }
-        return settings.visibleProviders.filter { settings.isProviderEnabled($0) }
-            + settings.enabledProviders.filter { !settings.visibleProviders.contains($0) }
+        return settings.enabledFavoriteProviders
     }
 
     func update(_ presentation: Presentation) {

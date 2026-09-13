@@ -207,16 +207,25 @@ from Grok model token history.
 
 Settings → Menu Bar → Usage & spend → **Overview usage & spend** controls the
 compact 30-day card above the Overview quota bars (on by default). It sums the
-backend's existing monthly snapshots for enabled providers, independent of the
-favorites. Token and spend visibility still follow their existing toggles.
-Unknown costs are excluded from the subtotal. An adjacent `≈$` marks estimated
+backend's existing monthly snapshots for favorites with account usage enabled.
+Removing a favorite removes its amounts and provider count even if its collector
+stays enabled. Token and spend visibility still follow their existing toggles.
+Unknown costs are excluded from the subtotal. A spaced `≈ $` marks estimated
 or incomplete costs, and provider coverage explains missing amounts without a
 repeated partial label. All-unknown remains Unavailable, reported zero remains
 zero, and stale amounts retain their qualifier. No extra collection runs, charts, subscription counts, or invented
 pricing-coverage counts are added to Overview.
 
+If an unavailable provider total includes known model costs, those costs can
+contribute a presentation-only subtotal. The card marks it approximate and says
+that unpriced usage is excluded. This counts a provider with known spend without
+inventing a price for unknown models or changing its authoritative snapshot.
+Available provider totals take precedence; models are never added twice.
+
 **Separate provider icons** is off by default. Enabling it replaces the combined
-Bridge item with each enabled provider's template logo and standard status text.
+Bridge item with each enabled favorite's template logo and standard status text.
+Its provider set and ordering follow Favorites; other enabled collectors do not
+create icons. With no enabled favorites, the combined Bridge item remains.
 Each icon owns its provider regardless of the selected detail tab; clicking opens
 that provider, with the usual Overview and provider navigation available inside.
 Single-icon mode keeps the first-favorite behavior and its custom layout. Custom
@@ -244,3 +253,25 @@ credential output is capped at 64 KiB. The helper and its descendants are killed
 and reaped on timeout. Explicit Refresh may request Keychain access with a
 30-second deadline before the CLI fallback. The menu paints its retained snapshot
 before starting credential or network work.
+
+### Public release setup and upgrade verification
+
+Settings explains that automatic Claude usage requires access to its Claude Code
+sign-in. The user starts **Refresh usage** and can choose **Always Allow** for
+Bridge's `bridged` helper when macOS asks for `Claude Code-credentials`. A denied
+or revoked grant leaves the last observation stale; Refresh retries explicitly,
+and background work remains non-interactive. Claude can rewrite that Keychain
+entry during token rotation, so access cannot be promised to last forever.
+
+Ship through `scripts/release-dmg.sh` / the macOS release workflow, which require
+Developer ID signing, notarization, stapling, and verification of the exact DMG.
+Keep the app and helper identifiers, team, and designated requirements stable
+across updates. Development-signed previews have a different designated
+requirement from distribution builds and cannot prove the release permission
+experience; see Apple's [code-signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
+and [notarization guidance](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+Before public distribution, verify the signed release on a fresh macOS account:
+Claude setup and explicit consent, silent refresh, denial and retry, credential
+rotation, and updating to a second release without an unexpected identity change.
+These distribution checks are separate from the locally approved preview.

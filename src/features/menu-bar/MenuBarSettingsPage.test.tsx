@@ -194,6 +194,27 @@ it("persists overview summary visibility and separate icons independently", asyn
   expect(icons().getAttribute("aria-checked")).toBe("true");
 });
 
+it("limits separate icon owners to enabled favorites as favorites are added and removed", async () => {
+  vi.mocked(bridgeApi.getMenuBarSettings).mockResolvedValue({ ...settings, claudeEnabled: true, cursorEnabled: true, opencodeEnabled: true,
+    pinnedProviders: ["cursor", "codex", "claude"], separateProviderIcons: true });
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const owners = () => container.querySelector('[aria-label="Provider beside the icon"]')?.textContent;
+  expect(owners()).toBe("Cursor, Codex, Claude");
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Add favorite")!.click());
+  expect(owners()).toBe("Cursor, Codex, Claude, OpenCode");
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Favorite provider 4"]')!.click());
+  const remove = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Remove favorite")!;
+  await act(async () => {
+    remove.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    remove.click();
+  });
+  expect(owners()).toBe("Cursor, Codex, Claude");
+  expect(save.mock.lastCall?.[0].opencodeEnabled).toBe(true);
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Read Claude usage"]')!.click());
+  expect(owners()).toBe("Cursor, Codex");
+});
+
 it("adds a fourth favorite without connecting the provider", async () => {
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));

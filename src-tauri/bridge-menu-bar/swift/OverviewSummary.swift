@@ -10,23 +10,17 @@ struct OverviewSummary {
     let tokens: Metric
     let costPartial: Bool
     let tokensPartial: Bool
+    let usesModelCostSubtotal: Bool
 
     init(_ presentation: Presentation) {
-        let providers = presentation.settings.enabledProviders
+        let providers = presentation.settings.enabledFavoriteProviders
         let periods = providers.map { provider in
             presentation.usage?.providers.first { $0.provider == provider }?.month
         }
         providerCount = providers.count
-        let costs = periods.compactMap { $0?.costMicrousd }
-        let counts = periods.compactMap { $0?.tokens }
         func known(_ metric: Metric) -> Bool {
             metric.status != "unavailable" && metric.value.map { $0.isFinite && $0 >= 0 } == true
         }
-        costProviderCount = costs.filter(known).count
-        tokenProviderCount = counts.filter(known).count
-        // A partial price can carry a known subtotal even within one provider.
-        costPartial = costProviderCount < providers.count || costs.contains { $0.status != "current" }
-        tokensPartial = tokenProviderCount < providers.count || counts.contains { $0.status != "current" }
         func sum(_ metrics: [Metric]) -> Metric {
             let available = metrics.filter(known)
             guard !available.isEmpty else { return .unavailable }
@@ -36,6 +30,23 @@ struct OverviewSummary {
                           source: available.contains { $0.source == "estimated" } ? "estimated" : "measured",
                           status: available.contains { $0.status == "stale" } ? "stale" : "current")
         }
+        // The backend can withhold a provider total when any model is unpriced.
+        // Its known model costs still form a useful lower bound for this card.
+        // Keep that presentation subtotal partial; never overwrite the snapshot
+        // or add it to an already available provider total.
+        let contributions = periods.map { period -> (cost: Metric, partial: Bool) in
+            guard let period = period else { return (.unavailable, false) }
+            if known(period.costMicrousd) { return (period.costMicrousd, false) }
+            let subtotal = sum(period.models.map { $0.costMicrousd })
+            return (subtotal, known(subtotal))
+        }
+        let costs = contributions.map { $0.cost }
+        let counts = periods.compactMap { $0?.tokens }
+        costProviderCount = costs.filter(known).count
+        tokenProviderCount = counts.filter(known).count
+        usesModelCostSubtotal = contributions.contains { $0.partial }
+        costPartial = usesModelCostSubtotal || costProviderCount < providers.count || costs.contains { $0.status != "current" }
+        tokensPartial = tokenProviderCount < providers.count || counts.contains { $0.status != "current" }
         cost = sum(costs)
         tokens = sum(counts)
     }
@@ -64,7 +75,9 @@ struct OverviewSummaryCard: View {
                         .foregroundColor(.secondary)
                 }
                 if settings.showTokens { Text(summary.tokenLabel).foregroundColor(.secondary) }
-                if settings.showCost && summary.cost.source == "estimated" {
+                if settings.showCost && summary.usesModelCostSubtotal {
+                    Text("Known costs only; unpriced usage excluded").font(.system(size: 10)).foregroundColor(.secondary)
+                } else if settings.showCost && summary.cost.source == "estimated" {
                     Text("Includes estimated API cost").font(.system(size: 10)).foregroundColor(.secondary)
                 }
             }

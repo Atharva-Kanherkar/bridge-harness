@@ -578,13 +578,13 @@ check(settingsActions == 1, "The disconnected card settings action is independen
 try renderMenuCardFixtures(fixture)
 print("Menu Bar Swift checks passed: wire fixture, disabled-data isolation, favorite defaults, 69-provider bounded overflow, selection reveal, scroll preservation, countdowns, status accessibility, viewport resizing, appearance, submenu tracking, template mask")
 
-// Summary scope is enabled providers, independently of favorites/selected tab.
+// Every overview contribution and separate icon follows enabled favorites.
 var summaryFixture = fixture
 summaryFixture.settings.codexEnabled = true
 summaryFixture.settings.claudeEnabled = true
-summaryFixture.settings.cursorEnabled = false
-summaryFixture.settings.opencodeEnabled = false
-summaryFixture.settings.pinnedProviders = ["cursor"]
+summaryFixture.settings.cursorEnabled = true
+summaryFixture.settings.opencodeEnabled = true
+summaryFixture.settings.pinnedProviders = ["codex", "claude", "cursor"]
 var summaryCodex = fixture.usage!.providers[0]
 summaryCodex.provider = "codex"
 summaryCodex.month.costMicrousd = Metric(value: 2_000_000, source: "estimated", status: "current")
@@ -593,22 +593,62 @@ var summaryClaude = summaryCodex
 summaryClaude.provider = "claude"
 summaryClaude.month.costMicrousd = .unavailable
 summaryClaude.month.tokens = Metric(value: 2000, source: "measured", status: "current")
-summaryFixture.usage!.providers = [summaryCodex, summaryClaude]
+summaryClaude.month.models = []
+var summaryCursor = summaryCodex
+summaryCursor.provider = "cursor"
+summaryCursor.month.costMicrousd = Metric(value: 3_000_000, source: "reported", status: "current")
+summaryCursor.month.tokens = Metric(value: 3000, source: "reported", status: "current")
+var summaryOpenCode = summaryCodex
+summaryOpenCode.provider = "opencode"
+summaryOpenCode.month.costMicrousd = Metric(value: 100_000_000, source: "reported", status: "current")
+summaryOpenCode.month.tokens = Metric(value: 100_000, source: "reported", status: "current")
+summaryFixture.usage!.providers = [summaryCodex, summaryClaude, summaryCursor, summaryOpenCode]
 let partialSummary = OverviewSummary(summaryFixture)
-check(partialSummary.providerCount == 2 && partialSummary.costProviderCount == 1, "Disabled favorites do not enter the summary denominator")
-check(partialSummary.costLabel == "≈ $2.00", "Approximate spend stays compact with spaced symbols and no repeated partial label")
-check(partialSummary.tokens.value == 3000 && !partialSummary.tokensPartial, "Token coverage is independent of cost coverage")
-summaryFixture.usage!.providers[0].month.costMicrousd = .unavailable
+check(partialSummary.providerCount == 3 && partialSummary.costProviderCount == 2, "Enabled OpenCode does not enter the favorite summary denominator")
+check(partialSummary.costLabel == "≈ $5.00", "Unfavorited spend is excluded and unknown favorites remain partial")
+check(partialSummary.tokens.value == 6000 && !partialSummary.tokensPartial, "Token coverage is independent of cost coverage and excludes unfavorited tokens")
+var modelSubtotalFixture = summaryFixture
+modelSubtotalFixture.usage!.providers[0].month.costMicrousd = .unavailable
+var pricedModel = fixture.usage!.providers[0].today.models[0]
+pricedModel.costMicrousd = Metric(value: 2_000_000, source: "estimated", status: "current")
+var unpricedModel = pricedModel
+unpricedModel.model = "unpriced-model"
+unpricedModel.costMicrousd = .unavailable
+modelSubtotalFixture.usage!.providers[0].month.models = [pricedModel, unpricedModel]
+modelSubtotalFixture.usage!.providers[1].month.costMicrousd = Metric(value: 1_000_000, source: "reported", status: "current")
+let modelSubtotal = OverviewSummary(modelSubtotalFixture)
+check(modelSubtotal.costProviderCount == 3 && modelSubtotal.providerCount == 3 && modelSubtotal.cost.value == 6_000_000,
+      "Three favorites with known spend contribute, including a partially priced Codex subtotal")
+check(modelSubtotal.usesModelCostSubtotal && modelSubtotal.costPartial && modelSubtotal.costLabel == "≈ $6.00",
+      "Model-derived subtotals stay explicitly approximate without altering provider authority")
+check(modelSubtotalFixture.usage!.providers[0].month.costMicrousd.value == nil, "The original unavailable provider total remains unchanged")
+modelSubtotalFixture.usage!.providers[0].month.costMicrousd = Metric(value: 4_000_000, source: "reported", status: "current")
+check(OverviewSummary(modelSubtotalFixture).cost.value == 8_000_000 && !OverviewSummary(modelSubtotalFixture).usesModelCostSubtotal,
+      "An authoritative provider total takes precedence without double-counting its models")
+for i in 0..<3 {
+    summaryFixture.usage!.providers[i].month.costMicrousd = .unavailable
+    summaryFixture.usage!.providers[i].month.models = []
+}
 check(OverviewSummary(summaryFixture).costLabel == "Unavailable", "All unknown cost never becomes zero")
-for i in 0..<2 { summaryFixture.usage!.providers[i].month.costMicrousd = Metric(value: 0, source: "reported", status: "current") }
+for i in 0..<3 { summaryFixture.usage!.providers[i].month.costMicrousd = Metric(value: 0, source: "reported", status: "current") }
 check(OverviewSummary(summaryFixture).costLabel == "$0.00", "Known zero remains a real zero")
 summaryFixture.usage!.providers[0].month.costMicrousd.status = "stale"
 check(OverviewSummary(summaryFixture).costLabel.contains("stale"), "Last-known amounts remain visibly stale")
 summaryFixture.settings.claudeEnabled = false
-check(OverviewSummary(summaryFixture).providerCount == 1, "Disabling a provider removes its cached totals")
+check(OverviewSummary(summaryFixture).providerCount == 2, "Disabling a favorite removes its cached totals")
 summaryFixture.settings.separateProviderIcons = true
-summaryFixture.settings.cursorEnabled = true
-check(MenuBarController.providerIDs(summaryFixture.settings) == ["cursor", "codex"], "Separate icons follow favorites then enabled providers")
+summaryFixture.settings.pinnedProviders = ["cursor", "codex", "claude"]
+check(MenuBarController.providerIDs(summaryFixture.settings) == ["cursor", "codex"], "Separate icons follow favorite order and exclude disabled favorites and enabled nonfavorites")
+summaryFixture.settings.pinnedProviders!.append("opencode")
+check(MenuBarController.providerIDs(summaryFixture.settings) == ["cursor", "codex", "opencode"] && OverviewSummary(summaryFixture).providerCount == 3,
+      "Adding OpenCode as a favorite includes its icon and summary contribution")
+summaryFixture.settings.pinnedProviders = ["cursor", "codex", "claude"]
+check(!MenuBarController.providerIDs(summaryFixture.settings).contains("opencode") && OverviewSummary(summaryFixture).cost.value == 0,
+      "Removing OpenCode as a favorite removes its icon and cached spend even while collection stays enabled")
+summaryFixture.settings.pinnedProviders = []
+check(MenuBarController.providerIDs(summaryFixture.settings).isEmpty && OverviewSummary(summaryFixture).providerCount == 0,
+      "No favorites leaves no provider icons or overview summary contributions")
+summaryFixture.settings.pinnedProviders = ["cursor", "codex"]
 summaryFixture.settings.enabled = false
 check(MenuBarController.providerIDs(summaryFixture.settings).isEmpty, "Disabling the menu removes every provider icon")
 summaryFixture.settings.enabled = true
