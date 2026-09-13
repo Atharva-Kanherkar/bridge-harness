@@ -142,7 +142,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **1.13**),
+- its `protocolVersion` (this document describes **1.16**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -151,6 +151,11 @@ request is answered with `invalid_request`. The server advertises:
 when majors match and the client's minor is not newer than the server's.
 Incompatible clients are rejected with the stable code **2000
 `incompatible_protocol`**, with both versions in `error.data`.
+
+**1.16 adds opt-in dashboard history.** `usage/summary` accepts the optional
+`includeDashboard` flag. Only opted-in requests can receive dashboard buckets
+with unavailable (`null`) session counts. Requests from older clients retain
+their local-only integer session counts; source origin is an optional field.
 
 **1.7 adds worker prompt proposal grants and attributed prompt revisions.**
 An older daemon must reject a new client during handshake so it cannot silently

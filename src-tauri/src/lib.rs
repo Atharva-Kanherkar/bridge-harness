@@ -743,6 +743,7 @@ async fn summary(
     time_zone: Option<String>,
     workspace_id: Option<String>,
     include_imported: bool,
+    include_dashboard: Option<bool>,
     since_time: Option<String>,
     until_time: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
@@ -755,6 +756,7 @@ async fn summary(
         time_zone,
         workspace_id,
         include_imported,
+        include_dashboard: include_dashboard.unwrap_or(false),
         since_time,
         until_time,
     };

@@ -13,6 +13,11 @@
     }
   },
   "properties": {
+    "includeDashboard": {
+      "default": false,
+      "description": "Opt in to account dashboard history and nullable session counts. Older clients omit this and retain the original local-only result.",
+      "type": "boolean"
+    },
     "includeImported": {
       "description": "Merge observations imported from provider transcripts, de-duplicated against live rows by provider session.",
       "type": "boolean"

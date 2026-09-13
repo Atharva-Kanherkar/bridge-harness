@@ -3,8 +3,9 @@
 //!
 //! Every figure is an integer. Rates are micro-USD per million tokens, costs
 //! are micro-USD, and a bucket with no rate is `unpriced` with zero cost while
-//! its tokens still count. Nothing here reaches the network except
-//! `usage/refresh_rates`, which a client must ask for by name.
+//! its tokens still count. Summary and source listing read cached data.
+//! `usage/refresh_rates` fetches prices; `usage/scan_history` also refreshes
+//! enabled dashboard sources through their shared provider collectors.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,10 @@ pub struct SummaryParams {
     /// Merge observations imported from provider transcripts, de-duplicated
     /// against live rows by provider session.
     pub include_imported: bool,
+    /// Opt in to account dashboard history and nullable session counts.
+    /// Older clients omit this and retain the original local-only result.
+    #[serde(default)]
+    pub include_dashboard: bool,
     /// Inclusive UTC start, RFC 3339. Required for `hour` resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_time: Option<String>,
@@ -86,7 +91,16 @@ pub struct UsageBucket {
     pub cost_source: UsageCostSource,
     pub records: i64,
     pub unpriced_records: i64,
-    pub sessions: i64,
+    /// Unavailable for account dashboards without session identifiers.
+    pub sessions: Option<i64>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageHistoryOrigin {
+    #[default]
+    Local,
+    Dashboard,
 }
 
 /// A history importer's standing. Mirrors
@@ -95,6 +109,8 @@ pub struct UsageBucket {
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummarySource {
     pub id: String,
+    #[serde(default)]
+    pub origin: UsageHistoryOrigin,
     pub agent: String,
     pub provider: String,
     pub coverage_state: String,
@@ -198,6 +214,8 @@ pub enum UsageCoverageState {
 #[serde(rename_all = "camelCase")]
 pub struct UsageHistorySource {
     pub id: String,
+    #[serde(default)]
+    pub origin: UsageHistoryOrigin,
     pub agent: String,
     pub provider: String,
     pub location: String,
@@ -207,6 +225,7 @@ pub struct UsageHistorySource {
     pub coverage_reason: Option<String>,
     pub coverage_start_at: Option<String>,
     pub coverage_end_at: Option<String>,
+    /// Indexed local records, or cached events for a dashboard source.
     pub records_imported: i64,
     pub records_skipped: i64,
     pub last_successful_scan_at: Option<String>,
@@ -224,7 +243,8 @@ pub struct ScanHistoryParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_records: Option<u64>,
     /// Only these sources; every id must be one `list_history_sources`
-    /// returned. All discovered sources when absent.
+    /// returned. All discovered sources when absent. Dashboard sources use
+    /// the shared authenticated provider collector; no transcript is imported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ids: Option<Vec<String>>,
 }
@@ -429,7 +449,7 @@ mod tests {
             cost_source: UsageCostSource::ModelPriced,
             records: 1,
             unpriced_records: 0,
-            sessions: 1,
+            sessions: Some(1),
         };
         let wire = serde_json::to_value(&bucket).unwrap();
         assert!(wire.get("hourStart").is_none());

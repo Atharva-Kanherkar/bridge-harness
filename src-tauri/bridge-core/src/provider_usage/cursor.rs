@@ -388,11 +388,15 @@ fn fetch_history(
     Ok(history(events, subject, today, tz, now))
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Aggregate {
     input: i64,
     output: i64,
     cache: i64,
+    cache_read: i64,
+    cache_write: i64,
+    records: i64,
+    unpriced_records: i64,
     cost_cents: f64,
     cost_known: bool,
     unpriced: bool,
@@ -419,13 +423,19 @@ impl Aggregate {
         self.input = input;
         self.output = output;
         self.cache = cache;
+        // The combined cache sum was checked above; each component fits too.
+        self.cache_read += event.cache_read;
+        self.cache_write += event.cache_write;
+        self.records += 1;
         if event.cost_invalid || event.total_cents.is_none() {
             self.unpriced = true;
+            self.unpriced_records += 1;
         }
         if let Some(cents) = event.total_cents {
             let next = self.cost_cents + cents;
             if !next.is_finite() || next * 10_000.0 > i64::MAX as f64 {
                 self.unpriced = true;
+                self.unpriced_records += 1;
             } else {
                 self.cost_cents = next;
                 self.cost_known = true;
@@ -477,9 +487,39 @@ impl Aggregate {
         self.input = input;
         self.output = output;
         self.cache = cache;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.records += other.records;
+        self.unpriced_records += other.unpriced_records;
         self.cost_cents = cost;
         self.cost_known |= other.cost_known;
         self.unpriced |= other.unpriced;
+    }
+
+    fn bucket(&self, day: &str, model: &str) -> Option<crate::usage_summary::UsageBucket> {
+        use crate::usage_pricing::CostSource;
+        use crate::usage_summary::{UsageBucket, UsageBucketTotals};
+        self.input.checked_add(self.output)?.checked_add(self.cache)?;
+        (!self.invalid).then(|| UsageBucket {
+            day: day.into(),
+            hour_start: None,
+            harness: "cursor".into(),
+            model: model.into(),
+            totals: UsageBucketTotals {
+                uncached_input_tokens: self.input,
+                cache_read_tokens: self.cache_read,
+                cache_write_tokens: self.cache_write,
+                output_tokens: self.output,
+                reasoning_tokens: 0,
+            },
+            // Sum fractional cents before rounding, like the menu collector.
+            cost_microusd: (self.cost_cents * 10_000.0).round() as i64,
+            cache_savings_microusd: 0,
+            cost_source: if self.unpriced { CostSource::Unpriced } else { CostSource::ProviderReported },
+            records: self.records,
+            unpriced_records: self.unpriced_records,
+            sessions: None,
+        })
     }
 }
 
@@ -509,6 +549,8 @@ fn history(
             .add(event);
     }
     let mut daily = Vec::new();
+    let mut buckets = Vec::new();
+    let mut breakdown_complete = true;
     let mut month = Aggregate::default();
     let mut today_total = Aggregate::default();
     let mut found_today = false;
@@ -516,6 +558,11 @@ fn history(
         let mut day_total = Aggregate::default();
         let mut model_rows = Vec::new();
         for (model, aggregate) in models {
+            if let Some(bucket) = aggregate.bucket(&day, &model) {
+                buckets.push(bucket);
+            } else {
+                breakdown_complete = false;
+            }
             model_rows.push(model_row(model, &aggregate));
             day_total.merge(&aggregate);
         }
@@ -527,15 +574,7 @@ fn history(
         });
         if day == today.to_string() {
             found_today = true;
-            today_total = Aggregate {
-                input: day_total.input,
-                output: day_total.output,
-                cache: day_total.cache,
-                cost_cents: day_total.cost_cents,
-                cost_known: day_total.cost_known,
-                unpriced: day_total.unpriced,
-                invalid: day_total.invalid,
-            };
+            today_total = day_total.clone();
         }
         month.merge(&day_total);
         daily.push(UsageDailyOverview {
@@ -567,6 +606,11 @@ fn history(
         ),
         month: month.period(month_rows),
         daily,
+        breakdown: breakdown_complete.then(|| AccountHistoryBreakdown {
+            time_zone: tz.name().into(),
+            since_day: (today - chrono::Duration::days(29)).to_string(),
+            buckets,
+        }),
         coverage: if empty {
             "Cursor dashboard account history · confirmed empty for the last 30 days".into()
         } else {
@@ -839,6 +883,20 @@ mod tests {
         assert_eq!(report.daily.len(), 1);
         assert_eq!(report.today.tokens.value, Some(21.0));
         assert_eq!(report.month.models.len(), 2);
+        let exact = report.breakdown.as_ref().unwrap();
+        assert_eq!(exact.time_zone, "UTC");
+        assert_eq!(exact.since_day, "2026-08-12");
+        let bucket = exact.buckets.iter().find(|row| row.model == "cursor-model").unwrap();
+        assert_eq!(bucket.totals.uncached_input_tokens, 10);
+        assert_eq!(bucket.totals.cache_read_tokens, 3);
+        assert_eq!(bucket.totals.cache_write_tokens, 4);
+        assert_eq!(bucket.totals.output_tokens, 2);
+        assert_eq!(bucket.cost_microusd, 12_500);
+        assert_eq!(bucket.records, 1);
+        assert_eq!(bucket.sessions, None);
+        let unknown = exact.buckets.iter().find(|row| row.model == "other").unwrap();
+        assert_eq!(unknown.unpriced_records, 1);
+        assert_eq!(unknown.cost_source, crate::usage_pricing::CostSource::Unpriced);
         assert_eq!(
             report.month.cost_microusd.value, None,
             "a mixed priced/unpriced total is not a lower bound"
@@ -858,6 +916,21 @@ mod tests {
         assert_ne!(report.account_scope, other.account_scope);
         assert_eq!(other.today.tokens.value, Some(0.0));
         assert_eq!(other.today.cost_microusd.value, Some(0.0));
+        assert!(other.breakdown.unwrap().buckets.is_empty());
+    }
+
+    #[test]
+    fn exact_dashboard_buckets_keep_known_subtotals_and_fractional_costs() {
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+        let at = day.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp();
+        let row = |cents| event(&json!({"timestamp":at * 1000,"model":"same-model","tokenUsage":{"inputTokens":1,"totalCents":cents}})).unwrap().unwrap();
+        let report = history(vec![row(json!(0.00004)), row(json!(0.00004)), row(Value::Null)], "account", day, chrono_tz::UTC, at);
+        let bucket = &report.breakdown.as_ref().unwrap().buckets[0];
+        assert_eq!(bucket.cost_microusd, 1, "round the cell sum once, not each event");
+        assert_eq!(bucket.records, 3);
+        assert_eq!(bucket.unpriced_records, 1);
+        assert_eq!(bucket.cost_source, crate::usage_pricing::CostSource::Unpriced);
+        assert_eq!(report.month.cost_microusd.value, None);
     }
 
     #[test]

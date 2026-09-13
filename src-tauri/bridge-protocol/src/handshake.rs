@@ -62,9 +62,10 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// numerically newer preview that is missing terminal methods.
 /// **1.14 adds overview summary visibility and separate provider status items.**
 /// **1.15 supports expandable favorites; only favorites appear in provider tabs.**
+/// **1.16 adds dashboard history origins and nullable usage session counts.**
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 15,
+    minor: 16,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -226,6 +227,13 @@ mod tests {
             minor: 14
         }
         .accepts(PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn dashboard_history_client_rejects_a_daemon_without_account_history() {
+        let older = ProtocolVersion { major: 1, minor: 15 };
+        assert!(!older.accepts(PROTOCOL_VERSION));
+        assert!(PROTOCOL_VERSION.accepts(older));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

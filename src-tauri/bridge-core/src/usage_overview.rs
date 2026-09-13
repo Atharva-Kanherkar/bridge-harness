@@ -97,6 +97,7 @@ fn menu_summary(
             time_zone: Some(time_zone.to_owned()),
             workspace_id: None,
             include_imported: true,
+            include_dashboard: false,
             since_time: None,
             until_time: None,
         },
@@ -654,7 +655,7 @@ mod tests {
             cost_source: CostSource::Unpriced,
             records: 1,
             unpriced_records: 1,
-            sessions: 1,
+            sessions: Some(1),
         };
         let usage = period(&[&row]);
         assert_eq!(usage.tokens.value, Some(65.0));
@@ -688,7 +689,7 @@ mod tests {
             cost_source: CostSource::ProviderReported,
             records: 1,
             unpriced_records: 0,
-            sessions: 1,
+            sessions: Some(1),
         };
         let first = row("2026-09-01", 10);
         let third = row("2026-09-03", 30);
@@ -703,11 +704,11 @@ mod tests {
 }
 
 #[derive(Default, Serialize, Deserialize)]
-struct CachedProvider {
-    usage: Option<crate::provider_usage::AccountUsage>,
-    error: Option<String>,
+pub(crate) struct CachedProvider {
+    pub(crate) usage: Option<crate::provider_usage::AccountUsage>,
+    pub(crate) error: Option<String>,
 }
-fn load_provider(db: &Connection, provider: &str) -> Result<CachedProvider, BridgeError> {
+pub(crate) fn load_provider(db: &Connection, provider: &str) -> Result<CachedProvider, BridgeError> {
     let payload: Option<String> = db
         .query_row(
             "SELECT payload FROM configuration_entries WHERE kind='usage_overview' AND id=?1",
@@ -903,6 +904,16 @@ fn refresh_provider(
         let _ = crate::usage_history::scan_history(core, &env, Some(10_000), Some(&ids));
     }
     *last = Some(Instant::now());
+    Ok(())
+}
+/// History uses the same Cursor collector and refresh gate as the Menu Bar.
+/// The provider preference is authoritative; listing sources never authenticates.
+pub(crate) fn refresh_cursor_history(core: &BridgeCore) -> Result<(), BridgeError> {
+    let settings = crate::menu_bar::load(&core.db.lock().unwrap())?;
+    let provider = bridge_protocol::messages::MenuBarProvider::Cursor;
+    if settings.provider_enabled(provider) {
+        refresh_provider(core, provider, &settings, 1, false)?;
+    }
     Ok(())
 }
 pub fn refresh_providers(
@@ -1131,6 +1142,7 @@ mod provider_tests {
             month: confirmed_empty_account_period(),
             daily: vec![],
             coverage: "Cursor dashboard account history".into(),
+            breakdown: None,
         };
         let projected = project_account_history(history, today, observed_at + 120, None);
         assert_eq!(projected.today.tokens.value, None);
@@ -1155,6 +1167,7 @@ mod provider_tests {
                     month: confirmed_empty_account_period(),
                     daily: vec![],
                     coverage: "Cursor dashboard account history".into(),
+                    breakdown: None,
                 }),
                 ..Default::default()
             }),
@@ -1194,6 +1207,7 @@ mod provider_tests {
             month: confirmed_empty_account_period(),
             daily: vec![],
             coverage: "Cursor dashboard account history".into(),
+            breakdown: None,
         };
         let prior = AccountUsage { history: Some(history.clone()), ..Default::default() };
         for (scope, error) in [

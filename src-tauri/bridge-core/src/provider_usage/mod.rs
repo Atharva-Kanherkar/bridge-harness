@@ -46,6 +46,17 @@ pub(crate) struct AccountHistory {
     pub month: UsagePeriodOverview,
     pub daily: Vec<UsageDailyOverview>,
     pub coverage: String,
+    /// Exact daily dashboard buckets, never synthetic transcript records.
+    /// Older caches stay usable by the menu, but need a refresh for the main report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakdown: Option<AccountHistoryBreakdown>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AccountHistoryBreakdown {
+    pub time_zone: String,
+    pub since_day: String,
+    pub buckets: Vec<crate::usage_summary::UsageBucket>,
 }
 
 pub(crate) fn read_interactive(

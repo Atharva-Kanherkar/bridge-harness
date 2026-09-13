@@ -222,6 +222,10 @@ that unpriced usage is excluded. This counts a provider with known spend without
 inventing a price for unknown models or changing its authoritative snapshot.
 Available provider totals take precedence; models are never added twice.
 
+The main Usage screen also consumes Cursor dashboard history from this same
+collector and cache. See [dashboard history](usage-dashboard-history.md) for
+source selection, date coverage, and the Claude quota/history comparison.
+
 Cursor history survives a transient dashboard failure when fresh account quota
 data verifies the same subject fingerprint as the saved history. Retained
 amounts are immediately stale and keep their original observation time. Unknown

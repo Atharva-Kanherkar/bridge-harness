@@ -3812,7 +3812,7 @@ pub fn usage_summary(
     core: &Arc<BridgeCore>,
     request: &usage_summary::UsageSummaryRequest,
 ) -> Result<usage_summary::UsageSummary, BridgeError> {
-    usage_summary::summarize(&core.db.lock().unwrap(), request)
+    crate::usage_dashboard::summarize(&core.db.lock().unwrap(), request, chrono::Utc::now().timestamp())
 }
 
 /// The Insights tab: the stored report, or a fresh one from a headless harness
@@ -3880,17 +3880,17 @@ pub fn list_usage_history_sources(
     core: &Arc<BridgeCore>,
 ) -> Result<Vec<usage_history::UsageHistorySource>, BridgeError> {
     let env = usage_import::SourceEnv::from_process();
-    usage_history::list_history_sources(&core.db.lock().unwrap(), &env)
+    crate::usage_dashboard::list_sources(&core.db.lock().unwrap(), &env)
 }
 
-/// One bounded, incremental import pass over the chosen history sources.
+/// One bounded local import pass and, when selected, a shared Cursor dashboard refresh.
 pub fn scan_usage_history(
     core: &Arc<BridgeCore>,
     max_records: Option<usize>,
     source_ids: Option<&[String]>,
 ) -> Result<usage_import::ScanReport, BridgeError> {
     let env = usage_import::SourceEnv::from_process();
-    usage_history::scan_history(core, &env, max_records, source_ids)
+    crate::usage_dashboard::scan(core, &env, max_records, source_ids)
 }
 
 // --- menu-bar meter (CodexBar port) ------------------------------------------------
