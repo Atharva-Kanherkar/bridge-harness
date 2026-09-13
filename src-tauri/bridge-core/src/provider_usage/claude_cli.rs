@@ -21,6 +21,13 @@ static RESET_LINE: LazyLock<regex::Regex> = LazyLock::new(|| {
 });
 static RESET_ZONE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\(([^)]+)\)\s*$").expect("valid reset timezone regex"));
+static RESET_AT: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)\s+at\s+").expect("valid reset separator regex"));
+static RESET_MONTH_GAP: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)\b([a-z]{3})(\d)").expect("valid reset month regex"));
+static RESET_HOUR: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)(^|\s)(\d{1,2})(\s*(?:am|pm))?$").expect("valid reset hour regex")
+});
 
 #[derive(Default)]
 struct ProbeState {
@@ -623,10 +630,15 @@ fn parse_reset(line: &str, now: i64, window_minutes: i64) -> Option<i64> {
             .parse::<chrono_tz::Tz>()
             .ok()?
     };
-    raw = raw.trim().replace(" at ", " ");
+    // CodexBar's reset parser accepts the CLI's comma, "at", and clock
+    // spacing variants. Normalize punctuation before applying date formats.
+    raw = RESET_AT.replace_all(&raw, " ").replace(',', " ");
+    raw = RESET_MONTH_GAP.replace_all(&raw, "${1} ${2}").into_owned();
+    raw = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    raw = RESET_HOUR.replace(&raw, "${1}${2}:00${3}").into_owned();
     let now = Utc.timestamp_opt(now, 0).single()?;
     let local_now = now.with_timezone(&zone);
-    let explicit = ["%b %e, %Y, %I:%M%p", "%b %e, %Y, %I%p", "%b %e %Y %H:%M"]
+    let explicit = ["%b %e %Y %I:%M%p", "%b %e %Y %I:%M %p", "%b %e %Y %H:%M"]
         .iter()
         .find_map(|format| NaiveDateTime::parse_from_str(&raw, format).ok())
         .and_then(|value| local_datetime(zone, value));
@@ -635,7 +647,7 @@ fn parse_reset(line: &str, now: i64, window_minutes: i64) -> Option<i64> {
             .map(|value| value.timestamp());
     }
     let dated_input = format!("2000 {raw}");
-    let dated = ["%Y %b %e %I:%M%p", "%Y %b %e %I%p", "%Y %b %e %H:%M"]
+    let dated = ["%Y %b %e %I:%M%p", "%Y %b %e %I:%M %p", "%Y %b %e %H:%M"]
         .iter()
         .find_map(|format| NaiveDateTime::parse_from_str(&dated_input, format).ok())
         .and_then(|value| {
@@ -781,6 +793,27 @@ mod tests {
             parse_reset("Resets Jan 1, 2028, 4:00am (Asia/Kolkata)", now, 10080),
             None
         );
+    }
+
+    #[test]
+    fn reset_dates_accept_claude_cli_punctuation_and_clock_variants() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-13T06:00:00Z")
+            .unwrap().timestamp();
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-09-18T06:00:00Z")
+            .unwrap().timestamp();
+        for label in [
+            "Sep 18, 11:30 am", "Sep 18 AT 11:30am", "Sep18,11:30AM",
+            "Sep 18, 2026, 11:30am", "Sep 18 2026 11:30 AM", "Sep 18 11:30",
+        ] {
+            assert_eq!(parse_reset(&format!("Resets {label} (Asia/Kolkata)"), now, 10080),
+                Some(expected), "{label}");
+        }
+        let hour = chrono::DateTime::parse_from_rfc3339("2026-09-18T05:30:00Z")
+            .unwrap().timestamp();
+        for label in ["Sep 18, 11am", "Sep 18 2026 11 AM", "Sep 18, 11"] {
+            assert_eq!(parse_reset(&format!("Resets {label} (Asia/Kolkata)"), now, 10080),
+                Some(hour), "{label}");
+        }
     }
 
     #[test]
