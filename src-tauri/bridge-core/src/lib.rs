@@ -31,6 +31,7 @@ pub mod claude_import;
 pub mod codex_adapter;
 pub mod compaction_controller;
 pub mod connector_inbox;
+pub mod connector_runs;
 pub mod connector_surface;
 pub mod completion;
 pub mod context;
