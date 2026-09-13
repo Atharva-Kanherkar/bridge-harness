@@ -36,6 +36,9 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { ConnectorPane } from "./components/ConnectorPane";
+import { ConnectorToasts } from "./components/ConnectorToasts";
+import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
@@ -512,6 +515,13 @@ function AppContent() {
     const attention = statuses.some(item => (item.status.tone === "failed" || item.status.tone === "stalled") && !acknowledgedTasks.has(item.id));
     return { running, attention };
   }, [forest?.workerRuntimes, visibleSessions, terminalActivity?.running, acknowledgedTasks]);
+  // Connector inbox state, declared here because the dock descriptor below
+  // reads its unread count. The rest of the glue is further down.
+  const [connectorToasts, setConnectorToasts] = useState<ConnectorToast[]>([]);
+  const [connectorUnread, setConnectorUnread] = useState(0);
+  const [connectorFocus, setConnectorFocus] = useState<string>();
+  const connectorAttention = connectorToasts.some(toast => !toast.settled);
+
   const dockPanes: DockPaneDescriptor[] = [
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
@@ -520,6 +530,9 @@ function AppContent() {
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
+    // Always available: an inbox is about an account, not a repository, so
+    // gating it on a worktree would hide it exactly where a direct chat is.
+    { id: "inbox", label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
@@ -605,6 +618,48 @@ function AppContent() {
       setGithubToasts(current => current.some(item => item.key === key) ? current : [...current.slice(-3), { key, payload }]);
     }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
     return () => { active = false; off?.(); };
+  }, []);
+
+  // ── Connector surface glue ─────────────────────────────────────────────────
+  // Inbound connector notifications and the deep link from a toast into the
+  // Inbox dock pane. The stack is reduced by `connectorSurface.reduceToasts`,
+  // which upgrades a toast in place when its card lands rather than stacking a
+  // second card for the same message.
+  function openConnectorItem(itemKey: string) {
+    setConnectorToasts(current => current.filter(toast => toast.itemKey !== itemKey));
+    setConnectorFocus(itemKey);
+    setView("workspace");
+    dispatchDock({ type: "open-pane", pane: "inbox" });
+  }
+
+  useEffect(() => {
+    let active = true;
+    const stops: Array<() => void> = [];
+    const track = (pending: Promise<() => void>) => {
+      void pending.then(stop => { if (active) stops.push(stop); else stop(); });
+    };
+    track(bridgeApi.onConnectorItemArrived(payload => {
+      if (active) setConnectorToasts(current => reduceToasts(current, { type: "arrived", payload }));
+    }));
+    track(bridgeApi.onConnectorCardReady(payload => {
+      if (active) setConnectorToasts(current => reduceToasts(current, { type: "card", payload }));
+    }));
+    track(bridgeApi.onConnectorItemResolved(payload => {
+      if (active) setConnectorToasts(current => reduceToasts(current, { type: "resolved", payload }));
+    }));
+    // The authoritative unread count, read here rather than only inside the
+    // pane. The pane mounts lazily — it does not exist until the dock has shown
+    // it once — and arrival events are transient and never replayed, so a launch
+    // with unresolved items from a previous session showed neither a badge nor a
+    // toast until the user happened to open Inbox.
+    const hydrate = () => {
+      void bridgeApi.connectorInbox().then(inbox => {
+        if (active) setConnectorUnread(inbox.unreadCount);
+      }).catch(() => undefined);
+    };
+    hydrate();
+    track(bridgeApi.onConnectorInboxChanged(() => { if (active) hydrate(); }));
+    return () => { active = false; for (const stop of stops) stop(); };
   }, []);
 
   // ── App update notification ────────────────────────────────────────────────
@@ -2675,6 +2730,11 @@ function AppContent() {
                 )}
                 onRevealEntry={revealEntryInConversation}
               />;
+              // Before the workspace guard: an inbox is about an account, not a
+              // tree, and the dock advertises it as always available. Left
+              // below this line it rendered nothing in exactly the direct-chat
+              // case the always-available descriptor exists to support.
+              if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
               if (!workspace) return null;
               /* Keyed on the workspace: these panes hold open buffers, shells,
                  and relative paths, and none of that survives a change of tree.
@@ -2744,6 +2804,13 @@ function AppContent() {
         </Alert>
       );
     })()}
+    {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
+    <ConnectorToasts
+      toasts={connectorToasts}
+      suppressed={dock.open && dock.pane === "inbox"}
+      onOpen={toast => openConnectorItem(toast.itemKey)}
+      onDismiss={key => setConnectorToasts(current => reduceToasts(current, { type: "dismiss", key }))}
+    />
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}

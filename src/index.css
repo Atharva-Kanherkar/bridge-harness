@@ -773,6 +773,86 @@ html[data-native-fullscreen] .u-traffic-inset {
   margin-top: 1em;
 }
 
+/* ── Connector surface ──────────────────────────────────────────────────────
+   A notification arrives unannounced, so its motion has to read as "this came
+   to you" rather than "you opened this": toasts rise and settle, and the card
+   that lands a second later *replaces text inside a toast that is already
+   there*. All of it is collapsed to its final frame by the reduced-motion
+   block at the bottom of this file, which is why none of these are branched in
+   JS — there is one code path and it simply lands instantly. */
+
+@keyframes connector-toast-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); filter: blur(3px); }
+  to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+.connector-toast-in {
+  animation: connector-toast-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--connector-toast-delay, 0ms);
+}
+
+/* The moment a harness-rendered card replaces Bridge's placeholder wording.
+   A brief lift rather than a colour flash: the chrome is achromatic, and the
+   point is "this just got sharper", not "something is wrong". */
+@keyframes connector-settle {
+  0% { opacity: 0.55; transform: translateY(2px); }
+  60% { opacity: 1; transform: translateY(-1px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.connector-settle {
+  animation: connector-settle 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The unread dot. Slow enough to notice without pulling the eye off the text. */
+@keyframes connector-dot-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.88); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+.connector-dot-live {
+  animation: connector-dot-pulse 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Inbox rows arriving together. Same index-as-custom-property trick as the
+   GitHub list, and collapsed the same way. */
+@keyframes connector-row-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.connector-row-enter {
+  animation: connector-row-enter 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--connector-row-delay, 0ms);
+}
+
+/* The placeholder a card occupies while its render run is in flight. The sweep
+   runs over the *text tone*, not a grey box, so the item stays readable — the
+   message already arrived and hiding it would be the wrong trade. */
+.connector-shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--color-muted-foreground) 20%,
+    var(--color-foreground) 42%,
+    var(--color-muted-foreground) 64%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: text-shimmer-sweep 2.1s linear infinite;
+}
+
+/* The approval sheet sliding over the card it describes. */
+@keyframes connector-approval-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.connector-approval-in {
+  animation: connector-approval-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 /* The live accent bar on a working Agent Fleet tile. */
 @keyframes mission-pulse {
   0%, 100% { opacity: 0.45; }

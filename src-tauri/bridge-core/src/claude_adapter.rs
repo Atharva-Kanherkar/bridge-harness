@@ -211,6 +211,15 @@ fn launch(
                 // own MCP configuration decides what exists. Empty for an
                 // exact-review policy, and the gate treats empty as no scope.
                 "readScopeServers": policy.read_scope_servers(),
+                // The single approved write, when this run carries one. Absent
+                // for every briefing and every connector read; present only
+                // after a human approved the literal text being sent.
+                "actionScope": policy.action_scope_config().map(|(server, intent, permitted)| json!({
+                    "server": server,
+                    "intent": intent,
+                    "permittedWords": permitted,
+                    "forbiddenWords": crate::briefing_policy::BriefingRuntimePolicy::action_forbidden_words(),
+                })),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
             }))

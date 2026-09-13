@@ -118,6 +118,36 @@ async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc
 }
 
 #[tauri::command]
+async fn connector_list(refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorListResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector list", move || api::connector_list(&core, refresh)).await
+}
+
+#[tauri::command]
+async fn connector_inbox(limit: Option<u32>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorInboxResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector inbox", move || api::connector_inbox(&core, limit)).await
+}
+
+#[tauri::command]
+async fn connector_act(item_key: String, action: wire::ConnectorActionRequest, approved: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorActResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector action", move || api::connector_act(&core, &item_key, action, approved)).await
+}
+
+#[tauri::command]
+async fn connector_dismiss(item_key: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorDismissResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector dismiss", move || api::connector_dismiss(&core, &item_key)).await
+}
+
+#[tauri::command]
+async fn connector_refresh(family: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorRefreshResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector refresh", move || api::connector_refresh(&core, &family)).await
+}
+
+#[tauri::command]
 async fn github_prs(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub pull-request list", move || api::github_prs(&core, &workspace_id)).await
@@ -1645,11 +1675,33 @@ async fn search_session_entries(
     session_id: String,
     query: String,
     limit: Option<u32>,
+    offset: Option<u32>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Session recall", move || {
-        api::search_session_entries(&core, &session_id, &query, limit)
+        api::search_session_entries(&core, &session_id, &query, limit, offset)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn export_session_transcript(
+    session_id: String,
+    scope: Option<bridge_protocol::messages::TranscriptExportScope>,
+    include_hidden: Option<bool>,
+    destination_path: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ExportSessionTranscriptResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Transcript export", move || {
+        api::export_session_transcript(
+            &core,
+            &session_id,
+            scope,
+            include_hidden,
+            destination_path.as_deref(),
+        )
     })
     .await
 }
@@ -2269,6 +2321,7 @@ fn setup_embedded(
     live_turn::start_learning_maintenance(core.clone());
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
     bridge_core::github_poll::start_github_poll_maintenance(core.clone());
+    bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
@@ -2289,6 +2342,11 @@ pub fn run() -> i32 {
             preview_external_import,
             commit_external_import,
             github_status,
+            connector_list,
+            connector_inbox,
+            connector_act,
+            connector_dismiss,
+            connector_refresh,
             github_prs,
             github_pr,
             github_checks,
@@ -2446,6 +2504,7 @@ pub fn run() -> i32 {
             write_workspace_file,
             compact_session,
             search_session_entries,
+            export_session_transcript,
             save_memory_record,
             list_memory_records,
             delete_memory_record,

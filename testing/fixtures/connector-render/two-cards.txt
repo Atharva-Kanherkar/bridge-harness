@@ -1,0 +1,9 @@
+Here are two options, pick whichever reads better.
+
+```bridge-connector-card
+{"itemKey":"slack:D0BKKG51DJM:1789041929.055829","headline":"Option one","blocks":[{"kind":"context","text":"first"}],"suggestedReplies":[],"harnessRendered":true}
+```
+
+```bridge-connector-card
+{"itemKey":"slack:D0BKKG51DJM:1789041929.055829","headline":"Option two","blocks":[{"kind":"context","text":"second"}],"suggestedReplies":[],"harnessRendered":true}
+```

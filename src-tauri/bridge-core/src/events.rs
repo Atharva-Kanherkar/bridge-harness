@@ -83,6 +83,28 @@ pub enum CoreEvent {
         failed: u32,
         total: u32,
     },
+    /// A connector message Bridge had not seen before. Published *before* any
+    /// card exists, so a slow or failed render delays the polish and never the
+    /// notification. The headline is Bridge's own, built from structured
+    /// ingress fields; `ConnectorCardReady` replaces it if a card lands.
+    ConnectorItemArrived {
+        family: String,
+        item_key: String,
+        headline: String,
+        channel_label: String,
+        author: String,
+    },
+    /// The card for one already-announced item is stored and readable.
+    ConnectorCardReady {
+        family: String,
+        item_key: String,
+        headline: String,
+        harness_rendered: bool,
+    },
+    /// An approved reply or reaction finished.
+    ConnectorItemResolved { family: String, item_key: String, succeeded: bool },
+    /// Refetch hint: one family's inbox changed.
+    ConnectorInboxChanged { family: String },
 }
 
 impl CoreEvent {
@@ -104,6 +126,10 @@ impl CoreEvent {
             CoreEvent::SessionStartup { .. } => NotificationName::SessionStartup,
             CoreEvent::GithubChecksChanged { .. } => NotificationName::GithubChecksChanged,
             CoreEvent::GithubCiFinished { .. } => NotificationName::GithubCiFinished,
+            CoreEvent::ConnectorItemArrived { .. } => NotificationName::ConnectorItemArrived,
+            CoreEvent::ConnectorCardReady { .. } => NotificationName::ConnectorCardReady,
+            CoreEvent::ConnectorItemResolved { .. } => NotificationName::ConnectorItemResolved,
+            CoreEvent::ConnectorInboxChanged { .. } => NotificationName::ConnectorInboxChanged,
         }
     }
 
@@ -151,6 +177,18 @@ impl CoreEvent {
                 "workspaceId": workspace_id, "number": number, "headBranch": head_branch,
                 "title": title, "failed": failed, "total": total,
             }),
+            CoreEvent::ConnectorItemArrived { family, item_key, headline, channel_label, author } => serde_json::json!({
+                "family": family, "itemKey": item_key, "headline": headline,
+                "channelLabel": channel_label, "author": author,
+            }),
+            CoreEvent::ConnectorCardReady { family, item_key, headline, harness_rendered } => serde_json::json!({
+                "family": family, "itemKey": item_key, "headline": headline,
+                "harnessRendered": harness_rendered,
+            }),
+            CoreEvent::ConnectorItemResolved { family, item_key, succeeded } => serde_json::json!({
+                "family": family, "itemKey": item_key, "succeeded": succeeded,
+            }),
+            CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
         }
     }
 
@@ -292,7 +330,11 @@ impl EventBus {
                 | CoreEvent::AccountUsage { .. }
                 | CoreEvent::SessionStartup { .. } => {}
                 | CoreEvent::GithubChecksChanged { .. }
-                | CoreEvent::GithubCiFinished { .. } => {}
+                | CoreEvent::GithubCiFinished { .. }
+                | CoreEvent::ConnectorItemArrived { .. }
+                | CoreEvent::ConnectorCardReady { .. }
+                | CoreEvent::ConnectorItemResolved { .. }
+                | CoreEvent::ConnectorInboxChanged { .. } => {}
             }
         }
         let _ = self.sender.send(event);
@@ -395,6 +437,25 @@ mod tests {
                 failed: 1,
                 total: 2,
             },
+            CoreEvent::ConnectorItemArrived {
+                family: "slack".into(),
+                item_key: "slack:D0:1.0".into(),
+                headline: "Nina sent you a direct message".into(),
+                channel_label: "Nina Alvarez".into(),
+                author: "Nina Alvarez".into(),
+            },
+            CoreEvent::ConnectorCardReady {
+                family: "slack".into(),
+                item_key: "slack:D0:1.0".into(),
+                headline: "Nina asked about the release checklist".into(),
+                harness_rendered: true,
+            },
+            CoreEvent::ConnectorItemResolved {
+                family: "slack".into(),
+                item_key: "slack:D0:1.0".into(),
+                succeeded: true,
+            },
+            CoreEvent::ConnectorInboxChanged { family: "slack".into() },
         ];
         for event in &events {
             assert_eq!(
