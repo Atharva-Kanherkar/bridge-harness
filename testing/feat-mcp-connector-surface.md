@@ -38,7 +38,13 @@ no MCP client, no credential store, no Slack token, no OAuth.
 
 ### Inbox ingress (polling)
 - The poller asks the harness, on an interval, for unread mentions and DMs and
-  receives a strict JSON delta. Cadence: 30s focused, 180s unfocused.
+  receives a strict JSON delta. Cadence: 30s.
+  *(Amended during implementation: the contract originally specified 30s focused
+  / 180s unfocused. `bridge-core` has no window-focus signal to switch on — the
+  GitHub poller declares the same pair and also only ever uses the focused one.
+  Rather than ship a constant naming behaviour nothing implements, this slice
+  has one cadence. Focus-aware backoff needs a focus signal in core first, and
+  that is a separate change.)*
 - An item is keyed by `(family, channel_id, message_ts)`. A key already seen is
   never re-announced, across restarts (the ledger is persisted).
 - Items arriving while a poll is already in flight do not start a second poll
@@ -86,7 +92,11 @@ no MCP client, no credential store, no Slack token, no OAuth.
 - `a_seen_key_is_never_reannounced`
 - `the_seen_ledger_survives_a_restart`
 - `a_failed_poll_preserves_the_ledger_and_reports_degraded`
-- `one_poll_runs_per_connector_at_a_time`
+**Rust — `connector_runs_live.rs`**
+- `one_ingress_cycle_runs_per_family_at_a_time`
+- `a_failed_cycle_still_releases_its_slot`
+- `ingress_is_slower_than_the_github_poller_because_a_cycle_is_a_model_turn`
+- `a_burst_of_arrivals_does_not_become_a_burst_of_model_turns`
 - `resolving_an_item_marks_it_read`
 
 **Rust — `connector_runs.rs`**
