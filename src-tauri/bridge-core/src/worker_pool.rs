@@ -1,10 +1,10 @@
 use crate::{
-    compaction_controller::CompactionController, delegation::DelegationRequest, handoff,
+    compaction_controller::CompactionController, delegation::DelegationRequest,
     model::QueuedWorkerRequest, policy, session_supervisor::SessionSupervisor, store,
     worker_lifecycle::WorkerLifecycleState, BridgeError,
 };
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -113,11 +113,20 @@ impl WorkerPool {
         request: &DelegationRequest,
         actual_model: &str,
     ) -> Result<String, BridgeError> {
+        let encoded_request = serde_json::to_value(request)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?.to_string();
+        if let Some(id) = db.query_row(
+            "SELECT id FROM worker_queue WHERE parent_session_id=?1 AND turn_id=?2 AND request=?3 AND queue_status IN ('queued','dispatching','blocked_on_human') ORDER BY sequence LIMIT 1",
+            rusqlite::params![parent_session_id, turn_id, encoded_request], |row| row.get::<_, String>(0),
+        ).optional()? {
+            return Ok(id);
+        }
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let expires_at = (Utc::now() + Duration::hours(QUEUE_TTL_HOURS)).to_rfc3339();
+        let transaction = db.unchecked_transaction()?;
         store::enqueue_worker_request(
-            db,
+            &transaction,
             &QueuedWorkerRequest {
                 id: id.clone(),
                 parent_session_id: parent_session_id.to_owned(),
@@ -138,7 +147,51 @@ impl WorkerPool {
                 updated_at: now,
                             },
         )?;
+        crate::session_forest::append_in_transaction(
+            &transaction, parent_session_id, crate::session_forest::EntryKind::DelegationRequested,
+            serde_json::json!({
+                "requestId":id, "queueId":id, "turnId":turn_id, "status":"queued",
+                "title":"Worker queued", "text":format!("{} is queued ({}).", request.label(), id),
+                "request":request,
+            }),
+        ).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        transaction.commit()?;
         Ok(id)
+    }
+
+    /// Persist the visible failure and its parent notification together. The
+    /// audit receipt prevents every maintenance tick from announcing it again.
+    pub fn report_terminal_queue_outcomes(db: &Connection) -> Result<Vec<String>, BridgeError> {
+        let mut statement = db.prepare(
+            "SELECT q.id,q.parent_session_id,q.turn_id,q.queue_status,COALESCE(q.last_error,'worker launch failed')
+             FROM worker_queue q JOIN sessions s ON s.id=q.parent_session_id
+             WHERE q.queue_status IN ('expired','dead_letter','rejected') AND s.status!='cancelled'
+             AND NOT EXISTS(SELECT 1 FROM events e WHERE e.kind='worker.queue.terminal_reported' AND e.entity_id=q.id)
+             ORDER BY q.sequence",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut parents = Vec::new();
+        for (id, parent, turn, status, reason) in rows {
+            let transaction = db.unchecked_transaction()?;
+            let text = format!("Queued worker {id} {status}: {reason}. No worker will start from this queue item.");
+            crate::session_forest::append_in_transaction(&transaction, &parent,
+                crate::session_forest::EntryKind::DelegationRejected,
+                serde_json::json!({"requestId":id,"queueId":id,"turnId":turn,"status":"failed",
+                    "title":"Queued worker could not launch","text":text,"reason":reason,"willRetry":false}),
+            ).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+            if !turn.starts_with("direct-agent-") {
+                crate::session_input::enqueue(&transaction, &parent, &serde_json::json!({
+                    "type":"bridge-worker-launch-failed","queueId":id,"turnId":turn,"phase":"queue",
+                    "reason":reason,"status":status,"instruction":"This queue item is terminal. No worker will start. Do not wait for a result; report the failure before considering a new request."
+                }).to_string(), "")?;
+            }
+            store::event(&transaction, "worker-pool", "worker.queue.terminal_reported", &id, &text)?;
+            transaction.commit()?;
+            parents.push(parent);
+        }
+        Ok(parents)
     }
 
     pub fn maintain_queue(db: &Connection, now: DateTime<Utc>) -> Result<(), BridgeError> {
@@ -254,11 +307,6 @@ impl WorkerPool {
                 return Ok(None);
             }
         };
-        let handoff =
-            handoff::assess(db, &request.parent_session_id, &directive.runtime_harness())?;
-        if handoff.cross_harness && !handoff.at_phase_boundary {
-            return Ok(None);
-        }
         let conflicts = directive.write_mode != crate::delegation::WriteMode::ReadOnly
             && active.iter().any(|worker| {
                 worker.write_mode != crate::delegation::WriteMode::ReadOnly
@@ -590,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_harness_queue_waits_for_parent_phase_boundary() {
+    fn cross_harness_queue_can_progress_while_the_parent_turn_is_active() {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
         db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/handoff-queue','now')", []).unwrap();
         db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/handoff-queue-w','idle','now')", []).unwrap();
@@ -598,13 +646,33 @@ mod tests {
         let mut directive = request();
         directive.harness = Some("claude".into());
         WorkerPool::enqueue(&db, "parent", "w", "turn", &directive, "model").unwrap();
-        assert_eq!(WorkerPool::claim_next_queued(&db, "w").unwrap(), None);
-        db.execute(
-            "UPDATE sessions SET active_turn_id=NULL WHERE id='parent'",
-            [],
-        )
-        .unwrap();
         assert!(WorkerPool::claim_next_queued(&db, "w").unwrap().is_some());
+    }
+
+    #[test]
+    fn repeated_enqueue_keeps_one_identity_and_terminal_notice_is_durable_once() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/queue','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task','/tmp/queue','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','ready','reported')", []).unwrap();
+        let id = WorkerPool::enqueue(&db, "parent", "w", "turn", &request(), "model").unwrap();
+        assert_eq!(WorkerPool::enqueue(&db, "parent", "w", "turn", &request(), "model").unwrap(), id);
+        assert_eq!(store::session_entries(&db, "parent").unwrap().len(), 1);
+        db.execute("UPDATE worker_queue SET expires_at='2000-01-01T00:00:00Z' WHERE id=?1", [&id]).unwrap();
+        WorkerPool::maintain_queue(&db, Utc::now()).unwrap();
+        // An enqueue failure must roll back both the receipt and the visible failure.
+        db.execute_batch("CREATE TRIGGER fail_queue_notice BEFORE INSERT ON queued_session_input BEGIN SELECT RAISE(FAIL,'notice unavailable'); END;").unwrap();
+        assert!(WorkerPool::report_terminal_queue_outcomes(&db).is_err());
+        assert_eq!(store::session_entries(&db, "parent").unwrap().len(), 1);
+        db.execute_batch("DROP TRIGGER fail_queue_notice;").unwrap();
+        assert_eq!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap(), vec!["parent"]);
+        assert!(WorkerPool::report_terminal_queue_outcomes(&db).unwrap().is_empty());
+        assert_eq!(store::session_entries(&db, "parent").unwrap().len(), 2);
+        let notice = crate::session_input::next_queued(&db, "parent").unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&notice.provider_text).unwrap();
+        assert_eq!(value["queueId"], id);
+        assert_eq!(value["status"], "expired");
+        assert_eq!(crate::session_input::pending_count(&db, "parent").unwrap(), 1);
     }
 
     #[test]

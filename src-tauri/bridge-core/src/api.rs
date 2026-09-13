@@ -700,7 +700,7 @@ pub fn github_review(
             session_id: Some(child_session_id),
             message: format!("Review started with {harness} — comments will post to PR #{number} shortly."),
         },
-        live_turn::WorkerLaunchOutcome::Queued => wire::GithubReviewResult {
+        live_turn::WorkerLaunchOutcome::Queued(_) => wire::GithubReviewResult {
             status: "queued".into(),
             session_id: None,
             message: format!("Review queued with {harness}; it will start when a worker slot frees up."),
@@ -2041,23 +2041,26 @@ fn resolve_legacy_approval(
                     &resolved.turn_id,
                     &resolved.approval_id,
                     Some(&child_session_id),
-                    false,
+                    None,
                 );
             }
-            live_turn::WorkerLaunchOutcome::Queued => {
+            live_turn::WorkerLaunchOutcome::Queued(queue_id) => {
                 live_turn::report_approved_launch_adopted(
                     core,
                     session_id,
                     &resolved.turn_id,
                     &resolved.approval_id,
                     None,
-                    true,
+                    Some(&queue_id),
                 );
             }
-            // An approved scope that still routes to approval would loop the
-            // user; treat it as a launch failure so the turn terminates.
-            live_turn::WorkerLaunchOutcome::AwaitingApproval
-            | live_turn::WorkerLaunchOutcome::Failed => {
+            // A different pending gate is not a failed launch. Resolved scope
+            // cards are refused by policy rather than being reopened here.
+            live_turn::WorkerLaunchOutcome::AwaitingApproval => {
+                core.events.publish(CoreEvent::StateChanged);
+                return Ok(());
+            }
+            live_turn::WorkerLaunchOutcome::Failed => {
                 let db = core.db.lock().unwrap();
                 live_turn::record_approved_launch_failure(
                     &db,

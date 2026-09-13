@@ -3868,7 +3868,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(matches!(second, WorkerReservationOutcome::Queued));
+        assert!(matches!(second, WorkerReservationOutcome::Queued(_)));
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM sessions WHERE workspace_id='w'",
@@ -3879,14 +3879,14 @@ mod tests {
             2
         );
         let entries = store::session_entries(&db, "parent").unwrap();
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 4);
         assert_eq!(entries[2].kind, "delegation.requested");
         assert_eq!(entries[2].payload["decision"], "queue");
         assert_eq!(entries[2].payload["reason"], "writer_conflict");
     }
 
     #[test]
-    fn policy_defers_cross_harness_reservation_until_phase_boundary() {
+    fn policy_reserves_cross_harness_children_without_waiting_for_parent_boundary() {
         let db = policy_fixture();
         db.execute(
             "UPDATE sessions SET active_turn_id='turn-cross' WHERE id='parent'",
@@ -3905,7 +3905,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(matches!(outcome, WorkerReservationOutcome::Queued));
+        assert!(matches!(outcome, WorkerReservationOutcome::Reserved(_)));
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'",
@@ -3913,22 +3913,13 @@ mod tests {
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),
-            0
+            1
         );
         assert_eq!(
-            db.query_row("SELECT queue_status FROM worker_queue", [], |row| row
-                .get::<_, String>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_queue", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
-            "queued"
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .unwrap(),
-            "handoff.deferred_for_phase_boundary"
+            0
         );
     }
 
@@ -4226,15 +4217,15 @@ mod tests {
                 .unwrap(),
             0
         );
-        reserve_worker_launch(
+        let retry = reserve_worker_launch(
             &db,
             "parent",
             "turn-decline",
             &request,
             "gpt-5.6-terra",
             true,
-        )
-        .unwrap();
+        );
+        assert!(retry.err().unwrap().to_string().contains("already resolved"));
         assert_eq!(
             store::session_entries(&db, "parent")
                 .unwrap()
