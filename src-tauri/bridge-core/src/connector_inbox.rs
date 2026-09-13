@@ -33,14 +33,6 @@ pub enum ItemState {
 }
 
 impl ItemState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Rendered => "rendered",
-            Self::Resolved => "resolved",
-        }
-    }
-
     fn parse(value: &str) -> Self {
         match value {
             "rendered" => Self::Rendered,

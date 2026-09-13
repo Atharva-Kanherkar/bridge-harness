@@ -30,6 +30,7 @@ pub mod claude_adapter;
 pub mod claude_import;
 pub mod codex_adapter;
 pub mod compaction_controller;
+pub mod connector_eval;
 pub mod connector_inbox;
 pub mod connector_runs;
 pub mod connector_runs_live;
