@@ -256,6 +256,223 @@ fn github_error(error: crate::github_surface::GithubSurfaceError) -> BridgeError
     BridgeError::Invalid(error.to_string())
 }
 
+// ── connectors ───────────────────────────────────────────────────────────────
+// In-app surfaces over the harness's own authenticated MCP servers. Bridge
+// holds no connector credential: every read and every write below is a bounded
+// harness turn, and every write passes an approval gate that names the literal
+// effect before anything runs.
+
+fn connector_family(family: &str) -> Result<crate::work_connectors::ConnectorFamily, BridgeError> {
+    crate::work_connectors::ConnectorFamily::parse(family)
+        .ok_or_else(|| BridgeError::Invalid(format!("unknown connector family `{family}`")))
+}
+
+pub fn connector_list(
+    core: &Arc<BridgeCore>,
+    refresh: bool,
+) -> Result<wire::ConnectorListResult, BridgeError> {
+    let _ = (core, refresh);
+    let configuration = crate::marketplace::claude_sdk_configuration();
+    let connectors = crate::connector_surface::resolve_availability(&configuration.connector_health)
+        .into_iter()
+        .map(|entry| wire::ConnectorDescriptor {
+            explanation: entry.reason.as_ref().map(|reason| reason.explanation(entry.family)),
+            reason: entry.reason.as_ref().map(connector_reason_wire),
+            family: entry.family.as_str().into(),
+            display_name: entry.family.display_name().into(),
+            server: entry.server,
+            available: entry.available,
+        })
+        .collect();
+    Ok(wire::ConnectorListResult { connectors })
+}
+
+fn connector_reason_wire(
+    reason: &crate::connector_surface::UnavailableReason,
+) -> wire::ConnectorUnavailableReason {
+    use crate::connector_surface::UnavailableReason;
+    match reason {
+        UnavailableReason::AuthRequired => wire::ConnectorUnavailableReason::AuthRequired,
+        UnavailableReason::Unreachable => wire::ConnectorUnavailableReason::Unreachable,
+        UnavailableReason::NotConfigured => wire::ConnectorUnavailableReason::NotConfigured,
+        UnavailableReason::NoResolver => wire::ConnectorUnavailableReason::NoResolver,
+    }
+}
+
+/// Most items one inbox read returns, whatever the caller asked for.
+const CONNECTOR_INBOX_MAX: u32 = 200;
+
+pub fn connector_inbox(
+    core: &Arc<BridgeCore>,
+    limit: Option<u32>,
+) -> Result<wire::ConnectorInboxResult, BridgeError> {
+    let limit = limit.unwrap_or(50).clamp(1, CONNECTOR_INBOX_MAX);
+    let db = core.db.lock().unwrap();
+    let items = crate::connector_inbox::list(&db, limit as usize)?
+        .into_iter()
+        .map(connector_item_wire)
+        .collect();
+    let unread_count = crate::connector_inbox::unread_count(&db)?.clamp(0, i64::from(u32::MAX)) as u32;
+    let poll = crate::work_connectors::ConnectorFamily::ALL
+        .into_iter()
+        .filter(|family| family.has_inbox_support())
+        .map(|family| {
+            let status = crate::connector_inbox::poll_status(&db, family)?;
+            Ok(wire::ConnectorPollStatus {
+                family: family.as_str().into(),
+                last_attempt_at: status.last_attempt_at,
+                last_success_at: status.last_success_at,
+                degraded: status.degraded,
+            })
+        })
+        .collect::<Result<Vec<_>, BridgeError>>()?;
+    Ok(wire::ConnectorInboxResult { items, unread_count, poll })
+}
+
+fn connector_item_wire(stored: crate::connector_inbox::StoredItem) -> wire::ConnectorInboxItem {
+    use crate::connector_inbox::ItemState;
+    use crate::connector_surface::ItemKind;
+    let crate::connector_inbox::StoredItem { item, state, card, render_rejection, resolution } = stored;
+    wire::ConnectorInboxItem {
+        item_key: item.key(),
+        family: item.family.as_str().into(),
+        channel_id: item.channel_id,
+        channel_label: item.channel_label,
+        author: item.author,
+        kind: match item.kind {
+            ItemKind::DirectMessage => wire::ConnectorItemKind::DirectMessage,
+            ItemKind::Mention => wire::ConnectorItemKind::Mention,
+            ItemKind::ThreadReply => wire::ConnectorItemKind::ThreadReply,
+        },
+        text: item.text,
+        permalink: item.permalink,
+        received_at: item.received_at,
+        state: match state {
+            ItemState::Pending => wire::ConnectorItemState::Pending,
+            ItemState::Rendered => wire::ConnectorItemState::Rendered,
+            ItemState::Resolved => wire::ConnectorItemState::Resolved,
+        },
+        card: card.map(connector_card_wire),
+        render_rejection,
+        resolution,
+    }
+}
+
+fn connector_card_wire(card: crate::connector_surface::ConnectorCard) -> wire::ConnectorCardPayload {
+    use crate::connector_surface::CardBlock;
+    wire::ConnectorCardPayload {
+        item_key: card.item_key,
+        headline: card.headline,
+        blocks: card
+            .blocks
+            .into_iter()
+            .map(|block| match block {
+                CardBlock::Message { author, text, timestamp } => {
+                    wire::ConnectorCardBlock::Message { author, text, timestamp }
+                }
+                CardBlock::Context { text } => wire::ConnectorCardBlock::Context { text },
+                CardBlock::Summary { text } => wire::ConnectorCardBlock::Summary { text },
+                CardBlock::Fact { label, value } => wire::ConnectorCardBlock::Fact { label, value },
+            })
+            .collect(),
+        suggested_replies: card.suggested_replies,
+        harness_rendered: card.harness_rendered,
+    }
+}
+
+/// Reply or react to one inbox item.
+///
+/// Two calls by design. The first arrives with `approved: None`, is refused, and
+/// returns the literal effect for Bridge's own confirmation dialog; the second
+/// carries the user's answer. There is no sticky grant — what gets approved is a
+/// specific string going to a specific place, which is not a thing that can be
+/// approved in advance.
+pub fn connector_act(
+    core: &Arc<BridgeCore>,
+    item_key: &str,
+    action: wire::ConnectorActionRequest,
+    approved: Option<bool>,
+) -> Result<wire::ConnectorActResult, BridgeError> {
+    use crate::connector_runs::{authorize, ActionRefusal, ApprovalDecision, ConnectorAction};
+
+    let stored = {
+        let db = core.db.lock().unwrap();
+        crate::connector_inbox::load(&db, item_key)?
+    };
+    let Some(stored) = stored else {
+        return Ok(wire::ConnectorActResult::Refused {
+            reason: "that message is no longer in the inbox".into(),
+        });
+    };
+    let already_resolved = stored.state == crate::connector_inbox::ItemState::Resolved;
+    let action = match action {
+        wire::ConnectorActionRequest::Reply { text } => {
+            ConnectorAction::Reply { item: stored.item.clone(), text }
+        }
+        wire::ConnectorActionRequest::React { emoji } => {
+            ConnectorAction::React { item: stored.item.clone(), emoji }
+        }
+    };
+    let available = crate::connector_runs_live::available_server(core, stored.item.family)
+        .map(|_| ())
+        .ok_or_else(|| {
+            format!("{} is not connected in this harness", stored.item.family.display_name())
+        });
+    let decision = approved.map(|approved| {
+        if approved { ApprovalDecision::Approved } else { ApprovalDecision::Denied }
+    });
+
+    match authorize(action, decision, already_resolved, available) {
+        Ok(authorized) => match crate::connector_runs_live::execute_action(core, &authorized) {
+            Ok(()) => Ok(wire::ConnectorActResult::Sent { item_key: item_key.into() }),
+            Err(reason) => Ok(wire::ConnectorActResult::Refused { reason }),
+        },
+        Err(ActionRefusal::ApprovalRequired { effect }) => {
+            Ok(wire::ConnectorActResult::ApprovalRequired { effect })
+        }
+        Err(refusal) => Ok(wire::ConnectorActResult::Refused { reason: refusal.detail() }),
+    }
+}
+
+/// Put an item away without answering it. Not a write to the connector — it
+/// resolves the Bridge-side item only, so it needs no approval.
+pub fn connector_dismiss(
+    core: &Arc<BridgeCore>,
+    item_key: &str,
+) -> Result<wire::ConnectorDismissResult, BridgeError> {
+    let dismissed = {
+        let db = core.db.lock().unwrap();
+        crate::connector_inbox::resolve(
+            &db,
+            item_key,
+            crate::connector_inbox::Resolution::Dismissed,
+            &chrono::Utc::now().to_rfc3339(),
+        )?
+    };
+    if dismissed {
+        core.events.publish(crate::events::CoreEvent::ConnectorInboxChanged {
+            family: "slack".into(),
+        });
+    }
+    Ok(wire::ConnectorDismissResult { dismissed })
+}
+
+/// Run one ingress cycle now. The manual counterpart to the timer.
+pub fn connector_refresh(
+    core: &Arc<BridgeCore>,
+    family: &str,
+) -> Result<wire::ConnectorRefreshResult, BridgeError> {
+    let family = connector_family(family)?;
+    if !family.has_inbox_support() {
+        return Err(BridgeError::Invalid(format!(
+            "{} has no in-app inbox in this build",
+            family.display_name()
+        )));
+    }
+    let announced = crate::connector_runs_live::poll_once(core, family);
+    Ok(wire::ConnectorRefreshResult { announced: announced.min(u32::MAX as usize) as u32 })
+}
+
 pub fn github_status(core: &Arc<BridgeCore>, workspace_id: &str, refresh: bool) -> Result<wire::GithubStatusResult, BridgeError> {
     let availability = github_wire(if refresh { core.github_surface.refresh_availability() } else { core.github_surface.availability() })?;
     let repository = if matches!(availability, wire::GithubAvailability::Available) {

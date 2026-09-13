@@ -128,6 +128,41 @@
       "resultSchema": "github-checkout-result.json"
     },
     {
+      "command": "connector_list",
+      "domain": "connectors",
+      "method": "connectors/connector_list",
+      "paramsSchema": "connector-list-params.json",
+      "resultSchema": "connector-list-result.json"
+    },
+    {
+      "command": "connector_inbox",
+      "domain": "connectors",
+      "method": "connectors/connector_inbox",
+      "paramsSchema": "connector-inbox-params.json",
+      "resultSchema": "connector-inbox-result.json"
+    },
+    {
+      "command": "connector_act",
+      "domain": "connectors",
+      "method": "connectors/connector_act",
+      "paramsSchema": "connector-act-params.json",
+      "resultSchema": "connector-act-result.json"
+    },
+    {
+      "command": "connector_dismiss",
+      "domain": "connectors",
+      "method": "connectors/connector_dismiss",
+      "paramsSchema": "connector-dismiss-params.json",
+      "resultSchema": "connector-dismiss-result.json"
+    },
+    {
+      "command": "connector_refresh",
+      "domain": "connectors",
+      "method": "connectors/connector_refresh",
+      "paramsSchema": "connector-refresh-params.json",
+      "resultSchema": "connector-refresh-result.json"
+    },
+    {
       "command": "create_workspace",
       "domain": "workspaces",
       "method": "workspaces/create_workspace",

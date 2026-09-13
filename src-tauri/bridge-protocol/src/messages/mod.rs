@@ -27,6 +27,7 @@ mod browser;
 mod common;
 mod completion;
 mod config;
+mod connectors;
 mod forest;
 mod github;
 mod imports;
@@ -55,6 +56,7 @@ pub use browser::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
+pub use connectors::*;
 pub use forest::*;
 pub use github::*;
 pub use imports::*;
@@ -173,6 +175,12 @@ typed_methods![
     (GithubAct, GithubActParams, GithubActResult),
     (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
+    // connectors — in-app surfaces over the harness's own MCP servers
+    (ConnectorList, ConnectorListParams, ConnectorListResult),
+    (ConnectorInbox, ConnectorInboxParams, ConnectorInboxResult),
+    (ConnectorAct, ConnectorActParams, ConnectorActResult),
+    (ConnectorDismiss, ConnectorDismissParams, ConnectorDismissResult),
+    (ConnectorRefresh, ConnectorRefreshParams, ConnectorRefreshResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),
     (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, BridgeState),

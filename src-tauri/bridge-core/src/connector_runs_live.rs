@@ -26,7 +26,7 @@ use crate::adapters::{ShutdownReason, StartRequest};
 use crate::briefing_policy::BriefingRuntimePolicy;
 use crate::connector_inbox::{self, Resolution};
 use crate::connector_runs::{
-    self, AuthorizedAction, ConnectorAction, RunKind, CARD_FENCE, INGRESS_FENCE,
+    self, AuthorizedAction, ConnectorAction, RunKind, INGRESS_FENCE,
 };
 use crate::connector_surface::{ConnectorCard, InboxItem};
 use crate::events::CoreEvent;

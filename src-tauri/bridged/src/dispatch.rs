@@ -68,6 +68,26 @@ pub fn dispatch(
             let p: wire::GithubMergeConfigParams = decode(method, params)?;
             reply(api::github_merge_config(core, &p.workspace_id))
         }
+        MethodName::ConnectorList => {
+            let p: wire::ConnectorListParams = decode(method, params)?;
+            reply(api::connector_list(core, p.refresh))
+        }
+        MethodName::ConnectorInbox => {
+            let p: wire::ConnectorInboxParams = decode(method, params)?;
+            reply(api::connector_inbox(core, p.limit))
+        }
+        MethodName::ConnectorAct => {
+            let p: wire::ConnectorActParams = decode(method, params)?;
+            reply(api::connector_act(core, &p.item_key, p.action, p.approved))
+        }
+        MethodName::ConnectorDismiss => {
+            let p: wire::ConnectorDismissParams = decode(method, params)?;
+            reply(api::connector_dismiss(core, &p.item_key))
+        }
+        MethodName::ConnectorRefresh => {
+            let p: wire::ConnectorRefreshParams = decode(method, params)?;
+            reply(api::connector_refresh(core, &p.family))
+        }
         MethodName::GithubAct => {
             let p: wire::GithubActParams = decode(method, params)?;
             reply(api::github_act(core, &p.workspace_id, p.action, p.confirmed))
