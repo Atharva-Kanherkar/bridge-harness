@@ -690,3 +690,39 @@ tests, 2,677 Rust tests (13 ignored), 16 release-script tests, 12 Python tests,
 native Swift checks. Bun failed before executing either package script with
 `CouldntReadCurrentDirectory`; npm ran the identical package.json build/test
 commands successfully. These are local results; hosted CI is reported separately.
+
+### Expandable favorites and Claude credential repair · 2026-09-13
+
+Protocol 1.15 accepts all supported providers as unique favorites; only favorites
+appear as tabs and Overview quota rows. The installed preview was exercised with
+Codex/Claude/Cursor, Add favorite (OpenCode appeared as the fourth tab), and Remove
+favorite (OpenCode disappeared again). Original settings were restored. Native
+accessibility inspection verified adjacent `≈$`, no repeated partial suffix,
+`GPT Reserve Weekly`, and live Claude five-hour, weekly, and Fable-only rows.
+
+Claude's legacy credential file expired on August 1 while Keychain held a current
+credential that returned HTTP 200 from the official usage endpoint. Default
+collection now prefers Keychain. Live stack sampling also identified a legacy
+Security.framework decrypt blocked indefinitely despite its no-UI query flag.
+The isolated helper now disables process-level Keychain interaction and bounds
+background reads to two seconds. The live helper returned in about one second;
+Bridge started normally with the fix. Manual Refresh restored usage through the
+bounded Claude CLI fallback. Silent Keychain access remains denied on this Mac;
+background authentication still requires the user's macOS Keychain approval.
+Computer Use refused access to the protected SecurityAgent surface, so approval
+was left to the user rather than bypassed.
+
+Production frontend and full packaged-app builds passed. The complete repository
+test script passed before the additional live Keychain fix (2,173 frontend tests
+plus Rust, native, sidecar and release suites). After that fix, all 39 provider
+regressions passed serially and daemon entry tests passed. Under concurrent
+release compilation, two timing-sensitive provider tests initially timed out;
+the successful-output helper fixture now has a five-second scheduling allowance,
+while timeout fixtures retain their short deadline and use absolute sleep paths.
+Native regression checks also passed after the final presentation changes.
+
+Signed installed preview: `/Users/yashaf/Applications/Bridge Menu Bar Preview.app`,
+version 0.5.8, identifier `dev.bridge.deck.menubar-preview`, executable SHA-256
+`04f0fc7972cf38154946b48c8cd7b4d29a090b3bf676c03b86410dcb74ab04ea`.
+The previous app is retained as `Bridge Menu Bar Preview.previous-20260913-165221.app`.
+These are local build and live-app results; hosted CI was not checked in this run.
