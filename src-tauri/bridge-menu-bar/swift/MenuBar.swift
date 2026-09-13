@@ -134,19 +134,19 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     static func templateIcon() -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
-            // Foreground rectangles from assets/bridge-icon.svg, with its
-            // background omitted. Center the original proportions at 16pt wide.
-            let scale: CGFloat = 16 / 640
-            let top = (18 - 408 * scale) / 2
+            // Dot grid from the current assets/bridge-icon.png Doto B mark.
+            // Omit the app tile and center its 431 x 607 foreground at 16pt high.
+            let scale: CGFloat = 16 / 607
+            let left = (18 - 431 * scale) / 2
+            let rows = [[0, 1, 2, 3], [1, 4], [1, 4], [1, 2, 3],
+                        [1, 4], [1, 4], [0, 1, 2, 3]]
             NSColor.black.setFill()
-            for rect in [
-                NSRect(x: 264, y: 400, width: 96, height: 312),
-                NSRect(x: 664, y: 400, width: 96, height: 312),
-                NSRect(x: 192, y: 304, width: 640, height: 104),
-            ] {
-                NSRect(x: 1 + (rect.minX - 192) * scale,
-                    y: top + (rect.minY - 304) * scale,
-                    width: rect.width * scale, height: rect.height * scale).fill()
+            for (row, columns) in rows.enumerated() {
+                for column in columns {
+                    NSRect(x: left + CGFloat(column * 88) * scale,
+                           y: 1 + CGFloat(row * 88) * scale,
+                           width: 79 * scale, height: 79 * scale).fill()
+                }
             }
             return true
         }
