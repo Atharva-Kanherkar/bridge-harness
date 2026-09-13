@@ -726,3 +726,58 @@ version 0.5.8, identifier `dev.bridge.deck.menubar-preview`, executable SHA-256
 `04f0fc7972cf38154946b48c8cd7b4d29a090b3bf676c03b86410dcb74ab04ea`.
 The previous app is retained as `Bridge Menu Bar Preview.previous-20260913-165221.app`.
 These are local build and live-app results; hosted CI was not checked in this run.
+
+### Balanced tabs and Claude usage reset parsing · 2026-09-13
+
+The non-scrolling provider row now uses the same 16-point leading and trailing
+insets as the overview card. Overview, Codex, Claude, and Cursor receive equal
+widths; hidden navigation arrows no longer reserve space after Cursor. Estimated
+amounts use `≈ $` consistently in the status item, overview summary, and details,
+with the approximation still spoken as "estimated" by VoiceOver.
+
+Claude's read-only CLI fallback now recognizes used and remaining percentages,
+and retains reset times for five-hour, weekly, and model-scoped limits. Reset
+parsing follows the CodexBar reference's section boundaries, IANA time zones,
+and bounded date rollover. Missing or unrecognized resets remain unavailable.
+OAuth plan metadata now retains the Max allowance multiplier when reported.
+
+The installed previous preview was inspected directly during this change: all
+three Claude rows were stale, with a Keychain access error and a 51-minute-old
+CLI observation. This was separate from percentage parsing. Scheduled refreshes
+could not read Claude's credential on this Mac, and did not launch an opaque CLI
+authentication flow in the background. CodexBar's background CLI recovery is
+also gated by an explicit prompt policy. Bridge continues to offer its bounded
+user-initiated recovery through Refresh; no Keychain ACL was changed.
+
+The CodexBar reference and installed Claude desktop code do not establish a
+semantic mapping from opaque legacy quota keys to Fable. The collector only
+uses explicit model labels in the scoped API array or the CLI's Fable section.
+
+Validation for these changes: `npm run build` passed. The release-script,
+Python, sidecar, native Swift, and 2,173 frontend tests passed. The initial Rust
+run was prevented from binding temporary daemon sockets by the sandbox; the
+workspace rerun with local socket access passed 2,700 tests, with 13 intentionally
+ignored. After adding CodexBar's comma/clock-spacing compatibility forms, all
+15 Claude CLI parser and lifecycle tests passed again. `git diff --check` is
+clean.
+
+Installed the signed 0.5.8 preview from `a83ea1df` at
+`~/Applications/Bridge Menu Bar Preview.app`, preserving the previous bundle as
+`Bridge Menu Bar Preview.previous-20260913-181649.app`. The executable SHA-256 is
+`6038c631b0fa05bc20168abccfc62a852e1f0d42b9b9b41473f314828b2af360`.
+Both the app and daemon restarted from that exact bundle, and its deployment
+target remains macOS 12. The daemon's signing requirement matches the prior
+preview, so rebuilding did not introduce a different Keychain identity.
+
+The live native menu confirmed the spaced `≈ $` amount. Its initial manual CLI
+fallback returned 0% five-hour and 9% weekly without Fable; a bounded 20-second
+CLI probe confirmed that was the actual CLI output, not a missing late row.
+After the user completed the macOS Keychain approval, the installed daemon's
+silent credential read succeeded. Calling the normal, non-interactive
+`usage/refresh_provider_usage_overviews` method against that running daemon
+then returned current Claude values: Max (5x), five-hour 0%, weekly 10%, Fable
+11%, all with reset timestamps and no error. These match the user's Claude
+desktop screenshot. The local automatic-refresh authentication blocker is now
+resolved; no quota values were inferred from the CLI discrepancy. Native menu
+accessibility inspection confirmed all three current values in Overview after
+the background refresh.
