@@ -60,8 +60,37 @@ fn decode_credentials(content: &str, now_ms: i64) -> Result<(String, Option<Stri
         .as_str()
         .filter(|s| !s.is_empty() && s.len() <= 16_384)
         .ok_or("Sign in through Claude Code to read account limits.")?;
-    Ok((token.into(), public_text(&oauth["subscriptionType"])))
+    Ok((token.into(), subscription_plan(oauth)))
 }
+
+fn subscription_plan(oauth: &Value) -> Option<String> {
+    let subscription = public_text(&oauth["subscriptionType"])?;
+    // CodexBar's ClaudePlan keeps Max's allowance multiplier separate from
+    // utilization. Do not collapse Max 5x and Max 20x into the same plan label.
+    let label = match subscription.to_ascii_lowercase().as_str() {
+        "max" => "Max",
+        "pro" => "Pro",
+        "team" => "Team",
+        "enterprise" => "Enterprise",
+        _ => return Some(subscription),
+    };
+    if label == "Max" {
+        if let Some(tier) = public_text(&oauth["rateLimitTier"]) {
+            let words: Vec<_> = tier.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+            if let Some(multiplier) = words.windows(2).find_map(|pair| {
+                (pair[0].eq_ignore_ascii_case("max")
+                    && pair[1].strip_suffix('x').is_some_and(|value| {
+                        !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit())
+                    }))
+                .then_some(pair[1])
+            }) {
+                return Some(format!("Max ({multiplier})"));
+            }
+        }
+    }
+    Some(label.into())
+}
+
 fn read_with_credentials(token: String, plan: Option<String>) -> Result<AccountUsage, String> {
     let client = http::client()?;
     let auth = format!("Bearer {token}");
@@ -320,6 +349,24 @@ mod tests {
         assert!(!cli_fallback_allowed(true, false));
         assert!(!cli_fallback_allowed(false, true));
         assert!(!cli_fallback_allowed(true, true));
+    }
+
+    #[test]
+    fn credential_plan_preserves_max_allowance_without_guessing() {
+        for (tier, expected) in [
+            ("default_claude_max_5x", "Max (5x)"),
+            ("default_claude_max_20x", "Max (20x)"),
+            ("default_claude_max_unknown", "Max"),
+            ("default_claude_max_x", "Max"),
+        ] {
+            let (_, plan) = decode_credentials(
+                &json!({"claudeAiOauth": {"accessToken": "test", "subscriptionType": "max",
+                    "rateLimitTier": tier}}).to_string(), 1,
+            ).unwrap();
+            assert_eq!(plan.as_deref(), Some(expected));
+        }
+        assert_eq!(subscription_plan(&json!({"subscriptionType":"pro"})).as_deref(), Some("Pro"));
+        assert_eq!(subscription_plan(&json!({"rateLimitTier":"default_claude_max_5x"})), None);
     }
 
     #[test]
