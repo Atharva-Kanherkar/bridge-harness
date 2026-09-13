@@ -27,7 +27,7 @@ export function MenuBarSettingsPage() {
   const favorites = settings?.pinnedProviders ?? defaultFavorites;
   const visibleIds = [...favorites, ...enabled.map(provider => provider.id).filter(id => !favorites.includes(id))];
   const visible = visibleIds.flatMap(id => providers.filter(provider => provider.id === id));
-  const customDisplay = settings?.statusLayout?.flat().some(token => token !== "space" && token !== "dot") ?? false;
+  const customDisplay = !settings?.separateProviderIcons && (settings?.statusLayout?.flat().some(token => token !== "space" && token !== "dot") ?? false);
 
   useEffect(() => {
     let active = true;
@@ -85,17 +85,19 @@ export function MenuBarSettingsPage() {
       <SettingsGroup label="Display">
         <SettingsRow label="Show in menu bar" description="The Bridge symbol follows your macOS appearance."
           control={<Switch label="Show in menu bar" checked={settings.enabled} disabled={busy} onChange={enabled => void save({ enabled })} />} />
+        <SettingsRow label="Separate provider icons" description="Show each enabled provider’s icon and usage in the macOS menu bar. Each icon opens that provider."
+          control={<Switch label="Separate provider icons" checked={settings.separateProviderIcons ?? false} disabled={busy} onChange={separateProviderIcons => void save({ separateProviderIcons })} />} />
         <SettingsRow label="Open to Overview" description="See every enabled provider’s current quota together. Details stay in provider tabs."
           control={<Switch label="Open to Overview" checked={settings.openToOverview ?? true} disabled={busy} onChange={openToOverview => void save({ openToOverview })} />} />
         <SettingsRow label="Quota bars" description="Used fills the bar as you consume your allowance. The opposite percentage appears below."
           control={<Select label="Quota bars" value={settings.quotaDisplayMode ?? "used"} disabled={busy}
             options={[{ value: "used", label: "Show used" }, { value: "remaining", label: "Show remaining" }]}
             onChange={value => void save({ quotaDisplayMode: value as MenuBarSettings["quotaDisplayMode"] })} />} />
-        <SettingsRow label="Menu icon" description="Both icons use a transparent template that follows macOS appearance."
-          control={<Select label="Menu icon" value={settings.iconStyle ?? "bridge"} disabled={busy}
+        <SettingsRow label="Menu icon" description="Single-icon mode uses this mark. Separate icons use each provider’s logo. All follow macOS appearance."
+          control={<Select label="Menu icon" value={settings.iconStyle ?? "bridge"} disabled={busy || settings.separateProviderIcons}
             options={[{ value: "bridge", label: "Bridge logo" }, { value: "meter", label: "Quota meters" }]}
             onChange={value => void save({ iconStyle: value as MenuBarSettings["iconStyle"] })} />} />
-        <SettingsRow label="Beside the icon" description={customDisplay ? "Custom layout is active. Choose a standard display to replace it." : "Choose what appears beside the Bridge icon."}
+        <SettingsRow label="Beside the icon" description={customDisplay ? "Custom layout is active. Choose a standard display to replace it." : "Choose what appears beside each menu icon."}
           control={<Select label="Beside the icon" value={customDisplay ? "custom" : settings.displayMode} disabled={busy} options={[
             ...(customDisplay ? [{ value: "custom", label: "Custom layout", disabled: true }] : []),
             { value: "icon", label: "Icon only" }, { value: "remaining", label: "Quota remaining" },
@@ -107,11 +109,12 @@ export function MenuBarSettingsPage() {
           onChange={quotaWindow => void save({ quotaWindow: quotaWindow as MenuBarSettings["quotaWindow"] })} />} />
       </SettingsGroup>
       <SettingsGroup label="Menu icon layout">
-        <MenuBarLayoutEditor key={JSON.stringify(settings.statusLayout ?? [])} layout={settings.statusLayout ?? []} busy={busy}
+        {settings.separateProviderIcons && <p className="px-4 py-3 text-xs text-muted-foreground">Custom layouts apply to the single Bridge icon. Separate provider icons use the standard display selected above.</p>}
+        <MenuBarLayoutEditor key={JSON.stringify(settings.statusLayout ?? [])} layout={settings.statusLayout ?? []} busy={busy || !!settings.separateProviderIcons}
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
       <SettingsGroup label="Favorite providers">
-        <p className="px-4 py-3 text-xs text-muted-foreground">Your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Scroll horizontally or use the arrows for more providers. Favorites stay visible while disconnected.</p>
+        <p className="px-4 py-3 text-xs text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Scroll horizontally or use the arrows for more providers. Favorites stay visible while disconnected.</p>
         {[0, 1, 2].map(position => <SettingsRow key={position} label={`Favorite ${position + 1}`}
           control={<Select label={`Favorite provider ${position + 1}`} value={favorites[position] ?? ""} disabled={busy}
             options={[{ value: "", label: "None" }, ...providers.map(provider => ({ value: provider.id, label: provider.name }))]}
@@ -140,7 +143,9 @@ export function MenuBarSettingsPage() {
           onChange={showAccount => void save({ showAccount })} />} />
       </SettingsGroup>
       <SettingsGroup label="Usage & spend">
-        <SettingsRow label="Daily history" description="A 30-day chart in provider tabs. Overview shows quotas only."
+        <SettingsRow label="Overview usage & spend" description="Show a 30-day summary across enabled providers above the Overview quota bars."
+          control={<Switch label="Overview usage & spend" checked={settings.showOverviewSummary ?? true} disabled={busy} onChange={showOverviewSummary => void save({ showOverviewSummary })} />} />
+        <SettingsRow label="Daily history" description="A 30-day chart in provider tabs. Overview stays compact without charts."
           control={<Switch label="Daily history" checked={settings.showHistory ?? true} disabled={busy} onChange={showHistory => void save({ showHistory })} />} />
         <SettingsRow label="Tokens and models" description="Show token totals. Model details are available in the breakdown submenu."
           control={<Switch label="Tokens and models" checked={settings.showTokens} disabled={busy} onChange={showTokens => void save({ showTokens })} />} />

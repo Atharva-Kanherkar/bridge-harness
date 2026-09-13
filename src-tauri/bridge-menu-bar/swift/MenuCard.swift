@@ -85,6 +85,9 @@ struct MenuCard: View {
     }
 
     @ViewBuilder func overview(_ presentation: Presentation) -> some View {
+        if presentation.settings.showOverviewSummary ?? true {
+            OverviewSummaryCard(presentation: presentation)
+        }
         ForEach(presentation.settings.visibleProviders, id: \.self) { provider in
             Divider()
             if !presentation.settings.isProviderEnabled(provider) {

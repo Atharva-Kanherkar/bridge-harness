@@ -178,3 +178,18 @@ it("shows the first favorite beside the icon independently of the selected detai
   expect(statusProvider.tagName).toBe("SPAN");
   expect(container.textContent).toContain("Switching tabs only changes the open menu");
 });
+
+it("persists overview summary visibility and separate icons independently", async () => {
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const summary = () => container.querySelector<HTMLButtonElement>('[aria-label="Overview usage & spend"]')!;
+  const icons = () => container.querySelector<HTMLButtonElement>('[aria-label="Separate provider icons"]')!;
+  expect(summary().getAttribute("aria-checked")).toBe("true");
+  expect(icons().getAttribute("aria-checked")).toBe("false");
+  await act(async () => summary().click());
+  expect(save).toHaveBeenLastCalledWith({ ...settings, showOverviewSummary: false });
+  await act(async () => icons().click());
+  expect(save).toHaveBeenLastCalledWith({ ...settings, showOverviewSummary: false, separateProviderIcons: true });
+  expect(summary().getAttribute("aria-checked")).toBe("false");
+  expect(icons().getAttribute("aria-checked")).toBe("true");
+});

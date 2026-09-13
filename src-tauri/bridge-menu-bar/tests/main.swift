@@ -575,3 +575,62 @@ disconnectedState.openSettings()
 check(settingsActions == 1, "The disconnected card settings action is independently wired")
 try renderMenuCardFixtures(fixture)
 print("Menu Bar Swift checks passed: wire fixture, disabled-data isolation, favorite defaults, 69-provider bounded overflow, selection reveal, scroll preservation, countdowns, status accessibility, viewport resizing, appearance, submenu tracking, template mask")
+
+// Summary scope is enabled providers, independently of favorites/selected tab.
+var summaryFixture = fixture
+summaryFixture.settings.codexEnabled = true
+summaryFixture.settings.claudeEnabled = true
+summaryFixture.settings.cursorEnabled = false
+summaryFixture.settings.opencodeEnabled = false
+summaryFixture.settings.pinnedProviders = ["cursor"]
+var summaryCodex = fixture.usage!.providers[0]
+summaryCodex.provider = "codex"
+summaryCodex.month.costMicrousd = Metric(value: 2_000_000, source: "estimated", status: "current")
+summaryCodex.month.tokens = Metric(value: 1000, source: "measured", status: "current")
+var summaryClaude = summaryCodex
+summaryClaude.provider = "claude"
+summaryClaude.month.costMicrousd = .unavailable
+summaryClaude.month.tokens = Metric(value: 2000, source: "measured", status: "current")
+summaryFixture.usage!.providers = [summaryCodex, summaryClaude]
+let partialSummary = OverviewSummary(summaryFixture)
+check(partialSummary.providerCount == 2 && partialSummary.costProviderCount == 1, "Disabled favorites do not enter the summary denominator")
+check(partialSummary.costLabel == "≈$2.00 · partial", "Missing provider cost keeps the known estimate explicitly partial")
+check(partialSummary.tokens.value == 3000 && !partialSummary.tokensPartial, "Token coverage is independent of cost coverage")
+summaryFixture.usage!.providers[0].month.costMicrousd = .unavailable
+check(OverviewSummary(summaryFixture).costLabel == "Unavailable", "All unknown cost never becomes zero")
+for i in 0..<2 { summaryFixture.usage!.providers[i].month.costMicrousd = Metric(value: 0, source: "reported", status: "current") }
+check(OverviewSummary(summaryFixture).costLabel == "$0.00", "Known zero remains a real zero")
+summaryFixture.usage!.providers[0].month.costMicrousd.status = "stale"
+check(OverviewSummary(summaryFixture).costLabel.contains("stale"), "Last-known amounts remain visibly stale")
+summaryFixture.settings.claudeEnabled = false
+check(OverviewSummary(summaryFixture).providerCount == 1, "Disabling a provider removes its cached totals")
+summaryFixture.settings.separateProviderIcons = true
+summaryFixture.settings.cursorEnabled = true
+check(MenuBarController.providerIDs(summaryFixture.settings) == ["cursor", "codex"], "Separate icons follow favorites then enabled providers")
+summaryFixture.settings.enabled = false
+check(MenuBarController.providerIDs(summaryFixture.settings).isEmpty, "Disabling the menu removes every provider icon")
+summaryFixture.settings.enabled = true
+let cursorStatus = summaryFixture.forStatusProvider("cursor")
+summaryFixture.settings.selectedProvider = "claude"
+check(cursorStatus.settings.statusProvider == "cursor", "Each status item keeps its provider identity independently of selected tabs")
+for provider in ["codex", "claude", "cursor", "opencode"] {
+    let brand = ProviderIcon.image(provider)
+    check(brand != nil && brand!.isTemplate && brand!.size == NSSize(width: 18, height: 18), "\(provider) SVG must decode as an 18pt template in the packaged native library")
+    check(brand === ProviderIcon.image(provider), "Provider imagery is cached instead of re-decoded on every refresh")
+    let raster = NSBitmapImageRep(data: brand!.tiffRepresentation!)!
+    var visiblePixels = 0
+    for y in 0..<raster.pixelsHigh {
+        for x in 0..<raster.pixelsWide {
+            if raster.colorAt(x: x, y: y)!.alphaComponent > 0 { visiblePixels += 1 }
+        }
+    }
+    check(visiblePixels > 0 && visiblePixels < raster.pixelsWide * raster.pixelsHigh, "Provider SVGs must render visible artwork with a transparent background")
+}
+print("Overview totals and separate provider status checks passed")
+var globalSelection = fixture
+globalSelection.settings.selectedProvider = "claude"
+globalSelection.settings.statusLayout = [["used"]]
+let ownedMenu = globalSelection.forMenuProvider("codex")
+check(ownedMenu.settings.activeProvider == "codex", "A background snapshot cannot move a Codex-owned menu to global Claude selection")
+check(globalSelection.forMenuProvider("cursor").settings.activeProvider == "cursor", "Each menu can locally browse another provider")
+check(globalSelection.forStatusProvider("codex").settings.statusLayout?.isEmpty == true, "Separate provider icons cannot disappear behind an icon-free custom layout")

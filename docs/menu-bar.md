@@ -30,7 +30,7 @@ that preserves the existing quota presentation.
 
 ## Data contract
 
-Protocol 1.13 includes `usage/get_usage_overview`, `usage/refresh_usage_overview`,
+Protocol 1.14 includes `usage/get_usage_overview`, `usage/refresh_usage_overview`,
 `menu_bar/get_menu_bar_settings` and `menu_bar/save_menu_bar_settings`.
 Both snapshots and settings carry `schemaVersion: 1`. Older daemons fail the
 handshake before a menu attempts to use missing methods.
@@ -203,3 +203,27 @@ adds a separate Grok Bot quota and its own reset/duration when Cursor reports an
 included allowance. The request has a five-second timeout; failure or an absent
 allowance leaves the main Cursor usage available. Missing quota is never inferred
 from Grok model token history.
+
+## Overview summary and separate provider icons
+
+Settings → Menu Bar → Usage & spend → **Overview usage & spend** controls the
+compact 30-day card above the Overview quota bars (on by default). It sums the
+backend's existing monthly snapshots for enabled providers, independent of the
+three favorites. Token and spend visibility still follow their existing toggles.
+Unknown costs are excluded from a labelled partial subtotal; all-unknown remains
+Unavailable, reported zero remains zero, and estimated/stale amounts retain their
+qualifiers. No extra collection runs, charts, subscription counts, or invented
+pricing-coverage counts are added to Overview.
+
+**Separate provider icons** is off by default. Enabling it replaces the combined
+Bridge item with each enabled provider's template logo and standard status text.
+Each icon owns its provider regardless of the selected detail tab; clicking opens
+that provider, with the usual Overview and provider navigation available inside.
+Single-icon mode keeps the first-favorite behavior and its custom layout. Custom
+layouts are retained while separate icons use the standard “Beside the icon” mode.
+
+`MenuBarController` retains stable per-provider items and autosave names, defers
+visibility/topology changes while any menu tracks, and reconciles after close.
+The new persisted flags require protocol 1.14, preventing an older daemon from
+silently discarding them. Provider SVGs and native presentation reference CodexBar;
+see `THIRD_PARTY_NOTICES.md` for attribution.

@@ -60,7 +60,8 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// terminal workspace contract. The integrated client must reject both the
 /// mainline 1.8 daemon and those preview daemons, rather than accepting a
 /// numerically newer preview that is missing terminal methods.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 13 };
+/// **1.14 adds overview summary visibility and separate provider status items.**
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 14 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -190,6 +191,11 @@ mod tests {
             assert!(!older.accepts(PROTOCOL_VERSION));
             assert!(PROTOCOL_VERSION.accepts(older));
         }
+    }
+
+    #[test]
+    fn menu_presentation_client_rejects_daemon_without_new_settings() {
+        assert!(!ProtocolVersion { major: 1, minor: 13 }.accepts(PROTOCOL_VERSION));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

@@ -111,6 +111,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let db = crate::store::open(&temp.path().join("test.db")).unwrap();
         let mut settings = load(&db).unwrap();
+        assert!(settings.show_overview_summary);
+        assert!(!settings.separate_provider_icons);
+        settings.show_overview_summary = false;
+        settings.separate_provider_icons = true;
+        assert_eq!(save(&db, &settings).unwrap(), settings);
+        assert_eq!(load(&db).unwrap(), settings);
         settings.enabled = false;
         save(&db, &settings).unwrap();
         settings.opencode_workspace = Some("wrk_../wrong".into());

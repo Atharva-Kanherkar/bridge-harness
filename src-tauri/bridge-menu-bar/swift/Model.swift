@@ -117,6 +117,8 @@ struct MenuSettings: Decodable {
     var showTokens: Bool
     var showCost: Bool
     var showHistory: Bool? = nil
+    var showOverviewSummary: Bool? = nil
+    var separateProviderIcons: Bool? = nil
     var refreshSeconds: UInt64
     static let initial = MenuSettings(schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: nil,
         displayMode: "used", quotaWindow: "auto", showAccount: true,

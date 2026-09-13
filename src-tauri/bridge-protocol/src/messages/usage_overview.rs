@@ -243,6 +243,10 @@ pub struct MenuBarSettings {
     pub show_cost: bool,
     #[serde(default = "default_true")]
     pub show_history: bool,
+    #[serde(default = "default_true")]
+    pub show_overview_summary: bool,
+    #[serde(default)]
+    pub separate_provider_icons: bool,
     /// Zero means manual; otherwise 60, 300, 900, or 1800 seconds.
     pub refresh_seconds: u64,
 }
@@ -269,6 +273,8 @@ impl Default for MenuBarSettings {
             show_tokens: true,
             show_cost: true,
             show_history: true,
+            show_overview_summary: true,
+            separate_provider_icons: false,
             refresh_seconds: 300,
         }
     }

@@ -146,6 +146,10 @@
       ],
       "default": "codex"
     },
+    "separateProviderIcons": {
+      "default": false,
+      "type": "boolean"
+    },
     "showAccount": {
       "type": "boolean"
     },
@@ -153,6 +157,10 @@
       "type": "boolean"
     },
     "showHistory": {
+      "default": true,
+      "type": "boolean"
+    },
+    "showOverviewSummary": {
       "default": true,
       "type": "boolean"
     },

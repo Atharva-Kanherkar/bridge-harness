@@ -3,7 +3,7 @@ import SwiftUI
 
 // Owns native presentation only. AppKit retains the status item until destroy;
 // Rust supplies data and handles all outward actions through the callback.
-private var controller: MenuController?
+private var controller: MenuBarController?
 
 final class ModelBreakdownMenu: NSObject, NSMenuDelegate {
     let item = NSMenuItem(title: "Model & token breakdown", action: nil, keyEquivalent: "")
@@ -81,13 +81,23 @@ final class MenuController: NSObject, NSMenuDelegate {
     let refreshOptions = NSMenu(title: "Refresh interval")
     lazy var breakdown = ModelBreakdownMenu(state: state)
     var tracking = false
+    let statusProvider: String?
+    private var menuProvider: String?
+    var visibilityRequested = false
+    var didClose: (() -> Void)?
 
-    init(callback: @escaping @convention(c) (Int32) -> Void) {
+    init(statusProvider: String? = nil, callback: @escaping @convention(c) (Int32) -> Void) {
         self.callback = callback
+        self.statusProvider = statusProvider
+        self.menuProvider = statusProvider
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         state.selectProvider = { [weak self] id in
             guard let index = ["codex", "claude", "cursor", "opencode"].firstIndex(of: id) else { return }
+            if let self = self, self.statusProvider != nil {
+                self.menuProvider = id
+                self.update(self.state.presentation, visible: self.visibilityRequested)
+            }
             self?.callback(Int32(100 + index))
         }
         state.openSettings = { [weak self] in self?.openSettingsFromCard() }
@@ -101,7 +111,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             (self.card.view as? MenuCardScrollView)?.scheduleUpdateSize(maximumHeight: self.cardMaximumHeight)
         }
         item.isVisible = false
-        item.autosaveName = "BridgeMenuBar"
+        item.autosaveName = statusProvider.map { "BridgeMenuBar-\($0)" } ?? "BridgeMenuBar"
         item.button?.image = Self.templateIcon()
         item.button?.imagePosition = .imageLeading
         item.button?.toolTip = "Bridge usage"
@@ -208,16 +218,19 @@ final class MenuController: NSObject, NSMenuDelegate {
         MenuCardScrollView.maximumHeight(on: card.view?.window?.screen ?? item.button?.window?.screen ?? NSScreen.main)
     }
 
-    func update(_ presentation: Presentation) {
+    func update(_ snapshot: Presentation, visible: Bool? = nil) {
+        let presentation = snapshot.forMenuProvider(menuProvider)
         let providerChanged = state.presentation.settings.activeProvider != presentation.settings.activeProvider
         let usageAvailabilityChanged = (state.presentation.selectedUsage == nil) != (presentation.selectedUsage == nil)
         state.presentation = presentation
-        item.isVisible = presentation.settings.enabled || tracking
+        visibilityRequested = visible ?? presentation.settings.enabled
+        item.isVisible = visibilityRequested || tracking
         refresh.isEnabled = !presentation.settings.enabledProviders.isEmpty && !presentation.refreshing
         refresh.title = presentation.refreshing ? "Refreshing usage…" : "Refresh usage"
-        let status = MenuStatus(presentation, now: Int64(Date().timeIntervalSince1970))
-        let icon = presentation.settings.iconStyle == "meter" ? Self.meterIcon(presentation) : Self.templateIcon()
-        let layout = StatusLayout(presentation, now: Int64(Date().timeIntervalSince1970))
+        let statusPresentation = presentation.forStatusProvider(statusProvider)
+        let status = MenuStatus(statusPresentation, now: Int64(Date().timeIntervalSince1970))
+        let icon = statusProvider.flatMap { ProviderIcon.image($0) } ?? (presentation.settings.iconStyle == "meter" ? Self.meterIcon(presentation) : Self.templateIcon())
+        let layout = StatusLayout(statusPresentation, now: Int64(Date().timeIntervalSince1970))
         if layout.custom && layout.hasContent {
             if layout.requiresTemplateImage {
                 item.button?.attributedTitle = NSAttributedString(string: "")
@@ -256,17 +269,28 @@ final class MenuController: NSObject, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         MenuAppearance.pin(menu)
         guard menu === self.menu else { return }
-        state.showingOverview = state.presentation.settings.openToOverview ?? true
+        if let provider = statusProvider {
+            menuProvider = provider
+            state.presentation = state.presentation.forMenuProvider(provider)
+            state.showingOverview = false
+        } else {
+            state.showingOverview = state.presentation.settings.openToOverview ?? true
+        }
         rebuildCard()
         tracking = true
         breakdown.parentTracking = true
+        if let provider = statusProvider,
+           let index = ["codex", "claude", "cursor", "opencode"].firstIndex(of: provider) {
+            callback(Int32(100 + index))
+        }
         callback(4)
     }
     func menuDidClose(_ menu: NSMenu) {
         guard menu === self.menu else { return }
         tracking = false
         breakdown.parentTracking = false
-        item.isVisible = state.presentation.settings.enabled
+        item.isVisible = visibilityRequested
+        didClose?()
     }
     @objc func refreshUsage() { callback(1) }
     @objc func changeRefreshInterval(_ sender: NSMenuItem) { callback(Int32(sender.tag)) }
@@ -286,7 +310,7 @@ final class MenuController: NSObject, NSMenuDelegate {
 @_cdecl("bridge_menu_bar_create")
 public func createMenuBar(_ callback: @escaping @convention(c) (Int32) -> Void) -> Bool {
     guard Thread.isMainThread else { return false }
-    if controller == nil { controller = MenuController(callback: callback) }
+    if controller == nil { controller = MenuBarController(callback: callback) }
     return true
 }
 
@@ -307,8 +331,7 @@ public func showMenuBar() {
     guard Thread.isMainThread else { return }
     // An explicit Open Meter action can temporarily reveal a hidden item;
     // dismissal restores the saved visibility preference.
-    controller?.item.isVisible = true
-    controller?.item.button?.performClick(nil)
+    controller?.show()
 }
 
 @_cdecl("bridge_menu_bar_destroy")
