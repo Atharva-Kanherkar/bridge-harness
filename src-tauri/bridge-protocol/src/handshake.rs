@@ -61,7 +61,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// mainline 1.8 daemon and those preview daemons, rather than accepting a
 /// numerically newer preview that is missing terminal methods.
 /// **1.14 adds overview summary visibility and separate provider status items.**
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 14 };
+/// **1.15 supports expandable favorites; only favorites appear in provider tabs.**
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
+    major: 1,
+    minor: 15,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -150,7 +154,10 @@ pub fn negotiate(request: &HandshakeRequest) -> Result<HandshakeResponse, RpcErr
             // application version.
             version: env!("CARGO_PKG_VERSION").into(),
         },
-        capabilities: MethodName::domains().iter().map(|domain| (*domain).into()).collect(),
+        capabilities: MethodName::domains()
+            .iter()
+            .map(|domain| (*domain).into())
+            .collect(),
         // The host fills this in: negotiation is about the protocol, and only
         // the serving process knows which binary it is.
         build_id: None,
@@ -177,17 +184,31 @@ mod tests {
 
     #[test]
     fn manual_refresh_client_rejects_daemon_without_interaction_boundary() {
-        assert!(!ProtocolVersion { major: 1, minor: 10 }.accepts(PROTOCOL_VERSION));
+        assert!(!ProtocolVersion {
+            major: 1,
+            minor: 10
+        }
+        .accepts(PROTOCOL_VERSION));
     }
 
     #[test]
     fn favorites_client_rejects_daemon_that_cannot_persist_provider_order() {
-        assert!(!ProtocolVersion { major: 1, minor: 11 }.accepts(PROTOCOL_VERSION));
+        assert!(!ProtocolVersion {
+            major: 1,
+            minor: 11
+        }
+        .accepts(PROTOCOL_VERSION));
     }
 
     #[test]
     fn integrated_client_rejects_both_pre_menu_and_pre_terminal_daemons() {
-        for older in [ProtocolVersion { major: 1, minor: 8 }, ProtocolVersion { major: 1, minor: 12 }] {
+        for older in [
+            ProtocolVersion { major: 1, minor: 8 },
+            ProtocolVersion {
+                major: 1,
+                minor: 12,
+            },
+        ] {
             assert!(!older.accepts(PROTOCOL_VERSION));
             assert!(PROTOCOL_VERSION.accepts(older));
         }
@@ -195,13 +216,25 @@ mod tests {
 
     #[test]
     fn menu_presentation_client_rejects_daemon_without_new_settings() {
-        assert!(!ProtocolVersion { major: 1, minor: 13 }.accepts(PROTOCOL_VERSION));
+        assert!(!ProtocolVersion {
+            major: 1,
+            minor: 13
+        }
+        .accepts(PROTOCOL_VERSION));
+        assert!(!ProtocolVersion {
+            major: 1,
+            minor: 14
+        }
+        .accepts(PROTOCOL_VERSION));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {
         HandshakeRequest {
             protocol_version: ProtocolVersion { major, minor },
-            client: ClientInfo { name: "test-client".into(), version: "1.2.3".into() },
+            client: ClientInfo {
+                name: "test-client".into(),
+                version: "1.2.3".into(),
+            },
             auth_token: None,
         }
     }
@@ -282,15 +315,24 @@ mod tests {
     fn handshake_shapes_round_trip() {
         let request = request(PROTOCOL_VERSION.major, 0);
         let encoded = serde_json::to_string(&request).unwrap();
-        assert_eq!(serde_json::from_str::<HandshakeRequest>(&encoded).unwrap(), request);
-        assert!(encoded.contains("protocolVersion"), "wire fields are camelCase");
+        assert_eq!(
+            serde_json::from_str::<HandshakeRequest>(&encoded).unwrap(),
+            request
+        );
+        assert!(
+            encoded.contains("protocolVersion"),
+            "wire fields are camelCase"
+        );
         assert!(
             !encoded.contains("authToken"),
             "an absent token stays off the wire — pre-0.6 requests are still valid"
         );
         let response = negotiate(&request).unwrap();
         let encoded = serde_json::to_string(&response).unwrap();
-        assert_eq!(serde_json::from_str::<HandshakeResponse>(&encoded).unwrap(), response);
+        assert_eq!(
+            serde_json::from_str::<HandshakeResponse>(&encoded).unwrap(),
+            response
+        );
     }
 
     #[test]
@@ -306,6 +348,8 @@ mod tests {
         // Negotiation ignores the token entirely — hosts enforce it — and no
         // response field can ever echo it.
         let response = negotiate(&authenticated).unwrap();
-        assert!(!serde_json::to_string(&response).unwrap().contains("secret-token"));
+        assert!(!serde_json::to_string(&response)
+            .unwrap()
+            .contains("secret-token"));
     }
 }

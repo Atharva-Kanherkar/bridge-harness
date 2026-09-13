@@ -201,10 +201,16 @@ pub enum MenuBarLayoutToken {
     Space,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 fn default_pinned_providers() -> Vec<MenuBarProvider> {
-    vec![MenuBarProvider::Codex, MenuBarProvider::Claude, MenuBarProvider::Cursor]
+    vec![
+        MenuBarProvider::Codex,
+        MenuBarProvider::Claude,
+        MenuBarProvider::Cursor,
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -221,7 +227,7 @@ pub struct MenuBarSettings {
     pub opencode_enabled: bool,
     #[serde(default)]
     pub selected_provider: MenuBarProvider,
-    /// Up to three favorites, in display order. Pinning never enables account collection.
+    /// Unique favorites in tab order. Pinning never enables account collection.
     #[serde(default = "default_pinned_providers")]
     pub pinned_providers: Vec<MenuBarProvider>,
     #[serde(default)]
@@ -313,7 +319,14 @@ mod tests {
         assert_eq!(settings.display_mode, MenuBarDisplayMode::Used);
         assert_eq!(settings.refresh_seconds, 900);
         assert_eq!(settings.selected_provider, MenuBarProvider::Codex);
-        assert_eq!(settings.pinned_providers, vec![MenuBarProvider::Codex, MenuBarProvider::Claude, MenuBarProvider::Cursor]);
+        assert_eq!(
+            settings.pinned_providers,
+            vec![
+                MenuBarProvider::Codex,
+                MenuBarProvider::Claude,
+                MenuBarProvider::Cursor
+            ]
+        );
         for provider in MenuBarProvider::ALL.into_iter().skip(1) {
             assert!(!settings.provider_enabled(provider));
         }

@@ -110,7 +110,7 @@
             "claude",
             "cursor"
           ],
-          "description": "Up to three favorites, in display order. Pinning never enables account collection.",
+          "description": "Unique favorites in tab order. Pinning never enables account collection.",
           "items": {
             "$ref": "#/definitions/MenuBarProvider"
           },

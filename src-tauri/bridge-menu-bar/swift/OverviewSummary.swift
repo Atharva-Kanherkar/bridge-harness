@@ -42,11 +42,11 @@ struct OverviewSummary {
 
     var costLabel: String {
         let value = moneyLabel(cost)
-        return costPartial && cost.value != nil ? "\(value) · partial" : value
+        return costPartial && cost.value != nil && !value.hasPrefix("≈") ? "≈\(value)" : value
     }
     var tokenLabel: String {
         let value = compactCountLabel(tokens, unit: "tokens")
-        return tokensPartial && tokens.value != nil ? "\(value) · partial" : value
+        return tokensPartial && tokens.value != nil ? "≈\(value)" : value
     }
 }
 

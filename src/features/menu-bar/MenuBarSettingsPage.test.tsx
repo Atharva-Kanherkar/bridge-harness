@@ -193,3 +193,15 @@ it("persists overview summary visibility and separate icons independently", asyn
   expect(summary().getAttribute("aria-checked")).toBe("false");
   expect(icons().getAttribute("aria-checked")).toBe("true");
 });
+
+it("adds a fourth favorite without connecting the provider", async () => {
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  expect(container.querySelector('[aria-label="Favorite provider 4"]')).toBeNull();
+  const add = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Add favorite")!;
+  await act(async () => add.click());
+  expect(save).toHaveBeenLastCalledWith({ ...settings, pinnedProviders: ["codex", "claude", "cursor", "opencode"] });
+  expect(container.querySelector('[aria-label="Favorite provider 4"]')?.textContent).toBe("OpenCode");
+  expect(container.querySelector('[aria-label="Read OpenCode usage"]')?.getAttribute("aria-checked")).toBe("false");
+  expect(add.disabled).toBe(true);
+});

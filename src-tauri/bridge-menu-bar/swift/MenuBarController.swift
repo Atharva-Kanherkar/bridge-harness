@@ -5,9 +5,7 @@ extension Presentation {
         guard let provider = provider else { return self }
         var result = self
         result.settings.selectedProvider = provider
-        if !result.settings.visibleProviders.contains(provider) {
-            result.settings.pinnedProviders = result.settings.normalizedPinnedProviders + [provider]
-        }
+        result.settings.menuProviderOverride = provider
         return result
     }
 
@@ -39,6 +37,7 @@ final class MenuBarController {
     static func providerIDs(_ settings: MenuSettings) -> [String] {
         guard settings.enabled, settings.separateProviderIcons ?? false else { return [] }
         return settings.visibleProviders.filter { settings.isProviderEnabled($0) }
+            + settings.enabledProviders.filter { !settings.visibleProviders.contains($0) }
     }
 
     func update(_ presentation: Presentation) {

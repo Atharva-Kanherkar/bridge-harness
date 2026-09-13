@@ -23,13 +23,15 @@ pub fn load(db: &Connection) -> Result<MenuBarSettings, BridgeError> {
 }
 
 fn validate(settings: &MenuBarSettings) -> Result<(), BridgeError> {
-    if settings.pinned_providers.len() > 3
-        || settings.pinned_providers.iter().enumerate().any(|(index, provider)| {
-            settings.pinned_providers[..index].contains(provider)
-        })
+    if settings.pinned_providers.len() > bridge_protocol::messages::MenuBarProvider::ALL.len()
+        || settings
+            .pinned_providers
+            .iter()
+            .enumerate()
+            .any(|(index, provider)| settings.pinned_providers[..index].contains(provider))
     {
         return Err(BridgeError::Invalid(
-            "Choose up to three different favorite providers".into(),
+            "Choose different favorite providers from the supported providers".into(),
         ));
     }
     if settings.status_layout.len() > 2
@@ -99,9 +101,9 @@ mod tests {
         assert!(!saved.cursor_enabled && !saved.opencode_enabled);
         settings.pinned_providers = vec![Cursor, Cursor];
         assert!(save(&db, &settings).is_err());
-        settings.pinned_providers = vec![Codex, Claude, Cursor, OpenCode];
-        assert!(save(&db, &settings).is_err());
         assert_eq!(load(&db).unwrap(), saved);
+        settings.pinned_providers = vec![Codex, Claude, Cursor, OpenCode];
+        assert_eq!(save(&db, &settings).unwrap().pinned_providers.len(), 4);
         settings.pinned_providers.clear();
         assert!(save(&db, &settings).unwrap().pinned_providers.is_empty());
     }

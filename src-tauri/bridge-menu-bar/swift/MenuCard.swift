@@ -18,8 +18,8 @@ struct MenuCard: View {
                 onSelect: state.select)
                 .frame(width: 350, height: 30).padding(.horizontal, -16)
             if state.showingOverview && settings.visibleProviders.isEmpty {
-                Text("No providers enabled").font(.headline)
-                Text("Enable a provider in Menu Bar settings to see its usage.").foregroundColor(.secondary)
+                Text("No favorite providers").font(.headline)
+                Text("Add a favorite in Menu Bar settings to see its usage here.").foregroundColor(.secondary)
                 settingsButton
             } else if state.showingOverview {
                 overview(presentation)

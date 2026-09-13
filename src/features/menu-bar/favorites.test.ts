@@ -13,3 +13,9 @@ it("removes and adds favorites without leaving empty slots", () => {
   expect(chooseFavorite(["codex"], 1, "codex")).toEqual(["codex"]);
   expect(chooseFavorite(defaultFavorites, 4, "opencode")).toEqual(defaultFavorites);
 });
+
+it("adds a fourth favorite and removes it without changing the first three", () => {
+  const four = chooseFavorite(defaultFavorites, 3, "opencode");
+  expect(four).toEqual(["codex", "claude", "cursor", "opencode"]);
+  expect(chooseFavorite(four, 3, "")).toEqual(defaultFavorites);
+});

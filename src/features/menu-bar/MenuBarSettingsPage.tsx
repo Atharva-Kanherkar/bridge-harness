@@ -25,7 +25,8 @@ export function MenuBarSettingsPage() {
   const pendingSaves = useRef(0);
   const enabled = providers.filter(provider => settings?.[provider.key]);
   const favorites = settings?.pinnedProviders ?? defaultFavorites;
-  const visibleIds = [...favorites, ...enabled.map(provider => provider.id).filter(id => !favorites.includes(id))];
+  const visibleIds = favorites;
+  const nextFavorite = providers.find(provider => !favorites.includes(provider.id));
   const visible = visibleIds.flatMap(id => providers.filter(provider => provider.id === id));
   const customDisplay = !settings?.separateProviderIcons && (settings?.statusLayout?.flat().some(token => token !== "space" && token !== "dot") ?? false);
 
@@ -87,7 +88,7 @@ export function MenuBarSettingsPage() {
           control={<Switch label="Show in menu bar" checked={settings.enabled} disabled={busy} onChange={enabled => void save({ enabled })} />} />
         <SettingsRow label="Separate provider icons" description="Show each enabled provider’s icon and usage in the macOS menu bar. Each icon opens that provider."
           control={<Switch label="Separate provider icons" checked={settings.separateProviderIcons ?? false} disabled={busy} onChange={separateProviderIcons => void save({ separateProviderIcons })} />} />
-        <SettingsRow label="Open to Overview" description="See every enabled provider’s current quota together. Details stay in provider tabs."
+        <SettingsRow label="Open to Overview" description="See your favorite providers’ current quotas together. Details stay in provider tabs."
           control={<Switch label="Open to Overview" checked={settings.openToOverview ?? true} disabled={busy} onChange={openToOverview => void save({ openToOverview })} />} />
         <SettingsRow label="Quota bars" description="Used fills the bar as you consume your allowance. The opposite percentage appears below."
           control={<Select label="Quota bars" value={settings.quotaDisplayMode ?? "used"} disabled={busy}
@@ -114,11 +115,18 @@ export function MenuBarSettingsPage() {
           onSave={statusLayout => save({ statusLayout })} />
       </SettingsGroup>
       <SettingsGroup label="Favorite providers">
-        <p className="px-4 py-3 text-xs text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Scroll horizontally or use the arrows for more providers. Favorites stay visible while disconnected.</p>
-        {[0, 1, 2].map(position => <SettingsRow key={position} label={`Favorite ${position + 1}`}
+        <p className="px-4 py-3 text-xs text-muted-foreground">In single-icon mode, your first favorite supplies the usage beside the menu icon. Switching tabs only changes the open menu. Only favorites appear in the tab bar. Add more favorites below, then scroll or use the arrows. Favorites stay visible while disconnected.</p>
+        {favorites.map((_, position) => <SettingsRow key={position} label={`Favorite ${position + 1}`}
           control={<Select label={`Favorite provider ${position + 1}`} value={favorites[position] ?? ""} disabled={busy}
-            options={[{ value: "", label: "None" }, ...providers.map(provider => ({ value: provider.id, label: provider.name }))]}
+            options={[{ value: "", label: "Remove favorite" }, ...providers.map(provider => ({ value: provider.id, label: provider.name }))]}
             onChange={value => void save({ pinnedProviders: chooseFavorite(favorites, position, value as (typeof favorites)[number] | "") })} />} />)}
+        <div className="px-4 py-3">
+          <button type="button" disabled={busy || !nextFavorite}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
+            onClick={() => { if (nextFavorite) void save({ pinnedProviders: [...favorites, nextFavorite.id] }); }}>
+            Add favorite
+          </button>
+        </div>
       </SettingsGroup>
       <SettingsGroup label="Providers & accounts">
         <p className="px-4 py-3 text-xs text-muted-foreground">Enable account usage for each provider. Choosing a favorite does not connect its account.</p>
@@ -129,8 +137,8 @@ export function MenuBarSettingsPage() {
             control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
               onChange={value => void save({ [provider.key]: value })} />} />;
         })}
-        <SettingsRow label="Provider beside the icon" description="Uses your first favorite, or the first enabled provider when no favorites are set."
-          control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{visible[0]?.name ?? "None"}</span>} />
+        <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each enabled provider has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}
+          control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabled.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
         <SettingsRow label="OpenCode Zen account" description="Sign in and open a workspace. Bridge saves that session in macOS Keychain."
           control={<button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
             onClick={() => { setConnection("Complete sign-in in the OpenCode window and open your workspace."); void bridgeApi.connectMenuBarOpenCode().catch(error => setError(String(error))); }}>Connect OpenCode</button>} />

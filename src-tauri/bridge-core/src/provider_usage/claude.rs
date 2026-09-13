@@ -8,6 +8,10 @@ fn credentials() -> Result<(String, Option<String>), String> {
         }
         return Ok((token, None));
     }
+    legacy_file_credentials()
+}
+
+fn legacy_file_credentials() -> Result<(String, Option<String>), String> {
     let configured = std::env::var_os("CLAUDE_CONFIG_DIR");
     let path = configured
         .clone()
@@ -16,16 +20,30 @@ fn credentials() -> Result<(String, Option<String>), String> {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude")
         })
         .join(".credentials.json");
-    let content = if path.exists() || configured.is_some() {
-        super::credentials::read_file(&path)?
-    } else {
-        String::from_utf8(super::credentials::keychain(
-            "Claude Code-credentials",
-            None,
-        )?)
-        .map_err(|_| "Invalid Claude credentials")?
-    };
+    let content = super::credentials::read_file(&path)?;
     decode_credentials(&content, chrono::Utc::now().timestamp_millis())
+}
+
+fn keychain_credentials() -> Result<(String, Option<String>), String> {
+    let content = String::from_utf8(super::credentials::keychain(
+        "Claude Code-credentials",
+        None,
+    )?)
+    .map_err(|_| "Invalid Claude credentials")?;
+    decode_credentials(&content, chrono::Utc::now().timestamp_millis())
+}
+
+fn may_retry_with_legacy_file(error: &str) -> bool {
+    error == "Reconnect Claude to read account usage."
+}
+
+fn may_fallback_to_claude_cli(error: &str) -> bool {
+    error == "Reconnect Claude to read account usage."
+        || error.starts_with("Claude session expired.")
+        || error.starts_with("Sign in through Claude Code")
+        || error.starts_with("Provider credentials are unavailable")
+        || error.starts_with("Provider session is unavailable in Keychain")
+        || error.starts_with("Invalid Claude credentials")
 }
 fn decode_credentials(content: &str, now_ms: i64) -> Result<(String, Option<String>), String> {
     let data: Value = serde_json::from_str(content).map_err(|_| "Invalid Claude credentials")?;
@@ -79,8 +97,56 @@ fn read_with_credentials(token: String, plan: Option<String>) -> Result<AccountU
     Ok(parsed)
 }
 pub(super) fn read() -> Result<AccountUsage, String> {
-    let (token, plan) = credentials()?;
-    read_with_credentials(token, plan)
+    read_direct_with_default_keychain_fallback()
+}
+
+fn read_direct_with_default_keychain_fallback() -> Result<AccountUsage, String> {
+    let explicit = std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some()
+        || std::env::var_os("CLAUDE_CONFIG_DIR").is_some();
+    read_direct_with_sources(
+        explicit,
+        credentials,
+        keychain_credentials,
+        legacy_file_credentials,
+        read_with_credentials,
+    )
+}
+
+fn read_direct_with_sources<E, K, L, R>(
+    explicit: bool,
+    mut explicit_credentials: E,
+    mut keychain: K,
+    mut legacy_file: L,
+    mut request: R,
+) -> Result<AccountUsage, String>
+where
+    E: FnMut() -> Result<(String, Option<String>), String>,
+    K: FnMut() -> Result<(String, Option<String>), String>,
+    L: FnMut() -> Result<(String, Option<String>), String>,
+    R: FnMut(String, Option<String>) -> Result<AccountUsage, String>,
+{
+    if explicit {
+        let (token, plan) = explicit_credentials()?;
+        return request(token, plan);
+    }
+
+    // Claude Code rotates its default-profile OAuth credential in Keychain. A
+    // legacy credentials file can remain on disk long after that rotation, so
+    // it must not shadow the current Keychain item. Reads are non-interactive.
+    match keychain() {
+        Ok((token, plan)) => match request(token, plan) {
+            Ok(usage) => Ok(usage),
+            Err(error) if may_retry_with_legacy_file(&error) => {
+                let (token, plan) = legacy_file().map_err(|_| error)?;
+                request(token, plan)
+            }
+            Err(error) => Err(error),
+        },
+        Err(_) => {
+            let (token, plan) = legacy_file()?;
+            request(token, plan)
+        }
+    }
 }
 
 pub(super) fn read_interactive(core: &crate::BridgeCore) -> Result<AccountUsage, String> {
@@ -92,11 +158,24 @@ pub(super) fn read_interactive(core: &crate::BridgeCore) -> Result<AccountUsage,
     ) {
         return read();
     }
-    match credentials() {
-        Ok((token, plan)) => read_with_credentials(token, plan),
-        Err(direct_error) => super::claude_cli::read(core).map_err(|cli_error| {
-            format!("{direct_error} Manual Claude CLI fallback failed: {cli_error}")
-        }),
+    read_interactive_with_fallback(read_direct_with_default_keychain_fallback, || {
+        super::claude_cli::read(core)
+    })
+}
+
+fn read_interactive_with_fallback<D, C>(mut direct: D, mut cli: C) -> Result<AccountUsage, String>
+where
+    D: FnMut() -> Result<AccountUsage, String>,
+    C: FnMut() -> Result<AccountUsage, String>,
+{
+    match direct() {
+        Ok(usage) => Ok(usage),
+        Err(direct_error) if may_fallback_to_claude_cli(&direct_error) => {
+            cli().map_err(|cli_error| {
+                format!("{direct_error} Manual Claude CLI fallback failed: {cli_error}")
+            })
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -195,6 +274,14 @@ fn scoped_slug(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::Cell;
+
+    fn usage() -> AccountUsage {
+        AccountUsage {
+            observed_at: 1,
+            ..Default::default()
+        }
+    }
     #[test]
     fn zero_missing_scoped_and_expiry_remain_distinct() {
         let data = parse(&json!({"five_hour":{"utilization":0,"resets_at":"2026-09-12T00:00:00Z"},"seven_day":{"utilization":null},"seven_day_opus":{"utilization":12}}), 10).unwrap();
@@ -214,6 +301,98 @@ mod tests {
         assert!(!cli_fallback_allowed(true, false));
         assert!(!cli_fallback_allowed(false, true));
         assert!(!cli_fallback_allowed(true, true));
+    }
+
+    #[test]
+    fn only_an_auth_rejection_retries_the_legacy_file() {
+        assert!(may_retry_with_legacy_file(
+            "Reconnect Claude to read account usage."
+        ));
+        assert!(!may_retry_with_legacy_file(
+            "Claude is rate limited. Wait a few minutes before refreshing."
+        ));
+        assert!(!may_retry_with_legacy_file(
+            "Claude usage request failed or timed out. Try Refresh."
+        ));
+    }
+
+    #[test]
+    fn valid_keychain_wins_without_reading_an_expired_legacy_file() {
+        let legacy_reads = Cell::new(0);
+        let result = read_direct_with_sources(
+            false,
+            || panic!("explicit source must be bypassed"),
+            || Ok(("current".into(), None)),
+            || {
+                legacy_reads.set(legacy_reads.get() + 1);
+                Err("expired legacy file".into())
+            },
+            |token, _| {
+                assert_eq!(token, "current");
+                Ok(usage())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(legacy_reads.get(), 0);
+    }
+
+    #[test]
+    fn explicit_identity_bypasses_keychain_and_legacy_sources() {
+        let result = read_direct_with_sources(
+            true,
+            || Ok(("explicit".into(), None)),
+            || panic!("keychain must be bypassed"),
+            || panic!("legacy file must be bypassed"),
+            |token, _| {
+                assert_eq!(token, "explicit");
+                Ok(usage())
+            },
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn missing_legacy_file_does_not_repeat_the_same_keychain_auth_request() {
+        let requests = Cell::new(0);
+        let keychain_reads = Cell::new(0);
+        let result = read_direct_with_sources(
+            false,
+            || panic!("explicit source must be bypassed"),
+            || {
+                keychain_reads.set(keychain_reads.get() + 1);
+                Ok(("rejected".into(), None))
+            },
+            || Err("Provider credentials are unavailable".into()),
+            |_, _| {
+                requests.set(requests.get() + 1);
+                Err("Reconnect Claude to read account usage.".into())
+            },
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Reconnect Claude to read account usage."
+        );
+        assert_eq!(keychain_reads.get(), 1);
+        assert_eq!(requests.get(), 1);
+    }
+
+    #[test]
+    fn rate_limit_and_transport_failures_do_not_launch_the_cli() {
+        for error in [
+            "Claude is rate limited. Wait a few minutes before refreshing.",
+            "Claude usage request failed or timed out. Try Refresh.",
+        ] {
+            let cli_calls = Cell::new(0);
+            let result = read_interactive_with_fallback(
+                || Err(error.into()),
+                || {
+                    cli_calls.set(cli_calls.get() + 1);
+                    Ok(usage())
+                },
+            );
+            assert_eq!(result.unwrap_err(), error);
+            assert_eq!(cli_calls.get(), 0);
+        }
     }
 
     #[test]

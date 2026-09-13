@@ -274,7 +274,7 @@ final class MenuController: NSObject, NSMenuDelegate {
             state.presentation = state.presentation.forMenuProvider(provider)
             state.showingOverview = false
         } else {
-            state.showingOverview = state.presentation.settings.openToOverview ?? true
+            state.showingOverview = state.presentation.settings.visibleProviders.isEmpty || (state.presentation.settings.openToOverview ?? true)
         }
         rebuildCard()
         tracking = true

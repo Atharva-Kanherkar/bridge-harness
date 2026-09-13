@@ -95,17 +95,19 @@ struct MenuSettings: Decodable {
     var normalizedPinnedProviders: [String] {
         let requested = pinnedProviders ?? ["codex", "claude", "cursor"]
         return requested.reduce(into: [String]()) { result, provider in
-            if result.count < 3 && !provider.isEmpty && !result.contains(provider) { result.append(provider) }
+            if !provider.isEmpty && !result.contains(provider) { result.append(provider) }
         }
     }
     var visibleProviders: [String] {
-        normalizedPinnedProviders + enabledProviders.filter { !normalizedPinnedProviders.contains($0) }
+        normalizedPinnedProviders
     }
-    var activeProvider: String? { visibleProviders.contains(selectedProvider) ? selectedProvider : visibleProviders.first }
+    // Local detail selection for a separate icon; never changes saved favorites.
+    var menuProviderOverride: String? = nil
+    var activeProvider: String? { menuProviderOverride ?? (visibleProviders.contains(selectedProvider) ? selectedProvider : visibleProviders.first) }
     // The status item belongs to the first favorite, independently of which
     // detail tab is open. A disconnected favorite must not expose cached data
     // or silently substitute another account; no favorites uses the first enabled.
-    var statusProvider: String? { visibleProviders.first }
+    var statusProvider: String? { visibleProviders.first ?? enabledProviders.first }
     func isProviderEnabled(_ provider: String) -> Bool { enabledProviders.contains(provider) }
     var displayMode: String
     var quotaDisplayMode: String? = nil
@@ -190,6 +192,9 @@ final class MenuState: ObservableObject {
 func quotaLabel(_ window: QuotaWindow, provider: String) -> String {
     if window.id == "session" && window.windowMinutes == 300 { return "5-hour" }
     if provider == "codex" && window.label == "Session" { return "Rolling" }
+    if provider == "codex" {
+        return window.label.replacingOccurrences(of: "gpt[- ]reserve", with: "GPT Reserve", options: [.regularExpression, .caseInsensitive])
+    }
     return window.label
 }
 

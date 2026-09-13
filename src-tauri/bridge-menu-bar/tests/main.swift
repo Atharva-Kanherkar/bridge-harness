@@ -77,6 +77,7 @@ switched.settings.selectedProvider = "claude"
 check(switched.selectedUsage?.provider == "claude", "Claude can be the only enabled provider")
 switched.settings.claudeEnabled = false
 switched.settings.opencodeEnabled = true
+switched.settings.pinnedProviders = ["opencode"]
 switched.settings.selectedProvider = "opencode"
 check(switched.selectedUsage?.provider == "opencode", "OpenCode can be the only enabled provider")
 
@@ -276,6 +277,7 @@ for name in [NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua, 
 var breakdownPresentation = fixture
 breakdownPresentation.settings.cursorEnabled = true
 breakdownPresentation.settings.opencodeEnabled = true
+breakdownPresentation.settings.pinnedProviders = ["codex", "claude", "cursor", "opencode"]
 for index in breakdownPresentation.usage!.providers.indices {
     let provider = breakdownPresentation.usage!.providers[index].provider
     breakdownPresentation.usage!.providers[index].today.models[0].model = "\(provider)-model"
@@ -448,8 +450,8 @@ allProviders.opencodeEnabled = true
 check(allProviders.enabledProviders == ["codex", "claude", "cursor", "opencode"],
       "Cursor appears immediately after Claude in both switcher and Overview")
 allProviders.pinnedProviders = ["cursor", "codex", "cursor", "claude", "opencode"]
-check(allProviders.normalizedPinnedProviders == ["cursor", "codex", "claude"], "Favorites are unique and capped at three")
-check(allProviders.visibleProviders == ["cursor", "codex", "claude", "opencode"], "Favorites lead enabled overflow providers")
+check(allProviders.normalizedPinnedProviders == ["cursor", "codex", "claude", "opencode"], "A fourth unique favorite is preserved")
+check(allProviders.visibleProviders == ["cursor", "codex", "claude", "opencode"], "All selected favorites appear in order")
 var legacySettings = fixture.settings
 legacySettings.pinnedProviders = nil
 check(legacySettings.visibleProviders.prefix(3) == ["codex", "claude", "cursor"], "Old payloads show the default favorite three including Cursor")
@@ -594,7 +596,7 @@ summaryClaude.month.tokens = Metric(value: 2000, source: "measured", status: "cu
 summaryFixture.usage!.providers = [summaryCodex, summaryClaude]
 let partialSummary = OverviewSummary(summaryFixture)
 check(partialSummary.providerCount == 2 && partialSummary.costProviderCount == 1, "Disabled favorites do not enter the summary denominator")
-check(partialSummary.costLabel == "≈$2.00 · partial", "Missing provider cost keeps the known estimate explicitly partial")
+check(partialSummary.costLabel == "≈$2.00", "Approximate spend stays compact with adjacent symbols and no repeated partial label")
 check(partialSummary.tokens.value == 3000 && !partialSummary.tokensPartial, "Token coverage is independent of cost coverage")
 summaryFixture.usage!.providers[0].month.costMicrousd = .unavailable
 check(OverviewSummary(summaryFixture).costLabel == "Unavailable", "All unknown cost never becomes zero")
@@ -634,3 +636,18 @@ let ownedMenu = globalSelection.forMenuProvider("codex")
 check(ownedMenu.settings.activeProvider == "codex", "A background snapshot cannot move a Codex-owned menu to global Claude selection")
 check(globalSelection.forMenuProvider("cursor").settings.activeProvider == "cursor", "Each menu can locally browse another provider")
 check(globalSelection.forStatusProvider("codex").settings.statusLayout?.isEmpty == true, "Separate provider icons cannot disappear behind an icon-free custom layout")
+
+var favoriteTabs = fixture.settings
+favoriteTabs.opencodeEnabled = true
+check(!favoriteTabs.visibleProviders.contains("opencode"), "Enabling collection alone must not add a provider tab")
+favoriteTabs.pinnedProviders = ["codex", "claude", "cursor", "opencode"]
+check(favoriteTabs.visibleProviders.last == "opencode", "Adding a fourth favorite reveals its tab")
+favoriteTabs.opencodeEnabled = false
+check(favoriteTabs.visibleProviders.last == "opencode", "An explicitly favorited disconnected provider keeps its tab")
+check(quotaLabel(QuotaWindow(id: "gpt-reserve", label: "gpt-reserve Weekly", usedPercent: .unavailable, resetsAt: nil, windowMinutes: nil), provider: "codex") == "GPT Reserve Weekly", "GPT Reserve uses its proper capitalization")
+check(!partialSummary.tokenLabel.contains("partial"), "Summary tokens do not repeat the coverage qualifier")
+
+let unfavoritedOwner = fixture.forMenuProvider("opencode")
+check(unfavoritedOwner.settings.activeProvider == "opencode", "Separate icons can open their own detail")
+check(!unfavoritedOwner.settings.visibleProviders.contains("opencode"), "Opening a separate icon never adds an unfavorited tab")
+check(quotaLabel(QuotaWindow(id: "gpt-reserve", label: "gpt reserve Weekly", usedPercent: .unavailable, resetsAt: nil, windowMinutes: nil), provider: "codex") == "GPT Reserve Weekly", "GPT Reserve normalizes spaced labels too")

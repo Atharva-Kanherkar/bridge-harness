@@ -30,7 +30,7 @@ that preserves the existing quota presentation.
 
 ## Data contract
 
-Protocol 1.14 includes `usage/get_usage_overview`, `usage/refresh_usage_overview`,
+Protocol 1.15 includes `usage/get_usage_overview`, `usage/refresh_usage_overview`,
 `menu_bar/get_menu_bar_settings` and `menu_bar/save_menu_bar_settings`.
 Both snapshots and settings carry `schemaVersion: 1`. Older daemons fail the
 handshake before a menu attempts to use missing methods.
@@ -155,16 +155,15 @@ plan and reset information remain unavailable.
 
 ## Favorite providers and overflow
 
-Protocol 1.13 persists `pinnedProviders`: up to three unique provider IDs in
+Protocol 1.15 persists `pinnedProviders`: unique supported provider IDs in
 display order, defaulting to Codex, Claude, and Cursor. General → Menu Bar lets
-users choose each position. Selecting an existing favorite swaps its position;
-choosing None removes it. The backend validates the list and older clients do
+users choose each position and use Add favorite to append another provider.
+Selecting an existing favorite swaps its position; Remove favorite removes it. The backend validates the list and older clients do
 not pair with a daemon that would discard the preference.
 
 Overview stays fixed beside a horizontally scrollable provider strip. Three
 providers fit at once; arrow buttons and horizontal scrolling reveal additional
-providers without increasing the 350-point menu width. Favorites lead the list,
-followed by other enabled providers. The currently supported collectors remain
+providers without increasing the 350-point menu width. Only favorites appear in the tab list and Overview quota rows. The currently supported collectors remain
 Codex, Claude, Cursor, and OpenCode; scroll capacity does not imply new adapters.
 Navigation arrows sit at opposite edges with matching 6-point outer gutters and
 4-point gaps beside the tab group; three equal provider slots fit between them.
@@ -209,10 +208,11 @@ from Grok model token history.
 Settings → Menu Bar → Usage & spend → **Overview usage & spend** controls the
 compact 30-day card above the Overview quota bars (on by default). It sums the
 backend's existing monthly snapshots for enabled providers, independent of the
-three favorites. Token and spend visibility still follow their existing toggles.
-Unknown costs are excluded from a labelled partial subtotal; all-unknown remains
-Unavailable, reported zero remains zero, and estimated/stale amounts retain their
-qualifiers. No extra collection runs, charts, subscription counts, or invented
+favorites. Token and spend visibility still follow their existing toggles.
+Unknown costs are excluded from the subtotal. An adjacent `≈$` marks estimated
+or incomplete costs, and provider coverage explains missing amounts without a
+repeated partial label. All-unknown remains Unavailable, reported zero remains
+zero, and stale amounts retain their qualifier. No extra collection runs, charts, subscription counts, or invented
 pricing-coverage counts are added to Overview.
 
 **Separate provider icons** is off by default. Enabling it replaces the combined
@@ -227,3 +227,13 @@ visibility/topology changes while any menu tracks, and reconciles after close.
 The new persisted flags require protocol 1.14, preventing an older daemon from
 silently discarding them. Provider SVGs and native presentation reference CodexBar;
 see `THIRD_PARTY_NOTICES.md` for attribution.
+
+## Claude credential freshness
+
+For the default Claude Code profile, background collection prefers the current
+Keychain credential over the legacy `.credentials.json` file, which can survive
+long after Claude Code rotates its token. The file remains a fallback when
+Keychain is unavailable or its token is rejected. Explicit OAuth tokens and
+configuration directories retain precedence. Rate limits and transport failures
+do not retry another credential or launch the CLI. Manual Refresh may use the
+existing bounded Claude CLI fallback for credential failures.
