@@ -44,6 +44,8 @@ fn may_fallback_to_claude_cli(error: &str) -> bool {
         || error.starts_with("Provider credentials are unavailable")
         || error.starts_with("Provider session is unavailable in Keychain")
         || error.starts_with("Invalid Claude credentials")
+        || error.starts_with("Provider session read timed out")
+        || error.starts_with("Provider session helper")
 }
 fn decode_credentials(content: &str, now_ms: i64) -> Result<(String, Option<String>), String> {
     let data: Value = serde_json::from_str(content).map_err(|_| "Invalid Claude credentials")?;
@@ -142,8 +144,8 @@ where
             }
             Err(error) => Err(error),
         },
-        Err(_) => {
-            let (token, plan) = legacy_file()?;
+        Err(keychain_error) => {
+            let (token, plan) = legacy_file().map_err(|_| keychain_error)?;
             request(token, plan)
         }
     }
@@ -158,9 +160,26 @@ pub(super) fn read_interactive(core: &crate::BridgeCore) -> Result<AccountUsage,
     ) {
         return read();
     }
-    read_interactive_with_fallback(read_direct_with_default_keychain_fallback, || {
-        super::claude_cli::read(core)
-    })
+    read_interactive_with_fallback(
+        || read_manual_with_repair(read_direct_with_default_keychain_fallback, || {
+            let bytes = super::credentials::keychain_interactive("Claude Code-credentials", None)?;
+            let content = String::from_utf8(bytes).map_err(|_| "Invalid Claude credentials")?;
+            let (token, plan) = decode_credentials(&content, chrono::Utc::now().timestamp_millis())?;
+            read_with_credentials(token, plan)
+        }),
+        || super::claude_cli::read(core),
+    )
+}
+
+fn read_manual_with_repair<D, R>(mut direct: D, mut repair: R) -> Result<AccountUsage, String>
+where
+    D: FnMut() -> Result<AccountUsage, String>,
+    R: FnMut() -> Result<AccountUsage, String>,
+{
+    match direct() {
+        Err(error) if may_fallback_to_claude_cli(&error) => repair(),
+        result => result,
+    }
 }
 
 fn read_interactive_with_fallback<D, C>(mut direct: D, mut cli: C) -> Result<AccountUsage, String>
@@ -392,6 +411,19 @@ mod tests {
             );
             assert_eq!(result.unwrap_err(), error);
             assert_eq!(cli_calls.get(), 0);
+        }
+    }
+
+    #[test]
+    fn manual_repair_only_runs_for_credential_failures() {
+        assert!(read_manual_with_repair(
+            || Err("Claude session expired. Sign in again through Claude Code.".into()),
+            || Ok(usage()),
+        ).is_ok());
+        for error in ["Claude is rate limited. Wait a few minutes before refreshing.",
+                      "Claude usage request failed or timed out. Try Refresh."] {
+            assert_eq!(read_manual_with_repair(|| Err(error.into()),
+                || panic!("network failures must not request Keychain access")).unwrap_err(), error);
         }
     }
 

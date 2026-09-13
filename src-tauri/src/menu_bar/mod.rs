@@ -274,6 +274,15 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                             || due
                             || (newly_enabled && interval > 0));
                     if should_refresh {
+                        // Paint the retained snapshot before credential/network work.
+                        // A slow provider must not leave the first menu empty.
+                        if presentation.usage.is_none() {
+                            if let Ok(usage) = call(&handle, &host, MethodName::GetProviderUsageOverviews)
+                                .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+                            {
+                                presentation.usage = Some(usage);
+                            }
+                        }
                         presentation.refreshing = true;
                         publish(&handle, &presentation);
                     }

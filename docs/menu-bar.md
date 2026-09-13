@@ -237,3 +237,10 @@ Keychain is unavailable or its token is rejected. Explicit OAuth tokens and
 configuration directories retain precedence. Rate limits and transport failures
 do not retry another credential or launch the CLI. Manual Refresh may use the
 existing bounded Claude CLI fallback for credential failures.
+
+Keychain access runs in an isolated `bridged` helper. Background reads disable
+legacy Keychain interaction in that process and have a two-second deadline;
+credential output is capped at 64 KiB. The helper and its descendants are killed
+and reaped on timeout. Explicit Refresh may request Keychain access with a
+30-second deadline before the CLI fallback. The menu paints its retained snapshot
+before starting credential or network work.
