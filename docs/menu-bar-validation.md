@@ -781,3 +781,52 @@ desktop screenshot. The local automatic-refresh authentication blocker is now
 resolved; no quota values were inferred from the CLI discrepancy. Native menu
 accessibility inspection confirmed all three current values in Overview after
 the background refresh.
+
+### Favorite scope, spend contributors, and Cursor history · 2026-09-13
+
+The live preview had Codex, Claude, and Cursor as favorites while all four
+collectors remained enabled. Overview totals and separate icons incorrectly
+used the enabled-collector list. Both now use the same ordered enabled-favorite
+list; adding or removing a favorite controls its totals and icon without
+changing account collection. Native checks cover removal, re-addition,
+disconnected favorites, and an explicitly empty favorites list. The Settings
+regression exercises live add/remove changes and verifies the displayed owners.
+
+The initial missing spend contributor was Codex: `codex-auto-review` had no
+known price, making its provider total unavailable while four model subtotals
+remained priced. Overview can now include those authoritative model amounts as
+a presentation-only subtotal, marked approximate with unpriced usage excluded.
+Tests cover no double counting, no mutation of the unavailable provider total,
+unknown cost, actual zero, and stale values. Claude and Cursor costs contribute
+normally. After refreshing, native accessibility inspection confirmed
+`3 of 3 providers have spend`, with only Codex/Claude/Cursor tabs. Separate-icon
+mode's Settings owners were exactly `Codex, Claude, Cursor`; the user's original
+single-icon preference was restored afterward.
+
+Restarting exposed an independent Cursor failure: quota fetching succeeded but
+the optional history response could not be read, overwriting the prior saved
+history. The central cache now retains it for retryable failures only when a
+freshly verified subject fingerprint matches the saved history. It preserves
+the observation timestamp and immediately marks retained costs/tokens stale.
+Database close/reopen tests verify retention; missing or changed identity,
+authentication failures, and confirmed-empty success do not reuse old history.
+The account fingerprint is private cache metadata, not a protocol field.
+
+Production frontend build and native checks passed. The repository test script
+passed release, Python, sidecar, and all 2,174 frontend tests. Three timed Claude
+CLI fixtures failed in the full Rust run; all 44 provider tests passed serially
+afterward. All 13 overview tests, the remaining workspace suites (332 tests),
+and the final three Cursor history regressions passed. Two real-vendor lifecycle
+tests remain intentionally ignored. Public-release setup guidance and a
+fresh-account install/update verification procedure are documented in
+`docs/menu-bar.md`; that distribution-specific verification has not been run
+with this development-signed preview.
+
+The final signed 0.5.8 bundle from `232f3199` is installed at
+`~/Applications/Bridge Menu Bar Preview.app`. Its executable SHA-256 is
+`7dc6cfade829167b2a04ce9de43dc65f8c24b5aeb2997c66cc8103d3c6229e8e`;
+the previous bundle is `Bridge Menu Bar Preview.previous-20260913-190620.app`.
+The app and daemon both restarted from this bundle, retaining the helper's
+designated requirement. The final native Overview again showed three tabs,
+`3 of 3 providers have spend`, current Cursor history, and Claude's 0% five-hour,
+10% weekly, and 11% Fable limits.
