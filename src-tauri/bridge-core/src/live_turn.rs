@@ -6395,14 +6395,6 @@ fn queue_parent_prompt_notice(
     }
 }
 
-/// Answer an approval the permission policy granted.
-///
-/// Goes through the same single-owner resolver a human click uses. The resolver
-/// chooses only an advertised allow action and prefers the provider's standing
-/// grant over its one-shot grant.
-///
-/// The reason ledger names the policy that matched, so an auto-approval is
-/// auditable after the fact rather than merely absent from the UI.
 fn should_auto_approve_permission(db: &Connection, event: &agent::NormalizedEvent) -> bool {
     event.kind == "permission.requested"
         && !matches!(event.data.get("approvalType")
@@ -6414,6 +6406,14 @@ fn should_auto_approve_permission(db: &Connection, event: &agent::NormalizedEven
             .unwrap_or(false)
 }
 
+/// Answer an approval the permission policy granted.
+///
+/// Goes through the same single-owner resolver a human click uses. The resolver
+/// chooses only an advertised allow action and prefers the provider's standing
+/// grant over its one-shot grant.
+///
+/// The reason ledger names the policy that matched, so an auto-approval is
+/// auditable after the fact rather than merely absent from the UI.
 fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64) {
     match crate::api::auto_resolve_provider_permission(core, session_id, event_id) {
         Ok(result) if matches!(result.disposition, wire::InteractionResolutionDisposition::Resolved) => {

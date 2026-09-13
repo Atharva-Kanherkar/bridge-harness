@@ -38,3 +38,14 @@ In a rebuilt app, delegate an isolated edit into a new nested directory, approve
 
 ## Issue Coverage
 Fix #636's repeated approval, null-child queued acknowledgement, and stalled launch. Audit adjacent worker capability and approval defects. #425 (new session modes) and #440 (recurring byte-bound grants) remain separate feature proposals. No claim to fix unrelated worker-cache, TUI, or connector work.
+
+## Verification Results
+
+Verified after merging main e32720111e25b5f5f4b24a6433bcf419caaa1230 into this branch.
+
+- `bun run build`: passed; existing chunk-size and mixed-import warnings remain.
+- `bun run test`: passed, including 2,237 frontend tests, 2,425 core Rust tests, 88 shell tests, and all other workspace, release-script and sidecar suites. Live-provider tests remain ignored by the suite.
+- `git diff --check`: passed.
+- Host integration tests cover accepted nested scopes with a different provider, no reopened resolved card, no duplicate launch on repeated acceptance, terminal queue notification rollback/deduplication, and two permissions in a mixed provider frame.
+- Reviewed cumulative diff for path containment, turn scoping, hard-limit ordering, queue receipts and correct permission identities. No application authorization gate or sandbox default was removed.
+- Live desktop/worker checks: not run, per the user's explicit instruction not to launch workers. No installed app or production session state was modified.
