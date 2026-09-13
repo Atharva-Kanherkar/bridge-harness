@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { SearchSessionEntriesResult, SessionRecallHit } from "../types";
@@ -26,6 +26,11 @@ export function SessionRecallSearch({
   const [loadingMore, setLoadingMore] = useState(false);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
+  // Bumped whenever the query or session changes. A page request captures it
+  // and drops its answer if it is no longer current: clicking Show more and
+  // then editing the query used to append the old query's hits to the new
+  // results, which reads as a search finding things it did not find.
+  const generation = useRef(0);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -36,6 +41,7 @@ export function SessionRecallSearch({
   }, [onClose]);
 
   useEffect(() => {
+    generation.current += 1;
     const trimmed = query.trim();
     if (!trimmed) {
       setHits([]);
@@ -123,18 +129,24 @@ export function SessionRecallSearch({
             type="button"
             disabled={loadingMore}
             onClick={() => {
+              const requested = generation.current;
               setLoadingMore(true);
               void search(sessionId, query.trim(), RECALL_PAGE_SIZE, hits.length)
                 .then(result => {
+                  if (requested !== generation.current) return;
                   // Append rather than replace: paging is reading further, not
                   // searching again.
                   setHits(current => [...current, ...result.hits]);
                   setHasMore(result.hasMore ?? false);
                 })
                 .catch(cause => {
+                  if (requested !== generation.current) return;
                   setStatus("error");
                   setError(cause instanceof Error ? cause.message : String(cause));
                 })
+                // Always cleared: a superseded request leaves no page in
+                // flight for the new query, so holding the button disabled
+                // would strand it.
                 .finally(() => setLoadingMore(false));
             }}
             className="self-start rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"

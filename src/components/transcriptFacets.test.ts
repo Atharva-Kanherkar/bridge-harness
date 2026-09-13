@@ -7,6 +7,7 @@ import {
   filterTranscriptRows,
   problemReason,
   TRANSCRIPT_FACETS,
+  turnNumbersAreAbsolute,
 } from "./transcriptFacets";
 
 // Contract: testing/feat-session-observability.md §C1–C5.
@@ -102,6 +103,51 @@ describe("problems", () => {
 });
 
 describe("turn grouping", () => {
+  it("takes the session's own turn number off the boundary, not its position in the window", () => {
+    // A pane showing the newest page of a long session used to count from what
+    // it had loaded, so the same event read as turn 2 there and turn 118 in an
+    // export. The boundary carries its ordinal; both readers use it.
+    const window = buildTranscriptRows([
+      event(9001, "turn.started", { data: { turnIndex: 118 } }),
+      event(9002, "assistant.message", { text: "late in a long session" }),
+      event(9003, "turn.started", { data: { turnIndex: 119 } }),
+      event(9004, "assistant.message", { text: "and the next" }),
+    ]);
+    expect(window.map(row => row.turnIndex)).toEqual([118, 118, 119, 119]);
+  });
+
+  it("does not renumber loaded rows when an earlier page arrives", () => {
+    const tail = [
+      event(9001, "turn.started", { data: { turnIndex: 118 } }),
+      event(9002, "assistant.message", { text: "late" }),
+    ];
+    const earlier = [
+      event(8001, "turn.started", { data: { turnIndex: 117 } }),
+      event(8002, "assistant.message", { text: "earlier" }),
+    ];
+    const before = buildTranscriptRows(tail).map(row => row.turnIndex);
+    const after = buildTranscriptRows([...earlier, ...tail]).slice(2).map(row => row.turnIndex);
+    expect(after).toEqual(before);
+  });
+
+  it("counts when a boundary predates the stamp, and says the count is relative", () => {
+    const rows = buildTranscriptRows([
+      event(1, "turn.started"),
+      event(2, "assistant.message", { text: "one" }),
+    ]);
+    expect(rows.map(row => row.turnIndex)).toEqual([1, 1]);
+    // No stamp and more events before this window: the number is this
+    // window's, so the pane must not present it as the session's.
+    expect(turnNumbersAreAbsolute(rows, false)).toBe(false);
+    // Same rows, but this window starts at the session's first event.
+    expect(turnNumbersAreAbsolute(rows, true)).toBe(true);
+  });
+
+  it("vouches for the numbers as soon as one stamped boundary is loaded", () => {
+    const rows = buildTranscriptRows([event(9001, "turn.started", { data: { turnIndex: 118 } })]);
+    expect(turnNumbersAreAbsolute(rows, false)).toBe(true);
+  });
+
   it("numbers from the boundaries and leaves the preamble at zero", () => {
     const rows = buildTranscriptRows([
       event(1, "session.status"),

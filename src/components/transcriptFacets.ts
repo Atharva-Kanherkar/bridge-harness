@@ -108,16 +108,41 @@ function detailFor(event: AgentEvent, facet: PrimaryFacet): string {
   return title || text || (event.status ?? "");
 }
 
+/**
+ * A turn boundary carries the ordinal it was recorded with, so a pane showing
+ * the newest page of a long session says "turn 118", not "turn 2 of what I
+ * happen to have loaded" — and does not renumber those rows when an earlier
+ * page arrives. Counting is the fallback for entries written before the
+ * ordinal was stamped; a window into one of those still reads relatively,
+ * which is why the pane says so rather than claiming an absolute number.
+ */
+function stampedTurn(event: AgentEvent): number | null {
+  const stamped = (event.data as { turnIndex?: unknown })?.turnIndex;
+  return typeof stamped === "number" && Number.isFinite(stamped) ? stamped : null;
+}
+
 export function buildTranscriptRows(events: AgentEvent[]): TranscriptRow[] {
   let turnIndex = 0;
   return events.map(event => {
     const kind = readWireKind(event.kind);
     // The same rule the JSONL export uses, so a reader comparing the pane with
     // an exported file never has to reconcile two numbering schemes.
-    if (kind === "turn.started") turnIndex += 1;
+    if (kind === "turn.started") turnIndex = stampedTurn(event) ?? turnIndex + 1;
     const facet = bucket(kind);
     return { event, kind, turnIndex, facet, problem: problemReason(event, kind), detail: detailFor(event, facet) };
   });
+}
+
+/**
+ * Whether the loaded window can vouch for its turn numbers.
+ *
+ * True once a stamped boundary has been seen, or when the window starts at the
+ * session's first event. Otherwise the numbers are counted from whatever
+ * happens to be loaded and the pane marks them as such.
+ */
+export function turnNumbersAreAbsolute(rows: TranscriptRow[], hasSessionStart: boolean): boolean {
+  if (hasSessionStart) return true;
+  return rows.some(row => row.kind === "turn.started" && stampedTurn(row.event) !== null);
 }
 
 export function matchesFacet(row: TranscriptRow, facet: TranscriptFacet): boolean {

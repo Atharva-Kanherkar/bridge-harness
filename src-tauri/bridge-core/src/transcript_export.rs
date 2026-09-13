@@ -103,16 +103,13 @@ pub fn export(
         },
     }))?);
 
-    // Turn index is derived, not stored: the boundary entries are in the file
-    // in sequence order, so a reader could recompute this — it is written out
-    // so every consumer agrees on the answer rather than each deriving one.
-    let mut turn_index: u64 = 0;
+    // Turn index is derived, not stored. It is written out so every consumer
+    // agrees on the answer rather than each deriving one — and so an export
+    // that omits the hidden boundary entries still says which turn a row was
+    // in, which a reader could no longer work out from the file alone.
     for entry in &entries {
-        if entry.kind == "turn.started" {
-            turn_index += 1;
-        }
         *counts.entry(entry.kind.clone()).or_default() += 1;
-        let rendered = line(&entry_record(entry, turn_index))?;
+        let rendered = line(&entry_record(entry))?;
         digest.update(rendered.as_bytes());
         lines.push(rendered);
     }
@@ -153,7 +150,7 @@ pub fn export(
 
 /// One entry, flattened so the fields a reader greps for are top level and the
 /// stored document is still present whole under `payload`.
-fn entry_record(entry: &ExportEntry, turn_index: u64) -> Value {
+fn entry_record(entry: &ExportEntry) -> Value {
     let payload = &entry.entry.payload;
     let field = |name: &str| payload.get(name).and_then(Value::as_str);
     json!({
@@ -167,7 +164,7 @@ fn entry_record(entry: &ExportEntry, turn_index: u64) -> Value {
         "semanticSchemaVersion": entry.entry.semantic_schema_version,
         "tokenEstimate": entry.entry.token_estimate,
         "providerEventId": entry.entry.provider_event_id,
-        "turnIndex": turn_index,
+        "turnIndex": entry.turn_index,
         "onActiveBranch": entry.on_active_branch,
         "role": field("role"),
         "status": field("status"),
@@ -182,6 +179,9 @@ fn entry_record(entry: &ExportEntry, turn_index: u64) -> Value {
 struct ExportEntry {
     entry: SessionEntry,
     on_active_branch: bool,
+    /// Which turn this entry fell in, counted over the scoped sequence before
+    /// hidden entries are dropped.
+    turn_index: u64,
 }
 
 impl std::ops::Deref for ExportEntry {
@@ -211,12 +211,35 @@ fn collect_entries(
             ExportEntry {
                 entry,
                 on_active_branch,
+                turn_index: 0,
             }
         })
         .filter(|entry| scope == ExportScope::Forest || entry.on_active_branch)
-        .filter(|entry| include_hidden || entry.context_visibility != "hidden")
         .collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.sequence);
+
+    // Number the turns *before* dropping the hidden entries, because the
+    // boundaries that define a turn are themselves hidden. Deriving after the
+    // filter labelled every row of an `includeHidden: false` export turn zero,
+    // which is worse than omitting the field: it reads like a real answer.
+    //
+    // The boundary carries its own ordinal (stamped when it was recorded), so
+    // the number here is the session's turn and not this export's count of
+    // them. Entries written before the stamp existed fall back to counting.
+    let mut turn_index = 0;
+    for entry in &mut entries {
+        if entry.kind == "turn.started" {
+            turn_index = entry
+                .payload
+                .get("data")
+                .and_then(|data| data.get("turnIndex"))
+                .and_then(Value::as_u64)
+                .unwrap_or(turn_index + 1);
+        }
+        entry.turn_index = turn_index;
+    }
+
+    entries.retain(|entry| include_hidden || entry.context_visibility != "hidden");
     Ok(entries)
 }
 
@@ -423,6 +446,98 @@ mod tests {
             .map(|line| line["turnIndex"].as_u64().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(indexes, vec![0, 1, 1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn a_turn_boundary_carries_the_sessions_turn_number_not_a_readers_count() {
+        // The number has to survive being read through a window. A client that
+        // loads only the newest page counts from what it loaded; the stamp is
+        // what makes its answer and this file's answer the same answer.
+        let (dir, db) = session_db();
+        for _ in 0..3 {
+            say(&db, "turn.started", "");
+            say(&db, "message.completed", "reply");
+        }
+        let stamped = store::session_events_tail(&db, "s", 10)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "turn.started")
+            .map(|event| event.data["turnIndex"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(stamped, vec![1, 2, 3], "replay must carry the ordinal");
+
+        let lines = read_lines(&export_forest(&dir, &db));
+        let exported = lines
+            .iter()
+            .filter(|line| line["kind"] == "turn.started")
+            .map(|line| line["turnIndex"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(exported, stamped);
+    }
+
+    #[test]
+    fn a_session_recorded_before_the_stamp_still_numbers_its_turns() {
+        // Older entries have no ordinal. Counting is the fallback, so an
+        // existing session does not export a file full of turn zero.
+        let (dir, db) = session_db();
+        for index in 0..3 {
+            store::append_session_entry(
+                &db, "s", None, "turn.started", &json!({"protocolVersion":1,"data":{}}), None, "hidden", None,
+            )
+            .unwrap();
+            store::append_session_entry(
+                &db, "s", None, "assistant.message",
+                &json!({"protocolVersion":1,"text":format!("reply {index}"),"data":{}}), None, "eligible", None,
+            )
+            .unwrap();
+        }
+        let turns = read_lines(&export_forest(&dir, &db))
+            .into_iter()
+            .filter(|line| line["kind"] == "assistant.message")
+            .map(|line| line["turnIndex"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(turns, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn omitting_hidden_entries_keeps_the_turn_numbers_of_the_rows_that_remain() {
+        // The boundaries that define a turn are themselves hidden, so deriving
+        // the index after the filter labelled every row turn zero — which
+        // reads like a real answer rather than a missing one.
+        let (dir, db) = session_db();
+        say(&db, "turn.started", "");
+        say(&db, "message.completed", "first turn");
+        say(&db, "turn.completed", "");
+        say(&db, "turn.started", "");
+        say(&db, "message.completed", "second turn");
+        say(&db, "turn.completed", "");
+        say(&db, "turn.started", "");
+        say(&db, "message.completed", "third turn");
+
+        let spoken = export(&db, dir.path(), "s", ExportScope::Forest, false, None).unwrap();
+        let rows = read_lines(&spoken)
+            .into_iter()
+            .filter(|line| line["type"] == "entry")
+            .map(|line| (line["text"].as_str().unwrap().to_owned(), line["turnIndex"].as_u64().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                ("first turn".to_owned(), 1),
+                ("second turn".to_owned(), 2),
+                ("third turn".to_owned(), 3),
+            ]
+        );
+
+        // And the same rows carry the same numbers when the boundaries are in
+        // the file, so the two exports of one session never disagree.
+        let everything = export_forest(&dir, &db);
+        let with_hidden = read_lines(&everything)
+            .into_iter()
+            .filter(|line| line["type"] == "entry" && line["kind"] == "assistant.message")
+            .map(|line| (line["text"].as_str().unwrap().to_owned(), line["turnIndex"].as_u64().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(with_hidden, rows);
     }
 
     #[test]

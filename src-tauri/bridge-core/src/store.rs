@@ -3985,7 +3985,7 @@ pub(crate) fn session_event_in_transaction(
             |row| row.get(0),
         )
         .unwrap_or_else(|_| session_id.to_owned());
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "protocolVersion": 1,
         "itemId": event.item_id,
         "role": event.role,
@@ -3996,6 +3996,33 @@ pub(crate) fn session_event_in_transaction(
         "providerMeta": provider_meta,
         "traceId": trace_id,
     });
+    // Stamp the turn's ordinal onto the boundary that opens it.
+    //
+    // Every reader wants to say "this happened in turn 3", and every reader
+    // that derives it by counting boundaries gets a different answer from a
+    // different window: a transcript showing the newest page counts from
+    // whatever it loaded, while an export counts from the session's start.
+    // Recording the ordinal once, here, is what makes those answers the same
+    // answer — the same reason the export writes `turnIndex` out rather than
+    // leaving each consumer to compute one.
+    if event.kind == "turn.started" {
+        let ordinal: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='turn.started'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        // Into `data`, not the payload root: replay projects a stored entry
+        // back to an `AgentEvent` by lifting `data`, so an ordinal written
+        // beside it would exist in the database and be invisible to every
+        // client reading the stream.
+        if !payload["data"].is_object() {
+            payload["data"] = serde_json::json!({});
+        }
+        payload["data"]["turnIndex"] = serde_json::json!(ordinal + 1);
+    }
+    let payload = payload;
     let mut final_kind = event.kind.as_str();
     if final_kind == "message.completed" {
         final_kind = if event.role.as_deref() == Some("user") {

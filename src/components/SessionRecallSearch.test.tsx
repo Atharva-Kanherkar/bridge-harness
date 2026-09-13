@@ -141,4 +141,46 @@ describe("SessionRecallSearch", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(container.textContent).toContain("No matches in this chat.");
   });
+
+  it("drops a page that arrives after the query changed", async () => {
+    // Show more, then edit the query before the page lands. Appending the old
+    // query's hits would make the new search appear to find things it did not.
+    let releaseFirstPage: ((value: SearchSessionEntriesResult) => void) | undefined;
+    const search = vi.fn((sessionId: string, query: string, _limit?: number | null, offset?: number | null) => {
+      if (query === "alpha" && offset === RECALL_PAGE_SIZE) {
+        return new Promise<SearchSessionEntriesResult>(resolve => { releaseFirstPage = resolve; });
+      }
+      return Promise.resolve({
+        sessionId,
+        query,
+        offset: offset ?? 0,
+        hits: query === "alpha" ? page(0, RECALL_PAGE_SIZE) : [
+          { entryId: "beta-1", kind: "user.message", sequence: 1, snippet: "beta only", createdAt: "now" },
+        ],
+        hasMore: query === "alpha",
+      });
+    });
+    mount(search);
+
+    typeQuery("alpha");
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    const showMore = [...container.querySelectorAll("button")].find(button => button.textContent === "Show more")!;
+    await act(async () => { showMore.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+
+    // The query moves on while that page is still in flight.
+    typeQuery("beta");
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(container.textContent).toContain("beta only");
+
+    await act(async () => {
+      releaseFirstPage!({ sessionId: "chat-a", query: "alpha", offset: RECALL_PAGE_SIZE, hits: page(RECALL_PAGE_SIZE, RECALL_PAGE_SIZE), hasMore: false });
+      await Promise.resolve();
+    });
+
+    // Still only beta's single hit, and no Show more borrowed from alpha.
+    expect(container.querySelectorAll("li")).toHaveLength(1);
+    expect(container.textContent).toContain("beta only");
+    expect(container.textContent).not.toContain(`hit ${RECALL_PAGE_SIZE}`);
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Show more")).toBe(false);
+  });
 });

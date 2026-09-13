@@ -10,6 +10,7 @@ import {
   FACET_LABELS,
   filterTranscriptRows,
   TRANSCRIPT_FACETS,
+  turnNumbersAreAbsolute,
   type TranscriptFacet,
 } from "./transcriptFacets";
 // The live view merges delta frames for readability; this pane must not —
@@ -106,6 +107,11 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
   const rows = useMemo(() => buildTranscriptRows(stream), [stream]);
   const counts = useMemo(() => countFacets(rows), [rows]);
   const visible = useMemo(() => filterTranscriptRows(rows, facet, filter), [rows, facet, filter]);
+  // A window onto the newest page of a long session can only count the turns
+  // it loaded. Boundaries recorded since the ordinal was stamped carry the
+  // session's own number; where none does, the pane says the number is
+  // relative rather than quietly showing a different one from the export.
+  const absoluteTurns = useMemo(() => turnNumbersAreAbsolute(rows, !canLoadEarlier), [rows, canLoadEarlier]);
 
   const selected = visible.find(row => row.event.id === selectedId);
 
@@ -223,7 +229,12 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
           className={cn("flex w-full items-baseline gap-2 px-2 text-left transition-colors hover:bg-accent", selectedId === row.event.id && "bg-code")}
         >
           <span className="w-7 shrink-0 tabular-nums text-muted-foreground">{row.event.sequence}</span>
-          <span className="w-8 shrink-0 tabular-nums text-muted-foreground" title={`Turn ${row.turnIndex}`}>t{row.turnIndex}</span>
+          <span
+            className="w-10 shrink-0 tabular-nums text-muted-foreground"
+            title={absoluteTurns
+              ? `Turn ${row.turnIndex}`
+              : `Turn ${row.turnIndex} of the loaded events — load earlier events for the session's own numbering`}
+          >{absoluteTurns ? "" : "~"}t{row.turnIndex}</span>
           <span className={cn("w-[34%] min-w-0 shrink-0 truncate", row.problem ? "text-destructive" : "text-foreground")}>{row.kind}</span>
           {row.problem && <AlertTriangle size={10} className="shrink-0 text-destructive" aria-label={row.problem} />}
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{row.detail}</span>

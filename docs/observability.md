@@ -33,6 +33,10 @@ whether the recall trigger indexes it for search, and nothing else. It does
 | `eligible` | yes | yes | yes, if the kind is conversational | yes |
 | `hidden` | yes | no | no | yes, unless `includeHidden: false` |
 
+An export with `includeHidden: false` still says which turn each row was in:
+the boundaries that define a turn are themselves hidden, so the indexes are
+derived before the filter runs rather than after it.
+
 `hidden` is what lets the record be wider than the prompt. Turn boundaries
 (`turn.started`, `turn.completed`), per-turn usage (`usage.updated`) and the
 agent's plan (`plan.updated`) are recorded there. They used to be dropped
@@ -59,9 +63,15 @@ carries three derived facts:
 - **Facet** — messages, thinking, tools, turns, usage, approvals, delegation.
   The chips count the loaded stream and filter it; the text box narrows further
   inside the selected facet.
-- **Turn** — `t0`, `t1`, … counted from `turn.started` boundaries. Events before
-  the first boundary are `t0`. The JSONL export uses the identical rule, so the
-  pane and a file never disagree about which turn something was in.
+- **Turn** — `t0`, `t1`, … Events before the first boundary are `t0`.
+
+  A `turn.started` entry carries its own ordinal, stamped when it was recorded,
+  and both the pane and the export read it. That is what lets a pane showing
+  the newest 200 events of a thousand-turn session say *turn 118* rather than
+  *turn 2 of what I happen to have loaded* — and not renumber those rows when
+  an earlier page arrives. Boundaries recorded before the ordinal existed are
+  counted instead; a window into one of those shows `~t2`, saying in the
+  marker that the number is the window's rather than the session's.
 - **Problem** — whether this is evidence something went wrong. The rules:
 
   | Condition | Reads as |
