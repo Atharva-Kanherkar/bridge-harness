@@ -24,7 +24,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::adapters::{ShutdownReason, StartRequest};
-use crate::briefing_policy::BriefingRuntimePolicy;
+use crate::briefing_policy::{ActionIntent, BriefingRuntimePolicy};
 use crate::connector_inbox::{self, Resolution};
 use crate::connector_runs::{
     self, AuthorizedAction, ConnectorAction, RunKind, INGRESS_FENCE,
@@ -61,6 +61,10 @@ pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(30);
 #[derive(Default)]
 pub struct ConnectorPoller {
     in_flight: Mutex<BTreeSet<&'static str>>,
+    /// Items with an action run in flight. Held for the duration of the send
+    /// instead of resolving the item up front, so a concurrent click is refused
+    /// while a failed send stays retryable.
+    sending: Mutex<BTreeSet<String>>,
 }
 
 impl ConnectorPoller {
@@ -71,6 +75,15 @@ impl ConnectorPoller {
 
     fn finish(&self, family: ConnectorFamily) {
         self.in_flight.lock().unwrap().remove(family.as_str());
+    }
+
+    /// Claim an item for one action run, or refuse because one is in flight.
+    pub(crate) fn begin_action(&self, item_key: &str) -> bool {
+        self.sending.lock().unwrap().insert(item_key.to_owned())
+    }
+
+    pub(crate) fn finish_action(&self, item_key: &str) {
+        self.sending.lock().unwrap().remove(item_key);
     }
 }
 
@@ -113,6 +126,7 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
         &connection,
         RunKind::Ingress,
         &connector_runs::ingress_prompt(family),
+        None,
     ) {
         Ok(text) => text,
         Err(detail) => {
@@ -168,10 +182,39 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
         core.events.publish(CoreEvent::ConnectorInboxChanged { family: family.as_str().into() });
     }
 
-    for item in fresh.iter().take(MAX_RENDERS_PER_CYCLE) {
+    // Render this cycle's arrivals first, then spend anything left of the budget
+    // on the backlog. Without the second half, a burst larger than the cap left
+    // its overflow pending forever: those rows are already stored, so the next
+    // poll's `INSERT OR IGNORE` drops them from `fresh` and nothing else ever
+    // calls `render_item` for them.
+    let mut budget = MAX_RENDERS_PER_CYCLE;
+    for item in fresh.iter().take(budget) {
         render_item(core, &connection, item);
     }
+    budget = budget.saturating_sub(fresh.len());
+    if budget > 0 {
+        for item in pending_backlog(core, family, budget, &fresh) {
+            render_item(core, &connection, &item);
+        }
+    }
     fresh.len()
+}
+
+/// Announced items still waiting for a card, oldest first, excluding the ones
+/// this cycle just rendered.
+fn pending_backlog(
+    core: &Arc<BridgeCore>,
+    family: ConnectorFamily,
+    budget: usize,
+    just_rendered: &[InboxItem],
+) -> Vec<InboxItem> {
+    let db = core.db.lock().unwrap();
+    let Ok(pending) = connector_inbox::pending_without_cards(&db, family, budget + just_rendered.len())
+    else {
+        return Vec::new();
+    };
+    let skip: BTreeSet<String> = just_rendered.iter().map(InboxItem::key).collect();
+    pending.into_iter().filter(|item| !skip.contains(&item.key())).take(budget).collect()
 }
 
 /// Render exactly one item and attach the result.
@@ -186,6 +229,7 @@ pub fn render_item(core: &Arc<BridgeCore>, connection: &ConnectorAvailability, i
         connection,
         RunKind::Render,
         &connector_runs::render_prompt(item),
+        None,
     ) {
         Ok(text) => connector_runs::card_or_fallback(&text, item),
         // The notification already landed. A failed render costs polish only,
@@ -220,12 +264,25 @@ pub fn execute_action(
     let connection = available_connection(item.family)
         .ok_or_else(|| format!("{} is not connected in any harness", item.family.display_name()))?;
 
-    // Claim the item *before* the run. A send that succeeds and then fails to
-    // record would let the next click send again; claiming first means the worst
-    // case is a resolved item whose send failed, which the user can see and redo.
-    let claimed = {
+    // Hold the item for the duration of the run rather than resolving it up
+    // front. Resolving first did stop a double send, but it also made every
+    // failure permanent: the composer disappeared and both `authorize` and the
+    // storage claim refused a second attempt, so a timed-out send could never be
+    // retried. An in-flight claim blocks the concurrent click just as well and
+    // leaves a failed send exactly where the user can try it again.
+    if !core.connector_poller.begin_action(&item.key()) {
+        return Err("this message is already being answered".into());
+    }
+    let outcome = run_authorized(core, &connection, authorized);
+    core.connector_poller.finish_action(&item.key());
+
+    let succeeded = outcome.is_ok();
+    if succeeded {
         let db = core.db.lock().unwrap();
-        connector_inbox::resolve(
+        // Only now. The residual window — a send that lands and a database that
+        // then fails — leaves the item unresolved and retryable, which is the
+        // safer end of a trade that has no free side.
+        let _ = connector_inbox::resolve(
             &db,
             &item.key(),
             match authorized.action() {
@@ -233,23 +290,34 @@ pub fn execute_action(
                 ConnectorAction::React { .. } => Resolution::Reacted,
             },
             &Utc::now().to_rfc3339(),
-        )
-        .unwrap_or(false)
-    };
-    if !claimed {
-        return Err("this message has already been dealt with".into());
+        );
     }
-
-    let outcome = one_bounded_turn(core, &connection, RunKind::Action, &authorized.prompt());
     core.events.publish(CoreEvent::ConnectorItemResolved {
         family: item.family.as_str().into(),
         item_key: item.key(),
-        succeeded: outcome.is_ok(),
+        succeeded,
     });
     core.events.publish(CoreEvent::ConnectorInboxChanged {
         family: item.family.as_str().into(),
     });
-    outcome.map(|_| ())
+    outcome
+}
+
+/// The run half of an action, split out so the in-flight claim is released on
+/// every path including an early return.
+fn run_authorized(
+    core: &Arc<BridgeCore>,
+    connection: &ConnectorAvailability,
+    authorized: &AuthorizedAction,
+) -> Result<(), String> {
+    let intent = match authorized.action() {
+        ConnectorAction::Reply { .. } => ActionIntent::Reply,
+        ConnectorAction::React { .. } => ActionIntent::React,
+    };
+    let text =
+        one_bounded_turn(core, connection, RunKind::Action, &authorized.prompt(), Some(intent))?;
+    // The turn completing is not the send succeeding.
+    action_succeeded(&text, intent)
 }
 
 /// What every harness Bridge can ask reports having connected.
@@ -290,16 +358,28 @@ fn one_bounded_turn(
     connection: &ConnectorAvailability,
     kind: RunKind,
     prompt: &str,
+    action_intent: Option<ActionIntent>,
 ) -> Result<String, String> {
     let server = connection.server.as_deref().unwrap_or_default();
     let harness_id = connection.harness.as_deref().unwrap_or_default();
     let limits = connector_runs::run_limits(kind);
     let wall = limits.max_wall_seconds.max(1) as u64;
-    // Scoped to this one server: the policy's read-verb rule is what keeps an
-    // ingress run from reaching a different connector, and what keeps a render
-    // run from reaching a write tool on this one.
-    let policy = BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], limits)
-        .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
+    // Scoped to this one server. Ingress and render get the read-only policy —
+    // its verb rule is what keeps them from reaching a different connector or a
+    // write tool on this one. An action gets the same policy plus exactly one
+    // approved mutation, because the read-only rule bans every mutation word and
+    // would otherwise deny the very send the user just approved.
+    let policy = match kind {
+        RunKind::Ingress | RunKind::Render => {
+            BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], limits)
+        }
+        RunKind::Action => BriefingRuntimePolicy::compile_action(
+            server.to_owned(),
+            action_intent.ok_or("an action run reached the executor with no approved intent")?,
+            limits,
+        ),
+    }
+    .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
 
     let (harness, model) = run_profile(core, harness_id)?;
     let session_id = Uuid::new_v4().to_string();
@@ -363,6 +443,10 @@ fn one_bounded_turn(
 
     let deadline = Instant::now() + StdDuration::from_secs(wall);
     let mut text = String::new();
+    // Tool failures the run saw. A denied or failed connector call completes the
+    // model turn perfectly normally, so without collecting these a failed send
+    // and a successful one are indistinguishable at the result frame.
+    let mut tool_errors: Vec<String> = Vec::new();
     let outcome = loop {
         if Instant::now() >= deadline {
             break Err(format!("the {} run exceeded its {wall}s budget", kind_label(kind)));
@@ -372,7 +456,8 @@ fn one_bounded_turn(
                 let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
                 match message.get("type").and_then(Value::as_str) {
                     Some("assistant") => collect_text(&message, &mut text),
-                    Some("result") => break Ok(()),
+                    Some("user") => collect_tool_errors(&message, &mut tool_errors),
+                    Some("result") => break result_outcome(&message, &tool_errors),
                     _ => {}
                 }
             }
@@ -395,6 +480,85 @@ fn one_bounded_turn(
             Err(detail)
         }
     }
+}
+
+/// Read the terminal frame as success or failure.
+///
+/// An `is_error` result, a non-success subtype, or any tool error seen during
+/// the turn all mean the run did not do what it was asked. Treating a terminal
+/// frame as success on its own is how a denied Slack call became a reported
+/// "sent".
+fn result_outcome(message: &Value, tool_errors: &[String]) -> Result<(), String> {
+    if let Some(first) = tool_errors.first() {
+        return Err(format!("a tool call failed: {first}"));
+    }
+    if message.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+        let detail = message
+            .get("result")
+            .and_then(Value::as_str)
+            .unwrap_or("the provider reported an error");
+        return Err(bounded(detail));
+    }
+    match message.get("subtype").and_then(Value::as_str) {
+        None | Some("success") => Ok(()),
+        Some(other) => Err(format!("the run ended as `{other}`")),
+    }
+}
+
+/// Tool results the provider marked as errors.
+fn collect_tool_errors(message: &Value, errors: &mut Vec<String>) {
+    let blocks = message
+        .get("message")
+        .and_then(|inner| inner.get("content"))
+        .or_else(|| message.get("content"))
+        .and_then(Value::as_array);
+    for block in blocks.into_iter().flatten() {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        if !block.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let detail = block
+            .get("content")
+            .and_then(|content| {
+                content.as_str().map(str::to_owned).or_else(|| {
+                    content.as_array().and_then(|parts| {
+                        parts.iter().find_map(|part| {
+                            part.get("text").and_then(Value::as_str).map(str::to_owned)
+                        })
+                    })
+                })
+            })
+            .unwrap_or_else(|| "the connector rejected the call".to_owned());
+        errors.push(bounded(&detail));
+    }
+}
+
+fn bounded(detail: &str) -> String {
+    detail.chars().take(300).collect()
+}
+
+/// Did an action run actually report doing the thing?
+///
+/// The action prompt asks for `sent` or `reacted`, or a one-line failure. A run
+/// that returns neither did something other than what was asked, and the safe
+/// reading of "I cannot tell" is failure: a reply the user believes was sent and
+/// was not is worse than one they are asked to retry.
+fn action_succeeded(text: &str, intent: ActionIntent) -> Result<(), String> {
+    let lowered = text.to_lowercase();
+    let token = match intent {
+        ActionIntent::Reply => "sent",
+        ActionIntent::React => "reacted",
+    };
+    if lowered.split(|c: char| !c.is_ascii_alphanumeric()).any(|word| word == token) {
+        return Ok(());
+    }
+    Err(if text.trim().is_empty() {
+        format!("the run ended without confirming it {token} anything")
+    } else {
+        bounded(text.trim())
+    })
 }
 
 fn kind_label(kind: RunKind) -> &'static str {
@@ -538,6 +702,77 @@ mod tests {
             &mut text,
         );
         assert_eq!(text, "first\nsecond");
+    }
+
+    #[test]
+    fn a_terminal_frame_is_not_by_itself_a_success() {
+        // A denied or failed connector call completes the model turn perfectly
+        // normally. Reading the frame alone reported "sent" for a send that
+        // never happened.
+        let ok = serde_json::json!({"type": "result", "subtype": "success"});
+        assert!(result_outcome(&ok, &[]).is_ok());
+
+        let errored = serde_json::json!({"type": "result", "is_error": true, "result": "provider refused"});
+        assert!(result_outcome(&errored, &[]).unwrap_err().contains("provider refused"));
+
+        let capped = serde_json::json!({"type": "result", "subtype": "error_max_turns"});
+        assert!(result_outcome(&capped, &[]).unwrap_err().contains("error_max_turns"));
+
+        // A tool error anywhere in the turn outranks a clean terminal frame.
+        assert!(result_outcome(&ok, &["not_in_channel".into()]).unwrap_err().contains("not_in_channel"));
+    }
+
+    #[test]
+    fn tool_errors_are_collected_from_the_result_blocks() {
+        let mut errors = Vec::new();
+        collect_tool_errors(
+            &serde_json::json!({"content": [
+                {"type": "tool_result", "is_error": true, "content": "channel_not_found"},
+                {"type": "tool_result", "is_error": false, "content": "fine"},
+                {"type": "text", "text": "prose"},
+            ]}),
+            &mut errors,
+        );
+        assert_eq!(errors, vec!["channel_not_found".to_string()]);
+
+        // The block-array shape too, which is what the SDK actually emits.
+        let mut nested = Vec::new();
+        collect_tool_errors(
+            &serde_json::json!({"message": {"content": [
+                {"type": "tool_result", "is_error": true, "content": [{"type": "text", "text": "rate limited"}]},
+            ]}}),
+            &mut nested,
+        );
+        assert_eq!(nested, vec!["rate limited".to_string()]);
+    }
+
+    #[test]
+    fn an_action_must_report_doing_the_thing_it_was_asked_to_do() {
+        assert!(action_succeeded("sent", ActionIntent::Reply).is_ok());
+        assert!(action_succeeded("Sent.", ActionIntent::Reply).is_ok());
+        assert!(action_succeeded("reacted", ActionIntent::React).is_ok());
+
+        // "I cannot tell" reads as failure: a reply the user believes was sent
+        // and was not is worse than one they are asked to retry.
+        assert!(action_succeeded("", ActionIntent::Reply).is_err());
+        assert!(action_succeeded("I could not reach the channel.", ActionIntent::Reply).is_err());
+        // And the other intent's token does not count.
+        assert!(action_succeeded("reacted", ActionIntent::Reply).is_err());
+        // Substrings do not count either.
+        assert!(action_succeeded("unsent draft remains", ActionIntent::Reply).is_err());
+    }
+
+    #[test]
+    fn one_action_runs_per_item_and_a_failure_releases_the_claim() {
+        let poller = ConnectorPoller::default();
+        assert!(poller.begin_action("slack:D0:1.0"));
+        // A second click while the first send is in flight.
+        assert!(!poller.begin_action("slack:D0:1.0"));
+        assert!(poller.begin_action("slack:D0:2.0"), "other items are independent");
+        poller.finish_action("slack:D0:1.0");
+        // Released on every path, so a failed send stays retryable rather than
+        // wedging the item forever.
+        assert!(poller.begin_action("slack:D0:1.0"));
     }
 
     #[test]

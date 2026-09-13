@@ -647,6 +647,18 @@ function AppContent() {
     track(bridgeApi.onConnectorItemResolved(payload => {
       if (active) setConnectorToasts(current => reduceToasts(current, { type: "resolved", payload }));
     }));
+    // The authoritative unread count, read here rather than only inside the
+    // pane. The pane mounts lazily — it does not exist until the dock has shown
+    // it once — and arrival events are transient and never replayed, so a launch
+    // with unresolved items from a previous session showed neither a badge nor a
+    // toast until the user happened to open Inbox.
+    const hydrate = () => {
+      void bridgeApi.connectorInbox().then(inbox => {
+        if (active) setConnectorUnread(inbox.unreadCount);
+      }).catch(() => undefined);
+    };
+    hydrate();
+    track(bridgeApi.onConnectorInboxChanged(() => { if (active) hydrate(); }));
     return () => { active = false; for (const stop of stops) stop(); };
   }, []);
 
@@ -2718,12 +2730,16 @@ function AppContent() {
                 )}
                 onRevealEntry={revealEntryInConversation}
               />;
+              // Before the workspace guard: an inbox is about an account, not a
+              // tree, and the dock advertises it as always available. Left
+              // below this line it rendered nothing in exactly the direct-chat
+              // case the always-available descriptor exists to support.
+              if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
               if (!workspace) return null;
               /* Keyed on the workspace: these panes hold open buffers, shells,
                  and relative paths, and none of that survives a change of tree.
                  Without the key a save would aim the old path at the new
                  workspace. */
-              if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
               if (pane === "github") return <GitHubPane key={workspace.id} workspaceId={workspace.id} workspaceBranch={workspace.branch ?? null} sessionId={session?.id} intent={githubIntent} onJumpToFile={jumpToReviewComment} />;
               if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} onQuote={quoteToComposer} onOpenFile={openFileInDock} />;
               if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;

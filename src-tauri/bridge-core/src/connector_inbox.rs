@@ -185,6 +185,35 @@ pub fn list(db: &Connection, limit: usize) -> Result<Vec<StoredItem>, BridgeErro
 ///
 /// Counted from the known-family list rather than with `COUNT(*)`, so the dock
 /// badge can never claim messages the pane then refuses to show.
+/// Announced items that never got a card, oldest first.
+///
+/// The backlog a burst leaves behind. `state='pending'` is exactly "announced,
+/// no card": `attach_card` moves an item to `rendered` whether the card came
+/// from the harness or from Bridge's fallback, so anything still pending has
+/// genuinely never been through a render.
+pub fn pending_without_cards(
+    db: &Connection,
+    family: ConnectorFamily,
+    limit: usize,
+) -> Result<Vec<InboxItem>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT family,channel_id,channel_label,message_ts,author,kind,body,permalink,received_at,
+                state,card,render_rejection,resolution
+           FROM connector_inbox_items
+          WHERE state='pending' AND family=?1
+          ORDER BY received_at ASC, item_key ASC
+          LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![family.as_str(), limit as i64], row_to_item)?;
+    let mut items = Vec::new();
+    for row in rows {
+        if let Some(stored) = row? {
+            items.push(stored.item);
+        }
+    }
+    Ok(items)
+}
+
 pub fn unread_count(db: &Connection) -> Result<i64, BridgeError> {
     let mut statement = db.prepare(
         "SELECT family FROM connector_inbox_items WHERE state!='resolved'",
@@ -583,6 +612,44 @@ mod tests {
         // And the badge agrees with the list rather than counting a row the
         // pane will never show.
         assert_eq!(unread_count(&db).unwrap(), 1);
+    }
+
+    #[test]
+    fn the_backlog_returns_announced_items_that_never_got_a_card() {
+        let db = db();
+        let mut older = item("1.1");
+        older.received_at = "2026-09-13T08:00:00Z".into();
+        let mut newer = item("1.2");
+        newer.received_at = "2026-09-13T09:00:00Z".into();
+        let carded = item("1.3");
+        record_arrivals(&db, &[older.clone(), newer.clone(), carded.clone()]).unwrap();
+        attach_card(&db, &carded.key(), &ConnectorCard::fallback(&carded), None).unwrap();
+
+        // A burst bigger than the per-cycle cap leaves rows announced but never
+        // rendered; later polls drop them from `fresh`, so this query is the
+        // only thing that can pick them up.
+        let backlog = pending_without_cards(&db, ConnectorFamily::Slack, 10).unwrap();
+        assert_eq!(
+            backlog.iter().map(|entry| entry.message_ts.clone()).collect::<Vec<_>>(),
+            vec!["1.1", "1.2"],
+            "oldest first, and a carded item is not backlog",
+        );
+    }
+
+    #[test]
+    fn the_backlog_respects_its_budget_and_its_family() {
+        let db = db();
+        record_arrivals(&db, &[item("1.1"), item("1.2"), item("1.3")]).unwrap();
+        assert_eq!(pending_without_cards(&db, ConnectorFamily::Slack, 2).unwrap().len(), 2);
+        assert!(pending_without_cards(&db, ConnectorFamily::Gmail, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_resolved_item_is_not_backlog() {
+        let db = db();
+        record_arrivals(&db, &[item("1.1")]).unwrap();
+        resolve(&db, &item("1.1").key(), Resolution::Dismissed, "2026-09-13T09:30:00Z").unwrap();
+        assert!(pending_without_cards(&db, ConnectorFamily::Slack, 10).unwrap().is_empty());
     }
 
     #[test]

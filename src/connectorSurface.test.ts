@@ -242,3 +242,14 @@ describe("item subtitle", () => {
     expect(itemSubtitle(item({ kind: "threadReply" }), now)).toContain("Thread");
   });
 });
+
+describe("unread hydration", () => {
+  it("reports the count from the authoritative inbox, not from live events", () => {
+    // Arrival events are transient and never replayed, so a launch with items
+    // left unresolved from a previous session has no event to learn from. The
+    // count has to come from the inbox read.
+    const persisted = [item({ state: "pending" }), item({ itemKey: "b", state: "rendered" })];
+    expect(unreadCount(persisted)).toBe(2);
+    expect(hasAttention({ unreadCount: unreadCount(persisted), poll: [] })).toBe(true);
+  });
+});
