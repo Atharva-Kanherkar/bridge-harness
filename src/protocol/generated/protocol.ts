@@ -2579,7 +2579,7 @@ export interface ConnectorActParams {
   itemKey: string;
 }
 
-export type ConnectorActResult = { effect: string; status: "approvalRequired" } | { item_key: string; status: "sent" } | { reason: string; status: "refused" };
+export type ConnectorActResult = { effect: string; status: "approvalRequired" } | { itemKey: string; status: "sent" } | { reason: string; status: "refused" };
 
 export interface ConnectorDismissParams {
   itemKey: string;

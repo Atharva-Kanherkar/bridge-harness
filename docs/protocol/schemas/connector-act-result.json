@@ -23,7 +23,7 @@
     },
     {
       "properties": {
-        "item_key": {
+        "itemKey": {
           "type": "string"
         },
         "status": {
@@ -34,7 +34,7 @@
         }
       },
       "required": [
-        "item_key",
+        "itemKey",
         "status"
       ],
       "type": "object"

@@ -165,7 +165,12 @@ pub struct ConnectorActParams {
 pub enum ConnectorActResult {
     /// Nothing ran. `effect` is the literal sentence to show the user.
     ApprovalRequired { effect: String },
-    Sent { item_key: String },
+    // `rename_all` on the enum renames the *variants*, not their fields, so a
+    // multi-word field inside one stays snake_case unless the variant says so.
+    Sent {
+        #[serde(rename = "itemKey")]
+        item_key: String,
+    },
     Refused { reason: String },
 }
 
