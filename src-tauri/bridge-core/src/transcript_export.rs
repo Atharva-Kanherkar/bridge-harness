@@ -566,6 +566,41 @@ mod tests {
     }
 
     #[test]
+    fn the_entry_lines_reproduce_the_rows_they_came_from() {
+        // The round trip the export exists for: read the file back and assert
+        // it is the forest, not a summary of it. An export that quietly drops
+        // a field is worse than no export, because it reads as complete.
+        let (dir, db) = session_db();
+        say(&db, "turn.started", "");
+        say(&db, "reasoning.completed", "Check the lock order.");
+        say(&db, "message.completed", "Fixed.");
+        say(&db, "usage.updated", "");
+
+        let export = export_forest(&dir, &db);
+        let lines = read_lines(&export);
+        let exported = lines
+            .iter()
+            .filter(|line| line["type"] == "entry")
+            .collect::<Vec<_>>();
+        let stored = store::session_entries(&db, "s").unwrap();
+
+        assert_eq!(exported.len(), stored.len());
+        for (line, entry) in exported.iter().zip(stored.iter()) {
+            assert_eq!(line["entryId"], entry.id);
+            assert_eq!(line["sequence"], entry.sequence);
+            assert_eq!(line["kind"], entry.kind);
+            assert_eq!(line["createdAt"], entry.created_at);
+            assert_eq!(line["contextVisibility"], entry.context_visibility);
+            assert_eq!(
+                line["parentEntryId"],
+                entry.parent_entry_id.clone().map_or(Value::Null, Value::String)
+            );
+            // The stored document, whole and unaltered.
+            assert_eq!(line["payload"], entry.payload);
+        }
+    }
+
+    #[test]
     fn a_session_with_no_entries_still_exports_a_readable_file() {
         let (dir, db) = session_db();
         let export = export_forest(&dir, &db);

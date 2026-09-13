@@ -56,7 +56,7 @@ By default the desktop app runs as a *daemon client* and proxies every invoke to
 
 **The session forest** is append-only local history. Entries are immutable with a parent, an event kind, and visibility rules for context projection; compaction adds a verified checkpoint boundary rather than rewriting events. **The policy engine** owns every safety gate — capability tier, write scope, worktree isolation, concurrency, depth, retries, budgets, approvals. Learning and routing may rank eligible candidates; they can never grant a permission, widen a scope, or skip an approval.
 
-Design references worth reading before touching those areas: [`docs/session-forest.md`](docs/session-forest.md), [`docs/delegation-policy.md`](docs/delegation-policy.md), [`docs/compaction-and-resume.md`](docs/compaction-and-resume.md), [`docs/managed-agent-runtimes.md`](docs/managed-agent-runtimes.md), [`docs/adaptive-learning.md`](docs/adaptive-learning.md), [`docs/worktree-lifecycle.md`](docs/worktree-lifecycle.md).
+Design references worth reading before touching those areas: [`docs/session-forest.md`](docs/session-forest.md), [`docs/observability.md`](docs/observability.md), [`docs/delegation-policy.md`](docs/delegation-policy.md), [`docs/compaction-and-resume.md`](docs/compaction-and-resume.md), [`docs/managed-agent-runtimes.md`](docs/managed-agent-runtimes.md), [`docs/adaptive-learning.md`](docs/adaptive-learning.md), [`docs/worktree-lifecycle.md`](docs/worktree-lifecycle.md).
 
 ## Testing conventions
 
