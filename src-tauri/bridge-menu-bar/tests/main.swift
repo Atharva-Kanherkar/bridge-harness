@@ -25,12 +25,12 @@ check(compactCountLabel(Metric(value: 27_933_293, source: "measured", status: "c
 check(moneyLabel(zero) == "$0.00", "A reported zero cost is valid")
 check(countLabel(.unavailable) == "Unavailable", "Unknown tokens must not become zero")
 check(moneyLabel(.unavailable) == "Unavailable", "Unpriced usage must not become $0")
-check(moneyLabel(Metric(value: 2_300_000, source: "estimated", status: "current")) == "≈$2.30", "Estimated costs need a qualifier")
+check(moneyLabel(Metric(value: 2_300_000, source: "estimated", status: "current")) == "≈ $2.30", "Estimated costs need a qualifier")
 let compactPeriod = UsagePeriod(
     tokens: Metric(value: 18_400, source: "measured", status: "current"),
     costMicrousd: Metric(value: 1_240_000, source: "estimated", status: "current"),
     models: [])
-check(usageSummaryValues(compactPeriod, showTokens: true, showCost: true) == "18K tokens · ≈$1.24",
+check(usageSummaryValues(compactPeriod, showTokens: true, showCost: true) == "18K tokens · ≈ $1.24",
       "A summary combines labeled tokens and spend without repeated rows")
 check(usageSummaryValues(compactPeriod, showTokens: true, showCost: false) == "18K tokens",
       "Token-only summaries retain their unit")
@@ -51,7 +51,7 @@ let fixture = try JSONDecoder().decode(Presentation.self, from: Data(contentsOf:
 check(fixture.settings.schemaVersion == 1 && fixture.settings.displayMode == "remaining", "Settings wire names must agree")
 check(fixture.selectedUsage?.windows[0].usedPercent.current == 0, "Reported zero survives Rust to Swift")
 check(fixture.selectedUsage?.windows[1].usedPercent.current == nil, "Stale usage stays historical")
-check(moneyLabel(fixture.selectedUsage!.today.costMicrousd) == "≈$1.20", "Estimated cost survives Rust to Swift")
+check(moneyLabel(fixture.selectedUsage!.today.costMicrousd) == "≈ $1.20", "Estimated cost survives Rust to Swift")
 check(moneyLabel(fixture.selectedUsage!.month.costMicrousd) == "Unavailable", "Unpriced totals stay unavailable")
 check(fixture.selectedUsage?.today.models[0].totalTokens.current == 60, "Model token fields must agree")
 var available = fixture.selectedUsage!
@@ -100,14 +100,14 @@ status = MenuStatus(statusPresentation, now: 100)
 check(status.title == "—" && status.accessibilityTitle.contains("unavailable"), "Missing quota must not be spoken as zero or stale")
 statusPresentation.settings.displayMode = "cost"
 status = MenuStatus(statusPresentation, now: 100)
-check(status.title == "≈$1.20" && status.accessibilityTitle.contains("estimated cost $1.20"), "VoiceOver must explain estimated prices")
+check(status.title == "≈ $1.20" && status.accessibilityTitle.contains("estimated cost $1.20"), "VoiceOver must explain estimated prices")
 statusPresentation.usage!.providers[0].error = "Account session expired"
 statusPresentation.usage!.providers[0].observedAt = nil
 status = MenuStatus(statusPresentation, now: 100)
-check(status.title == "≈$1.20" && !status.accessibilityTitle.contains("stale"), "An account auth failure must not taint freshly computed local cost")
+check(status.title == "≈ $1.20" && !status.accessibilityTitle.contains("stale"), "An account auth failure must not taint freshly computed local cost")
 statusPresentation.usage!.providers[0].today.costMicrousd.status = "stale"
 status = MenuStatus(statusPresentation, now: 100)
-check(status.title == "≈$1.20 · stale" && status.accessibilityTitle.contains("estimated cost $1.20 · stale"), "Metric-level stale cost must retain both qualifiers")
+check(status.title == "≈ $1.20 · stale" && status.accessibilityTitle.contains("estimated cost $1.20 · stale"), "Metric-level stale cost must retain both qualifiers")
 statusPresentation.usage!.providers[0].today.costMicrousd = .unavailable
 status = MenuStatus(statusPresentation, now: 100)
 check(status.title == "—" && status.accessibilityTitle.contains("cost unavailable"), "Unknown prices must not be spoken as free")
@@ -382,7 +382,7 @@ statusLayout = StatusLayout(layoutPresentation, now: 900)
 check(statusLayout.visibleText.contains("5h —") && statusLayout.accessibilityTitle.contains("stale"), "Custom layouts must not present stale quota as current")
 layoutPresentation.settings.statusLayout = [["todayCost"]]
 layoutPresentation.usage!.providers[0].error = "Expired account"
-check(StatusLayout(layoutPresentation, now: 100).visibleText == "≈$1.20", "Account failures must not invalidate local ledger cost in a layout")
+check(StatusLayout(layoutPresentation, now: 100).visibleText == "≈ $1.20", "Account failures must not invalidate local ledger cost in a layout")
 layoutPresentation.settings.statusLayout = [["space", "dot"]]
 check(!StatusLayout(layoutPresentation, now: 100).hasContent, "A whitespace-only layout must fall back to a visible status item")
 
@@ -596,7 +596,7 @@ summaryClaude.month.tokens = Metric(value: 2000, source: "measured", status: "cu
 summaryFixture.usage!.providers = [summaryCodex, summaryClaude]
 let partialSummary = OverviewSummary(summaryFixture)
 check(partialSummary.providerCount == 2 && partialSummary.costProviderCount == 1, "Disabled favorites do not enter the summary denominator")
-check(partialSummary.costLabel == "≈$2.00", "Approximate spend stays compact with adjacent symbols and no repeated partial label")
+check(partialSummary.costLabel == "≈ $2.00", "Approximate spend stays compact with spaced symbols and no repeated partial label")
 check(partialSummary.tokens.value == 3000 && !partialSummary.tokensPartial, "Token coverage is independent of cost coverage")
 summaryFixture.usage!.providers[0].month.costMicrousd = .unavailable
 check(OverviewSummary(summaryFixture).costLabel == "Unavailable", "All unknown cost never becomes zero")
@@ -651,3 +651,12 @@ let unfavoritedOwner = fixture.forMenuProvider("opencode")
 check(unfavoritedOwner.settings.activeProvider == "opencode", "Separate icons can open their own detail")
 check(!unfavoritedOwner.settings.visibleProviders.contains("opencode"), "Opening a separate icon never adds an unfavorited tab")
 check(quotaLabel(QuotaWindow(id: "gpt-reserve", label: "gpt reserve Weekly", usedPercent: .unavailable, resetsAt: nil, windowMinutes: nil), provider: "codex") == "GPT Reserve Weekly", "GPT Reserve normalizes spaced labels too")
+
+let balancedSwitcher = ProviderSwitcherView(providers: ["codex", "claude", "cursor"], selection: "overview") { _ in }
+balancedSwitcher.layoutSubtreeIfNeeded()
+let balancedFrames = balancedSwitcher.testNavigationFrames
+let lastTabRight = balancedFrames.viewport.minX + balancedSwitcher.buttons.last!.frame.maxX
+check(balancedFrames.overview.minX == 16 && abs(350 - lastTabRight - 16) < 0.01,
+      "Overview and the last visible favorite align with equal card gutters")
+check(Set(balancedSwitcher.buttons.map { $0.frame.width }).count == 1 && balancedSwitcher.testMaximumOffset == 0,
+      "Three favorites fill the available row evenly without invisible arrow space")

@@ -295,7 +295,7 @@ func usageSummaryValues(_ period: UsagePeriod, showTokens: Bool, showCost: Bool)
 func moneyLabel(_ metric: Metric) -> String {
     guard let value = metric.value, metric.status != "unavailable" else { return "Unavailable" }
     let label = String(format: "$%.2f", value / 1_000_000)
-    let qualified = metric.source == "estimated" ? "≈\(label)" : label
+    let qualified = metric.source == "estimated" ? "≈ \(label)" : label
     return metric.status == "stale" ? "\(qualified) · stale" : qualified
 }
 

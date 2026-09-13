@@ -148,19 +148,23 @@ final class ProviderSwitcherView: NSView {
         super.layout()
         guard let overview = buttons.first else { return }
         let providerButtons = Array(buttons.dropFirst())
-        let available = bounds.width - Self.outerInset * 2 - Self.overviewWidth - Self.gap
-        // Reserve exactly three comfortable provider slots. A long future name
-        // truncates inside its own slot rather than widening every provider.
+        let overflows = providerButtons.count > 3
+        // CodexBar prefers the card's 16-point content grid, reducing padding
+        // only when controls need room. Hidden arrows must not reserve space.
+        let outerInset: CGFloat = overflows ? Self.outerInset : 16
+        let overviewGap = providerButtons.isEmpty ? 0 : Self.gap
+        let overviewWidth = overflows ? Self.overviewWidth
+            : (bounds.width - outerInset * 2 - Self.gap * CGFloat(providerButtons.count)) / CGFloat(buttons.count)
+        let available = bounds.width - outerInset * 2 - overviewWidth - overviewGap
         let arrowAllowance = (Self.arrowWidth + Self.arrowGap) * 2
-        let threeSlotViewport = available - arrowAllowance
-        let segmentWidth = max(Self.minimumProviderWidth, floor((threeSlotViewport - Self.gap * 2) / 3))
+        let segmentWidth = overflows
+            ? max(Self.minimumProviderWidth, floor((available - arrowAllowance - Self.gap * 2) / 3))
+            : overviewWidth
         let contentWidth = providerButtons.isEmpty ? 0 : CGFloat(providerButtons.count) * segmentWidth + CGFloat(max(0, providerButtons.count - 1)) * Self.gap
-        let overflows = contentWidth > available
-        let arrowsWidth = overflows ? arrowAllowance : 0
-        let viewportWidth = max(0, available - arrowsWidth)
-        let leadingInset = Self.outerInset + (overflows ? Self.arrowWidth + Self.arrowGap : 0)
-        overview.frame = NSRect(x: leadingInset, y: 0, width: Self.overviewWidth, height: Self.rowHeight)
-        scrollView.frame = NSRect(x: overview.frame.maxX + Self.gap, y: 0, width: viewportWidth, height: Self.rowHeight)
+        let viewportWidth = max(0, available - (overflows ? arrowAllowance : 0))
+        let leadingInset = outerInset + (overflows ? Self.arrowWidth + Self.arrowGap : 0)
+        overview.frame = NSRect(x: leadingInset, y: 0, width: overviewWidth, height: Self.rowHeight)
+        scrollView.frame = NSRect(x: overview.frame.maxX + overviewGap, y: 0, width: viewportWidth, height: Self.rowHeight)
         providerDocument.frame = NSRect(x: 0, y: 0, width: max(viewportWidth, contentWidth), height: Self.rowHeight)
         for (index, button) in providerButtons.enumerated() {
             button.frame = NSRect(x: CGFloat(index) * (segmentWidth + Self.gap), y: 0, width: segmentWidth, height: Self.rowHeight)

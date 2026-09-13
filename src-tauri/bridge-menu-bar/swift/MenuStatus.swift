@@ -31,7 +31,9 @@ struct MenuStatus {
                 accessibilityTitle = "\(prefix), today's cost unavailable"
             } else {
                 let estimate = metric.source == "estimated" ? "estimated " : ""
-                accessibilityTitle = "\(prefix), today's \(estimate)cost \(amount.replacingOccurrences(of: "≈", with: ""))"
+                let spokenAmount = amount.replacingOccurrences(of: "≈", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                accessibilityTitle = "\(prefix), today's \(estimate)cost \(spokenAmount)"
             }
         } else {
             let window = usage?.menuWindow(settings.quotaWindow, now: now)
