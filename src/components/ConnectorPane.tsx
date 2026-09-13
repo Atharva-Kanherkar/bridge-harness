@@ -289,13 +289,22 @@ function CardView({ item }: { item: ConnectorInboxItem }) {
   </article>;
 }
 
+/** A message's own clock time. The harness echoes back whatever timestamp the
+ *  provider gave it, which is an ISO string — readable to a parser, not to a
+ *  person glancing at a notification. */
+function messageTime(value: string): string {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return value;
+  return new Date(parsed).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 function Block({ block }: { block: ConnectorCardBlock }) {
   switch (block.kind) {
     case "message":
       return <div className="u-glass-soft rounded-xl p-2.5">
         <div className="flex items-baseline gap-2">
           <b className="text-[12px] font-semibold text-foreground">{block.author}</b>
-          {block.timestamp && <span className="text-[10px] text-muted-foreground">{block.timestamp}</span>}
+          {block.timestamp && <span className="text-[10px] text-muted-foreground">{messageTime(block.timestamp)}</span>}
         </div>
         {/* Untrusted third-party text, rendered as text. */}
         <p className="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-foreground">{block.text}</p>

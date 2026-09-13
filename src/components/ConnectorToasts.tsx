@@ -69,12 +69,16 @@ function ToastCard({ toast, index, onOpen, onDismiss }: {
   </div>;
 }
 
-export function ConnectorToasts({ toasts, onOpen, onDismiss }: {
+export function ConnectorToasts({ toasts, suppressed = false, onOpen, onDismiss }: {
   toasts: ConnectorToast[];
+  /** True while the Inbox pane is the one on screen. Telling someone about a
+   *  message they are already looking at is noise, and the stack sits exactly
+   *  where that pane's reply box is. */
+  suppressed?: boolean;
   onOpen: (toast: ConnectorToast) => void;
   onDismiss: (key: string) => void;
 }) {
-  if (!toasts.length) return null;
+  if (suppressed || !toasts.length) return null;
   // Newest nearest the corner, and never more than three at once: a burst of
   // mentions should not become a wall the user has to clear.
   const shown = toasts.slice(-3);

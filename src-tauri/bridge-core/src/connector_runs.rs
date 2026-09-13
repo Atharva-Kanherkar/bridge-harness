@@ -293,12 +293,20 @@ impl ConnectorAction {
     /// approval worth collecting is one where the user read the thing that will
     /// actually happen. "Allow Slack access" is not that.
     pub fn effect(&self) -> String {
-        match self {
-            Self::Reply { item, text } => {
-                format!("Send to {} in {}:\n{text}", item.author, item.channel_label)
+        // In a DM the channel *is* the person, so naming both reads as a stutter
+        // ("Send to Nina in Nina"). The destination still has to be unambiguous,
+        // which for a DM the name alone already is.
+        let destination = |item: &InboxItem| {
+            if item.kind == ItemKind::DirectMessage || item.channel_label == item.author {
+                item.author.clone()
+            } else {
+                format!("{} in {}", item.author, item.channel_label)
             }
+        };
+        match self {
+            Self::Reply { item, text } => format!("Send to {}:\n{text}", destination(item)),
             Self::React { item, emoji } => {
-                format!("React :{emoji}: to {}’s message in {}", item.author, item.channel_label)
+                format!("React :{emoji}: to {}’s message", destination(item))
             }
         }
     }
@@ -628,6 +636,20 @@ mod tests {
         assert!(effect.contains("Shipping at 4."));
         // "Allow Slack access" would be an approval nobody could meaningfully give.
         assert!(!effect.to_lowercase().contains("allow access"));
+    }
+
+    #[test]
+    fn a_dm_destination_is_named_once_and_a_channel_twice() {
+        let dm = ConnectorAction::Reply { item: item(), text: "ok".into() };
+        assert_eq!(dm.effect(), "Send to Nina Alvarez:\nok");
+
+        let mut mention = item();
+        mention.kind = ItemKind::Mention;
+        mention.channel_label = "#eng-alerts".into();
+        let in_channel = ConnectorAction::Reply { item: mention, text: "ok".into() };
+        // A channel reply goes somewhere other people can read, which the
+        // approval has to say out loud.
+        assert_eq!(in_channel.effect(), "Send to Nina Alvarez in #eng-alerts:\nok");
     }
 
     #[test]

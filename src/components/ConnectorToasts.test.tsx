@@ -115,3 +115,17 @@ describe("ConnectorToasts", () => {
     expect(node.textContent).toContain("Nina wants the checklist reviewed");
   });
 });
+
+describe("suppression", () => {
+  it("shows nothing while the Inbox pane is the one on screen", () => {
+    // The stack sits exactly where that pane's reply box is, and telling
+    // someone about a message they are reading is noise.
+    const node = mount(<ConnectorToasts toasts={[toast()]} suppressed onOpen={() => {}} onDismiss={() => {}} />);
+    expect(node.textContent).toBe("");
+  });
+
+  it("still shows when some other pane is open", () => {
+    const node = mount(<ConnectorToasts toasts={[toast()]} suppressed={false} onOpen={() => {}} onDismiss={() => {}} />);
+    expect(node.textContent).toContain("Nina Alvarez");
+  });
+});

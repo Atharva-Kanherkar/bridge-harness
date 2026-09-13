@@ -2791,6 +2791,7 @@ function AppContent() {
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
     <ConnectorToasts
       toasts={connectorToasts}
+      suppressed={dock.open && dock.pane === "inbox"}
       onOpen={toast => openConnectorItem(toast.itemKey)}
       onDismiss={key => setConnectorToasts(current => reduceToasts(current, { type: "dismiss", key }))}
     />

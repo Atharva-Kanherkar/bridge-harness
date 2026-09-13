@@ -1072,9 +1072,12 @@ function mockConnectorAct(itemKey: string, action: ConnectorActionRequest, appro
   // back the effect, so the mock exercises the real approval flow rather than
   // letting the UI shortcut it.
   if (approved === undefined) {
+    const destination = item.kind === "directMessage" || item.channelLabel === item.author
+      ? item.author
+      : `${item.author} in ${item.channelLabel}`;
     const effect = action.kind === "reply"
-      ? `Send to ${item.author} in ${item.channelLabel}:\n${action.text}`
-      : `React :${action.emoji}: to ${item.author}'s message in ${item.channelLabel}`;
+      ? `Send to ${destination}:\n${action.text}`
+      : `React :${action.emoji}: to ${destination}'s message`;
     return { status: "approvalRequired", effect };
   }
   if (!approved) return { status: "refused", reason: "the action was denied" };

@@ -121,7 +121,7 @@ describe("ConnectorPane", () => {
     stub(inbox([item()]));
     const act_ = vi.spyOn(bridgeApi, "connectorAct").mockResolvedValue({
       status: "approvalRequired",
-      effect: "Send to Nina Alvarez in Nina Alvarez:\nOn it.",
+      effect: "Send to Nina Alvarez:\nOn it.",
     });
     const node = await mount(<ConnectorPane />);
     const box = node.querySelector("textarea") as HTMLTextAreaElement;
@@ -148,7 +148,7 @@ describe("ConnectorPane", () => {
     stub(inbox([item()]));
     const act_ = vi.spyOn(bridgeApi, "connectorAct").mockResolvedValue({
       status: "approvalRequired",
-      effect: "Send to Nina Alvarez in Nina Alvarez:\nOn it.",
+      effect: "Send to Nina Alvarez:\nOn it.",
     });
     const node = await mount(<ConnectorPane />);
     const suggestion = Array.from(node.querySelectorAll("button")).find(button => button.textContent === "On it — looking now.")!;
