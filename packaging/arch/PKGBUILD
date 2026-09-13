@@ -1,7 +1,7 @@
 # Repackage the exact Debian artifact produced by the same CI run.
 # CI adds source and sha256sums from that artifact before calling makepkg.
 pkgname=bridge-bin
-pkgver=0.5.6
+pkgver=0.5.8 # x-release-please-version
 pkgrel=1
 pkgdesc='Supervise coding agents from one desktop window'
 arch=('x86_64')

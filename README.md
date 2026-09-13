@@ -142,7 +142,7 @@ Approvals, history, and usage tracking are on from the start.
 - **Release builds:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_*.dmg`, signed with a Developer ID, notarized, and stapled
 - **Requirements:** macOS 12 or later (Apple Silicon), Git, and Node.js 18+ (only needed for Claude sessions)
 - **Linux:** Debian, AppImage, and Arch packages build in CI as release candidates. They are not published downloads yet — see [docs/linux-release.md](docs/linux-release.md).
-- **Updates:** in-app auto-update isn't in this release yet — grab new builds from Releases. See the [CHANGELOG](CHANGELOG.md) for what's new.
+- **Updates:** signed macOS builds check GitHub Releases on launch and offer to download, install, and restart when a newer signed update is available. You can always install a DMG manually; see the [CHANGELOG](CHANGELOG.md) for what's new.
 
 > [!NOTE]
 > Bridge is early-stage software. Expect rough edges and frequent improvements. macOS may ask for file access the first time Bridge touches `Desktop`, `Documents`, or `Downloads` — keeping repos in a folder like `~/Code` avoids repeated prompts.
@@ -176,7 +176,18 @@ bun run build
 bun run test
 ```
 
-Keep changes focused, follow [AGENTS.md](AGENTS.md) (Tailwind CSS v4 only, colocated tests), and use Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
+Keep changes focused and follow [AGENTS.md](AGENTS.md) (Tailwind CSS v4 only,
+colocated tests). PR titles must use Conventional Commit syntax (`feat:`,
+`fix:`, `docs:`, `chore:`), and PRs are squash-merged so that title becomes the
+release commit. `fix:` releases a patch, `feat:` a minor, and `!` marks a major
+version.
+
+Release Please maintains one release PR. Squash-merging that PR creates a
+version tag and draft release; production CI signs and notarizes the exact tagged
+build, runs the packaged app and its bundled daemon from the mounted DMG in a
+credential-free job, and publishes only after every gate passes. See the
+[macOS release guide](docs/macos-release.md) for credentials, verification, and
+recovery.
 
 </details>
 

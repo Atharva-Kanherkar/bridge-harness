@@ -1,0 +1,159 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+# The Release Please job's built-in token stays read-only. A short-lived,
+# repository-scoped GitHub App token performs its writes so its PRs receive CI.
+permissions:
+  contents: read
+
+concurrency:
+  # Shared with production so a later release run cannot overtake publication.
+  group: bridge-release-automation
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require protected pull request inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main")
+          requires_pr=$(printf '%s' "$rules" | jq -r 'any(.[]; .type == "pull_request")')
+          requires_title=$(printf '%s' "$rules" | jq -r 'any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]?; .context == "Conventional PR title"))')
+          if [ "$requires_pr" != true ] || [ "$requires_title" != true ]; then
+            echo "Release Please requires a main-branch pull-request rule and the Conventional PR title status check." >&2
+            exit 1
+          fi
+
+      - name: Validate release automation credentials
+        env:
+          APP_CLIENT_ID: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_CLIENT_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+            echo "Release Please requires RELEASE_PLEASE_APP_CLIENT_ID and RELEASE_PLEASE_APP_PRIVATE_KEY." >&2
+            exit 1
+          fi
+
+      - name: Create repository-scoped release token
+        id: app-token
+        # actions/create-github-app-token v3.2.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      # GitHub exposes the squash title/message policy only to a token with
+      # Contents write. The built-in token remains read-only; this App token is
+      # already scoped to the one repository and is used here only to inspect.
+      - name: Require deterministic squash-only merges
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          policy=$(gh api "repos/$GITHUB_REPOSITORY" --jq '[.allow_squash_merge, .allow_merge_commit, .allow_rebase_merge, .squash_merge_commit_title, .squash_merge_commit_message] | map(tostring) | join(",")')
+          if [ "$policy" != "true,false,false,PR_TITLE,BLANK" ]; then
+            echo "Release Please requires squash-only merges whose commit is exactly the checked PR title." >&2
+            echo "Disable merge/rebase, then select PR title with a blank squash commit message." >&2
+            exit 1
+          fi
+
+      - name: Create or update the cumulative Release PR
+        id: release
+        # release-please-action v5.0.0, pinned so release automation cannot drift.
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Lockfiles are generated state, not separate release components. Release
+      # Please updates the authoritative version files; this deterministic
+      # follow-up keeps their root/workspace entries in the same Release PR.
+      - name: Check out the Release PR as untrusted data
+        if: steps.release.outputs.prs_created == 'true'
+        # actions/checkout v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}
+          token: ${{ github.token }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: release-pr
+
+      - name: Check out release tooling from protected main
+        if: steps.release.outputs.prs_created == 'true'
+        # actions/checkout v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          token: ${{ github.token }}
+          persist-credentials: false
+          path: trusted-release-tools
+          sparse-checkout: scripts/release-version.mjs
+          sparse-checkout-cone-mode: false
+
+      # actions/setup-node v4.4.0
+      - if: steps.release.outputs.prs_created == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+
+      - name: Synchronize generated lockfile versions
+        if: steps.release.outputs.prs_created == 'true'
+        run: >-
+          node "$GITHUB_WORKSPACE/trusted-release-tools/scripts/release-version.mjs"
+          --root "$GITHUB_WORKSPACE/release-pr" --write-locks
+
+      - name: Commit lockfiles when Release Please changed the version
+        if: steps.release.outputs.prs_created == 'true'
+        working-directory: release-pr
+        env:
+          RELEASE_PR_BRANCH: ${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}
+          BOT_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if git diff --quiet -- src-tauri/Cargo.lock sidecar/claude-agent/package-lock.json bun.lock; then
+            exit 0
+          fi
+          bot_id=$(gh api "/users/${BOT_SLUG}[bot]" --jq .id)
+          git config user.name "${BOT_SLUG}[bot]"
+          git config user.email "${bot_id}+${BOT_SLUG}[bot]@users.noreply.github.com"
+          git config core.hooksPath /dev/null
+          git add src-tauri/Cargo.lock sidecar/claude-agent/package-lock.json bun.lock
+          git commit -m "chore: sync generated lockfiles for release"
+          gh auth setup-git
+          git push --no-verify origin "HEAD:$RELEASE_PR_BRANCH"
+
+  # Keep tag creation and production in one queued run. The reusable workflow
+  # narrows the built-in token again for every job except its draft preflight.
+  production-macos:
+    name: Production macOS
+    needs: release-please
+    permissions:
+      contents: write
+      pull-requests: read
+    uses: ./.github/workflows/release-macos.yml
+    with:
+      source_sha: ${{ github.sha }}
+      release_please_app_client_id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+    secrets:
+      RELEASE_PLEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
