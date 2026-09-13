@@ -322,6 +322,8 @@ mod tests {
         assert!(settings.opencode_workspace.is_none());
         assert_eq!(settings.quota_display_mode, MenuBarQuotaDisplayMode::Used);
         assert!(settings.open_to_overview && settings.show_history);
+        assert!(settings.show_overview_summary);
+        assert!(!settings.separate_provider_icons);
         assert!(settings.status_layout.is_empty());
     }
 

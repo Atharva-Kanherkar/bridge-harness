@@ -54,6 +54,7 @@
     ],
     "externalBin": ["binaries/bridge-browser-host", "binaries/bridged"],
     "resources": {
+      "../docs/third-party/CodexBar-LICENSE.txt": "licenses/CodexBar-LICENSE.txt",
       "../browser-extension/": "browser-extension/",
       "../browser-skills/": "browser-skills/",
       "resources/sidecar/claude-agent/": "sidecar/claude-agent/",

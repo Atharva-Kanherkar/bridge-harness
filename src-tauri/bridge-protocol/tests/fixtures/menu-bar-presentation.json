@@ -19,7 +19,9 @@
     "openToOverview": true,
     "iconStyle": "bridge",
     "statusLayout": [],
-    "showHistory": true
+    "showHistory": true,
+    "showOverviewSummary": true,
+    "separateProviderIcons": false
   },
   "usage": {
     "schemaVersion": 1,
