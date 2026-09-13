@@ -61,9 +61,13 @@ impl UnavailableReason {
             Self::NotConfigured => {
                 format!("No {name} MCP server is configured in this harness.")
             }
-            Self::NoResolver => {
-                format!("Bridge cannot derive provenance for {name} results yet, so it will not surface them.")
-            }
+            // The registry's own sentence, because "unsupported" tells a user
+            // nothing and the three not-yet families and the one never family
+            // are genuinely different situations.
+            Self::NoResolver => profile(family)
+                .no_inbox_reason
+                .unwrap_or("This connector has no in-app inbox in this build.")
+                .to_owned(),
         }
     }
 }
@@ -76,30 +80,157 @@ pub struct ConnectorAvailability {
     /// The MCP server name the harness knows this family by, when one exists.
     /// Carried because the connector run scopes its policy to this exact name.
     pub server: Option<String>,
+    /// **Which harness holds this connection.** A connector run has to go to the
+    /// harness whose own MCP configuration owns the credential — sending it to
+    /// another one sends it somewhere that cannot see the account at all. This
+    /// is how the run layer knows, rather than assuming.
+    pub harness: Option<String>,
     pub available: bool,
     pub reason: Option<UnavailableReason>,
 }
 
+// ── The family registry ──────────────────────────────────────────────────────
+//
+// Everything that differs between one connector and the next lives in exactly
+// one place: the [`profile`] table below. Nothing else in this feature matches
+// on a family — not the prompts, not the API layer, not the UI. Adding a family
+// is therefore filling in one row, not finding every `if slack` in the tree.
+//
+// That is the whole design constraint. The first version of this module had
+// `matches!(self, Self::Slack)` scattered through it, and each one was a place a
+// later family would silently do the wrong thing.
+//
+// See `docs/connector-families.md` for the step-by-step.
+
+/// How one product names the things it can notify you about.
+///
+/// A DM in Slack, an email in Gmail, and an assigned issue in Linear are the
+/// same *shape* — someone wants you — and completely different words. The
+/// prompts and the UI both read these rather than saying "DM" everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InboxProfile {
+    /// What the ingress run should go looking for, in this product's own terms.
+    /// Interpolated into the prompt, so it reads as an instruction.
+    pub attention_items: &'static str,
+    /// What a one-to-one message is called here. Slack: "direct message".
+    /// Gmail: "email".
+    pub direct_label: &'static str,
+    /// What being named in a shared space is called. Slack: "mention".
+    /// Linear: "assignment".
+    pub mention_label: &'static str,
+    /// What a follow-up in an existing conversation is called.
+    pub thread_label: &'static str,
+    /// Where a conversation lives. Slack: "channel". Gmail: "mailbox".
+    pub container_noun: &'static str,
+    /// The verb for answering. Slack: "send". Linear: "comment".
+    pub reply_verb: &'static str,
+    /// How a lightweight acknowledgement works here, when one exists at all.
+    /// `None` means the UI offers no react affordance for this family.
+    pub reaction: Option<ReactionProfile>,
+}
+
+/// A one-click acknowledgement, for products that have such a thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReactionProfile {
+    /// What it is called. Slack: "reaction".
+    pub noun: &'static str,
+    /// The default the UI's one-click control sends. Slack: `eyes`.
+    pub default_token: &'static str,
+}
+
+/// One family's full description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorProfile {
+    pub family: ConnectorFamily,
+    pub display_name: &'static str,
+    /// `None` means this build has no in-app inbox for the family. That is a
+    /// statement about Bridge, not about the product: it means nobody has
+    /// written the row below yet, or — for GitHub — that routing it here would
+    /// be worse than the surface it already has.
+    pub inbox: Option<InboxProfile>,
+    /// Why there is no inbox, when there is none. Shown to the user, so it has
+    /// to say something truer than "unsupported".
+    pub no_inbox_reason: Option<&'static str>,
+}
+
+/// The registry. **This is the extension point.**
+pub fn profile(family: ConnectorFamily) -> ConnectorProfile {
+    match family {
+        ConnectorFamily::Slack => ConnectorProfile {
+            family,
+            display_name: "Slack",
+            inbox: Some(InboxProfile {
+                attention_items:
+                    "direct messages, @-mentions of the account owner, and replies in threads the owner is part of",
+                direct_label: "direct message",
+                mention_label: "mention",
+                thread_label: "thread reply",
+                container_noun: "channel",
+                reply_verb: "send",
+                reaction: Some(ReactionProfile { noun: "reaction", default_token: "eyes" }),
+            }),
+            no_inbox_reason: None,
+        },
+        ConnectorFamily::Gmail => ConnectorProfile {
+            family,
+            display_name: "Gmail",
+            inbox: None,
+            no_inbox_reason: Some("Gmail has no in-app inbox yet — its ingress query and card template are not written."),
+        },
+        ConnectorFamily::Linear => ConnectorProfile {
+            family,
+            display_name: "Linear",
+            inbox: None,
+            no_inbox_reason: Some("Linear has no in-app inbox yet — its ingress query and card template are not written."),
+        },
+        ConnectorFamily::Notion => ConnectorProfile {
+            family,
+            display_name: "Notion",
+            inbox: None,
+            no_inbox_reason: Some("Notion has no in-app inbox yet — its ingress query and card template are not written."),
+        },
+        // Deliberately permanent, unlike the three above. GitHub has a native
+        // `gh`-backed surface that needs no model turn; routing it through a
+        // harness turn would be a strictly worse version of something Bridge
+        // already does well.
+        ConnectorFamily::GitHub => ConnectorProfile {
+            family,
+            display_name: "GitHub",
+            inbox: None,
+            no_inbox_reason: Some("GitHub is served by Bridge's own pull-request surface, which needs no model turn."),
+        },
+    }
+}
+
 impl ConnectorFamily {
     pub fn display_name(self) -> &'static str {
-        match self {
-            Self::Slack => "Slack",
-            Self::Gmail => "Gmail",
-            Self::GitHub => "GitHub",
-            Self::Linear => "Linear",
-            Self::Notion => "Notion",
-        }
+        profile(self).display_name
     }
 
-    /// Whether this slice can render and act on the family. Deliberately narrow:
-    /// a family reaches the inbox only once someone writes its card template and
-    /// its ingress query, not merely because an MCP server for it exists.
-    ///
-    /// GitHub is excluded on purpose and permanently — it has a native, `gh`-backed
-    /// surface that needs no model turn, and routing it through here would be a
-    /// strictly worse version of a thing Bridge already does well.
+    /// The inbox description, when this family has one.
+    pub fn inbox(self) -> Option<InboxProfile> {
+        profile(self).inbox
+    }
+
+    /// Whether this build can render and act on the family. A family reaches the
+    /// inbox when its registry row describes one — not merely because an MCP
+    /// server for it exists.
     pub fn has_inbox_support(self) -> bool {
-        matches!(self, Self::Slack)
+        profile(self).inbox.is_some()
+    }
+
+    /// The label for one item kind, in this family's vocabulary.
+    pub fn kind_label(self, kind: ItemKind) -> &'static str {
+        match self.inbox() {
+            Some(inbox) => match kind {
+                ItemKind::DirectMessage => inbox.direct_label,
+                ItemKind::Mention => inbox.mention_label,
+                ItemKind::ThreadReply => inbox.thread_label,
+            },
+            // Unreachable for a family with an inbox; a neutral word beats a
+            // panic for one without.
+            None => "message",
+        }
     }
 
     /// Match an MCP server name to a family. Matching is on a word-ish boundary
@@ -114,15 +245,28 @@ impl ConnectorFamily {
     }
 }
 
-/// Resolve every family's availability from the harness's health map.
+/// One harness's view of what it has connected.
 ///
-/// `health` is exactly what `marketplace::claude_sdk_configuration` already
-/// parses: server name → `Some(true)` connected, `Some(false)` failed or signed
-/// out, `None` no verdict. This function performs no I/O and no model turn —
-/// knowing *which* connectors exist must never cost a token.
-pub fn resolve_availability(
-    health: &std::collections::BTreeMap<String, Option<bool>>,
-) -> Vec<ConnectorAvailability> {
+/// A list rather than a single map because connectors do not all live in one
+/// harness: Slack may be a claude.ai connector while a Linear server is
+/// configured in Codex. Resolution takes every harness's view at once so the
+/// answer names *which* harness owns each connection.
+#[derive(Debug, Clone)]
+pub struct HarnessConnectors {
+    pub harness: String,
+    /// Server name → `Some(true)` connected, `Some(false)` failed or signed out,
+    /// `None` no verdict. Exactly what `marketplace::claude_sdk_configuration`
+    /// already parses out of `mcp list`.
+    pub health: std::collections::BTreeMap<String, Option<bool>>,
+}
+
+/// Resolve every family's availability across every harness.
+///
+/// Performs no I/O and no model turn — knowing *which* connectors exist must
+/// never cost a token. Where two harnesses both report a family, a connected one
+/// wins over a signed-out one; ties break on harness name so the answer is
+/// stable rather than dependent on iteration order.
+pub fn resolve_availability(harnesses: &[HarnessConnectors]) -> Vec<ConnectorAvailability> {
     ConnectorFamily::ALL
         .into_iter()
         .map(|family| {
@@ -130,39 +274,41 @@ pub fn resolve_availability(
                 return ConnectorAvailability {
                     family,
                     server: None,
+                    harness: None,
                     available: false,
                     reason: Some(UnavailableReason::NoResolver),
                 };
             }
-            // Prefer a connected server when the harness lists several for one
-            // family, so a stale signed-out duplicate cannot mask a live one.
-            let mut matched: Vec<(&String, &Option<bool>)> = health
+            // Every (harness, server) pair claiming this family, best first:
+            // connected over not, then stable by harness and server name.
+            let mut matched: Vec<(&str, &str, Option<bool>)> = harnesses
                 .iter()
-                .filter(|(server, _)| ConnectorFamily::from_server_name(server) == Some(family))
+                .flat_map(|entry| {
+                    entry.health.iter().map(move |(server, verdict)| {
+                        (entry.harness.as_str(), server.as_str(), *verdict)
+                    })
+                })
+                .filter(|(_, server, _)| ConnectorFamily::from_server_name(server) == Some(family))
                 .collect();
-            matched.sort_by_key(|(server, verdict)| (**verdict != Some(true), (*server).clone()));
+            matched.sort_by_key(|(harness, server, verdict)| {
+                (*verdict != Some(true), *harness, *server)
+            });
             match matched.first() {
-                Some((server, Some(true))) => ConnectorAvailability {
+                Some((harness, server, verdict)) => ConnectorAvailability {
                     family,
-                    server: Some((*server).clone()),
-                    available: true,
-                    reason: None,
-                },
-                Some((server, Some(false))) => ConnectorAvailability {
-                    family,
-                    server: Some((*server).clone()),
-                    available: false,
-                    reason: Some(UnavailableReason::AuthRequired),
-                },
-                Some((server, None)) => ConnectorAvailability {
-                    family,
-                    server: Some((*server).clone()),
-                    available: false,
-                    reason: Some(UnavailableReason::Unreachable),
+                    server: Some((*server).to_owned()),
+                    harness: Some((*harness).to_owned()),
+                    available: *verdict == Some(true),
+                    reason: match verdict {
+                        Some(true) => None,
+                        Some(false) => Some(UnavailableReason::AuthRequired),
+                        None => Some(UnavailableReason::Unreachable),
+                    },
                 },
                 None => ConnectorAvailability {
                     family,
                     server: None,
+                    harness: None,
                     available: false,
                     reason: Some(UnavailableReason::NotConfigured),
                 },
@@ -394,10 +540,19 @@ fn truncate(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
-    fn health(entries: &[(&str, Option<bool>)]) -> BTreeMap<String, Option<bool>> {
-        entries.iter().map(|(name, verdict)| ((*name).to_owned(), *verdict)).collect()
+    fn health(entries: &[(&str, Option<bool>)]) -> Vec<HarnessConnectors> {
+        vec![HarnessConnectors {
+            harness: "claude".into(),
+            health: entries.iter().map(|(name, verdict)| ((*name).to_owned(), *verdict)).collect(),
+        }]
+    }
+
+    fn on(harness: &str, entries: &[(&str, Option<bool>)]) -> HarnessConnectors {
+        HarnessConnectors {
+            harness: harness.into(),
+            health: entries.iter().map(|(name, verdict)| ((*name).to_owned(), *verdict)).collect(),
+        }
     }
 
     fn slack(availability: &[ConnectorAvailability]) -> &ConnectorAvailability {
@@ -439,6 +594,7 @@ mod tests {
         let slack = slack(&resolved);
         assert!(slack.available);
         assert_eq!(slack.server.as_deref(), Some("claude.ai Slack"));
+        assert_eq!(slack.harness.as_deref(), Some("claude"));
         assert_eq!(slack.reason, None);
     }
 
@@ -455,11 +611,157 @@ mod tests {
 
     #[test]
     fn a_family_without_a_resolver_is_never_offered() {
-        // Even with a connected server, a family this slice cannot resolve stays off.
+        // Even with a connected server, a family with no registry inbox row stays off.
         let resolved = resolve_availability(&health(&[("claude.ai Linear", Some(true))]));
         let linear = resolved.iter().find(|entry| entry.family == ConnectorFamily::Linear).unwrap();
         assert!(!linear.available);
         assert_eq!(linear.reason, Some(UnavailableReason::NoResolver));
+        // And it says *why* in the registry's own words, because "not yet
+        // written" and "served better elsewhere" are different situations.
+        let explanation = linear.reason.as_ref().unwrap().explanation(ConnectorFamily::Linear);
+        assert!(explanation.contains("not written"), "{explanation}");
+    }
+
+    #[test]
+    fn a_connector_run_is_sent_to_the_harness_that_owns_the_connection() {
+        // The premise of the feature: the credential lives in one harness's own
+        // MCP configuration. Losing track of which one sends the run somewhere
+        // that cannot see the account.
+        let resolved = resolve_availability(&[
+            on("codex", &[("acme-slack", Some(true))]),
+            on("claude", &[]),
+        ]);
+        let slack = slack(&resolved);
+        assert!(slack.available);
+        assert_eq!(slack.harness.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn a_connected_harness_wins_over_one_that_is_signed_out() {
+        let resolved = resolve_availability(&[
+            on("claude", &[("claude.ai Slack", Some(false))]),
+            on("codex", &[("acme-slack", Some(true))]),
+        ]);
+        let slack = slack(&resolved);
+        assert!(slack.available);
+        assert_eq!(slack.harness.as_deref(), Some("codex"), "the live one is the usable one");
+    }
+
+    #[test]
+    fn resolution_is_stable_when_two_harnesses_are_equally_good() {
+        // Iteration order must not decide which account a reply goes to.
+        let first = resolve_availability(&[
+            on("codex", &[("acme-slack", Some(true))]),
+            on("claude", &[("claude.ai Slack", Some(true))]),
+        ]);
+        let second = resolve_availability(&[
+            on("claude", &[("claude.ai Slack", Some(true))]),
+            on("codex", &[("acme-slack", Some(true))]),
+        ]);
+        assert_eq!(slack(&first).harness, slack(&second).harness);
+    }
+
+    // ── The registry contract ───────────────────────────────────────────────
+    // These are the tests that make the feature extensible rather than merely
+    // extensible-looking: they fail when a new family is added without the rows
+    // that make it actually work.
+
+    /// The source files that make up this feature, minus the registry itself.
+    ///
+    /// Read as text on purpose. The point is not what these modules *do* — the
+    /// other tests cover that — but that none of them has quietly grown a
+    /// second place where one family is special. That is how a feature stops
+    /// being extensible: not in one big decision, but in six small `if slack`s
+    /// added by six people in a hurry.
+    fn feature_sources() -> Vec<(&'static str, String)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        ["connector_runs.rs", "connector_runs_live.rs", "connector_inbox.rs"]
+            .into_iter()
+            .map(|name| {
+                let body = std::fs::read_to_string(root.join(name))
+                    .unwrap_or_else(|error| panic!("{name} is unreadable: {error}"));
+                // Everything from `mod tests` down is fixtures and assertions,
+                // which name families legitimately and constantly.
+                let production = body
+                    .split_once("#[cfg(test)]")
+                    .map(|(before, _)| before.to_owned())
+                    .unwrap_or(body);
+                (name, production)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_module_outside_the_registry_singles_out_one_family() {
+        for (name, source) in feature_sources() {
+            for family in ConnectorFamily::ALL {
+                let variant = format!("ConnectorFamily::{family:?}");
+                assert!(
+                    !source.contains(&variant),
+                    "{name} names {variant} in production code — that behaviour belongs in \
+                     `connector_surface::profile` so every family gets it. See \
+                     docs/connector-families.md.",
+                );
+            }
+            // The string form is the same mistake wearing a different hat.
+            for family in ConnectorFamily::ALL {
+                let quoted = format!("\"{}\"", family.as_str());
+                assert!(
+                    !source.contains(&quoted),
+                    "{name} hardcodes the family string {quoted} in production code",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_family_has_a_registry_row_that_describes_itself() {
+        for family in ConnectorFamily::ALL {
+            let entry = profile(family);
+            assert_eq!(entry.family, family, "a row is filed under the wrong family");
+            assert!(!entry.display_name.trim().is_empty(), "{family:?} has no display name");
+            // Exactly one of the two must be present: a family either has an
+            // inbox or owes the user a sentence about why it does not.
+            assert_eq!(
+                entry.inbox.is_some(),
+                entry.no_inbox_reason.is_none(),
+                "{family:?} must have either an inbox or a stated reason it has none",
+            );
+        }
+    }
+
+    #[test]
+    fn every_inbox_row_is_fully_populated() {
+        // A half-filled row produces prompts with empty words in them, which is
+        // the failure mode this test exists to make loud.
+        for family in ConnectorFamily::ALL.into_iter().filter(|family| family.has_inbox_support()) {
+            let inbox = family.inbox().unwrap();
+            for (label, value) in [
+                ("attention_items", inbox.attention_items),
+                ("direct_label", inbox.direct_label),
+                ("mention_label", inbox.mention_label),
+                ("thread_label", inbox.thread_label),
+                ("container_noun", inbox.container_noun),
+                ("reply_verb", inbox.reply_verb),
+            ] {
+                assert!(!value.trim().is_empty(), "{family:?}.{label} is empty");
+            }
+            if let Some(reaction) = inbox.reaction {
+                assert!(!reaction.noun.trim().is_empty(), "{family:?} reaction noun is empty");
+                assert!(!reaction.default_token.trim().is_empty(), "{family:?} reaction token is empty");
+            }
+            for kind in [ItemKind::DirectMessage, ItemKind::Mention, ItemKind::ThreadReply] {
+                assert!(!family.kind_label(kind).trim().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_family_names_its_own_item_kinds() {
+        assert_eq!(ConnectorFamily::Slack.kind_label(ItemKind::DirectMessage), "direct message");
+        assert_eq!(ConnectorFamily::Slack.kind_label(ItemKind::Mention), "mention");
+        // A family with no inbox still answers rather than panicking.
+        assert!(!ConnectorFamily::Gmail.kind_label(ItemKind::Mention).is_empty());
     }
 
     #[test]

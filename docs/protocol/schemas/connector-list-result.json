@@ -20,6 +20,17 @@
         "family": {
           "type": "string"
         },
+        "harness": {
+          "description": "Which harness holds this connection. Connectors do not all live in one: carrying the owner means no client needs its own table of which harness has what, and a run can be sent to the one that can actually see it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hasInbox": {
+          "description": "Whether this build has an in-app inbox for the family at all. Distinct from `available`: a family can be perfectly connected and still have no surface here, which is a different sentence to show the user.",
+          "type": "boolean"
+        },
         "reason": {
           "anyOf": [
             {
@@ -41,7 +52,8 @@
       "required": [
         "available",
         "displayName",
-        "family"
+        "family",
+        "hasInbox"
       ],
       "type": "object"
     },

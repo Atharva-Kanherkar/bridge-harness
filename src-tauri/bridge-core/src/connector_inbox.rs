@@ -157,6 +157,7 @@ pub fn load(db: &Connection, item_key: &str) -> Result<Option<StoredItem>, Bridg
         row_to_item,
     )
     .optional()
+    .map(Option::flatten)
     .map_err(BridgeError::from)
 }
 
@@ -172,27 +173,49 @@ pub fn list(db: &Connection, limit: usize) -> Result<Vec<StoredItem>, BridgeErro
     let rows = statement.query_map(params![limit as i64], row_to_item)?;
     let mut items = Vec::new();
     for row in rows {
-        items.push(row?);
+        // A row this build cannot name is skipped, not guessed at.
+        if let Some(item) = row? {
+            items.push(item);
+        }
     }
     Ok(items)
 }
 
+/// Unread items this build can actually render.
+///
+/// Counted from the known-family list rather than with `COUNT(*)`, so the dock
+/// badge can never claim messages the pane then refuses to show.
 pub fn unread_count(db: &Connection) -> Result<i64, BridgeError> {
-    db.query_row(
-        "SELECT COUNT(*) FROM connector_inbox_items WHERE state!='resolved'",
-        [],
-        |row| row.get(0),
-    )
-    .map_err(BridgeError::from)
+    let mut statement = db.prepare(
+        "SELECT family FROM connector_inbox_items WHERE state!='resolved'",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut count = 0;
+    for family in rows {
+        if ConnectorFamily::parse(&family?).is_some() {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
-fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredItem> {
+/// Read one row, or `None` when this build cannot render it.
+///
+/// The `None` case is a family string this build does not know — a row written
+/// by a newer Bridge. It must not be *guessed*: an earlier version defaulted to
+/// the first family, which would have labelled a foreign row as Slack and then
+/// offered to reply to it there. Skipping is the only safe reading, and the
+/// row stays on disk for whichever build does understand it.
+fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<StoredItem>> {
     let family: String = row.get(0)?;
+    let Some(family) = ConnectorFamily::parse(&family) else {
+        return Ok(None);
+    };
     let kind: String = row.get(5)?;
     let card: Option<String> = row.get(10)?;
-    Ok(StoredItem {
+    Ok(Some(StoredItem {
         item: InboxItem {
-            family: ConnectorFamily::parse(&family).unwrap_or(ConnectorFamily::Slack),
+            family,
             channel_id: row.get(1)?,
             channel_label: row.get(2)?,
             message_ts: row.get(3)?,
@@ -208,7 +231,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredItem> {
         card: card.and_then(|raw| serde_json::from_str(&raw).ok()),
         render_rejection: row.get(11)?,
         resolution: row.get(12)?,
-    })
+    }))
 }
 
 fn kind_str(kind: ItemKind) -> &'static str {
@@ -534,6 +557,32 @@ mod tests {
         assert_eq!(parse_ingress(&payload, ConnectorFamily::Slack, "now")[0].text, "");
         assert!(parse_ingress(&json!({"nope": []}), ConnectorFamily::Slack, "now").is_empty());
         assert!(parse_ingress(&json!("not an object"), ConnectorFamily::Slack, "now").is_empty());
+    }
+
+    #[test]
+    fn a_row_from_a_newer_build_is_skipped_rather_than_mislabelled() {
+        let db = db();
+        record_arrivals(&db, &[item("1.1")]).unwrap();
+        // A family a future Bridge knows and this one does not. The name is
+        // deliberately one no real connector will ever use, so adding a genuine
+        // family later cannot quietly turn this case into the ordinary one.
+        // Defaulting it to the first known family would offer to reply to it in
+        // the wrong product entirely.
+        db.execute(
+            "INSERT INTO connector_inbox_items
+                 (item_key,family,channel_id,channel_label,message_ts,author,kind,body,received_at,state)
+             VALUES('futurecorp:C1:2.0','futurecorp','C1','#general','2.0','someone','mention','hi','2026-09-13T09:00:00Z','pending')",
+            [],
+        )
+        .unwrap();
+
+        let listed = list(&db, 10).unwrap();
+        assert_eq!(listed.len(), 1, "the unknown row is skipped");
+        assert_eq!(listed[0].item.family, ConnectorFamily::Slack);
+        assert!(load(&db, "futurecorp:C1:2.0").unwrap().is_none());
+        // And the badge agrees with the list rather than counting a row the
+        // pane will never show.
+        assert_eq!(unread_count(&db).unwrap(), 1);
     }
 
     #[test]

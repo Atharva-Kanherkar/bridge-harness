@@ -29,7 +29,9 @@ use crate::connector_inbox::{self, Resolution};
 use crate::connector_runs::{
     self, AuthorizedAction, ConnectorAction, RunKind, INGRESS_FENCE,
 };
-use crate::connector_surface::{ConnectorCard, InboxItem};
+use crate::connector_surface::{
+    ConnectorAvailability, ConnectorCard, HarnessConnectors, InboxItem,
+};
 use crate::events::CoreEvent;
 use crate::runtime::BridgeCore;
 use crate::work_connectors::ConnectorFamily;
@@ -95,20 +97,20 @@ pub fn poll_once(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
 
 fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
     let now = Utc::now().to_rfc3339();
-    let Some(server) = available_server(core, family) else {
+    let Some(connection) = available_connection(family) else {
         let db = core.db.lock().unwrap();
         let _ = connector_inbox::record_poll_failure(
             &db,
             family,
             &now,
-            &format!("{} is not connected in this harness", family.display_name()),
+            &format!("{} is not connected in any harness", family.display_name()),
         );
         return 0;
     };
 
     let output = match one_bounded_turn(
         core,
-        &server,
+        &connection,
         RunKind::Ingress,
         &connector_runs::ingress_prompt(family),
     ) {
@@ -167,7 +169,7 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
     }
 
     for item in fresh.iter().take(MAX_RENDERS_PER_CYCLE) {
-        render_item(core, &server, item);
+        render_item(core, &connection, item);
     }
     fresh.len()
 }
@@ -178,10 +180,10 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
 /// function: it is called per arrival, it is given one item, and there is no
 /// batch or refresh variant of it anywhere. Re-opening the pane re-reads the
 /// stored card; it does not come back here.
-pub fn render_item(core: &Arc<BridgeCore>, server: &str, item: &InboxItem) {
+pub fn render_item(core: &Arc<BridgeCore>, connection: &ConnectorAvailability, item: &InboxItem) {
     let (card, rejection) = match one_bounded_turn(
         core,
-        server,
+        connection,
         RunKind::Render,
         &connector_runs::render_prompt(item),
     ) {
@@ -215,8 +217,8 @@ pub fn execute_action(
     authorized: &AuthorizedAction,
 ) -> Result<(), String> {
     let item = authorized.action().item();
-    let server = available_server(core, item.family)
-        .ok_or_else(|| format!("{} is not connected in this harness", item.family.display_name()))?;
+    let connection = available_connection(item.family)
+        .ok_or_else(|| format!("{} is not connected in any harness", item.family.display_name()))?;
 
     // Claim the item *before* the run. A send that succeeds and then fails to
     // record would let the next click send again; claiming first means the worst
@@ -238,7 +240,7 @@ pub fn execute_action(
         return Err("this message has already been dealt with".into());
     }
 
-    let outcome = one_bounded_turn(core, &server, RunKind::Action, &authorized.prompt());
+    let outcome = one_bounded_turn(core, &connection, RunKind::Action, &authorized.prompt());
     core.events.publish(CoreEvent::ConnectorItemResolved {
         family: item.family.as_str().into(),
         item_key: item.key(),
@@ -250,14 +252,33 @@ pub fn execute_action(
     outcome.map(|_| ())
 }
 
-/// The MCP server name for a family, when the harness has it connected.
-pub fn available_server(core: &Arc<BridgeCore>, family: ConnectorFamily) -> Option<String> {
-    let _ = core;
-    let configuration = crate::marketplace::claude_sdk_configuration();
-    crate::connector_surface::resolve_availability(&configuration.connector_health)
+/// What every harness Bridge can ask reports having connected.
+///
+/// **This is the second extension point.** Today exactly one harness exposes its
+/// MCP inventory to Bridge, so this list has one entry; when Codex or OpenCode
+/// grow an equivalent of `claude mcp list`, adding them is appending a row here
+/// and nothing else. Everything downstream — availability, the run layer, the
+/// API — already reasons about "which harness owns this connector" rather than
+/// assuming, because the answer travels with the connector.
+pub fn discover_harness_connectors() -> Vec<HarnessConnectors> {
+    let claude = crate::marketplace::claude_sdk_configuration();
+    vec![HarnessConnectors {
+        harness: "claude".to_owned(),
+        health: claude.connector_health,
+    }]
+}
+
+/// Where a family's connection lives, when one is connected.
+pub fn available_connection(family: ConnectorFamily) -> Option<ConnectorAvailability> {
+    crate::connector_surface::resolve_availability(&discover_harness_connectors())
         .into_iter()
         .find(|entry| entry.family == family && entry.available)
-        .and_then(|entry| entry.server)
+}
+
+/// The MCP server name for a family, when some harness has it connected.
+pub fn available_server(core: &Arc<BridgeCore>, family: ConnectorFamily) -> Option<String> {
+    let _ = core;
+    available_connection(family).and_then(|entry| entry.server)
 }
 
 /// Spawn the hidden session, send one prompt, and read to the result marker
@@ -266,10 +287,12 @@ pub fn available_server(core: &Arc<BridgeCore>, family: ConnectorFamily) -> Opti
 /// instead of to nothing.
 fn one_bounded_turn(
     core: &Arc<BridgeCore>,
-    server: &str,
+    connection: &ConnectorAvailability,
     kind: RunKind,
     prompt: &str,
 ) -> Result<String, String> {
+    let server = connection.server.as_deref().unwrap_or_default();
+    let harness_id = connection.harness.as_deref().unwrap_or_default();
     let limits = connector_runs::run_limits(kind);
     let wall = limits.max_wall_seconds.max(1) as u64;
     // Scoped to this one server: the policy's read-verb rule is what keeps an
@@ -278,7 +301,7 @@ fn one_bounded_turn(
     let policy = BriefingRuntimePolicy::compile_scoped(vec![server.to_owned()], limits)
         .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
 
-    let (harness, model) = run_profile(core)?;
+    let (harness, model) = run_profile(core, harness_id)?;
     let session_id = Uuid::new_v4().to_string();
     let scratch = core.chat_scratch_dir(&session_id);
     std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
@@ -402,19 +425,25 @@ fn collect_text(message: &Value, text: &mut String) {
 
 /// Which harness and model a connector run uses.
 ///
-/// The harness is **pinned**, not routed. The premise of the whole feature is
-/// that the connector lives in one harness's own MCP configuration, so sending
-/// this run to a "better" harness sends it to one that cannot see the account at
-/// all. Learning and routing rank eligible candidates; here there is exactly one.
+/// The harness is **determined, not routed**: it is whichever one's own MCP
+/// configuration holds this connector, which `available_connection` carries
+/// alongside the server name. Sending the run to a "better" harness sends it to
+/// one that cannot see the account at all, so learning and routing have nothing
+/// to rank here — there is exactly one eligible candidate and the connector
+/// names it.
 ///
 /// The model is taken from the Research profile when that profile is already on
-/// this harness — a connector run is a read-and-summarise job, which is what
-/// that profile is for — and otherwise from the adapter's own default. Reading a
+/// that harness — a connector run is a read-and-summarise job, which is what
+/// that profile is for — and otherwise from the harness's own default. Reading a
 /// DM is not worth a premium model, and the ceilings in
 /// `connector_runs::run_limits` assume it is not getting one.
-fn run_profile(core: &Arc<BridgeCore>) -> Result<(String, String), String> {
-    const HARNESS: &str = "claude";
+fn run_profile(core: &Arc<BridgeCore>, harness: &str) -> Result<(String, String), String> {
     let descriptors = core.adapter_registry.descriptors();
+    let default_model = descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == harness)
+        .and_then(|descriptor| descriptor.models.first())
+        .map(|model| model.id.clone());
     let model = {
         let db = core.db.lock().unwrap();
         crate::model_profiles::resolve_profile(
@@ -424,13 +453,13 @@ fn run_profile(core: &Arc<BridgeCore>) -> Result<(String, String), String> {
         )
         .ok()
         .flatten()
-        .filter(|profile| profile.provider == HARNESS)
+        .filter(|profile| profile.provider == harness)
         .map(|profile| profile.model)
     };
-    Ok((
-        HARNESS.to_owned(),
-        model.unwrap_or_else(|| crate::claude_adapter::DEFAULT_MODEL.to_owned()),
-    ))
+    model
+        .or(default_model)
+        .map(|model| (harness.to_owned(), model))
+        .ok_or_else(|| format!("{harness} offers no model to run a connector turn on"))
 }
 
 fn settle_session(core: &Arc<BridgeCore>, session_id: &str, status: &str) {
@@ -449,7 +478,7 @@ pub fn start_connector_poll_maintenance(core: Arc<BridgeCore>) {
             if !family.has_inbox_support() {
                 continue;
             }
-            if available_server(&core, family).is_some() {
+            if available_connection(family).is_some() {
                 poll_once(&core, family);
             }
         }

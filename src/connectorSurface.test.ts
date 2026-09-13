@@ -168,6 +168,8 @@ describe("connector selection and hints", () => {
     family: "slack",
     displayName: "Slack",
     server: "claude.ai Slack",
+    harness: "claude",
+    hasInbox: true,
     available: true,
     reason: null,
     explanation: null,
@@ -182,9 +184,19 @@ describe("connector selection and hints", () => {
     expect(chosen?.family).toBe("slack");
   });
 
-  it("falls back to Slack so the pane can explain itself with none available", () => {
-    const chosen = primaryConnector([descriptor({ available: false, reason: "notConfigured" })]);
+  it("falls back to a family this build has an inbox for, so the pane can explain itself", () => {
+    const chosen = primaryConnector([
+      descriptor({ family: "gmail", displayName: "Gmail", hasInbox: false, available: false, reason: "noResolver" }),
+      descriptor({ available: false, reason: "notConfigured" }),
+    ]);
+    // No family is named in the implementation — "has an inbox here" is the
+    // property that makes a connector worth explaining.
     expect(chosen?.family).toBe("slack");
+  });
+
+  it("names no family of its own when nothing has an inbox", () => {
+    const chosen = primaryConnector([descriptor({ family: "gmail", displayName: "Gmail", hasInbox: false, available: false })]);
+    expect(chosen?.family).toBe("gmail");
   });
 
   it("passes the host's explanation through, because the fix is usually not in Bridge", () => {

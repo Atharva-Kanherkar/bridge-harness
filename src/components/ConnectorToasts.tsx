@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { AtSign, MessageSquare, Reply, X } from "lucide-react";
+import { AtSign, FileText, Mail, MessageSquare, Reply, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ConnectorToast } from "../connectorSurface";
 
@@ -13,8 +13,22 @@ import type { ConnectorToast } from "../connectorSurface";
 
 export const CONNECTOR_TOAST_TTL_MS = 20_000;
 
+/**
+ * Per-family glyphs, with a default that is right rather than arbitrary.
+ *
+ * A table instead of a conditional so an unlisted family gets the generic
+ * message glyph — which is true of every connector here — rather than whichever
+ * icon happened to be on the else branch.
+ */
+const FAMILY_ICON: Record<string, typeof MessageSquare> = {
+  slack: MessageSquare,
+  gmail: Mail,
+  linear: AtSign,
+  notion: FileText,
+};
+
 function KindIcon({ family }: { family: string }) {
-  const Icon = family === "slack" ? MessageSquare : AtSign;
+  const Icon = FAMILY_ICON[family] ?? MessageSquare;
   return <Icon size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-foreground" />;
 }
 

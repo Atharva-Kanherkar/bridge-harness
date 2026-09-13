@@ -137,9 +137,23 @@ export function emptyStateFor(result: Pick<ConnectorInboxResult, "items" | "poll
   return { tone: "caught-up", title: "You’re all caught up", detail: "Nothing new since the last check." };
 }
 
-/** The one connector family this build surfaces, when the harness has it. */
+/**
+ * The connector the pane is about.
+ *
+ * An available one wins; failing that, the best one to *explain* — a family that
+ * has an inbox in this build but is signed out is a fixable situation and worth
+ * naming, whereas one with no inbox at all is not news. No family is named
+ * here: adding Gmail should not require editing this function.
+ */
 export function primaryConnector(connectors: ConnectorDescriptor[]): ConnectorDescriptor | undefined {
-  return connectors.find(connector => connector.available) ?? connectors.find(connector => connector.family === "slack");
+  return connectors.find(connector => connector.available)
+    ?? connectors.find(connector => connector.hasInbox)
+    ?? connectors[0];
+}
+
+/** Families this build has an inbox for, whether or not they are connected. */
+export function inboxFamilies(connectors: ConnectorDescriptor[]): string[] {
+  return connectors.filter(connector => connector.hasInbox).map(connector => connector.family);
 }
 
 /** Whether anything is worth showing a dock badge for. */
@@ -184,7 +198,8 @@ export function unavailableHint(connector: ConnectorDescriptor): string {
   return connector.explanation ?? `${connector.displayName} is not available.`;
 }
 
-/** True when the degraded badge should show for this family. */
-export function isDegraded(poll: ConnectorPollStatus[], family: string): boolean {
-  return poll.some(status => status.family === family && !!status.degraded);
+/** True when the degraded badge should show for this family, or for any of
+ *  them when no family is named. */
+export function isDegraded(poll: ConnectorPollStatus[], family?: string): boolean {
+  return poll.some(status => (!family || status.family === family) && !!status.degraded);
 }

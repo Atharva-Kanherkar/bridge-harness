@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   emptyStateFor,
+  inboxFamilies,
   isDegraded,
   itemSubtitle,
   primaryConnector,
@@ -95,7 +96,7 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
   );
   const connector = primaryConnector(connectors);
   const empty = inbox ? emptyStateFor(inbox) : null;
-  const degraded = inbox ? isDegraded(inbox.poll, "slack") : false;
+  const degraded = inbox ? isDegraded(inbox.poll, connector?.family) : false;
 
   const act = async (action: ConnectorActionRequest, approved?: boolean) => {
     if (!selected) return;
@@ -140,7 +141,11 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
         aria-label="Check for new messages"
         onClick={() => void (async () => {
           setBusy(true);
-          try { await bridgeApi.connectorRefresh("slack"); await refresh(); }
+          try {
+            // Refresh every family this build has an inbox for, not a named one.
+            await Promise.all(inboxFamilies(connectors).map(family => bridgeApi.connectorRefresh(family)));
+            await refresh();
+          }
           finally { setBusy(false); }
         })()}
       >
@@ -321,7 +326,25 @@ function Block({ block }: { block: ConnectorCardBlock }) {
         <span className="shrink-0 uppercase tracking-wider text-muted-foreground">{block.label}</span>
         <span className="min-w-0 flex-1 truncate text-foreground">{block.value}</span>
       </div>;
+    default:
+      // A block kind this build does not know, from a newer host. Unreachable
+      // through the type system and entirely reachable at runtime, which is the
+      // only kind of unreachable that matters for data off a wire. Rendering the
+      // block's own text keeps the card useful instead of silently dropping a
+      // paragraph of it; the fields are still bounded by the host's validator.
+      return <UnknownBlock block={block} />;
   }
+}
+
+/** Best-effort rendering of a block kind added after this build shipped. */
+function UnknownBlock({ block }: { block: ConnectorCardBlock }) {
+  const record = block as unknown as Record<string, unknown>;
+  const text = ["text", "value", "label", "author"]
+    .map(field => record[field])
+    .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+    .join(" · ");
+  if (!text) return null;
+  return <p className="text-[12px] leading-relaxed text-muted-foreground">{text}</p>;
 }
 
 /**

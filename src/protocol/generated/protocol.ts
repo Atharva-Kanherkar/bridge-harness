@@ -1036,6 +1036,8 @@ export interface ConnectorDescriptor {
   displayName: string;
   explanation?: string | null;
   family: string;
+  harness?: string | null;
+  hasInbox: boolean;
   reason?: ConnectorUnavailableReason | null;
   server?: string | null;
 }

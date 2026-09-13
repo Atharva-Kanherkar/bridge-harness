@@ -17,7 +17,7 @@ let host: HTMLDivElement | undefined;
 const flush = async () => { for (let i = 0; i < 4; i += 1) await Promise.resolve(); };
 
 const connected: ConnectorListResult = {
-  connectors: [{ family: "slack", displayName: "Slack", server: "claude.ai Slack", available: true, reason: null, explanation: null }],
+  connectors: [{ family: "slack", displayName: "Slack", server: "claude.ai Slack", harness: "claude", hasInbox: true, available: true, reason: null, explanation: null }],
 };
 
 function item(overrides: Partial<ConnectorInboxItem> = {}): ConnectorInboxItem {
@@ -193,8 +193,9 @@ describe("ConnectorPane", () => {
   it("explains an unavailable connector instead of erroring", async () => {
     stub(inbox([]), {
       connectors: [{
-        family: "slack", displayName: "Slack", server: "claude.ai Slack", available: false,
-        reason: "authRequired", explanation: "Slack is configured but signed out. Sign in from your harness.",
+        family: "slack", displayName: "Slack", server: "claude.ai Slack", harness: "claude", hasInbox: true,
+        available: false, reason: "authRequired",
+        explanation: "Slack is configured but signed out. Sign in from your harness.",
       }],
     });
     const node = await mount(<ConnectorPane />);
@@ -213,6 +214,47 @@ describe("ConnectorPane", () => {
     stub(inbox([item(), item({ itemKey: "b", state: "resolved", resolution: "replied" })]));
     await mount(<ConnectorPane onUnreadChange={onUnreadChange} />);
     expect(onUnreadChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it("renders a block kind from a newer host instead of dropping it", async () => {
+    const future = item();
+    future.card!.blocks = [
+      { kind: "summary", text: "A kind this build knows." },
+      // A host one version ahead. TypeScript says this cannot happen; the wire
+      // says otherwise, and silently swallowing a paragraph of a notification
+      // is worse than rendering it plainly.
+      { kind: "deadline", label: "Due", value: "in 20 minutes" } as never,
+    ];
+    stub(inbox([future]));
+    const node = await mount(<ConnectorPane />);
+    expect(node.textContent).toContain("A kind this build knows.");
+    expect(node.textContent).toContain("in 20 minutes");
+  });
+
+  it("drops a future block with no readable text rather than rendering an empty row", async () => {
+    const future = item();
+    future.card!.blocks = [
+      { kind: "summary", text: "Still here." },
+      { kind: "chart", points: [1, 2, 3] } as never,
+    ];
+    stub(inbox([future]));
+    const node = await mount(<ConnectorPane />);
+    expect(node.textContent).toContain("Still here.");
+  });
+
+  it("refreshes every family this build has an inbox for, naming none of them", async () => {
+    stub(inbox([item()]), {
+      connectors: [
+        { family: "slack", displayName: "Slack", server: "s", harness: "claude", hasInbox: true, available: true, reason: null, explanation: null },
+        { family: "gmail", displayName: "Gmail", server: "g", harness: "claude", hasInbox: true, available: true, reason: null, explanation: null },
+        { family: "linear", displayName: "Linear", server: null, harness: null, hasInbox: false, available: false, reason: "noResolver", explanation: "not written" },
+      ],
+    });
+    const refresh = vi.spyOn(bridgeApi, "connectorRefresh").mockResolvedValue({ announced: 0 });
+    const node = await mount(<ConnectorPane />);
+    const button = node.querySelector('button[aria-label="Check for new messages"]') as HTMLButtonElement;
+    await act(async () => { button.click(); await flush(); });
+    expect(refresh.mock.calls.map(call => call[0]).sort()).toEqual(["gmail", "slack"]);
   });
 
   it("opens the item a toast deep-linked to", async () => {

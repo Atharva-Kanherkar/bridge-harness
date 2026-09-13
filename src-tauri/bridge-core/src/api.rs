@@ -272,18 +272,23 @@ pub fn connector_list(
     refresh: bool,
 ) -> Result<wire::ConnectorListResult, BridgeError> {
     let _ = (core, refresh);
-    let configuration = crate::marketplace::claude_sdk_configuration();
-    let connectors = crate::connector_surface::resolve_availability(&configuration.connector_health)
-        .into_iter()
-        .map(|entry| wire::ConnectorDescriptor {
-            explanation: entry.reason.as_ref().map(|reason| reason.explanation(entry.family)),
-            reason: entry.reason.as_ref().map(connector_reason_wire),
-            family: entry.family.as_str().into(),
-            display_name: entry.family.display_name().into(),
-            server: entry.server,
-            available: entry.available,
-        })
-        .collect();
+    let connectors = crate::connector_surface::resolve_availability(
+        &crate::connector_runs_live::discover_harness_connectors(),
+    )
+    .into_iter()
+    .map(|entry| wire::ConnectorDescriptor {
+        explanation: entry.reason.as_ref().map(|reason| reason.explanation(entry.family)),
+        reason: entry.reason.as_ref().map(connector_reason_wire),
+        family: entry.family.as_str().into(),
+        display_name: entry.family.display_name().into(),
+        // Carried to the UI so a pane can say where a connection lives, and so
+        // no client has to keep its own table of which harness owns what.
+        harness: entry.harness,
+        has_inbox: entry.family.has_inbox_support(),
+        server: entry.server,
+        available: entry.available,
+    })
+    .collect();
     Ok(wire::ConnectorListResult { connectors })
 }
 
@@ -440,19 +445,25 @@ pub fn connector_dismiss(
     core: &Arc<BridgeCore>,
     item_key: &str,
 ) -> Result<wire::ConnectorDismissResult, BridgeError> {
-    let dismissed = {
+    let (dismissed, stored) = {
         let db = core.db.lock().unwrap();
-        crate::connector_inbox::resolve(
+        let stored = crate::connector_inbox::load(&db, item_key)?;
+        let dismissed = crate::connector_inbox::resolve(
             &db,
             item_key,
             crate::connector_inbox::Resolution::Dismissed,
             &chrono::Utc::now().to_rfc3339(),
-        )?
+        )?;
+        (dismissed, stored)
     };
     if dismissed {
-        core.events.publish(crate::events::CoreEvent::ConnectorInboxChanged {
-            family: "slack".into(),
-        });
+        // The dismissed item's own family, not a constant: this published
+        // "slack" for every family, which was wrong the moment a second one
+        // existed and was invisible while only one did.
+        let family = stored
+            .map(|item| item.item.family.as_str().to_owned())
+            .unwrap_or_else(|| "unknown".into());
+        core.events.publish(crate::events::CoreEvent::ConnectorInboxChanged { family });
     }
     Ok(wire::ConnectorDismissResult { dismissed })
 }

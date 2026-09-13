@@ -21,7 +21,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::connector_surface::{
-    CardRejection, ConnectorCard, InboxItem, ItemKind, MAX_REPLY_TEXT, MAX_SUGGESTED_REPLIES,
+    CardRejection, ConnectorCard, InboxItem, InboxProfile, ItemKind, MAX_REPLY_TEXT,
+    MAX_SUGGESTED_REPLIES,
 };
 use crate::connector_inbox::INGRESS_LOOKBACK_MINUTES;
 use crate::work_connectors::ConnectorFamily;
@@ -84,6 +85,31 @@ pub fn fence_untrusted(text: &str) -> String {
     format!("<{UNTRUSTED_FENCE}>\n{cleaned}\n</{UNTRUSTED_FENCE}>")
 }
 
+/// The vocabulary used when a family somehow reaches a prompt without an inbox
+/// row. Unreachable through the poller and the API, which both refuse first;
+/// present so every function here is total rather than panicking.
+const FALLBACK_INBOX: InboxProfile = InboxProfile {
+    attention_items: "anything addressed to the account owner",
+    direct_label: "direct message",
+    mention_label: "mention",
+    thread_label: "thread reply",
+    container_noun: "channel",
+    reply_verb: "send",
+    reaction: None,
+};
+
+fn inbox_of(item: &InboxItem) -> InboxProfile {
+    item.family.inbox().unwrap_or(FALLBACK_INBOX)
+}
+
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// The ingress prompt: what is unread, as structured rows.
 ///
 /// It asks for identity fields and the body, and for nothing that requires a
@@ -92,12 +118,18 @@ pub fn fence_untrusted(text: &str) -> String {
 /// unattended run whose opinions nobody reviewed.
 pub fn ingress_prompt(family: ConnectorFamily) -> String {
     let name = family.display_name();
+    // A family with no inbox row never reaches here — the poller skips it and
+    // `connector_refresh` refuses it — but the fallback keeps this total.
+    let inbox = family.inbox().unwrap_or(FALLBACK_INBOX);
+    let attention_items = inbox.attention_items;
+    let direct = inbox.direct_label;
+    let mention = inbox.mention_label;
+    let thread = inbox.thread_label;
     format!(
         "You are reading one {name} account through its MCP tools on behalf of its owner.\n\
          \n\
-         Find every direct message, @-mention of the account owner, and reply in a thread the\n\
-         owner participates in, received in the last {INGRESS_LOOKBACK_MINUTES} minutes and not\n\
-         yet read. Use read tools only.\n\
+         Find every one of the following, received in the last {INGRESS_LOOKBACK_MINUTES} minutes\n\
+         and not yet read: {attention_items}. Use read tools only.\n\
          \n\
          Reply with exactly one fenced block tagged `{INGRESS_FENCE}` containing JSON:\n\
          \n\
@@ -109,6 +141,8 @@ pub fn ingress_prompt(family: ConnectorFamily) -> String {
          ```\n\
          \n\
          Rules:\n\
+         - `kind` is `direct_message` for a {direct}, `mention` for a {mention}, and\n\
+           `thread_reply` for a {thread}.\n\
          - `channelId` and `messageTs` must be the provider's own identifiers, copied exactly.\n\
            They are how this message is recognised again; a value you inferred is a wrong value.\n\
          - `text` is the message body copied verbatim. Do not summarise, translate, or redact it.\n\
@@ -127,17 +161,14 @@ pub fn ingress_prompt(family: ConnectorFamily) -> String {
 /// rendering ten items in one turn would let one message's content influence
 /// another message's card.
 pub fn render_prompt(item: &InboxItem) -> String {
-    let kind = match item.kind {
-        ItemKind::DirectMessage => "a direct message",
-        ItemKind::Mention => "a mention",
-        ItemKind::ThreadReply => "a thread reply",
-    };
+    let kind = format!("a {}", item.family.kind_label(item.kind));
+    let container = item.family.inbox().unwrap_or(FALLBACK_INBOX).container_noun;
     format!(
         "Render one notification card for {kind} that just arrived in {family}.\n\
          \n\
          Message envelope (Bridge-derived, trusted):\n\
          - itemKey: {key}\n\
-         - channel: {channel} ({channel_id})\n\
+         - {container}: {channel} ({channel_id})\n\
          - author: {author}\n\
          - messageTs: {ts}\n\
          \n\
@@ -181,31 +212,36 @@ pub fn render_prompt(item: &InboxItem) -> String {
 pub fn action_prompt(action: &ConnectorAction) -> String {
     match action {
         ConnectorAction::Reply { item, text } => format!(
-            "Send exactly this reply in {family}, then stop.\n\
+            "{Verb} exactly this reply in {family}, then stop.\n\
              \n\
-             - channel: {channel} ({channel_id})\n\
+             - {container}: {channel} ({channel_id})\n\
              - thread: {ts}\n\
              \n\
-             The message to send, verbatim, with nothing added or removed:\n\
+             The message to {verb}, verbatim, with nothing added or removed:\n\
              {body}\n\
              \n\
-             The owner of this account wrote and approved that text. Send it with one send/post\n\
-             tool call in that thread. Do not compose anything else, do not send anywhere else,\n\
-             and do not call any other tool. Reply with `sent` or a one-line failure reason.",
+             The owner of this account wrote and approved that text. {Verb} it with one tool call\n\
+             in that thread. Do not compose anything else, do not {verb} anywhere else, and do not\n\
+             call any other tool. Reply with `sent` or a one-line failure reason.",
             family = item.family.display_name(),
+            container = inbox_of(item).container_noun,
+            verb = inbox_of(item).reply_verb,
+            Verb = capitalize(inbox_of(item).reply_verb),
             channel = item.channel_label,
             channel_id = item.channel_id,
             ts = item.message_ts,
             body = fence_untrusted(text),
         ),
         ConnectorAction::React { item, emoji } => format!(
-            "Add exactly one reaction and stop.\n\
+            "Add exactly one {noun} and stop.\n\
              \n\
-             - channel: {channel} ({channel_id})\n\
+             - {container}: {channel} ({channel_id})\n\
              - message: {ts}\n\
-             - emoji: :{emoji}:\n\
+             - {noun}: {emoji}\n\
              \n\
-             One reaction tool call, nothing else. Reply with `reacted` or a one-line failure reason.",
+             One tool call, nothing else. Reply with `reacted` or a one-line failure reason.",
+            noun = inbox_of(item).reaction.map_or("reaction", |reaction| reaction.noun),
+            container = inbox_of(item).container_noun,
             channel = item.channel_label,
             channel_id = item.channel_id,
             ts = item.message_ts,
@@ -500,6 +536,54 @@ mod tests {
         // The fallback path renders it too, with no replies invented.
         let (card, _) = card_or_fallback("nothing fenced here", &hostile);
         assert!(card.suggested_replies.is_empty());
+    }
+
+    #[test]
+    fn every_prompt_is_written_in_the_familys_own_vocabulary() {
+        // The proof that these templates are reusable: each varying word comes
+        // out of the registry row, so a new family gets correct prompts by
+        // filling in that row rather than by forking the template.
+        let inbox = ConnectorFamily::Slack.inbox().unwrap();
+
+        let ingress = ingress_prompt(ConnectorFamily::Slack);
+        assert!(ingress.contains(inbox.attention_items), "ingress ignores attention_items");
+        assert!(ingress.contains(inbox.direct_label));
+        assert!(ingress.contains(inbox.mention_label));
+        assert!(ingress.contains(inbox.thread_label));
+
+        let render = render_prompt(&item());
+        assert!(render.contains(inbox.container_noun), "render ignores container_noun");
+        assert!(render.contains(inbox.direct_label), "render ignores the item's kind label");
+
+        let reply = action_prompt(&ConnectorAction::Reply { item: item(), text: "ok".into() });
+        assert!(reply.contains(inbox.reply_verb), "the action prompt ignores reply_verb");
+        assert!(reply.contains(inbox.container_noun));
+
+        let react = action_prompt(&ConnectorAction::React { item: item(), emoji: "eyes".into() });
+        assert!(react.contains(inbox.reaction.unwrap().noun), "the react prompt ignores the reaction noun");
+    }
+
+    #[test]
+    fn no_prompt_hardcodes_a_word_the_registry_owns() {
+        // The specific regression this guards: the first version of these
+        // templates said "direct message", "channel" and ":emoji:" literally, so
+        // a Gmail row would have produced prompts telling a model to look for
+        // Slack things in a mailbox.
+        let sources = [
+            ingress_prompt(ConnectorFamily::Slack),
+            render_prompt(&item()),
+            action_prompt(&ConnectorAction::Reply { item: item(), text: "ok".into() }),
+        ];
+        for prompt in &sources {
+            // Present only because Slack's row says so — swap the row and these
+            // go away. The test asserts the words are *sourced*, not banned.
+            let inbox = ConnectorFamily::Slack.inbox().unwrap();
+            let sourced = [inbox.direct_label, inbox.container_noun, inbox.reply_verb];
+            assert!(
+                sourced.iter().any(|word| prompt.contains(word)),
+                "a prompt that mentions none of the registry's words is not reading the registry",
+            );
+        }
     }
 
     #[test]

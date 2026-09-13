@@ -912,13 +912,15 @@ function browserWorkBoard(): WorkBoard {
 function mockConnectorList(): ConnectorListResult {
   return {
     connectors: [
-      { family: "slack", displayName: "Slack", server: "claude.ai Slack", available: true, reason: null, explanation: null },
+      { family: "slack", displayName: "Slack", server: "claude.ai Slack", harness: "claude", hasInbox: true, available: true, reason: null, explanation: null },
       {
-        family: "gmail", displayName: "Gmail", server: "claude.ai Gmail", available: false, reason: "noResolver",
-        explanation: "Bridge cannot derive provenance for Gmail results yet, so it will not surface them.",
+        family: "gmail", displayName: "Gmail", server: "claude.ai Gmail", harness: "claude", hasInbox: false,
+        available: false, reason: "noResolver",
+        explanation: "Gmail has no in-app inbox yet — its ingress query and card template are not written.",
       },
       {
-        family: "linear", displayName: "Linear", server: null, available: false, reason: "notConfigured",
+        family: "linear", displayName: "Linear", server: null, harness: null, hasInbox: false,
+        available: false, reason: "notConfigured",
         explanation: "No Linear MCP server is configured in this harness.",
       },
     ],

@@ -36,6 +36,14 @@ pub struct ConnectorDescriptor {
     pub display_name: String,
     /// The MCP server name the harness knows this family by, when one exists.
     pub server: Option<String>,
+    /// Which harness holds this connection. Connectors do not all live in one:
+    /// carrying the owner means no client needs its own table of which harness
+    /// has what, and a run can be sent to the one that can actually see it.
+    pub harness: Option<String>,
+    /// Whether this build has an in-app inbox for the family at all. Distinct
+    /// from `available`: a family can be perfectly connected and still have no
+    /// surface here, which is a different sentence to show the user.
+    pub has_inbox: bool,
     pub available: bool,
     pub reason: Option<ConnectorUnavailableReason>,
     /// The sentence the pane shows when unavailable, written to say where the
@@ -76,6 +84,16 @@ pub enum ConnectorItemState {
 
 /// One renderable block. A closed set: the harness picks from these, it never
 /// authors markup, so no connector message can become script or layout.
+///
+/// **Adding a kind** is one variant here, one in `connector_surface::CardBlock`,
+/// one arm in the render prompt's block list, and one arm in the pane's
+/// renderer. Four edits, all of which the compiler or a test will demand — see
+/// `docs/connector-families.md`. The set stays closed on purpose: it is the
+/// reason a connector message can never become markup, and the reason this
+/// surface needs no iframe.
+///
+/// Clients render an unrecognised kind as plain text rather than dropping it, so
+/// a newer host talking to an older client degrades instead of going blank.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ConnectorCardBlock {

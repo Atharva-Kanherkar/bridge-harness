@@ -3,7 +3,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
     "ConnectorCardBlock": {
-      "description": "One renderable block. A closed set: the harness picks from these, it never authors markup, so no connector message can become script or layout.",
+      "description": "One renderable block. A closed set: the harness picks from these, it never authors markup, so no connector message can become script or layout.\n\n**Adding a kind** is one variant here, one in `connector_surface::CardBlock`, one arm in the render prompt's block list, and one arm in the pane's renderer. Four edits, all of which the compiler or a test will demand — see `docs/connector-families.md`. The set stays closed on purpose: it is the reason a connector message can never become markup, and the reason this surface needs no iframe.\n\nClients render an unrecognised kind as plain text rather than dropping it, so a newer host talking to an older client degrades instead of going blank.",
       "oneOf": [
         {
           "properties": {
