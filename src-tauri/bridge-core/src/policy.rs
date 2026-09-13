@@ -218,14 +218,7 @@ impl PolicyEngine {
         if input.parent_depth >= self.config.max_depth {
             return outcome(RouteDecision::Reject, RouteReason::DepthLimit, 0);
         }
-        if input.requires_user_approval {
-            return outcome(
-                RouteDecision::RequireUserApproval,
-                RouteReason::UserApprovalRequired,
-                0,
-            );
-        }
-        if input.parent_can_execute {
+        if input.parent_can_execute && !input.requires_user_approval {
             return outcome(
                 RouteDecision::ExecuteInParent,
                 RouteReason::ParentExecutionPreferred,
@@ -234,18 +227,6 @@ impl PolicyEngine {
         }
         if normalize_owned_paths(&input.request.owned_paths).is_err() {
             return outcome(RouteDecision::Reject, RouteReason::InvalidOwnedPath, 0);
-        }
-        if input.request.write_mode != WriteMode::ReadOnly
-            && !owned_paths_are_provenanced(
-                &input.request.owned_paths,
-                &input.owned_path_provenance.trusted_paths,
-            )
-        {
-            return outcome(
-                RouteDecision::RequireUserApproval,
-                RouteReason::OwnedPathProvenanceRequired,
-                0,
-            );
         }
         if input.retry_count > self.config.max_automatic_retries {
             return outcome(RouteDecision::Reject, RouteReason::RetryLimit, 0);
@@ -281,6 +262,18 @@ impl PolicyEngine {
             );
         }
 
+        // Do not ask the user to approve work that cannot pass a hard limit.
+        if input.requires_user_approval {
+            return outcome(RouteDecision::RequireUserApproval, RouteReason::UserApprovalRequired, 0);
+        }
+        if input.request.write_mode != WriteMode::ReadOnly
+            && !owned_paths_are_provenanced(
+                &input.request.owned_paths,
+                &input.owned_path_provenance.trusted_paths,
+            )
+        {
+            return outcome(RouteDecision::RequireUserApproval, RouteReason::OwnedPathProvenanceRequired, 0);
+        }
         if input.active_workers.len() >= self.config.max_concurrent_workers {
             return outcome(RouteDecision::Queue, RouteReason::ConcurrencyLimit, units);
         }
@@ -937,6 +930,13 @@ pub fn record_decision(
         let approval_already_recorded = branch.iter().any(|entry| {
             entry.kind == "approval.requested" && entry.payload["approvalId"] == approval_id
         });
+        if branch.iter().any(|entry| {
+            entry.kind == "approval.resolved" && entry.payload["approvalId"] == approval_id
+        }) {
+            return Err(BridgeError::Invalid(
+                "This write-scope approval is already resolved; its scope is no longer valid for this launch. No approval card was reopened.".into(),
+            ));
+        }
         if approval_already_recorded {
             return Ok(Some(approval_id));
         }
@@ -1232,6 +1232,29 @@ mod tests {
             outcome.decision,
             RouteDecision::RequireUserApproval
         ));
+    }
+
+    #[test]
+    fn hard_limits_reject_before_requesting_scope_approval() {
+        let engine = PolicyEngine::default();
+        for (field, reason) in [
+            ("workers", RouteReason::WorkerBudgetExhausted),
+            ("strong", RouteReason::StrongWorkerLimit),
+            ("capability", RouteReason::CapabilityBudgetExhausted),
+            ("retry", RouteReason::RetryLimit),
+        ] {
+            let mut case = input();
+            case.owned_path_provenance = OwnedPathProvenance::default();
+            match field {
+                "workers" => case.budget.workers_used = 1000,
+                "strong" => { case.request.capability_tier = CapabilityTier::Strong; case.budget.strong_workers_used = 1000; }
+                "capability" => case.budget.capability_units_used = 1000,
+                _ => case.retry_count = 1000,
+            }
+            let outcome = engine.decide(&case);
+            assert!(matches!(outcome.decision, RouteDecision::Reject));
+            assert_eq!(outcome.reason, reason);
+        }
     }
 
     #[test]

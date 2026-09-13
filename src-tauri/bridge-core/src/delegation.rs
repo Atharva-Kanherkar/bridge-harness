@@ -1559,6 +1559,8 @@ Delegate only focused, non-trivial work. Emit one fenced `bridge-delegate` JSON 
 
 After emitting a request, stop and wait. Default topology is flat: the worker cannot directly spawn another worker. Do trivial work in the parent.
 
+Optional capability fields: `networkAccess` (boolean, default `false`; request `true` for online research, subject to host policy) and `writableOutputPaths` (relative artifact paths under `BRIDGE_WORKER_OUTPUT_DIR`, default `[]`). They do not authorize workspace writes. A read-only worker may lack shell tools; use its exposed read tools or gather command-based evidence in the parent, not by widening its write mode.
+
 ## Checking on your workers (bridge-peek)
 
 While workers run you are not blind. Bridge attaches a compact `fleet` digest (per worker: lifecycle, task family, current activity, waiting reason) to the routing notices it sends you. To inspect on demand — for example when the user asks how far along the work is — emit one fenced `bridge-peek` block and stop:
