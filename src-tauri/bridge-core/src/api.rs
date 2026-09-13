@@ -1535,9 +1535,38 @@ pub fn search_session_entries(
     session_id: &str,
     query: &str,
     limit: Option<u32>,
+    offset: Option<u32>,
 ) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
     let db = core.db.lock().unwrap();
-    session_recall::search(&db, session_id, query, limit)
+    session_recall::search_page(&db, session_id, query, limit, offset)
+}
+
+/// Write one session's durable record out as JSONL.
+///
+/// The data directory is derived from the database path rather than carried
+/// separately, so an export can never land beside a different database than
+/// the one it was read from.
+pub fn export_session_transcript(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    scope: Option<bridge_protocol::messages::TranscriptExportScope>,
+    include_hidden: Option<bool>,
+    destination_path: Option<&str>,
+) -> Result<bridge_protocol::messages::ExportSessionTranscriptResult, BridgeError> {
+    let data_dir = core
+        .database_path
+        .parent()
+        .ok_or_else(|| BridgeError::Invalid("the data directory has no parent".into()))?
+        .to_path_buf();
+    let db = core.db.lock().unwrap();
+    crate::transcript_export::export(
+        &db,
+        &data_dir,
+        session_id,
+        scope.unwrap_or_default(),
+        include_hidden.unwrap_or(true),
+        destination_path,
+    )
 }
 
 pub fn save_memory_record(

@@ -3959,6 +3959,27 @@ fn parse_json_column(row: &rusqlite::Row<'_>, index: usize) -> serde_json::Value
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// Runtime control records: durable evidence of what actually happened that is
+/// nevertheless not conversation.
+///
+/// Turn boundaries, per-turn usage and the agent's plan are how a reader
+/// reconstructs *where* a session spent its time and *where* it failed, so
+/// dropping them left the forest unable to answer the questions an
+/// observability surface exists to answer. They are stored, but stored
+/// [`HIDDEN_VISIBILITY`]: the context projector admits only `eligible` entries
+/// and the recall trigger indexes only `eligible`/`visible`, so recording them
+/// widens the record without widening either the prompt or search.
+const HIDDEN_CONTROL_KINDS: [&str; 4] = [
+    "turn.started",
+    "turn.completed",
+    "usage.updated",
+    "plan.updated",
+];
+
+/// Written, replayed and exported — never projected into model context and
+/// never an FTS recall hit.
+const HIDDEN_VISIBILITY: &str = "hidden";
+
 pub fn session_event(
     db: &Connection,
     session_id: &str,
@@ -4005,7 +4026,7 @@ pub(crate) fn session_event_in_transaction(
             |row| row.get(0),
         )
         .unwrap_or_else(|_| session_id.to_owned());
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "protocolVersion": 1,
         "itemId": event.item_id,
         "role": event.role,
@@ -4016,6 +4037,33 @@ pub(crate) fn session_event_in_transaction(
         "providerMeta": provider_meta,
         "traceId": trace_id,
     });
+    // Stamp the turn's ordinal onto the boundary that opens it.
+    //
+    // Every reader wants to say "this happened in turn 3", and every reader
+    // that derives it by counting boundaries gets a different answer from a
+    // different window: a transcript showing the newest page counts from
+    // whatever it loaded, while an export counts from the session's start.
+    // Recording the ordinal once, here, is what makes those answers the same
+    // answer — the same reason the export writes `turnIndex` out rather than
+    // leaving each consumer to compute one.
+    if event.kind == "turn.started" {
+        let ordinal: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='turn.started'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        // Into `data`, not the payload root: replay projects a stored entry
+        // back to an `AgentEvent` by lifting `data`, so an ordinal written
+        // beside it would exist in the database and be invisible to every
+        // client reading the stream.
+        if !payload["data"].is_object() {
+            payload["data"] = serde_json::json!({});
+        }
+        payload["data"]["turnIndex"] = serde_json::json!(ordinal + 1);
+    }
+    let payload = payload;
     let mut final_kind = event.kind.as_str();
     if final_kind == "message.completed" {
         final_kind = if event.role.as_deref() == Some("user") {
@@ -4035,16 +4083,13 @@ pub(crate) fn session_event_in_transaction(
         // Keep as is, it maps directly.
     } else if final_kind.ends_with(".delta")
         || final_kind.ends_with(".progress")
-        || final_kind == "turn.started"
-        || final_kind == "turn.completed"
-        || final_kind == "usage.updated"
-        || final_kind == "plan.updated"
         || final_kind == "question.settled"
     {
-        // Do not store transient or internal events in the immutable forest.
-        // `question.settled` is a control signal telling `live_turn.rs` to
-        // resolve an existing `approval.requested` row; it is not itself a
-        // durable conversation item.
+        // Streaming frames and one control signal are the only events that
+        // leave no trace. A delta is worthless once its terminal event lands
+        // carrying the whole content, and `question.settled` merely tells
+        // `live_turn.rs` to resolve an existing `approval.requested` row; it
+        // is not itself a durable conversation item.
         return Ok(AgentEvent {
             id: 0,
             session_id: session_id.into(),
@@ -4069,7 +4114,11 @@ pub(crate) fn session_event_in_transaction(
         final_kind,
         &payload,
         event.item_id.as_deref(),
-        "eligible",
+        if HIDDEN_CONTROL_KINDS.contains(&final_kind) {
+            HIDDEN_VISIBILITY
+        } else {
+            "eligible"
+        },
         None,
     )?;
     Ok(AgentEvent {
@@ -4093,6 +4142,97 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn observability_db() -> Connection {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','codex','Chat','ready','reported')", []).unwrap();
+        db
+    }
+
+    fn record(db: &Connection, kind: &str, data: serde_json::Value) -> AgentEvent {
+        let mut event = crate::agent::NormalizedEvent::new(kind);
+        event.data = data;
+        session_event(db, "s", &event, &json!({"adapter":"codex"})).unwrap()
+    }
+
+    fn visibility(db: &Connection, kind: &str) -> String {
+        db.query_row(
+            "SELECT context_visibility FROM session_entries WHERE session_id='s' AND kind=?1",
+            params![kind],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn turn_boundaries_are_durable_but_never_context_eligible() {
+        // Where a turn began is the spine an observability read hangs off. It
+        // used to be dropped, so a reloaded forest could not say which events
+        // belonged to which turn.
+        let db = observability_db();
+        let started = record(&db, "turn.started", json!({"turnId":"t-1"}));
+        let completed = record(&db, "turn.completed", json!({"turnId":"t-1","status":"completed"}));
+
+        assert!(started.sequence > 0, "a turn boundary is history now");
+        assert!(completed.sequence > 0);
+        assert_eq!(visibility(&db, "turn.started"), "hidden");
+        assert_eq!(visibility(&db, "turn.completed"), "hidden");
+
+        // It replays with its kind intact, which is what lets a reader group
+        // the stream by turn after a restart.
+        let replayed = session_events_tail(&db, "s", 10).unwrap();
+        let kinds = replayed.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["turn.started", "turn.completed"]);
+        assert_eq!(replayed[0].data["turnId"], "t-1");
+    }
+
+    #[test]
+    fn usage_and_plan_updates_are_recorded_as_hidden_history() {
+        let db = observability_db();
+        record(&db, "usage.updated", json!({"input_tokens":1200,"output_tokens":340}));
+        record(&db, "plan.updated", json!({"steps":[{"title":"read the code","status":"completed"}]}));
+
+        assert_eq!(visibility(&db, "usage.updated"), "hidden");
+        assert_eq!(visibility(&db, "plan.updated"), "hidden");
+
+        let replayed = session_events_tail(&db, "s", 10).unwrap();
+        let usage = replayed.iter().find(|event| event.kind == "usage.updated").unwrap();
+        assert_eq!(usage.data["input_tokens"], 1200);
+        let plan = replayed.iter().find(|event| event.kind == "plan.updated").unwrap();
+        assert_eq!(plan.data["steps"][0]["title"], "read the code");
+    }
+
+    #[test]
+    fn streaming_frames_are_still_never_stored() {
+        // Widening the record must not turn the delta stream into storage: a
+        // terminal event already carries the whole content a delta was
+        // building, so persisting both would duplicate every message.
+        let db = observability_db();
+        for kind in ["message.delta", "reasoning.delta", "tool.progress", "question.settled"] {
+            let stored = record(&db, kind, json!({"text":"partial"}));
+            assert_eq!(stored.sequence, 0, "{kind} must stay transient");
+        }
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='s'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "transient frames wrote a row");
+    }
+
+    #[test]
+    fn a_recorded_control_entry_is_not_a_recall_hit() {
+        // The record widens; search does not. A token count is not something a
+        // reader means to find when they search their own words.
+        let db = observability_db();
+        record(&db, "usage.updated", json!({"text":"parliamentarian","input_tokens":9}));
+        let mut spoken = crate::agent::NormalizedEvent::new("message.completed");
+        spoken.role = Some("user".into());
+        spoken.text = Some("parliamentarian".into());
+        session_event(&db, "s", &spoken, &json!({})).unwrap();
+
+        let hits = crate::session_recall::search(&db, "s", "parliamentarian", None).unwrap();
+        assert_eq!(hits.hits.len(), 1, "only the spoken message is findable");
+        assert_eq!(hits.hits[0].kind, "user.message");
+    }
 
     #[test]
     fn errors_keep_their_forest_identity_live_and_on_legacy_replay() {

@@ -284,6 +284,17 @@ pub fn dispatch(
                 &p.session_id,
                 &p.query,
                 p.limit,
+                p.offset,
+            ))
+        }
+        MethodName::ExportSessionTranscript => {
+            let p: wire::ExportSessionTranscriptParams = decode(method, params)?;
+            reply(api::export_session_transcript(
+                core,
+                &p.session_id,
+                p.scope,
+                p.include_hidden,
+                p.destination_path.as_deref(),
             ))
         }
         MethodName::SaveMemoryRecord => {

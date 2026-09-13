@@ -229,6 +229,7 @@ typed_methods![
     ),
     (CompactSession, CompactSessionParams, UnitResult),
     (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
+    (ExportSessionTranscript, ExportSessionTranscriptParams, ExportSessionTranscriptResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),

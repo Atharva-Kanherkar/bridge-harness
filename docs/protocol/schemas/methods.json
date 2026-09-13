@@ -401,6 +401,13 @@
       "resultSchema": "search-session-entries-result.json"
     },
     {
+      "command": "export_session_transcript",
+      "domain": "sessions",
+      "method": "sessions/export_session_transcript",
+      "paramsSchema": "export-session-transcript-params.json",
+      "resultSchema": "export-session-transcript-result.json"
+    },
+    {
       "command": "interrupt_turn",
       "domain": "sessions",
       "method": "sessions/interrupt_turn",

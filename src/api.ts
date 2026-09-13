@@ -7,7 +7,7 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
+import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
@@ -365,7 +365,18 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     agentEvent(8, "session-1", "delegation.spawned", { itemId: "spawn-1w2", role: "system", status: "working", title: "Delegated to Verification · strong", text: "Run the auth test suite and confirm the token store migration is correct.", data: { childSessionId: "session-1w2", harness: "codex", requestedTier: "strong", model: "gpt-5.6-sol", modelLabel: "GPT Sol", effort: "xhigh", depth: 1 } }),
     agentEvent(9, "session-1w2", "message.completed", { itemId: "assistant-1w2", role: "assistant", status: "completed", text: "All 42 auth tests pass. Token store migration verified." }),
     agentEvent(10, "session-1", "delegation.result", { itemId: "result-1w2", role: "system", status: "completed", title: "Worker result", text: "[worker result] Verification · strong (STRONG TIER, runtime GPT Sol, effort xhigh) finished:\n\nAll 42 auth tests pass. Token store migration verified.", data: { childSessionId: "session-1w2", delivered: true } }),
-    agentEvent(11, "session-1", "delegation.result", { itemId: "result-1w", role: "system", status: "completed", title: "Worker result", text: "[worker result] Implementation · strong (STRONG TIER, runtime Fable, effort high) finished:\n\nAuth module refactored to the new token store.", data: { childSessionId: "session-1w", delivered: true } })
+    agentEvent(11, "session-1", "delegation.result", { itemId: "result-1w", role: "system", status: "completed", title: "Worker result", text: "[worker result] Implementation · strong (STRONG TIER, runtime Fable, effort high) finished:\n\nAuth module refactored to the new token store.", data: { childSessionId: "session-1w", delivered: true } }),
+    // A second turn, so the demo carries the things the transcript pane exists
+    // to show: a turn boundary with its stamped ordinal, a thought, a tool
+    // call that failed, and the turn's usage. Without one of each, mock mode
+    // renders an observability surface with nothing to observe.
+    agentEvent(12, "session-1", "turn.started", { status: "inProgress", data: { turnIndex: 1 } }),
+    agentEvent(13, "session-1", "message.completed", { itemId: "user-2", role: "user", status: "completed", text: "Run the full suite before we land this." }),
+    agentEvent(14, "session-1", "reasoning.completed", { itemId: "thought-1", status: "completed", text: "The migration touched the refresh path, so the auth suite is the one that actually exercises it. Running that before the whole tree." }),
+    agentEvent(15, "session-1", "tool.completed", { itemId: "tool-2", title: "bun test src/auth", status: "failed", data: { type: "commandExecution", exitCode: 1, durationMs: 8421, aggregatedOutput: "(fail) rotation invalidates the old token\n  expected: null\n  received: Token { scope: 'session' }\n\n 41 pass\n 1 fail" } }),
+    agentEvent(16, "session-1", "usage.updated", { status: "completed", data: { input_tokens: 18432, output_tokens: 611, cache_read_tokens: 16384, reasoning_tokens: 240, context_percent: 9 } }),
+    agentEvent(17, "session-1", "message.completed", { itemId: "assistant-2", role: "assistant", status: "completed", text: "One test fails: the old token still verifies after a rotate. Looking at the store now." }),
+    agentEvent(18, "session-1", "turn.completed", { status: "completed" })
   ]
 };
 
@@ -1833,9 +1844,14 @@ export const bridgeApi = {
     forest.reasons.unshift({ id: nextEventId++, source: "compaction", kind: "compaction.completed", entityId: sessionId, body: "manual", createdAt: new Date().toISOString() });
     emitState();
   },
-  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null): Promise<SearchSessionEntriesResult> => {
+  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null, offset?: number | null): Promise<SearchSessionEntriesResult> => {
     if (isTauri()) {
-      return call("sessions/search_session_entries", limit != null ? { sessionId, query, limit } : { sessionId, query });
+      return call("sessions/search_session_entries", {
+        sessionId,
+        query,
+        ...(limit != null ? { limit } : {}),
+        ...(offset ? { offset } : {}),
+      });
     }
     if (!sessionId.trim()) throw new Error("Recall needs a session id; search cannot run across a workspace");
     const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -1848,7 +1864,6 @@ export const bridgeApi = {
         const body = `${entry.payload.text ?? ""} ${entry.payload.title ?? ""} ${entry.payload.summary ?? ""}`.toLowerCase();
         return tokens.every(token => body.includes(token));
       })
-      .slice(0, limit ?? 20)
       .map(entry => ({
         entryId: entry.id,
         kind: entry.kind,
@@ -1856,7 +1871,35 @@ export const bridgeApi = {
         snippet: String(entry.payload.text ?? entry.payload.summary ?? entry.payload.title ?? ""),
         createdAt: entry.createdAt,
       }));
-    return { sessionId, query, hits };
+    // Page the mock the same way the server does, so the Show more affordance
+    // is exercised by `bun run dev` and not only by the desktop app.
+    const size = limit ?? 20;
+    const start = offset ?? 0;
+    return { sessionId, query, hits: hits.slice(start, start + size), offset: start, hasMore: hits.length > start + size };
+  },
+  /**
+   * Write one session's durable record out as JSONL.
+   *
+   * The result is a path, never the transcript itself: a long session is
+   * megabytes, and the point of the export is an artifact you can grep, diff
+   * and hand to something that is not Bridge.
+   */
+  exportSessionTranscript: async (
+    sessionId: string,
+    options: { scope?: TranscriptExportScope; includeHidden?: boolean; destinationPath?: string } = {},
+  ): Promise<ExportSessionTranscriptResult> => {
+    if (isTauri()) {
+      return call("sessions/export_session_transcript", {
+        sessionId,
+        ...(options.scope ? { scope: options.scope } : {}),
+        ...(options.includeHidden != null ? { includeHidden: options.includeHidden } : {}),
+        ...(options.destinationPath ? { destinationPath: options.destinationPath } : {}),
+      });
+    }
+    // Mock mode has no filesystem. Reporting a plausible path would be a lie a
+    // reader could only catch by going to look for the file, so say plainly
+    // that the export needs the desktop app.
+    throw new Error("Exporting a transcript needs the desktop app; the browser preview has no session store to read.");
   },
   saveMemoryRecord: async (body: string, kind?: string | null, sessionId?: string | null): Promise<MemoryRecord> => {
     if (isTauri()) {

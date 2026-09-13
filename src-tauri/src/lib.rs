@@ -1675,11 +1675,33 @@ async fn search_session_entries(
     session_id: String,
     query: String,
     limit: Option<u32>,
+    offset: Option<u32>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Session recall", move || {
-        api::search_session_entries(&core, &session_id, &query, limit)
+        api::search_session_entries(&core, &session_id, &query, limit, offset)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn export_session_transcript(
+    session_id: String,
+    scope: Option<bridge_protocol::messages::TranscriptExportScope>,
+    include_hidden: Option<bool>,
+    destination_path: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ExportSessionTranscriptResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Transcript export", move || {
+        api::export_session_transcript(
+            &core,
+            &session_id,
+            scope,
+            include_hidden,
+            destination_path.as_deref(),
+        )
     })
     .await
 }
@@ -2482,6 +2504,7 @@ pub fn run() -> i32 {
             write_workspace_file,
             compact_session,
             search_session_entries,
+            export_session_transcript,
             save_memory_record,
             list_memory_records,
             delete_memory_record,
