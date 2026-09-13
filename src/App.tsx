@@ -12,7 +12,7 @@ import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
-import { openExternalUrl } from "./externalLinks";
+import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
@@ -22,7 +22,7 @@ import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
-import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
@@ -39,6 +39,8 @@ import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
+import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
+import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
 import { TasksPane } from "./components/TasksPane";
@@ -472,6 +474,9 @@ function AppContent() {
   // The new-thread hero names the project when it can, dotted-underlined.
   const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
   const hasRepo = !!workspace?.path;
+  // The workspace a GitHub link could be routed into, if any — the same
+  // condition that decides whether the pane is available at all.
+  const githubWorkspaceId = hasRepo ? workspace?.id : undefined;
   const isDirectChat = session?.kind === "direct";
   const importedSourceFingerprint = useMemo(() => {
     if (session?.kind !== "imported") return undefined;
@@ -563,20 +568,74 @@ function AppContent() {
   }
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
-  // Deep links into the GitHub dock pane (sidebar rows, CI toasts), the
-  // CI-finished notification stack, and jump-to-diff from a review comment.
+  // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
+  // anywhere in the app), the CI-finished notification stack, and
+  // jump-to-diff from a review comment.
   const githubIntentNonce = useRef(0);
-  const [githubIntent, setGithubIntent] = useState<{ number: number; nonce: number }>();
+  const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
 
-  function openPullRequestPane(number: number) {
+  const openGithubPane = useCallback((view: GithubLinkView) => {
     githubIntentNonce.current += 1;
-    setGithubIntent({ number, nonce: githubIntentNonce.current });
+    setGithubIntent({ view, nonce: githubIntentNonce.current });
     setView("workspace");
     setParadigm("single");
     dispatchDock({ type: "open-pane", pane: "github" });
+  }, [dispatchDock]);
+
+  function openPullRequestPane(number: number) {
+    openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
+
+  // Which repository a workspace is on is read per click rather than
+  // remembered. The pane resolves the repository itself, server-side and at
+  // call time, from the workspace's remote — so an identity remembered here
+  // and since changed would not merely fail to route: it would route a link
+  // for the old repository into a pane bound to the new one and open, or act
+  // on, the same number there. Asking each time keeps the decision and the
+  // read that follows it looking at the same repository. It is not a hot
+  // path — one read per GitHub-shaped click, behind the surface's own cache.
+  const githubWorkspaceIdRef = useRef(githubWorkspaceId);
+  githubWorkspaceIdRef.current = githubWorkspaceId;
+  const resolveGithubRepository = useCallback(async (id: string): Promise<GithubRepository | null> => {
+    try {
+      const status = await bridgeApi.githubStatus(id);
+      return status.availability.status === "available" ? status.repository ?? null : null;
+    } catch {
+      // No `gh`, signed out, no remote: nothing to route into.
+      return null;
+    }
+  }, []);
+
+  // A GitHub link the pane can render belongs in the pane, not in the OS
+  // browser. Anything else — another repository, a view the pane does not
+  // have, a chat with no worktree — is declined here and leaves the app
+  // exactly as it did before.
+  // A GitHub link the pane could render is a question, not a decision: the
+  // reader is asked where to open it. Only a link with somewhere to go inline
+  // is worth asking about — another repository, a view the pane does not have,
+  // a chat with no worktree — those have one destination, so they take it
+  // silently and leave, exactly as they did before any of this.
+  const [githubLinkChoice, setGithubLinkChoice] = useState<{ url: string; link: GithubLink }>();
+  const routeGithubLink = useCallback(async (url: string): Promise<boolean> => {
+    const link = parseGithubLink(url);
+    if (!link || !githubWorkspaceId) return false;
+    const repository = await resolveGithubRepository(githubWorkspaceId);
+    // Resolving can take a `gh` round-trip, and the reader may have moved on
+    // in the meantime; a pane intent aimed at the workspace they left would
+    // open the wrong repository's PR under the same number.
+    if (githubWorkspaceIdRef.current !== githubWorkspaceId) return false;
+    if (!githubLinkMatchesRepository(link, repository)) return false;
+    // Taken: the question is now on screen, so nothing may open behind it.
+    setGithubLinkChoice({ url, link });
+    return true;
+  }, [githubWorkspaceId, resolveGithubRepository]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeGithubLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeGithubLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -2744,6 +2803,15 @@ function AppContent() {
         </Alert>
       );
     })()}
+    {githubLinkChoice && <GithubLinkDestinationDialog
+      subject={describeGithubLink(githubLinkChoice.link)}
+      repository={`${githubLinkChoice.link.owner}/${githubLinkChoice.link.name}`}
+      url={githubLinkChoice.url}
+      onOpenInline={() => { openGithubPane(githubLinkChoice.link.view); setGithubLinkChoice(undefined); }}
+      onOpenInBrowser={() => { void openInSystemBrowser(githubLinkChoice.url); setGithubLinkChoice(undefined); }}
+      onCancel={() => setGithubLinkChoice(undefined)}
+    />}
+
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
