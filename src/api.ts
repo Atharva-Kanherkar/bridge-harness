@@ -73,6 +73,11 @@ import type {
   SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
+import type {
+  ConnectorCardReadyPayload,
+  ConnectorItemArrivedPayload,
+  ConnectorItemResolvedPayload,
+} from "./connectorSurface";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -1001,6 +1006,47 @@ const mockConnectorItems: ConnectorInboxItem[] = [
     state: "pending",
   }),
 ];
+
+const connectorArrivalListeners = new Set<(payload: ConnectorItemArrivedPayload) => void>();
+const connectorCardListeners = new Set<(payload: ConnectorCardReadyPayload) => void>();
+const connectorResolvedListeners = new Set<(payload: ConnectorItemResolvedPayload) => void>();
+const connectorInboxListeners = new Set<(payload: { family: string }) => void>();
+
+/**
+ * Replay one arrival in mock mode so `bun run dev` shows the actual sequence —
+ * a toast in Bridge's own wording, then the harness-rendered headline replacing
+ * it in place a beat later. Without this, mock mode could only ever show the
+ * resting state, and the part of the feature most worth reviewing is the part
+ * that happens when nobody asked for it.
+ */
+let mockArrivalScheduled = false;
+function scheduleMockConnectorArrival(): void {
+  if (mockArrivalScheduled || typeof window === "undefined") return;
+  mockArrivalScheduled = true;
+  const item = mockConnectorItems[0];
+  window.setTimeout(() => {
+    for (const listener of connectorArrivalListeners) {
+      listener({
+        family: "slack",
+        itemKey: item.itemKey,
+        headline: `${item.author} sent you a direct message`,
+        channelLabel: item.channelLabel,
+        author: item.author,
+      });
+    }
+    window.setTimeout(() => {
+      for (const listener of connectorCardListeners) {
+        listener({
+          family: "slack",
+          itemKey: item.itemKey,
+          headline: item.card?.headline ?? `${item.author} sent you a direct message`,
+          harnessRendered: true,
+        });
+      }
+      for (const listener of connectorInboxListeners) listener({ family: "slack" });
+    }, 1_400);
+  }, 900);
+}
 
 function mockConnectorInbox(): ConnectorInboxResult {
   const items = mockConnectorItems.filter(item => item.state !== "resolved");
@@ -2270,6 +2316,27 @@ export const bridgeApi = {
   onSessionStartup: async (handler: (payload: SessionStartupPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<SessionStartupPayload>("session-startup", handler);
     return () => undefined;
+  },
+  onConnectorItemArrived: async (handler: (payload: ConnectorItemArrivedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorItemArrivedPayload>("connectors/item_arrived", handler);
+    connectorArrivalListeners.add(handler);
+    scheduleMockConnectorArrival();
+    return () => connectorArrivalListeners.delete(handler);
+  },
+  onConnectorCardReady: async (handler: (payload: ConnectorCardReadyPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorCardReadyPayload>("connectors/card_ready", handler);
+    connectorCardListeners.add(handler);
+    return () => connectorCardListeners.delete(handler);
+  },
+  onConnectorItemResolved: async (handler: (payload: ConnectorItemResolvedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorItemResolvedPayload>("connectors/item_resolved", handler);
+    connectorResolvedListeners.add(handler);
+    return () => connectorResolvedListeners.delete(handler);
+  },
+  onConnectorInboxChanged: async (handler: (payload: { family: string }) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<{ family: string }>("connectors/inbox_changed", handler);
+    connectorInboxListeners.add(handler);
+    return () => connectorInboxListeners.delete(handler);
   },
   onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
