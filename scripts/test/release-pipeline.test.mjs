@@ -870,9 +870,12 @@ test("workflow boundaries keep PR smoke and post-build acceptance credential-fre
     .split("  release-please:\n")[1]
     .split("\n  production-macos:\n")[0];
   const productionCall = releasePlease.split("  production-macos:\n")[1];
+  const appToken = releasePleaseJob
+    .split("      - name: Create repository-scoped release token\n")[1]
+    .split("\n      - name: Require protected pull request inputs\n")[0];
   const protectedInputs = releasePleaseJob
     .split("      - name: Require protected pull request inputs\n")[1]
-    .split("\n      - name: Validate release automation credentials\n")[0];
+    .split("\n      - name: Require deterministic squash-only merges\n")[0];
   const mergePolicy = releasePleaseJob
     .split("      - name: Require deterministic squash-only merges\n")[1]
     .split("\n      - name: Create or update the cumulative Release PR\n")[0];
@@ -1012,7 +1015,14 @@ test("workflow boundaries keep PR smoke and post-build acceptance credential-fre
   assert.match(releasePlease, /\.type == "pull_request"/);
   assert.match(releasePlease, /\.type == "required_status_checks"/);
   assert.match(releasePlease, /\.context == "Conventional PR title"/);
-  assert.match(protectedInputs, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(appToken, /permission-administration: read/);
+  assert.ok(
+    releasePleaseJob.indexOf("Create repository-scoped release token") <
+      releasePleaseJob.indexOf("Require protected pull request inputs"),
+    "the Administration-capable App token must exist before branch rules are queried",
+  );
+  assert.match(protectedInputs, /GH_TOKEN: \$\{\{ steps\.app-token\.outputs\.token \}\}/);
+  assert.doesNotMatch(protectedInputs, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(mergePolicy, /GH_TOKEN: \$\{\{ steps\.app-token\.outputs\.token \}\}/);
   assert.doesNotMatch(mergePolicy, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(releasePlease, /group: bridge-release-automation\n\s+queue: max/);

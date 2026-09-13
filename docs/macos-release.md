@@ -35,10 +35,12 @@ Before enabling the workflow, configure the repository once:
    **Conventional PR title** CI check. Do not let the Release Please App bypass
    required CI. Release automation fails closed if the effective rules for
    `main` do not include a pull-request rule.
-3. Install the Release Please GitHub App on this repository with read/write
-   access to Contents, Issues, Pull requests, and Workflows. Workflows write is
-   needed only when publishing a recovered tag whose workflow files differ from
-   current `main`. Add its client ID and private key using the names below.
+3. Install the Release Please GitHub App on this repository with read access to
+   Administration and read/write access to Contents, Issues, Pull requests, and
+   Workflows. Administration read is required to verify the effective `main`
+   branch rules before Release Please runs. Workflows write is needed only when
+   publishing a recovered tag whose workflow files differ from current `main`.
+   Add its client ID and private key using the names below.
 
 Release Please maintains one release PR against `main`, updating its version and
 changelog as releasable changes land. Its exact title is
@@ -79,14 +81,15 @@ Release Please authenticates as a GitHub App. Configure:
   key.
 
 The App should be installed only on the Bridge repository unless it has another
-explicit use. Release Please requests Contents, Issues, and Pull requests
-read/write permissions from its short-lived installation token. The final
-publisher requests Contents and Workflows write so GitHub permits both immediate
-publication and recovery when workflow files changed after the tag. The primary
-Release Please job and the build, smoke, and publication jobs keep their
-built-in workflow tokens read-only. Production preflight alone receives
-Contents write because GitHub hides draft releases from callers without push
-access; the protected resolver uses that token only for read operations.
+explicit use. Release Please requests Administration read plus Contents, Issues,
+and Pull requests read/write permissions from its short-lived installation
+token. The final publisher requests only Contents and Workflows write so GitHub
+permits both immediate publication and recovery when workflow files changed
+after the tag. The primary Release Please job and the build, smoke, and
+publication jobs keep their built-in workflow tokens read-only. Production
+preflight alone receives Contents write because GitHub hides draft releases from
+callers without push access; the protected resolver uses that token only for
+read operations.
 
 The production signing job uses these existing repository secrets:
 

@@ -20,18 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Require protected pull request inputs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rules=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main")
-          requires_pr=$(printf '%s' "$rules" | jq -r 'any(.[]; .type == "pull_request")')
-          requires_title=$(printf '%s' "$rules" | jq -r 'any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]?; .context == "Conventional PR title"))')
-          if [ "$requires_pr" != true ] || [ "$requires_title" != true ]; then
-            echo "Release Please requires a main-branch pull-request rule and the Conventional PR title status check." >&2
-            exit 1
-          fi
-
       - name: Validate release automation credentials
         env:
           APP_CLIENT_ID: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
@@ -49,13 +37,26 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-administration: read
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
 
-      # GitHub exposes the squash title/message policy only to a token with
-      # Contents write. The built-in token remains read-only; this App token is
-      # already scoped to the one repository and is used here only to inspect.
+      # Effective branch rules require repository Administration read access.
+      # Keep the built-in token read-only and use the repository-scoped App
+      # token for both protected-setting queries.
+      - name: Require protected pull request inputs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main")
+          requires_pr=$(printf '%s' "$rules" | jq -r 'any(.[]; .type == "pull_request")')
+          requires_title=$(printf '%s' "$rules" | jq -r 'any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]?; .context == "Conventional PR title"))')
+          if [ "$requires_pr" != true ] || [ "$requires_title" != true ]; then
+            echo "Release Please requires a main-branch pull-request rule and the Conventional PR title status check." >&2
+            exit 1
+          fi
+
       - name: Require deterministic squash-only merges
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
