@@ -52,6 +52,13 @@ import type {
   GithubCheckoutResult,
   GithubChecksResult,
   GithubIssueResult,
+  ConnectorActionRequest,
+  ConnectorActResult,
+  ConnectorDismissResult,
+  ConnectorInboxItem,
+  ConnectorInboxResult,
+  ConnectorListResult,
+  ConnectorRefreshResult,
   GithubIssuesResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
@@ -66,6 +73,11 @@ import type {
   SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
+import type {
+  ConnectorCardReadyPayload,
+  ConnectorItemArrivedPayload,
+  ConnectorItemResolvedPayload,
+} from "./connectorSurface";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -892,6 +904,198 @@ function browserWorkBoard(): WorkBoard {
   };
 }
 
+// ── Connector surface mocks ─────────────────────────────────────────────────
+// What `bun run dev` and the component tests see. Synthetic on purpose: the
+// real surface reads a live account, and a fixture that quoted one would put a
+// stranger's message in this repository. Shapes match the wire contract exactly.
+
+function mockConnectorList(): ConnectorListResult {
+  return {
+    connectors: [
+      { family: "slack", displayName: "Slack", server: "claude.ai Slack", harness: "claude", hasInbox: true, available: true, reason: null, explanation: null },
+      {
+        family: "gmail", displayName: "Gmail", server: "claude.ai Gmail", harness: "claude", hasInbox: false,
+        available: false, reason: "noResolver",
+        explanation: "Gmail has no in-app inbox yet — its ingress query and card template are not written.",
+      },
+      {
+        family: "linear", displayName: "Linear", server: null, harness: null, hasInbox: false,
+        available: false, reason: "notConfigured",
+        explanation: "No Linear MCP server is configured in this harness.",
+      },
+    ],
+  };
+}
+
+function mockInboxItem(
+  key: string,
+  overrides: Partial<ConnectorInboxItem> & Pick<ConnectorInboxItem, "channelLabel" | "author" | "text" | "receivedAt">,
+): ConnectorInboxItem {
+  return {
+    itemKey: key,
+    family: "slack",
+    channelId: key.split(":")[1] ?? "C000",
+    kind: "directMessage",
+    permalink: null,
+    state: "rendered",
+    card: null,
+    renderRejection: null,
+    resolution: null,
+    ...overrides,
+  } as ConnectorInboxItem;
+}
+
+const mockConnectorItems: ConnectorInboxItem[] = [
+  mockInboxItem("slack:D09KQ2M4A1X:1757756400.000100", {
+    channelLabel: "Nina Alvarez",
+    author: "Nina Alvarez",
+    kind: "directMessage",
+    text: "can you take a look at the release checklist before standup? the updater step is the one I'm unsure about",
+    receivedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+    state: "rendered",
+    card: {
+      itemKey: "slack:D09KQ2M4A1X:1757756400.000100",
+      headline: "Nina wants the release checklist reviewed before standup",
+      blocks: [
+        {
+          kind: "message",
+          author: "Nina Alvarez",
+          text: "can you take a look at the release checklist before standup? the updater step is the one I'm unsure about",
+          timestamp: new Date(Date.now() - 4 * 60_000).toISOString(),
+        },
+        { kind: "summary", text: "She is blocked on the updater step and standup is in 20 minutes." },
+        { kind: "fact", label: "Asked", value: "4 minutes ago" },
+      ],
+      suggestedReplies: [
+        "On it — reading the updater step now.",
+        "Looking before standup. The updater step changed on Tuesday, I'll flag anything stale.",
+      ],
+      harnessRendered: true,
+    },
+  }),
+  mockInboxItem("slack:C07R4TQ8ZKD:1757756100.000300", {
+    channelLabel: "#eng-alerts",
+    author: "Devesh Kumar",
+    kind: "mention",
+    text: "@atharva the nightly bundle job failed on the notarisation step again — same signature as last week?",
+    receivedAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+    state: "rendered",
+    card: {
+      itemKey: "slack:C07R4TQ8ZKD:1757756100.000300",
+      headline: "Devesh is asking whether the notarisation failure repeats last week's",
+      blocks: [
+        {
+          kind: "message",
+          author: "Devesh Kumar",
+          text: "@atharva the nightly bundle job failed on the notarisation step again — same signature as last week?",
+          timestamp: new Date(Date.now() - 11 * 60_000).toISOString(),
+        },
+        { kind: "context", text: "3 earlier messages in #eng-alerts about the nightly bundle." },
+        { kind: "fact", label: "Channel", value: "#eng-alerts" },
+      ],
+      suggestedReplies: ["Checking the signature now.", "Same one — it's the expired notarisation profile."],
+      harnessRendered: true,
+    },
+  }),
+  mockInboxItem("slack:C0A469VRHMH:1757755500.000900", {
+    channelLabel: "Design sync",
+    author: "Rinako Yoshizawa",
+    kind: "threadReply",
+    text: "the dock pane spacing looks right to me now, shipping it",
+    receivedAt: new Date(Date.now() - 21 * 60_000).toISOString(),
+    // Deliberately un-carded: this is what a notification looks like while its
+    // render run is still in flight, and what it stays as if that run fails.
+    state: "pending",
+  }),
+];
+
+const connectorArrivalListeners = new Set<(payload: ConnectorItemArrivedPayload) => void>();
+const connectorCardListeners = new Set<(payload: ConnectorCardReadyPayload) => void>();
+const connectorResolvedListeners = new Set<(payload: ConnectorItemResolvedPayload) => void>();
+const connectorInboxListeners = new Set<(payload: { family: string }) => void>();
+
+/**
+ * Replay one arrival in mock mode so `bun run dev` shows the actual sequence —
+ * a toast in Bridge's own wording, then the harness-rendered headline replacing
+ * it in place a beat later. Without this, mock mode could only ever show the
+ * resting state, and the part of the feature most worth reviewing is the part
+ * that happens when nobody asked for it.
+ */
+let mockArrivalScheduled = false;
+function scheduleMockConnectorArrival(): void {
+  if (mockArrivalScheduled || typeof window === "undefined") return;
+  mockArrivalScheduled = true;
+  const item = mockConnectorItems[0];
+  window.setTimeout(() => {
+    for (const listener of connectorArrivalListeners) {
+      listener({
+        family: "slack",
+        itemKey: item.itemKey,
+        headline: `${item.author} sent you a direct message`,
+        channelLabel: item.channelLabel,
+        author: item.author,
+      });
+    }
+    window.setTimeout(() => {
+      for (const listener of connectorCardListeners) {
+        listener({
+          family: "slack",
+          itemKey: item.itemKey,
+          headline: item.card?.headline ?? `${item.author} sent you a direct message`,
+          harnessRendered: true,
+        });
+      }
+      for (const listener of connectorInboxListeners) listener({ family: "slack" });
+    }, 1_400);
+  }, 900);
+}
+
+function mockConnectorInbox(): ConnectorInboxResult {
+  const items = mockConnectorItems.filter(item => item.state !== "resolved");
+  return {
+    items,
+    unreadCount: items.length,
+    poll: [
+      {
+        family: "slack",
+        lastAttemptAt: new Date(Date.now() - 20_000).toISOString(),
+        lastSuccessAt: new Date(Date.now() - 20_000).toISOString(),
+        degraded: null,
+      },
+    ],
+  };
+}
+
+function mockConnectorAct(itemKey: string, action: ConnectorActionRequest, approved?: boolean): ConnectorActResult {
+  const item = mockConnectorItems.find(candidate => candidate.itemKey === itemKey);
+  if (!item) return { status: "refused", reason: "that message is no longer in the inbox" };
+  if (item.state === "resolved") return { status: "refused", reason: "this message has already been dealt with" };
+  // The same two-call shape as the host: an undecided call is refused and hands
+  // back the effect, so the mock exercises the real approval flow rather than
+  // letting the UI shortcut it.
+  if (approved === undefined) {
+    const destination = item.kind === "directMessage" || item.channelLabel === item.author
+      ? item.author
+      : `${item.author} in ${item.channelLabel}`;
+    const effect = action.kind === "reply"
+      ? `Send to ${destination}:\n${action.text}`
+      : `React :${action.emoji}: to ${destination}'s message`;
+    return { status: "approvalRequired", effect };
+  }
+  if (!approved) return { status: "refused", reason: "the action was denied" };
+  item.state = "resolved";
+  item.resolution = action.kind === "reply" ? "replied" : "reacted";
+  return { status: "sent", itemKey };
+}
+
+function mockConnectorDismiss(itemKey: string): ConnectorDismissResult {
+  const item = mockConnectorItems.find(candidate => candidate.itemKey === itemKey);
+  if (!item || item.state === "resolved") return { dismissed: false };
+  item.state = "resolved";
+  item.resolution = "dismissed";
+  return { dismissed: true };
+}
+
 export const bridgeApi = {
   discoverExternalImport: (params: DiscoverExternalImportParams): Promise<ExternalImportDiscovery> => {
     if (isTauri()) return call("imports/discover_external_import", params);
@@ -970,6 +1174,18 @@ export const bridgeApi = {
       createdAt: new Date().toISOString(),
     });
   },
+  connectorList: (refresh = false): Promise<ConnectorListResult> =>
+    isTauri() ? call("connectors/connector_list", { refresh }) : Promise.resolve(mockConnectorList()),
+  connectorInbox: (limit?: number): Promise<ConnectorInboxResult> =>
+    isTauri() ? call("connectors/connector_inbox", { limit: limit ?? null }) : Promise.resolve(mockConnectorInbox()),
+  connectorAct: (itemKey: string, action: ConnectorActionRequest, approved?: boolean): Promise<ConnectorActResult> =>
+    isTauri()
+      ? call("connectors/connector_act", { itemKey, action, approved: approved ?? null })
+      : Promise.resolve(mockConnectorAct(itemKey, action, approved)),
+  connectorDismiss: (itemKey: string): Promise<ConnectorDismissResult> =>
+    isTauri() ? call("connectors/connector_dismiss", { itemKey }) : Promise.resolve(mockConnectorDismiss(itemKey)),
+  connectorRefresh: (family: string): Promise<ConnectorRefreshResult> =>
+    isTauri() ? call("connectors/connector_refresh", { family }) : Promise.resolve({ announced: 0 }),
   githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
     isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
@@ -2105,6 +2321,27 @@ export const bridgeApi = {
   onSessionStartup: async (handler: (payload: SessionStartupPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<SessionStartupPayload>("session-startup", handler);
     return () => undefined;
+  },
+  onConnectorItemArrived: async (handler: (payload: ConnectorItemArrivedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorItemArrivedPayload>("connectors/item_arrived", handler);
+    connectorArrivalListeners.add(handler);
+    scheduleMockConnectorArrival();
+    return () => connectorArrivalListeners.delete(handler);
+  },
+  onConnectorCardReady: async (handler: (payload: ConnectorCardReadyPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorCardReadyPayload>("connectors/card_ready", handler);
+    connectorCardListeners.add(handler);
+    return () => connectorCardListeners.delete(handler);
+  },
+  onConnectorItemResolved: async (handler: (payload: ConnectorItemResolvedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorItemResolvedPayload>("connectors/item_resolved", handler);
+    connectorResolvedListeners.add(handler);
+    return () => connectorResolvedListeners.delete(handler);
+  },
+  onConnectorInboxChanged: async (handler: (payload: { family: string }) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<{ family: string }>("connectors/inbox_changed", handler);
+    connectorInboxListeners.add(handler);
+    return () => connectorInboxListeners.delete(handler);
   },
   onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);

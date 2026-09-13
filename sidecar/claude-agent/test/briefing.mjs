@@ -285,3 +285,56 @@ test("briefingOptions is usable directly and matches what buildOptions applies",
   assert.deepEqual(direct.disallowedTools, built.disallowedTools);
   assert.deepEqual(direct.settingSources, built.settingSources);
 });
+
+test("a server-namespaced read verb is recognised", async () => {
+  // Real MCP tools are named `<server>_<verb>_<noun>`. A prefix rule matched
+  // none of them, so a scoped policy that looked correct denied every genuine
+  // connector read.
+  const gate = makeBriefingGate({ readScopeServers: ["slack"] });
+  for (const tool of [
+    "mcp__slack__slack_read_thread",
+    "mcp__slack__slack_search_public_and_private",
+    "mcp__slack__slack_list_user_channels",
+  ]) {
+    assert.equal((await gate(tool, {})).behavior, "allow", tool);
+  }
+});
+
+test("a mutation word anywhere still denies a read", async () => {
+  const gate = makeBriefingGate({ readScopeServers: ["slack"] });
+  for (const tool of [
+    "mcp__slack__slack_send_message",
+    "mcp__slack__slack_add_reaction",
+    "mcp__slack__get_and_delete_thread",
+    "mcp__slack__slack_archive_channel",
+  ]) {
+    assert.equal((await gate(tool, {})).behavior, "deny", tool);
+  }
+});
+
+test("an approved action may call its one write, and nothing else", async () => {
+  const actionScope = {
+    server: "slack",
+    intent: "reply",
+    permittedWords: ["send", "post", "reply"],
+    forbiddenWords: ["delete", "remove", "update", "merge"],
+  };
+  const gate = makeBriefingGate({ readScopeServers: ["slack"], actionScope });
+
+  assert.equal((await gate("mcp__slack__slack_send_message", {})).behavior, "allow");
+  // Reads stay available to the same run.
+  assert.equal((await gate("mcp__slack__slack_read_thread", {})).behavior, "allow");
+  // The other intent's write was not approved.
+  assert.equal((await gate("mcp__slack__slack_add_reaction", {})).behavior, "deny");
+  // Another server is out of scope entirely.
+  assert.equal((await gate("mcp__gmail__send_message", {})).behavior, "deny");
+  // A destructive compound is not the tool anybody approved.
+  assert.equal((await gate("mcp__slack__send_and_delete_message", {})).behavior, "deny");
+  // Substring, not word.
+  assert.equal((await gate("mcp__slack__resend_everything", {})).behavior, "deny");
+});
+
+test("without an action scope every write stays denied", async () => {
+  const gate = makeBriefingGate({ readScopeServers: ["slack"] });
+  assert.equal((await gate("mcp__slack__slack_send_message", {})).behavior, "deny");
+});
