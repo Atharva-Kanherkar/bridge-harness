@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 57;
+const LATEST_SCHEMA_VERSION: i64 = 58;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -693,6 +693,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "work_tasks", "source_activity_at", "TEXT")?;
                 add_column_if_missing(&transaction, "work_evidence", "source_activity_at", "TEXT")?;
             }
+            58 => migration_58_connector_inbox(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -948,6 +949,46 @@ fn migration_49_worker_repair_budget(transaction: &Transaction<'_>) -> Result<()
 /// cooldown the router checks in addition to live session state, so the next
 /// delegation in this workspace routes around a harness that just failed for
 /// quota reasons instead of picking it again and hitting the same wall.
+/// The connector inbox: one row per message Bridge has announced.
+///
+/// `item_key` is the primary key and that is the whole dedup mechanism — an
+/// arrival is new exactly when its insert succeeds. Polling re-reads an
+/// overlapping window every cycle, so without this the surface would re-announce
+/// its backlog on every poll and again on every restart.
+///
+/// Nothing here is a credential. Bridge holds no connector token; these rows are
+/// message envelopes and bodies the user can already read in the source app.
+fn migration_58_connector_inbox(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS connector_inbox_items (
+            item_key TEXT PRIMARY KEY,
+            family TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            channel_label TEXT NOT NULL,
+            message_ts TEXT NOT NULL,
+            author TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('direct_message','mention','thread_reply')),
+            body TEXT NOT NULL,
+            permalink TEXT,
+            received_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending','rendered','resolved')),
+            card TEXT,
+            render_rejection TEXT,
+            resolution TEXT,
+            resolved_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS connector_inbox_items_unresolved
+             ON connector_inbox_items(state, received_at DESC);
+         CREATE TABLE IF NOT EXISTS connector_poll_state (
+            family TEXT PRIMARY KEY,
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            degraded TEXT
+         );",
+    )?;
+    Ok(())
+}
+
 fn migration_48_harness_quota_cooldowns(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS harness_quota_cooldowns (
@@ -7498,7 +7539,7 @@ mod tests {
             VALUES('legacy','slack','slack.message','Old task','old',1,8000,'now','now');
             ALTER TABLE work_tasks DROP COLUMN source_activity_at;
             ALTER TABLE work_evidence DROP COLUMN source_activity_at;
-            DELETE FROM schema_version WHERE version=57;").unwrap();
+            DELETE FROM schema_version WHERE version>=57;").unwrap();
         drop(db);
         let db = open(&path).unwrap();
         let (title, date): (String, Option<String>) = db.query_row("SELECT title,source_activity_at FROM work_tasks WHERE id='legacy'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
