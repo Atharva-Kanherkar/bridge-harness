@@ -14,7 +14,8 @@
 //! broken delays the polish and never the notification.
 
 use std::io::BufRead;
-use std::sync::{mpsc, Arc};
+use std::collections::BTreeSet;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
 use chrono::Utc;
@@ -36,14 +37,40 @@ use crate::work_connectors::ConnectorFamily;
 /// Hidden session kind. No surface lists these.
 pub const CONNECTOR_SESSION_KIND: &str = "connector";
 
-/// How often ingress runs while the window has focus, and while it does not.
+/// How often ingress runs.
 ///
 /// Slower than the GitHub poller's 15s on purpose: each cycle here is a model
 /// turn, not a `gh` call. A minute of latency on a DM is the price of a surface
 /// that costs almost nothing to leave on, and push ingress is the fix if it ever
 /// stops being an acceptable trade.
-pub const FOCUSED_CADENCE: StdDuration = StdDuration::from_secs(30);
-pub const UNFOCUSED_CADENCE: StdDuration = StdDuration::from_secs(180);
+///
+/// One cadence, not a focused/unfocused pair: `bridge-core` has no window-focus
+/// signal to switch on, and a constant naming a behaviour nothing implements is
+/// worse than no constant.
+pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(30);
+
+/// Which families have an ingress cycle running right now.
+///
+/// The manual refresh in the pane header and the timer are two callers of the
+/// same cycle, and a cycle is a model turn. Without this they can overlap: two
+/// runs, two bills, and two racing writers of the same poll state. The ledger's
+/// unique insert means the *user* would never see a duplicate — this is about
+/// not paying for the same answer twice.
+#[derive(Default)]
+pub struct ConnectorPoller {
+    in_flight: Mutex<BTreeSet<&'static str>>,
+}
+
+impl ConnectorPoller {
+    /// Claim the cycle for `family`, or refuse because one is already running.
+    fn begin(&self, family: ConnectorFamily) -> bool {
+        self.in_flight.lock().unwrap().insert(family.as_str())
+    }
+
+    fn finish(&self, family: ConnectorFamily) {
+        self.in_flight.lock().unwrap().remove(family.as_str());
+    }
+}
 
 /// Most items one cycle will render. A quiet hour then a burst of thirty
 /// mentions must not turn into thirty simultaneous model turns; the rest keep
@@ -56,6 +83,17 @@ pub const MAX_RENDERS_PER_CYCLE: usize = 5;
 /// nobody is watching has nowhere to surface one, so failures are written to the
 /// poll state and read back by the pane as a degraded badge.
 pub fn poll_once(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
+    if !core.connector_poller.begin(family) {
+        // A cycle is already running for this family — the timer and the pane's
+        // refresh control both land here. Joining it is not worth a second turn.
+        return 0;
+    }
+    let announced = poll_claimed(core, family);
+    core.connector_poller.finish(family);
+    announced
+}
+
+fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
     let now = Utc::now().to_rfc3339();
     let Some(server) = available_server(core, family) else {
         let db = core.db.lock().unwrap();
@@ -415,7 +453,7 @@ pub fn start_connector_poll_maintenance(core: Arc<BridgeCore>) {
                 poll_once(&core, family);
             }
         }
-        std::thread::sleep(FOCUSED_CADENCE);
+        std::thread::sleep(POLL_CADENCE);
     });
 }
 
@@ -425,8 +463,29 @@ mod tests {
 
     #[test]
     fn ingress_is_slower_than_the_github_poller_because_a_cycle_is_a_model_turn() {
-        assert!(FOCUSED_CADENCE > crate::github_poll::FOCUSED_CADENCE);
-        assert!(UNFOCUSED_CADENCE > FOCUSED_CADENCE);
+        assert!(POLL_CADENCE > crate::github_poll::FOCUSED_CADENCE);
+    }
+
+    #[test]
+    fn one_ingress_cycle_runs_per_family_at_a_time() {
+        let poller = ConnectorPoller::default();
+        assert!(poller.begin(ConnectorFamily::Slack));
+        // The pane's refresh control arriving mid-timer-cycle must not start a
+        // second model turn for the same answer.
+        assert!(!poller.begin(ConnectorFamily::Slack));
+        assert!(poller.begin(ConnectorFamily::Gmail), "families poll independently");
+        poller.finish(ConnectorFamily::Slack);
+        assert!(poller.begin(ConnectorFamily::Slack), "completion releases the slot");
+    }
+
+    #[test]
+    fn a_failed_cycle_still_releases_its_slot() {
+        // poll_once releases unconditionally after poll_claimed returns, so a
+        // cycle that failed cannot wedge the family forever.
+        let poller = ConnectorPoller::default();
+        poller.begin(ConnectorFamily::Slack);
+        poller.finish(ConnectorFamily::Slack);
+        assert!(poller.begin(ConnectorFamily::Slack));
     }
 
     #[test]
