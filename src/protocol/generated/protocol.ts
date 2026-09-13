@@ -3421,7 +3421,7 @@ export interface UnarchiveChatParams {
 }
 
 export interface SummaryParams {
-  includeDashboard?: boolean;
+  includeDashboard?: boolean | null;
   includeImported: boolean;
   resolution: UsageResolution;
   sinceDay: string;

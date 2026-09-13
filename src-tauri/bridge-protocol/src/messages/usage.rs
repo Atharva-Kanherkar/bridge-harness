@@ -51,8 +51,8 @@ pub struct SummaryParams {
     pub include_imported: bool,
     /// Opt in to account dashboard history and nullable session counts.
     /// Older clients omit this and retain the original local-only result.
-    #[serde(default)]
-    pub include_dashboard: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_dashboard: Option<bool>,
     /// Inclusive UTC start, RFC 3339. Required for `hour` resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_time: Option<String>,
