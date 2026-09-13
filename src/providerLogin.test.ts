@@ -16,6 +16,12 @@ describe("provider login recovery", () => {
     expect(needsProviderSignIn("codex", "Your refresh token was already used. Please log out and sign in again.")).toBe("codex");
     expect(needsProviderSignIn("codex", "The refresh token has been revoked")).toBe("codex");
   });
+  it("does not offer subscription sign-in for a rejected API key", () => {
+    // The user had just swapped a Codex subscription for an API key in a
+    // terminal. Offering /login here offers to undo that.
+    expect(needsProviderSignIn("codex", "authentication failed: invalid api key")).toBeNull();
+    expect(needsProviderSignIn("codex", "OPENAI_API_KEY is not set")).toBeNull();
+  });
   it("does not turn policy, network, quota, or unknown-provider errors into login", () => {
     for (const message of ["403 forbidden", "429 rate limit", "connection refused", "write scope rejected"])
       expect(needsProviderSignIn("codex", message)).toBeNull();

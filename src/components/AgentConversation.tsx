@@ -7,7 +7,7 @@ import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humaniz
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
-import { describeError } from "../errors";
+import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
 import { FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
@@ -30,6 +30,17 @@ type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
+}
+
+/**
+ * What the pane knows about the session an error row sits in: its current
+ * runtime and that runtime's usage meter. Both are fallbacks — see `ErrorCard`
+ * for why a row's own runtime wins.
+ */
+interface ErrorContext {
+  harness?: string;
+  provider?: string;
+  snapshot: UsageSnapshot | null;
 }
 
 // A conversation of prose messages, live tool-call cards, clickable thinking,
@@ -624,7 +635,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // An image-only send has no words yet — its optimistic row is the image, so
   // an empty-text row would render as a blank bubble.
   const optimistic = pendingMessages.filter(text => text.trim().length > 0 && !existingUserTexts.has(text.trim()));
-  const errorContext = { provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
+  // The session's *current* runtime, and its meter. Only a fallback: a row
+  // that knows which runtime raised it outranks both (see `ErrorCard`).
+  const errorContext: ErrorContext = { harness: session?.harness ?? undefined, provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
   // Content-addressed, occurrence-counted keys for the optimistic bubbles: when
   // an earlier pending message lands as a real message, the bubbles after it
   // keep their identity — one ghost fades, and no survivor flips its text.
@@ -1113,7 +1126,7 @@ const MessageRow = memo(function MessageRow({ item, onRemember }: { item: Conver
   </div>;
 }, (previous, next) => previous.onRemember === next.onRemember && sameItem(previous.item, next.item));
 
-function ItemView({ item, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} onRemember={onRemember}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
@@ -1142,9 +1155,18 @@ function ItemView({ item, workers, now, readOnly, onResolve, onAnswerQuestion, o
 /// arrives a beat after the card, so the eye is drawn to the mark that says
 /// *what kind* of interruption this is. No shake — a graphite-and-paper
 /// transcript should not flinch.
-function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
-  const described = describeError(item.text, errorContext);
-  const isUsage = described.kind === "usage-limit";
+function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContext?: ErrorContext }) {
+  // The runtime that raised this failure, which is not necessarily the one the
+  // chat is set to now: switching a chat from Codex to OpenCode used to relabel
+  // every Codex failure above the switch as an OpenCode one, and hand it
+  // OpenCode's meter to quote a reset from. A row that came in with its own
+  // adapter stamp keeps it, and the session's meter only travels with it when
+  // the two agree.
+  const harness = item.harness ?? errorContext?.harness;
+  const provider = providerLabel(harness) ?? errorContext?.provider;
+  const sameRuntime = !item.harness || !errorContext?.harness || item.harness === errorContext.harness;
+  const described = describeError(item.text, { provider, snapshot: sameRuntime ? errorContext?.snapshot : null });
+  const isUsage = isThrottleKind(described.kind);
   const transition = useMotionTransition(MOTION_DURATION.tick, MOTION_DURATION.reveal);
   // A rate limit is a wait, not a failure — it gets the tick. A real error
   // is the one place a full wash is warranted.

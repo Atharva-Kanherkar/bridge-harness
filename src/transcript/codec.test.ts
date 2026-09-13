@@ -183,6 +183,29 @@ describe("normalizeSessionEntry", () => {
       .toMatchObject({ type: "model.change" });
   });
 
+  /**
+   * Which runtime a row came from is the row's fact, not the session's. Both
+   * doors read it off `providerMeta` — live from the event, durably from the
+   * copy `store::session_event_in_transaction` writes into the payload.
+   */
+  it("carries the originating adapter onto the envelope from both doors", () => {
+    expect(normalizeAgentEvent(live("error", { text: "boom", providerMeta: { adapter: "codex" } })).envelope.adapter)
+      .toBe("codex");
+    expect(normalizeSessionEntry(durable("error", { text: "boom", providerMeta: { adapter: "codex" } }))?.envelope.adapter)
+      .toBe("codex");
+    // An entry stored before the stamp existed simply has none; nothing guesses.
+    expect(normalizeSessionEntry(durable("error", { text: "boom" }))?.envelope.adapter).toBeUndefined();
+  });
+
+  it("reads a live error's text from the same places its replay does", () => {
+    // The two doors used to disagree: live read only `text`, replay fell back
+    // to `data.error.message`. One failure then said two different things —
+    // and the merge, which matches errors on their words, kept both rows.
+    const nested = { data: { error: { message: "You've hit your usage limit." } } };
+    expect(normalizeAgentEvent(live("error", nested))).toMatchObject({ type: "error", text: "You've hit your usage limit." });
+    expect(normalizeSessionEntry(durable("error", nested))).toMatchObject({ type: "error", text: "You've hit your usage limit." });
+  });
+
   it("keeps a replayed raw provider frame inspectable", () => {
     expect(normalizeSessionEntry(durable("provider.unknown", { title: "frame" }, { contextVisibility: "worker_raw" })))
       .toMatchObject({ type: "raw", inspectable: true, title: "frame" });

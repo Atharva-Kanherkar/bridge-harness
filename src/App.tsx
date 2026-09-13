@@ -81,7 +81,7 @@ import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } fro
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
-import { describeError, errorMessage } from "./errors";
+import { describeError, errorMessage, isThrottleKind } from "./errors";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
@@ -2778,7 +2778,7 @@ function AppContent() {
         snapshot: session ? usageByProvider[session.harness as UsageProvider] : undefined,
       });
       return (
-        <Alert variant={described.kind === "usage-limit" ? "warning" : "error"} className="u-overlay fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] rounded-xl sm:right-[18px] sm:bottom-[18px]">
+        <Alert variant={isThrottleKind(described.kind) ? "warning" : "error"} className="u-overlay fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] rounded-xl sm:right-[18px] sm:bottom-[18px]">
           <AlertTitle>{described.title}</AlertTitle>
           <AlertDescription>{described.message}</AlertDescription>
           <AlertAction>
