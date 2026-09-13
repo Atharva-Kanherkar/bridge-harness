@@ -62,6 +62,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// time to finish after the accept loop observes SIGTERM.
 const CHILD_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Stable lifecycle evidence for the credential-free packaged-app smoke. The
+/// external harness also checks socket removal and lease release; this marker
+/// distinguishes a successful daemon/wrapper exit from cleanup after failure.
+const CHILD_CLEAN_EXIT_MARKER: &str = "bridge: bridged process exited cleanly";
+
 /// Where a spawned daemon's stdout/stderr goes, inside the data directory.
 const DAEMON_LOG_FILE: &str = "bridged.log";
 const MAX_DAEMON_LOG_BYTES: u64 = 4 * 1024 * 1024;
@@ -638,7 +643,10 @@ impl Launcher {
             // Never signal that PID/group again: the group can still contain
             // surviving processes, and the numeric PID may have been reused.
             match child.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(status)) => {
+                    report_child_exit(status, false, false);
+                    return;
+                }
                 Ok(None) => {}
                 Err(error) => {
                     eprintln!(
@@ -649,24 +657,35 @@ impl Launcher {
                 }
             }
             let group = -(child.id() as libc::pid_t);
-            if unsafe { libc::kill(group, libc::SIGTERM) } != 0 {
-                let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
-            }
+            let termination_requested = unsafe { libc::kill(group, libc::SIGTERM) } == 0
+                || unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } == 0;
             let deadline = Instant::now() + CHILD_SHUTDOWN_DEADLINE;
             loop {
                 match child.try_wait() {
-                    Ok(Some(_)) => break,
+                    Ok(Some(status)) => {
+                        report_child_exit(status, termination_requested, false);
+                        return;
+                    }
                     _ if Instant::now() < deadline => {
                         std::thread::sleep(Duration::from_millis(50));
                     }
                     _ => {
+                        eprintln!(
+                            "bridge: bridged did not exit within {:?}; forcing process-group shutdown",
+                            CHILD_SHUTDOWN_DEADLINE
+                        );
                         let _ = unsafe { libc::kill(group, libc::SIGKILL) };
                         let _ = child.kill();
                         break;
                     }
                 }
             }
-            let _ = child.wait();
+            match child.wait() {
+                Ok(status) => report_child_exit(status, termination_requested, true),
+                Err(error) => {
+                    eprintln!("bridge: could not reap forced bridged shutdown: {error}")
+                }
+            }
         }
     }
 
@@ -706,6 +725,20 @@ impl Launcher {
         let mut tail: Vec<&str> = lines.into_iter().rev().collect();
         tail.insert(0, "last daemon log lines:");
         tail.join("\n")
+    }
+}
+
+fn report_child_exit(
+    status: std::process::ExitStatus,
+    termination_requested: bool,
+    forced: bool,
+) {
+    if termination_requested && !forced && status.success() {
+        eprintln!("{CHILD_CLEAN_EXIT_MARKER}");
+    } else if !termination_requested {
+        eprintln!("bridge: bridged exited before desktop shutdown ({status})");
+    } else {
+        eprintln!("bridge: bridged process exited uncleanly ({status})");
     }
 }
 

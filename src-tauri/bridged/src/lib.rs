@@ -59,6 +59,11 @@ pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// before proceeding to adapter teardown anyway.
 pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Emitted by the `bridged` executable only after its accept loop stops and
+/// graceful shutdown finishes. Packaged-app acceptance uses this daemon-side
+/// acknowledgement together with the desktop wrapper's exit status.
+pub const CLEAN_SHUTDOWN_MARKER: &str = "bridged: graceful shutdown complete";
+
 pub const SOCKET_FILE_NAME: &str = "bridged.sock";
 pub const TOKEN_FILE_NAME: &str = "daemon.token";
 
