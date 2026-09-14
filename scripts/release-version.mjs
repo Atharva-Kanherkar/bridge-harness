@@ -66,7 +66,10 @@ export function cargoWorkspacePackageNames(cargoRoot) {
   return manifests.map((manifestPath) => {
     const manifest = read(manifestPath);
     const packageSection = tomlSection(manifest, "package");
-    if (!/^version\s*=\s*\{\s*workspace\s*=\s*true\s*\}\s*$/m.test(packageSection)) {
+    const inheritsWorkspaceVersion =
+      /^version\s*=\s*\{\s*workspace\s*=\s*true\s*\}\s*$/m.test(packageSection) ||
+      /^version\.workspace\s*=\s*true\s*$/m.test(packageSection);
+    if (!inheritsWorkspaceVersion) {
       throw new Error(`${manifestPath} must inherit workspace.package.version`);
     }
     return tomlString(packageSection, "name");

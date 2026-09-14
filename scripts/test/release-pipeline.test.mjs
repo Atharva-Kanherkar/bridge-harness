@@ -55,6 +55,7 @@ function fixture(t, version = "0.5.8") {
   mkdirSync(join(dir, "safari-extension/Resources"), { recursive: true });
   mkdirSync(join(dir, "sidecar/claude-agent"), { recursive: true });
   mkdirSync(join(dir, "src-tauri/bridge-core"), { recursive: true });
+  mkdirSync(join(dir, "src-tauri/bridge-menu-bar"), { recursive: true });
   mkdirSync(join(dir, "packaging/arch"), { recursive: true });
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "bridge-deck", version }));
   writeFileSync(join(dir, ".release-please-manifest.json"), JSON.stringify({ ".": version }));
@@ -113,15 +114,19 @@ function fixture(t, version = "0.5.8") {
   writeFileSync(join(dir, "src-tauri/tauri.conf.json"), JSON.stringify({ version }));
   writeFileSync(
     join(dir, "src-tauri/Cargo.toml"),
-    `[workspace]\nmembers = ["bridge-core"]\n\n[workspace.package]\nversion = "${version}"\n\n[package]\nname = "bridge-deck"\nversion = { workspace = true }\n`,
+    `[workspace]\nmembers = ["bridge-core", "bridge-menu-bar"]\n\n[workspace.package]\nversion = "${version}"\n\n[package]\nname = "bridge-deck"\nversion = { workspace = true }\n`,
   );
   writeFileSync(
     join(dir, "src-tauri/bridge-core/Cargo.toml"),
     '[package]\nname = "bridge-core"\nversion = { workspace = true }\n',
   );
   writeFileSync(
+    join(dir, "src-tauri/bridge-menu-bar/Cargo.toml"),
+    '[package]\nname = "bridge-menu-bar"\nversion.workspace = true\n',
+  );
+  writeFileSync(
     join(dir, "src-tauri/Cargo.lock"),
-    `version = 4\n\n[[package]]\nname = "bridge-core"\nversion = "${version}"\n\n[[package]]\nname = "bridge-deck"\nversion = "${version}"\n\n[[package]]\nname = "external"\nversion = "9.9.9"\nsource = "registry+fixture"\n`,
+    `version = 4\n\n[[package]]\nname = "bridge-core"\nversion = "${version}"\n\n[[package]]\nname = "bridge-deck"\nversion = "${version}"\n\n[[package]]\nname = "bridge-menu-bar"\nversion = "${version}"\n\n[[package]]\nname = "external"\nversion = "9.9.9"\nsource = "registry+fixture"\n`,
   );
   writeFileSync(
     join(dir, "packaging/arch/PKGBUILD"),
