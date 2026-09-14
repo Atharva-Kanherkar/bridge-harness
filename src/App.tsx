@@ -65,7 +65,7 @@ import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
-import { UsageWidget, ProviderLoginPane } from "./components/UsageWidget";
+import { ProviderLoginPane } from "./components/ProviderLoginPane";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
@@ -83,7 +83,7 @@ import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setL
 import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
-import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
+import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage, isThrottleKind } from "./errors";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
@@ -264,18 +264,12 @@ function AppContent() {
   const [agentDispatchNotice, setAgentDispatchNotice] = useState<string>();
   const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
-  const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
-  // The menu has its own native presentation. The main window consumes the
-  // same backend quota contract and retains its existing usage presentation.
-  const [meterRefreshing, setMeterRefreshing] = useState(false);
   // These handlers must be initialized before the startup effects subscribe.
   // The first render returns the loading shell, so handlers declared below
   // that return leave the tray listener with an uninitialized closure forever.
   const refreshMeter = useCallback(() => {
-    setMeterRefreshing(true);
     Promise.all([bridgeApi.refreshMeter(), bridgeApi.refreshUsageOverview()])
-      .catch(value => setError(errorMessage(value)))
-      .finally(() => setMeterRefreshing(false));
+      .catch(value => setError(errorMessage(value)));
   }, []);
   // The meter lives in the menu bar, in its own window. Opening it from the
   // Usage screen opens that same panel rather than a second, in-app copy —
@@ -369,9 +363,8 @@ function AppContent() {
       if (payload.provider === "codex") return;
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
       // An unreadable frame means the provider has no current limits — its
-      // last window reset with nothing running, say. Dropping the snapshot is
-      // what stops the old percentage sitting in the ring after it expired;
-      // the samples series is history and is deliberately left alone.
+      // last window reset with nothing running, say. Dropping the snapshot
+      // keeps error explanations from using a limit that has expired.
       if (!snapshot) {
         setUsageByProvider(current => {
           if (!(payload.provider in current)) return current;
@@ -382,18 +375,10 @@ function AppContent() {
         return;
       }
       setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
-      if (snapshot.windows.length) {
-        const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
-        setUsageSamples(current => ({
-          ...current,
-          [payload.provider]: [...(current[payload.provider] ?? []), { usedPercent, capturedAt: snapshot.capturedAt }].slice(-24),
-        }));
-      }
     }).then(fn => offUsage = fn);
     // Native tray (menu-bar meter companion): left-click opens the meter
     // popover, the tray menu's refresh triggers a shared usage refresh. Both
-    // route through the same handlers as the in-app controls so the registry
-    // loads and the spinner spins on every path.
+    // route through the same handler as the Usage screen refresh.
     let offMeter: (() => void) | undefined;
     // The tray opens the panel itself, natively — the app is not involved in
     // showing the meter, which is what stops a menu-bar click raising the
@@ -789,14 +774,6 @@ function AppContent() {
         if (snapshot) next.codex = snapshot; else delete next.codex;
         return next;
       });
-      if (snapshot) {
-        const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
-        setUsageSamples(current => {
-          const samples = current.codex ?? [];
-          if (samples.at(-1)?.capturedAt === snapshot.capturedAt) return current;
-          return { ...current, codex: [...samples, { usedPercent, capturedAt: snapshot.capturedAt }].slice(-24) };
-        });
-      }
     };
     void bridgeApi.onUsageOverview(accept).then(fn => { if (active) off = fn; else fn(); });
     void bridgeApi.getUsageOverview().then(accept).catch(() => undefined);
@@ -819,10 +796,6 @@ function AppContent() {
     () => (session ? queuedFollowUps(session.id, state.events).length : 0),
     [session, state.events],
   );
-  const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
-  const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
-  const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
-  const latestContextSource = session?.contextPercent != null ? session.metricSource as import("./usage").MetricSource : usageHistory.find(entry => entry.contextPercent != null)?.source;
   const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
@@ -2301,10 +2274,6 @@ function AppContent() {
     }
   };
   const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
-  const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
-  const usageWidget = <UsageWidget {...usageProps} />;
-  const usageRing = <UsageWidget compact {...usageProps} />;
-  const titleBarActions = <>{usageWidget}</>;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2372,7 +2341,6 @@ function AppContent() {
       onOpenNav={() => setNavOpen(true)}
       leading={sidebarNav}
       sidebarHidden={sidebarCollapsed}
-      actions={titleBarActions}
     />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
@@ -2620,7 +2588,7 @@ function AppContent() {
                     the orchestrator is told so it does not fight the change. */}
                 {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
-                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={usageWidget}/>
+                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2"/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -2707,7 +2675,6 @@ function AppContent() {
                     onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
-                    leading={usageRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}

@@ -24,9 +24,10 @@ library using Xcode, targeting macOS 12 on both arm64 and x86_64. No separate
 application or provider daemon is embedded by this package.
 
 Settings compose Bridge's ordinary Tailwind v4 settings primitives. Menu
-presentation imports neither UsageWidget nor MeterReadings. Main-window
-integration is limited to startup, opening Settings/Bridge, and a data adapter
-that preserves the existing quota presentation.
+presentation is independent of the React meter components. The retired
+main-window usage ring and its details popover have been removed from the title
+bar and composers. Provider sign-in remains in setup and Harnesses settings;
+usage collection and the native menu keep their shared backend.
 
 ## Data contract
 
