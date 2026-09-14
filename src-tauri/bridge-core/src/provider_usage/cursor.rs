@@ -124,27 +124,39 @@ fn fetch_account(
     base_url: &str,
 ) -> Result<AccountUsage, AccountReadError> {
     let scope = account_scope(subject);
-    let me = http::json_result(
-        http::secret(client.get(format!("{base_url}/api/auth/me")), true, cookie)?,
-        "Cursor",
-    ).map_err(|error| AccountReadError::for_account(error, &scope))?;
+    let account_request = http::secret(
+        client.get(format!("{base_url}/api/auth/me"))
+            .header("Accept", "application/json")
+            .timeout(Duration::from_secs(2)),
+        true,
+        cookie,
+    )?;
+    let usage_request = http::secret(
+        client.get(format!("{base_url}/api/usage-summary"))
+            .header("Accept", "application/json"),
+        true,
+        cookie,
+    )?;
+    // Like CodexBar's CursorStatusProbe, account metadata is optional. The
+    // validated local session identifies the account; usage-summary determines
+    // whether its usage is available. Fetch both together with a shorter bound
+    // for the label lookup so its failure cannot block valid account limits.
+    let (me, usage) = std::thread::scope(|threads| {
+        let account = threads.spawn(|| http::json(account_request, "Cursor"));
+        let usage = http::json_result(usage_request, "Cursor");
+        let me = account.join().ok().and_then(Result::ok).unwrap_or(Value::Null);
+        (me, usage)
+    });
+    // A returned mismatch still invalidates the account, even if the usage
+    // request failed transiently. Never retain another account's cache.
     if let Some(actual) = me["sub"].as_str() {
         if actual.rsplit('|').next().map(str::to_lowercase)
             != subject.rsplit('|').next().map(str::to_lowercase)
         {
             return Err("Cursor account changed. Sign in again in Cursor desktop.".into());
         }
-    } else if public_text(&me["email"]).is_none() {
-        return Err("Cursor account identity is unavailable".into());
     }
-    let usage = http::json_result(
-        http::secret(
-            client.get(format!("{base_url}/api/usage-summary")),
-            true,
-            cookie,
-        )?,
-        "Cursor",
-    ).map_err(|error| AccountReadError::for_account(error, &scope))?;
+    let usage = usage.map_err(|error| AccountReadError::for_account(error, &scope))?;
     let mut result = parse(&usage, now)?;
     result.account = public_text(&me["email"]).or_else(|| public_text(&me["sub"]));
     result.account_scope = Some(scope);
@@ -757,31 +769,62 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn account_probe(responses: Vec<(u16, &str, Duration)>) -> Result<AccountUsage, AccountReadError> {
+    const ACCOUNT: &str = r#"{"sub":"auth0|account-a","email":"fixture@example.test"}"#;
+    const SUMMARY: &str = r#"{"individualUsage":{"plan":{"totalPercentUsed":35}}}"#;
+
+    fn account_probe(
+        account: (u16, &str, Duration),
+        usage: (u16, &str, Duration),
+    ) -> Result<AccountUsage, AccountReadError> {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
-        let responses: Vec<_> = responses.into_iter().map(|(code, body, delay)| (code, body.to_owned(), delay)).collect();
-        let server = std::thread::spawn(move || {
-            for (code, body, delay) in responses {
-                let until = Instant::now() + Duration::from_secs(3);
+        let owned = |(code, body, delay): (u16, &str, Duration)| (code, body.to_owned(), delay);
+        let account = owned(account);
+        let usage = owned(usage);
+        let server = std::thread::spawn(move || std::thread::scope(|threads| {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let until = Instant::now() + Duration::from_secs(4);
                 let mut socket = loop {
                     match listener.accept() {
                         Ok((socket, _)) => break socket,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => {
                             std::thread::sleep(Duration::from_millis(5));
                         }
-                        _ => return,
+                        error => panic!("missing fixture request: {error:?}"),
                     }
                 };
-                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-                let mut request = [0; 4096];
-                socket.read(&mut request).unwrap();
-                std::thread::sleep(delay);
-                let _ = write!(socket, "HTTP/1.1 {code} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let account = &account;
+                let usage = &usage;
+                requests.push(threads.spawn(move || {
+                    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut chunk = [0; 1024];
+                        let count = socket.read(&mut chunk).unwrap();
+                        assert!(count > 0 && request.len() < 4096);
+                        request.extend_from_slice(&chunk[..count]);
+                    }
+                    let request = String::from_utf8(request).unwrap().to_lowercase();
+                    assert!(request.contains("\r\ncookie: fixture-session\r\n"));
+                    assert!(request.contains("\r\naccept: application/json\r\n"));
+                    let path = request.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                    let (code, body, delay) = match path {
+                        "/api/auth/me" => account,
+                        "/api/usage-summary" => usage,
+                        _ => panic!("unexpected fixture path: {path}"),
+                    };
+                    std::thread::sleep(*delay);
+                    let _ = write!(socket, "HTTP/1.1 {code} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    path.to_owned()
+                }));
             }
-        });
+            let mut paths: Vec<_> = requests.into_iter().map(|request| request.join().unwrap()).collect();
+            paths.sort();
+            assert_eq!(paths, ["/api/auth/me", "/api/usage-summary"]);
+        }));
         let client = reqwest::blocking::Client::builder().no_proxy()
             .timeout(Duration::from_secs(1)).build().unwrap();
         let result = fetch_account(&client, "auth0|account-a", "fixture-session", 100, &url);
@@ -790,31 +833,58 @@ mod tests {
     }
 
     #[test]
-    fn cursor_top_level_timeouts_keep_the_current_account_scope() {
-        let error = account_probe(vec![(200, "{}", Duration::from_millis(1200))]).unwrap_err();
-        assert_eq!(error.retry_account_scope.as_deref(), Some(account_scope("auth0|account-a").as_str()));
-        assert!(error.message.contains("timed out"));
-        let error = account_probe(vec![
-            (200, r#"{"sub":"auth0|account-a"}"#, Duration::ZERO),
+    fn cursor_usage_survives_missing_or_failed_optional_account_metadata() {
+        for (code, body, delay) in [
+            (401, "{}", Duration::ZERO),
             (503, "{}", Duration::ZERO),
-        ]).unwrap_err();
-        assert_eq!(error.retry_account_scope, Some(account_scope("auth0|account-a")));
+            (200, "not-json", Duration::ZERO),
+            (204, "", Duration::ZERO),
+            (200, "{}", Duration::ZERO),
+            (200, ACCOUNT, Duration::from_millis(2200)),
+        ] {
+            let result = account_probe((code, body, delay), (200, SUMMARY, Duration::ZERO)).unwrap();
+            assert_eq!(result.windows[0].used_percent.value, Some(35.0));
+            assert_eq!(result.windows[0].used_percent.source, Some(UsageMetricSource::Reported));
+            assert_eq!(result.observed_at, 100);
+            assert_eq!(result.account_scope, Some(account_scope("auth0|account-a")));
+            assert!(result.account.is_none());
+        }
+        let result = account_probe((200, ACCOUNT, Duration::ZERO), (200, SUMMARY, Duration::ZERO)).unwrap();
+        assert_eq!(result.account.as_deref(), Some("fixture@example.test"));
     }
 
     #[test]
-    fn cursor_rejected_auth_identity_and_malformed_data_do_not_authorize_stale_history() {
-        for (code, body) in [
-            (401, "{}"), (403, "{}"), (200, "not-json"),
-            (200, r#"{"sub":"auth0|different-account"}"#), (200, "{}"),
+    fn cursor_usage_summary_timeouts_and_server_failures_keep_the_current_account_scope() {
+        for (code, body, delay) in [
+            (200, SUMMARY, Duration::from_millis(1200)),
+            (503, "{}", Duration::ZERO),
         ] {
-            let error = account_probe(vec![(code, body, Duration::ZERO)]).unwrap_err();
+            let error = account_probe((200, ACCOUNT, Duration::ZERO), (code, body, delay)).unwrap_err();
+            assert_eq!(error.retry_account_scope, Some(account_scope("auth0|account-a")));
+            if !delay.is_zero() {
+                assert!(error.message.contains("timed out"));
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_rejected_usage_and_malformed_summary_do_not_authorize_stale_history() {
+        for (code, body) in [(401, "{}"), (403, "{}"), (200, "not-json"), (200, "{}")] {
+            let error = account_probe((200, ACCOUNT, Duration::ZERO), (code, body, Duration::ZERO)).unwrap_err();
             assert!(error.retry_account_scope.is_none(), "{code}: {body}");
         }
-        let error = account_probe(vec![
-            (200, r#"{"sub":"auth0|account-a"}"#, Duration::ZERO),
-            (200, "not-json", Duration::ZERO),
-        ]).unwrap_err();
-        assert!(error.retry_account_scope.is_none());
+    }
+
+    #[test]
+    fn cursor_returned_account_mismatch_rejects_usage_and_cache_reuse() {
+        for (code, body) in [(200, SUMMARY), (503, "{}")] {
+            let error = account_probe(
+                (200, r#"{"sub":"auth0|different-account"}"#, Duration::ZERO),
+                (code, body, Duration::ZERO),
+            ).unwrap_err();
+            assert!(error.retry_account_scope.is_none());
+            assert!(error.message.contains("account changed"));
+        }
     }
 
     #[test]

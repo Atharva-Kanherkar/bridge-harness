@@ -73,9 +73,16 @@ collector rather than adding a second dashboard fetch to the History screen.
 
 ## Temporary Cursor request failures
 
+A valid usage-summary response refreshes account limits even when Cursor's
+optional account-label endpoint fails. Both requests run together; the label
+lookup has a shorter timeout. The current unexpired desktop session supplies
+the account scope, and unavailable labels are omitted. A returned account
+mismatch rejects the reading and cached history.
+
 A timeout, interrupted response, rate limit, or temporary server error during
-account refresh preserves the last reading only when the current unexpired
+usage-summary refresh preserves the last reading only when the current unexpired
 Cursor desktop session identifies the exact cached account. Both menu and Usage
 show it as stale, with its original observation time and refresh error.
-Rejected or unavailable authentication, changed account identity, and malformed
-responses clear account history. No credentials are added to the usage cache.
+Rejected usage-summary authentication, unavailable local authentication,
+changed account identity, and malformed usage responses clear account history.
+No credentials are added to the usage cache.
