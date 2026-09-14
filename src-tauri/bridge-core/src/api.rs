@@ -3812,7 +3812,7 @@ pub fn usage_summary(
     core: &Arc<BridgeCore>,
     request: &usage_summary::UsageSummaryRequest,
 ) -> Result<usage_summary::UsageSummary, BridgeError> {
-    usage_summary::summarize(&core.db.lock().unwrap(), request)
+    crate::usage_dashboard::summarize(&core.db.lock().unwrap(), request, chrono::Utc::now().timestamp())
 }
 
 /// The Insights tab: the stored report, or a fresh one from a headless harness
@@ -3880,17 +3880,17 @@ pub fn list_usage_history_sources(
     core: &Arc<BridgeCore>,
 ) -> Result<Vec<usage_history::UsageHistorySource>, BridgeError> {
     let env = usage_import::SourceEnv::from_process();
-    usage_history::list_history_sources(&core.db.lock().unwrap(), &env)
+    crate::usage_dashboard::list_sources(&core.db.lock().unwrap(), &env)
 }
 
-/// One bounded, incremental import pass over the chosen history sources.
+/// One bounded local import pass and, when selected, a shared Cursor dashboard refresh.
 pub fn scan_usage_history(
     core: &Arc<BridgeCore>,
     max_records: Option<usize>,
     source_ids: Option<&[String]>,
 ) -> Result<usage_import::ScanReport, BridgeError> {
     let env = usage_import::SourceEnv::from_process();
-    usage_history::scan_history(core, &env, max_records, source_ids)
+    crate::usage_dashboard::scan(core, &env, max_records, source_ids)
 }
 
 // --- menu-bar meter (CodexBar port) ------------------------------------------------
@@ -3902,6 +3902,40 @@ pub fn scan_usage_history(
 /// The meter registry: live providers plus planned CodexBar follow-ups.
 pub fn meter_snapshot() -> meter::MeterRegistry {
     meter::registry_snapshot()
+}
+
+pub fn save_opencode_usage_session(core: &Arc<BridgeCore>, cookie: &str, workspace: &str) -> Result<(), BridgeError> {
+    crate::provider_usage::credentials::save_opencode_session(cookie, workspace).map_err(BridgeError::Invalid)?;
+    crate::usage_overview::invalidate_opencode(core)
+}
+
+pub fn get_provider_usage_overviews(core: &Arc<BridgeCore>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    crate::usage_overview::provider_snapshots(core)
+}
+
+pub fn refresh_provider_usage_overviews(core: &Arc<BridgeCore>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    crate::usage_overview::refresh_providers(core)
+}
+
+/// Explicit user action only; scheduled collectors use the noninteractive method.
+pub fn refresh_provider_usage_overviews_interactive(core: &Arc<BridgeCore>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    crate::usage_overview::refresh_providers_interactive(core)
+}
+
+pub fn get_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    crate::usage_overview::snapshot(core)
+}
+
+pub fn refresh_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    crate::usage_overview::refresh(core)
+}
+
+pub fn get_menu_bar_settings(core: &Arc<BridgeCore>) -> Result<wire::MenuBarSettings, BridgeError> {
+    crate::menu_bar::load(&core.db.lock().unwrap())
+}
+
+pub fn save_menu_bar_settings(core: &Arc<BridgeCore>, settings: &wire::MenuBarSettings) -> Result<wire::MenuBarSettings, BridgeError> {
+    crate::menu_bar::save(&core.db.lock().unwrap(), settings)
 }
 
 /// Trigger the shared account-usage refresh (Claude `/usage` probe plus Codex,

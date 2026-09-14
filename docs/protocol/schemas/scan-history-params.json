@@ -13,7 +13,7 @@
       ]
     },
     "sourceIds": {
-      "description": "Only these sources; every id must be one `list_history_sources` returned. All discovered sources when absent.",
+      "description": "Only these sources; every id must be one `list_history_sources` returned. All discovered sources when absent. Dashboard sources use the shared authenticated provider collector; no transcript is imported.",
       "items": {
         "type": "string"
       },

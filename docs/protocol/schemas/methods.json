@@ -856,6 +856,62 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "save_opencode_usage_session",
+      "domain": "usage",
+      "method": "usage/save_opencode_usage_session",
+      "paramsSchema": "save-opencode-usage-session-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "get_provider_usage_overviews",
+      "domain": "usage",
+      "method": "usage/get_provider_usage_overviews",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "refresh_provider_usage_overviews",
+      "domain": "usage",
+      "method": "usage/refresh_provider_usage_overviews",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "refresh_provider_usage_overviews_interactive",
+      "domain": "usage",
+      "method": "usage/refresh_provider_usage_overviews_interactive",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "get_usage_overview",
+      "domain": "usage",
+      "method": "usage/get_usage_overview",
+      "paramsSchema": null,
+      "resultSchema": "usage-overview-snapshot.json"
+    },
+    {
+      "command": "refresh_usage_overview",
+      "domain": "usage",
+      "method": "usage/refresh_usage_overview",
+      "paramsSchema": null,
+      "resultSchema": "usage-overview-snapshot.json"
+    },
+    {
+      "command": "get_menu_bar_settings",
+      "domain": "menu_bar",
+      "method": "menu_bar/get_menu_bar_settings",
+      "paramsSchema": null,
+      "resultSchema": "menu-bar-settings.json"
+    },
+    {
+      "command": "save_menu_bar_settings",
+      "domain": "menu_bar",
+      "method": "menu_bar/save_menu_bar_settings",
+      "paramsSchema": "save-menu-bar-settings-params.json",
+      "resultSchema": "menu-bar-settings.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",
@@ -1376,7 +1432,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 8
+    "minor": 16
   },
   "reserved": {
     "cancel": "$/cancel",

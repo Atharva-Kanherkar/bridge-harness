@@ -14,6 +14,13 @@
       ],
       "type": "string"
     },
+    "UsageHistoryOrigin": {
+      "enum": [
+        "local",
+        "dashboard"
+      ],
+      "type": "string"
+    },
     "UsageHistorySource": {
       "description": "A history source the importers know how to look for, with what has been indexed from it. Mirrors `bridge_core::usage_history::UsageHistorySource`.",
       "properties": {
@@ -68,10 +75,19 @@
         "location": {
           "type": "string"
         },
+        "origin": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UsageHistoryOrigin"
+            }
+          ],
+          "default": "local"
+        },
         "provider": {
           "type": "string"
         },
         "recordsImported": {
+          "description": "Indexed local records, or cached events for a dashboard source.",
           "format": "int64",
           "type": "integer"
         },

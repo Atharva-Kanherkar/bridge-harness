@@ -5,6 +5,7 @@
 //!         [--browser-extension <path>]
 //! ```
 
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,6 +14,13 @@ use std::sync::atomic::Ordering;
 const DEFAULT_HEALTH_ADDR: &str = "127.0.0.1:4318";
 
 fn main() -> ExitCode {
+    let helper_args = std::env::args().skip(1).collect::<Vec<_>>();
+    if matches!(
+        helper_args.first().map(String::as_str),
+        Some("--bridge-keychain-read" | "--bridge-keychain-read-interactive")
+    ) {
+        return keychain_read_helper(&helper_args);
+    }
     let config = match parse_flags(std::env::args().skip(1)) {
         Ok(config) => config,
         Err(message) => {
@@ -49,7 +57,12 @@ fn main() -> ExitCode {
     eprintln!(
         "bridged: serving {} (data dir {})",
         daemon.socket_path.display(),
-        daemon.core.database_path.parent().unwrap_or(&daemon.socket_path).display()
+        daemon
+            .core
+            .database_path
+            .parent()
+            .unwrap_or(&daemon.socket_path)
+            .display()
     );
     let served = bridged::serve(&daemon, listener);
     daemon.shutdown(bridged::DEFAULT_DRAIN_TIMEOUT);
@@ -62,6 +75,33 @@ fn main() -> ExitCode {
     }
 }
 
+fn keychain_read_helper(args: &[String]) -> ExitCode {
+    let Some(service) = args.get(1) else {
+        return ExitCode::from(2);
+    };
+    if args.len() > 3
+        || !["Claude Code-credentials", "dev.bridge.deck.provider-usage"]
+            .contains(&service.as_str())
+    {
+        return ExitCode::from(2);
+    }
+    let interactive = args[0] == "--bridge-keychain-read-interactive";
+    match bridge_core::provider_usage::credentials::keychain_helper_read(
+        service,
+        args.get(2).map(String::as_str),
+        interactive,
+    ) {
+        Ok(bytes) if bytes.len() <= 65_536 => {
+            if std::io::stdout().write_all(&bytes).is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        _ => ExitCode::FAILURE,
+    }
+}
+
 fn parse_flags(args: impl Iterator<Item = String>) -> Result<bridged::DaemonConfig, String> {
     let mut data_dir: Option<PathBuf> = None;
     let mut socket_path: Option<PathBuf> = None;
@@ -70,7 +110,8 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<bridged::DaemonConf
     let mut args = args.peekable();
     while let Some(flag) = args.next() {
         let mut value = |flag: &str| {
-            args.next().ok_or_else(|| format!("{flag} requires a value"))
+            args.next()
+                .ok_or_else(|| format!("{flag} requires a value"))
         };
         match flag.as_str() {
             "--data-dir" => data_dir = Some(PathBuf::from(value("--data-dir")?)),
@@ -87,15 +128,18 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<bridged::DaemonConf
         .or_else(default_data_dir)
         .ok_or("--data-dir is required (or set BRIDGE_DATA_DIR)")?;
     let health_addr: Option<SocketAddr> = match health.as_deref() {
-        None => Some(DEFAULT_HEALTH_ADDR.parse().expect("default health addr parses")),
+        None => Some(
+            DEFAULT_HEALTH_ADDR
+                .parse()
+                .expect("default health addr parses"),
+        ),
         Some("none") => None,
         Some(addr) => Some(
             addr.parse()
                 .map_err(|_| format!("--health-addr must be ip:port or none, got {addr}"))?,
         ),
     };
-    let browser_extension_path =
-        browser_extension.unwrap_or_else(default_browser_extension_path);
+    let browser_extension_path = browser_extension.unwrap_or_else(default_browser_extension_path);
     Ok(bridged::DaemonConfig {
         data_dir,
         socket_path,
@@ -134,9 +178,8 @@ fn default_browser_extension_path() -> PathBuf {
 fn default_data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        std::env::var_os("HOME").map(|home| {
-            PathBuf::from(home).join("Library/Application Support/dev.bridge.deck")
-        })
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/dev.bridge.deck"))
     }
     #[cfg(not(target_os = "macos"))]
     {

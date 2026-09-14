@@ -76,6 +76,11 @@ fn stage_placeholder(path: &PathBuf) {
 }
 
 fn main() {
+    // Link arguments from the Swift static-library crate do not propagate to
+    // this package's executables (including Cargo test binaries).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    }
     let config = Path::new("tauri.conf.json");
     println!("cargo:rerun-if-changed=tauri.conf.json");
     if let Ok(target) = std::env::var("TARGET") {

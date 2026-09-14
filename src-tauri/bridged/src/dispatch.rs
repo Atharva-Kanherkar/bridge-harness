@@ -574,6 +574,20 @@ pub fn dispatch(
         }
         MethodName::GetMeterSnapshot => reply(Ok(api::meter_snapshot())),
         MethodName::RefreshMeter => reply(api::refresh_meter(core)),
+        MethodName::SaveOpencodeUsageSession => {
+            let p: wire::SaveOpencodeUsageSessionParams = decode(method, params)?;
+            reply(api::save_opencode_usage_session(core, &p.cookie, &p.workspace))
+        }
+        MethodName::GetProviderUsageOverviews => reply(api::get_provider_usage_overviews(core)),
+        MethodName::RefreshProviderUsageOverviews => reply(api::refresh_provider_usage_overviews(core)),
+        MethodName::RefreshProviderUsageOverviewsInteractive => reply(api::refresh_provider_usage_overviews_interactive(core)),
+        MethodName::GetUsageOverview => reply(api::get_usage_overview(core)),
+        MethodName::RefreshUsageOverview => reply(api::refresh_usage_overview(core)),
+        MethodName::GetMenuBarSettings => reply(api::get_menu_bar_settings(core)),
+        MethodName::SaveMenuBarSettings => {
+            let p: wire::SaveMenuBarSettingsParams = decode(method, params)?;
+            reply(api::save_menu_bar_settings(core, &p.settings))
+        }
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

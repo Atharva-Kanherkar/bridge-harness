@@ -423,14 +423,18 @@ dependencies = [
  "cap-std",
  "chrono",
  "chrono-tz",
+ "core-foundation 0.10.1",
  "ed25519-dalek",
  "flate2",
  "futures",
+ "iana-time-zone",
  "libc",
  "portable-pty",
  "regex",
  "reqwest",
  "rusqlite",
+ "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "sha2",
@@ -450,6 +454,7 @@ version = "0.5.8"
 dependencies = [
  "bridge-client",
  "bridge-core",
+ "bridge-menu-bar",
  "bridge-protocol",
  "bridged",
  "chrono",
@@ -472,6 +477,13 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "bridge-menu-bar"
+version = "0.5.8"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

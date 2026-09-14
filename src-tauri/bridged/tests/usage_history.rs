@@ -120,7 +120,9 @@ fn history_is_discovered_scanned_once_and_reported_incrementally() {
             .find(|source| source["agent"] == json!(agent))
             .unwrap_or_else(|| panic!("no {agent} source in {sources}"))
     };
-    assert_eq!(by_agent("cursor")["capability"], json!("unsupported"));
+    assert_eq!(by_agent("cursor")["capability"], json!("supported"));
+    assert_eq!(by_agent("cursor")["origin"], json!("dashboard"));
+    assert_eq!(by_agent("cursor")["id"], json!("cursor:dashboard"));
     assert_eq!(by_agent("cursor")["coverageState"], json!("unsupported"));
     assert!(by_agent("cursor")["coverageReason"].is_string());
     assert_eq!(by_agent("claude")["capability"], json!("supported"));
@@ -139,6 +141,10 @@ fn history_is_discovered_scanned_once_and_reported_incrementally() {
         .unwrap();
     assert_eq!(claude_outcome["recordsImported"], json!(1));
     assert_eq!(claude_outcome["coverage"], json!("complete"));
+    let cursor_outcome = first["result"]["sources"].as_array().unwrap().iter()
+        .find(|outcome| outcome["agent"] == "cursor").unwrap();
+    assert_eq!(cursor_outcome["coverage"], "unsupported", "disabled dashboard collection stays off");
+    assert_eq!(cursor_outcome["recordsImported"], 0);
 
     let second = client.call(
         3,
@@ -172,6 +178,43 @@ fn history_is_discovered_scanned_once_and_reported_incrementally() {
     );
     assert_eq!(summary["result"]["importedRecords"], json!(1), "{summary}");
     assert_eq!(summary["result"]["buckets"][0]["totals"]["cacheReadTokens"], json!(40));
+
+    // The same RPC returns the shared dashboard cache without importing its
+    // aggregates into the transcript ledger or reading any credentials.
+    {
+        let db = bridge_core::store::open(&data_dir.join("bridge.db")).unwrap();
+        let mut settings = bridge_core::menu_bar::load(&db).unwrap();
+        settings.cursor_enabled = true;
+        bridge_core::menu_bar::save(&db, &settings).unwrap();
+        let metric = json!({"value": 64, "source": "reported", "status": "current"});
+        let period = json!({"tokens": metric, "costMicrousd": metric, "models": []});
+        let cache = json!({"usage": {
+            "account": null, "plan": null, "observed_at": 1772366400i64, "windows": [], "metrics": [], "account_scope": "fixture-account",
+            "history": {
+                "account_scope": "fixture-account", "observed_at": 1772366400i64, "through_day": "2026-03-01",
+                "today": period, "month": period, "daily": [], "coverage": "fixture dashboard",
+                "breakdown": {"time_zone": "UTC", "since_day": "2026-02-01", "buckets": [{
+                    "day": "2026-03-01", "harness": "cursor", "model": "cursor-model",
+                    "totals": {"uncachedInputTokens":12,"cacheReadTokens":40,"cacheWriteTokens":3,"outputTokens":9,"reasoningTokens":0},
+                    "costMicrousd": 64, "cacheSavingsMicrousd": 0, "costSource": "provider_reported", "records": 1, "unpricedRecords": 0, "sessions": null
+                }]}
+            }
+        }, "error": null});
+        db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview','cursor',?1,'now','now')", [cache.to_string()]).unwrap();
+    }
+    let legacy = client.call(8, "usage/summary", Some(json!({"sinceDay":"2026-03-01","untilDay":"2026-03-01","resolution":"day","includeImported":true})));
+    assert_eq!(legacy["result"]["buckets"].as_array().unwrap().len(), 1);
+    assert!(legacy["result"]["buckets"][0]["sessions"].is_i64(), "older clients retain integer session counts");
+    let combined = client.call(9, "usage/summary", Some(json!({"sinceDay":"2026-03-01","untilDay":"2026-03-01","resolution":"day","includeImported":true,"includeDashboard":true})));
+    assert!(combined.get("error").is_none(), "{combined}");
+    assert_eq!(combined["result"]["importedRecords"], 1);
+    assert_eq!(combined["result"]["buckets"].as_array().unwrap().len(), 2);
+    let cursor = combined["result"]["buckets"].as_array().unwrap().iter().find(|row| row["harness"] == "cursor").unwrap();
+    assert_eq!(cursor["totals"]["cacheReadTokens"], 40);
+    assert_eq!(cursor["totals"]["cacheWriteTokens"], 3);
+    assert_eq!(cursor["costMicrousd"], 64);
+    assert!(cursor["sessions"].is_null());
+    assert!(!combined.to_string().contains("SECRET PROMPT TEXT"));
 
     daemon.state.shutting_down.store(true, Ordering::SeqCst);
     accept_loop.join().unwrap();

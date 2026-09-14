@@ -73,6 +73,7 @@ import type {
   SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
+import type { MenuBarSettings, UsageOverviewSnapshot, ProviderUsageOverviews } from "./protocol/generated/protocol";
 import type {
   ConnectorCardReadyPayload,
   ConnectorItemArrivedPayload,
@@ -81,6 +82,10 @@ import type {
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+let mockMenuBarSettings: MenuBarSettings = {
+  schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: null, displayMode: "remaining", quotaWindow: "auto",
+  showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300,
+};
 
 // The typed protocol boundary. Every Tauri round-trip goes through these two
 // helpers, so params, results, and event names all come from the generated
@@ -1418,6 +1423,54 @@ export const bridgeApi = {
     if (isTauri()) return call("meter/refresh_meter").then(() => undefined);
     return Promise.resolve();
   },
+  getMenuBarSettings: (): Promise<MenuBarSettings> => isTauri()
+    ? call("menu_bar/get_menu_bar_settings") : Promise.resolve(structuredClone(mockMenuBarSettings)),
+  saveMenuBarSettings: async (settings: MenuBarSettings): Promise<MenuBarSettings> => {
+    if (!isTauri()) { mockMenuBarSettings = structuredClone(settings); return structuredClone(settings); }
+    const saved = await call("menu_bar/save_menu_bar_settings", { settings });
+    const { emit } = await import("@tauri-apps/api/event");
+    // Persistence already succeeded. A missed presentation hint must not
+    // misreport the save; the native host also re-reads preferences on its tick.
+    await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
+    return saved;
+  },
+  getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => isTauri()
+    ? call("usage/get_provider_usage_overviews") : Promise.resolve(null),
+  refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
+    if (!isTauri()) return null;
+    const snapshot = await call("usage/refresh_provider_usage_overviews_interactive");
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined);
+    await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
+    return snapshot;
+  },
+  onProviderUsageOverviews: (handler: (snapshot: ProviderUsageOverviews) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<ProviderUsageOverviews>("bridge-provider-usage-overviews", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  connectMenuBarOpenCode: async (): Promise<void> => {
+    if (!isTauri()) throw new Error("Open Bridge desktop to connect OpenCode.");
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-menu-bar-connect-opencode");
+  },
+  onMenuBarConnection: (handler: (message: string) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<string>("bridge-menu-bar-connection", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  onMenuBarSettingsChanged: (handler: () => void): Promise<UnlistenFn> => isTauri()
+    ? listen("bridge-menu-bar-settings-changed", handler) : Promise.resolve(() => undefined),
+  getUsageOverview: (): Promise<UsageOverviewSnapshot | null> => isTauri()
+    ? call("usage/get_usage_overview") : Promise.resolve(null),
+  refreshUsageOverview: async (): Promise<UsageOverviewSnapshot | null> => {
+    if (!isTauri()) return null;
+    const snapshot = await call("usage/refresh_usage_overview");
+    const { emit } = await import("@tauri-apps/api/event");
+    await Promise.all([
+      emit("bridge-usage-overview", snapshot).catch(() => undefined),
+      emit("bridge-menu-bar-settings-changed").catch(() => undefined),
+    ]);
+    return snapshot;
+  },
+  onUsageOverview: (handler: (snapshot: UsageOverviewSnapshot) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<UsageOverviewSnapshot>("bridge-usage-overview", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  onMenuBarSettings: (handler: () => void): Promise<UnlistenFn> => isTauri()
+    ? listen("bridge-menu-bar-settings", handler) : Promise.resolve(() => undefined),
   // Opening and closing the meter is window work, so the shell does it. Same
   // channel pattern as `revealMainWindow`: the panel is positioned against the
   // status item's rect, which only the tray handler knows.
