@@ -18,6 +18,8 @@
     "prepare:daemon:dev": "sh scripts/prepare-daemon.sh debug",
     "prepare:claude-sidecar": "sh scripts/prepare-claude-sidecar.sh",
     "prepare:safari-extension": "sh scripts/prepare-safari-extension.sh",
+    "build:macos-smoke": "sh scripts/build-macos-smoke.sh",
+    "smoke:macos-app": "python3 scripts/smoke-packaged-macos-app.py src-tauri/target/release/bundle/macos/Bridge.app",
     "release:dmg": "sh scripts/release-dmg.sh",
     "notarize:dmg": "sh scripts/notarize-dmg.sh",
     "check": "tsc -b --pretty false && cargo check --manifest-path src-tauri/Cargo.toml --workspace",

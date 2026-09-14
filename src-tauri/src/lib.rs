@@ -2128,6 +2128,104 @@ pub enum HostMode {
     Failed(String),
 }
 
+const PACKAGED_SMOKE_ENV: &str = "BRIDGE_PACKAGED_SMOKE";
+const PACKAGED_SMOKE_LINK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const PACKAGED_SMOKE_PASS_MARKER: &str = "bridge: packaged smoke health check passed";
+const PACKAGED_SMOKE_FAIL_MARKER: &str = "bridge: packaged smoke health check failed:";
+
+fn packaged_smoke_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+}
+
+fn packaged_smoke_database_path(data_dir: Option<&std::ffi::OsStr>) -> Result<PathBuf, String> {
+    let data_dir = data_dir
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "BRIDGE_DATA_DIR must be set for the packaged smoke test".to_owned())?;
+    if !data_dir.is_absolute() {
+        return Err("BRIDGE_DATA_DIR must be an absolute path for the packaged smoke test".into());
+    }
+    Ok(data_dir.join("bridge.db"))
+}
+
+fn validate_packaged_smoke_health(
+    health: &serde_json::Value,
+    expected_database: &std::path::Path,
+) -> Result<(), String> {
+    if health.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("health/health did not report ok=true".into());
+    }
+    let database = health
+        .get("database")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "health/health did not report a database path".to_owned())?;
+    if std::path::Path::new(database) != expected_database {
+        return Err(format!(
+            "health/health reported database {}, expected {}",
+            database,
+            expected_database.display()
+        ));
+    }
+    Ok(())
+}
+
+fn fail_packaged_smoke(app: &AppHandle, message: impl std::fmt::Display) {
+    eprintln!("{PACKAGED_SMOKE_FAIL_MARKER} {message}");
+    app.exit(1);
+}
+
+fn start_packaged_smoke(app: &AppHandle, host: Option<&HostMode>) {
+    let runtime = match host {
+        Some(HostMode::Daemon(runtime)) => runtime,
+        Some(HostMode::Embedded) => {
+            fail_packaged_smoke(app, "desktop selected the embedded host");
+            return;
+        }
+        Some(HostMode::Failed(message)) => {
+            fail_packaged_smoke(app, message);
+            return;
+        }
+        None => {
+            fail_packaged_smoke(app, "desktop host was not initialized");
+            return;
+        }
+    };
+    let data_dir = std::env::var_os("BRIDGE_DATA_DIR");
+    let expected_database = match packaged_smoke_database_path(data_dir.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            fail_packaged_smoke(app, error);
+            return;
+        }
+    };
+    let proxy = runtime.proxy.clone();
+    let app_for_probe = app.clone();
+    let spawn = std::thread::Builder::new()
+        .name("packaged-smoke-health".into())
+        .spawn(move || {
+            let result = proxy
+                .call_within(
+                    bridge_protocol::MethodName::Health,
+                    None,
+                    PACKAGED_SMOKE_LINK_WAIT,
+                )
+                .and_then(|health| validate_packaged_smoke_health(&health, &expected_database));
+            match result {
+                Ok(()) => {
+                    eprintln!(
+                        "{PACKAGED_SMOKE_PASS_MARKER}: {}",
+                        expected_database.display()
+                    );
+                    app_for_probe.exit(0);
+                }
+                Err(error) => fail_packaged_smoke(&app_for_probe, error),
+            }
+        });
+    if let Err(error) = spawn {
+        fail_packaged_smoke(app, format!("could not start health probe: {error}"));
+    }
+}
+
 pub struct DaemonHostRuntime {
     proxy: Arc<daemon_host::DaemonProxy>,
     stop: Arc<std::sync::atomic::AtomicBool>,
@@ -2383,6 +2481,7 @@ fn setup_embedded(
 }
 
 pub fn run() -> i32 {
+    let packaged_smoke = packaged_smoke_requested(std::env::var_os(PACKAGED_SMOKE_ENV).as_deref());
     let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
     let setup_slot = host.clone();
     let exit_host = host.clone();
@@ -2691,7 +2790,9 @@ pub fn run() -> i32 {
     diagnostics::install(app.path().app_log_dir().ok());
     app.run_return(move |app, event| {
         if matches!(event, tauri::RunEvent::Ready) {
-            if let Some(HostMode::Failed(message)) = exit_host.get() {
+            if packaged_smoke {
+                start_packaged_smoke(app, exit_host.get());
+            } else if let Some(HostMode::Failed(message)) = exit_host.get() {
                 use tauri_plugin_dialog::DialogExt;
                 let mut detail = message.clone();
                 if let Some(path) = diagnostics::path() {
@@ -2740,6 +2841,52 @@ mod tests {
     use std::process::Command;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    #[test]
+    fn packaged_smoke_requires_exact_opt_in() {
+        assert!(packaged_smoke_requested(Some(std::ffi::OsStr::new("1"))));
+        for value in [None, Some(""), Some("0"), Some("true"), Some("01")] {
+            assert!(!packaged_smoke_requested(value.map(std::ffi::OsStr::new)));
+        }
+    }
+
+    #[test]
+    fn packaged_smoke_database_path_requires_an_absolute_override() {
+        assert_eq!(
+            packaged_smoke_database_path(Some(std::ffi::OsStr::new("/tmp/bridge-smoke"))).unwrap(),
+            PathBuf::from("/tmp/bridge-smoke/bridge.db")
+        );
+        for value in [None, Some(""), Some("relative/data")] {
+            assert!(packaged_smoke_database_path(value.map(std::ffi::OsStr::new)).is_err());
+        }
+    }
+
+    #[test]
+    fn packaged_smoke_health_requires_ok_and_the_isolated_database() {
+        let expected = Path::new("/tmp/bridge-smoke/bridge.db");
+        assert!(validate_packaged_smoke_health(
+            &serde_json::json!({
+                "ok": true,
+                "database": "/tmp/bridge-smoke/bridge.db",
+            }),
+            expected,
+        )
+        .is_ok());
+
+        for health in [
+            serde_json::json!({
+                "ok": false,
+                "database": "/tmp/bridge-smoke/bridge.db",
+            }),
+            serde_json::json!({ "ok": true }),
+            serde_json::json!({
+                "ok": true,
+                "database": "/tmp/another-bridge/bridge.db",
+            }),
+        ] {
+            assert!(validate_packaged_smoke_health(&health, expected).is_err());
+        }
+    }
 
     #[test]
     fn daemon_runtime_shutdown_stops_and_joins_its_supervisor() {

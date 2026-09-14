@@ -67,7 +67,10 @@ fn main() -> ExitCode {
     let served = bridged::serve(&daemon, listener);
     daemon.shutdown(bridged::DEFAULT_DRAIN_TIMEOUT);
     match served {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            eprintln!("{}", bridged::CLEAN_SHUTDOWN_MARKER);
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("bridged: accept loop failed: {error}");
             ExitCode::FAILURE
