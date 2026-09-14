@@ -70,3 +70,12 @@ Reference study: CodexBar `CursorStatusProbe.fetchCostReport`,
 selection prefers a remote report, with third-party tokscale CSV as a fallback;
 the two sources are not added together. Bridge reuses its one persisted provider
 collector rather than adding a second dashboard fetch to the History screen.
+
+## Temporary Cursor request failures
+
+A timeout, interrupted response, rate limit, or temporary server error during
+account refresh preserves the last reading only when the current unexpired
+Cursor desktop session identifies the exact cached account. Both menu and Usage
+show it as stale, with its original observation time and refresh error.
+Rejected or unavailable authentication, changed account identity, and malformed
+responses clear account history. No credentials are added to the usage cache.

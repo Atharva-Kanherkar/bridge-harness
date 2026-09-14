@@ -105,4 +105,3 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
     </div>
   </section>;
 }
-

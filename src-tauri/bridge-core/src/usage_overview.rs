@@ -853,6 +853,46 @@ fn retain_cursor_history(
     }
 }
 
+fn cache_provider_result(
+    provider: bridge_protocol::messages::MenuBarProvider,
+    prior: CachedProvider,
+    result: Result<crate::provider_usage::AccountUsage, crate::provider_usage::AccountReadError>,
+) -> CachedProvider {
+    match result {
+        Ok(mut usage) => {
+            if provider == bridge_protocol::messages::MenuBarProvider::Cursor {
+                retain_cursor_history(&mut usage, prior.usage.as_ref());
+            }
+            CachedProvider {
+                usage: Some(usage),
+                error: None,
+            }
+        }
+        Err(error) => CachedProvider {
+            usage: prior.usage.map(|mut q| {
+                let retain = provider == bridge_protocol::messages::MenuBarProvider::Cursor
+                    && error.retry_account_scope.as_deref().is_some_and(|scope| {
+                        !scope.is_empty()
+                            && q.account_scope.as_deref() == Some(scope)
+                            && q.history.as_ref().is_none_or(|history| history.account_scope == scope)
+                    });
+                if retain {
+                    // Keep the original timestamps: a failed refresh cannot
+                    // turn yesterday's reading into a fresh one in either UI.
+                    q.history_error = Some(error.message.clone());
+                } else {
+                    q.account = None;
+                    q.plan = None;
+                    q.account_scope = None;
+                    q.history = None;
+                }
+                q
+            }),
+            error: Some(error.message),
+        },
+    }
+}
+
 fn refresh_provider(
     core: &BridgeCore,
     provider: bridge_protocol::messages::MenuBarProvider,
@@ -867,31 +907,12 @@ fn refresh_provider(
         return Ok(());
     }
     let prior = load_provider(&core.db.lock().unwrap(), provider.id())?;
-    let cache = match if interactive {
+    let result = if interactive {
         crate::provider_usage::read_interactive(core, provider, settings)
     } else {
         crate::provider_usage::read(provider, settings)
-    } {
-        Ok(mut usage) => {
-            if provider == bridge_protocol::messages::MenuBarProvider::Cursor {
-                retain_cursor_history(&mut usage, prior.usage.as_ref());
-            }
-            CachedProvider {
-                usage: Some(usage),
-                error: None,
-            }
-        }
-        Err(error) => CachedProvider {
-            usage: prior.usage.map(|mut q| {
-                q.account = None;
-                q.plan = None;
-                q.account_scope = None;
-                q.history = None;
-                q
-            }),
-            error: Some(error),
-        },
     };
+    let cache = cache_provider_result(provider, prior, result);
     core.db.lock().unwrap().execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview',?1,?2,?3,?3) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
         params![provider.id(),serde_json::to_string(&cache).map_err(|e| BridgeError::Invalid(e.to_string()))?,Utc::now().to_rfc3339()])?;
     let env = crate::usage_import::SourceEnv::from_process();
@@ -1247,6 +1268,81 @@ mod provider_tests {
         };
         retain_cursor_history(&mut current, Some(&prior));
         assert_eq!(current.history.unwrap().observed_at, 200, "A confirmed-empty successful fetch replaces old history");
+    }
+
+    fn cached_cursor_account() -> CachedProvider {
+        use crate::provider_usage::{AccountHistory, AccountUsage};
+        CachedProvider {
+            usage: Some(AccountUsage {
+                account: Some("Account A".into()),
+                account_scope: Some("scope-a".into()),
+                observed_at: 100,
+                history: Some(AccountHistory {
+                    account_scope: "scope-a".into(),
+                    observed_at: 100,
+                    through_day: test_day().to_string(),
+                    today: confirmed_empty_account_period(),
+                    month: confirmed_empty_account_period(),
+                    daily: vec![], coverage: "Cursor dashboard".into(), breakdown: None,
+                }),
+                ..Default::default()
+            }),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn cursor_top_level_transient_failure_retains_stale_history_across_reopen() {
+        use crate::provider_usage::AccountReadError;
+        use bridge_protocol::messages::MenuBarProvider;
+        let error = "Cursor usage request failed or timed out. Try Refresh.";
+        let cache = cache_provider_result(MenuBarProvider::Cursor, cached_cursor_account(), Err(AccountReadError {
+            message: error.into(), retry_account_scope: Some("scope-a".into()),
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.db");
+        {
+            let db = crate::store::open(&path).unwrap();
+            db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview','cursor',?1,'now','now')",
+                [serde_json::to_string(&cache).unwrap()]).unwrap();
+        }
+        let db = crate::store::open(&path).unwrap();
+        let reopened = load_provider(&db, "cursor").unwrap();
+        assert_eq!(reopened.error.as_deref(), Some(error));
+        let usage = reopened.usage.unwrap();
+        assert_eq!(usage.account.as_deref(), Some("Account A"));
+        assert_eq!(usage.observed_at, 100);
+        let history = usage.history.unwrap();
+        assert_eq!(history.observed_at, 100);
+        let projected = project_account_history(history, test_day(), 101, usage.history_error.as_deref());
+        assert_eq!(projected.month.cost_microusd.value, Some(0.0));
+        assert_eq!(projected.month.cost_microusd.status, Status::Stale);
+        assert!(projected.coverage.contains("timed out"));
+    }
+
+    #[test]
+    fn cursor_top_level_failure_never_reuses_an_unverified_or_different_account() {
+        use crate::provider_usage::AccountReadError;
+        use bridge_protocol::messages::MenuBarProvider;
+        for scope in [None, Some("scope-b"), Some("")] {
+            let cache = cache_provider_result(MenuBarProvider::Cursor, cached_cursor_account(), Err(AccountReadError {
+                message: "Fetch failed".into(), retry_account_scope: scope.map(str::to_owned),
+            }));
+            let usage = cache.usage.unwrap();
+            assert!(usage.account.is_none());
+            assert!(usage.account_scope.is_none());
+            assert!(usage.history.is_none());
+        }
+        let mut prior = cached_cursor_account();
+        prior.usage.as_mut().unwrap().history.as_mut().unwrap().account_scope = "scope-b".into();
+        let cache = cache_provider_result(MenuBarProvider::Cursor, prior, Err(AccountReadError {
+            message: "Fetch failed".into(), retry_account_scope: Some("scope-a".into()),
+        }));
+        assert!(cache.usage.unwrap().history.is_none());
+        let fresh = cached_cursor_account().usage.unwrap();
+        let cache = cache_provider_result(MenuBarProvider::Cursor, cached_cursor_account(), Ok(fresh));
+        assert!(cache.error.is_none());
+        assert!(cache.usage.unwrap().history_error.is_none());
     }
 
     #[test]
