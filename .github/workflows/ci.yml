@@ -47,6 +47,9 @@ jobs:
       - name: Release scripts and crash report tests
         run: npm run test:release
 
+      - name: Release version consistency
+        run: node scripts/release-version.mjs
+
   rust:
     name: Rust
     runs-on: ubuntu-latest
@@ -85,10 +88,10 @@ jobs:
           workspaces: src-tauri
 
       - name: cargo check (workspace)
-        run: cargo check --manifest-path src-tauri/Cargo.toml --workspace
+        run: cargo check --manifest-path src-tauri/Cargo.toml --workspace --locked
 
       - name: cargo test (workspace)
-        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
 
   macos-package-smoke:
     name: macOS packaged app smoke

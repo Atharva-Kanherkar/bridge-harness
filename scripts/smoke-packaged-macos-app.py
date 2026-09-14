@@ -21,6 +21,7 @@ from typing import Mapping
 
 
 APP_STARTED = re.compile(r"bridge: started bridged \(pid (\d+)\)")
+DESKTOP_STARTED = re.compile(r"bridge: starting Bridge .* pid=(\d+) executable=")
 APP_ATTACHED = "bridge: attached to bridged (desktop runs as a daemon client)"
 SMOKE_PASSED = "bridge: packaged smoke health check passed"
 SMOKE_FAILED = "bridge: packaged smoke health check failed:"
@@ -131,6 +132,71 @@ def daemon_pid(app_log: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def desktop_pid(app_log: str) -> int | None:
+    match = DESKTOP_STARTED.search(app_log)
+    return int(match.group(1)) if match else None
+
+
+def launch_services_command(
+    bundle: Bundle,
+    environment: Mapping[str, str],
+    stdout_path: pathlib.Path,
+    stderr_path: pathlib.Path,
+) -> list[str]:
+    """Build an argv-only LaunchServices invocation for the exact app bundle."""
+    command = [
+        "/usr/bin/open",
+        "-W",
+        "-n",
+        "-g",
+        "--stdin",
+        "/dev/null",
+        "--stdout",
+        str(stdout_path),
+        "--stderr",
+        str(stderr_path),
+    ]
+    # `open` inherits this same allowlisted environment, and explicit --env
+    # entries make the launched application's environment deterministic too.
+    for name, value in sorted(environment.items()):
+        command.extend(("--env", f"{name}={value}"))
+    command.extend(("-a", str(bundle.app)))
+    return command
+
+
+def executable_process_ids(listing: str, executable: pathlib.Path) -> set[int]:
+    """Select only processes whose command is the exact packaged executable."""
+    target = str(executable)
+    matches: set[int] = set()
+    for line in listing.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) != 2 or not fields[0].isdigit():
+            continue
+        command = fields[1]
+        if command == target or command.startswith(f"{target} "):
+            matches.add(int(fields[0]))
+    return matches
+
+
+def running_executable_process_ids(executable: pathlib.Path) -> set[int] | None:
+    """Best-effort exact-path inventory used only for failed-launch cleanup."""
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-ww", "-axo", "pid=,command="],
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return executable_process_ids(result.stdout, executable)
+
+
 def process_exists(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -146,6 +212,31 @@ def wait_for_process_exit(pid: int, timeout: float) -> bool:
     while process_exists(pid) and time.monotonic() < deadline:
         time.sleep(0.05)
     return not process_exists(pid)
+
+
+def terminate_processes(pids: set[int], timeout: float = 5) -> None:
+    targets = {pid for pid in pids if pid > 1 and pid != os.getpid() and process_exists(pid)}
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    deadline = time.monotonic() + timeout
+    while any(process_exists(pid) for pid in targets) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    for pid in targets:
+        if not process_exists(pid):
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    # These LaunchServices-owned processes are not our children, so polling for
+    # disappearance is the available equivalent of reaping after SIGKILL.
+    kill_deadline = time.monotonic() + min(timeout, 1)
+    while any(process_exists(pid) for pid in targets) and time.monotonic() < kill_deadline:
+        time.sleep(0.05)
 
 
 def owner_lease_is_free(path: pathlib.Path) -> bool:
@@ -216,23 +307,53 @@ def validate_runtime_evidence(
     return pid
 
 
-def print_logs(app_log_path: pathlib.Path, daemon_log_path: pathlib.Path) -> None:
-    for label, path in (("Bridge.app", app_log_path), ("bridged", daemon_log_path)):
+def print_logs(
+    app_log_path: pathlib.Path,
+    daemon_log_path: pathlib.Path,
+    app_stdout_path: pathlib.Path | None = None,
+    launcher_log_path: pathlib.Path | None = None,
+) -> None:
+    paths = [("Bridge.app stderr", app_log_path), ("bridged", daemon_log_path)]
+    if app_stdout_path is not None:
+        paths.append(("Bridge.app stdout", app_stdout_path))
+    if launcher_log_path is not None:
+        paths.append(("LaunchServices", launcher_log_path))
+    for label, path in paths:
         contents = read_text(path)
         print(f"--- {label} log ({path}) ---", file=sys.stderr)
         print(contents[-64 * 1024 :] if contents else "<missing or empty>", file=sys.stderr)
 
 
-def force_cleanup(process: subprocess.Popen[bytes] | None, app_log_path: pathlib.Path) -> None:
-    if process is not None and process.poll() is None:
-        process.terminate()
+def force_cleanup(
+    launcher: subprocess.Popen[bytes] | None,
+    bundle: Bundle,
+    preexisting_app_pids: set[int] | None,
+    app_log_path: pathlib.Path,
+) -> None:
+    # Stop and reap `open -W` before taking the final process inventory. If it
+    # were still running, LaunchServices could create the app after our scan.
+    if launcher is not None and launcher.poll() is None:
+        launcher.terminate()
         try:
-            process.wait(timeout=5)
+            launcher.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+            launcher.kill()
+            launcher.wait(timeout=5)
 
-    pid = daemon_pid(read_text(app_log_path))
+    app_log = read_text(app_log_path)
+    app_pids: set[int] = set()
+    reported_pid = desktop_pid(app_log)
+    if reported_pid is not None:
+        app_pids.add(reported_pid)
+    current_app_pids = running_executable_process_ids(bundle.executable)
+    if preexisting_app_pids is not None and current_app_pids is not None:
+        app_pids.update(current_app_pids - preexisting_app_pids)
+    terminate_processes(app_pids)
+
+    # The app may have emitted its daemon PID while cleanup was terminating it,
+    # so refresh once more before targeting the daemon process group.
+    app_log = read_text(app_log_path)
+    pid = daemon_pid(app_log)
     if pid is None or not process_exists(pid):
         return
     try:
@@ -257,32 +378,38 @@ def run(app: pathlib.Path, timeout: float) -> None:
     home = scratch / "home"
     temp_dir = scratch / "tmp"
     app_log_path = scratch / "Bridge.log"
+    app_stdout_path = scratch / "Bridge.stdout.log"
+    launcher_log_path = scratch / "LaunchServices.log"
     daemon_log_path = data_dir / "bridged.log"
     data_dir.mkdir(mode=0o700)
     home.mkdir(mode=0o700)
     temp_dir.mkdir(mode=0o700)
-    process: subprocess.Popen[bytes] | None = None
+    launcher: subprocess.Popen[bytes] | None = None
+    preexisting_app_pids = running_executable_process_ids(bundle.executable)
     succeeded = False
     try:
         environment = smoke_environment(os.environ, home, data_dir, temp_dir)
-        with app_log_path.open("wb") as app_log:
-            process = subprocess.Popen(
-                [str(bundle.executable)],
+        command = launch_services_command(
+            bundle, environment, app_stdout_path, app_log_path
+        )
+        with launcher_log_path.open("wb") as launcher_log:
+            launcher = subprocess.Popen(
+                command,
                 cwd=bundle.app.parent,
                 env=environment,
                 stdin=subprocess.DEVNULL,
-                stdout=app_log,
+                stdout=launcher_log,
                 stderr=subprocess.STDOUT,
                 start_new_session=False,
             )
             try:
-                app_status = process.wait(timeout=timeout)
+                app_status = launcher.wait(timeout=timeout)
             except subprocess.TimeoutExpired as error:
                 raise SmokeFailure(
                     f"packaged Bridge did not finish its smoke cycle within {timeout:.0f}s"
                 ) from error
 
-        app_log = read_text(app_log_path)
+        app_log = "\n".join((read_text(app_log_path), read_text(app_stdout_path)))
         daemon_log = read_text(daemon_log_path)
         pid = daemon_pid(app_log)
         if pid is not None and not wait_for_process_exit(pid, 5):
@@ -294,11 +421,11 @@ def run(app: pathlib.Path, timeout: float) -> None:
             "authenticated desktop health RPC, clean app/daemon shutdown."
         )
     except Exception:
-        print_logs(app_log_path, daemon_log_path)
+        print_logs(app_log_path, daemon_log_path, app_stdout_path, launcher_log_path)
         raise
     finally:
         if not succeeded:
-            force_cleanup(process, app_log_path)
+            force_cleanup(launcher, bundle, preexisting_app_pids, app_log_path)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
