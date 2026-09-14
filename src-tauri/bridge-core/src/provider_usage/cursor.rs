@@ -95,7 +95,7 @@ fn session(token: &str, now: i64) -> Result<(String, String), String> {
         format!("WorkosCursorSessionToken={id}%3A%3A{token}"),
     ))
 }
-pub(super) fn read() -> Result<AccountUsage, String> {
+pub(super) fn read() -> Result<AccountUsage, AccountReadError> {
     let home = std::env::var_os("HOME").ok_or("Home directory unavailable")?;
     let path =
         Path::new(&home).join("Library/Application Support/Cursor/User/globalStorage/state.vscdb");
@@ -103,30 +103,7 @@ pub(super) fn read() -> Result<AccountUsage, String> {
     let now = chrono::Utc::now().timestamp();
     let (subject, cookie) = session(&token, now)?;
     let client = http::client()?;
-    let me = http::json(
-        http::secret(client.get("https://cursor.com/api/auth/me"), true, &cookie)?,
-        "Cursor",
-    )?;
-    if let Some(actual) = me["sub"].as_str() {
-        if actual.rsplit('|').next().map(str::to_lowercase)
-            != subject.rsplit('|').next().map(str::to_lowercase)
-        {
-            return Err("Cursor account changed. Sign in again in Cursor desktop.".into());
-        }
-    } else if public_text(&me["email"]).is_none() {
-        return Err("Cursor account identity is unavailable".into());
-    }
-    let usage = http::json(
-        http::secret(
-            client.get("https://cursor.com/api/usage-summary"),
-            true,
-            &cookie,
-        )?,
-        "Cursor",
-    )?;
-    let mut result = parse(&usage, now)?;
-    result.account = public_text(&me["email"]).or_else(|| public_text(&me["sub"]));
-    result.account_scope = Some(account_scope(&subject));
+    let mut result = fetch_account(&client, &subject, &cookie, now, "https://cursor.com")?;
     // Grok Bot has a separate included allowance. Its optional endpoint must
     // never discard successfully fetched Cursor/Third Party account limits.
     result.windows.extend(fetch_grok_bot(&client, &cookie));
@@ -136,6 +113,53 @@ pub(super) fn read() -> Result<AccountUsage, String> {
         Ok(history) => result.history = Some(history),
         Err(error) => result.history_error = Some(error),
     }
+    Ok(result)
+}
+
+fn fetch_account(
+    client: &reqwest::blocking::Client,
+    subject: &str,
+    cookie: &str,
+    now: i64,
+    base_url: &str,
+) -> Result<AccountUsage, AccountReadError> {
+    let scope = account_scope(subject);
+    let account_request = http::secret(
+        client.get(format!("{base_url}/api/auth/me"))
+            .header("Accept", "application/json")
+            .timeout(Duration::from_secs(2)),
+        true,
+        cookie,
+    )?;
+    let usage_request = http::secret(
+        client.get(format!("{base_url}/api/usage-summary"))
+            .header("Accept", "application/json"),
+        true,
+        cookie,
+    )?;
+    // Like CodexBar's CursorStatusProbe, account metadata is optional. The
+    // validated local session identifies the account; usage-summary determines
+    // whether its usage is available. Fetch both together with a shorter bound
+    // for the label lookup so its failure cannot block valid account limits.
+    let (me, usage) = std::thread::scope(|threads| {
+        let account = threads.spawn(|| http::json(account_request, "Cursor"));
+        let usage = http::json_result(usage_request, "Cursor");
+        let me = account.join().ok().and_then(Result::ok).unwrap_or(Value::Null);
+        (me, usage)
+    });
+    // A returned mismatch still invalidates the account, even if the usage
+    // request failed transiently. Never retain another account's cache.
+    if let Some(actual) = me["sub"].as_str() {
+        if actual.rsplit('|').next().map(str::to_lowercase)
+            != subject.rsplit('|').next().map(str::to_lowercase)
+        {
+            return Err("Cursor account changed. Sign in again in Cursor desktop.".into());
+        }
+    }
+    let usage = usage.map_err(|error| AccountReadError::for_account(error, &scope))?;
+    let mut result = parse(&usage, now)?;
+    result.account = public_text(&me["email"]).or_else(|| public_text(&me["sub"]));
+    result.account_scope = Some(scope);
     Ok(result)
 }
 
@@ -744,6 +768,124 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const ACCOUNT: &str = r#"{"sub":"auth0|account-a","email":"fixture@example.test"}"#;
+    const SUMMARY: &str = r#"{"individualUsage":{"plan":{"totalPercentUsed":35}}}"#;
+
+    fn account_probe(
+        account: (u16, &str, Duration),
+        usage: (u16, &str, Duration),
+    ) -> Result<AccountUsage, AccountReadError> {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let owned = |(code, body, delay): (u16, &str, Duration)| (code, body.to_owned(), delay);
+        let account = owned(account);
+        let usage = owned(usage);
+        let server = std::thread::spawn(move || std::thread::scope(|threads| {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let until = Instant::now() + Duration::from_secs(4);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        error => panic!("missing fixture request: {error:?}"),
+                    }
+                };
+                let account = &account;
+                let usage = &usage;
+                requests.push(threads.spawn(move || {
+                    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut chunk = [0; 1024];
+                        let count = socket.read(&mut chunk).unwrap();
+                        assert!(count > 0 && request.len() < 4096);
+                        request.extend_from_slice(&chunk[..count]);
+                    }
+                    let request = String::from_utf8(request).unwrap().to_lowercase();
+                    assert!(request.contains("\r\ncookie: fixture-session\r\n"));
+                    assert!(request.contains("\r\naccept: application/json\r\n"));
+                    let path = request.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                    let (code, body, delay) = match path {
+                        "/api/auth/me" => account,
+                        "/api/usage-summary" => usage,
+                        _ => panic!("unexpected fixture path: {path}"),
+                    };
+                    std::thread::sleep(*delay);
+                    let _ = write!(socket, "HTTP/1.1 {code} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    path.to_owned()
+                }));
+            }
+            let mut paths: Vec<_> = requests.into_iter().map(|request| request.join().unwrap()).collect();
+            paths.sort();
+            assert_eq!(paths, ["/api/auth/me", "/api/usage-summary"]);
+        }));
+        let client = reqwest::blocking::Client::builder().no_proxy()
+            .timeout(Duration::from_secs(1)).build().unwrap();
+        let result = fetch_account(&client, "auth0|account-a", "fixture-session", 100, &url);
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn cursor_usage_survives_missing_or_failed_optional_account_metadata() {
+        for (code, body, delay) in [
+            (401, "{}", Duration::ZERO),
+            (503, "{}", Duration::ZERO),
+            (200, "not-json", Duration::ZERO),
+            (204, "", Duration::ZERO),
+            (200, "{}", Duration::ZERO),
+            (200, ACCOUNT, Duration::from_millis(2200)),
+        ] {
+            let result = account_probe((code, body, delay), (200, SUMMARY, Duration::ZERO)).unwrap();
+            assert_eq!(result.windows[0].used_percent.value, Some(35.0));
+            assert_eq!(result.windows[0].used_percent.source, Some(UsageMetricSource::Reported));
+            assert_eq!(result.observed_at, 100);
+            assert_eq!(result.account_scope, Some(account_scope("auth0|account-a")));
+            assert!(result.account.is_none());
+        }
+        let result = account_probe((200, ACCOUNT, Duration::ZERO), (200, SUMMARY, Duration::ZERO)).unwrap();
+        assert_eq!(result.account.as_deref(), Some("fixture@example.test"));
+    }
+
+    #[test]
+    fn cursor_usage_summary_timeouts_and_server_failures_keep_the_current_account_scope() {
+        for (code, body, delay) in [
+            (200, SUMMARY, Duration::from_millis(1200)),
+            (503, "{}", Duration::ZERO),
+        ] {
+            let error = account_probe((200, ACCOUNT, Duration::ZERO), (code, body, delay)).unwrap_err();
+            assert_eq!(error.retry_account_scope, Some(account_scope("auth0|account-a")));
+            if !delay.is_zero() {
+                assert!(error.message.contains("timed out"));
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_rejected_usage_and_malformed_summary_do_not_authorize_stale_history() {
+        for (code, body) in [(401, "{}"), (403, "{}"), (200, "not-json"), (200, "{}")] {
+            let error = account_probe((200, ACCOUNT, Duration::ZERO), (code, body, Duration::ZERO)).unwrap_err();
+            assert!(error.retry_account_scope.is_none(), "{code}: {body}");
+        }
+    }
+
+    #[test]
+    fn cursor_returned_account_mismatch_rejects_usage_and_cache_reuse() {
+        for (code, body) in [(200, SUMMARY), (503, "{}")] {
+            let error = account_probe(
+                (200, r#"{"sub":"auth0|different-account"}"#, Duration::ZERO),
+                (code, body, Duration::ZERO),
+            ).unwrap_err();
+            assert!(error.retry_account_scope.is_none());
+            assert!(error.message.contains("account changed"));
+        }
+    }
 
     #[test]
     fn grok_bot_uses_its_own_allowance_and_reset() {

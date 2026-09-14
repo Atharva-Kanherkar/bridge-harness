@@ -17,6 +17,35 @@ use bridge_protocol::messages::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// A failed read may authorize stale Cursor data only after the current local
+/// session has identified the same account. Credentials never enter the cache.
+#[derive(Debug)]
+pub(crate) struct AccountReadError {
+    pub message: String,
+    pub retry_account_scope: Option<String>,
+}
+
+impl From<String> for AccountReadError {
+    fn from(message: String) -> Self {
+        Self { message, retry_account_scope: None }
+    }
+}
+
+impl From<&str> for AccountReadError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+impl AccountReadError {
+    fn for_account(error: http::RequestError, scope: &str) -> Self {
+        Self {
+            message: error.message,
+            retry_account_scope: error.retryable.then(|| scope.to_owned()),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(crate) struct AccountUsage {
     pub account: Option<String>,
@@ -63,9 +92,9 @@ pub(crate) fn read_interactive(
     core: &crate::BridgeCore,
     provider: MenuBarProvider,
     settings: &MenuBarSettings,
-) -> Result<AccountUsage, String> {
+) -> Result<AccountUsage, AccountReadError> {
     match provider {
-        MenuBarProvider::Claude => claude::read_interactive(core),
+        MenuBarProvider::Claude => claude::read_interactive(core).map_err(Into::into),
         _ => read(provider, settings),
     }
 }
@@ -73,11 +102,11 @@ pub(crate) fn read_interactive(
 pub(crate) fn read(
     provider: MenuBarProvider,
     settings: &MenuBarSettings,
-) -> Result<AccountUsage, String> {
+) -> Result<AccountUsage, AccountReadError> {
     match provider {
-        MenuBarProvider::Claude => claude::read(),
+        MenuBarProvider::Claude => claude::read().map_err(Into::into),
         MenuBarProvider::Cursor => cursor::read(),
-        MenuBarProvider::OpenCode => opencode::read(settings.opencode_workspace.as_deref()),
+        MenuBarProvider::OpenCode => opencode::read(settings.opencode_workspace.as_deref()).map_err(Into::into),
         MenuBarProvider::Codex => Err("Codex uses its app-server collector".into()),
     }
 }

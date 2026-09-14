@@ -1,20 +1,14 @@
 // @vitest-environment jsdom
-// Regression: the provider sign-in reply must stay local to the provider
-// terminal. The widget renders through the composer's `trailing` slot, inside
-// the composer's <form>, so the login pane must NOT itself be a nested form —
-// a nested form's submit bubbles and would also fire the composer's onSubmit,
-// sending the chat/steer draft. See UsageWidget.tsx ProviderLoginPane.
-import { act } from "react";
+// Provider sign-in replies must stay local to the provider terminal.
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import { UsageWidget } from "./UsageWidget";
-import type { AdapterDescriptor, AuthState } from "../types";
-
-const cursorSignedOut: AdapterDescriptor = {
-  id: "cursor", label: "Cursor", available: true, authState: "signed_out" as AuthState,
-  version: "mock", capabilities: [], unavailableReason: null, models: [],
-};
+import { ProviderLoginPane } from "./ProviderLoginPane";
+function LoginHarness() {
+  const [open, setOpen] = useState(true);
+  return open ? <ProviderLoginPane provider="cursor" label="Cursor" onClose={() => setOpen(false)} /> : null;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -43,15 +37,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("provider sign-in inside a composer form", () => {
+describe("provider sign-in inside a parent form", () => {
   const openLogin = async (onSubmit: () => void) => {
     act(() => {
-      // The widget lives inside the composer's own <form>, exactly as the
-      // `trailing` slot mounts it.
-      root.render(<form onSubmit={onSubmit}><UsageWidget usage={{}} adapters={[cursorSignedOut]} /></form>);
+      root.render(<form onSubmit={onSubmit}><LoginHarness /></form>);
     });
-    await flush();
-    click(buttonByText("Sign in"));
     await flush();
     return document.querySelector<HTMLInputElement>('input[aria-label="Reply to the Cursor sign-in prompt"]')!;
   };

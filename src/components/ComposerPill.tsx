@@ -42,9 +42,7 @@ export type ComposerPillProps = {
   /// own — opening the file picker from `+` is useless if the user then has to
   /// click into the box to filter it.
   inputRef?: MutableRefObject<HTMLTextAreaElement | null>;
-  /// Sits immediately after `+`, at the composer's leading edge. The usage ring
-  /// rides here on a session so the health it reports is next to the box that
-  /// spends it, rather than a title-bar corner the session view no longer has.
+  /// Optional control immediately after the attachment button.
   leading?: ReactNode;
   trailing?: ReactNode;
   /// The model chip (ChatModelControl) that leads the controls row, below the
@@ -148,9 +146,7 @@ export function ComposerPill({
 
   return (
     <div className={cn("w-full", isHero ? "mx-auto max-w-3xl" : "mx-auto max-w-conversation-frame px-4 pb-3 pt-2 sm:px-8 sm:pb-4", className)}>
-      {/* The pill's own box, and the anchor a `leading` control can portal a
-          panel onto — `data-composer-frame` is how the usage panel matches the
-          composer's width instead of guessing at it. */}
+      {/* The pill's box also anchors any floating composer controls. */}
       <div data-composer-frame className="relative">
         <form
           className={cn(

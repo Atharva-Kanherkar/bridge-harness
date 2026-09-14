@@ -16,8 +16,7 @@ export type AppTitleBarProps = {
    *  the sidebar header owns while it is on screen. Desktop only — below `sm`
    *  the drawer's own "Open navigation" button is the way in. */
   leading?: ReactNode;
-  /** Right-edge cluster: view toggles, usage. Trailing inset matches the usage chip
-   *  so its top-right corner is concentric with the window. Controls block dragging. */
+  /** Optional right-edge controls, kept clear of the window corner. */
   actions?: ReactNode;
   /** No hairline — the strip shares a surface with a flush sidebar. */
   flush?: boolean;

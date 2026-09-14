@@ -1,4 +1,4 @@
-import { ProviderLoginPane } from "./UsageWidget";
+import { ProviderLoginPane } from "./ProviderLoginPane";
 import type { UsageProvider } from "../usage";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { bridgeApi } from "../api";
