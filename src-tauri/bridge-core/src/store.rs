@@ -5479,6 +5479,8 @@ mod tests {
             "routing_evaluation_settings",
             "memory_consolidation_runs",
             "memory_consolidation_settings",
+            "connector_inbox_items",
+            "connector_poll_state",
         ] {
             assert!(
                 db.query_row(

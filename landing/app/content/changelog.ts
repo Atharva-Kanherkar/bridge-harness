@@ -7,6 +7,15 @@ export type ReleaseEntry = {
 
 export const releases: ReleaseEntry[] = [
   {
+    version: "0.5.9",
+    date: "September 16, 2026",
+    headline: "Database compatibility release",
+    bullets: [
+      "Includes the schema 58 migration for databases created by the current Bridge build.",
+      "Ships as a new macOS version so the compatible DMG is selected instead of the older 0.5.8 build.",
+    ],
+  },
+  {
     version: "0.5.8",
     date: "September 12, 2026",
     headline: "Worker reports reach the parent",

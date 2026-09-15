@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.9] - 2026-09-16
+
+- Include migration 58 in the release so databases created by the current Bridge build open successfully.
+- Publish a new app version after the schema change so macOS does not retain or select the older 0.5.8 DMG.
+
 ## [0.5.8] - 2026-09-12
 
 - Encode the existing updater public key as the minisign text box Tauri requires. The 0.5.7 build was rejected before publication; no signing key was replaced.
