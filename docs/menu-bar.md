@@ -52,9 +52,10 @@ Numeric metrics carry independent value, source and status fields:
 - Quota percentages are never converted into an invented token budget.
 - Reported window duration identifies session and weekly quotas, including
   accounts whose only weekly limit occupies the provider's primary slot.
-  Automatic status-item selection prefers a current session, then a current
-  weekly limit. An explicit selection stays unavailable when that window is
-  missing.
+  Automatic status-item selection headlines the current, unexpired window with
+  the highest used percentage — the one closest to stopping work — and falls
+  back to the first window when none is current. An explicit selection stays
+  unavailable when that window is missing.
 - Costs and token totals cover records on this Mac, potentially across accounts;
   the account heading identifies the quota account, not a billing attribution
   for the device-wide history.

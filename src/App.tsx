@@ -68,6 +68,7 @@ import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { ProviderLoginPane } from "./components/ProviderLoginPane";
+import { ChatUsageDot } from "./components/UsageDot";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
@@ -2296,6 +2297,10 @@ function AppContent() {
     }
   };
   const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
+  // The usage dot beside the composer reads the same provider overviews the
+  // menu-bar meter does, so the health it reports is next to the box that
+  // spends it and never disagrees with the status item.
+  const usageDot = <ChatUsageDot adapters={health?.adapters} onOpenUsage={() => setView("usage")} onSignIn={provider => setLoginProvider(provider)} />;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2610,7 +2615,7 @@ function AppContent() {
                     the orchestrator is told so it does not fight the change. */}
                 {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
-                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2"/>
+                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={usageDot}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -2697,6 +2702,7 @@ function AppContent() {
                     onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
+                    leading={usageDot}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}

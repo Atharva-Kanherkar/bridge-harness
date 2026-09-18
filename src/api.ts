@@ -88,6 +88,29 @@ let mockMenuBarSettings: MenuBarSettings = {
   showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300,
 };
 
+// Mock-mode provider overviews so the chat's usage dot has something to draw
+// under `bun run dev`: a Codex account with a quiet session window and a busy
+// weekly one, and a Claude read that failed. Fresh at call time by design.
+function mockProviderUsageOverviews(): ProviderUsageOverviews {
+  const now = Math.floor(Date.now() / 1000);
+  const empty = { tokens: { status: "unavailable" as const }, costMicrousd: { status: "unavailable" as const }, models: [] };
+  return {
+    schemaVersion: 1,
+    generatedAt: now,
+    providers: [
+      {
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "dev@example.com", plan: "plus", observedAt: now - 30, coverage: "Mock data",
+        windows: [
+          { id: "session", label: "5-hour", usedPercent: { value: 4, source: "reported", status: "current" }, resetsAt: now + 4 * 3600, windowMinutes: 300 },
+          { id: "weekly", label: "Weekly", usedPercent: { value: 63, source: "reported", status: "current" }, resetsAt: now + 3 * 86400, windowMinutes: 10080 },
+        ],
+        today: empty, month: empty, error: null,
+      },
+      { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Provider session is unavailable in Keychain. Reconnect the provider." },
+    ],
+  };
+}
+
 // The typed protocol boundary. Every Tauri round-trip goes through these two
 // helpers, so params, results, and event names all come from the generated
 // contract: renaming a wire field breaks `bun run check`, not a user session.
@@ -1443,7 +1466,7 @@ export const bridgeApi = {
     return saved;
   },
   getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => isTauri()
-    ? call("usage/get_provider_usage_overviews") : Promise.resolve(null),
+    ? call("usage/get_provider_usage_overviews") : Promise.resolve(mockProviderUsageOverviews()),
   refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
     if (!isTauri()) return null;
     const snapshot = await call("usage/refresh_provider_usage_overviews_interactive");
