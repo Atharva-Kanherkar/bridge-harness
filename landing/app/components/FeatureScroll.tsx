@@ -59,20 +59,6 @@ export default function FeatureScroll() {
           align="center"
         />
 
-        {/* Jump links: six features is a long scroll, so the list doubles as a table of contents
-            and each id below is the anchor it points at. */}
-        <nav aria-label="Features" className="reveal mt-8">
-          <ol className="flex flex-wrap justify-center gap-x-5 gap-y-2 text-[12.5px]">
-            {features.map((feature, i) => (
-              <li key={feature.id} className="flex items-baseline gap-1.5">
-                <span className="font-mono text-[10.5px] tabular-nums text-faint" aria-hidden="true">{String(i + 1).padStart(2, "0")}</span>
-                <a href={`#${feature.id}`} className="text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline">
-                  {feature.name}
-                </a>
-              </li>
-            ))}
-          </ol>
-        </nav>
       </div>
 
       {/* The left column lines up with the page gutter; the capture runs off the right edge,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ArrowUp, BadgeCheck, GitBranch, LayoutGrid, Paperclip, PanelRight, Pause, Play, Search, ShieldCheck } from "lucide-react";
+import { ArrowUp, BadgeCheck, GitBranch, LayoutGrid, Paperclip, PanelRight, Search, ShieldCheck } from "lucide-react";
 import ChangesDock from "./app/ChangesDock";
 import MissionGrid from "./app/MissionGrid";
 import Sidebar from "./app/Sidebar";
@@ -162,15 +162,14 @@ function ChatView({ scene, typed, step }: { scene: Scene; typed: string; step: n
 export default function AppDemo() {
   const [active, setActive] = useState(0);
   const [replay, setReplay] = useState(0);
-  // Auto-advance stops the moment a visitor takes over, by clicking or focusing a tab or the
-  // pause control, and stays stopped until they press Play (WCAG 2.2.2: moving content that
-  // runs longer than five seconds needs a pause the user controls, and a hover hold is not one).
-  // Reduced-motion visitors start paused; the server markup is the finished first scene either way.
+  // Auto-advance stops the moment a visitor takes over by clicking or focusing a tab, and stays
+  // stopped: the strip then only moves when they pick another tab (WCAG 2.2.2: moving content
+  // that runs longer than five seconds needs a stop the user controls, and a hover hold is not
+  // one). Reduced-motion visitors start paused; server markup is the finished scene either way.
   const [choice, setChoice] = useState<boolean | null>(null);
   const reducedMotion = useReducedMotion();
   const paused = choice ?? reducedMotion;
-  const setPaused = (next: boolean | ((current: boolean) => boolean)) =>
-    setChoice(typeof next === "function" ? next(paused) : next);
+  const setPaused = setChoice;
   const held = useRef(false);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -225,7 +224,7 @@ export default function AppDemo() {
       onFocusCapture={() => { held.current = true; }}
       onBlurCapture={() => { held.current = false; }}
     >
-      <div className="-mx-4 mb-5 flex flex-wrap items-center justify-center gap-2 px-4 sm:flex-nowrap sm:overflow-x-auto sm:[scrollbar-width:none] sm:[&::-webkit-scrollbar]:hidden">
+      <div className="-mx-4 mb-5 flex justify-center px-4 sm:overflow-x-auto sm:[scrollbar-width:none] sm:[&::-webkit-scrollbar]:hidden">
         <div
           ref={listRef}
           role="tablist"
@@ -270,17 +269,6 @@ export default function AppDemo() {
             );
           })}
         </div>
-        <button
-          type="button"
-          onClick={() => setPaused(value => !value)}
-          aria-pressed={paused}
-          aria-controls="scene-panel"
-          className="flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-border-card bg-card/50 px-3.5 text-[12.5px] font-semibold text-muted-foreground backdrop-blur-xl transition-colors hover:text-foreground"
-        >
-          {paused ? <Play size={13} aria-hidden="true" /> : <Pause size={13} aria-hidden="true" />}
-          <span>{paused ? "Play" : "Pause"}</span>
-          <span className="sr-only"> demo</span>
-        </button>
       </div>
 
       <div
