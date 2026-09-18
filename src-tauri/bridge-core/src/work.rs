@@ -52,6 +52,7 @@ pub fn default_settings() -> wire::WorkSettings {
         briefing: None,
         enabled_connector_instances: Vec::new(),
         refresh_on_focus: false,
+        include_read_mentions: false,
         refresh_interval_minutes: None,
         cooldown_minutes: DEFAULT_COOLDOWN_MINUTES,
         limits: wire::WorkBriefLimits {
@@ -1672,6 +1673,31 @@ mod tests {
             rusqlite::params![run, instance, family, status],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn settings_written_before_read_mentions_existed_still_load() {
+        // `WorkSettings` denies unknown fields, so the compatibility risk runs
+        // the other way too: a row written by an older build has no
+        // `includeReadMentions` key and must not fail the whole board.
+        let db = memory_db();
+        store_settings(
+            &db,
+            r#"{"briefing":null,"enabledConnectorInstances":[],"refreshOnFocus":true,
+                "refreshIntervalMinutes":30,"cooldownMinutes":15,
+                "limits":{"maxWallSeconds":600,"maxTurns":12,"maxToolCalls":24,
+                          "maxOutputTokens":null,"costCeilingMicrousd":null}}"#,
+        );
+
+        let board = board(&db).unwrap();
+
+        assert!(!board.settings.include_read_mentions, "defaults off");
+        assert!(board.settings.refresh_on_focus, "the rest of the row survived");
+        assert_ne!(
+            board.suggestions.state,
+            wire::WorkSuggestionsState::Degraded,
+            "a missing optional field is not an unreadable row"
+        );
     }
 
     #[test]

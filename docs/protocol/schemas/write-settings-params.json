@@ -108,6 +108,11 @@
           },
           "type": "array"
         },
+        "includeReadMentions": {
+          "default": false,
+          "description": "Include threads that mention the user even when they are already read.\n\nOff by default because the board is about what still needs attention, and a read thread usually does not. On, it is the setting that makes the pipe testable: a mention you have already seen is a signal you can produce on demand, where genuinely new activity is not.\n\n`default` because `WorkSettings` denies unknown fields, so a settings row written before this field existed has to keep deserializing.",
+          "type": "boolean"
+        },
         "limits": {
           "$ref": "#/definitions/WorkBriefLimits"
         },

@@ -403,6 +403,17 @@ pub struct WorkSettings {
     pub briefing: Option<WorkBriefingProfile>,
     pub enabled_connector_instances: Vec<String>,
     pub refresh_on_focus: bool,
+    /// Include threads that mention the user even when they are already read.
+    ///
+    /// Off by default because the board is about what still needs attention,
+    /// and a read thread usually does not. On, it is the setting that makes the
+    /// pipe testable: a mention you have already seen is a signal you can
+    /// produce on demand, where genuinely new activity is not.
+    ///
+    /// `default` because `WorkSettings` denies unknown fields, so a settings row
+    /// written before this field existed has to keep deserializing.
+    #[serde(default)]
+    pub include_read_mentions: bool,
     /// `None` disables cadence refresh; manual still works.
     pub refresh_interval_minutes: Option<i64>,
     pub cooldown_minutes: i64,
@@ -577,6 +588,7 @@ mod tests {
             briefing: None,
             enabled_connector_instances: Vec::new(),
             refresh_on_focus: false,
+            include_read_mentions: false,
             refresh_interval_minutes: None,
             cooldown_minutes: 15,
             limits: limits(),

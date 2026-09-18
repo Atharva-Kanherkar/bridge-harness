@@ -190,6 +190,7 @@ mod tests {
             briefing,
             enabled_connector_instances: vec![],
             refresh_on_focus: false,
+            include_read_mentions: false,
             refresh_interval_minutes: None,
             cooldown_minutes: 15,
             limits: wire::WorkBriefLimits {

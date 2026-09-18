@@ -252,6 +252,20 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
       {emptyNarrowing && <SettingsRow label="Pick at least one tool, or switch back to everything. A briefing with nothing to read has nothing to say." />}
     </SettingsGroup>}
 
+    <SettingsGroup label="What it reports">
+      <SettingsRow
+        label="Include mentions you have already read"
+        description="Read state stops excluding an item. Useful for checking a connector is really being read, since a mention you can already see is a signal you can produce on demand."
+        saved={isFlashed("mentions")}
+        control={<Switch
+          label="Include mentions you have already read"
+          checked={draft.includeReadMentions ?? false}
+          disabled={busy}
+          onChange={next => void persist({ ...draft, includeReadMentions: next }, "mentions")}
+        />}
+      />
+    </SettingsGroup>
+
     <SettingsGroup
       label="When it runs"
       note={`${draft.cooldownMinutes} minute cooldown`}

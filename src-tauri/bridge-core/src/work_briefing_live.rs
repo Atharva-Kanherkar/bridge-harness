@@ -74,8 +74,24 @@ fn briefing_instructions() -> String {
 }
 
 /// The task turn. Deliberately connector-agnostic.
-fn briefing_task(now: chrono::DateTime<Utc>) -> String {
+///
+/// `include_read_mentions` widens what counts as worth reporting; it grants no
+/// tool and changes no scope. With it off the text is byte-identical to what it
+/// has always been, so turning the setting on is the only thing that can change
+/// a run's behaviour here.
+fn briefing_task(now: chrono::DateTime<Utc>, include_read_mentions: bool) -> String {
     let since = now - chrono::Duration::hours(24);
+    // Read state is a poor proxy for "handled", and a mention the user has
+    // already seen is the one signal they can produce on demand — which is what
+    // makes the pipe testable rather than something you wait on.
+    let mentions = if include_read_mentions {
+        " Also include threads and messages that mention the user directly even when \
+         they have already been read: read state is not a reason to leave an item out. \
+         The time window still applies — an old mention opened recently is not recent \
+         activity."
+    } else {
+        ""
+    };
     format!(
         "Summarise activity across the user's connected tools in the past 24 hours, \
          from {} through {} (UTC). Use these exact bounds in searches where supported. \
@@ -87,8 +103,8 @@ fn briefing_task(now: chrono::DateTime<Utc>) -> String {
          and permalink. Search results containing multiple items are discovery only: \
          never cite a collection as one item. Use the individual read's tool_use id as \
          evidence. Omit items without a source timestamp. Skip unreachable tools and \
-         return an empty list when no recent activity can be verified. Then emit the brief block.",
-        since.to_rfc3339(), now.to_rfc3339(),
+         return an empty list when no recent activity can be verified.{} Then emit the brief block.",
+        since.to_rfc3339(), now.to_rfc3339(), mentions,
     )
 }
 
@@ -649,7 +665,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
         }
         turns += 1;
         runtime
-            .send_turn(&briefing_task(Utc::now()))
+            .send_turn(&briefing_task(Utc::now(), settings.include_read_mentions))
             .map_err(|error| BridgeError::Invalid(format!("the briefing turn could not be sent: {error}")))?;
         read_turn(&mut observer, &mut guard)
     })();
@@ -1004,6 +1020,43 @@ mod tests {
     }
 
     #[test]
+    fn the_mentions_setting_adds_one_clause_and_changes_nothing_else() {
+        // The setting has to be provably additive: everything that keeps the
+        // brief honest — the window, the per-item timestamp rule, the
+        // collections-are-discovery-only rule — lives in this same string.
+        let now = Utc::now();
+        let off = briefing_task(now, false);
+        let on = briefing_task(now, true);
+
+        // The base task already asks for mentions; what this setting adds is the
+        // ones the user has already opened, which is the part that is reliably
+        // reproducible on demand.
+        assert!(off.contains("mentions"), "the base task already asks for mentions");
+        assert!(!off.contains("already been read"), "off must not reach read items");
+        assert!(on.contains("mention the user directly"));
+        assert!(on.contains("read state is not a reason to leave an item out"));
+        // Still bounded by the window: an old mention opened today is not news.
+        assert!(on.contains("The time window still applies"));
+
+        let start = on.find(" Also include threads").expect("the clause");
+        let end = on.find(" Then emit the brief block.").expect("the tail");
+        let mut without = on.clone();
+        without.replace_range(start..end, "");
+        assert_eq!(without, off, "the clause is the only difference");
+    }
+
+    #[test]
+    fn the_mentions_clause_names_no_connector_either() {
+        // The same property the connector-agnostic test pins for the base task:
+        // naming Slack here would go stale the moment someone connects anything
+        // else, and would quietly privilege one family over the rest.
+        let prompt = briefing_task(Utc::now(), true);
+        for named in ["slack", "gmail", "github", "linear", "notion"] {
+            assert!(!prompt.to_lowercase().contains(named), "{named} is named in the task");
+        }
+    }
+
+    #[test]
     fn a_successful_observed_result_earns_a_citable_reference() {
         let mut observer = StreamObserver::new("run-1");
         observer.observe_line(&assistant_tool_use("toolu_1", "mcp__slack-work__search_messages"), SEEN);
@@ -1123,7 +1176,7 @@ mod tests {
         let instructions = briefing_instructions();
         for named in ["Slack", "Gmail", "GitHub", "Linear", "Notion", "slack", "gmail"] {
             assert!(
-                !briefing_task(Utc::now()).contains(named) && !instructions.contains(named),
+                !briefing_task(Utc::now(), false).contains(named) && !instructions.contains(named),
                 "{named} must not be named; the harness decides what it can read"
             );
         }
@@ -1131,7 +1184,7 @@ mod tests {
     #[test]
     fn integration_briefing_has_exact_utc_bounds_and_requires_individual_source_dates() {
         let now = chrono::DateTime::parse_from_rfc3339("2026-09-10T12:00:00Z").unwrap().with_timezone(&Utc);
-        let prompt = briefing_task(now);
+        let prompt = briefing_task(now, false);
         assert!(prompt.contains("2026-09-09T12:00:00+00:00"));
         assert!(prompt.contains("2026-09-10T12:00:00+00:00"));
         assert!(prompt.contains("Search results containing multiple items are discovery only"));

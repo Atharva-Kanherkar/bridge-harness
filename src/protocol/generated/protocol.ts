@@ -2311,6 +2311,7 @@ export interface WorkSettings {
   briefing?: WorkBriefingProfile | null;
   cooldownMinutes: number;
   enabledConnectorInstances: string[];
+  includeReadMentions?: boolean;
   limits: WorkBriefLimits;
   refreshIntervalMinutes?: number | null;
   refreshOnFocus: boolean;

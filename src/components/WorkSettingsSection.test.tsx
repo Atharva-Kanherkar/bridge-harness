@@ -161,6 +161,17 @@ describe("Work briefing", () => {
     expect(switchFor("Integration briefing")?.getAttribute("aria-checked")).toBe("false");
   });
 
+  it("persists the read-mentions toggle and defaults it off", async () => {
+    // The setting exists to make the pipe testable: an already-read mention is
+    // reproducible on demand, where genuinely new activity is not.
+    await render();
+    expect(switchFor("Include mentions you have already read")?.getAttribute("aria-checked")).toBe("false");
+
+    await click(switchFor("Include mentions you have already read"));
+
+    expect(writeWorkSettings.mock.calls.at(-1)![0].includeReadMentions).toBe(true);
+  });
+
   it("keeps cadence and refresh on focus, and persists each on change", async () => {
     await render();
     await click(switchFor("Refresh on focus"));
