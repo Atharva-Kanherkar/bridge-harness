@@ -36,7 +36,7 @@ export default function CompareTable({ table }: { table: Table }) {
           <caption className="sr-only">{table.title}</caption>
           <thead>
             <tr className="border-b border-border-card">
-              <th scope="col" className="w-[300px] px-5 py-4 text-[11px] font-normal uppercase tracking-wider text-faint">
+              <th scope="col" className="w-[300px] px-5 py-4 text-[11px] font-normal uppercase tracking-wider text-muted-foreground">
                 Capability
               </th>
               {products.map((product, index) => (
@@ -60,7 +60,7 @@ export default function CompareTable({ table }: { table: Table }) {
               <tr key={row.label} className="border-b border-border last:border-b-0">
                 <th scope="row" className="px-5 py-4 align-top font-normal">
                   <span className="block text-[13.5px] font-medium text-foreground">{row.label}</span>
-                  {row.hint && <span className="mt-1 block max-w-[280px] text-[12px] leading-5 text-faint">{row.hint}</span>}
+                  {row.hint && <span className="mt-1 block max-w-[280px] text-[12px] leading-5 text-muted-foreground">{row.hint}</span>}
                 </th>
                 {row.cells.map((cell, index) => (
                   <td key={products[index].id} className={`px-5 py-4 align-top ${index === BRIDGE ? "bg-card" : ""}`}>
