@@ -10,13 +10,13 @@ vi.mock("./attention", () => ({ notifyAttention }));
 
 function session(id: string, status: SessionStatus, overrides: Partial<Session> = {}): Session {
   return {
-    continuationFidelity: "full",
+    continuationFidelity: "native",
     harness: "claude",
     id,
     kind: "chat",
     label: `Chat ${id}`,
     metricSource: "provider",
-    restorationMode: "resume",
+    restorationMode: "fresh",
     status,
     title: `Title ${id}`,
     ...overrides,
