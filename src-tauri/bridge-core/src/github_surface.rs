@@ -597,6 +597,10 @@ impl GithubSurface {
     /// remote. The caller validates the URL before this runs — nothing here
     /// interpolates user text into a git flag position.
     ///
+    /// The workspace must be the repository root itself, not merely inside
+    /// one: a folder nested in someone else's checkout gets its own
+    /// repository rather than repointing that checkout's `origin`.
+    ///
     /// Returns the resolved repository, so a caller can only report success
     /// once the surface genuinely sees the repository it asked for.
     pub fn connect_repository(
@@ -604,7 +608,7 @@ impl GithubSurface {
         workspace: &Path,
         remote_url: &str,
     ) -> Result<ConnectedRepository, GithubSurfaceError> {
-        let initialized = ensure_git_repository(workspace).is_err();
+        let initialized = !is_git_root(workspace);
         if initialized {
             let output = run_git(workspace, ["init", "-b", "main"])?;
             if !output.status.success() {
@@ -2382,6 +2386,23 @@ fn repository_for_remote(workspace: &Path, remote: &str) -> Option<GithubReposit
     parse_remote_url(&url)
 }
 
+/// `true` when `workspace` is itself a repository root.
+///
+/// `rev-parse --git-dir` succeeds from any subdirectory by walking up, which
+/// is right for reads and wrong for writes — `connect_workspace_folder` stores
+/// a non-root selection as a plain folder, so treating an ancestor's
+/// repository as this workspace's would mutate a different project. Mirrors
+/// `git::validate_repo`.
+fn is_git_root(workspace: &Path) -> bool {
+    let Some(root) = git_stdout(workspace, ["rev-parse", "--show-toplevel"]) else {
+        return false;
+    };
+    match (std::fs::canonicalize(root), std::fs::canonicalize(workspace)) {
+        (Ok(root), Ok(workspace)) => root == workspace,
+        _ => false,
+    }
+}
+
 fn run_git<I, S>(workspace: &Path, args: I) -> Result<Output, GithubSurfaceError>
 where
     I: IntoIterator<Item = S>,
@@ -2633,6 +2654,31 @@ mod tests {
         assert_eq!(
             surface.resolve_repository(folder.path()).unwrap(),
             expected("bridge", "harness")
+        );
+    }
+
+    #[test]
+    fn connect_never_repoints_an_ancestor_repository() {
+        let outer = repository();
+        git(
+            outer.path(),
+            &["remote", "add", "origin", "https://github.com/outer/project.git"],
+        );
+        let nested = outer.path().join("vendor/thing");
+        std::fs::create_dir_all(&nested).unwrap();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        // `rev-parse --git-dir` walks up and would hand back the outer repo.
+        let connected = surface
+            .connect_repository(&nested, "https://github.com/inner/thing.git")
+            .unwrap();
+        assert!(connected.initialized);
+        assert_eq!(connected.repository, expected("inner", "thing"));
+        // The outer project keeps the remote it had.
+        assert_eq!(
+            surface.resolve_repository(outer.path()).unwrap(),
+            expected("outer", "project")
         );
     }
 

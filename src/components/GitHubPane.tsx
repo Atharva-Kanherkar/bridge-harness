@@ -1387,6 +1387,7 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
 }) {
   const [query, setQuery] = useState("");
   const [candidates, setCandidates] = useState<GithubRepoCandidate[]>();
+  const [searchError, setSearchError] = useState<string>();
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -1401,13 +1402,15 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
 
   useEffect(() => {
     const needle = query.trim();
-    if (pastedUrl || needle.length < 2) { setCandidates(undefined); return; }
+    if (pastedUrl || needle.length < 2) { setCandidates(undefined); setSearchError(undefined); return; }
     let cancelled = false;
     setSearching(true);
     const timer = setTimeout(() => {
       void bridgeApi.searchGithubRepos(needle)
-        .then(result => { if (!cancelled && alive.current) setCandidates(result.repositories); })
-        .catch(() => { if (!cancelled && alive.current) setCandidates([]); })
+        .then(result => { if (!cancelled && alive.current) { setCandidates(result.repositories); setSearchError(undefined); } })
+        // A failed search is not an empty one. Reporting "no matches" for an
+        // unreachable `gh` sends the user hunting for a repository that exists.
+        .catch(value => { if (!cancelled && alive.current) { setCandidates(undefined); setSearchError(errorMessage(value)); } })
         .finally(() => { if (!cancelled && alive.current) setSearching(false); });
     }, 250);
     return () => { cancelled = true; clearTimeout(timer); setSearching(false); };
@@ -1451,6 +1454,7 @@ function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
             </button>
           </li>)}
       </ul>}
+      {searchError && !pastedUrl && <p role="alert" className="mt-2 text-[12px] text-destructive">Search failed: {searchError} You can still paste the repository URL.</p>}
       {error && <p role="alert" className="mt-3 text-[12px] text-destructive">{error}</p>}
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>

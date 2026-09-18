@@ -685,6 +685,23 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Safe GitHub surface");
   });
 
+  it("reports a failed repository search instead of claiming no matches", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    const search = vi.spyOn(bridgeApi, "searchGithubRepos").mockRejectedValue(new Error("GitHub CLI unavailable: gh is not installed"));
+    await mount();
+
+    await click(buttonByText("Connect a repository"));
+    const field = document.body.querySelector<HTMLInputElement>('input[aria-label="Repository search or URL"]')!;
+    await type(field, "harness");
+    await act(async () => { vi.advanceTimersByTime(300); await flush(); });
+
+    expect(search).toHaveBeenCalledWith("harness");
+    expect(document.body.textContent).toContain("GitHub CLI unavailable: gh is not installed");
+    // "No repository matches that" would send the user hunting for a repo that exists.
+    expect(document.body.textContent).not.toContain("No repository matches that");
+  });
+
   it("keeps the connect failure on the dialog rather than dropping the user back to an error pane", async () => {
     vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
     vi.spyOn(bridgeApi, "githubConnect").mockRejectedValue(new Error("Enter a GitHub repository HTTPS or SSH URL"));
