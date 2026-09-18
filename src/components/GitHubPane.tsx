@@ -35,6 +35,7 @@ import {
   X,
 } from "lucide-react";
 import { bridgeApi } from "../api";
+import { errorMessage } from "../errors";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "./Markdown";
@@ -60,6 +61,7 @@ import type {
   GithubLabel,
   GithubMergeConfigResult,
   GithubPullRequestResult,
+  GithubRepoCandidate,
   GithubRepository,
   GithubRepositoryResult,
   GithubStatusResult,
@@ -338,6 +340,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   const [selected, setSelected] = useState<number>();
   const [detail, setDetail] = useState<Detail>();
   const [detailError, setDetailError] = useState<string>();
+  const [connectOpen, setConnectOpen] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<number>();
   const [issueDetail, setIssueDetail] = useState<GithubIssueResult>();
   const [issueError, setIssueError] = useState<string>();
@@ -353,7 +356,10 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       if (!alive.current) return;
       setStatus(next);
       setSurfaceError(undefined);
-      if (next.availability.status === "available") {
+      // With no repository resolved, every read below fails with the same
+      // resolution error. Asking anyway only turns a setup step into three
+      // error notices, so the pane offers Connect instead.
+      if (next.availability.status === "available" && next.repository) {
         const settle = async <T,>(tab: SurfaceTab, read: Promise<T>, apply: (value: T) => void) => {
           try {
             const value = await read;
@@ -368,7 +374,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             if (!alive.current) return;
             setTabErrors(current => ({
               ...current,
-              [tab]: error instanceof Error ? error.message : String(error),
+              [tab]: errorMessage(error),
             }));
           }
         };
@@ -377,9 +383,14 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           settle("issues", bridgeApi.githubIssues(workspaceId), value => setIssues(value.issues)),
           settle("repository", bridgeApi.githubRepository(workspaceId), setRepositoryOverview),
         ]);
+      } else {
+        setPrs(undefined);
+        setIssues(undefined);
+        setRepositoryOverview(undefined);
+        setTabErrors({});
       }
     } catch (error) {
-      if (alive.current) setSurfaceError(error instanceof Error ? error.message : String(error));
+      if (alive.current) setSurfaceError(errorMessage(error));
     } finally {
       if (alive.current) setRefreshing(false);
     }
@@ -397,7 +408,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       ]);
       if (alive.current) setDetail({ result, checks });
     } catch (error) {
-      if (alive.current) setDetailError(error instanceof Error ? error.message : String(error));
+      if (alive.current) setDetailError(errorMessage(error));
     }
   }, [workspaceId]);
 
@@ -410,7 +421,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       const result = await bridgeApi.githubIssue(workspaceId, number);
       if (alive.current) setIssueDetail(result);
     } catch (error) {
-      if (alive.current) setIssueError(error instanceof Error ? error.message : String(error));
+      if (alive.current) setIssueError(errorMessage(error));
     }
   }, [workspaceId]);
 
@@ -427,7 +438,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       setDetail(current => current && current.result.pullRequest.summary.number === number ? { ...current, checks } : current);
       setDetailError(undefined);
     } catch (error) {
-      if (alive.current) setDetailError(error instanceof Error ? error.message : String(error));
+      if (alive.current) setDetailError(errorMessage(error));
     } finally { refreshingChecks.current = false; }
   }, [workspaceId]);
 
@@ -492,7 +503,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   const visiblePrs = useMemo(() => prs && filterPullRequests(prs, query, facet), [prs, query, facet]);
   const visibleIssues = useMemo(() => issues && filterIssues(issues, query), [issues, query]);
   const inDetail = (surfaceTab === "pulls" && selected !== undefined) || (surfaceTab === "issues" && selectedIssue !== undefined);
-  const showsFilters = !inDetail && surfaceTab !== "repository" && status?.availability.status === "available";
+  const showsFilters = !inDetail && surfaceTab !== "repository" && status?.availability.status === "available" && !!status.repository;
 
   let body: React.ReactNode;
   if (surfaceError) {
@@ -503,6 +514,15 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     body = <PaneNotice icon={CircleSlash} title="GitHub CLI is not installed">Bridge drives GitHub through <code className="font-mono text-foreground/90">gh</code> — install it and sign in, and this pane fills in by itself.</PaneNotice>;
   } else if (status.availability.status === "notAuthenticated") {
     body = <PaneNotice icon={CircleDot} title="Sign in to GitHub">Run <code className="rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[12px] text-foreground/90">{status.availability.remediation}</code> in a terminal, then refresh.</PaneNotice>;
+  } else if (!status.repository) {
+    // Not an error: the folder either has no git repository yet or no GitHub
+    // remote. Both are one action away from working, so offer the action.
+    body = <PaneNotice icon={FolderGit2} title="No GitHub repository connected">
+      This folder has no GitHub remote, so there are no pull requests or issues to show. Connect it to a repository and this pane fills in.
+      <span className="mt-3 block">
+        <button type="button" onClick={() => setConnectOpen(true)} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">Connect a repository</button>
+      </span>
+    </PaneNotice>;
   } else if (surfaceTab === "pulls" && selected !== undefined) {
     body = <PullRequestDetail
       workspaceId={workspaceId}
@@ -614,6 +634,11 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
         </div>}
       </div>}
     </header>
+    {connectOpen && <ConnectRepositoryDialog
+      workspaceId={workspaceId}
+      onCancel={() => setConnectOpen(false)}
+      onConnected={() => { setConnectOpen(false); void loadSurface(true); }}
+    />}
     {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[11px] text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
     {body}
   </section>;
@@ -966,7 +991,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       setReviewNotice({ tone: result.status === "failed" ? "error" : "success", text: result.message });
       if (harness === "bugbot" && result.status !== "failed") onActed();
     } catch (value) {
-      setReviewNotice({ tone: "error", text: value instanceof Error ? value.message : String(value) });
+      setReviewNotice({ tone: "error", text: errorMessage(value) });
     } finally { setReviewBusy(false); }
   };
 
@@ -980,7 +1005,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       if (!outcome.executed) { setActionError(outcome.message); return; }
       onActed();
     } catch (value) {
-      setActionError(value instanceof Error ? value.message : String(value));
+      setActionError(errorMessage(value));
     } finally { setBusy(false); }
   };
 
@@ -991,7 +1016,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       setMergeConfig(config); setStrategy(config.defaultStrategy);
     } catch (value) {
       setMergeOpen(false);
-      setActionError(value instanceof Error ? value.message : String(value));
+      setActionError(errorMessage(value));
     }
   };
 
@@ -1002,7 +1027,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       closeOverlays();
       setCheckout(result);
     } catch (value) {
-      setActionError(value instanceof Error ? value.message : String(value));
+      setActionError(errorMessage(value));
     } finally { setBusy(false); }
   };
 
@@ -1264,7 +1289,7 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
       if (!outcome.executed) { setActionError(outcome.message); return; }
       setPending(undefined); setLabelsOpen(false); onActed();
     } catch (value) {
-      setActionError(value instanceof Error ? value.message : String(value));
+      setActionError(errorMessage(value));
     } finally { setBusy(false); }
   };
 
@@ -1347,6 +1372,97 @@ type ConfirmOverlayProps = {
   onCancel: () => void;
   onConfirm: () => void;
 };
+
+/** Connect a workspace folder to a GitHub repository.
+ *
+ * The pane reaches this when `gh` is healthy but the folder resolves to no
+ * repository — a setup step, which is why it is a dialog with an action rather
+ * than an error notice. Search covers the common case (a repository the user
+ * already owns); the URL field covers the rest, and is the same validation the
+ * clone flow uses. */
+function ConnectRepositoryDialog({ workspaceId, onCancel, onConnected }: {
+  workspaceId: string;
+  onCancel: () => void;
+  onConnected: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [candidates, setCandidates] = useState<GithubRepoCandidate[]>();
+  const [searchError, setSearchError] = useState<string>();
+  const [searching, setSearching] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+
+  // A pasted URL is already an answer — searching for it would only stall the
+  // one interaction that needs no network round trip.
+  const pastedUrl = /^(https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/.test(query.trim())
+    ? query.trim()
+    : undefined;
+
+  useEffect(() => {
+    const needle = query.trim();
+    if (pastedUrl || needle.length < 2) { setCandidates(undefined); setSearchError(undefined); return; }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      void bridgeApi.searchGithubRepos(needle)
+        .then(result => { if (!cancelled && alive.current) { setCandidates(result.repositories); setSearchError(undefined); } })
+        // A failed search is not an empty one. Reporting "no matches" for an
+        // unreachable `gh` sends the user hunting for a repository that exists.
+        .catch(value => { if (!cancelled && alive.current) { setCandidates(undefined); setSearchError(errorMessage(value)); } })
+        .finally(() => { if (!cancelled && alive.current) setSearching(false); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); setSearching(false); };
+  }, [query, pastedUrl]);
+
+  async function connect(remoteUrl: string) {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await bridgeApi.githubConnect(workspaceId, remoteUrl);
+      if (alive.current) onConnected();
+    } catch (value) {
+      if (alive.current) setError(errorMessage(value));
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  }
+
+  return <Dialog open onOpenChange={next => { if (!next && !busy) onCancel(); }}>
+    <DialogPopup showCloseButton={false} aria-label="Connect a repository" className="max-w-md p-5">
+      <h2 className="font-display text-[14px] font-semibold text-foreground">Connect a repository</h2>
+      <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Search your GitHub repositories, or paste a repository URL. Bridge points this folder&apos;s <code className="font-mono text-foreground/90">origin</code> at it.</p>
+      <input
+        autoFocus
+        value={query}
+        onChange={event => { setQuery(event.target.value); setError(undefined); }}
+        onKeyDown={event => { if (event.key === "Enter" && pastedUrl && !busy) { event.preventDefault(); void connect(pastedUrl); } }}
+        disabled={busy}
+        aria-label="Repository search or URL"
+        placeholder="owner/name, or https://github.com/owner/name"
+        className="mt-4 h-9 w-full rounded-lg border border-input bg-card px-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring disabled:opacity-50"
+      />
+      {!pastedUrl && candidates !== undefined && <ul className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border" aria-label="Matching repositories">
+        {candidates.length === 0
+          ? <li className="px-3 py-2.5 text-[12px] text-muted-foreground">{searching ? "Searching…" : "No repository matches that. Paste its URL instead."}</li>
+          : candidates.map(candidate => <li key={candidate.nameWithOwner}>
+            <button type="button" disabled={busy} onClick={() => void connect(candidate.url)} className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent disabled:opacity-50">
+              <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">{candidate.nameWithOwner}</span>
+              {candidate.isPrivate && <Badge variant="outline" className="shrink-0 text-[10px]">Private</Badge>}
+            </button>
+          </li>)}
+      </ul>}
+      {searchError && !pastedUrl && <p role="alert" className="mt-2 text-[12px] text-destructive">Search failed: {searchError} You can still paste the repository URL.</p>}
+      {error && <p role="alert" className="mt-3 text-[12px] text-destructive">{error}</p>}
+      <div className="mt-4 flex justify-end gap-2">
+        <button type="button" onClick={onCancel} disabled={busy} className="min-h-8 rounded-lg px-3 text-[13px] font-medium hover:bg-accent disabled:opacity-50">Cancel</button>
+        <button type="button" onClick={() => pastedUrl && void connect(pastedUrl)} disabled={busy || !pastedUrl} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">Connect</button>
+      </div>
+    </DialogPopup>
+  </Dialog>;
+}
 
 function ConfirmOverlay({ statement, note, requiresBody, body, onBody, readOnlyBody, busy, confirmLabel = "Confirm", onCancel, onConfirm }: ConfirmOverlayProps) {
   const ready = !requiresBody || body.trim().length > 0;

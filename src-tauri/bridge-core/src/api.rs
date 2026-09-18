@@ -765,6 +765,29 @@ fn request_cursor_bugbot_review(
 /// workspace node beside the source workspace, never a mutation of it. The
 /// resolved PR data (head branch, title) comes from the surface, not the
 /// client, so a stale panel cannot check out the wrong branch.
+/// Connect a workspace to a GitHub repository.
+///
+/// The URL is validated against the same rule the clone flow uses before any
+/// git command sees it, so an operator cannot smuggle a git option through the
+/// remote argument.
+pub fn github_connect(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    remote_url: &str,
+) -> Result<wire::GithubConnectResult, BridgeError> {
+    let remote_url = crate::project_onboarding::validate_github_url(remote_url)?.to_owned();
+    let path = locked_workspace_path(core, workspace_id)?;
+    let connected = core
+        .github_surface
+        .connect_repository(Path::new(&path), &remote_url)
+        .map_err(github_error)?;
+    Ok(wire::GithubConnectResult {
+        repository: github_wire(connected.repository)?,
+        initialized: connected.initialized,
+        replaced_remote: connected.replaced_remote,
+    })
+}
+
 pub fn github_checkout(
     core: &Arc<BridgeCore>,
     workspace_id: &str,

@@ -215,6 +215,12 @@ async fn github_checkout(workspace_id: String, number: u64, state: State<'_, Arc
 }
 
 #[tauri::command]
+async fn github_connect(workspace_id: String, remote_url: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubConnectResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub repository connect", move || api::github_connect(&core, &workspace_id, &remote_url)).await
+}
+
+#[tauri::command]
 async fn browser_bridge_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
@@ -2514,6 +2520,7 @@ pub fn run() -> i32 {
             github_act,
             github_review,
             github_checkout,
+            github_connect,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,

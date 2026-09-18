@@ -2087,25 +2087,6 @@ function AppContent() {
   // paths become `@path` mentions, which the backend reads as bounded,
   // secret-sanitized, untrusted context at submit time. The draft is never
   // touched, only added to.
-  async function attachFile() {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      // No system dialog outside the desktop shell; fall back to the workspace
-      // picker `@` drives rather than doing nothing.
-      setMentionDismissed(false);
-      setMentionIndex(0);
-      setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
-      composerRef.current?.focus();
-      return;
-    }
-    try {
-      const picked = await open({ multiple: true, title: "Attach files" });
-      if (picked == null) return;
-      const paths = (Array.isArray(picked) ? picked : [picked]).filter(path => typeof path === "string");
-      if (paths.length === 0) return;
-      setComposer(current => paths.reduce(appendFileMention, current));
-    } catch (e) { setError(errorMessage(e)); }
-    finally { composerRef.current?.focus(); }
-  }
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
   function applyFileMention(path: string) {
@@ -2713,7 +2694,6 @@ function AppContent() {
                     stopping={stopping}
                     onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
-                    onPlusClick={() => void attachFile()}
                     leading={usageDot}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
@@ -3034,11 +3014,6 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // check. Gating the whole composer on canStartChat would block adding
       // a project before any adapter is installed.
       disabled={busy}
-      // There is no conversation or folder here yet, so the structural `+`
-      // still creates a workspace. Clipboard images are first-turn content and
-      // use the paste path above instead of pretending to be repository files.
-      plusLabel="New workspace"
-      onPlusClick={onNewWorkspace}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
@@ -3063,6 +3038,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       <span>{greeting.hint}</span>
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
     </div>
+    {workspaces.length === 0 && <div className="mt-6 flex justify-center">
+      <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
+    </div>}
     {workspaces.length > 0 && <section aria-label="Choose a project" className="mt-9 border-t border-border pt-5">
       <div className="mb-3 flex items-center justify-between"><h2 className="text-[12px] font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
       <div className="grid gap-2 sm:grid-cols-2">{workspaces.slice(0, 4).map(item => <button key={item.id} type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={workspace?.id === item.id} className={cn("flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50", workspace?.id === item.id ? "border-ring/50 bg-selection" : "border-border bg-card hover:border-input")}>

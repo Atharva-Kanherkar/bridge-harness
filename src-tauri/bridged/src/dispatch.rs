@@ -104,6 +104,10 @@ pub fn dispatch(
             let p: wire::GithubCheckoutParams = decode(method, params)?;
             reply(api::github_checkout(core, &p.workspace_id, p.number))
         }
+        MethodName::GithubConnect => {
+            let p: wire::GithubConnectParams = decode(method, params)?;
+            reply(api::github_connect(core, &p.workspace_id, &p.remote_url))
+        }
 
         MethodName::AddProject => {
             let p: wire::AddProjectParams = decode(method, params)?;
