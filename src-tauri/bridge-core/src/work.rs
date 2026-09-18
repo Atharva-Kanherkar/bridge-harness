@@ -10,6 +10,8 @@
 //! The DTOs are `bridge_protocol::messages`' Work types used directly. A second
 //! copy in this crate would only create something to drift.
 
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 
@@ -666,6 +668,52 @@ fn suggested_tasks(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::Work
     Ok(tasks)
 }
 
+/// The families a run could not read, phrased for the board's degraded detail.
+///
+/// The distinction the board has to carry: "nothing happened" and "nothing was
+/// read" both produce an empty task list, and only one of them means the user is
+/// caught up. A run's *status* cannot answer this — a run that read one connector
+/// of three and summarised it correctly succeeded — so the sources answer it.
+///
+/// Needs-sign-in and could-not-be-read stay separate because only one of them
+/// names an action the user can take. Instance ids stand in for families Bridge
+/// could not resolve, so the sentence never says "unknown needs signing in".
+fn unread_sources_detail(sources: &[wire::WorkSourceCoverage]) -> Option<String> {
+    let label = |source: &wire::WorkSourceCoverage| match source.connector_family.as_str() {
+        "unknown" => source.connector_instance_id.clone(),
+        family => family.to_owned(),
+    };
+    let mut needs_sign_in: BTreeSet<String> = BTreeSet::new();
+    let mut unreadable: BTreeSet<String> = BTreeSet::new();
+    for source in sources {
+        match source.status {
+            wire::WorkSourceStatus::AuthRequired => {
+                needs_sign_in.insert(label(source));
+            }
+            wire::WorkSourceStatus::Failed => {
+                unreadable.insert(label(source));
+            }
+            // Eligible and consulted are mid-run states, and succeeded is the
+            // whole point. None of them is a source the board has to warn about.
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    if !needs_sign_in.is_empty() {
+        parts.push(format!(
+            "{} needs to be signed in to your harness",
+            needs_sign_in.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !unreadable.is_empty() {
+        parts.push(format!(
+            "{} could not be read",
+            unreadable.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    (!parts.is_empty()).then(|| format!("{}.", parts.join("; ")))
+}
+
 pub fn board(db: &Connection) -> Result<wire::WorkBoard, BridgeError> {
     let (settings, settings_error) = match stored_settings(db) {
         Ok(Some(settings)) => (settings, None),
@@ -704,7 +752,18 @@ pub fn board(db: &Connection) -> Result<wire::WorkBoard, BridgeError> {
                 state: wire::WorkSuggestionsState::Degraded,
                 detail: latest_run.as_ref().and_then(|run| run.failure_detail.clone()),
             },
-            _ => wire::WorkSuggestions { state: wire::WorkSuggestionsState::Ready, detail: None },
+            // A run can succeed having read nothing. Reporting that as ready is
+            // what made an unread Slack indistinguishable from a quiet one.
+            _ => match unread_sources_detail(&sources) {
+                Some(detail) => wire::WorkSuggestions {
+                    state: wire::WorkSuggestionsState::Degraded,
+                    detail: Some(detail),
+                },
+                None => wire::WorkSuggestions {
+                    state: wire::WorkSuggestionsState::Ready,
+                    detail: None,
+                },
+            },
         },
     };
 
@@ -1585,6 +1644,138 @@ mod tests {
             .as_deref()
             .is_some_and(|detail| detail.contains("could not be read")));
     }
+    fn configured_settings(db: &Connection) {
+        store_settings(
+            db,
+            r#"{"briefing":{"harness":"claude","model":"claude-opus-5","effort":null},
+                "enabledConnectorInstances":[],"refreshOnFocus":false,
+                "refreshIntervalMinutes":null,"cooldownMinutes":15,
+                "limits":{"maxWallSeconds":600,"maxTurns":12,"maxToolCalls":24,
+                          "maxOutputTokens":null,"costCeilingMicrousd":null}}"#,
+        );
+    }
+
+    fn insert_run(db: &Connection, id: &str, status: &str, failure_detail: Option<&str>) {
+        db.execute(
+            "INSERT INTO work_brief_runs(id,trigger_kind,status,max_wall_seconds,max_turns,
+                 max_tool_calls,failure_detail,started_at,completed_at)
+             VALUES(?1,'manual',?2,600,12,24,?3,'2026-09-10T12:00:00Z','2026-09-10T12:01:00Z')",
+            rusqlite::params![id, status, failure_detail],
+        )
+        .unwrap();
+    }
+
+    fn insert_source(db: &Connection, run: &str, instance: &str, family: &str, status: &str) {
+        db.execute(
+            "INSERT INTO work_brief_sources(run_id,connector_instance_id,connector_family,status)
+             VALUES(?1,?2,?3,?4)",
+            rusqlite::params![run, instance, family, status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_succeeded_run_that_could_not_read_a_source_degrades_the_board() {
+        // The defect in one assertion: the run succeeded, so the board used to
+        // read `ready`, and an empty board then claimed the user was caught up
+        // on a connector it had never opened.
+        let db = memory_db();
+        configured_settings(&db);
+        insert_run(&db, "run-1", "succeeded", None);
+        insert_source(&db, "run-1", "claude.ai Slack", "slack", "auth_required");
+        insert_source(&db, "run-1", "claude.ai Notion", "notion", "succeeded");
+
+        let board = board(&db).unwrap();
+
+        assert_eq!(board.suggestions.state, wire::WorkSuggestionsState::Degraded);
+        let detail = board.suggestions.detail.as_deref().expect("a reason");
+        assert!(detail.contains("slack"), "{detail}");
+        assert!(detail.contains("signed in"), "{detail}");
+        assert!(!detail.contains("notion"), "a source that was read is not a warning: {detail}");
+    }
+
+    #[test]
+    fn a_succeeded_run_that_read_everything_stays_ready() {
+        let db = memory_db();
+        configured_settings(&db);
+        insert_run(&db, "run-1", "succeeded", None);
+        insert_source(&db, "run-1", "claude.ai Slack", "slack", "succeeded");
+        insert_source(&db, "run-1", "claude.ai Notion", "notion", "consulted");
+
+        let board = board(&db).unwrap();
+
+        assert_eq!(board.suggestions.state, wire::WorkSuggestionsState::Ready);
+        assert_eq!(board.suggestions.detail, None);
+    }
+
+    #[test]
+    fn a_source_that_could_not_be_read_is_not_described_as_needing_sign_in() {
+        // Two different claims. Telling someone to sign in to a connector that is
+        // signed in and merely broken sends them somewhere that cannot help.
+        let db = memory_db();
+        configured_settings(&db);
+        insert_run(&db, "run-1", "succeeded", None);
+        insert_source(&db, "run-1", "claude.ai Slack", "slack", "failed");
+
+        let detail = board(&db).unwrap().suggestions.detail.expect("a reason");
+
+        assert!(detail.contains("could not be read"), "{detail}");
+        assert!(!detail.contains("signed in"), "{detail}");
+    }
+
+    #[test]
+    fn a_source_with_no_resolvable_family_is_named_by_its_instance() {
+        let db = memory_db();
+        configured_settings(&db);
+        insert_run(&db, "run-1", "succeeded", None);
+        insert_source(&db, "run-1", "internal-crm", "unknown", "auth_required");
+
+        let detail = board(&db).unwrap().suggestions.detail.expect("a reason");
+
+        assert!(detail.contains("internal-crm"), "{detail}");
+        assert!(!detail.contains("unknown"), "never says `unknown needs signing in`: {detail}");
+    }
+
+    #[test]
+    fn a_failed_runs_own_detail_outranks_source_degradation() {
+        // Both paths degrade, so the precedence has to be deliberate: the run's
+        // own failure is the more specific fact and keeps its wording.
+        let db = memory_db();
+        configured_settings(&db);
+        insert_run(&db, "run-1", "failed", Some("the provider ended the turn"));
+        insert_source(&db, "run-1", "claude.ai Slack", "slack", "auth_required");
+
+        let board = board(&db).unwrap();
+
+        assert_eq!(board.suggestions.state, wire::WorkSuggestionsState::Degraded);
+        assert_eq!(board.suggestions.detail.as_deref(), Some("the provider ended the turn"));
+    }
+
+    #[test]
+    fn a_degraded_board_still_returns_its_tasks() {
+        // Degrading is a statement about coverage, not a reason to withhold what
+        // was read. A partial board is still the useful half of the answer.
+        let db = memory_db();
+        configured_settings(&db);
+        insert_run(&db, "run-1", "succeeded", None);
+        insert_source(&db, "run-1", "claude.ai Slack", "slack", "auth_required");
+        let now = Utc::now().to_rfc3339();
+        db.execute(
+            "INSERT INTO work_tasks(id,connector_instance_id,source_kind,title,why,rank,
+                 confidence_bps,state,pinned,created_at,updated_at,evidence_observed_at,
+                 source_activity_at)
+             VALUES('task-1','claude.ai Notion','notion.page','Review the spec','updated',1,
+                 8000,'active',0,?1,?1,?1,?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+
+        let board = board(&db).unwrap();
+
+        assert_eq!(board.suggestions.state, wire::WorkSuggestionsState::Degraded);
+        assert_eq!(board.tasks.len(), 1, "a degraded board is not an empty one");
+    }
+
     #[test]
     fn integration_window_filters_before_limiting_and_uses_source_time_only() {
         let db = memory_db();
