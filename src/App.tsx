@@ -25,7 +25,7 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { chatName, isHiddenSession } from "./components/sidebarChats";
+import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -36,12 +36,14 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
 import { ConnectorToasts } from "./components/ConnectorToasts";
 import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
+import { attentionCopy, attentionToastKey } from "./attentionCopy";
 import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
@@ -398,21 +400,28 @@ function AppContent() {
   // transitions across visible sessions (hidden kinds filtered inside
   // `diffAttentionEvents`), not just the open one, so a background chat that
   // starts waiting on the human still surfaces a notification.
-  // `notifyAttention` itself gates delivery on Bridge not being the focused
-  // app, so this effect only has to decide *what* happened, not *whether to
-  // show* it.
+  // In-app glass toasts always enqueue; `notifyAttention` still gates the OS
+  // banner on Bridge not being focused.
+  const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
   const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
   useEffect(() => {
     const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
     previousAttentionSessionsRef.current = state.sessions;
+    if (!events.length) return;
+    const nextToasts: AttentionToast[] = [];
     for (const event of events) {
-      const name = chatName(event.session);
-      if (event.kind === "needs-you") {
-        void notifyAttention("Bridge needs you", `${name} is waiting for your input`);
-      } else {
-        void notifyAttention("Turn completed", `${name} finished its turn`);
-      }
+      const copy = attentionCopy(event);
+      const key = attentionToastKey(event);
+      nextToasts.push({ key, sessionId: event.session.id, copy });
+      void notifyAttention(copy.headline, copy.detail);
     }
+    setAttentionToasts(current => {
+      const merged = [...current];
+      for (const toast of nextToasts) {
+        if (!merged.some(item => item.key === toast.key)) merged.push(toast);
+      }
+      return merged.slice(-3);
+    });
   }, [state.sessions]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
@@ -2836,6 +2845,14 @@ function AppContent() {
         </Alert>
       );
     })()}
+    <AttentionToasts
+      toasts={attentionToasts}
+      onOpen={toast => {
+        setAttentionToasts(current => current.filter(item => item.key !== toast.key));
+        openSession(toast.sessionId);
+      }}
+      onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
+    />
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
     <ConnectorToasts
       toasts={connectorToasts}
