@@ -24,6 +24,11 @@ else
   built="$project_root/src-tauri/target/debug/bridged"
 fi
 
+# A stable code identity so a Keychain grant (e.g. for the `claude` CLI's
+# own credentials, which a read-only worker sandbox borrows) survives a
+# rebuild instead of macOS treating each rebuild as a new, untrusted app.
+sh "$project_root/scripts/dev-codesign.sh" sign "$built"
+
 cp "$built" "$sidecar"
 chmod 700 "$sidecar"
 echo "Prepared bridged daemon at $sidecar"

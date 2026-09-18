@@ -7,6 +7,9 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_root"
 
 if [ "${1:-}" = "dev" ]; then
+  # One-time bootstrap so rebuilds below keep a stable macOS code identity
+  # instead of re-tripping Keychain access checks on every `cargo build`.
+  sh "$project_root/scripts/dev-codesign.sh"
   bun run prepare:browser-host:dev
   bun run prepare:daemon:dev
 fi
