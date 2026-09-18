@@ -61,4 +61,21 @@ describe("diffAttentionEvents", () => {
       { kind: "turn-completed", session: session("b", "ready") },
     ]);
   });
+
+  it("ignores hidden session kinds", () => {
+    for (const kind of ["briefing", "suggestion", "extraction", "outcome_evaluation", "consolidation"] as const) {
+      expect(
+        diffAttentionEvents(
+          [session("hidden", "working", { kind })],
+          [session("hidden", "ready", { kind })],
+        ),
+      ).toEqual([]);
+      expect(
+        diffAttentionEvents(
+          [session("hidden", "working", { kind })],
+          [session("hidden", "waiting", { kind })],
+        ),
+      ).toEqual([]);
+    }
+  });
 });

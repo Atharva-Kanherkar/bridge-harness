@@ -395,8 +395,9 @@ function AppContent() {
     };
   }, [invalidateHealth, openMeter, refreshMeter, reload]);
   // Attention notifications: diff every `state.sessions` refresh for status
-  // transitions across *all* sessions, not just the open one, so a background
-  // chat that starts waiting on the human still surfaces a notification.
+  // transitions across visible sessions (hidden kinds filtered inside
+  // `diffAttentionEvents`), not just the open one, so a background chat that
+  // starts waiting on the human still surfaces a notification.
   // `notifyAttention` itself gates delivery on Bridge not being the focused
   // app, so this effect only has to decide *what* happened, not *whether to
   // show* it.

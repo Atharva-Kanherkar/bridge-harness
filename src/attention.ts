@@ -14,14 +14,28 @@ export function isBridgeFocused(): boolean {
   return focused;
 }
 
-let permissionRequested = false;
+// Shared across concurrent notifyAttention calls so the first OS prompt is
+// awaited by every in-flight caller — treating an outstanding request as
+// denial would drop every banner after the first when one snapshot emits
+// multiple attention events before the user answers. Assigned synchronously
+// so two callers cannot both miss and start duplicate prompts.
+let permissionRequest: Promise<boolean> | null = null;
+let notificationModule: Promise<typeof import("@tauri-apps/plugin-notification")> | null = null;
 
-async function ensureNotificationPermission(): Promise<boolean> {
-  const { isPermissionGranted, requestPermission } = await import("@tauri-apps/plugin-notification");
-  if (await isPermissionGranted()) return true;
-  if (permissionRequested) return false;
-  permissionRequested = true;
-  return (await requestPermission()) === "granted";
+function loadNotification() {
+  notificationModule ??= import("@tauri-apps/plugin-notification");
+  return notificationModule;
+}
+
+function ensureNotificationPermission(): Promise<boolean> {
+  if (!permissionRequest) {
+    permissionRequest = (async () => {
+      const { isPermissionGranted, requestPermission } = await loadNotification();
+      if (await isPermissionGranted()) return true;
+      return (await requestPermission()) === "granted";
+    })();
+  }
+  return permissionRequest;
 }
 
 /**
@@ -33,6 +47,6 @@ async function ensureNotificationPermission(): Promise<boolean> {
 export async function notifyAttention(title: string, body: string): Promise<void> {
   if (isBridgeFocused() || !isTauri()) return;
   if (!(await ensureNotificationPermission())) return;
-  const { sendNotification } = await import("@tauri-apps/plugin-notification");
+  const { sendNotification } = await loadNotification();
   sendNotification({ title, body });
 }

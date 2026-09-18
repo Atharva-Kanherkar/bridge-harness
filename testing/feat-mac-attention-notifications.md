@@ -26,6 +26,10 @@ session that starts waiting on the user must still surface a notification.
 - No notification fires for: the initial state load (no prior snapshot to diff
   against), a status that repeats the previous poll, or a transition between
   two non-active, non-waiting buckets (e.g. `ready` → `idle`).
+- **Hidden sessions excluded**: `isHiddenSession` kinds (`briefing`,
+  `suggestion`, `extraction`, `outcome_evaluation`, `consolidation`) never
+  produce attention events — background maintenance must not look like a
+  visible chat finishing or waiting.
 - **Suppression**: no OS notification is dispatched while Bridge's main window
   is focused (`document.hasFocus()` in the main window's webview, tracked via
   `focus`/`blur` listeners). The attention-diffing logic still runs so no
@@ -35,6 +39,9 @@ session that starts waiting on the user must still surface a notification.
   pure diffing logic is exercised.
 - The OS notification's title/body includes the session's display name
   (`chatName()`: `title || label`) so the user knows which chat needs them.
+- **Permission sharing**: concurrent `notifyAttention` calls while permission
+  is still being requested share one in-flight `requestPermission` promise so
+  a grant delivers every pending notification, not only the first.
 
 ## Unit Tests
 
@@ -55,6 +62,9 @@ session that starts waiting on the user must still surface a notification.
     yields no event.
   - Multiple sessions changing in the same poll each produce their own event,
     in `next` order.
+  - A hidden-kind session (`briefing` / `suggestion` / `extraction` /
+    `outcome_evaluation` / `consolidation`) transitioning active→idle or into
+    waiting yields no event.
 - `src/attention.test.ts`
   - `notifyAttention` does not call the notification plugin when
     `document.hasFocus()` is `true`.
@@ -64,6 +74,8 @@ session that starts waiting on the user must still surface a notification.
     unfocused, inside Tauri, and permission is already granted.
   - `notifyAttention` requests permission exactly once when not yet granted,
     and skips sending if the request is denied.
+  - Concurrent `notifyAttention` calls while permission is outstanding share
+    the same in-flight request; once granted, every caller sends.
   - The focus tracker flips to `false` on a `window` `blur` event and back to
     `true` on `focus`, independent of any Tauri API.
 

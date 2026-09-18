@@ -73,4 +73,18 @@ describe("notifyAttention", () => {
     expect(requestPermission).toHaveBeenCalledTimes(1);
     expect(sendNotification).not.toHaveBeenCalled();
   });
+
+  it("shares one in-flight permission request across concurrent notifies", async () => {
+    isPermissionGranted.mockResolvedValue(false);
+    requestPermission.mockImplementation(
+      () => new Promise(resolve => setTimeout(() => resolve("granted"), 20)),
+    );
+    const { notifyAttention } = await loadAttention();
+    window.dispatchEvent(new Event("blur"));
+    await Promise.all([notifyAttention("t1", "b1"), notifyAttention("t2", "b2")]);
+    expect(requestPermission).toHaveBeenCalledTimes(1);
+    expect(sendNotification).toHaveBeenCalledTimes(2);
+    expect(sendNotification).toHaveBeenCalledWith({ title: "t1", body: "b1" });
+    expect(sendNotification).toHaveBeenCalledWith({ title: "t2", body: "b2" });
+  });
 });
