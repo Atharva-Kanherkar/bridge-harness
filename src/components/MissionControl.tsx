@@ -239,6 +239,9 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
   );
   const pinnedSessionIds = useMemo(() => stored.pinnedSessionIds.filter(id => sessionMap.has(id) && !dismissedSessionIds.includes(id)), [stored.pinnedSessionIds, sessionMap, dismissedSessionIds]);
   const ids = useMemo(() => [...new Set([...live.map(session => session.id), ...pinnedSessionIds])], [live, pinnedSessionIds]);
+  // Includes active pinned workers the visibility filter kept out of `live` —
+  // otherwise a pinned worker can be visible and working while this reads 0.
+  const activeCount = useMemo(() => ids.filter(id => { const session = sessionMap.get(id); return session && isActiveSession(session); }).length, [ids, sessionMap]);
   const idsKey = ids.join(" ");
   const root = useMemo(() => reconcileLeaves(stored.root, ids), [stored.root, idsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const expandedLeafId = stored.expandedLeafId && root && leafIds(root).includes(stored.expandedLeafId) ? stored.expandedLeafId : null;
@@ -285,7 +288,7 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
     <header className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">
       <LayoutGrid size={14} className="text-muted-foreground" aria-hidden="true" />
       <h1 className="font-display text-sm font-medium">Mission Control</h1>
-      <span aria-label={`${live.length} live`} className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{live.length} live</span>
+      <span aria-label={`${activeCount} live`} className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{activeCount} live</span>
       {pinnedSessionIds.length > 0 && <span className="text-xs text-muted-foreground">{pinnedSessionIds.length} pinned</span>}
       <span className="ml-auto hidden truncate text-xs text-muted-foreground lg:block">Drag chats here · Drag headers to rearrange</span>
     </header>

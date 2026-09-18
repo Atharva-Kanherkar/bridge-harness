@@ -377,10 +377,34 @@ it("still shows a pinned worker chat even with the default worker-visibility set
   const canvas = host.querySelector("main")!;
   await dragEvent(canvas, "drop", data);
   expect(tiles().sort()).toEqual(["a", "w"]);
+  // The pinned worker is hidden from the visibility filter but still active,
+  // so the badge must count it too, not just the auto-surfaced chats.
+  expect(host.textContent).toContain("2 live");
 });
 
 it("shows worker chats once the setting is turned on", async () => {
-  localStorage.setItem("bridge.missionControl.showWorkerChats", "true");
+  localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
   await render({ sessions: [session("a", "working"), session("w", "working", { parentSessionId: "a" })] });
   expect(tiles().sort()).toEqual(["a", "w"]);
+});
+
+it("live-syncs worker visibility from an external write, without remounting or re-rendering with new props", async () => {
+  const sessions = [session("a", "working"), session("w", "working", { parentSessionId: "a" })];
+  await render({ sessions });
+  expect(tiles()).toEqual(["a"]);
+
+  // Simulates another window (e.g. Settings) flipping the preference: the
+  // mounted MissionControl instance must pick this up through its own
+  // storage-event listener, with no new props and no remount.
+  await act(async () => {
+    localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
+    window.dispatchEvent(new Event("storage"));
+  });
+  expect(tiles().sort()).toEqual(["a", "w"]);
+
+  await act(async () => {
+    localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "false");
+    window.dispatchEvent(new Event("storage"));
+  });
+  expect(tiles()).toEqual(["a"]);
 });
