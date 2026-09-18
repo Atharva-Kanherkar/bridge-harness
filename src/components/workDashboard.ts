@@ -40,6 +40,65 @@ export function toolsReadLine(sources: WorkSourceCoverage[]): string {
   return `${parts.join(" · ")}.`;
 }
 
+/** What an empty board is allowed to say.
+ *
+ * Zero items is two different situations — nothing happened, or nothing was
+ * read — and only one of them is "you're caught up". The sources decide which,
+ * so the copy never claims coverage the run did not have. Only the last branch
+ * here makes the caught-up claim, and it is the one that earned it. */
+export type EmptyState = { title: string; body: string };
+
+export function emptyStateCopy(
+  sources: WorkSourceCoverage[],
+  options: { running: boolean; configured: boolean; hasRun: boolean },
+): EmptyState {
+  if (options.running) {
+    return {
+      title: "Reading your integrations…",
+      body: "Your connected tools are being checked for updates from the past 24 hours.",
+    };
+  }
+  if (!options.configured) {
+    return {
+      title: "No recent activity to show",
+      body: "Recent activity will appear after you set up and refresh your integrations.",
+    };
+  }
+  // Nothing has been attempted yet, so there is no coverage to characterise and
+  // no claim to make either way.
+  if (!options.hasRun) {
+    return {
+      title: "No recent activity to show",
+      body: "Refresh to check your connected tools for updates from the past 24 hours.",
+    };
+  }
+  const needsAuth = unique(sources.filter(row => row.status === "auth_required").map(familyLabel));
+  const failed = unique(sources.filter(row => row.status === "failed").map(familyLabel));
+  if (needsAuth.length > 0 || failed.length > 0) {
+    const parts: string[] = [];
+    if (needsAuth.length > 0) {
+      parts.push(`${needsAuth.join(", ")} needs sign-in — reconnect it in your harness`);
+    }
+    if (failed.length > 0) parts.push(`${failed.join(", ")} could not be reached`);
+    return {
+      title: "Some tools could not be read",
+      body: `${parts.join(" · ")}. That is not the same as having nothing waiting — refresh once they are back.`,
+    };
+  }
+  // Offered but never called, or called and denied: either way nothing came
+  // back, so there is no basis for saying the past 24 hours were quiet.
+  if (!sources.some(row => row.status === "succeeded")) {
+    return {
+      title: "No tools were read",
+      body: "Nothing was read this run, so there is nothing to report yet. Refresh to check your connected tools.",
+    };
+  }
+  return {
+    title: "No recent activity to show",
+    body: "Your connected tools were read and had no updates from the past 24 hours.",
+  };
+}
+
 export function relativeTime(iso: string, now: Date): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return "at an unknown time";

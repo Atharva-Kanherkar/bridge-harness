@@ -90,3 +90,31 @@ it("preserves only recent activity during partial refresh failures", () => {
   render({ refreshError: "Slack is disconnected", board: board({ tasks: [task(), task({ id: "old", title: "Old message", sourceActivityAt: "2026-09-08T12:00:00Z" })] }) });
   expect(text()).toContain("Slack is disconnected"); expect(text()).toContain("Release discussion"); expect(text()).not.toContain("Old message");
 });
+
+it("does not tell you that you are caught up when a connector went unread", () => {
+  // A board with no items and a Slack that needed signing in is not an empty
+  // inbox — it is an unopened one, and the copy has to say so.
+  render({
+    board: board({
+      tasks: [],
+      sources: [{ connectorInstanceId: "claude.ai Slack", connectorFamily: "slack", status: "auth_required", detail: null, observedAt: null }],
+      latestRun: { id: "run-1", trigger: "manual", status: "succeeded", profileReference: "claude/opus", sessionId: null, outputDigest: null, failureCode: null, failureDetail: null, usage: null, startedAt: NOW.toISOString(), completedAt: NOW.toISOString() },
+      suggestions: { state: "degraded", detail: "slack needs to be signed in to your harness." },
+    }),
+  });
+  expect(text()).toContain("Some tools could not be read");
+  expect(text()).toContain("Slack needs sign-in");
+  expect(text()).not.toContain("No recent activity to show");
+});
+
+it("still says the board is quiet when every connector was actually read", () => {
+  render({
+    board: board({
+      tasks: [],
+      sources: [{ connectorInstanceId: "claude.ai Slack", connectorFamily: "slack", status: "succeeded", detail: null, observedAt: null }],
+      latestRun: { id: "run-1", trigger: "manual", status: "succeeded", profileReference: "claude/opus", sessionId: null, outputDigest: null, failureCode: null, failureDetail: null, usage: null, startedAt: NOW.toISOString(), completedAt: NOW.toISOString() },
+    }),
+  });
+  expect(text()).toContain("No recent activity to show");
+  expect(text()).toContain("were read and had no updates");
+});

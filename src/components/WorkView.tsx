@@ -4,7 +4,7 @@ import type { WorkBoard, WorkFactAction, WorkTask } from "../protocol/generated/
 import { hasOpenableEvidence, sourceLabel, type TaskAction } from "./workTasks";
 import { recentIntegrationActivity } from "./workActivity";
 import { logoForSourceKind } from "./connectorLogos";
-import { lastRunLine, toolsReadLine } from "./workDashboard";
+import { emptyStateCopy, lastRunLine, toolsReadLine } from "./workDashboard";
 
 export type WorkActionOutcome = { ok: true } | { ok: false; reason: string };
 
@@ -35,6 +35,9 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
   const configured = board !== undefined && board.suggestions.state !== "not_configured";
   const running = board?.suggestions.state === "running";
   const refresh = configured && onRunBriefing ? onRunBriefing : onRefresh;
+  // Zero items never speaks for itself: what the run managed to read decides
+  // whether an empty board means quiet or means unread.
+  const empty = emptyStateCopy(board?.sources ?? [], { running, configured, hasRun: Boolean(board?.latestRun) });
   const buttonClass = "inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50";
 
   return (
@@ -83,10 +86,8 @@ export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvi
           <p role="status" className="text-sm text-muted-foreground">Loading activity…</p>
         ) : items.length === 0 ? (
           <div className="rounded-xl border border-border p-6 text-center">
-            <h3 className="text-sm font-medium">No recent activity to show</h3>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              {running ? "Your integrations are being read." : configured ? "Refresh to check your connected tools for updates from the past 24 hours." : "Recent activity will appear after you set up and refresh your integrations."}
-            </p>
+            <h3 className="text-sm font-medium">{empty.title}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{empty.body}</p>
           </div>
         ) : (
           <ul aria-label="Integration activity" className="flex flex-col gap-2">

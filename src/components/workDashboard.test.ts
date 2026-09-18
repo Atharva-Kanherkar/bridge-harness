@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkBriefRun, WorkSourceCoverage } from "../protocol/generated/protocol";
-import { lastRunLine, relativeTime, toolsReadLine } from "./workDashboard";
+import { emptyStateCopy, lastRunLine, relativeTime, toolsReadLine } from "./workDashboard";
 
 const NOW = new Date("2026-08-19T12:00:00.000Z");
 
@@ -70,5 +70,55 @@ describe("relativeTime", () => {
     expect(relativeTime("2026-08-19T09:00:00.000Z", NOW)).toBe("3h ago");
     expect(relativeTime("2026-08-17T09:00:00.000Z", NOW)).toBe("2d ago");
     expect(relativeTime("not a time", NOW)).toBe("at an unknown time");
+  });
+});
+
+describe("emptyStateCopy", () => {
+  const ran = { running: false, configured: true, hasRun: true };
+
+  it("does not claim you are caught up when a source needed signing in", () => {
+    // The whole defect in one case: zero items plus an unread Slack used to
+    // render the same sentence as zero items plus a quiet Slack.
+    const copy = emptyStateCopy([source({ status: "auth_required" })], ran);
+    expect(copy.title).toBe("Some tools could not be read");
+    expect(copy.body).toContain("Slack needs sign-in");
+    expect(copy.body).not.toContain("no updates");
+  });
+
+  it("separates a tool that could not be reached from one that needs signing in", () => {
+    const copy = emptyStateCopy(
+      [source({ status: "failed" }), source({ connectorFamily: "gmail", status: "auth_required" })],
+      ran,
+    );
+    expect(copy.body).toContain("Gmail needs sign-in");
+    expect(copy.body).toContain("Slack could not be reached");
+  });
+
+  it("claims quiet only when a source actually came back", () => {
+    const copy = emptyStateCopy([source({ status: "succeeded" })], ran);
+    expect(copy.title).toBe("No recent activity to show");
+    expect(copy.body).toContain("were read and had no updates");
+  });
+
+  it("will not claim quiet from a source that was offered but never returned", () => {
+    // `eligible` means the model was given the tool, not that it used it, and
+    // `consulted` means it called and got nothing back. Neither is coverage.
+    for (const status of ["eligible", "consulted"] as const) {
+      expect(emptyStateCopy([source({ status })], ran).title).toBe("No tools were read");
+    }
+  });
+
+  it("keeps the refresh prompt before anything has run", () => {
+    const copy = emptyStateCopy([], { running: false, configured: true, hasRun: false });
+    expect(copy.title).toBe("No recent activity to show");
+    expect(copy.body).toContain("Refresh to check");
+  });
+
+  it("names the instance when the family cannot be resolved", () => {
+    const copy = emptyStateCopy(
+      [source({ connectorInstanceId: "internal-crm", connectorFamily: "unknown", status: "auth_required" })],
+      ran,
+    );
+    expect(copy.body).toContain("internal-crm");
   });
 });
