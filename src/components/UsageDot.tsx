@@ -193,11 +193,14 @@ export interface UsageDotProps {
   /** Rides the composer: the card portals onto `[data-composer-frame]` and
    *  hangs above it. Otherwise it drops below the trigger. */
   compact?: boolean;
+  /** The last load or refresh failure, shown in the card until a snapshot
+   *  arrives. Without it a failed first read would spin forever. */
+  error?: string | null;
   /** Test seam; production reads the ticking meter clock. */
   nowMs?: number;
 }
 
-export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing = false, onRefresh, onOpenUsage, onSignIn, compact = false, nowMs }: UsageDotProps) {
+export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing = false, onRefresh, onOpenUsage, onSignIn, compact = false, error = null, nowMs }: UsageDotProps) {
   const [open, setOpen] = useState(false);
   const clock = useMeterClock();
   const now = (nowMs ?? clock) / 1000;
@@ -282,7 +285,8 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
-          {overviews == null && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading usage</div>}
+          {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[11px] leading-relaxed text-destructive">{error}</p>}
+          {overviews == null && !error && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading usage</div>}
           {snapshots.map(snapshot => <ProviderSection key={snapshot.provider} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} onSignIn={onSignIn} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
         </div>
@@ -318,33 +322,37 @@ export function useProviderUsageOverviews(): { overviews: ProviderUsageOverviews
   const [overviews, setOverviews] = useState<ProviderUsageOverviews | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    let off: (() => void) | undefined;
-    let latest = -Infinity;
-    const accept = (value: ProviderUsageOverviews | null) => {
-      if (!active || !value || value.generatedAt < latest) return;
-      latest = value.generatedAt;
-      setOverviews(value);
-    };
-    void bridgeApi.getProviderUsageOverviews().then(accept).catch(value => { if (active) setError(errorMessage(value)); });
-    void bridgeApi.onProviderUsageOverviews(accept).then(fn => { if (active) off = fn; else fn(); });
-    return () => { active = false; off?.(); };
+  // Every source — initial read, pushed event, interactive refresh — passes
+  // through one watermark, so a late event generated before a refresh can
+  // never roll the dot back to older quota data.
+  const latest = useRef(-Infinity);
+  const active = useRef(true);
+  const accept = useCallback((value: ProviderUsageOverviews | null) => {
+    if (!active.current || !value || value.generatedAt < latest.current) return;
+    latest.current = value.generatedAt;
+    setOverviews(value);
+    setError(null);
   }, []);
+  useEffect(() => {
+    active.current = true;
+    let off: (() => void) | undefined;
+    void bridgeApi.getProviderUsageOverviews().then(accept).catch(value => { if (active.current) setError(errorMessage(value)); });
+    void bridgeApi.onProviderUsageOverviews(accept).then(fn => { if (active.current) off = fn; else fn(); });
+    return () => { active.current = false; off?.(); };
+  }, [accept]);
   const refresh = useCallback(() => {
     setRefreshing(true);
-    setError(null);
     bridgeApi.refreshProviderUsageOverviews()
-      .then(value => { if (value) setOverviews(current => (current && current.generatedAt > value.generatedAt ? current : value)); })
-      .catch(value => setError(errorMessage(value)))
-      .finally(() => setRefreshing(false));
-  }, []);
+      .then(accept)
+      .catch(value => { if (active.current) setError(errorMessage(value)); })
+      .finally(() => { if (active.current) setRefreshing(false); });
+  }, [accept]);
   return { overviews, refreshing, refresh, error };
 }
 
 /** The dot as the composer mounts it: live data, refresh wired, worker and
  *  chat composers alike. */
 export function ChatUsageDot({ adapters, onOpenUsage, onSignIn, compact = true }: { adapters?: AdapterDescriptor[]; onOpenUsage?: () => void; onSignIn?: (provider: UsageProvider) => void; compact?: boolean }) {
-  const { overviews, refreshing, refresh } = useProviderUsageOverviews();
-  return <UsageDot overviews={overviews} adapters={adapters} refreshing={refreshing} onRefresh={refresh} onOpenUsage={onOpenUsage} onSignIn={onSignIn} compact={compact} />;
+  const { overviews, refreshing, refresh, error } = useProviderUsageOverviews();
+  return <UsageDot overviews={overviews} adapters={adapters} refreshing={refreshing} onRefresh={refresh} onOpenUsage={onOpenUsage} onSignIn={onSignIn} compact={compact} error={error} />;
 }

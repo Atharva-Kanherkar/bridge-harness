@@ -88,6 +88,40 @@ describe("ChatUsageDot", () => {
     expect(trigger().getAttribute("aria-label")).toContain("71%");
   });
 
+  it("keeps a refreshed snapshot when an older event arrives late", async () => {
+    await mount();
+    const base = Math.floor(Date.now() / 1000);
+    vi.mocked(bridgeApi.refreshProviderUsageOverviews).mockResolvedValue(overviews(71, base + 5));
+    await act(async () => { trigger().click(); });
+    await act(async () => { panel().querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(trigger().getAttribute("aria-label")).toContain("71%");
+    await act(async () => { listener?.(overviews(20, base + 4)); });
+    expect(trigger().getAttribute("aria-label")).toContain("71%");
+  });
+
+  it("shows a failed initial load instead of loading forever, and clears it when a snapshot arrives", async () => {
+    vi.mocked(bridgeApi.getProviderUsageOverviews).mockRejectedValue(new Error("Usage unavailable"));
+    await mount();
+    await act(async () => { trigger().click(); });
+    expect(panel().textContent).not.toContain("Loading usage");
+    expect(panel().querySelector('[role="alert"]')!.textContent).toContain("Usage unavailable");
+    await act(async () => { listener?.(overviews(63)); });
+    expect(panel().querySelector('[role="alert"]')).toBeNull();
+    expect(panel().textContent).toContain("63% used");
+  });
+
+  it("reports a failed refresh and keeps the last reading", async () => {
+    vi.mocked(bridgeApi.refreshProviderUsageOverviews).mockRejectedValue(new Error("Codex account refresh timed out. Try again."));
+    await mount();
+    await act(async () => { trigger().click(); });
+    await act(async () => { panel().querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(panel().querySelector('[role="alert"]')!.textContent).toContain("timed out");
+    expect(panel().textContent).toContain("63% used");
+    expect(panel().querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]')!.disabled).toBe(false);
+  });
+
   it("drops an older push instead of letting it overwrite a newer reading", async () => {
     await mount();
     await act(async () => { listener?.(overviews(20, 1)); });
