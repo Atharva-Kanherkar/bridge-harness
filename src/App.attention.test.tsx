@@ -66,7 +66,7 @@ describe("App attention wiring", () => {
     vi.restoreAllMocks();
   });
 
-  it("notifies once when a session moves working → waiting, and not again on an unchanged snapshot", async () => {
+  it("notifies once with enriched copy and shows a glass toast when working → waiting", async () => {
     const { App } = await import("./App");
     await act(async () => {
       root.render(<App />);
@@ -83,13 +83,41 @@ describe("App attention wiring", () => {
     expect(notifyAttention).toHaveBeenCalledTimes(1);
     expect(notifyAttention).toHaveBeenCalledWith(
       "Bridge needs you",
-      "Title a is waiting for your input",
+      "Title a · Claude is waiting for your input",
     );
+    expect(container.textContent).toContain("Bridge needs you");
+    expect(container.textContent).toContain("Title a · Claude is waiting for your input");
+    expect(container.querySelector('[aria-label="Attention notifications"]')).toBeTruthy();
 
     await act(async () => {
       stateHandler!();
       await new Promise(resolve => setTimeout(resolve, 40));
     });
     expect(notifyAttention).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens that session and dismisses the card when the toast body is clicked", async () => {
+    currentSessions = [session("a", "working"), session("b", "working")];
+    const { App } = await import("./App");
+    await act(async () => {
+      root.render(<App />);
+      await new Promise(resolve => setTimeout(resolve, 40));
+    });
+
+    currentSessions = [session("a", "working"), session("b", "waiting")];
+    await act(async () => {
+      stateHandler!();
+      await new Promise(resolve => setTimeout(resolve, 40));
+    });
+
+    const toastButton = container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]') as HTMLButtonElement;
+    expect(toastButton, "toast body button for the waiting session").toBeTruthy();
+    await act(async () => {
+      toastButton.click();
+    });
+
+    expect(container.querySelector('[aria-label="Attention notifications"] button[aria-label*="open the chat"]')).toBeFalsy();
+    const chatRow = container.querySelector('button[title^="Title b"]');
+    expect(chatRow?.getAttribute("aria-current")).toBe("page");
   });
 });
