@@ -269,8 +269,11 @@ describe("ConnectorPane", () => {
     // The toggle exists to answer "is this connector working" on demand. Saving
     // it and then waiting up to 30 seconds for the next cycle would not answer
     // it, so the click has to force a check too.
-    const save = vi.spyOn(bridgeApi, "connectorSetSettings").mockResolvedValue({ includeReadMentions: true });
-    const refresh = vi.spyOn(bridgeApi, "connectorRefresh").mockResolvedValue({ announced: 0 });
+    const order: string[] = [];
+    const save = vi.spyOn(bridgeApi, "connectorSetSettings")
+      .mockImplementation(async () => { order.push("save"); return { includeReadMentions: true }; });
+    const refresh = vi.spyOn(bridgeApi, "connectorRefresh")
+      .mockImplementation(async () => { order.push("check"); return { announced: 0 }; });
     stub(inbox([item()], null, false));
     const node = await mount(<ConnectorPane />);
 
@@ -280,6 +283,9 @@ describe("ConnectorPane", () => {
 
     expect(save).toHaveBeenCalledWith(true);
     expect(refresh).toHaveBeenCalled();
+    // Order is load-bearing: a check started before the setting landed would
+    // read the old value and answer the question the user just stopped asking.
+    expect(order).toEqual(["save", "check"]);
   });
 
   it("opens the item a toast deep-linked to", async () => {
