@@ -33,6 +33,7 @@ pub mod compaction_controller;
 pub mod connector_eval;
 pub mod connector_inbox;
 pub mod connector_runs;
+pub mod connector_settings;
 pub mod connector_runs_live;
 pub mod connector_surface;
 pub mod completion;

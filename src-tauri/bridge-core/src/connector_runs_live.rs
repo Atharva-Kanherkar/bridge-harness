@@ -121,11 +121,18 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
         return 0;
     };
 
+    // Read per cycle rather than captured at startup: the toggle lives in the
+    // pane, so a user who flips it expects the next check to honour it.
+    let include_read_mentions = {
+        let db = core.db.lock().unwrap();
+        crate::connector_settings::read(&db).include_read_mentions
+    };
+
     let output = match one_bounded_turn(
         core,
         &connection,
         RunKind::Ingress,
-        &connector_runs::ingress_prompt(family),
+        &connector_runs::ingress_prompt(family, include_read_mentions),
         None,
     ) {
         Ok(text) => text,
