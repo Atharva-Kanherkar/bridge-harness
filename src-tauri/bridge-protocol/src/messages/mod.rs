@@ -177,6 +177,7 @@ typed_methods![
     (GithubAct, GithubActParams, GithubActResult),
     (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
+    (GithubConnect, GithubConnectParams, GithubConnectResult),
     // connectors — in-app surfaces over the harness's own MCP servers
     (ConnectorList, ConnectorListParams, ConnectorListResult),
     (ConnectorInbox, ConnectorInboxParams, ConnectorInboxResult),

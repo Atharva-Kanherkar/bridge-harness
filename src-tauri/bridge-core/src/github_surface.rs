@@ -480,6 +480,15 @@ struct CacheEntry {
     resource: CachedResource,
 }
 
+/// What [`GithubSurface::connect_repository`] did, beyond succeeding.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedRepository {
+    pub repository: GithubRepository,
+    pub initialized: bool,
+    pub replaced_remote: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum GithubSurfaceError {
     #[error("GitHub CLI is unavailable: {status:?}")]
@@ -579,6 +588,59 @@ impl GithubSurface {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .retain(|key, _| key.repository != selector);
         }
+    }
+
+    /// Point a workspace at `remote_url` so the GitHub surface can resolve it.
+    ///
+    /// Two setups reach here, and both are ordinary rather than exceptional: a
+    /// folder that was never a git repository, and a repository with no GitHub
+    /// remote. The caller validates the URL before this runs — nothing here
+    /// interpolates user text into a git flag position.
+    ///
+    /// Returns the resolved repository, so a caller can only report success
+    /// once the surface genuinely sees the repository it asked for.
+    pub fn connect_repository(
+        &self,
+        workspace: &Path,
+        remote_url: &str,
+    ) -> Result<ConnectedRepository, GithubSurfaceError> {
+        let initialized = ensure_git_repository(workspace).is_err();
+        if initialized {
+            let output = run_git(workspace, ["init", "-b", "main"])?;
+            if !output.status.success() {
+                return Err(GithubSurfaceError::RepositoryResolution {
+                    workspace: workspace.display().to_string(),
+                    detail: stderr_or_status(&output),
+                });
+            }
+        }
+
+        let replaced_remote = git_stdout(workspace, ["remote", "get-url", "origin"]).is_some();
+        let args: [&str; 5] = if replaced_remote {
+            ["remote", "set-url", "origin", "--", remote_url]
+        } else {
+            ["remote", "add", "origin", "--", remote_url]
+        };
+        let output = run_git(workspace, args)?;
+        if !output.status.success() {
+            return Err(GithubSurfaceError::RepositoryResolution {
+                workspace: workspace.display().to_string(),
+                detail: stderr_or_status(&output),
+            });
+        }
+
+        // A stale negative is the failure mode this guards: the pane would keep
+        // reporting "not connected" against a workspace that now resolves.
+        self.cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        let repository = self.resolve_repository(workspace)?;
+        Ok(ConnectedRepository {
+            repository,
+            initialized,
+            replaced_remote,
+        })
     }
 
     fn require_binary(&self) -> Result<&Path, GithubSurfaceError> {
@@ -2551,6 +2613,49 @@ mod tests {
             GithubAvailability::NotAuthenticated {
                 remediation: "gh auth login".into()
             }
+        );
+    }
+
+    #[test]
+    fn connect_initializes_a_plain_folder_and_resolves_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        // The reported failure: a folder that was never a git repository.
+        assert!(surface.resolve_repository(folder.path()).is_err());
+
+        let connected = surface
+            .connect_repository(folder.path(), "https://github.com/bridge/harness.git")
+            .unwrap();
+        assert!(connected.initialized);
+        assert!(!connected.replaced_remote);
+        assert_eq!(connected.repository, expected("bridge", "harness"));
+        assert_eq!(
+            surface.resolve_repository(folder.path()).unwrap(),
+            expected("bridge", "harness")
+        );
+    }
+
+    #[test]
+    fn connect_repoints_an_existing_origin_without_reinitializing() {
+        let repository = repository();
+        git(
+            repository.path(),
+            &["remote", "add", "origin", "https://github.com/old/name.git"],
+        );
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        let connected = surface
+            .connect_repository(repository.path(), "git@github.com:new/name.git")
+            .unwrap();
+        assert!(!connected.initialized);
+        assert!(connected.replaced_remote);
+        assert_eq!(connected.repository, expected("new", "name"));
+        // A stale cached resolution here would keep the pane on the old repo.
+        assert_eq!(
+            surface.resolve_repository(repository.path()).unwrap(),
+            expected("new", "name")
         );
     }
 

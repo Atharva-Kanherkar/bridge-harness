@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComposerPill, type ComposerPillProps } from "./ComposerPill";
 
 // The composer is the user's only steering wheel over a working agent, so the
-// coverage here is about what its controls *do*, not how they look: the `+`
-// performs the action its label names, and a draft is never collateral damage.
+// coverage here is about what its controls *do*, not how they look: attaching
+// is one control, and a draft is never collateral damage.
 
 let container: HTMLDivElement;
 let root: Root;
@@ -36,7 +36,7 @@ function render(overrides: Partial<ComposerPillProps> = {}) {
   act(() => root.render(<ComposerPill {...props(overrides)} />));
 }
 
-const plus = () => container.querySelector<HTMLButtonElement>('button[aria-label="Attach a file"]')!;
+const attach = () => container.querySelector<HTMLButtonElement>('button[aria-label="Attach images"]');
 const textarea = () => container.querySelector<HTMLTextAreaElement>("textarea")!;
 const stop = () => container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
 
@@ -55,59 +55,32 @@ describe("ComposerPill", () => {
     expect(input.value).toBe("");
   });
 
-  it("runs the named + action and leaves a non-empty draft alone", () => {
-    const onPlusClick = vi.fn();
-    const onChange = vi.fn();
-    render({ value: "keep this draft", onPlusClick, onChange });
-
-    act(() => plus().click());
-
-    expect(onPlusClick).toHaveBeenCalledTimes(1);
-    // A control labelled "New workspace" must not double as a draft eraser.
-    expect(onChange).not.toHaveBeenCalled();
-    expect(textarea().value).toBe("keep this draft");
-  });
-
-  it("keeps + reachable while the agent is working", () => {
-    const onPlusClick = vi.fn();
-    render({ value: "draft", working: true, onPlusClick, onStop: () => {} });
-
-    expect(plus().disabled).toBe(false);
-    act(() => plus().click());
-    expect(onPlusClick).toHaveBeenCalledTimes(1);
-  });
-
-  it("disables + only when the composer itself is disabled or has no handler", () => {
-    render({ onPlusClick: () => {}, disabled: true });
-    expect(plus().disabled).toBe(true);
+  // A second, generic attach control used to sit beside the paperclip: one
+  // surface showed two paperclips, the others a paperclip and a bare `+`. The
+  // attach affordance is singular now, and only present when the surface takes
+  // attachments at all.
+  it("offers exactly one attach control, and none without a handler", () => {
+    render({ onAttachFiles: () => {} });
+    expect(container.querySelectorAll('button[aria-label="Attach images"]').length).toBe(1);
 
     render({});
-    expect(plus().disabled).toBe(true);
+    expect(attach()).toBeNull();
   });
 
-  it("says what + does on this surface rather than assuming", () => {
-    render({ onPlusClick: () => {} });
-    // The default is the common case: adding context to a conversation.
-    expect(plus().title).toBe("Attach a file");
+  it("locks attaching only while the composer itself is locked", () => {
+    render({ onAttachFiles: () => {} });
+    expect(attach()!.disabled).toBe(false);
 
-    render({ onPlusClick: () => {}, plusLabel: "New workspace" });
-    const structural = container.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]')!;
-    expect(structural).not.toBeNull();
-    expect(structural.disabled).toBe(false);
+    render({ onAttachFiles: () => {}, disabled: true });
+    expect(attach()!.disabled).toBe(true);
   });
 
-  it("explains an unavailable + instead of leaving a dead control", () => {
-    render({ onPlusClick: () => {}, plusUnavailableReason: "Connect a folder to this chat to attach files from it" });
-    expect(plus().disabled).toBe(true);
-    expect(plus().title).toBe("Connect a folder to this chat to attach files from it");
-  });
-
-  it("renders a leading control beside +", () => {
+  it("renders a leading control beside the attach button", () => {
     render({
-      onPlusClick: () => {},
+      onAttachFiles: () => {},
       leading: <button type="button" aria-label="Open usage health details">ring</button>,
     });
-    expect(plus().nextElementSibling?.getAttribute("aria-label")).toBe("Open usage health details");
+    expect(attach()!.nextElementSibling?.getAttribute("aria-label")).toBe("Open usage health details");
   });
 
   it("stays editable while working, with Steer and Stop both reachable", () => {

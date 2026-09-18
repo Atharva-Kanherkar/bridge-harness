@@ -25,6 +25,7 @@ export type BridgeMethod =
   | "github/github_act"
   | "github/github_review"
   | "github/github_checkout"
+  | "github/github_connect"
   | "connectors/connector_list"
   | "connectors/connector_inbox"
   | "connectors/connector_act"
@@ -232,6 +233,7 @@ export const BRIDGE_METHODS = [
   { method: "github/github_act", domain: "github", command: "github_act" },
   { method: "github/github_review", domain: "github", command: "github_review" },
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
+  { method: "github/github_connect", domain: "github", command: "github_connect" },
   { method: "connectors/connector_list", domain: "connectors", command: "connector_list" },
   { method: "connectors/connector_inbox", domain: "connectors", command: "connector_inbox" },
   { method: "connectors/connector_act", domain: "connectors", command: "connector_act" },
@@ -509,6 +511,7 @@ export interface BridgeMethodParams {
   "github/github_act": GithubActParams;
   "github/github_review": GithubReviewParams;
   "github/github_checkout": GithubCheckoutParams;
+  "github/github_connect": GithubConnectParams;
   "connectors/connector_list": ConnectorListParams;
   "connectors/connector_inbox": ConnectorInboxParams;
   "connectors/connector_act": ConnectorActParams;
@@ -718,6 +721,7 @@ export interface BridgeMethodResults {
   "github/github_act": GithubActResult;
   "github/github_review": GithubReviewResult;
   "github/github_checkout": GithubCheckoutResult;
+  "github/github_connect": GithubConnectResult;
   "connectors/connector_list": ConnectorListResult;
   "connectors/connector_inbox": ConnectorInboxResult;
   "connectors/connector_act": ConnectorActResult;
@@ -2699,6 +2703,17 @@ export interface GithubCheckoutResult {
   path: string;
   reused: boolean;
   workspaceId: string;
+}
+
+export interface GithubConnectParams {
+  remoteUrl: string;
+  workspaceId: string;
+}
+
+export interface GithubConnectResult {
+  initialized: boolean;
+  replacedRemote: boolean;
+  repository: GithubRepository;
 }
 
 export interface ConnectorListParams {

@@ -60,6 +60,7 @@ methods![
     (GithubAct, "github", "github_act"),
     (GithubReview, "github", "github_review"),
     (GithubCheckout, "github", "github_checkout"),
+    (GithubConnect, "github", "github_connect"),
     // connectors — in-app surfaces over the harness's own authenticated MCP servers
     (ConnectorList, "connectors", "connector_list"),
     (ConnectorInbox, "connectors", "connector_inbox"),

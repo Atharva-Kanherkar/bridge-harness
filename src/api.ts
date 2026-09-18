@@ -50,6 +50,8 @@ import type {
   GithubActResult,
   GithubReviewResult,
   GithubCheckoutResult,
+  GithubConnectResult,
+  SearchGithubReposResult,
   GithubChecksResult,
   GithubIssueResult,
   ConnectorActionRequest,
@@ -1255,6 +1257,10 @@ export const bridgeApi = {
     isTauri() ? call("github/github_review", { workspaceId, number, harness, sessionId }) : Promise.resolve(mockGithubReview(number, harness)),
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
     isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
+  githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>
+    isTauri() ? call("github/github_connect", { workspaceId, remoteUrl }) : Promise.resolve(mockGithubConnect(remoteUrl)),
+  searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>
+    isTauri() ? call("workspaces/search_github_repos", { query }) : Promise.resolve(mockSearchGithubRepos(query)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   browserFrame: (afterRevision: number): Promise<BrowserFrame | null> => isTauri()
     ? call("browser/browser_frame", { afterRevision })
@@ -2545,6 +2551,21 @@ const mockGithubPullRequests = (workspaceId: string): GithubPullRequestsResult =
 });
 
 const mockGithubStatus = (_workspaceId: string): GithubStatusResult => ({ availability: { status: "available" }, repository: { host: "github.com", owner: "Atharva-Kanherkar", name: "bridge-harness" } });
+const mockSearchGithubRepos = (query: string): SearchGithubReposResult => ({
+  repositories: ["Atharva-Kanherkar/bridge-harness", "Atharva-Kanherkar/animevocab", "rimo/rimo-frontend"]
+    .filter(nameWithOwner => nameWithOwner.toLowerCase().includes(query.trim().toLowerCase()))
+    .map(nameWithOwner => ({
+      nameWithOwner,
+      url: `https://github.com/${nameWithOwner}`,
+      sshUrl: `git@github.com:${nameWithOwner}.git`,
+      isPrivate: true,
+      pushedAt: new Date().toISOString(),
+    })),
+});
+const mockGithubConnect = (remoteUrl: string): GithubConnectResult => {
+  const [owner = "bridge", name = "harness"] = remoteUrl.replace(/\.git$/, "").replace(/\/$/, "").split(/[/:]/).slice(-2);
+  return { repository: { host: "github.com", owner, name }, initialized: false, replacedRemote: false };
+};
 const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
 const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
   confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };
