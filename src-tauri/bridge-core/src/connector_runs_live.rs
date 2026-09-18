@@ -51,6 +51,16 @@ pub const CONNECTOR_SESSION_KIND: &str = "connector";
 /// worse than no constant.
 pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(30);
 
+/// How many cycles one claim will chain before handing the family back to the
+/// timer.
+///
+/// A chained cycle only happens when a fresh request arrived *during* the
+/// previous one, so this bounds how long a single caller's thread can be held,
+/// not how much work gets done. Three is well past the realistic case — a toggle
+/// landing on top of a running timer cycle — and short of a stuck client
+/// chaining turns forever.
+const MAX_CHAINED_CYCLES: usize = 3;
+
 /// Which families have an ingress cycle running right now.
 ///
 /// The manual refresh in the pane header and the timer are two callers of the
@@ -60,21 +70,61 @@ pub const POLL_CADENCE: StdDuration = StdDuration::from_secs(30);
 /// not paying for the same answer twice.
 #[derive(Default)]
 pub struct ConnectorPoller {
-    in_flight: Mutex<BTreeSet<&'static str>>,
+    claims: Mutex<PollClaims>,
     /// Items with an action run in flight. Held for the duration of the send
     /// instead of resolving the item up front, so a concurrent click is refused
     /// while a failed send stays retryable.
     sending: Mutex<BTreeSet<String>>,
 }
 
+/// Which families are mid-cycle, and which have been asked for another one
+/// since theirs started.
+///
+/// One structure under one lock because the two facts are decided together: a
+/// request that arrives between "nothing is queued" and "the claim is released"
+/// would otherwise fall into the gap and wait for the timer.
+#[derive(Default)]
+struct PollClaims {
+    in_flight: BTreeSet<&'static str>,
+    /// Requested while a cycle was already running. That cycle started before
+    /// the request, so it cannot reflect anything the request changed — a
+    /// settings toggle, most obviously — and refusing outright would leave the
+    /// pane showing a result that predates the setting it is meant to prove.
+    recheck: BTreeSet<&'static str>,
+}
+
 impl ConnectorPoller {
-    /// Claim the cycle for `family`, or refuse because one is already running.
+    /// Claim the cycle for `family`. When one is already running, record that
+    /// another is wanted and refuse: the caller has nothing to run, but its
+    /// request is queued rather than dropped.
     fn begin(&self, family: ConnectorFamily) -> bool {
-        self.in_flight.lock().unwrap().insert(family.as_str())
+        let mut claims = self.claims.lock().unwrap();
+        if claims.in_flight.contains(family.as_str()) {
+            claims.recheck.insert(family.as_str());
+            return false;
+        }
+        claims.in_flight.insert(family.as_str());
+        true
     }
 
-    fn finish(&self, family: ConnectorFamily) {
-        self.in_flight.lock().unwrap().remove(family.as_str());
+    /// Hand the claim straight to a queued recheck, or release it. `true` means
+    /// the caller keeps the claim and owes one more cycle.
+    fn finish_or_recheck(&self, family: ConnectorFamily) -> bool {
+        let mut claims = self.claims.lock().unwrap();
+        if claims.recheck.remove(family.as_str()) {
+            return true;
+        }
+        claims.in_flight.remove(family.as_str());
+        false
+    }
+
+    /// Give up the claim without serving what is queued. Only reached once a
+    /// chain has run long enough that continuing would mean one caller holding a
+    /// thread indefinitely; the timer picks the request up on its next tick.
+    fn release(&self, family: ConnectorFamily) {
+        let mut claims = self.claims.lock().unwrap();
+        claims.in_flight.remove(family.as_str());
+        claims.recheck.remove(family.as_str());
     }
 
     /// Claim an item for one action run, or refuse because one is in flight.
@@ -99,12 +149,24 @@ pub const MAX_RENDERS_PER_CYCLE: usize = 5;
 /// poll state and read back by the pane as a degraded badge.
 pub fn poll_once(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
     if !core.connector_poller.begin(family) {
-        // A cycle is already running for this family — the timer and the pane's
-        // refresh control both land here. Joining it is not worth a second turn.
+        // A cycle is already running for this family. It started before this
+        // call, so it cannot answer for anything changed since — `begin` has
+        // queued a recheck and the running cycle serves it on the way out.
+        // Zero is honest: this call announced nothing, and the pane learns of
+        // the queued cycle's results through `ConnectorInboxChanged` the same
+        // way it learns of the timer's.
         return 0;
     }
-    let announced = poll_claimed(core, family);
-    core.connector_poller.finish(family);
+    let mut announced = 0;
+    for cycle in 1..=MAX_CHAINED_CYCLES {
+        announced += poll_claimed(core, family);
+        if !core.connector_poller.finish_or_recheck(family) {
+            return announced;
+        }
+        if cycle == MAX_CHAINED_CYCLES {
+            core.connector_poller.release(family);
+        }
+    }
     announced
 }
 
@@ -121,11 +183,18 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
         return 0;
     };
 
+    // Read per cycle rather than captured at startup: the toggle lives in the
+    // pane, so a user who flips it expects the next check to honour it.
+    let include_read_mentions = {
+        let db = core.db.lock().unwrap();
+        crate::connector_settings::read(&db).include_read_mentions
+    };
+
     let output = match one_bounded_turn(
         core,
         &connection,
         RunKind::Ingress,
-        &connector_runs::ingress_prompt(family),
+        &connector_runs::ingress_prompt(family, include_read_mentions),
         None,
     ) {
         Ok(text) => text,
@@ -667,18 +736,67 @@ mod tests {
         // second model turn for the same answer.
         assert!(!poller.begin(ConnectorFamily::Slack));
         assert!(poller.begin(ConnectorFamily::Gmail), "families poll independently");
-        poller.finish(ConnectorFamily::Slack);
+    }
+
+    #[test]
+    fn a_request_refused_mid_cycle_is_queued_rather_than_dropped() {
+        // The running cycle started before the request, so it cannot answer for
+        // anything the request changed. Dropping it would leave the pane showing
+        // a result that predates the setting the user toggled to prove it, until
+        // the running cycle finished *and* the timer slept again.
+        let poller = ConnectorPoller::default();
+        assert!(poller.begin(ConnectorFamily::Slack));
+        assert!(!poller.begin(ConnectorFamily::Slack), "still no second concurrent turn");
+
+        assert!(
+            poller.finish_or_recheck(ConnectorFamily::Slack),
+            "the refused request is owed a cycle"
+        );
+        // The claim stays with its owner to serve that cycle rather than going
+        // back to the timer, so nothing else can start one in between. Asserted
+        // on the state rather than by calling `begin`, because `begin` is itself
+        // a request and would queue another recheck.
+        {
+            let claims = poller.claims.lock().unwrap();
+            assert!(claims.in_flight.contains("slack"), "the claim is still held");
+            assert!(claims.recheck.is_empty(), "and the queued request was consumed, not left");
+        }
+
+        assert!(!poller.finish_or_recheck(ConnectorFamily::Slack), "nothing queued now");
         assert!(poller.begin(ConnectorFamily::Slack), "completion releases the slot");
     }
 
     #[test]
     fn a_failed_cycle_still_releases_its_slot() {
-        // poll_once releases unconditionally after poll_claimed returns, so a
-        // cycle that failed cannot wedge the family forever.
+        // poll_once settles the claim after poll_claimed returns whatever it
+        // returned, so a cycle that failed cannot wedge the family forever.
         let poller = ConnectorPoller::default();
         poller.begin(ConnectorFamily::Slack);
-        poller.finish(ConnectorFamily::Slack);
+        assert!(!poller.finish_or_recheck(ConnectorFamily::Slack));
         assert!(poller.begin(ConnectorFamily::Slack));
+    }
+
+    #[test]
+    fn giving_up_a_chain_hands_the_family_back_without_a_stale_queue() {
+        // The cap keeps one caller from being held on a thread by a client that
+        // keeps asking. Releasing has to drop the queue too — otherwise the next
+        // claim would immediately owe a cycle nobody is waiting for.
+        let poller = ConnectorPoller::default();
+        poller.begin(ConnectorFamily::Slack);
+        poller.begin(ConnectorFamily::Slack);
+        poller.release(ConnectorFamily::Slack);
+
+        assert!(poller.begin(ConnectorFamily::Slack));
+        assert!(
+            !poller.finish_or_recheck(ConnectorFamily::Slack),
+            "the abandoned request did not linger into the next claim"
+        );
+    }
+
+    #[test]
+    fn a_chain_is_bounded() {
+        assert!(MAX_CHAINED_CYCLES >= 2, "a toggle landing on a running cycle must be served");
+        assert!(MAX_CHAINED_CYCLES <= 5, "and a caller must not be held indefinitely");
     }
 
     #[test]

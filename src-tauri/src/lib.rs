@@ -137,6 +137,12 @@ async fn connector_act(item_key: String, action: wire::ConnectorActionRequest, a
 }
 
 #[tauri::command]
+async fn connector_set_settings(include_read_mentions: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorSetSettingsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector settings", move || api::connector_set_settings(&core, include_read_mentions)).await
+}
+
+#[tauri::command]
 async fn connector_dismiss(item_key: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorDismissResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Connector dismiss", move || api::connector_dismiss(&core, &item_key)).await
@@ -2496,6 +2502,7 @@ pub fn run() -> i32 {
             connector_inbox,
             connector_act,
             connector_dismiss,
+            connector_set_settings,
             connector_refresh,
             github_prs,
             github_pr,

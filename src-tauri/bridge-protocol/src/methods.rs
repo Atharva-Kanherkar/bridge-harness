@@ -66,6 +66,7 @@ methods![
     (ConnectorAct, "connectors", "connector_act"),
     (ConnectorDismiss, "connectors", "connector_dismiss"),
     (ConnectorRefresh, "connectors", "connector_refresh"),
+    (ConnectorSetSettings, "connectors", "connector_set_settings"),
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),
     (ConnectWorkspaceFolder, "workspaces", "connect_workspace_folder"),

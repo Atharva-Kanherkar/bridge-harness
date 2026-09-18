@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Inbox,
   LoaderCircle,
+  MailOpen,
   MessageSquare,
   PlugZap,
   RefreshCw,
@@ -97,6 +98,7 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
   const connector = primaryConnector(connectors);
   const empty = inbox ? emptyStateFor(inbox) : null;
   const degraded = inbox ? isDegraded(inbox.poll, connector?.family) : false;
+  const includeReadMentions = inbox?.includeReadMentions ?? false;
 
   const act = async (action: ConnectorActionRequest, approved?: boolean) => {
     if (!selected) return;
@@ -134,6 +136,31 @@ export function ConnectorPane({ visible = true, focusItemKey, onClose, onUnreadC
         {items.filter(item => item.state !== "resolved").length} unread
       </Badge>}
       {degraded && <Badge variant="warning" size="sm">Degraded</Badge>}
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        role="switch"
+        aria-checked={includeReadMentions}
+        aria-label="Include messages you have already read"
+        title={includeReadMentions
+          ? "Including messages you have already read"
+          : "Only unread messages — turn on to check this connector is being read"}
+        className={includeReadMentions ? "text-foreground" : "text-muted-foreground"}
+        disabled={busy}
+        onClick={() => void (async () => {
+          setBusy(true);
+          try {
+            await bridgeApi.connectorSetSettings(!includeReadMentions);
+            // Refresh rather than waiting up to a cadence for the next cycle:
+            // the point of the toggle is to check the connector right now.
+            await Promise.all(inboxFamilies(connectors).map(family => bridgeApi.connectorRefresh(family)));
+            await refresh();
+          }
+          finally { setBusy(false); }
+        })()}
+      >
+        <MailOpen size={14} aria-hidden="true" />
+      </Button>
       <Button
         variant="ghost"
         size="icon-xs"

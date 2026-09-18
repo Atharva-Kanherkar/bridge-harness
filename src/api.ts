@@ -59,6 +59,7 @@ import type {
   ConnectorInboxResult,
   ConnectorListResult,
   ConnectorRefreshResult,
+  ConnectorSetSettingsResult,
   GithubIssuesResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
@@ -1066,11 +1067,14 @@ function scheduleMockConnectorArrival(): void {
   }, 900);
 }
 
+let mockIncludeReadMentions = false;
+
 function mockConnectorInbox(): ConnectorInboxResult {
   const items = mockConnectorItems.filter(item => item.state !== "resolved");
   return {
     items,
     unreadCount: items.length,
+    includeReadMentions: mockIncludeReadMentions,
     poll: [
       {
         family: "slack",
@@ -1202,6 +1206,10 @@ export const bridgeApi = {
     isTauri() ? call("connectors/connector_dismiss", { itemKey }) : Promise.resolve(mockConnectorDismiss(itemKey)),
   connectorRefresh: (family: string): Promise<ConnectorRefreshResult> =>
     isTauri() ? call("connectors/connector_refresh", { family }) : Promise.resolve({ announced: 0 }),
+  connectorSetSettings: (includeReadMentions: boolean): Promise<ConnectorSetSettingsResult> =>
+    isTauri()
+      ? call("connectors/connector_set_settings", { includeReadMentions })
+      : Promise.resolve(((mockIncludeReadMentions = includeReadMentions), { includeReadMentions })),
   githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
     isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
