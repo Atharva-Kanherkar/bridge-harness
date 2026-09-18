@@ -24,12 +24,14 @@ export default function Home() {
               style={{ "--i": 0 } as React.CSSProperties}
               className="enter font-display text-[2rem] font-semibold leading-[1.08] tracking-[-0.03em] text-foreground sm:text-[2.75rem]"
             >
-              The last coding agent
-              <br className="hidden sm:inline" /> you&rsquo;ll ever need.
+              Four coding agents, one window,
+              <br className="hidden sm:inline" /> every change in its own worktree.
             </h1>
 
             <p style={{ "--i": 1 } as React.CSSProperties} className="enter mx-auto mt-5 max-w-2xl text-[15.5px] leading-7 text-muted-foreground">
-              Claude Code, Codex, Cursor, and OpenCode, running as one team in one window.
+              Bridge runs Claude Code, Codex, Cursor, and OpenCode as one team. Each task gets an isolated Git
+              worktree, every delegation passes a policy gate, and the history is an append-only ledger that
+              survives a restart.
             </p>
 
             <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">

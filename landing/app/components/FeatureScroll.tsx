@@ -59,15 +59,33 @@ export default function FeatureScroll() {
           align="center"
         />
 
+        {/* Jump links: six features is a long scroll, so the list doubles as a table of contents
+            and each id below is the anchor it points at. */}
+        <nav aria-label="Features" className="reveal mt-8">
+          <ol className="flex flex-wrap justify-center gap-x-5 gap-y-2 text-[12.5px]">
+            {features.map((feature, i) => (
+              <li key={feature.id} className="flex items-baseline gap-1.5">
+                <span className="font-mono text-[10.5px] tabular-nums text-faint" aria-hidden="true">{String(i + 1).padStart(2, "0")}</span>
+                <a href={`#${feature.id}`} className="text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline">
+                  {feature.name}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </nav>
       </div>
 
       {/* The left column lines up with the page gutter; the capture runs off the right edge,
           so it is large enough to read instead of shrinking into half a column. */}
       <div className="mt-14 flex flex-col gap-14 pl-[max(1.5rem,calc((100vw-72rem)/2))] pr-6 lg:mt-20 lg:gap-0 lg:pr-0">
         {features.map((feature, i) => (
-          <article key={feature.id} className="grid items-start gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:gap-14">
-            <div className="lg:sticky lg:top-28 lg:self-start lg:py-28">
-              <span className="font-mono text-[11px] tabular-nums text-faint-2">{String(i + 1).padStart(2, "0")}</span>
+          <article
+            key={feature.id}
+            id={feature.id}
+            className="grid scroll-mt-24 items-start gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:gap-14"
+          >
+            <div className="lg:sticky lg:top-28 lg:self-start lg:py-16">
+              <span className="font-mono text-[11px] tabular-nums text-faint">{String(i + 1).padStart(2, "0")}</span>
               <h3 className="mt-3 font-display text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[2rem]">
                 {feature.name}
               </h3>

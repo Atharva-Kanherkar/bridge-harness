@@ -55,7 +55,7 @@ export default function Compare() {
             <div className="reveal mt-10 grid gap-px overflow-hidden rounded-xl border border-border-card bg-border sm:grid-cols-2 lg:grid-cols-3">
               {edges.map((edge, index) => (
                 <div key={edge.title} className="bg-background p-6 transition-colors duration-300 hover:bg-card">
-                  <span className="font-mono text-[11px] text-faint-2">{String(index + 1).padStart(2, "0")}</span>
+                  <span className="font-mono text-[11px] text-faint">{String(index + 1).padStart(2, "0")}</span>
                   <h3 className="mt-3 text-[15px] font-semibold text-foreground">{edge.title}</h3>
                   <p className="mt-2 text-[13.5px] leading-6 text-muted-foreground">{edge.body}</p>
                 </div>
@@ -81,7 +81,7 @@ export default function Compare() {
 
         <section>
           <div className="mx-auto max-w-6xl px-6 py-12">
-            <p className="text-[12.5px] leading-6 text-faint">
+            <p className="text-[12.5px] leading-6 text-muted-foreground">
               Checked against each product&rsquo;s public site and documentation in {comparedOn}. Prices are the published list
               prices for a single seat. This category moves fast. If a row is out of date,{" "}
               <a href={issuesUrl} className="underline underline-offset-4 hover:text-muted-foreground">
