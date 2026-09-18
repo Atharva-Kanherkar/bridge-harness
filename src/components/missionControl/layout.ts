@@ -1,7 +1,7 @@
 import { leafIds, removeLeaf, splitLeaf, type PaneNode, type SplitDirection } from "../../terminal/layout";
 
 export const MISSION_LAYOUT_KEY = "bridge.mission-control.layout";
-export type MissionLayout = { version: 1; root: PaneNode | null; expandedLeafId: string | null; pinnedSessionIds: string[] };
+export type MissionLayout = { version: 1; root: PaneNode | null; expandedLeafId: string | null; pinnedSessionIds: string[]; dismissedSessionIds: string[] };
 export type DropEdge = "left" | "right" | "top" | "bottom";
 
 // assumed screen aspect for picking which way to cut a tile. unmeasured on
@@ -58,7 +58,7 @@ export function dropEdge(rect: { left: number; top: number; width: number; heigh
 
 // persisted input is untrusted: bounded depth, deduped leaves, clamped ratios.
 export function parseLayout(raw: string | null): MissionLayout {
-  const empty: MissionLayout = { version: 1, root: null, expandedLeafId: null, pinnedSessionIds: [] };
+  const empty: MissionLayout = { version: 1, root: null, expandedLeafId: null, pinnedSessionIds: [], dismissedSessionIds: [] };
   if (!raw) return empty;
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return empty; }
@@ -78,16 +78,20 @@ export function parseLayout(raw: string | null): MissionLayout {
     const ratio = typeof n.ratio === "number" && Number.isFinite(n.ratio) ? Math.min(0.9, Math.max(0.1, n.ratio)) : 0.5;
     return { type: "split", direction: n.direction, first, second, ratio };
   };
-  const stored = value as { root?: unknown; expandedLeafId?: unknown; pinnedSessionIds?: unknown };
+  const stored = value as { root?: unknown; expandedLeafId?: unknown; pinnedSessionIds?: unknown; dismissedSessionIds?: unknown };
   const root = parseNode(stored.root);
   const expanded = typeof stored.expandedLeafId === "string" && root && leafIds(root).includes(stored.expandedLeafId) ? stored.expandedLeafId : null;
   const pinnedSessionIds = Array.isArray(stored.pinnedSessionIds)
     ? [...new Set(stored.pinnedSessionIds.filter((id): id is string => typeof id === "string" && seen.has(id)))] : [];
-  return { version: 1, root, expandedLeafId: expanded, pinnedSessionIds };
+  // Dismissed leaves are deliberately absent from the tree, so membership in
+  // `seen` cannot gate them the way it gates pins.
+  const dismissedSessionIds = Array.isArray(stored.dismissedSessionIds)
+    ? [...new Set(stored.dismissedSessionIds.filter((id): id is string => typeof id === "string"))] : [];
+  return { version: 1, root, expandedLeafId: expanded, pinnedSessionIds, dismissedSessionIds };
 }
 
 export function readLayout(): MissionLayout {
-  try { return parseLayout(globalThis.localStorage?.getItem(MISSION_LAYOUT_KEY) ?? null); } catch { return { version: 1, root: null, expandedLeafId: null, pinnedSessionIds: [] }; }
+  try { return parseLayout(globalThis.localStorage?.getItem(MISSION_LAYOUT_KEY) ?? null); } catch { return { version: 1, root: null, expandedLeafId: null, pinnedSessionIds: [], dismissedSessionIds: [] }; }
 }
 
 export function writeLayout(layout: MissionLayout) {
