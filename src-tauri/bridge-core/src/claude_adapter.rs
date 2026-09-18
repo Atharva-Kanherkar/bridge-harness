@@ -333,9 +333,7 @@ fn launch(
             .env("CLAUDE_CODE_TMPDIR", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
-        if let Some(token) = worker_credential.token.as_deref() {
-            command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
-        }
+        apply_worker_credential(&mut command, &worker_credential);
         // The redirected config dir leaves `gh` with no credentials or keychain;
         // a networked worker (e.g. a PR review) needs the host token or every
         // `gh` call 401s.
@@ -505,6 +503,18 @@ fn resolve_worker_credential(
                 },
             })
         }
+    }
+}
+
+/// The resolved credential is the *only* one a sandboxed worker sees. The
+/// child inherits Bridge's environment, so without the removal a Bridge that
+/// itself holds `CLAUDE_CODE_OAUTH_TOKEN` would still hand it to a worker
+/// whose source is `none` — and `none` would be indistinguishable from
+/// `auto`. Interactive sessions never reach this: they inherit as before.
+fn apply_worker_credential(command: &mut Command, credential: &WorkerCredential) {
+    command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+    if let Some(token) = credential.token.as_deref() {
+        command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
     }
 }
 
@@ -1830,6 +1840,26 @@ mod worker_credential_tests {
         assert_eq!(resolved.token, None);
         let diagnostic = resolved.diagnostic.expect("a missing credential is explained");
         assert!(diagnostic.contains("claude login"), "{diagnostic}");
+    }
+
+    fn oauth_env(command: &Command) -> Option<Option<String>> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == "CLAUDE_CODE_OAUTH_TOKEN")
+            .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn a_worker_sees_only_the_resolved_credential_never_an_inherited_one() {
+        // `none` (or a Keychain miss) must clear the inherited variable, not
+        // leave it: `Some(None)` is Command's explicit removal.
+        let mut command = Command::new("node");
+        apply_worker_credential(&mut command, &WorkerCredential::default());
+        assert_eq!(oauth_env(&command), Some(None));
+        // A resolved token is set explicitly, whatever Bridge inherited.
+        let mut command = Command::new("node");
+        apply_worker_credential(&mut command, &WorkerCredential { token: Some("tok".into()), diagnostic: None });
+        assert_eq!(oauth_env(&command), Some(Some("tok".into())));
     }
 
     #[test]
