@@ -16,6 +16,7 @@ import { useMemo } from "react";
 import type { AdapterDescriptor, HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../ManagedAgentsPanel";
+import { ClaudeHarnessSettings, type ClaudeAdvancedSettings } from "../ClaudeHarnessSettings";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "../OpenCodeHarnessSettings";
 import {
   Field, SaveBar, Select, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill,
@@ -87,6 +88,7 @@ function HarnessDetail({
   const [isFlashed, flash] = useSavedFlash();
   const draft = drafts[harness.id] ?? {};
   const isOpenCode = harness.id === "opencode";
+  const isClaude = harness.id === "claude";
   const isBridge = harness.id === "bridge";
   const advanced = (harness.advanced ?? {}) as OpenCodeAdvancedSettings;
   const storedAdvancedText = JSON.stringify(harness.advanced ?? {}, null, 2);
@@ -205,6 +207,15 @@ function HarnessDetail({
           defaultModel: stillVisible ? harness.defaultModel : null,
         }, "visible");
       }}
+    />}
+
+    {isClaude && <ClaudeHarnessSettings
+      value={(harness.advanced ?? {}) as ClaudeAdvancedSettings}
+      disabled={busy}
+      saved={isFlashed("credentials")}
+      onChange={value => void persist({
+        advanced: { ...((harness.advanced ?? {}) as ClaudeAdvancedSettings), ...value },
+      }, "credentials")}
     />}
 
     {!isBridge && <SettingsGroup label="Advanced">

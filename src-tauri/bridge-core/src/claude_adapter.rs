@@ -250,6 +250,27 @@ fn launch(
         briefing_config.is_some() || (read_only_sandbox.is_some() && network_allowed),
         &sdk_configuration.mcp_servers,
     );
+    // A read-only worker's credential is resolved before launch so a missing
+    // one is reported here, in the startup diagnostics, rather than surfacing
+    // later as an opaque authentication failure inside the worker.
+    let worker_credential = match read_only_sandbox {
+        Some(sandbox) => resolve_worker_credential(
+            sandbox.claude_credential_source(),
+            std::env::var("CLAUDE_CODE_OAUTH_TOKEN")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            claude_oauth_token,
+        )?,
+        None => WorkerCredential::default(),
+    };
+    let mut diagnostics = sdk_configuration.diagnostics.clone();
+    if let Some(message) = &worker_credential.diagnostic {
+        diagnostics.push(crate::marketplace::CapabilityDiscoveryDiagnostic {
+            stage: "worker-credentials".into(),
+            status: "missing".into(),
+            message: message.clone(),
+        });
+    }
     let launch_configuration = crate::marketplace::ClaudeSdkConfiguration {
         plugins: launch_plugins.clone(),
         mcp_servers: launch_mcp_servers.clone(),
@@ -259,7 +280,7 @@ fn launch(
             .filter(|(name, _)| launch_mcp_servers.contains_key(*name))
             .map(|(name, health)| (name.clone(), *health))
             .collect(),
-        diagnostics: sdk_configuration.diagnostics.clone(),
+        diagnostics,
     };
     let context_inventory = claude_context_inventory(lifecycle_phase, &launch_configuration)?;
     let config = json!({
@@ -312,10 +333,8 @@ fn launch(
             .env("CLAUDE_CODE_TMPDIR", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
-        if std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_none() {
-            if let Some(token) = claude_oauth_token()? {
-                command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
-            }
+        if let Some(token) = worker_credential.token.as_deref() {
+            command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
         }
         // The redirected config dir leaves `gh` with no credentials or keychain;
         // a networked worker (e.g. a PR review) needs the host token or every
@@ -371,11 +390,11 @@ fn launch(
         "model": chosen_model,
         "resumed": resume_session_id.is_some(),
     })];
-    if !sdk_configuration.diagnostics.is_empty() {
+    if !launch_configuration.diagnostics.is_empty() {
         startup_messages.push(json!({
             "type": "system",
             "subtype": "capability_discovery",
-            "diagnostics": sdk_configuration.diagnostics.clone(),
+            "diagnostics": launch_configuration.diagnostics.clone(),
         }));
     }
     // Boundary named honestly: this is the fork plus the pipe handoff, not the
@@ -413,15 +432,172 @@ fn prepare_isolated_claude_config(
     Ok(isolated_root)
 }
 
+#[cfg(any(target_os = "macos", test))]
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// Where a read-only Claude worker's credential comes from.
+///
+/// A read-only sandbox redirects `CLAUDE_CONFIG_DIR`, and Claude Code scopes
+/// its credential lookup to that directory, so the sidecar cannot find the
+/// user's own sign-in there; Bridge has to hand it one. Interactive sessions
+/// never take this path. Configured per harness under
+/// `advanced.workerCredentialSource` (see `agent_config::claude_settings`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkerCredentialSource {
+    /// `CLAUDE_CODE_OAUTH_TOKEN` from Bridge's own environment, else the
+    /// `claude` CLI's Keychain entry on macOS.
+    #[default]
+    Auto,
+    /// Only `CLAUDE_CODE_OAUTH_TOKEN` (e.g. from `claude setup-token`). The
+    /// Keychain is never consulted, so nothing here can ever prompt.
+    Environment,
+    /// Inject nothing: API-key setups, or users who never run read-only
+    /// Claude workers.
+    #[serde(rename = "none")]
+    Disabled,
+}
+
+impl WorkerCredentialSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkerCredentialSource::Auto => "auto",
+            WorkerCredentialSource::Environment => "environment",
+            WorkerCredentialSource::Disabled => "none",
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct WorkerCredential {
+    token: Option<String>,
+    /// Why no credential reached the worker, when the user should hear it.
+    /// Absent when a token was found or when none was wanted.
+    diagnostic: Option<String>,
+}
+
+fn resolve_worker_credential(
+    source: WorkerCredentialSource,
+    environment_token: Option<String>,
+    keychain_token: impl FnOnce() -> Result<Option<String>, BridgeError>,
+) -> Result<WorkerCredential, BridgeError> {
+    let found = |token: String| WorkerCredential { token: Some(token), diagnostic: None };
+    match source {
+        WorkerCredentialSource::Disabled => Ok(WorkerCredential::default()),
+        WorkerCredentialSource::Environment => environment_token.map(found).ok_or_else(|| {
+            BridgeError::Invalid(
+                "Claude read-only workers are set to use the environment, but CLAUDE_CODE_OAUTH_TOKEN is not set where Bridge runs. Run `claude setup-token` and export the token for Bridge, or switch the source back to Automatic in Settings → Harnesses → Claude Code."
+                    .into(),
+            )
+        }),
+        WorkerCredentialSource::Auto => {
+            if let Some(token) = environment_token {
+                return Ok(found(token));
+            }
+            Ok(match keychain_token()? {
+                Some(token) => found(token),
+                None => WorkerCredential {
+                    token: None,
+                    diagnostic: Some(
+                        "No Claude credential reached this read-only worker: CLAUDE_CODE_OAUTH_TOKEN is unset and the Keychain has no readable `Claude Code-credentials` entry. Run `claude login` and allow the `security` helper when macOS asks, or change the source in Settings → Harnesses → Claude Code."
+                            .into(),
+                    ),
+                },
+            })
+        }
+    }
+}
+
+/// The Keychain secret, cached per token version.
+///
+/// The `claude` CLI rewrites its entry whenever it refreshes the OAuth token,
+/// so a token cached for the daemon's lifetime would go stale within hours.
+/// The entry's attributes — its modification date among them — are readable
+/// without the access grant the secret itself needs, so they are the
+/// freshness check: one `-w` read per token version, and never a repeat
+/// prompt for a token Bridge already holds.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedKeychainToken {
+    modified: String,
+    token: String,
+}
+
+#[cfg(any(target_os = "macos", test))]
+static KEYCHAIN_TOKEN_CACHE: Mutex<Option<CachedKeychainToken>> = Mutex::new(None);
+
 #[cfg(target_os = "macos")]
 fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
+    cached_keychain_token(keychain_item_modified(), read_keychain_secret, &KEYCHAIN_TOKEN_CACHE)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
+    Ok(None)
+}
+
+/// `modified` is `None` when there is no entry at all; the cache is dropped
+/// with it so a later re-login is read fresh.
+#[cfg(any(target_os = "macos", test))]
+fn cached_keychain_token(
+    modified: Option<String>,
+    read_secret: impl FnOnce() -> Result<Option<String>, BridgeError>,
+    cache: &Mutex<Option<CachedKeychainToken>>,
+) -> Result<Option<String>, BridgeError> {
+    let mut cache = cache
+        .lock()
+        .map_err(|_| BridgeError::Adapter("Claude keychain cache lock was poisoned".into()))?;
+    let Some(modified) = modified else {
+        *cache = None;
+        return Ok(None);
+    };
+    if let Some(cached) = cache.as_ref().filter(|cached| cached.modified == modified) {
+        return Ok(Some(cached.token.clone()));
+    }
+    let token = read_secret()?;
+    *cache = token
+        .clone()
+        .map(|token| CachedKeychainToken { modified, token });
+    Ok(token)
+}
+
+/// The entry's modification date, or `None` when there is no entry. Attributes
+/// only — no `-w` — so this needs no access grant and never prompts.
+#[cfg(target_os = "macos")]
+fn keychain_item_modified() -> Option<String> {
     let output = Command::new("/usr/bin/security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-        ])
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // An entry that reports no readable date is still an entry; a fresh id
+    // makes every launch treat it as a new version rather than as absent.
+    Some(
+        parse_keychain_modified(&String::from_utf8_lossy(&output.stdout))
+            .unwrap_or_else(|| format!("unknown-{}", Uuid::new_v4())),
+    )
+}
+
+/// `"mdat"<timedate>=0x3230...  "20260918141353Z\000"` — the readable form
+/// is the last quoted token; `\000` is the listing's printed NUL terminator.
+#[cfg(any(target_os = "macos", test))]
+fn parse_keychain_modified(attributes: &str) -> Option<String> {
+    attributes
+        .lines()
+        .find(|line| line.trim_start().starts_with("\"mdat\""))
+        .and_then(|line| {
+            let quoted = line.rsplit('"').nth(1)?;
+            let value = quoted.trim_end_matches("\\000");
+            (!value.is_empty()).then(|| value.to_owned())
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn read_keychain_secret() -> Result<Option<String>, BridgeError> {
+    let output = Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
         .output()?;
     if !output.status.success() {
         return Ok(None);
@@ -435,11 +611,6 @@ fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
         .pointer("/claudeAiOauth/accessToken")
         .and_then(Value::as_str)
         .map(str::to_owned))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
-    Ok(None)
 }
 
 /// Whether Claude's own credential store holds a usable credential. A
@@ -486,7 +657,7 @@ fn auth_state_from_environment(
 #[cfg(target_os = "macos")]
 fn claude_keychain_present() -> AuthState {
     match Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", "Claude Code-credentials"])
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1575,5 +1746,103 @@ mod catalogue_tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "sonnet");
         assert!(parse_discovered_models("not json").is_err());
+    }
+}
+
+#[cfg(test)]
+mod worker_credential_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    const LISTING: &str = "keychain: \"/Users/x/Library/Keychains/login.keychain-db\"\nclass: \"genp\"\nattributes:\n    \"cdat\"<timedate>=0x3230  \"20260915183824Z\\000\"\n    \"mdat\"<timedate>=0x32303236303931383134313335335A00  \"20260918141353Z\\000\"\n    \"svce\"<blob>=\"Claude Code-credentials\"\n";
+
+    #[test]
+    fn modification_date_is_read_from_the_security_listing() {
+        assert_eq!(parse_keychain_modified(LISTING).as_deref(), Some("20260918141353Z"));
+        assert_eq!(parse_keychain_modified("attributes:\n    \"svce\"<blob>=\"x\"\n"), None);
+        assert_eq!(parse_keychain_modified(""), None);
+    }
+
+    fn counting_reader<'a>(reads: &'a Cell<usize>, value: Option<&'a str>) -> impl FnOnce() -> Result<Option<String>, BridgeError> + 'a {
+        move || {
+            reads.set(reads.get() + 1);
+            Ok(value.map(str::to_owned))
+        }
+    }
+
+    #[test]
+    fn secret_is_read_once_per_token_version() {
+        let cache = Mutex::new(None);
+        let reads = Cell::new(0);
+        let first = cached_keychain_token(Some("v1".into()), counting_reader(&reads, Some("tok-1")), &cache).unwrap();
+        assert_eq!(first.as_deref(), Some("tok-1"));
+        // Same version: served from the cache, the reader never runs.
+        let again = cached_keychain_token(Some("v1".into()), counting_reader(&reads, Some("WRONG")), &cache).unwrap();
+        assert_eq!(again.as_deref(), Some("tok-1"));
+        assert_eq!(reads.get(), 1);
+        // The CLI refreshed the token: a new version is read again.
+        let refreshed = cached_keychain_token(Some("v2".into()), counting_reader(&reads, Some("tok-2")), &cache).unwrap();
+        assert_eq!(refreshed.as_deref(), Some("tok-2"));
+        assert_eq!(reads.get(), 2);
+    }
+
+    #[test]
+    fn a_missing_entry_or_secret_drops_the_cache() {
+        let cache = Mutex::new(Some(CachedKeychainToken { modified: "v1".into(), token: "stale".into() }));
+        let reads = Cell::new(0);
+        assert_eq!(cached_keychain_token(None, counting_reader(&reads, Some("never")), &cache).unwrap(), None);
+        assert_eq!(reads.get(), 0);
+        assert_eq!(*cache.lock().unwrap(), None);
+        // Entry exists but its secret was denied: nothing stale is kept.
+        assert_eq!(cached_keychain_token(Some("v2".into()), counting_reader(&reads, None), &cache).unwrap(), None);
+        assert_eq!(*cache.lock().unwrap(), None);
+    }
+
+    fn never_keychain() -> Result<Option<String>, BridgeError> {
+        panic!("the Keychain must not be consulted for this source")
+    }
+
+    #[test]
+    fn disabled_injects_nothing_and_never_touches_the_keychain() {
+        let resolved = resolve_worker_credential(WorkerCredentialSource::Disabled, Some("env".into()), never_keychain).unwrap();
+        assert_eq!(resolved, WorkerCredential::default());
+    }
+
+    #[test]
+    fn environment_source_uses_only_the_variable() {
+        let resolved = resolve_worker_credential(WorkerCredentialSource::Environment, Some("env-token".into()), never_keychain).unwrap();
+        assert_eq!(resolved.token.as_deref(), Some("env-token"));
+        assert_eq!(resolved.diagnostic, None);
+        let error = resolve_worker_credential(WorkerCredentialSource::Environment, None, never_keychain).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("claude setup-token"), "{message}");
+        assert!(message.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{message}");
+    }
+
+    #[test]
+    fn auto_prefers_the_environment_then_the_keychain_then_explains() {
+        let resolved = resolve_worker_credential(WorkerCredentialSource::Auto, Some("env-token".into()), never_keychain).unwrap();
+        assert_eq!(resolved.token.as_deref(), Some("env-token"));
+        let resolved = resolve_worker_credential(WorkerCredentialSource::Auto, None, || Ok(Some("kc-token".into()))).unwrap();
+        assert_eq!(resolved.token.as_deref(), Some("kc-token"));
+        assert_eq!(resolved.diagnostic, None);
+        let resolved = resolve_worker_credential(WorkerCredentialSource::Auto, None, || Ok(None)).unwrap();
+        assert_eq!(resolved.token, None);
+        let diagnostic = resolved.diagnostic.expect("a missing credential is explained");
+        assert!(diagnostic.contains("claude login"), "{diagnostic}");
+    }
+
+    #[test]
+    fn source_round_trips_its_wire_names() {
+        for (source, wire) in [
+            (WorkerCredentialSource::Auto, "\"auto\""),
+            (WorkerCredentialSource::Environment, "\"environment\""),
+            (WorkerCredentialSource::Disabled, "\"none\""),
+        ] {
+            assert_eq!(serde_json::to_string(&source).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<WorkerCredentialSource>(wire).unwrap(), source);
+            assert_eq!(format!("\"{}\"", source.as_str()), wire);
+        }
+        assert_eq!(WorkerCredentialSource::default(), WorkerCredentialSource::Auto);
     }
 }

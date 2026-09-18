@@ -104,6 +104,16 @@ The practical consequence is that a cold-start "implement X" request from a user
 - Every non-read-only worker gets a durable repository binding at launch recording the exact checkout it runs in and that checkout's base revision, so `worktree_path` is never null and a later claim can always be checked against a known base.
 - Read-only workers are checked after execution; tracked file changes fail the guard.
 
+## Read-only worker credentials
+
+A read-only worker runs with a redirected `CLAUDE_CONFIG_DIR`, and Claude Code scopes its credential lookup to that directory, so the sidecar cannot see the user's own sign-in. Interactive sessions never take this path. Bridge hands the worker a token according to the Claude harness setting `advanced.workerCredentialSource` (Settings → Harnesses → Claude Code):
+
+- `auto` (default): `CLAUDE_CODE_OAUTH_TOKEN` from Bridge's environment, else the `claude` CLI's macOS Keychain entry. The Keychain is read through `/usr/bin/security`, so macOS may ask once to allow that helper. The entry's modification date is checked without any grant, and the secret is re-read only when the CLI rewrote the entry, so an unchanged token never prompts twice.
+- `environment`: the variable only, typically from `claude setup-token`. The Keychain is never consulted. A missing variable fails the launch with a message that names the command and the setting.
+- `none`: nothing is injected.
+
+The setting names a source, never a credential. Secret-looking fields in the Claude advanced configuration are refused on save, and a worker that starts without a credential reports it in its startup diagnostics instead of failing opaquely on its first model call.
+
 ## Adopting isolated worker output
 
 Verifying a child worktree proves nothing about the user's task checkout. Isolated output therefore has an explicit, durable lifecycle:
