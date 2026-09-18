@@ -412,13 +412,16 @@ function AppContent() {
     for (const event of events) {
       const copy = attentionCopy(event);
       const key = attentionToastKey(event);
-      nextToasts.push({ key, sessionId: event.session.id, copy });
+      nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
       void notifyAttention(copy.headline, copy.detail);
     }
     setAttentionToasts(current => {
-      const merged = [...current];
+      // A chat can revisit the same key (waiting → working → waiting) before
+      // its first card's TTL elapses. Replace rather than skip so the card
+      // reflects the latest event and restarts its countdown.
+      let merged = current;
       for (const toast of nextToasts) {
-        if (!merged.some(item => item.key === toast.key)) merged.push(toast);
+        merged = [...merged.filter(item => item.key !== toast.key), toast];
       }
       return merged.slice(-3);
     });

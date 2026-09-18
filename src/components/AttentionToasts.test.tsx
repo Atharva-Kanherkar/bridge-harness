@@ -67,6 +67,41 @@ describe("AttentionToasts", () => {
     expect(onDismiss).toHaveBeenCalledWith(needsYou.key);
   });
 
+  it("keeps counting toward the original TTL when the parent re-renders with a new onDismiss identity", async () => {
+    // App re-renders on unrelated state (e.g. its git-stat poll) and always
+    // passes a fresh onDismiss closure. That must not restart the timer.
+    vi.useFakeTimers();
+    const firstDismiss = vi.fn();
+    const secondDismiss = vi.fn();
+    await mount(<AttentionToasts toasts={[needsYou]} onOpen={() => undefined} onDismiss={firstDismiss} />);
+    await act(async () => { vi.advanceTimersByTime(ATTENTION_TOAST_TTL_MS - 1); });
+    expect(firstDismiss).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root?.render(<AttentionToasts toasts={[needsYou]} onOpen={() => undefined} onDismiss={secondDismiss} />);
+    });
+    await act(async () => { vi.advanceTimersByTime(2); });
+    expect(secondDismiss).toHaveBeenCalledWith(needsYou.key);
+  });
+
+  it("restarts the TTL when the same key fires again with a fresh occurrence", async () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    const first: AttentionToast = { ...needsYou, firedAt: 1 };
+    await mount(<AttentionToasts toasts={[first]} onOpen={() => undefined} onDismiss={onDismiss} />);
+    await act(async () => { vi.advanceTimersByTime(ATTENTION_TOAST_TTL_MS - 1); });
+    expect(onDismiss).not.toHaveBeenCalled();
+
+    const second: AttentionToast = { ...needsYou, firedAt: 2 };
+    await act(async () => {
+      root?.render(<AttentionToasts toasts={[second]} onOpen={() => undefined} onDismiss={onDismiss} />);
+    });
+    await act(async () => { vi.advanceTimersByTime(ATTENTION_TOAST_TTL_MS - 1); });
+    expect(onDismiss).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(2); });
+    expect(onDismiss).toHaveBeenCalledWith(needsYou.key);
+  });
+
   it("renders nothing when empty", async () => {
     await mount(<AttentionToasts toasts={[]} onOpen={() => undefined} onDismiss={() => undefined} />);
     expect(host!.textContent).toBe("");

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { CircleAlert, CircleCheck, Hand, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AttentionCopy } from "../attentionCopy";
@@ -14,6 +14,11 @@ export type AttentionToast = {
   key: string;
   sessionId: string;
   copy: AttentionCopy;
+  // Distinguishes a fresh occurrence of the same key (a chat that re-enters
+  // `waiting` before its last card expired) so the TTL below can restart —
+  // without this, App re-renders that only change unrelated state (e.g. the
+  // git-stat poll) would pass a same-key toast through and must NOT restart it.
+  firedAt?: number;
 };
 
 function ToneIcon({ tone }: { tone: AttentionCopy["tone"] }) {
@@ -31,10 +36,16 @@ function ToastCard({ toast, onOpen, onDismiss }: {
   onOpen: (toast: AttentionToast) => void;
   onDismiss: (key: string) => void;
 }) {
+  // `onDismiss` is a fresh closure on every App render (e.g. its ~5s
+  // git-stat poll), which is not a reason to restart this timer — only a
+  // new `key`/`firedAt` occurrence is. Read the latest callback from a ref
+  // instead of depending on it directly.
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
   useEffect(() => {
-    const timer = window.setTimeout(() => onDismiss(toast.key), ATTENTION_TOAST_TTL_MS);
+    const timer = window.setTimeout(() => onDismissRef.current(toast.key), ATTENTION_TOAST_TTL_MS);
     return () => window.clearTimeout(timer);
-  }, [toast.key, onDismiss]);
+  }, [toast.key, toast.firedAt]);
 
   return <div className="u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl animate-page-mount">
     <ToneIcon tone={toast.copy.tone} />
