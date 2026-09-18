@@ -74,8 +74,11 @@ struct UsageOverview: Decodable {
     func menuWindow(_ preference: String, now: Int64) -> QuotaWindow? {
         if preference == "fiveHour" { return windows.first { $0.windowMinutes == 300 } }
         if preference != "auto" { return windows.first { $0.id == preference } }
-        return windows.first { $0.usedPercent.current != nil && ($0.resetsAt.map { $0 > now } ?? true) }
-            ?? windows.first
+        // Headline the window closest to biting. A fresh 5-hour session at 0%
+        // next to a weekly at 63% must read 63%, not 0%: the status item is a
+        // warning, and the quietest window is never the one about to stop you.
+        let live = windows.filter { $0.usedPercent.current != nil && ($0.resetsAt.map { $0 > now } ?? true) }
+        return live.max { ($0.usedPercent.current ?? 0) < ($1.usedPercent.current ?? 0) } ?? windows.first
     }
 }
 

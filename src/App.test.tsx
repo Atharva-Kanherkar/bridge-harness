@@ -552,7 +552,7 @@ describe("the dock in the session view", () => {
     expect(tasksTab.textContent).toContain("1");
   });
 
-  it("does not mount the retired usage widget in a worker composer", async () => {
+  it("mounts the usage dot beside a worker's steer composer", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
@@ -563,13 +563,21 @@ describe("the dock in the session view", () => {
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Open usage"]')).not.toBeNull();
   });
 
-  it("does not mount the retired usage widget in the title bar", async () => {
+  it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
     expect(container.querySelector("header")).not.toBeNull();
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).toBeNull();
+    expect(container.querySelector('header [aria-label^="Open usage"]')).toBeNull();
+  });
+
+  it("mounts the usage dot at the chat composer's leading edge", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const dot = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Open usage"]');
+    expect(dot).not.toBeNull();
+    expect(dot!.getAttribute("aria-controls")).toBe("usage-dot-panel");
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {

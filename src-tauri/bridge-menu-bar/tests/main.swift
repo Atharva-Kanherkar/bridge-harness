@@ -56,7 +56,9 @@ check(moneyLabel(fixture.selectedUsage!.month.costMicrousd) == "Unavailable", "U
 check(fixture.selectedUsage?.today.models[0].totalTokens.current == 60, "Model token fields must agree")
 var available = fixture.selectedUsage!
 available.windows[1].usedPercent = Metric(value: 58, source: "reported", status: "current")
-check(available.menuWindow("auto", now: 100)?.id == "session", "Automatic prefers a current session")
+check(available.menuWindow("auto", now: 100)?.id == "weekly", "Automatic headlines the window closest to exhaustion, not the first slot")
+available.windows[0].usedPercent = Metric(value: 71, source: "reported", status: "current")
+check(available.menuWindow("auto", now: 100)?.id == "session", "Automatic follows the tightest window as usage moves")
 available.windows[0].usedPercent = .unavailable
 check(available.menuWindow("auto", now: 100)?.id == "weekly", "Automatic supports weekly-only accounts")
 check(available.menuWindow("session", now: 100)?.usedPercent.current == nil, "Explicit selection must not silently switch windows")
