@@ -121,11 +121,22 @@ fn poll_claimed(core: &Arc<BridgeCore>, family: ConnectorFamily) -> usize {
         return 0;
     };
 
+    // One user-facing switch for "include things I have already read", shared
+    // with the Work briefing rather than duplicated: it is the same question
+    // about the same connectors, and two toggles that must agree are a bug
+    // waiting for someone to set one of them.
+    let include_read_mentions = {
+        let db = core.db.lock().unwrap();
+        crate::work::read_settings(&db)
+            .map(|snapshot| snapshot.settings.include_read_mentions)
+            .unwrap_or(false)
+    };
+
     let output = match one_bounded_turn(
         core,
         &connection,
         RunKind::Ingress,
-        &connector_runs::ingress_prompt(family),
+        &connector_runs::ingress_prompt(family, include_read_mentions),
         None,
     ) {
         Ok(text) => text,

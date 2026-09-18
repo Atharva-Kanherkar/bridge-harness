@@ -255,7 +255,7 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
     <SettingsGroup label="What it reports">
       <SettingsRow
         label="Include mentions you have already read"
-        description="Read state stops excluding an item. Useful for checking a connector is really being read, since a mention you can already see is a signal you can produce on demand."
+        description="Read state stops excluding an item, in both the briefing and the inbox. A mention you have already opened still arrives once, which is how you check a connector is really being read without waiting for someone to message you."
         saved={isFlashed("mentions")}
         control={<Switch
           label="Include mentions you have already read"
