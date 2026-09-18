@@ -2711,6 +2711,7 @@ pub fn run() -> i32 {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .menu(|handle| menu::build(handle))
         .on_menu_event(menu::dispatch)
         .setup(move |app| {
