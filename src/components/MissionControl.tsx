@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUpRight, GripVertical, LayoutGrid, Maximize2, Minimize2, Pin, PinOff, Square, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { useShowWorkerChatsInMissionControl } from "../missionControlSettings";
 import { cn } from "@/lib/utils";
 import type { AgentEvent, Session, SessionForestSnapshot, Workspace, WorkerRuntimeRecord } from "../types";
 import type { ApprovalDecision, InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
@@ -57,6 +58,7 @@ type TileActions = {
   pinnedSessionIds: string[];
   pin: (id: string) => void;
   unpin: (id: string) => void;
+  dismiss: (id: string) => void;
   drafts: Record<string, string>;
   setDraft: (id: string, draft: string) => void;
   resize: (path: string, ratio: number) => void;
@@ -150,8 +152,9 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
       <IconButton title={expanded ? "Restore grid" : "Maximize tile"} onClick={() => actions.toggleExpanded(id)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
       {isWorker && actions.onStopWorker && <IconButton title="Stop worker" onClick={() => { void actions.onStopWorker?.(id); }}><Square size={12} /></IconButton>}
       {actions.pinnedSessionIds.includes(id)
-        ? <IconButton title={isActiveSession(session) ? "Unpin chat (stays while active)" : "Remove from Mission Control"} onClick={() => actions.unpin(id)}>{isActiveSession(session) ? <PinOff size={13} /> : <X size={13} />}</IconButton>
+        ? <IconButton title="Unpin chat" onClick={() => actions.unpin(id)}><PinOff size={13} /></IconButton>
         : <IconButton title="Pin chat in Mission Control" onClick={() => actions.pin(id)}><Pin size={13} /></IconButton>}
+      <IconButton title="Close chat" onClick={() => actions.dismiss(id)}><X size={13} /></IconButton>
     </header>
     <div className="relative min-h-0 flex-1 overflow-y-auto">
       <AgentConversation
@@ -228,15 +231,20 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
   }, [forests]);
   const sessionMap = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions]);
   const workspaceMap = useMemo(() => new Map(workspaces.map(workspace => [workspace.id, workspace])), [workspaces]);
-  const live = useMemo(() => sessions.filter(isActiveSession), [sessions]);
-  const pinnedSessionIds = useMemo(() => stored.pinnedSessionIds.filter(id => sessionMap.has(id)), [stored.pinnedSessionIds, sessionMap]);
+  const [showWorkerChats] = useShowWorkerChatsInMissionControl();
+  const dismissedSessionIds = useMemo(() => stored.dismissedSessionIds.filter(id => sessionMap.has(id)), [stored.dismissedSessionIds, sessionMap]);
+  const live = useMemo(
+    () => sessions.filter(session => isActiveSession(session) && (showWorkerChats || !session.parentSessionId) && !dismissedSessionIds.includes(session.id)),
+    [sessions, showWorkerChats, dismissedSessionIds],
+  );
+  const pinnedSessionIds = useMemo(() => stored.pinnedSessionIds.filter(id => sessionMap.has(id) && !dismissedSessionIds.includes(id)), [stored.pinnedSessionIds, sessionMap, dismissedSessionIds]);
   const ids = useMemo(() => [...new Set([...live.map(session => session.id), ...pinnedSessionIds])], [live, pinnedSessionIds]);
   const idsKey = ids.join(" ");
   const root = useMemo(() => reconcileLeaves(stored.root, ids), [stored.root, idsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const expandedLeafId = stored.expandedLeafId && root && leafIds(root).includes(stored.expandedLeafId) ? stored.expandedLeafId : null;
   const size = root ? minimumSize(expandedLeafId ? { type: "leaf", leafId: expandedLeafId } : root) : undefined;
-  useEffect(() => { setStored(prev => prev.root === root && prev.expandedLeafId === expandedLeafId && prev.pinnedSessionIds.length === pinnedSessionIds.length ? prev : { version: 1, root, expandedLeafId, pinnedSessionIds }); }, [root, expandedLeafId, pinnedSessionIds]);
-  useEffect(() => { writeLayout({ version: 1, root, expandedLeafId, pinnedSessionIds }); }, [root, expandedLeafId, pinnedSessionIds]);
+  useEffect(() => { setStored(prev => prev.root === root && prev.expandedLeafId === expandedLeafId && prev.pinnedSessionIds.length === pinnedSessionIds.length && prev.dismissedSessionIds.length === dismissedSessionIds.length ? prev : { version: 1, root, expandedLeafId, pinnedSessionIds, dismissedSessionIds }); }, [root, expandedLeafId, pinnedSessionIds, dismissedSessionIds]);
+  useEffect(() => { writeLayout({ version: 1, root, expandedLeafId, pinnedSessionIds, dismissedSessionIds }); }, [root, expandedLeafId, pinnedSessionIds, dismissedSessionIds]);
 
   function dropChat(id: string, fromSidebar: boolean, target?: string, edge?: DropEdge) {
     setDropOnCanvas(false);
@@ -244,7 +252,12 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
     const next = root && target && edge
       ? moveLeaf(root, id, target, edge === "left" || edge === "right" ? "horizontal" : "vertical", edge === "left" || edge === "top")
       : insertLeaf(root, id);
-    setStored({ version: 1, root: next, expandedLeafId: null, pinnedSessionIds: fromSidebar ? [...new Set([...pinnedSessionIds, id])] : pinnedSessionIds });
+    setStored({
+      version: 1, root: next, expandedLeafId: null,
+      pinnedSessionIds: fromSidebar ? [...new Set([...pinnedSessionIds, id])] : pinnedSessionIds,
+      // Bringing a chat back in by hand is what un-closes it.
+      dismissedSessionIds: dismissedSessionIds.filter(dismissed => dismissed !== id),
+    });
   }
 
   const actions: TileActions = {
@@ -252,8 +265,9 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
     toggleExpanded: id => setStored(prev => ({ ...prev, root, expandedLeafId: prev.expandedLeafId === id ? null : id })),
     dropChat, pinnedSessionIds, drafts,
     setDraft: (id, draft) => setDrafts(prev => ({ ...prev, [id]: draft })),
-    pin: id => setStored(prev => ({ ...prev, pinnedSessionIds: [...new Set([...prev.pinnedSessionIds, id])] })),
+    pin: id => setStored(prev => ({ ...prev, pinnedSessionIds: [...new Set([...prev.pinnedSessionIds, id])], dismissedSessionIds: prev.dismissedSessionIds.filter(dismissed => dismissed !== id) })),
     unpin: id => setStored(prev => ({ ...prev, pinnedSessionIds: prev.pinnedSessionIds.filter(pinned => pinned !== id) })),
+    dismiss: id => setStored(prev => ({ ...prev, pinnedSessionIds: prev.pinnedSessionIds.filter(pinned => pinned !== id), dismissedSessionIds: [...new Set([...prev.dismissedSessionIds, id])] })),
     resize: (path, ratio) => { if (root) setStored(prev => ({ ...prev, root: resizeNode(root, path, ratio) })); },
   };
 
