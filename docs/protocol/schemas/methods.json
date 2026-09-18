@@ -163,6 +163,13 @@
       "resultSchema": "connector-refresh-result.json"
     },
     {
+      "command": "connector_set_settings",
+      "domain": "connectors",
+      "method": "connectors/connector_set_settings",
+      "paramsSchema": "connector-set-settings-params.json",
+      "resultSchema": "connector-set-settings-result.json"
+    },
+    {
       "command": "create_workspace",
       "domain": "workspaces",
       "method": "workspaces/create_workspace",

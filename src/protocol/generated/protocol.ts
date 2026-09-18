@@ -30,6 +30,7 @@ export type BridgeMethod =
   | "connectors/connector_act"
   | "connectors/connector_dismiss"
   | "connectors/connector_refresh"
+  | "connectors/connector_set_settings"
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
   | "workspaces/clone_workspace_repo"
@@ -236,6 +237,7 @@ export const BRIDGE_METHODS = [
   { method: "connectors/connector_act", domain: "connectors", command: "connector_act" },
   { method: "connectors/connector_dismiss", domain: "connectors", command: "connector_dismiss" },
   { method: "connectors/connector_refresh", domain: "connectors", command: "connector_refresh" },
+  { method: "connectors/connector_set_settings", domain: "connectors", command: "connector_set_settings" },
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
   { method: "workspaces/clone_workspace_repo", domain: "workspaces", command: "clone_workspace_repo" },
@@ -511,6 +513,7 @@ export interface BridgeMethodParams {
   "connectors/connector_inbox": ConnectorInboxParams;
   "connectors/connector_act": ConnectorActParams;
   "connectors/connector_dismiss": ConnectorDismissParams;
+  "connectors/connector_set_settings": ConnectorSetSettingsParams;
   "connectors/connector_refresh": ConnectorRefreshParams;
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
@@ -720,6 +723,7 @@ export interface BridgeMethodResults {
   "connectors/connector_act": ConnectorActResult;
   "connectors/connector_dismiss": ConnectorDismissResult;
   "connectors/connector_refresh": ConnectorRefreshResult;
+  "connectors/connector_set_settings": ConnectorSetSettingsResult;
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
   "workspaces/clone_workspace_repo": BridgeState;
@@ -2710,6 +2714,7 @@ export interface ConnectorInboxParams {
 }
 
 export interface ConnectorInboxResult {
+  includeReadMentions: boolean;
   items: ConnectorInboxItem[];
   poll: ConnectorPollStatus[];
   unreadCount: number;
@@ -2729,6 +2734,14 @@ export interface ConnectorDismissParams {
 
 export interface ConnectorDismissResult {
   dismissed: boolean;
+}
+
+export interface ConnectorSetSettingsParams {
+  includeReadMentions: boolean;
+}
+
+export interface ConnectorSetSettingsResult {
+  includeReadMentions: boolean;
 }
 
 export interface ConnectorRefreshParams {

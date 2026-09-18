@@ -182,6 +182,7 @@ typed_methods![
     (ConnectorInbox, ConnectorInboxParams, ConnectorInboxResult),
     (ConnectorAct, ConnectorActParams, ConnectorActResult),
     (ConnectorDismiss, ConnectorDismissParams, ConnectorDismissResult),
+    (ConnectorSetSettings, ConnectorSetSettingsParams, ConnectorSetSettingsResult),
     (ConnectorRefresh, ConnectorRefreshParams, ConnectorRefreshResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),

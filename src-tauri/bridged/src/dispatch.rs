@@ -80,6 +80,10 @@ pub fn dispatch(
             let p: wire::ConnectorActParams = decode(method, params)?;
             reply(api::connector_act(core, &p.item_key, p.action, p.approved))
         }
+        MethodName::ConnectorSetSettings => {
+            let p: wire::ConnectorSetSettingsParams = decode(method, params)?;
+            reply(api::connector_set_settings(core, p.include_read_mentions))
+        }
         MethodName::ConnectorDismiss => {
             let p: wire::ConnectorDismissParams = decode(method, params)?;
             reply(api::connector_dismiss(core, &p.item_key))

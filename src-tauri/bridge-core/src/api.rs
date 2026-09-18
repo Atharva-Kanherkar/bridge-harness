@@ -331,7 +331,8 @@ pub fn connector_inbox(
             })
         })
         .collect::<Result<Vec<_>, BridgeError>>()?;
-    Ok(wire::ConnectorInboxResult { items, unread_count, poll })
+    let include_read_mentions = crate::connector_settings::read(&db).include_read_mentions;
+    Ok(wire::ConnectorInboxResult { items, unread_count, poll, include_read_mentions })
 }
 
 fn connector_item_wire(stored: crate::connector_inbox::StoredItem) -> wire::ConnectorInboxItem {
@@ -441,6 +442,22 @@ pub fn connector_act(
 
 /// Put an item away without answering it. Not a write to the connector — it
 /// resolves the Bridge-side item only, so it needs no approval.
+/// Persist the inbox's preferences and re-read them, so the caller renders what
+/// was actually stored rather than what it asked for.
+pub fn connector_set_settings(
+    core: &Arc<BridgeCore>,
+    include_read_mentions: bool,
+) -> Result<wire::ConnectorSetSettingsResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let stored = crate::connector_settings::write(
+        &db,
+        crate::connector_settings::ConnectorSettings { include_read_mentions },
+    )?;
+    Ok(wire::ConnectorSetSettingsResult {
+        include_read_mentions: stored.include_read_mentions,
+    })
+}
+
 pub fn connector_dismiss(
     core: &Arc<BridgeCore>,
     item_key: &str,
