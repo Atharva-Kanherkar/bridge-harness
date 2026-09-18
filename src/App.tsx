@@ -25,7 +25,7 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { isHiddenSession } from "./components/sidebarChats";
+import { chatName, isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -41,6 +41,8 @@ import { ConnectorToasts } from "./components/ConnectorToasts";
 import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
+import { notifyAttention } from "./attention";
+import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
@@ -392,6 +394,25 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, openMeter, refreshMeter, reload]);
+  // Attention notifications: diff every `state.sessions` refresh for status
+  // transitions across *all* sessions, not just the open one, so a background
+  // chat that starts waiting on the human still surfaces a notification.
+  // `notifyAttention` itself gates delivery on Bridge not being the focused
+  // app, so this effect only has to decide *what* happened, not *whether to
+  // show* it.
+  const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
+  useEffect(() => {
+    const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
+    previousAttentionSessionsRef.current = state.sessions;
+    for (const event of events) {
+      const name = chatName(event.session);
+      if (event.kind === "needs-you") {
+        void notifyAttention("Bridge needs you", `${name} is waiting for your input`);
+      } else {
+        void notifyAttention("Turn completed", `${name} finished its turn`);
+      }
+    }
+  }, [state.sessions]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
