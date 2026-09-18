@@ -133,6 +133,79 @@ pub fn briefing_scope(
         .collect()
 }
 
+/// A configured connector this run could not read, and why.
+///
+/// Not an error state: a connector the user has not signed into is a normal
+/// thing to find. It is a *reportable* state, which is the part that was
+/// missing — an unread source that leaves no trace is indistinguishable from a
+/// source with nothing to say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreachableSource {
+    pub server: String,
+    pub family: Option<ConnectorFamily>,
+    pub status: wire::WorkSourceStatus,
+    pub detail: String,
+}
+
+/// The configured connectors that did not make it into the readable set.
+///
+/// `marketplace::sdk_connector_configs` keeps only the connectors the harness
+/// reported healthy, and that filter is correct: a needs-auth connector handed
+/// to a `strictMcpConfig` run stalls its handshake rather than failing it. But
+/// that filter was also the connector's only appearance, so an unhealthy Slack
+/// left no row, no coverage, and no way for the board to say it went unread.
+///
+/// So the health map — keyed over every discovered connector, not just the kept
+/// ones — is read a second time here for the difference. These are recorded as
+/// coverage and never added to scope: the point is to report a source as unread,
+/// not to make it readable.
+pub fn unreachable_scope(
+    health: &BTreeMap<String, Option<bool>>,
+    readable: &[String],
+    enabled: &[String],
+) -> Vec<UnreachableSource> {
+    health
+        .iter()
+        .filter(|(server, _)| !readable.iter().any(|kept| kept == *server))
+        // The same narrowing the readable set gets. A connector the user switched
+        // off was not meant to be read, so it is not a fault worth reporting.
+        .filter(|(server, _)| enabled.is_empty() || enabled.iter().any(|allow| allow == *server))
+        .map(|(server, verdict)| {
+            let (status, detail) = match verdict {
+                // `mcp list` spells needs-authentication and failed-to-connect
+                // differently, but both arrive here as `false`, and signing in is
+                // the action that resolves either one.
+                Some(false) => (
+                    wire::WorkSourceStatus::AuthRequired,
+                    "the harness does not have this connector connected; sign in to it there"
+                        .to_owned(),
+                ),
+                // Discovered, but its line carried no verdict this run.
+                None => (
+                    wire::WorkSourceStatus::Failed,
+                    "the harness listed this connector without a connection verdict, so it was not read"
+                        .to_owned(),
+                ),
+                // Unreachable by construction: the health map and the readable set
+                // are derived from the same listing, so a healthy connector is
+                // always kept. Recorded rather than dropped so the two going out of
+                // step shows up as a row instead of as silence.
+                Some(true) => (
+                    wire::WorkSourceStatus::Failed,
+                    "the harness reported this connector connected but it was not offered to the run"
+                        .to_owned(),
+                ),
+            };
+            UnreachableSource {
+                server: server.clone(),
+                family: family_for_server(server),
+                status,
+                detail,
+            }
+        })
+        .collect()
+}
+
 /// Accumulated provider usage across the run's turns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct UsageTotals {
@@ -424,6 +497,23 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
             ),
         }
         scope.push(server);
+    }
+
+    // The connectors that did not make it into the readable set. Coverage only:
+    // these are unread sources, not readable ones, so nothing here reaches
+    // `scope` and the model is never offered them.
+    for unreachable in unreachable_scope(
+        &configured.connector_health,
+        &configured_servers,
+        &settings.enabled_connector_instances,
+    ) {
+        observer.ledger.record_source(
+            &unreachable.server,
+            unreachable.family.map(ConnectorFamily::as_str).unwrap_or("unknown"),
+            unreachable.status,
+            Some(unreachable.detail),
+            None,
+        );
     }
 
     let policy = match BriefingRuntimePolicy::compile_scoped(scope, settings.limits) {
@@ -828,6 +918,89 @@ mod tests {
         let narrowed = briefing_scope(&configured, &["internal-crm".to_owned()]);
         assert_eq!(narrowed.len(), 1);
         assert_eq!(narrowed[0], ("internal-crm".to_owned(), None));
+    }
+
+    fn health(pairs: &[(&str, Option<bool>)]) -> BTreeMap<String, Option<bool>> {
+        pairs.iter().map(|(name, verdict)| ((*name).to_owned(), *verdict)).collect()
+    }
+
+    #[test]
+    fn an_unhealthy_connector_is_reported_unread_instead_of_vanishing() {
+        // The defect this fixes: `sdk_connector_configs` keeps only the healthy
+        // connectors, so an unhealthy Slack was absent from the readable set
+        // rather than present-and-unhealthy, and left no row at all.
+        let health = health(&[("claude.ai Slack", Some(false)), ("claude.ai Notion", Some(true))]);
+        let readable = vec!["claude.ai Notion".to_owned()];
+
+        let unread = unreachable_scope(&health, &readable, &[]);
+
+        assert_eq!(unread.len(), 1, "only the connector missing from the readable set");
+        assert_eq!(unread[0].server, "claude.ai Slack");
+        assert_eq!(unread[0].family, Some(ConnectorFamily::Slack));
+        assert_eq!(unread[0].status, wire::WorkSourceStatus::AuthRequired);
+        assert!(unread[0].detail.contains("sign in"), "{}", unread[0].detail);
+    }
+
+    #[test]
+    fn a_connector_listed_without_a_verdict_reads_as_failed_not_as_needing_sign_in() {
+        // No verdict is not the same claim as "not connected": telling the user
+        // to sign in to a connector that may be fine is a wrong instruction.
+        let unread = unreachable_scope(&health(&[("claude.ai Slack", None)]), &[], &[]);
+
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].status, wire::WorkSourceStatus::Failed);
+        assert!(unread[0].detail.contains("without a connection verdict"), "{}", unread[0].detail);
+    }
+
+    #[test]
+    fn a_connector_the_user_switched_off_is_not_reported_as_a_fault() {
+        // Narrowing is a decision, not a failure. The same filter the readable
+        // set gets has to apply here, or disabling a connector would trade a
+        // silent board for a permanent nag about it.
+        let health = health(&[("claude.ai Slack", Some(false)), ("claude.ai Gmail", Some(false))]);
+
+        let unread = unreachable_scope(&health, &[], &["claude.ai Gmail".to_owned()]);
+
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].server, "claude.ai Gmail");
+    }
+
+    #[test]
+    fn unread_connectors_are_disjoint_from_the_readable_scope() {
+        // The invariant that keeps this reporting-only: a connector reported as
+        // unread must never also be offered to the model.
+        let health = health(&[
+            ("claude.ai Slack", Some(false)),
+            ("claude.ai Notion", Some(true)),
+            ("claude.ai Gmail", None),
+        ]);
+        let readable = vec!["claude.ai Notion".to_owned()];
+
+        let scope = briefing_scope(&readable, &[]);
+        let unread = unreachable_scope(&health, &readable, &[]);
+
+        for entry in &unread {
+            assert!(
+                !scope.iter().any(|(server, _)| server == &entry.server),
+                "{} was both offered and reported unread",
+                entry.server
+            );
+        }
+        assert_eq!(unread.len(), 2);
+    }
+
+    #[test]
+    fn unread_family_resolution_uses_whole_tokens_like_the_readable_path() {
+        let unread = unreachable_scope(
+            &health(&[("unslacker", Some(false)), ("internal-crm", Some(false))]),
+            &[],
+            &[],
+        );
+
+        assert_eq!(unread.len(), 2);
+        // A name merely containing a family word is not that family, and an
+        // unresolvable one is still reported — as `unknown`, by the caller.
+        assert!(unread.iter().all(|entry| entry.family.is_none()));
     }
 
     #[test]
