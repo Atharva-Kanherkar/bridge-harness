@@ -97,17 +97,42 @@ action instead. See §Reply channel.
 - The setting changes prompt text only. It grants no tool, widens no scope, and
   changes no policy.
 
-### 5. Reply channel
+### 5. Reply channel — already present, corrected mid-implementation
 
-- A new protocol method sends a reply to a resolved Slack evidence target.
-- It is **user-initiated only**: no briefing run, no cadence, no autonomous path
-  reaches it.
-- It requires an explicit approval before the send, carrying the exact destination and
-  the exact text.
-- It refuses when: the task has no resolved Slack evidence target, the target host is
-  outside the family allowlist, the connector is not currently healthy, or the reply
-  body is empty or over the length bound.
-- The send is recorded so a reply is auditable after the fact.
+Amended after reading the code. Two findings changed this section:
+
+**The reply channel already exists and needs no work.** `connectors/connector_act`
+takes `ConnectorActParams { item_key, action: Reply { text } | React { emoji },
+approved: Option<bool> }`. Absent `approved` means "not decided": the host refuses and
+returns the exact effect for a confirmation dialog, and approval is per call and never
+sticky. `briefing_policy::compile_action_scoped` admits mutation tools only for an
+`AuthorizedAction` that `connector_runs::authorize` will not produce until a human has
+approved the literal text. That is the design this contract was about to specify, built
+already. Nothing is added here.
+
+**The surface with the reported symptom is the connector Inbox, not the Work board.**
+`connectorSurface::emptyStateFor` already distinguishes degraded / waiting / caught-up,
+so the Inbox was never lying about *coverage*. What it does is ask ingress for items
+"received in the last 60 minutes and not yet read" — so a user who reads Slack in Slack
+leaves ingress nothing to find, and the pane reports being caught up truthfully and
+uselessly, forever.
+
+So deliverable 3 becomes: `includeReadMentions` also swaps ingress from unread-only to
+everything in the window.
+
+- Off: both prompts are byte-identical to their current text.
+- On: ingress asks for items whether or not they have been read, and the empty-answer
+  rule stops naming unread so the two cannot disagree.
+- Widening reads no extra tool and calls no extra tool.
+- The announce-once ledger is untouched, so widening cannot replay an inbox: an item
+  already announced is never announced again.
+- Every safety clause in the ingress prompt survives both variants: read tools only,
+  bodies copied verbatim, provider-owned identifiers, and message text treated as data
+  rather than instructions.
+
+Deliverables 1 and 2 are unchanged and still needed: the Work board had the same class
+of defect the Inbox had already solved, and bringing it up to that standard is what
+steps 1–3 do.
 
 ---
 
@@ -207,10 +232,16 @@ Run against a real harness, since the whole defect is about real connector state
    Expected: the mention appears even though it is already read. With the setting off,
    a refresh does not surface it.
 
-5. **Verify the reply channel**
-   From a Slack-backed item, use the reply affordance. Expected: an approval naming the
-   exact channel/thread and the exact text; on approval the message appears in Slack;
-   on decline nothing is sent.
+5. **Verify the Inbox actually polls** — the reported symptom
+   With *Include read mentions* off, read every Slack mention in Slack, then refresh the
+   Inbox. Expected: "You're all caught up" — correct, and indistinguishable from broken.
+   Turn the setting on and refresh. Expected: mentions from the last hour arrive even
+   though they are already read. That is the check for "is Slack even working".
+
+6. **Verify the reply channel** (pre-existing; verifying, not adding)
+   Reply to an inbox item. Expected: a confirmation naming the exact destination and the
+   exact text, because `approved` is absent on the first call; on approval the message
+   appears in Slack; on decline nothing is sent.
 
 ---
 
