@@ -17,7 +17,9 @@ Status is `active`, `proposed`, `rejected`, `superseded`, `expired`, or `deleted
 
 ## How pins get in
 
-Only an explicit save: protocol `memory/save_memory_record` or slash `/pin <text>`. Listing is `memory/list_memory_records` with a required `scopeKey`, or `/pins`. Forgetting is a tombstone (`status=deleted`) via `memory/delete_memory_record` or `/unpin <id>`. `/pin`, `/pins`, and `/unpin` are Bridge-handled and never auto-switch harness. They are not Claude’s `/memory`.
+An explicit save: protocol `memory/save_memory_record` or slash `/pin <text>`. Listing is `memory/list_memory_records` with a required `scopeKey`, or `/pins`. Forgetting is a tombstone (`status=deleted`) via `memory/delete_memory_record` or `/unpin <id>`. `/pin`, `/pins`, and `/unpin` are Bridge-handled and never auto-switch harness. They are not Claude’s `/memory`.
+
+Or a reviewed proposal. After each finished turn of a visible chat, extraction (`propose` mode, the default) replays a bounded digest of that chat through a hidden tool-free session on the chat's own harness and model — or on a helper pinned in the Memory settings — and queues what it finds as `proposed` records. A proposal reaches a packet only once the user approves it; `remember` mode turns the run off. See [`testing/feat-memory-extract.md`](../testing/feat-memory-extract.md).
 
 The server always writes `account:local`. The client cannot pass a scope on save. Empty, whitespace, and credential-shaped bodies are rejected.
 

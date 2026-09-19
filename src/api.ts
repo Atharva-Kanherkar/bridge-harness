@@ -500,7 +500,7 @@ const mockConsolidationLog: MemoryConsolidationEntry[] = [
   { op: "group", detail: "3 records tied under conflict-group design-direction", day: 4 },
   { op: "retire", detail: "mem_d1c9 tombstoned", day: 2 },
 ];
-let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "remember" };
+let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
@@ -2091,7 +2091,7 @@ export const bridgeApi = {
     }
     if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it. Use remember or propose.");
     if (mode !== "remember" && mode !== "propose") throw new Error(`Unknown extraction mode '${mode}'. Use remember or propose.`);
-    if (mode === "propose" && (!harness || !model)) throw new Error("Propose mode needs a pinned harness and model to run on.");
+    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
     mockExtractionSettings = { ...mockExtractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
     return structuredClone(mockExtractionSettings);
   },
