@@ -34,7 +34,17 @@ fn keychain_credentials() -> Result<(String, Option<String>), String> {
 }
 
 fn may_retry_with_legacy_file(error: &str) -> bool {
-    error == "Reconnect Claude to read account usage."
+    // Only a missing/inaccessible Keychain source permits the legacy source.
+    // A readable but expired/rejected credential belongs to the current login;
+    // a leftover file may belong to an entirely different account.
+    error.starts_with("Provider session is unavailable in Keychain")
+        || error.starts_with("Provider session requires macOS Keychain")
+        || error.starts_with("Provider session helper")
+        || error.starts_with("Provider session read timed out")
+}
+
+fn needs_keychain_permission(error: &str) -> bool {
+    error.starts_with("Provider session is unavailable in Keychain")
 }
 
 fn may_fallback_to_claude_cli(error: &str) -> bool {
@@ -165,18 +175,12 @@ where
     // legacy credentials file can remain on disk long after that rotation, so
     // it must not shadow the current Keychain item. Reads are non-interactive.
     match keychain() {
-        Ok((token, plan)) => match request(token, plan) {
-            Ok(usage) => Ok(usage),
-            Err(error) if may_retry_with_legacy_file(&error) => {
-                let (token, plan) = legacy_file().map_err(|_| error)?;
-                request(token, plan)
-            }
-            Err(error) => Err(error),
-        },
-        Err(keychain_error) => {
+        Ok((token, plan)) => request(token, plan),
+        Err(keychain_error) if may_retry_with_legacy_file(&keychain_error) => {
             let (token, plan) = legacy_file().map_err(|_| keychain_error)?;
             request(token, plan)
         }
+        Err(error) => Err(error),
     }
 }
 
@@ -190,7 +194,7 @@ pub(super) fn read_interactive(core: &crate::BridgeCore) -> Result<AccountUsage,
         return read();
     }
     read_interactive_with_fallback(
-        || read_manual_with_repair(read_direct_with_default_keychain_fallback, || {
+        || read_manual_with_repair(read_default_for_manual_refresh, || {
             let bytes = super::credentials::keychain_interactive("Claude Code-credentials", None)?;
             let content = String::from_utf8(bytes).map_err(|_| "Invalid Claude credentials")?;
             let (token, plan) = decode_credentials(&content, chrono::Utc::now().timestamp_millis())?;
@@ -200,13 +204,27 @@ pub(super) fn read_interactive(core: &crate::BridgeCore) -> Result<AccountUsage,
     )
 }
 
+fn read_default_for_manual_refresh() -> Result<AccountUsage, String> {
+    // A manual refresh must expose a blocked default Keychain source so the
+    // permission repair can run. A readable legacy file must not hide it.
+    #[cfg(target_os = "macos")]
+    {
+        let (token, plan) = keychain_credentials()?;
+        read_with_credentials(token, plan)
+    }
+    #[cfg(not(target_os = "macos"))]
+    read_direct_with_default_keychain_fallback()
+}
+
 fn read_manual_with_repair<D, R>(mut direct: D, mut repair: R) -> Result<AccountUsage, String>
 where
     D: FnMut() -> Result<AccountUsage, String>,
     R: FnMut() -> Result<AccountUsage, String>,
 {
     match direct() {
-        Err(error) if may_fallback_to_claude_cli(&error) => repair(),
+        // Reading the same expired/rejected token with a password prompt cannot
+        // renew it. Let the user-initiated CLI fallback repair that login instead.
+        Err(error) if needs_keychain_permission(&error) => repair(),
         result => result,
     }
 }
@@ -370,10 +388,12 @@ mod tests {
     }
 
     #[test]
-    fn only_an_auth_rejection_retries_the_legacy_file() {
+    fn only_an_unavailable_keychain_source_retries_the_legacy_file() {
         assert!(may_retry_with_legacy_file(
-            "Reconnect Claude to read account usage."
+            "Provider session is unavailable in Keychain. Reconnect the provider."
         ));
+        assert!(!may_retry_with_legacy_file("Reconnect Claude to read account usage."));
+        assert!(!may_retry_with_legacy_file("Claude session expired. Sign in again through Claude Code."));
         assert!(!may_retry_with_legacy_file(
             "Claude is rate limited. Wait a few minutes before refreshing."
         ));
@@ -428,7 +448,7 @@ mod tests {
                 keychain_reads.set(keychain_reads.get() + 1);
                 Ok(("rejected".into(), None))
             },
-            || Err("Provider credentials are unavailable".into()),
+            || panic!("a rejected current login must not switch to a legacy account"),
             |_, _| {
                 requests.set(requests.get() + 1);
                 Err("Reconnect Claude to read account usage.".into())
@@ -462,16 +482,30 @@ mod tests {
     }
 
     #[test]
-    fn manual_repair_only_runs_for_credential_failures() {
+    fn manual_permission_repair_only_runs_for_keychain_access_failures() {
         assert!(read_manual_with_repair(
-            || Err("Claude session expired. Sign in again through Claude Code.".into()),
+            || Err("Provider session is unavailable in Keychain. Reconnect the provider.".into()),
             || Ok(usage()),
         ).is_ok());
         for error in ["Claude is rate limited. Wait a few minutes before refreshing.",
+                      "Claude session expired. Sign in again through Claude Code.",
+                      "Reconnect Claude to read account usage.",
                       "Claude usage request failed or timed out. Try Refresh."] {
             assert_eq!(read_manual_with_repair(|| Err(error.into()),
-                || panic!("network failures must not request Keychain access")).unwrap_err(), error);
+                || panic!("permission repair cannot fix this failure")).unwrap_err(), error);
         }
+    }
+
+    #[test]
+    fn expired_keychain_does_not_switch_to_another_legacy_account() {
+        let result = read_direct_with_sources(
+            false,
+            || panic!("not explicit"),
+            || Err("Claude session expired. Sign in again through Claude Code.".into()),
+            || panic!("must not switch accounts"),
+            |_, _| panic!("must repair the current login first"),
+        );
+        assert!(result.unwrap_err().starts_with("Claude session expired."));
     }
 
     #[test]

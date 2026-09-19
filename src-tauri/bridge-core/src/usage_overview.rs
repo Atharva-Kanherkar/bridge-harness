@@ -23,8 +23,26 @@ use std::{
 #[derive(Default)]
 pub struct UsageOverviewService {
     refresh: Mutex<Option<Instant>>,
-    providers: [Mutex<Option<Instant>>; 3],
+    providers: [Mutex<ProviderRefreshState>; 3],
     history: Mutex<Option<CachedSummary>>,
+}
+
+#[derive(Default)]
+struct ProviderRefreshState {
+    completed_at: Option<Instant>,
+    manual_completed_at: Option<Instant>,
+}
+
+impl ProviderRefreshState {
+    fn should_skip(&self, interactive: bool, requested_at: Instant) -> bool {
+        if interactive {
+            // Preserve a user click waiting on background work, but one manual
+            // pass satisfies every other click that arrived while it ran.
+            self.manual_completed_at.is_some_and(|at| at >= requested_at)
+        } else {
+            self.completed_at.is_some_and(|at| at.elapsed().as_secs() < 15)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -869,7 +887,11 @@ fn cache_provider_result(
             }
         }
         Err(error) => CachedProvider {
-            usage: prior.usage.map(|mut q| {
+            // Claude's optional profile lookup cannot prove that a failed read
+            // still belongs to the cached account. In particular, expired or
+            // rejected credentials must not leave another login's quota bars
+            // behind. Local token history remains independently available.
+            usage: prior.usage.filter(|_| provider != bridge_protocol::messages::MenuBarProvider::Claude).map(|mut q| {
                 let retain = provider == bridge_protocol::messages::MenuBarProvider::Cursor
                     && error.retry_account_scope.as_deref().is_some_and(|scope| {
                         !scope.is_empty()
@@ -900,10 +922,11 @@ fn refresh_provider(
     index: usize,
     interactive: bool,
 ) -> Result<(), BridgeError> {
+    let requested_at = Instant::now();
     let mut last = core.usage_overview.providers[index]
         .lock()
         .map_err(|_| BridgeError::Invalid("Provider refresh unavailable".into()))?;
-    if !interactive && last.is_some_and(|v| v.elapsed().as_secs() < 15) {
+    if last.should_skip(interactive, requested_at) {
         return Ok(());
     }
     let prior = load_provider(&core.db.lock().unwrap(), provider.id())?;
@@ -924,7 +947,11 @@ fn refresh_provider(
     if !ids.is_empty() {
         let _ = crate::usage_history::scan_history(core, &env, Some(10_000), Some(&ids));
     }
-    *last = Some(Instant::now());
+    let completed_at = Instant::now();
+    last.completed_at = Some(completed_at);
+    if interactive {
+        last.manual_completed_at = Some(completed_at);
+    }
     Ok(())
 }
 /// History uses the same Cursor collector and refresh gate as the Menu Bar.
@@ -1370,6 +1397,48 @@ mod provider_tests {
         assert_eq!(q.metrics[0].value.status, Status::Stale);
         assert_eq!(q.metrics[0].value.value, Some(0.0));
     }
+
+    #[test]
+    fn failed_claude_refresh_does_not_display_an_unverified_accounts_limits() {
+        use bridge_protocol::messages::MenuBarProvider;
+        for error in [
+            "Reconnect Claude to read account usage.",
+            "Claude session expired. Sign in again through Claude Code.",
+            "Provider session is unavailable in Keychain. Reconnect the provider.",
+            "Claude usage request failed or timed out. Try Refresh.",
+        ] {
+            let prior = CachedProvider {
+                usage: Some(crate::provider_usage::AccountUsage {
+                    observed_at: 100,
+                    windows: vec![UsageQuotaWindow {
+                        id: "weekly".into(), label: "Weekly".into(),
+                        used_percent: UsageMetric::known(14.0, Source::Reported),
+                        resets_at: None, window_minutes: Some(10080),
+                    }],
+                    ..Default::default()
+                }),
+                error: None,
+            };
+            let failed = cache_provider_result(MenuBarProvider::Claude, prior, Err(error.into()));
+            assert!(failed.usage.is_none());
+            assert_eq!(failed.error.as_deref(), Some(error));
+        }
+    }
+
+    #[test]
+    fn manual_refresh_waits_for_background_but_coalesces_queued_manual_clicks() {
+        let requested = Instant::now();
+        let completed = requested + std::time::Duration::from_secs(1);
+        let mut gate = ProviderRefreshState {
+            completed_at: Some(completed),
+            manual_completed_at: None,
+        };
+        assert!(!gate.should_skip(true, requested), "background work cannot satisfy manual repair");
+        gate.manual_completed_at = Some(completed);
+        assert!(gate.should_skip(true, requested), "one repair satisfies queued clicks");
+        assert!(!gate.should_skip(true, completed + std::time::Duration::from_secs(1)),
+            "a later explicit refresh must still be allowed");
+    }
 }
 
 /// Account connection changes invalidate both the old identity and refresh gate.
@@ -1381,6 +1450,6 @@ pub fn invalidate_opencode(core: &BridgeCore) -> Result<(), BridgeError> {
         "DELETE FROM configuration_entries WHERE kind='usage_overview' AND id='opencode'",
         [],
     )?;
-    *last = None;
+    *last = ProviderRefreshState::default();
     Ok(())
 }
