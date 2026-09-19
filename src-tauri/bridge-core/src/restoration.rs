@@ -21,6 +21,20 @@ pub const MAX_RESTORATION_BUDGET_BYTES: usize = 96 * 1024;
 /// The share of the incoming model's window the carried conversation may take.
 const RESTORATION_WINDOW_DIVISOR: i64 = 8;
 const BYTES_PER_TOKEN_ESTIMATE: i64 = 4;
+/// The share of the tail budget one entry may take before it is clipped: a
+/// pasted file or a log dump is one turn, and one turn must not be the whole
+/// carried conversation.
+const RESTORATION_ENTRY_DIVISOR: usize = 6;
+/// The smallest per-entry allowance, so a tiny budget still carries a whole
+/// ordinary turn rather than a fragment of one.
+pub const MIN_RESTORATION_ENTRY_BYTES: usize = 2_000;
+
+/// How many bytes of one entry's text a cold start keeps verbatim under a
+/// given tail budget. What is over the allowance is cut from the middle, so
+/// the entry's opening and its most recent words both survive.
+pub fn restoration_entry_bytes(budget: usize) -> usize {
+    (budget / RESTORATION_ENTRY_DIVISOR).max(MIN_RESTORATION_ENTRY_BYTES)
+}
 
 /// How many bytes of stored conversation a cold start may inject for a model
 /// with this context window: one eighth of the window at four bytes per token,
@@ -145,6 +159,10 @@ pub fn checkpoint_context(
 /// not fit, its head is trimmed so the most recent words survive. The former
 /// fixed twelve-line stop and 8 000-byte cut were the "new model forgot
 /// everything" experience: a 40-turn conversation arrived as a paragraph.
+///
+/// One entry is allowed [`restoration_entry_bytes`] of that budget. Without
+/// the allowance a single pasted file spent the whole tail, and the model
+/// inherited the paste and none of the thirty turns that discussed it.
 pub fn checkpoint_context_with_window(
     db: &Connection,
     session_id: &str,
@@ -187,6 +205,7 @@ pub fn checkpoint_context_with_window(
     let header = bound_header(header, MAX_RESTORATION_BUDGET_BYTES);
     let header_bytes = header.iter().map(|line| line.len() + 1).sum::<usize>();
     let mut remaining = budget.saturating_sub(header_bytes);
+    let entry_allowance = restoration_entry_bytes(budget);
     let mut tail = Vec::new();
     for entry in projection.render_entries.iter().rev() {
         let value = match entry.kind.as_str() {
@@ -206,6 +225,8 @@ pub fn checkpoint_context_with_window(
         let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
             continue;
         };
+        let clipped = clip_middle(value, entry_allowance);
+        let value = clipped.as_str();
         let line = format!("{}: {value}", entry.kind);
         let cost = line.len() + 1;
         if cost <= remaining {
@@ -259,6 +280,22 @@ fn bound_header(lines: Vec<String>, max_bytes: usize) -> Vec<String> {
         break;
     }
     kept
+}
+
+/// `text` when it fits in `max_bytes`, else its opening and closing halves
+/// around a marker naming what was cut. Both cuts land on char boundaries.
+fn clip_middle(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let half = max_bytes / 2;
+    let mut head_end = half.min(text.len());
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let tail = keep_tail(text, half);
+    let omitted = text.len() - head_end - tail.len();
+    format!("{}\n… {omitted} bytes omitted …\n{tail}", &text[..head_end])
 }
 
 /// The last `max_bytes` of `text`, cut forward to a char boundary.
@@ -575,6 +612,76 @@ mod tests {
         let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
         assert!(narrow.len() - envelope <= restoration_budget_bytes(32_000));
         assert!(wide.len() - envelope <= restoration_budget_bytes(128_000));
+    }
+
+    #[test]
+    fn one_pasted_file_cannot_spend_the_whole_tail() {
+        let db = database();
+        db.execute("UPDATE sessions SET harness='claude', model='claude-opus-4-6' WHERE id='s'", [])
+            .unwrap();
+        let forest = SessionForest::new(&db);
+        forest
+            .append("s", EntryKind::UserMessage, serde_json::json!({"text":"turn 00 user: before the paste"}))
+            .unwrap();
+        let paste = format!(
+            "turn 01 user: here is the whole file\n{}\nEND OF FILE",
+            "fn noise() { let x = 1; }\n".repeat(4_000)
+        );
+        assert!(paste.len() > MAX_RESTORATION_BUDGET_BYTES, "the paste alone exceeds the budget");
+        forest
+            .append("s", EntryKind::UserMessage, serde_json::json!({"text": paste}))
+            .unwrap();
+        for turn in 2..22 {
+            let (kind, speaker) = if turn % 2 == 0 {
+                (EntryKind::UserMessage, "user")
+            } else {
+                (EntryKind::AssistantMessage, "assistant")
+            };
+            forest
+                .append(
+                    "s",
+                    kind,
+                    serde_json::json!({"text": format!("turn {turn:02} {speaker}: we keep the retry in src/billing/retry.ts")}),
+                )
+                .unwrap();
+        }
+        let context = checkpoint_context(&db, "s").unwrap().unwrap();
+        for turn in 2..22 {
+            assert!(
+                context.contains(&format!("turn {turn:02} ")),
+                "turn {turn} must survive the paste verbatim"
+            );
+        }
+        assert!(context.contains("turn 00 user: before the paste"), "the turn before the paste survives too");
+        assert!(context.contains("turn 01 user: here is the whole file"), "the paste's opening survives");
+        assert!(context.contains("END OF FILE"), "the paste's closing survives");
+        assert!(context.contains("bytes omitted"), "the cut is marked, not silent");
+        let budget = restoration_budget_bytes(200_000);
+        let paste_line = context
+            .lines()
+            .skip_while(|line| !line.starts_with("user.message: turn 01"))
+            .take_while(|line| !line.starts_with("user.message: turn 02"))
+            .map(|line| line.len() + 1)
+            .sum::<usize>();
+        assert!(
+            paste_line <= restoration_entry_bytes(budget) + 64,
+            "the paste is held to its allowance: {paste_line}"
+        );
+        let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
+        assert!(context.len() - envelope <= budget);
+    }
+
+    #[test]
+    fn the_entry_allowance_scales_with_the_budget_and_keeps_a_floor() {
+        assert_eq!(restoration_entry_bytes(MAX_RESTORATION_BUDGET_BYTES), MAX_RESTORATION_BUDGET_BYTES / 6);
+        assert_eq!(restoration_entry_bytes(MIN_RESTORATION_BUDGET_BYTES), MIN_RESTORATION_ENTRY_BYTES);
+        assert_eq!(restoration_entry_bytes(0), MIN_RESTORATION_ENTRY_BYTES);
+        assert_eq!(clip_middle("short", 100), "short");
+        let clipped = clip_middle(&"ünïcödé ".repeat(1_000), 200);
+        assert!(clipped.starts_with("ünïcödé "));
+        assert!(clipped.ends_with("ünïcödé "));
+        assert!(clipped.contains("bytes omitted"));
+        assert!(clipped.len() < 300);
     }
 
     #[test]
