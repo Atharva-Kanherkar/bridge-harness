@@ -3420,7 +3420,32 @@ const SNAPSHOT_STRING_CAPS: [usize; 5] = [1024 * 1024, 256 * 1024, 64 * 1024, 16
 /// runtimes, usage and reason events ride in the same frame — and re-encoding
 /// stored JSON can only grow it, so the budget keeps better than 2x headroom
 /// rather than spending the frame right up to its edge.
-const SNAPSHOT_PAYLOAD_BUDGET_BYTES: usize = 24 * 1024 * 1024;
+///
+/// This is the *default* entry budget, used when the caller has not measured
+/// the snapshot's non-entry overhead. `sessions::session_forest_snapshot_*`
+/// tightens it further once that overhead is known (Codex P1 on this PR:
+/// usage/queue rows could otherwise push a 24 MiB window over the 64 MiB
+/// frame).
+pub const SNAPSHOT_PAYLOAD_BUDGET_BYTES: usize = 24 * 1024 * 1024;
+
+/// The daemon frame ceiling the snapshot must fit. Mirrors
+/// `bridge_client::MAX_SERVER_FRAME_BYTES`; duplicated here so `store` does
+/// not depend on the transport crate for a constant.
+pub const SNAPSHOT_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// Headroom reserved for the snapshot's non-entry fields (head, leaves,
+/// divergence states, completion summary, JSON framing) when deriving the
+/// entry budget from measured overhead.
+pub const SNAPSHOT_FRAME_MARGIN_BYTES: usize = 4 * 1024 * 1024;
+
+/// Derive the entry-payload budget from the snapshot's measured non-entry
+/// overhead: whatever the frame has left after overhead and margin, capped at
+/// the default so ordinary snapshots behave exactly as before.
+pub fn snapshot_entry_budget(overhead_bytes: usize) -> usize {
+    SNAPSHOT_FRAME_BYTES
+        .saturating_sub(overhead_bytes.saturating_add(SNAPSHOT_FRAME_MARGIN_BYTES))
+        .min(SNAPSHOT_PAYLOAD_BUDGET_BYTES)
+}
 
 /// The number of newest entries a snapshot carries.
 ///
@@ -3572,6 +3597,19 @@ pub fn session_entry_window(
     session_id: &str,
     limit: usize,
 ) -> Result<SessionEntryWindow, BridgeError> {
+    session_entry_window_with_budget(db, session_id, limit, SNAPSHOT_PAYLOAD_BUDGET_BYTES)
+}
+
+/// Same as [`session_entry_window`], but the caller supplies the entry-payload
+/// budget — typically [`snapshot_entry_budget`] of the snapshot's measured
+/// non-entry overhead, so a workspace heavy with usage/queue rows tightens the
+/// window before the full frame is assembled rather than after it overflows.
+pub fn session_entry_window_with_budget(
+    db: &Connection,
+    session_id: &str,
+    limit: usize,
+    entry_budget: usize,
+) -> Result<SessionEntryWindow, BridgeError> {
     let total: i64 = db.query_row(
         &format!("{ACTIVE_BRANCH_CTE} SELECT count(*) FROM active_branch"),
         params![session_id],
@@ -3586,14 +3624,14 @@ pub fn session_entry_window(
 
     // Untrimmed first. Nearly every session fits, and one that fits must reach
     // the UI byte-identical to what is stored.
-    if let Some(read) = window(usize::MAX, SNAPSHOT_PAYLOAD_BUDGET_BYTES)? {
+    if let Some(read) = window(usize::MAX, entry_budget)? {
         return Ok(assemble(read));
     }
     let (floor, rungs) = SNAPSHOT_STRING_CAPS
         .split_last()
         .expect("the cap ladder is never empty");
     for &cap in rungs {
-        if let Some(read) = window(cap, SNAPSHOT_PAYLOAD_BUDGET_BYTES)? {
+        if let Some(read) = window(cap, entry_budget)? {
             return Ok(assemble(read));
         }
     }
