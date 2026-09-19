@@ -93,7 +93,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let db = crate::store::open(&temp.path().join("favorites.db")).unwrap();
         let mut settings = load(&db).unwrap();
-        assert_eq!(settings.pinned_providers, vec![Codex, Claude, Cursor]);
+        assert_eq!(settings.pinned_providers, vec![Codex, Claude]);
         assert!(!settings.cursor_enabled && !settings.claude_enabled);
         settings.pinned_providers = vec![Cursor, OpenCode, Claude];
         let saved = save(&db, &settings).unwrap();

@@ -156,10 +156,10 @@ it("serializes rapid provider changes against the last confirmed settings", asyn
   expect(container.querySelector('[aria-label="Read Cursor usage"]')!.getAttribute("aria-checked")).toBe("true");
 });
 
-it("defaults to Codex, Claude and Cursor favorites without connecting their accounts", async () => {
+it("defaults to Codex and Claude favorites without connecting their accounts", async () => {
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));
-  for (const [index, name] of ["Codex", "Claude", "Cursor"].entries()) {
+  for (const [index, name] of ["Codex", "Claude"].entries()) {
     expect(container.querySelector(`[aria-label="Favorite provider ${index + 1}"]`)?.textContent).toBe(name);
   }
   expect(container.querySelector('[aria-label="Read Cursor usage"]')!.getAttribute("aria-checked")).toBe("false");
@@ -169,6 +169,7 @@ it("defaults to Codex, Claude and Cursor favorites without connecting their acco
 it("saves a favorite replacement without changing enabled accounts", async () => {
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Add favorite")!.click());
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Favorite provider 3"]')!.click());
   const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "OpenCode")!;
   expect(option).toBeDefined();
@@ -225,16 +226,16 @@ it("limits separate icon owners to enabled favorites as favorites are added and 
   expect(owners()).toBe("Cursor, Codex");
 });
 
-it("adds a fourth favorite without connecting the provider", async () => {
+it("adds Cursor as the next favorite without connecting its account", async () => {
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));
-  expect(container.querySelector('[aria-label="Favorite provider 4"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Favorite provider 3"]')).toBeNull();
   const add = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Add favorite")!;
   await act(async () => add.click());
-  expect(save).toHaveBeenLastCalledWith({ ...settings, pinnedProviders: ["codex", "claude", "cursor", "opencode"] });
-  expect(container.querySelector('[aria-label="Favorite provider 4"]')?.textContent).toBe("OpenCode");
-  expect(container.querySelector('[aria-label="Read OpenCode usage"]')?.getAttribute("aria-checked")).toBe("false");
-  expect(add.disabled).toBe(true);
+  expect(save).toHaveBeenLastCalledWith({ ...settings, pinnedProviders: ["codex", "claude", "cursor"] });
+  expect(container.querySelector('[aria-label="Favorite provider 3"]')?.textContent).toBe("Cursor");
+  expect(container.querySelector('[aria-label="Read Cursor usage"]')?.getAttribute("aria-checked")).toBe("false");
+  expect(add.disabled).toBe(false);
 });
 
 async function pasteOpenCodeKey(value: string) {

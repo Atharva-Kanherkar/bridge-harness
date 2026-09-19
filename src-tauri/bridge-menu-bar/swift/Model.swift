@@ -96,7 +96,7 @@ struct MenuSettings: Decodable {
         [("codex", codexEnabled), ("claude", claudeEnabled), ("cursor", cursorEnabled), ("opencode", opencodeEnabled)].filter { $0.1 }.map { $0.0 }
     }
     var normalizedPinnedProviders: [String] {
-        let requested = pinnedProviders ?? ["codex", "claude", "cursor"]
+        let requested = pinnedProviders ?? ["codex", "claude"]
         return requested.reduce(into: [String]()) { result, provider in
             if !provider.isEmpty && !result.contains(provider) { result.append(provider) }
         }

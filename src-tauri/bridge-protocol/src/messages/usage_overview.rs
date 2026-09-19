@@ -209,7 +209,6 @@ fn default_pinned_providers() -> Vec<MenuBarProvider> {
     vec![
         MenuBarProvider::Codex,
         MenuBarProvider::Claude,
-        MenuBarProvider::Cursor,
     ]
 }
 
