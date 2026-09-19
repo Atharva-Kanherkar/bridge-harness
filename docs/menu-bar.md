@@ -292,3 +292,39 @@ Before public distribution, verify the signed release on a fresh macOS account:
 Claude setup and explicit consent, silent refresh, denial and retry, credential
 rotation, and updating to a second release without an unexpected identity change.
 These distribution checks are separate from the locally approved preview.
+
+## OpenCode Go connection and limits
+
+OpenCode's menu provider now reads Go's five-hour, weekly, and monthly quota
+windows using `GET https://opencode.ai/zen/go/v1/usage`. Percentages and reset
+instants are reported by OpenCode; no inference request, estimated allowance,
+or synthetic zero is used. Local token history remains independent of quotas.
+
+**Connect OpenCode** opens `https://opencode.ai/auth` in the system default
+browser, reusing its existing sign-in. Go does not provide an OAuth callback:
+copy the account's API key into the password field and choose **Save key**, or
+connect **OpenCode Go** through OpenCode's `/connect` / `opencode auth login`
+and refresh. Bridge uses its existing OpenCode provider-auth API to save a key;
+OpenCode must be installed. Saving confirms storage; Refresh checks subscription
+access. The key is cleared from the form on submission and
+is never saved in Menu Bar preferences. Enable OpenCode usage and add it to
+favorites to make its quota bars visible.
+
+The collector honors `OPENCODE_AUTH_CONTENT`, otherwise reads the bounded
+`$XDG_DATA_HOME/opencode/auth.json` (default `~/.local/share/opencode/auth.json`).
+Only the `opencode-go` API entry is used, taking precedence over
+`OPENCODE_API_KEY`. Invalid configured credentials do not fall back to another
+account. While `OPENCODE_AUTH_CONTENT` is set, key changes are rejected with an
+environment-managed-auth message. Saving or removing a Go key clears persisted
+quota data and excludes concurrent refresh until the auth change finishes.
+Requests are bounded to five seconds and do not follow redirects.
+Missing, rejected or malformed account reads clear previous Go limits. An HTTP
+403 asks the user to check the key's workspace and Go subscription.
+
+Existing Zen web sessions remain readable when no Go credential is configured;
+the optional workspace override applies only to those sessions. New sign-ins no
+longer create a separate webview or collect browser cookies.
+
+Implementation references: [OpenCode Go onboarding](https://opencode.ai/docs/go/),
+[T3 Code's Go quota reader](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/provider/Layers/openCodeUsageLimits.ts),
+and [CodexBar's Go collector](https://github.com/steipete/CodexBar/blob/main/Sources/CodexBarCore/Providers/OpenCodeGo/OpenCodeGoUsageFetcher.swift).

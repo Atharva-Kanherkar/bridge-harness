@@ -887,11 +887,13 @@ fn cache_provider_result(
             }
         }
         Err(error) => CachedProvider {
-            // Claude's optional profile lookup cannot prove that a failed read
+            // OpenCode and Claude cannot prove that a failed read
             // still belongs to the cached account. In particular, expired or
             // rejected credentials must not leave another login's quota bars
             // behind. Local token history remains independently available.
-            usage: prior.usage.filter(|_| provider != bridge_protocol::messages::MenuBarProvider::Claude).map(|mut q| {
+            usage: prior.usage.filter(|_| !matches!(provider,
+                bridge_protocol::messages::MenuBarProvider::Claude | bridge_protocol::messages::MenuBarProvider::OpenCode
+            )).map(|mut q| {
                 let retain = provider == bridge_protocol::messages::MenuBarProvider::Cursor
                     && error.retry_account_scope.as_deref().is_some_and(|scope| {
                         !scope.is_empty()
@@ -1419,9 +1421,32 @@ mod provider_tests {
                 }),
                 error: None,
             };
-            let failed = cache_provider_result(MenuBarProvider::Claude, prior, Err(error.into()));
-            assert!(failed.usage.is_none());
-            assert_eq!(failed.error.as_deref(), Some(error));
+            for provider in [MenuBarProvider::Claude, MenuBarProvider::OpenCode] {
+                let failed = cache_provider_result(provider, CachedProvider { usage: prior.usage.clone(), error: None }, Err(error.into()));
+                assert!(failed.usage.is_none());
+                assert_eq!(failed.error.as_deref(), Some(error));
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_auth_mutation_clears_cache_and_blocks_refresh_even_on_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let core = crate::runtime::BridgeCore::for_tests(directory.path());
+        for succeeds in [true, false] {
+            core.db.lock().unwrap().execute(
+                "INSERT OR REPLACE INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview','opencode',?1,'0','0')",
+                [r#"{"usage":{"account":"old-account","observed_at":10,"windows":[],"metrics":[]},"error":null}"#],
+            ).unwrap();
+            core.usage_overview.providers[2].lock().unwrap().completed_at = Some(Instant::now());
+            let result = with_opencode_auth_change(&core, || {
+                assert!(core.usage_overview.providers[2].try_lock().is_err(), "refresh cannot race with the credential change");
+                assert!(load_provider(&core.db.lock().unwrap(), "opencode").unwrap().usage.is_none());
+                if succeeds { Ok(()) } else { Err(BridgeError::Invalid("catalog failed after save".into())) }
+            });
+            assert_eq!(result.is_ok(), succeeds);
+            assert!(core.usage_overview.providers[2].lock().unwrap().completed_at.is_none());
+            assert!(load_provider(&core.db.lock().unwrap(), "opencode").unwrap().usage.is_none());
         }
     }
 
@@ -1443,6 +1468,16 @@ mod provider_tests {
 
 /// Account connection changes invalidate both the old identity and refresh gate.
 pub fn invalidate_opencode(core: &BridgeCore) -> Result<(), BridgeError> {
+    with_opencode_auth_change(core, || Ok(()))
+}
+
+/// Exclude quota refresh during auth mutation. Clear first: OpenCode may save
+/// successfully and then fail catalog discovery, so even a failed result can
+/// mean the old account is no longer authoritative.
+pub(crate) fn with_opencode_auth_change<T>(
+    core: &BridgeCore,
+    change: impl FnOnce() -> Result<T, BridgeError>,
+) -> Result<T, BridgeError> {
     let mut last = core.usage_overview.providers[2]
         .lock()
         .map_err(|_| BridgeError::Invalid("OpenCode refresh unavailable".into()))?;
@@ -1451,5 +1486,5 @@ pub fn invalidate_opencode(core: &BridgeCore) -> Result<(), BridgeError> {
         [],
     )?;
     *last = ProviderRefreshState::default();
-    Ok(())
+    change()
 }

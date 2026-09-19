@@ -1485,11 +1485,9 @@ export const bridgeApi = {
     ? listen<ProviderUsageOverviews>("bridge-provider-usage-overviews", event => handler(event.payload)) : Promise.resolve(() => undefined),
   connectMenuBarOpenCode: async (): Promise<void> => {
     if (!isTauri()) throw new Error("Open Bridge desktop to connect OpenCode.");
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit("bridge-menu-bar-connect-opencode");
+    const { openExternalUrl } = await import("./externalLinks");
+    await openExternalUrl("https://opencode.ai/auth");
   },
-  onMenuBarConnection: (handler: (message: string) => void): Promise<UnlistenFn> => isTauri()
-    ? listen<string>("bridge-menu-bar-connection", event => handler(event.payload)) : Promise.resolve(() => undefined),
   onMenuBarSettingsChanged: (handler: () => void): Promise<UnlistenFn> => isTauri()
     ? listen("bridge-menu-bar-settings-changed", handler) : Promise.resolve(() => undefined),
   getUsageOverview: (): Promise<UsageOverviewSnapshot | null> => isTauri()

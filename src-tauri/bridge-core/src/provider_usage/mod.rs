@@ -6,6 +6,7 @@ pub mod credentials;
 mod cursor;
 mod http;
 mod opencode;
+mod opencode_go;
 
 pub fn shutdown() {
     claude_cli::shutdown();

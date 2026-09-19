@@ -226,3 +226,50 @@ it("adds a fourth favorite without connecting the provider", async () => {
   expect(container.querySelector('[aria-label="Read OpenCode usage"]')?.getAttribute("aria-checked")).toBe("false");
   expect(add.disabled).toBe(true);
 });
+
+async function pasteOpenCodeKey(value: string) {
+  const input = container.querySelector<HTMLInputElement>('[aria-label="OpenCode Go API key"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  return input;
+}
+
+it("saves Go through OpenCode's auth API, clears the secret and refreshes enabled usage", async () => {
+  vi.mocked(bridgeApi.getMenuBarSettings).mockResolvedValue({ ...settings, opencodeEnabled: true });
+  const connect = vi.spyOn(bridgeApi, "setOpenCodeProviderApiKey").mockResolvedValue({ executablePath: "opencode", version: "1.18.3", providers: [] });
+  const refresh = vi.spyOn(bridgeApi, "refreshProviderUsageOverviews").mockResolvedValue(null);
+  const preferences = vi.spyOn(bridgeApi, "saveMenuBarSettings");
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const input = await pasteOpenCodeKey(" test-go-key ");
+  expect(input.type).toBe("password");
+  await act(async () => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(connect).toHaveBeenCalledWith("opencode-go", "test-go-key");
+  expect(input.value).toBe("");
+  expect(refresh).toHaveBeenCalledOnce();
+  expect(preferences).not.toHaveBeenCalled();
+  expect(container.textContent).toContain("OpenCode Go API key saved");
+});
+
+it("does not retain or display API keys when OpenCode connection fails", async () => {
+  vi.spyOn(bridgeApi, "setOpenCodeProviderApiKey").mockRejectedValue(new Error("bad request secret-key"));
+  const refresh = vi.spyOn(bridgeApi, "refreshProviderUsageOverviews");
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const input = await pasteOpenCodeKey("secret-key");
+  await act(async () => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(input.value).toBe("");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not save the OpenCode Go API key");
+  expect(container.textContent).not.toContain("secret-key");
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+it("explains environment-managed OpenCode credentials without leaking the error payload", async () => {
+  vi.spyOn(bridgeApi, "setOpenCodeProviderApiKey").mockRejectedValue(new Error("OPENCODE_AUTH_CONTENT private-details"));
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const input = await pasteOpenCodeKey("new-key");
+  await act(async () => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Update that environment setting instead");
+  expect(container.textContent).not.toContain("private-details");
+  expect(input.value).toBe("");
+});
