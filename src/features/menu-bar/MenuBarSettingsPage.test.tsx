@@ -78,7 +78,17 @@ it("refreshes the provider group and opens the explicit OpenCode connection flow
   expect(refresh).toHaveBeenCalledOnce();
   await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Connect OpenCode")!.click());
   expect(connect).toHaveBeenCalledOnce();
-  expect(container.textContent).toContain("Complete sign-in");
+});
+
+it("shows the result from the native default-browser dispatch", async () => {
+  let publish: (message: string) => void = () => undefined;
+  vi.spyOn(bridgeApi, "onMenuBarConnection").mockImplementation(async handler => {
+    publish = handler;
+    return () => undefined;
+  });
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => publish("OpenCode sign-in opened in your default browser. Copy the Go API key, then paste it here."));
+  expect(container.textContent).toContain("OpenCode sign-in opened in your default browser");
 });
 
 it("composes a two-line icon layout without saving until Apply", async () => {
@@ -146,10 +156,10 @@ it("serializes rapid provider changes against the last confirmed settings", asyn
   expect(container.querySelector('[aria-label="Read Cursor usage"]')!.getAttribute("aria-checked")).toBe("true");
 });
 
-it("defaults to Codex, Claude and Cursor favorites without connecting their accounts", async () => {
+it("defaults to Codex and Claude favorites without connecting their accounts", async () => {
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));
-  for (const [index, name] of ["Codex", "Claude", "Cursor"].entries()) {
+  for (const [index, name] of ["Codex", "Claude"].entries()) {
     expect(container.querySelector(`[aria-label="Favorite provider ${index + 1}"]`)?.textContent).toBe(name);
   }
   expect(container.querySelector('[aria-label="Read Cursor usage"]')!.getAttribute("aria-checked")).toBe("false");
@@ -159,6 +169,7 @@ it("defaults to Codex, Claude and Cursor favorites without connecting their acco
 it("saves a favorite replacement without changing enabled accounts", async () => {
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Add favorite")!.click());
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Favorite provider 3"]')!.click());
   const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "OpenCode")!;
   expect(option).toBeDefined();
@@ -215,14 +226,61 @@ it("limits separate icon owners to enabled favorites as favorites are added and 
   expect(owners()).toBe("Cursor, Codex");
 });
 
-it("adds a fourth favorite without connecting the provider", async () => {
+it("adds Cursor as the next favorite without connecting its account", async () => {
   const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
   await act(async () => root.render(<MenuBarSettingsPage />));
-  expect(container.querySelector('[aria-label="Favorite provider 4"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Favorite provider 3"]')).toBeNull();
   const add = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Add favorite")!;
   await act(async () => add.click());
-  expect(save).toHaveBeenLastCalledWith({ ...settings, pinnedProviders: ["codex", "claude", "cursor", "opencode"] });
-  expect(container.querySelector('[aria-label="Favorite provider 4"]')?.textContent).toBe("OpenCode");
-  expect(container.querySelector('[aria-label="Read OpenCode usage"]')?.getAttribute("aria-checked")).toBe("false");
-  expect(add.disabled).toBe(true);
+  expect(save).toHaveBeenLastCalledWith({ ...settings, pinnedProviders: ["codex", "claude", "cursor"] });
+  expect(container.querySelector('[aria-label="Favorite provider 3"]')?.textContent).toBe("Cursor");
+  expect(container.querySelector('[aria-label="Read Cursor usage"]')?.getAttribute("aria-checked")).toBe("false");
+  expect(add.disabled).toBe(false);
+});
+
+async function pasteOpenCodeKey(value: string) {
+  const input = container.querySelector<HTMLInputElement>('[aria-label="OpenCode Go API key"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  return input;
+}
+
+it("saves Go through OpenCode's auth API, clears the secret and refreshes enabled usage", async () => {
+  vi.mocked(bridgeApi.getMenuBarSettings).mockResolvedValue({ ...settings, opencodeEnabled: true });
+  const connect = vi.spyOn(bridgeApi, "setOpenCodeProviderApiKey").mockResolvedValue({ executablePath: "opencode", version: "1.18.3", providers: [] });
+  const refresh = vi.spyOn(bridgeApi, "refreshProviderUsageOverviews").mockResolvedValue(null);
+  const preferences = vi.spyOn(bridgeApi, "saveMenuBarSettings");
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const input = await pasteOpenCodeKey(" test-go-key ");
+  expect(input.type).toBe("password");
+  await act(async () => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(connect).toHaveBeenCalledWith("opencode-go", "test-go-key");
+  expect(input.value).toBe("");
+  expect(refresh).toHaveBeenCalledOnce();
+  expect(preferences).not.toHaveBeenCalled();
+  expect(container.textContent).toContain("OpenCode Go API key saved");
+});
+
+it("does not retain or display API keys when OpenCode connection fails", async () => {
+  vi.spyOn(bridgeApi, "setOpenCodeProviderApiKey").mockRejectedValue(new Error("bad request secret-key"));
+  const refresh = vi.spyOn(bridgeApi, "refreshProviderUsageOverviews");
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const input = await pasteOpenCodeKey("secret-key");
+  await act(async () => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(input.value).toBe("");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not save the OpenCode Go API key");
+  expect(container.textContent).not.toContain("secret-key");
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+it("explains environment-managed OpenCode credentials without leaking the error payload", async () => {
+  vi.spyOn(bridgeApi, "setOpenCodeProviderApiKey").mockRejectedValue(new Error("OPENCODE_AUTH_CONTENT private-details"));
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  const input = await pasteOpenCodeKey("new-key");
+  await act(async () => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Update that environment setting instead");
+  expect(container.textContent).not.toContain("private-details");
+  expect(input.value).toBe("");
 });

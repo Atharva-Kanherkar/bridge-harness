@@ -189,15 +189,12 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
             let _ = signal.try_send(Work::SettingsChanged);
         });
         let connection_app = handle.clone();
-        let connection_host = host.clone();
         app.listen("bridge-menu-bar-connect-opencode", move |_| {
-            if let Err(error) = connect::open(&connection_app, connection_host.clone()) {
-                let _ = connection_app.emit("bridge-menu-bar-connection", error);
-            }
-        });
-        let signal = send.clone();
-        app.listen("bridge-menu-bar-connected", move |_| {
-            let _ = signal.try_send(Work::Refresh);
+            let message = match connect::open_default_browser() {
+                Ok(()) => "OpenCode sign-in opened in your default browser. Copy the Go API key, then paste it here.".into(),
+                Err(error) => error,
+            };
+            let _ = connection_app.emit("bridge-menu-bar-connection", message);
         });
         let signal = send.clone();
         app.listen("account-usage", move |_| {

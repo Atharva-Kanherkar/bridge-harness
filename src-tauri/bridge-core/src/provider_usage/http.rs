@@ -38,6 +38,7 @@ pub(super) fn text(request: RequestBuilder, provider: &str) -> Result<String, St
 fn status_error(status: reqwest::StatusCode, provider: &str) -> RequestError {
     RequestError {
         message: match status.as_u16() {
+            403 if provider == "OpenCode Go" => "OpenCode Go access is unavailable. Check that this API key belongs to a workspace with an active Go subscription.".into(),
             401 | 403 => format!("Reconnect {provider} to read account usage."),
             429 => format!("{provider} is rate limited. Wait a few minutes before refreshing."),
             _ => format!("{provider} usage is unavailable (HTTP {}).", status.as_u16()),

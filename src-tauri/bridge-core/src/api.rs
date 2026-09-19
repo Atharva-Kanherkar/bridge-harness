@@ -4555,8 +4555,14 @@ pub fn set_opencode_provider_api_key(
     directory: Option<String>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
-    core.adapter_registry
-        .set_opencode_provider_api_key(&directory, provider_id, api_key)
+    let save = || core.adapter_registry
+        .set_opencode_provider_api_key(&directory, provider_id, api_key);
+    if provider_id == "opencode-go" {
+        ensure_opencode_auth_is_mutable()?;
+        crate::usage_overview::with_opencode_auth_change(core, save)
+    } else {
+        save()
+    }
 }
 
 pub fn remove_opencode_provider_auth(
@@ -4565,8 +4571,21 @@ pub fn remove_opencode_provider_auth(
     directory: Option<String>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
-    core.adapter_registry
-        .remove_opencode_provider_auth(&directory, provider_id)
+    let remove = || core.adapter_registry
+        .remove_opencode_provider_auth(&directory, provider_id);
+    if provider_id == "opencode-go" {
+        ensure_opencode_auth_is_mutable()?;
+        crate::usage_overview::with_opencode_auth_change(core, remove)
+    } else {
+        remove()
+    }
+}
+
+fn ensure_opencode_auth_is_mutable() -> Result<(), BridgeError> {
+    if std::env::var_os("OPENCODE_AUTH_CONTENT").is_some_and(|value| !value.is_empty()) {
+        return Err(BridgeError::Invalid("OpenCode authentication is managed by OPENCODE_AUTH_CONTENT. Update that environment setting instead.".into()));
+    }
+    Ok(())
 }
 
 pub fn save_agent_config(
