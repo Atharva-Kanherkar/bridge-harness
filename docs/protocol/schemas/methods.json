@@ -289,6 +289,13 @@
       "resultSchema": "create-aside-chat-result.json"
     },
     {
+      "command": "fork_session",
+      "domain": "sessions",
+      "method": "sessions/fork_session",
+      "paramsSchema": "fork-session-params.json",
+      "resultSchema": "fork-session-result.json"
+    },
+    {
       "command": "create_workspace_session",
       "domain": "sessions",
       "method": "sessions/create_workspace_session",

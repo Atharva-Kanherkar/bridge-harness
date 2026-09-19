@@ -693,6 +693,12 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "work_tasks", "source_activity_at", "TEXT")?;
                 add_column_if_missing(&transaction, "work_evidence", "source_activity_at", "TEXT")?;
             }
+            // Fork origin on the sessions table: which parent entry a session
+            // was forked from, and which worktree policy the fork chose.
+            58 => {
+                add_column_if_missing(&transaction, "sessions", "fork_parent_entry_id", "TEXT")?;
+                add_column_if_missing(&transaction, "sessions", "fork_worktree_policy", "TEXT")?;
+            }
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

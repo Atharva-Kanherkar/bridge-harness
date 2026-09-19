@@ -48,6 +48,7 @@ export type BridgeMethod =
   | "sessions/create_chat"
   | "sessions/create_chat_id"
   | "sessions/create_aside_chat"
+  | "sessions/fork_session"
   | "sessions/create_workspace_session"
   | "sessions/start_session"
   | "sessions/start_chat"
@@ -240,6 +241,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/create_chat", domain: "sessions", command: "create_chat" },
   { method: "sessions/create_chat_id", domain: "sessions", command: "create_chat_id" },
   { method: "sessions/create_aside_chat", domain: "sessions", command: "create_aside_chat" },
+  { method: "sessions/fork_session", domain: "sessions", command: "fork_session" },
   { method: "sessions/create_workspace_session", domain: "sessions", command: "create_workspace_session" },
   { method: "sessions/start_session", domain: "sessions", command: "start_session" },
   { method: "sessions/start_chat", domain: "sessions", command: "start_chat" },
@@ -494,6 +496,7 @@ export interface BridgeMethodParams {
   "sessions/create_chat": CreateChatParams;
   "sessions/create_chat_id": CreateChatIdParams;
   "sessions/create_aside_chat": CreateAsideChatParams;
+  "sessions/fork_session": ForkSessionParams;
   "sessions/create_workspace_session": CreateWorkspaceSessionParams;
   "sessions/start_session": StartSessionParams;
   "sessions/start_chat": StartChatParams;
@@ -688,6 +691,7 @@ export interface BridgeMethodResults {
   "sessions/create_chat": BridgeState;
   "sessions/create_chat_id": CreateChatIdResult;
   "sessions/create_aside_chat": CreateAsideChatResult;
+  "sessions/fork_session": ForkSessionResult;
   "sessions/create_workspace_session": BridgeState;
   "sessions/start_session": BridgeState;
   "sessions/start_chat": BridgeState;
@@ -1726,6 +1730,22 @@ export interface SessionEntryWindowSummary {
   trimmedPayloads: JsSafeI64;
 }
 
+export interface SessionForestSnapshot {
+  completion?: CompletionSummary | null;
+  entries: SessionEntry[];
+  entryWindow: SessionEntryWindowSummary;
+  head?: SessionHead | null;
+  leaves: SessionEntry[];
+  policyLimits: PolicyLimits;
+  reasons: BridgeEvent[];
+  repositoryDivergence: RepositoryDivergence;
+  sessionId: string;
+  usage: UsageLedgerRow[];
+  workerLeases: WorkerLease[];
+  workerQueue: QueuedWorkerRequest[];
+  workerRuntimes: WorkerRuntimeRecord[];
+}
+
 export interface SessionHead {
   activeEntryId?: string | null;
   latestCheckpointEntryId?: string | null;
@@ -2583,22 +2603,6 @@ export interface GetSessionForestParams {
   sessionId: string;
 }
 
-export interface SessionForestSnapshot {
-  completion?: CompletionSummary | null;
-  entries: SessionEntry[];
-  entryWindow: SessionEntryWindowSummary;
-  head?: SessionHead | null;
-  leaves: SessionEntry[];
-  policyLimits: PolicyLimits;
-  reasons: BridgeEvent[];
-  repositoryDivergence: RepositoryDivergence;
-  sessionId: string;
-  usage: UsageLedgerRow[];
-  workerLeases: WorkerLease[];
-  workerQueue: QueuedWorkerRequest[];
-  workerRuntimes: WorkerRuntimeRecord[];
-}
-
 export interface GetSessionForestDigestParams {
   sessionId: string;
 }
@@ -2670,6 +2674,22 @@ export interface CreateAsideChatResult {
   handoffStatus: string;
   sessionId: string;
   sourceSessionId: string;
+  state: BridgeState;
+}
+
+export interface ForkSessionParams {
+  entryId: string;
+  harness?: HarnessId | null;
+  model?: string | null;
+  sessionId: string;
+  title?: string | null;
+  worktreePolicy?: string;
+}
+
+export interface ForkSessionResult {
+  fidelity: string;
+  sessionId: string;
+  snapshot: SessionForestSnapshot;
   state: BridgeState;
 }
 

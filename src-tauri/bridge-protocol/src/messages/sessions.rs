@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use super::common::HarnessId;
+use super::forest::SessionForestSnapshot;
 use super::state::BridgeState;
 
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
@@ -228,6 +229,44 @@ pub struct CreateAsideChatResult {
     pub source_session_id: String,
     pub session_id: String,
     pub handoff_status: String,
+    pub fidelity: String,
+}
+
+fn default_shared_worktree() -> String {
+    "shared".into()
+}
+
+/// `sessions/fork_session`'s request: branch a session's conversation at an
+/// entry into a new, independent session that begins with the parent's
+/// history up to that point. The parent is never modified.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForkSessionParams {
+    pub session_id: String,
+    pub entry_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Inherits the parent's harness when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    /// Inherits the parent's model when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `"shared"` — both sessions work the same repo path (default).
+    /// `"new"` — the fork gets its own Git worktree and branch.
+    #[serde(default = "default_shared_worktree")]
+    pub worktree_policy: String,
+}
+
+/// `sessions/fork_session`'s result: app state (the sidebar can pick the fork
+/// up immediately), the exact committed fork id, and the fork's own forest
+/// snapshot so the UI can switch to it in one round trip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkSessionResult {
+    pub state: BridgeState,
+    pub session_id: String,
+    pub snapshot: SessionForestSnapshot,
     pub fidelity: String,
 }
 

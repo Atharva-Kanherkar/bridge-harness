@@ -8,6 +8,7 @@
 //! and out-of-set enum values all fail here with `invalid_params` instead of
 //! deep inside the runtime.
 
+use bridge_core::model::Harness;
 use bridge_core::{api, learning_job, BridgeCore, BridgeError};
 use bridge_protocol::messages as wire;
 use bridge_protocol::{ErrorCode, MethodName, RpcError, TypedMethod};
@@ -868,6 +869,18 @@ pub fn dispatch(
                 &p.prompt,
                 &p.schedule_expression,
                 p.recurring,
+            ))
+        }
+        MethodName::ForkSession => {
+            let p: wire::ForkSessionParams = decode(method, params)?;
+            reply(api::fork_session(
+                core,
+                &p.session_id,
+                &p.entry_id,
+                p.title.as_deref(),
+                p.harness.clone().map(Harness::from).as_ref(),
+                p.model.as_deref(),
+                &p.worktree_policy,
             ))
         }
         MethodName::ExecuteAutomationAction => {

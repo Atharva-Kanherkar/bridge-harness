@@ -1027,6 +1027,28 @@ pub fn create_aside_chat(
     })
 }
 
+/// Fork a session's conversation branch at an entry. Returns the exact fork
+/// id, its own forest snapshot, and the app state so the sidebar can switch
+/// to the fork immediately. The parent is never modified.
+pub fn fork_session(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    entry_id: &str,
+    title: Option<&str>,
+    harness: Option<&Harness>,
+    model: Option<&str>,
+    worktree_policy: &str,
+) -> Result<wire::ForkSessionResult, BridgeError> {
+    let (fork_id, snapshot, fidelity) =
+        core.fork_session(session_id, entry_id, title, harness, model, worktree_policy)?;
+    Ok(wire::ForkSessionResult {
+        state: protocol_wire(core.state_snapshot()?)?,
+        session_id: fork_id,
+        snapshot: protocol_wire(snapshot)?,
+        fidelity: fidelity.into(),
+    })
+}
+
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
 pub fn create_workspace_session(

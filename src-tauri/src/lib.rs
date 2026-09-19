@@ -1313,6 +1313,35 @@ async fn create_workspace_session(
     .await
 }
 
+/// Fork a session's conversation branch at an entry into a new, independent
+/// session whose forest begins with the parent's history up to the fork
+/// point. The parent is never modified. Worktree creation shells out to Git,
+/// so the whole operation runs on the blocking pool.
+#[tauri::command]
+async fn fork_session(
+    session_id: String,
+    entry_id: String,
+    title: Option<String>,
+    harness: Option<Harness>,
+    model: Option<String>,
+    worktree_policy: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ForkSessionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Session fork", move || {
+        api::fork_session(
+            &core,
+            &session_id,
+            &entry_id,
+            title.as_deref(),
+            harness.as_ref(),
+            model.as_deref(),
+            worktree_policy.as_deref().unwrap_or("shared"),
+        )
+    })
+    .await
+}
+
 /// Change a root chat's provider/model. Stops any running adapter so the next
 /// message starts a fresh provider session with the explicit user selection.
 #[tauri::command]
@@ -2414,6 +2443,7 @@ pub fn run() -> i32 {
             create_chat,
             create_chat_id,
             create_aside_chat,
+            fork_session,
             create_workspace_session,
             connect_workspace_folder,
             clone_workspace_repo,
