@@ -569,8 +569,9 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
       return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? (title || "command"), command };
     }
     if (key === "read") return { verb: "read", glyph: "file", doing: "Reading", done: "Read", target: file ?? "file" };
-    if (key === "edit" || key === "multiedit" || key === "notebookedit") return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: file ?? "file" };
-    if (key === "write") return { verb: "edit", glyph: "file-plus", doing: "Writing", done: "Wrote", target: file ?? "file" };
+    if (key === "edit" || key === "multiedit" || key === "notebookedit") return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: fileChangeTarget(file, data) };
+    if (key === "write") return { verb: "edit", glyph: "file-plus", doing: "Writing", done: "Wrote", target: fileChangeTarget(file, data) };
+    if (key === "patch" || key === "apply_patch") return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: fileChangeTarget(file, data) };
     if (key === "grep" || key === "glob") {
       const pattern = text(input.pattern);
       return { verb: "search", glyph: "search", doing: "Searching", done: "Searched", target: pattern ? `“${pattern}”` : "files" };

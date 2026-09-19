@@ -1911,7 +1911,7 @@ fn extract_file_change(data: &Value) -> ExtractedFileChange {
         .or_else(|| {
             metadata
                 .get("filediff")
-                .and_then(|filediff| json_text(filediff, &["patch", "diff"]))
+                .and_then(|filediff| json_patch(filediff, &["patch", "diff"]))
         })
         .or_else(|| first_patch(metadata))
         .or_else(|| first_patch(input))
@@ -1919,7 +1919,7 @@ fn extract_file_change(data: &Value) -> ExtractedFileChange {
         .or(change_patch)
         .or(file_patch)
         .or_else(|| {
-            json_text(input, &["patchText", "patch_text"])
+            json_patch(input, &["patchText", "patch_text"])
                 .filter(|text| looks_like_patch(text))
                 .map(str::to_owned)
         })
@@ -1990,7 +1990,7 @@ fn join_change_patches(entries: Option<&Value>) -> Option<String> {
     let patches: Vec<String> = entries
         .iter()
         .filter_map(|entry| {
-            let diff = json_text(entry, &["diff", "patch", "unifiedDiff"])?;
+            let diff = json_patch(entry, &["diff", "patch", "unifiedDiff"])?;
             let path = json_text(entry, &["path", "file", "filePath", "file_path"]).unwrap_or("file");
             let kind = json_text(entry, &["kind", "type"]);
             Some(normalize_provider_diff(path, kind, diff))
@@ -2003,7 +2003,7 @@ fn join_file_patches(entries: Option<&Value>) -> Option<String> {
     let entries = entries.and_then(Value::as_array)?;
     let patches: Vec<&str> = entries
         .iter()
-        .filter_map(|entry| json_text(entry, &["patch", "diff", "unifiedDiff"]))
+        .filter_map(|entry| json_patch(entry, &["patch", "diff", "unifiedDiff"]))
         .collect();
     (!patches.is_empty()).then(|| patches.join("\n"))
 }
@@ -2023,19 +2023,19 @@ fn normalize_provider_diff(path: &str, kind: Option<&str>, diff: &str) -> String
 
 fn synthesize_opencode_file_patch(input: &Value, path: Option<&str>) -> Option<String> {
     let path = path?;
-    if let Some(content) = json_text(input, &["content", "new_source"]) {
+    if let Some(content) = json_patch(input, &["content", "new_source"]) {
         return synthesize_file_patch(path, "", content, true);
     }
-    let old = json_text(input, &["oldString", "old_string"]).unwrap_or("");
-    let new = json_text(input, &["newString", "new_string"]).unwrap_or("");
+    let old = json_patch(input, &["oldString", "old_string"]).unwrap_or("");
+    let new = json_patch(input, &["newString", "new_string"]).unwrap_or("");
     if old.is_empty() && new.is_empty() {
         if let Some(edits) = input.get("edits").and_then(Value::as_array) {
             let hunks: Vec<String> = edits
                 .iter()
                 .filter_map(|edit| {
                     claude_diff_hunk(
-                        json_text(edit, &["oldString", "old_string"]).unwrap_or(""),
-                        json_text(edit, &["newString", "new_string"]).unwrap_or(""),
+                        json_patch(edit, &["oldString", "old_string"]).unwrap_or(""),
+                        json_patch(edit, &["newString", "new_string"]).unwrap_or(""),
                     )
                 })
                 .collect();
@@ -2078,7 +2078,16 @@ fn paths_from_apply_patch(text: &str) -> Vec<String> {
 }
 
 fn first_patch(value: &Value) -> Option<&str> {
-    json_text(value, &["patch", "diff", "unifiedDiff"])
+    json_patch(value, &["patch", "diff", "unifiedDiff"])
+}
+
+fn json_patch<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+    })
 }
 
 fn looks_like_patch(text: &str) -> bool {
