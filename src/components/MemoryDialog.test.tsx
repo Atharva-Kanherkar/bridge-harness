@@ -83,7 +83,7 @@ beforeEach(() => {
   vi.spyOn(bridgeApi, "getExtractionSettings").mockImplementation(async () => structuredClone(extractionSettings));
   vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async (mode, harness, model) => {
     if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it.");
-    if (mode === "propose" && (!harness || !model)) throw new Error("Propose mode needs a pinned harness and model to run on.");
+    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
     extractionSettings = { ...extractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
     return structuredClone(extractionSettings);
   });
@@ -440,14 +440,38 @@ describe("MemoryDialog review queue", () => {
     expect(autoApply.title).toContain("replay bench");
   });
 
-  it("propose without a pinned profile is refused and the mode does not flip", async () => {
+  it("propose without a pinned helper flips the mode and runs on the chat's own model", async () => {
     const onError = vi.fn();
     mount({ onError });
     await flush();
     click(buttonByText("Review queue"));
+    expect(buttonByText("Remember").getAttribute("aria-pressed")).toBe("true");
     click(buttonByText("Propose"));
     await flush();
-    expect(onError).toHaveBeenCalledWith(expect.stringContaining("pinned harness and model"));
+    expect(onError).not.toHaveBeenCalled();
+    expect(buttonByText("Propose").getAttribute("aria-pressed")).toBe("true");
+    expect(extractionSettings.harness).toBeFalsy();
+    expect(extractionSettings.model).toBeFalsy();
+    expect(container.textContent).toContain("Chat's own model");
+  });
+
+  it("a helper pinned without a model is refused and the mode stays put", async () => {
+    const onError = vi.fn();
+    mount({
+      onError,
+      adapters: [{ id: "claude", label: "Claude", available: true, authState: "authenticated", capabilities: [], models: [] } as never],
+    });
+    await flush();
+    click(buttonByText("Review queue"));
+    const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(harness, "claude");
+      harness.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    click(buttonByText("Propose"));
+    await flush();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("both a helper and a model"));
     expect(buttonByText("Remember").getAttribute("aria-pressed")).toBe("true");
   });
 

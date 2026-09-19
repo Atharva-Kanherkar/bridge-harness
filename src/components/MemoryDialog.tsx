@@ -349,10 +349,10 @@ export function MemoryDialog({
             <button type="button" aria-pressed={settings?.mode === "propose"} className={tabClass(settings?.mode === "propose")} disabled={busy} onClick={() => void setMode("propose")}>Propose</button>
             <button type="button" aria-pressed={false} className={`${tabClass(false)} opacity-45`} disabled title="Auto-apply needs the replay bench before it can exist.">Auto-apply</button>
           </div>
-          <p className="text-[12px] leading-relaxed text-muted-foreground">Remember saves only what you ask. Propose replays finished turns on your pinned helper and queues suggestions here — nothing activates without you.</p>
+          <p className="text-[12px] leading-relaxed text-muted-foreground">Propose reviews each finished turn on the chat's own model and queues suggestions here — nothing activates without you. Pin a helper to run every review on one model instead. Remember saves only what you ask.</p>
           <div className="flex flex-wrap items-center gap-2">
             <select className={`${fieldClass} h-9 w-40`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
-              <option value="">Helper…</option>
+              <option value="">Chat's own model</option>
               {adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
             </select>
             <select className={`${fieldClass} h-9 w-48`} value={profileModel} disabled={busy || !profileHarness} onChange={event => setProfileModel(event.target.value)} aria-label="Extraction model">

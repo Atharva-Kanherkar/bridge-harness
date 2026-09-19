@@ -4,9 +4,15 @@
 //! the briefing runner is: the decisions — what a digest contains, what a
 //! proposal must look like, what the gate refuses — are this module's
 //! responsibility, and they must be checkable without a network. The live
-//! binding (memory_extraction_live) runs the user's pinned harness and model
-//! in a hidden bounded session; the learning router is never consulted, and an
-//! extraction run writes no router decision.
+//! binding (memory_extraction_live) runs a hidden bounded session on the
+//! harness and model the finished conversation itself used, unless the user
+//! pinned a helper; the learning router is never consulted, and an extraction
+//! run writes no router decision.
+//!
+//! Propose is the default. A ledger that only ever holds what the user typed
+//! into `/pin` reads as memory that is never used, because almost nobody pins.
+//! Nothing a run proposes activates without the user: proposals queue for
+//! review, and the packet excludes them until approved.
 
 use crate::memory_ledger;
 use crate::BridgeError;
@@ -86,8 +92,38 @@ pub fn settings(db: &Connection, scope_key: &str) -> Result<ExtractionSettings, 
             },
         )
         .optional()?;
-    let (mode, harness, model) = row.unwrap_or((MODE_REMEMBER.to_string(), None, None));
+    let (mode, harness, model) = row.unwrap_or((MODE_PROPOSE.to_string(), None, None));
     Ok(ExtractionSettings { scope_key, mode, harness, model })
+}
+
+/// The harness and model a run for `session_id` executes on.
+///
+/// A pinned helper wins. Otherwise the conversation's own harness serves,
+/// with `None` for the model when the session never chose one so the adapter
+/// starts on its default. A harness that cannot hold briefing authority is not
+/// a profile: an extraction turn is tool-free, and only an adapter that can
+/// enforce that may run one.
+pub fn resolve_profile(
+    db: &Connection,
+    settings: &ExtractionSettings,
+    session_id: &str,
+) -> Result<Option<(String, Option<String>)>, BridgeError> {
+    if let (Some(harness), Some(model)) = (&settings.harness, &settings.model) {
+        return Ok(Some((harness.clone(), Some(model.clone()))));
+    }
+    let session: Option<(String, Option<String>)> = db
+        .query_row(
+            "SELECT harness, model FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((harness, model)) = session else { return Ok(None) };
+    if crate::briefing_policy::adapter_may_brief(&harness).is_err() {
+        return Ok(None);
+    }
+    let model = model.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+    Ok(Some((harness, model)))
 }
 
 pub fn update_settings(
@@ -119,9 +155,9 @@ pub fn update_settings(
     };
     let harness = harness.map(str::trim).filter(|value| !value.is_empty());
     let model = model.map(str::trim).filter(|value| !value.is_empty());
-    if mode == MODE_PROPOSE && (harness.is_none() || model.is_none()) {
+    if harness.is_some() != model.is_some() {
         return Err(BridgeError::Invalid(
-            "Propose mode needs a pinned harness and model to run on.".into(),
+            "Pin both a helper and a model, or neither to run on each chat's own model.".into(),
         ));
     }
     // An extraction run is tool-free, and tool-free is enforced by the same
@@ -166,6 +202,13 @@ pub fn enqueue_after_turn(db: &Connection, session_id: &str) -> Result<bool, Bri
     if current.mode != MODE_PROPOSE {
         return Ok(false);
     }
+    // A chat on a harness that cannot run tool-free would queue a run that
+    // the claim can only cancel, after every turn, forever. Not enqueueing is
+    // the quiet answer; the setting still says propose, and a pinned helper
+    // makes such chats eligible.
+    if resolve_profile(db, &current, session_id)?.is_none() {
+        return Ok(false);
+    }
     let open: Option<i64> = db
         .query_row(
             "SELECT 1 FROM memory_extraction_runs
@@ -193,11 +236,13 @@ pub struct ClaimedExtraction {
     pub session_id: String,
     pub lease_owner: String,
     pub harness: String,
-    pub model: String,
+    /// `None` runs the harness on its default model.
+    pub model: Option<String>,
 }
 
-/// One due run, leased. A queued run whose scope has since left propose mode
-/// is settled `cancelled` rather than executed — turning it off means off.
+/// One due run, leased. A queued run whose scope has since left propose mode,
+/// or whose profile can no longer be resolved, is settled `cancelled` rather
+/// than executed — turning it off means off.
 pub fn claim_due(
     db: &Connection,
     now: DateTime<Utc>,
@@ -217,16 +262,26 @@ pub fn claim_due(
             return Ok(None);
         };
         let current = settings(db, &scope_key)?;
-        if current.mode != MODE_PROPOSE || current.harness.is_none() || current.model.is_none() {
+        let profile = if current.mode == MODE_PROPOSE {
+            resolve_profile(db, &current, &session_id)?
+        } else {
+            None
+        };
+        let Some((harness, model)) = profile else {
+            let detail = if current.mode == MODE_PROPOSE {
+                "no_extraction_profile"
+            } else {
+                "extraction_disabled"
+            };
             db.execute(
                 "UPDATE memory_extraction_runs
-                 SET status='cancelled', detail='extraction_disabled', lease_owner=NULL,
+                 SET status='cancelled', detail=?3, lease_owner=NULL,
                      lease_expires_at=NULL, updated_at=?2
                  WHERE id=?1 AND status IN ('queued','running')",
-                params![run_id, now.to_rfc3339()],
+                params![run_id, now.to_rfc3339(), detail],
             )?;
             continue;
-        }
+        };
         let lease_owner = Uuid::new_v4().to_string();
         let expires = (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339();
         let claimed = db.execute(
@@ -244,8 +299,8 @@ pub fn claim_due(
             scope_key,
             session_id,
             lease_owner,
-            harness: current.harness.expect("checked above"),
-            model: current.model.expect("checked above"),
+            harness,
+            model,
         }));
     }
 }
@@ -584,6 +639,19 @@ mod tests {
             .unwrap();
     }
 
+    fn remember_mode(db: &Connection) {
+        update_settings(db, ACCOUNT_MEMORY_SCOPE, MODE_REMEMBER, None, None).unwrap();
+    }
+
+    fn insert_chat_on(db: &Connection, id: &str, harness: &str, model: Option<&str>) {
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind)
+             VALUES(?1,NULL,?2,?1,'idle','reported',?3,'direct')",
+            params![id, harness, model],
+        )
+        .unwrap();
+    }
+
     struct CannedModel(String);
     impl ExtractionModel for CannedModel {
         fn propose(&mut self, _instructions: &str, _digest: &str) -> Result<ExtractionOutput, BridgeError> {
@@ -608,20 +676,92 @@ mod tests {
         let error = update_settings(&db, ACCOUNT_MEMORY_SCOPE, "auto_apply", Some("claude"), Some("m"))
             .unwrap_err();
         assert!(error.to_string().contains("replay bench"));
-        assert_eq!(settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap().mode, MODE_REMEMBER);
+        assert_eq!(settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap().mode, MODE_PROPOSE);
     }
 
     #[test]
-    fn propose_mode_needs_a_pinned_profile() {
+    fn propose_is_the_default_and_runs_on_the_chats_own_model() {
         let (_dir, db) = extraction_db();
-        assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None).is_err());
+        let current = settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+        assert_eq!(current.mode, MODE_PROPOSE);
+        assert_eq!(current.harness, None);
+        assert_eq!(current.model, None);
+        insert_chat_on(&db, "s1", "claude", Some("claude-sonnet-4-5"));
+        assert_eq!(
+            resolve_profile(&db, &current, "s1").unwrap(),
+            Some(("claude".to_string(), Some("claude-sonnet-4-5".to_string())))
+        );
+        assert!(enqueue_after_turn(&db, "s1").unwrap());
+        let claimed = claim_due(&db, Utc::now()).unwrap().unwrap();
+        assert_eq!(claimed.harness, "claude");
+        assert_eq!(claimed.model.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn a_chat_without_a_chosen_model_runs_on_the_harness_default() {
+        let (_dir, db) = extraction_db();
+        insert_chat_on(&db, "s1", "claude", None);
+        assert!(enqueue_after_turn(&db, "s1").unwrap());
+        let claimed = claim_due(&db, Utc::now()).unwrap().unwrap();
+        assert_eq!(claimed.harness, "claude");
+        assert_eq!(claimed.model, None, "no model pinned and none chosen: the adapter's default");
+    }
+
+    #[test]
+    fn a_pinned_helper_outranks_the_chats_own_harness() {
+        let (_dir, db) = extraction_db();
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("claude"), Some("haiku")).unwrap();
+        insert_chat_on(&db, "s1", "claude", Some("opus"));
+        assert!(enqueue_after_turn(&db, "s1").unwrap());
+        let claimed = claim_due(&db, Utc::now()).unwrap().unwrap();
+        assert_eq!(claimed.model.as_deref(), Some("haiku"));
+    }
+
+    #[test]
+    fn an_unpinned_chat_on_a_harness_that_cannot_run_tool_free_never_enqueues() {
+        let (_dir, db) = extraction_db();
+        // Codex and OpenCode adapters refuse to start under a briefing policy,
+        // so a run for such a chat could only ever be cancelled at claim time.
+        insert_chat_on(&db, "c1", "codex", Some("gpt-5.6-luna"));
+        insert_chat_on(&db, "o1", "opencode", None);
+        assert!(!enqueue_after_turn(&db, "c1").unwrap());
+        assert!(!enqueue_after_turn(&db, "o1").unwrap());
+        assert!(claim_due(&db, Utc::now()).unwrap().is_none());
+        assert!(last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().is_none(), "nothing queued, nothing cancelled");
+        // Pinning a helper that can hold briefing authority makes them eligible.
+        propose_mode(&db);
+        assert!(enqueue_after_turn(&db, "c1").unwrap());
+        assert_eq!(claim_due(&db, Utc::now()).unwrap().unwrap().harness, "claude");
+    }
+
+    #[test]
+    fn a_profile_that_stops_resolving_cancels_the_queued_run() {
+        let (_dir, db) = extraction_db();
+        propose_mode(&db);
+        insert_chat_on(&db, "c1", "codex", None);
+        assert!(enqueue_after_turn(&db, "c1").unwrap());
+        // Unpinning leaves propose on, but a Codex chat has no profile of its own.
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None).unwrap();
+        assert!(claim_due(&db, Utc::now()).unwrap().is_none());
+        let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
+        assert_eq!(last.status, "cancelled");
+        assert_eq!(last.detail.as_deref(), Some("no_extraction_profile"));
+    }
+
+    #[test]
+    fn a_helper_is_pinned_whole_or_not_at_all() {
+        let (_dir, db) = extraction_db();
+        assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("claude"), None).is_err());
+        assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, Some("m")).is_err());
+        assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, None, None).is_ok());
         assert!(update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("claude"), Some("m")).is_ok());
     }
 
     #[test]
     fn remember_mode_enqueues_nothing_and_calls_no_model() {
         let (_dir, db) = extraction_db();
-        insert_chat(&db, "s1", "direct");
+        remember_mode(&db);
+        insert_chat_on(&db, "s1", "claude", Some("sonnet"));
         insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
         assert!(!enqueue_after_turn(&db, "s1").unwrap());
         let mut model = RefusingModel;
@@ -739,6 +879,7 @@ mod tests {
         let claimed = claim_due(&db, now).unwrap().unwrap();
         assert_eq!(claimed.session_id, "s1");
         assert_eq!(claimed.harness, "claude");
+        assert_eq!(claimed.model.as_deref(), Some("sonnet"));
         assert!(claim_due(&db, now).unwrap().is_none(), "the lease excludes a second worker");
         assert!(heartbeat(&db, &claimed.run_id, &claimed.lease_owner, now).unwrap());
         assert!(settle(
@@ -765,11 +906,9 @@ mod tests {
                     .to_string();
             assert!(error.contains("tool-free"), "{harness}: {error}");
         }
-        assert_eq!(
-            settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap().mode,
-            MODE_REMEMBER,
-            "a refused profile leaves extraction off"
-        );
+        let current = settings(&db, ACCOUNT_MEMORY_SCOPE).unwrap();
+        assert_eq!(current.harness, None, "a refused profile pins nothing");
+        assert_eq!(current.model, None);
         assert!(
             update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_PROPOSE, Some("claude"), Some("m"))
                 .is_ok()

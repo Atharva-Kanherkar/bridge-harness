@@ -1,5 +1,5 @@
-//! The production extraction run: a hidden bounded session on the pinned
-//! harness and model.
+//! The production extraction run: a hidden bounded session on the resolved
+//! profile — the pinned helper, else the conversation's own harness and model.
 //!
 //! Same shape as the live briefing run, smaller in every dimension: the
 //! session is `kind = 'extraction'` so no surface lists it; the briefing
@@ -64,7 +64,7 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
         }
     };
 
-    let output = match one_bounded_turn(core, &harness, &model, &digest.text) {
+    let output = match one_bounded_turn(core, &harness, model.as_deref(), &digest.text) {
         Ok(output) => output,
         Err(detail) => {
             settle(core, &run_id, &lease_owner, "failed", Some(&detail), &harness, &model, Some(&digest.sha256), None);
@@ -107,7 +107,7 @@ fn settle(
     status: &str,
     detail: Option<&str>,
     harness: &str,
-    model: &str,
+    model: &Option<String>,
     prompt_digest: Option<&str>,
     output: Option<(&ExtractionOutput, i64)>,
 ) {
@@ -117,7 +117,7 @@ fn settle(
     };
     let db = core.db.lock().unwrap();
     let _ = memory_extraction::settle(
-        &db, run_id, lease_owner, status, detail, Some(harness), Some(model),
+        &db, run_id, lease_owner, status, detail, Some(harness), model.as_deref(),
         prompt_digest, tokens, spend, proposals,
     );
 }
@@ -127,7 +127,7 @@ fn settle(
 fn one_bounded_turn(
     core: &Arc<BridgeCore>,
     harness: &str,
-    model: &str,
+    model: Option<&str>,
     digest: &str,
 ) -> Result<ExtractionOutput, String> {
     let limits = wire::WorkBriefLimits {
@@ -159,7 +159,7 @@ fn one_bounded_turn(
         harness,
         StartRequest {
             cwd: &cwd,
-            model: Some(model),
+            model,
             effort: None,
             instructions: Some(&instructions),
             write_mode: None,

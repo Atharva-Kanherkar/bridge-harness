@@ -1,19 +1,28 @@
 # feat/memory-extract
 
 The first LLM writer, and it can only propose. A post-turn extraction run on
-the user's pinned harness and model — never selected by the learning router —
-produces proposed records for the review queue. The queue ships in this slice
-because its first content ships in this slice.
+the chat's own harness and model, or on a helper the user pinned — never
+selected by the learning router — produces proposed records for the review
+queue. The queue ships in this slice because its first content ships in this
+slice.
+
+Propose is the default. With extraction off by default the ledger held only
+what users typed into `/pin`, which almost nobody did, and testers reported
+memory as present but never used. Nothing a run proposes activates without
+the user.
 
 ## Schema 35
 
 - `memory_records` gains nullable `confidence_bps` and `rationale`, arriving
   with their first honest producer. Explicit saves keep them NULL and render
   as unknown, never a fake certainty.
-- `memory_extraction_settings`: one row per scope; `mode` is `remember`
-  (default, nothing automatic) or `propose`; plus the pinned `harness` and
-  `model`. `auto_apply` is refused by the store until a replay bench exists —
-  the same honesty as the evaluator ceilings.
+- `memory_extraction_settings`: one row per scope; `mode` is `propose`
+  (default) or `remember` (nothing automatic); plus an optional pinned
+  `harness` and `model`, saved together or not at all. Unpinned, a run
+  resolves to the finished chat's own harness and model; a chat on a harness
+  that cannot run tool-free is not enqueued at all rather than queued and
+  cancelled after every turn. `auto_apply` is refused by the store until a
+  replay bench exists — the same honesty as the evaluator ceilings.
 - `memory_extraction_runs`: every run is a written row — queued, leased,
   heartbeat, and settled `completed | failed | cancelled` with adapter, model,
   prompt digest, observed tokens and spend, proposal count, and detail. Spend
@@ -26,7 +35,7 @@ because its first content ships in this slice.
   per session at a time. Turning `propose` off stops new runs immediately.
 - The digest is bounded and typed: recent conversational entries by id plus
   the scope's active pin bodies, character-capped. Never a raw transcript.
-- The executor is the pinned profile through a hidden session
+- The executor is the resolved profile through a hidden session
   (`kind = 'extraction'`, no workspace, empty briefing scope so every tool
   call is denied), one turn, wall-clock bounded. The learning router is never
   consulted, and an extraction run writes no router decision.
