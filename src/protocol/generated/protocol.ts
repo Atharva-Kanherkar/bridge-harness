@@ -2683,7 +2683,7 @@ export interface ForkSessionParams {
   model?: string | null;
   sessionId: string;
   title?: string | null;
-  worktreePolicy?: string;
+  worktreePolicy: string;
 }
 
 export interface ForkSessionResult {

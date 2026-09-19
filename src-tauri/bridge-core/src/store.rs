@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 57;
+const LATEST_SCHEMA_VERSION: i64 = 58;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7477,7 +7477,7 @@ mod tests {
             VALUES('legacy','slack','slack.message','Old task','old',1,8000,'now','now');
             ALTER TABLE work_tasks DROP COLUMN source_activity_at;
             ALTER TABLE work_evidence DROP COLUMN source_activity_at;
-            DELETE FROM schema_version WHERE version=57;").unwrap();
+            DELETE FROM schema_version WHERE version IN (57, 58);").unwrap();
         drop(db);
         let db = open(&path).unwrap();
         let (title, date): (String, Option<String>) = db.query_row("SELECT title,source_activity_at FROM work_tasks WHERE id='legacy'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();

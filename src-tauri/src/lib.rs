@@ -1324,7 +1324,7 @@ async fn fork_session(
     title: Option<String>,
     harness: Option<Harness>,
     model: Option<String>,
-    worktree_policy: Option<String>,
+    worktree_policy: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<wire::ForkSessionResult, BridgeError> {
     let core = state.inner().clone();
@@ -1336,7 +1336,7 @@ async fn fork_session(
             title.as_deref(),
             harness.as_ref(),
             model.as_deref(),
-            worktree_policy.as_deref().unwrap_or("shared"),
+            &worktree_policy,
         )
     })
     .await

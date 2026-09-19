@@ -232,10 +232,6 @@ pub struct CreateAsideChatResult {
     pub fidelity: String,
 }
 
-fn default_shared_worktree() -> String {
-    "shared".into()
-}
-
 /// `sessions/fork_session`'s request: branch a session's conversation at an
 /// entry into a new, independent session that begins with the parent's
 /// history up to that point. The parent is never modified.
@@ -254,7 +250,6 @@ pub struct ForkSessionParams {
     pub model: Option<String>,
     /// `"shared"` — both sessions work the same repo path (default).
     /// `"new"` — the fork gets its own Git worktree and branch.
-    #[serde(default = "default_shared_worktree")]
     pub worktree_policy: String,
 }
 

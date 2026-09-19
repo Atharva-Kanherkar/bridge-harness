@@ -13,7 +13,7 @@ import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, Summ
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
-import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
@@ -1597,6 +1597,57 @@ export const bridgeApi = {
     if (forest.head) forest.head.activeEntryId = entryId;
     forest.reasons.unshift({ id: nextEventId++, source: "session-forest", kind: "session.head_moved", entityId: sessionId, body: `Conversation head moved to ${entryId}; files were not changed`, createdAt: new Date().toISOString() });
     emitState(); return structuredClone(forest);
+  },
+  forkSession: async (sessionId: string, entryId: string, title?: string | null, harness?: string | null, model?: string | null, worktreePolicy?: string | null): Promise<ForkSessionResult> => {
+    if (isTauri()) return call("sessions/fork_session", { sessionId, entryId, title, harness, model, worktreePolicy: worktreePolicy ?? "shared" }) as Promise<ForkSessionResult>;
+    const source = mockState.sessions.find(session => session.id === sessionId);
+    if (!source) throw new Error("Session to fork does not exist");
+    if (source.kind === "worker") throw new Error("Worker sessions cannot be forked; fork an orchestrator or direct chat");
+    const forest = mockForest(sessionId);
+    const cutoff = forest.entries.findIndex(entry => entry.id === entryId);
+    if (cutoff < 0) throw new Error("Entry is not in this session");
+    const prefix = forest.entries.slice(0, cutoff + 1);
+    const forkId = `fork-${nextEventId++}`;
+    const entries = prefix.map((entry, index) => ({
+      ...entry,
+      sessionId: forkId,
+      parentEntryId: index === 0 ? null : prefix[index - 1].id,
+      sequence: index + 1,
+      providerEventId: null,
+      createdAt: new Date().toISOString(),
+    }));
+    const checkpoint = [...entries].reverse().find(entry => entry.kind === "checkpoint");
+    const head: SessionForestSnapshot["head"] = {
+      sessionId: forkId,
+      activeEntryId: entries.at(-1)!.id,
+      nativeProviderSessionId: null,
+      restorationMode: "checkpoint_restored",
+      resumeEligibility: "checkpoint_restored",
+      latestCheckpointEntryId: checkpoint?.id ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+    mockForests[forkId] = { ...forest, sessionId: forkId, entries, head, leaves: [entries.at(-1)!] };
+    mockState.sessions.push({
+      ...source,
+      id: forkId,
+      label: title?.trim() || `Fork of ${source.label}`,
+      title: title?.trim() || `Fork of ${source.label}`,
+      harness: harness ?? source.harness,
+      model: model ?? source.model,
+      status: "idle",
+      activeTurnId: null,
+      providerSessionId: null,
+      parentSessionId: sessionId,
+      depth: (source.depth ?? 0) + 1,
+      restorationMode: "checkpoint_restored",
+      continuationFidelity: "projected_at_boundary",
+    });
+    mockState.events.unshift(
+      { id: nextEventId, source: "session-forest", kind: "fork.created", entityId: forkId, body: `Forked from ${sessionId} at ${entryId}`, createdAt: new Date().toISOString() },
+    );
+    nextEventId += 1;
+    emitState();
+    return { state: structuredClone(mockState) as BridgeState, sessionId: forkId, snapshot: structuredClone(mockForests[forkId]), fidelity: "projected_at_boundary" };
   },
   compactSession: async (sessionId: string): Promise<void> => {
     if (isTauri()) return unit(call("sessions/compact_session", { sessionId }));

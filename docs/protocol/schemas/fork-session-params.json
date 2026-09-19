@@ -42,14 +42,14 @@
       ]
     },
     "worktreePolicy": {
-      "default": "shared",
       "description": "`\"shared\"` — both sessions work the same repo path (default). `\"new\"` — the fork gets its own Git worktree and branch.",
       "type": "string"
     }
   },
   "required": [
     "entryId",
-    "sessionId"
+    "sessionId",
+    "worktreePolicy"
   ],
   "title": "ForkSessionParams",
   "type": "object"
