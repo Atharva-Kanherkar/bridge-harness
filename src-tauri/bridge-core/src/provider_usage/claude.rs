@@ -56,6 +56,9 @@ fn may_fallback_to_claude_cli(error: &str) -> bool {
         || error.starts_with("Invalid Claude credentials")
         || error.starts_with("Provider session read timed out")
         || error.starts_with("Provider session helper")
+        || error.starts_with("Claude Code usage initialization failed.")
+        || error.starts_with("Claude Code usage timed out.")
+        || error.starts_with("Claude Code could not read usage limits.")
 }
 fn decode_credentials(content: &str, now_ms: i64) -> Result<(String, Option<String>), String> {
     let data: Value = serde_json::from_str(content).map_err(|_| "Invalid Claude credentials")?;
@@ -137,13 +140,37 @@ fn read_with_credentials(token: String, plan: Option<String>) -> Result<AccountU
     }
     Ok(parsed)
 }
-pub(super) fn read() -> Result<AccountUsage, String> {
-    read_direct_with_default_keychain_fallback()
+pub(super) fn read(core: &crate::BridgeCore) -> Result<AccountUsage, String> {
+    read_with_sdk_fallback(
+        explicit_credentials(),
+        || super::claude_sdk::read(core),
+        read_direct_with_default_keychain_fallback,
+    )
+}
+
+fn explicit_credentials() -> bool {
+    std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some()
+        || std::env::var_os("CLAUDE_CONFIG_DIR").is_some()
+}
+
+fn read_with_sdk_fallback<S, D>(explicit: bool, mut sdk: S, mut direct: D) -> Result<AccountUsage, String>
+where
+    S: FnMut() -> Result<AccountUsage, String>,
+    D: FnMut() -> Result<AccountUsage, String>,
+{
+    if explicit {
+        return direct();
+    }
+    // Claude owns its default-profile credential and renewal. Only older or
+    // missing SDKs use the legacy reader, never an SDK auth/network failure.
+    match sdk() {
+        Err(error) if error.starts_with(super::claude_sdk::UNAVAILABLE) => direct(),
+        result => result,
+    }
 }
 
 fn read_direct_with_default_keychain_fallback() -> Result<AccountUsage, String> {
-    let explicit = std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some()
-        || std::env::var_os("CLAUDE_CONFIG_DIR").is_some();
+    let explicit = explicit_credentials();
     read_direct_with_sources(
         explicit,
         credentials,
@@ -191,15 +218,19 @@ pub(super) fn read_interactive(core: &crate::BridgeCore) -> Result<AccountUsage,
         std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some(),
         std::env::var_os("CLAUDE_CONFIG_DIR").is_some(),
     ) {
-        return read();
+        return read_direct_with_default_keychain_fallback();
     }
     read_interactive_with_fallback(
-        || read_manual_with_repair(read_default_for_manual_refresh, || {
-            let bytes = super::credentials::keychain_interactive("Claude Code-credentials", None)?;
-            let content = String::from_utf8(bytes).map_err(|_| "Invalid Claude credentials")?;
-            let (token, plan) = decode_credentials(&content, chrono::Utc::now().timestamp_millis())?;
-            read_with_credentials(token, plan)
-        }),
+        || read_with_sdk_fallback(
+            false,
+            || super::claude_sdk::read(core),
+            || read_manual_with_repair(read_default_for_manual_refresh, || {
+                let bytes = super::credentials::keychain_interactive("Claude Code-credentials", None)?;
+                let content = String::from_utf8(bytes).map_err(|_| "Invalid Claude credentials")?;
+                let (token, plan) = decode_credentials(&content, chrono::Utc::now().timestamp_millis())?;
+                read_with_credentials(token, plan)
+            }),
+        ),
         || super::claude_cli::read(core),
     )
 }
@@ -248,7 +279,7 @@ where
 fn cli_fallback_allowed(environment_token: bool, configured_directory: bool) -> bool {
     !environment_token && !configured_directory
 }
-fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
+pub(super) fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
     let mut result = AccountUsage {
         observed_at: now,
         ..Default::default()
@@ -277,6 +308,19 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
                 number(&value[key]["utilization"]),
                 timestamp(&value[key]["resets_at"]),
                 Some(minutes),
+            ));
+        }
+    }
+    if let Some(scoped) = value["model_scoped"].as_array() {
+        let mut seen = std::collections::HashSet::new();
+        for limit in scoped.iter().take(32) {
+            let Some(model) = public_text(&limit["display_name"]) else { continue };
+            let slug = scoped_slug(&model);
+            if slug.is_empty() || !seen.insert(slug.clone()) { continue; }
+            let label = if model.to_lowercase().ends_with(" only") { model } else { format!("{model} only") };
+            result.windows.push(window(
+                &format!("claude-weekly-scoped-{slug}"), &format!("Weekly · {label}"),
+                number(&limit["utilization"]), timestamp(&limit["resets_at"]), Some(10080),
             ));
         }
     }
@@ -346,6 +390,17 @@ mod tests {
         AccountUsage {
             observed_at: 1,
             ..Default::default()
+        }
+    }
+    #[test]
+    fn sdk_owns_default_login_and_only_unsupported_sdk_uses_legacy_reader() {
+        assert!(read_with_sdk_fallback(false, || Ok(usage()),
+            || panic!("must not read another application's keychain")).is_ok());
+        assert!(read_with_sdk_fallback(true, || panic!("explicit profile cannot change"), || Ok(usage())).is_ok());
+        assert!(read_with_sdk_fallback(false, || Err(super::super::claude_sdk::UNAVAILABLE.into()), || Ok(usage())).is_ok());
+        for error in ["Claude Code usage timed out. Try Refresh.", "Claude Code is not reporting subscription limits for this sign-in."] {
+            assert_eq!(read_with_sdk_fallback(false, || Err(error.into()),
+                || panic!("transient or auth failures must not switch accounts")).unwrap_err(), error);
         }
     }
     #[test]
@@ -479,6 +534,15 @@ mod tests {
             assert_eq!(result.unwrap_err(), error);
             assert_eq!(cli_calls.get(), 0);
         }
+    }
+
+    #[test]
+    fn manual_sdk_recovery_stays_on_claude_but_never_replaces_a_non_subscription_login() {
+        for error in ["Claude Code usage initialization failed.", "Claude Code usage timed out. Try Refresh.",
+            "Claude Code could not read usage limits. Try Refresh or check its sign-in."] {
+            assert!(read_interactive_with_fallback(|| Err(error.into()), || Ok(usage())).is_ok());
+        }
+        assert!(!may_fallback_to_claude_cli("Claude Code is not reporting subscription limits for this sign-in. Check your Claude Code account."));
     }
 
     #[test]

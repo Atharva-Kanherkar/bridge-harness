@@ -933,7 +933,7 @@ fn refresh_provider(
     let result = if interactive {
         crate::provider_usage::read_interactive(core, provider, settings)
     } else {
-        crate::provider_usage::read(provider, settings)
+        crate::provider_usage::read(core, provider, settings)
     };
     let cache = cache_provider_result(provider, prior, result);
     core.db.lock().unwrap().execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview',?1,?2,?3,?3) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",

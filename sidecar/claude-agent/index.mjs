@@ -20,6 +20,7 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { buildOptions, catalogOptions } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
+import { probeUsage } from "./usage.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -64,6 +65,12 @@ try {
 }
 
 const { sessionId } = config;
+
+if (config.usage === true) {
+  const frame = await probeUsage(query, config);
+  await writeFrame(frame);
+  process.exit(frame.type === "claude_usage" ? 0 : 1);
+}
 
 // Push-driven async iterable of SDKUserMessage: turns arrive on stdin over the
 // life of the process and are fed into the one streaming query.

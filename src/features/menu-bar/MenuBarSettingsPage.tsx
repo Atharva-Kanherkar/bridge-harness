@@ -138,7 +138,7 @@ export function MenuBarSettingsPage() {
             control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
               onChange={value => void save({ [provider.key]: value })} />} />;
         })}
-        {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">Claude limits use your Claude Code subscription sign-in, not an API key. Refresh usage can request access to “Claude Code-credentials” in macOS Keychain; choose Always Allow to enable automatic reads. Refresh can also ask Claude Code to renew an expired sign-in. Background updates never request Keychain permission.</p>}
+        {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">Claude limits come from your Claude Code subscription sign-in. Claude Code handles authentication and renewal. If limits are unavailable, open Claude Code, check your account, then refresh usage.</p>}
         <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each favorite with account usage enabled has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}
           control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabledFavorites.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
         <SettingsRow label="OpenCode Zen account" description="Sign in and open a workspace. Bridge saves that session in macOS Keychain."

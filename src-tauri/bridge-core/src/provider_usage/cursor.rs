@@ -846,6 +846,9 @@ mod tests {
                 let account = &account;
                 let usage = &usage;
                 requests.push(threads.spawn(move || {
+                    // macOS can inherit O_NONBLOCK from the listener. A read
+                    // timeout alone does not make the accepted socket blocking.
+                    socket.set_nonblocking(false).unwrap();
                     socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                     let mut request = Vec::new();
                     while !request.ends_with(b"\r\n\r\n") {
