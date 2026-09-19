@@ -15,7 +15,7 @@ use std::{
 const TIMEOUT: Duration = Duration::from_secs(20);
 const OUTPUT_LIMIT: usize = 256 * 1024;
 const SETTLE: Duration = Duration::from_secs(2);
-static ACTIVE_PROBES: LazyLock<ProbeRegistry> = LazyLock::new(ProbeRegistry::default);
+pub(super) static ACTIVE_PROBES: LazyLock<ProbeRegistry> = LazyLock::new(ProbeRegistry::default);
 static RESET_LINE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)\bresets?\b\s*:?[\s]*(.+)$").expect("valid reset regex")
 });
@@ -37,19 +37,19 @@ struct ProbeState {
 }
 
 #[derive(Default)]
-struct ProbeRegistry {
+pub(super) struct ProbeRegistry {
     state: Mutex<ProbeState>,
     changed: Condvar,
 }
 
-struct LaunchGuard<'a>(&'a ProbeRegistry);
-struct ActiveGuard<'a> {
+pub(super) struct LaunchGuard<'a>(&'a ProbeRegistry);
+pub(super) struct ActiveGuard<'a> {
     registry: &'a ProbeRegistry,
     pid: u32,
 }
 
 impl ProbeRegistry {
-    fn begin_launch(&self) -> Result<LaunchGuard<'_>, String> {
+    pub(super) fn begin_launch(&self) -> Result<LaunchGuard<'_>, String> {
         let mut state = self.state.lock().unwrap();
         if state.shutting_down {
             return Err("Bridge is shutting down; Claude CLI refresh was cancelled.".into());
@@ -57,7 +57,7 @@ impl ProbeRegistry {
         state.launches += 1;
         Ok(LaunchGuard(self))
     }
-    fn register(&self, pid: u32) -> ActiveGuard<'_> {
+    pub(super) fn register(&self, pid: u32) -> ActiveGuard<'_> {
         self.state.lock().unwrap().active.insert(pid);
         ActiveGuard {
             registry: self,

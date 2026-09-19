@@ -100,6 +100,14 @@ describe("ChatUsageDot", () => {
     expect(trigger().getAttribute("aria-label")).toContain("71%");
   });
 
+  it("accepts a current pushed reading between the meter clock's 30-second ticks", async () => {
+    const wallClock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    await mount();
+    wallClock.mockReturnValue(1_800_000_002_000);
+    await act(async () => { listener?.(overviews(88)); });
+    expect(trigger().getAttribute("aria-label")).toContain("elevated, 88%");
+  });
+
   it("shows a failed initial load instead of loading forever, and clears it when a snapshot arrives", async () => {
     vi.mocked(bridgeApi.getProviderUsageOverviews).mockRejectedValue(new Error("Usage unavailable"));
     await mount();

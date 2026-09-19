@@ -209,7 +209,6 @@ fn default_pinned_providers() -> Vec<MenuBarProvider> {
     vec![
         MenuBarProvider::Codex,
         MenuBarProvider::Claude,
-        MenuBarProvider::Cursor,
     ]
 }
 
@@ -323,14 +322,13 @@ mod tests {
             settings.pinned_providers,
             vec![
                 MenuBarProvider::Codex,
-                MenuBarProvider::Claude,
-                MenuBarProvider::Cursor
+                MenuBarProvider::Claude
             ]
         );
         for provider in MenuBarProvider::ALL.into_iter().skip(1) {
             assert!(!settings.provider_enabled(provider));
         }
-        assert!(settings.provider_visible(MenuBarProvider::Cursor));
+        assert!(!settings.provider_visible(MenuBarProvider::Cursor));
         assert!(!settings.provider_visible(MenuBarProvider::OpenCode));
         assert!(settings.opencode_workspace.is_none());
         assert_eq!(settings.quota_display_mode, MenuBarQuotaDisplayMode::Used);

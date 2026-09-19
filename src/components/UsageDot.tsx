@@ -203,7 +203,9 @@ export interface UsageDotProps {
 export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing = false, onRefresh, onOpenUsage, onSignIn, compact = false, error = null, nowMs }: UsageDotProps) {
   const [open, setOpen] = useState(false);
   const clock = useMeterClock();
-  const now = (nowMs ?? clock) / 1000;
+  // The timer ages idle readings. A newly pushed snapshot can arrive between
+  // ticks, so judge it against the current wall clock rather than the old tick.
+  const now = (nowMs ?? Math.max(clock, Date.now())) / 1000;
   const [frame, setFrame] = useState<HTMLElement | null>(null);
   const [availableHeight, setAvailableHeight] = useState<number>();
   const rootRef = useRef<HTMLDivElement>(null);

@@ -1,10 +1,12 @@
 //! Read-only account collectors. Authentication and transport stay out of both UIs.
 mod claude;
 mod claude_cli;
+mod claude_sdk;
 pub mod credentials;
 mod cursor;
 mod http;
 mod opencode;
+mod opencode_go;
 
 pub fn shutdown() {
     claude_cli::shutdown();
@@ -95,16 +97,17 @@ pub(crate) fn read_interactive(
 ) -> Result<AccountUsage, AccountReadError> {
     match provider {
         MenuBarProvider::Claude => claude::read_interactive(core).map_err(Into::into),
-        _ => read(provider, settings),
+        _ => read(core, provider, settings),
     }
 }
 
 pub(crate) fn read(
+    core: &crate::BridgeCore,
     provider: MenuBarProvider,
     settings: &MenuBarSettings,
 ) -> Result<AccountUsage, AccountReadError> {
     match provider {
-        MenuBarProvider::Claude => claude::read().map_err(Into::into),
+        MenuBarProvider::Claude => claude::read(core).map_err(Into::into),
         MenuBarProvider::Cursor => cursor::read(),
         MenuBarProvider::OpenCode => opencode::read(settings.opencode_workspace.as_deref()).map_err(Into::into),
         MenuBarProvider::Codex => Err("Codex uses its app-server collector".into()),
