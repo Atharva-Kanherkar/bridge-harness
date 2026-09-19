@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Let read-only Claude workers take their credential from the environment or the Keychain by choice, read the Keychain secret only when the `claude` CLI rewrote it, and report a missing worker credential at launch.
+
 ## [0.5.9] - 2026-09-16
 
 - Include migration 58 in the release so databases created by the current Bridge build open successfully.

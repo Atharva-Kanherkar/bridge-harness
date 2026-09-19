@@ -5401,6 +5401,11 @@ pub fn launch_worker_outcome(
             directive,
         ) {
             Ok(sandbox) => {
+                // Claude scopes its credential lookup to the redirected config
+                // dir, so the sandbox carries where Bridge should get one from.
+                let sandbox = sandbox.with_claude_credential_source(
+                    claude_worker_credential_source(&state.db.lock().unwrap()),
+                );
                 let output = sandbox.output_dir().display().to_string();
                 let network_allowed = sandbox.network_allowed();
                 let sandbox_runtime_egress = !sandbox.runtime_network_denied();
@@ -18179,4 +18184,15 @@ mod history_snapshot_maintenance_tests {
             .count();
         assert_eq!(databases, 2);
     }
+}
+
+/// The configured source for a read-only Claude worker's credential; the
+/// default when Claude has no stored configuration or it does not parse.
+fn claude_worker_credential_source(
+    db: &rusqlite::Connection,
+) -> crate::claude_adapter::WorkerCredentialSource {
+    agent_config::harness_config(db, "claude")
+        .and_then(|config| agent_config::claude_settings(Some(&config)).ok())
+        .map(|settings| settings.worker_credential_source)
+        .unwrap_or_default()
 }
