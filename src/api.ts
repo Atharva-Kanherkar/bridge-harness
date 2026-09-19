@@ -108,7 +108,7 @@ function mockProviderUsageOverviews(): ProviderUsageOverviews {
         ],
         today: empty, month: empty, error: null,
       },
-      { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Provider session is unavailable in Keychain. Reconnect the provider." },
+      { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Claude Code usage SDK unavailable. Open Claude Code and check its sign-in." },
     ],
   };
 }
