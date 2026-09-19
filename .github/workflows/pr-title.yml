@@ -1,0 +1,37 @@
+name: Pull request policy
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+# pull_request_target loads this tiny policy workflow from the protected base;
+# it never checks out or executes pull-request code and receives no production
+# credentials. A skipped push job therefore cannot mask a failed title check.
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  conventional-title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # pull_request_target sources the workflow from the latest protected
+          # default branch; execute the validator from that identical revision.
+          ref: ${{ github.sha }}
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+
+      - name: Validate Release Please's semantic-version input
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/check-pull-request-title.mjs "$PR_TITLE"

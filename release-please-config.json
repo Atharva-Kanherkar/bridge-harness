@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json",
+  "bootstrap-sha": "a6882d5f81c9b687ea12b1a93302be7e3495a987",
+  "release-type": "node",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "include-v-in-release-name": true,
+  "draft": true,
+  "force-tag-creation": true,
+  "separate-pull-requests": true,
+  "group-pull-request-title-pattern": "chore${scope}: release ${version}",
+  "packages": {
+    ".": {
+      "component": "Bridge",
+      "package-name": "bridge-deck",
+      "changelog-path": "CHANGELOG.md",
+      "pull-request-title-pattern": "chore${scope}: release ${version}",
+      "exclude-paths": [
+        "docs",
+        "docs-site",
+        "landing",
+        "launch-video"
+      ],
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "src-tauri/tauri.conf.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "browser-extension/manifest.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "safari-extension/Resources/manifest.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "sidecar/claude-agent/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "toml",
+          "path": "src-tauri/Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "generic",
+          "path": "packaging/arch/PKGBUILD"
+        }
+      ]
+    }
+  }
+}

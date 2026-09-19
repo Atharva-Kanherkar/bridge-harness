@@ -193,33 +193,3 @@ printf '%s' 'new target build' > "$ALTERNATE_APP/build-marker"
   assert.equal(readFileSync(events, "utf8"), "", "stale output must not reach verification or notarization");
   assert.equal(readFileSync(join(app, "build-marker"), "utf8"), "previous build", "failed builds restore the previous development artifact");
 });
-
-test("GitHub release remains a draft if uploading its verified assets fails", (t) => {
-  const { dir, env } = fixture(t);
-  const workflow = readFileSync(join(root, ".github/workflows/release-macos.yml"), "utf8");
-  const step = workflow.split("      - name: Publish verified tagged release\n")[1].split("\n      - name:")[0];
-  const script = step.split("        run: |\n")[1].split("\n").map(line => line.replace(/^          /, "")).join("\n");
-  mkdirSync(join(dir, "src-tauri"));
-  writeFileSync(join(dir, "src-tauri/tauri.conf.json"), '{"version":"0.5.2"}');
-  const arch = process.arch === "arm64" ? "aarch64" : "x64";
-  const dmgDir = join(dir, "src-tauri/target/release/bundle/dmg");
-  mkdirSync(dmgDir, { recursive: true });
-  writeFileSync(join(dmgDir, `Bridge_0.5.2_${arch}.app.tar.gz.sig`), "fixture-signature");
-  const events = join(dir, "events");
-  executable(join(dir, "bin/gh"), `#!/usr/bin/env node
-const fs = require("fs"), args = process.argv.slice(2);
-fs.appendFileSync(process.env.EVENTS, JSON.stringify(args) + "\\n");
-if (args[1] === "create" && process.env.FAIL_UPLOAD) process.exit(1);
-`);
-  for (const fail of [true, false]) {
-    writeFileSync(events, "");
-    const out = spawnSync("/bin/bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script], {
-      cwd: dir, env: { ...env, EVENTS: events, RUNNER_TEMP: dir, GITHUB_REF_NAME: "v0.5.2", FAIL_UPLOAD: fail ? "1" : "" }, encoding: "utf8",
-    });
-    const calls = readFileSync(events, "utf8").trim().split("\n").map(line => JSON.parse(line));
-    assert.ok(calls[0].includes("--draft"), "asset uploads must start in a draft");
-    assert.equal(out.status === 0, !fail, out.stderr);
-    if (fail) assert.equal(calls.length, 1, "upload failures must not reach publication");
-    else assert.deepEqual(calls[1], ["release", "edit", "v0.5.2", "--draft=false"]);
-  }
-});
