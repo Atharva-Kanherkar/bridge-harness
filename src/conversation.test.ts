@@ -613,6 +613,25 @@ describe("toolCallDisplay", () => {
       }));
       expect(display.patch).toBe(`${PATCH}\n@@ -9 +9 @@\n+c`);
       expect(display.path).toBe("a.rs");
+      expect(display.target).toBe("a.rs + 1 more");
+    });
+
+    it("names a pathless file change from the tool or type, not the word files", () => {
+      const typed = toolCallDisplay(call({ type: "diff", data: { type: "fileChange" } }));
+      expect(typed.target).toBe("fileChange");
+      expect(typed.done).toBe("Edited");
+      const tooled = toolCallDisplay(call({ type: "diff", data: { type: "tool", tool: "apply_patch" } }));
+      expect(tooled.target).toBe("apply_patch");
+    });
+
+    it("lists a multi-file change from paths[]", () => {
+      const display = toolCallDisplay(call({
+        type: "diff",
+        data: { paths: ["src/lib.rs", "src/main.rs"], patch: PATCH, additions: 2, deletions: 2 },
+      }));
+      expect(display.path).toBe("src/lib.rs");
+      expect(display.target).toBe("lib.rs + 1 more");
+      expect(display.additions).toBe(2);
     });
 
     it("falls back to the body when the body is unmistakably a diff", () => {
