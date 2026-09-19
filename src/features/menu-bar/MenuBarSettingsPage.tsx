@@ -44,6 +44,7 @@ export function MenuBarSettingsPage() {
       if (active) setUsage(usage);
     }).catch(error => { if (active) setError(String(error)); });
     subscribe(bridgeApi.onProviderUsageOverviews(value => { if (active) setUsage(value); }));
+    subscribe(bridgeApi.onMenuBarConnection(message => { if (active) setConnection(message); }));
     subscribe(bridgeApi.onMenuBarSettingsChanged(() => {
       void bridgeApi.getMenuBarSettings().then(value => { if (active && pendingSaves.current === 0) { confirmedSettings.current = value; setSettings(value); } }).catch(error => { if (active) setError(String(error)); });
     }));
@@ -158,7 +159,7 @@ export function MenuBarSettingsPage() {
           control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabledFavorites.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
         <SettingsRow label="OpenCode Go account" description="Sign in using your default browser, then copy your API key below. Already connected through OpenCode? Enable usage and click Refresh usage."
           control={<button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
-            onClick={() => { setConnection("Complete sign-in in your default browser, then paste your OpenCode Go API key below or connect through OpenCode and refresh usage."); void bridgeApi.connectMenuBarOpenCode().catch(() => setError("Could not open your default browser. Visit opencode.ai/auth to sign in.")); }}>Connect OpenCode</button>} />
+            onClick={() => { setConnection(null); void bridgeApi.connectMenuBarOpenCode().catch(() => setError("Could not open your default browser. Visit opencode.ai/auth to sign in.")); }}>Connect OpenCode</button>} />
         <SettingsRow label="OpenCode Go API key" description="Saved by OpenCode in its own authentication store. Requires OpenCode to be installed."
           control={<form className="flex flex-wrap items-center gap-2" onSubmit={event => { event.preventDefault(); void connectOpenCodeGo(); }}>
             <input aria-label="OpenCode Go API key" type="password" autoComplete="off" spellCheck={false}

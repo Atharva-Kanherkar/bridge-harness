@@ -78,7 +78,17 @@ it("refreshes the provider group and opens the explicit OpenCode connection flow
   expect(refresh).toHaveBeenCalledOnce();
   await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Connect OpenCode")!.click());
   expect(connect).toHaveBeenCalledOnce();
-  expect(container.textContent).toContain("Complete sign-in");
+});
+
+it("shows the result from the native default-browser dispatch", async () => {
+  let publish: (message: string) => void = () => undefined;
+  vi.spyOn(bridgeApi, "onMenuBarConnection").mockImplementation(async handler => {
+    publish = handler;
+    return () => undefined;
+  });
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => publish("OpenCode sign-in opened in your default browser. Copy the Go API key, then paste it here."));
+  expect(container.textContent).toContain("OpenCode sign-in opened in your default browser");
 });
 
 it("composes a two-line icon layout without saving until Apply", async () => {

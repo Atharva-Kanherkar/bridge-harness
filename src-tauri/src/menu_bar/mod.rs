@@ -1,5 +1,6 @@
 //! Native menu host. UI actions cross a bounded queue; all provider, ledger,
 //! and preference operations use the same versioned backend methods as React.
+mod connect;
 use crate::{diagnostics, HostMode};
 use bridge_protocol::{
     messages::{MenuBarProvider, MenuBarSettings, ProviderUsageOverviews},
@@ -186,6 +187,14 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
         let signal = send.clone();
         app.listen("bridge-menu-bar-settings-changed", move |_| {
             let _ = signal.try_send(Work::SettingsChanged);
+        });
+        let connection_app = handle.clone();
+        app.listen("bridge-menu-bar-connect-opencode", move |_| {
+            let message = match connect::open_default_browser() {
+                Ok(()) => "OpenCode sign-in opened in your default browser. Copy the Go API key, then paste it here.".into(),
+                Err(error) => error,
+            };
+            let _ = connection_app.emit("bridge-menu-bar-connection", message);
         });
         let signal = send.clone();
         app.listen("account-usage", move |_| {
