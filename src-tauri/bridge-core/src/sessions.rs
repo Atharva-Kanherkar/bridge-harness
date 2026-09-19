@@ -400,8 +400,44 @@ impl BridgeCore {
         model: Option<&str>,
         worktree_policy: &str,
     ) -> Result<(String, SessionForestSnapshot, String), BridgeError> {
+        // A "new" worktree is a git operation: prepare it before the database
+        // lock so a slow repository never stalls every other session op, and
+        // remove it if the durable fork fails so a retry starts clean.
+        let worktree_path = if worktree_policy == "new" {
+            let repo = self.session_repository_path(session_id)?.ok_or_else(|| {
+                BridgeError::Invalid(
+                    "The session has no repository to fork a worktree from".into(),
+                )
+            })?;
+            let id_hint = short_id();
+            let path = self.worktrees.join("forks").join(&id_hint);
+            let branch = format!("bridge/fork/{id_hint}");
+            git::validate_repo(&repo)?;
+            git::create_worktree(&repo, &path, &branch)?;
+            Some((path, repo))
+        } else {
+            None
+        };
         let db = self.db.lock().unwrap();
-        let fork_id = fork_session_records(&db, session_id, entry_id, title, harness, model, worktree_policy)?;
+        let fork_id = match fork_session_records(
+            &db,
+            session_id,
+            entry_id,
+            title,
+            harness,
+            model,
+            worktree_policy,
+            worktree_path.as_ref().map(|(path, _)| path.as_path()),
+        ) {
+            Ok(id) => id,
+            Err(error) => {
+                drop(db);
+                if let Some((path, repo)) = worktree_path {
+                    let _ = git::remove_worktree(&repo, &path);
+                }
+                return Err(error);
+            }
+        };
         let snapshot = session_forest_snapshot(&db, &fork_id)?;
         drop(db);
         self.events.publish(crate::events::CoreEvent::StateChanged);
@@ -1373,6 +1409,11 @@ fn chat_label(title: Option<&str>) -> String {
         .to_string()
 }
 
+/// A short, greppable id fragment for fork branches and worktree paths.
+fn short_id() -> String {
+    Uuid::new_v4().to_string().chars().take(8).collect()
+}
+
 /// An opaque change token composed from the monotonic columns behind every
 /// store-derived field of [`SessionForestSnapshot`]. Equal tokens mean the
 /// snapshot would be byte-identical except for repository divergence, which
@@ -1521,11 +1562,22 @@ pub(crate) fn fork_session_records(
     harness: Option<&Harness>,
     model: Option<&str>,
     worktree_policy: &str,
+    worktree_path: Option<&Path>,
 ) -> Result<String, BridgeError> {
-    if worktree_policy != "shared" {
+    if !matches!(worktree_policy, "shared" | "new") {
         return Err(BridgeError::Invalid(format!(
-            "Unsupported worktree policy {worktree_policy:?}; only \"shared\" is available"
+            "Unsupported worktree policy {worktree_policy:?}; expected \"shared\" or \"new\""
         )));
+    }
+    if worktree_policy == "new" && worktree_path.is_none() {
+        return Err(BridgeError::Invalid(
+            "Worktree policy \"new\" requires a prepared worktree path".into(),
+        ));
+    }
+    if (worktree_policy == "shared") != worktree_path.is_none() {
+        return Err(BridgeError::Invalid(
+            "Worktree path must accompany exactly the \"new\" policy".into(),
+        ));
     }
     let transaction = db.unchecked_transaction()?;
     let (parent_harness, parent_workspace_id, parent_depth, kind, cwd, parent_model, parent_title): (
@@ -1587,9 +1639,13 @@ pub(crate) fn fork_session_records(
             parent_title.as_deref().unwrap_or("session")
         )),
     ));
+    let cwd = match worktree_path {
+        Some(path) => Some(path.to_string_lossy().into_owned()),
+        None => cwd,
+    };
     transaction.execute(
         "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,parent_session_id,continuation_fidelity,fork_parent_entry_id,fork_worktree_policy)
-         VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,?10,'projected_at_boundary',?11,'shared')",
+         VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,?10,'projected_at_boundary',?11,?12)",
         params![
             id,
             parent_workspace_id,
@@ -1602,6 +1658,7 @@ pub(crate) fn fork_session_records(
             parent_depth + 1,
             session_id,
             entry_id,
+            worktree_policy,
         ],
     )?;
     let mut copied_parent: Option<&str> = None;
