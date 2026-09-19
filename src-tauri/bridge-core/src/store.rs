@@ -3390,16 +3390,62 @@ pub fn session_entries(
     )
 }
 
-/// The display ceiling for one string inside a snapshot payload.
+/// The per-string ceilings a snapshot falls back through, loosest first, when
+/// one session's payloads cannot fit a single frame.
 ///
-/// A transcript row renders a preview, never a 50 KB heredoc. The whole forest
-/// travels to the UI as a single JSON frame, and untrimmed payloads made that
-/// frame unopenable: one real chat's `command.started` entries alone held
-/// 115 MB, because each one carries the full command text as its `title` and
-/// the full command output under `data`. Past the daemon's 64 MB frame ceiling
-/// the read fails and takes the whole connection down, so an old chat did not
-/// load slowly — it did not load at all.
-const SNAPSHOT_STRING_BYTES: usize = 4 * 1024;
+/// The whole forest travels to the UI as a single JSON frame, and untrimmed
+/// payloads made that frame unopenable: one real chat's `command.started`
+/// entries alone held 115 MB, because each one carries the full command text as
+/// its `title` and the full command output under `data`. Past the daemon's
+/// 64 MB frame ceiling the read fails and takes the whole connection down, so
+/// an old chat did not load slowly — it did not load at all.
+///
+/// The flat 4 KiB cap that fixed it charged every chat for that one chat's
+/// sins. An ordinary 4.6 KiB answer lost its closing `Sources:` list to
+/// `… 578 more bytes not shown` for a snapshot four orders of magnitude under
+/// the ceiling, and because the dropped bytes are reachable only through
+/// `session_entries`, the rendered transcript quietly disagreed with stored
+/// history. So trimming is now the exception: a window is read untrimmed first
+/// and walks this ladder only when it does not fit
+/// [`SNAPSHOT_PAYLOAD_BUDGET_BYTES`], stopping at the first rung that does. The
+/// ladder bottoms out at the old 4 KiB, so no session is ever trimmed harder
+/// than it already was.
+const SNAPSHOT_STRING_CAPS: [usize; 5] = [1024 * 1024, 256 * 1024, 64 * 1024, 16 * 1024, 4 * 1024];
+
+/// The payload bytes one window may carry before [`SNAPSHOT_STRING_CAPS`]
+/// applies.
+///
+/// Deliberately well under `bridge_client::MAX_SERVER_FRAME_BYTES` (64 MB).
+/// Entry payloads are the bulk of a snapshot but not all of it — leases, worker
+/// runtimes, usage and reason events ride in the same frame — and re-encoding
+/// stored JSON can only grow it, so the budget keeps better than 2x headroom
+/// rather than spending the frame right up to its edge.
+///
+/// This is the *default* entry budget, used when the caller has not measured
+/// the snapshot's non-entry overhead. `sessions::session_forest_snapshot_*`
+/// tightens it further once that overhead is known (Codex P1 on this PR:
+/// usage/queue rows could otherwise push a 24 MiB window over the 64 MiB
+/// frame).
+pub const SNAPSHOT_PAYLOAD_BUDGET_BYTES: usize = 24 * 1024 * 1024;
+
+/// The daemon frame ceiling the snapshot must fit. Mirrors
+/// `bridge_client::MAX_SERVER_FRAME_BYTES`; duplicated here so `store` does
+/// not depend on the transport crate for a constant.
+pub const SNAPSHOT_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// Headroom reserved for the snapshot's non-entry fields (head, leaves,
+/// divergence states, completion summary, JSON framing) when deriving the
+/// entry budget from measured overhead.
+pub const SNAPSHOT_FRAME_MARGIN_BYTES: usize = 4 * 1024 * 1024;
+
+/// Derive the entry-payload budget from the snapshot's measured non-entry
+/// overhead: whatever the frame has left after overhead and margin, capped at
+/// the default so ordinary snapshots behave exactly as before.
+pub fn snapshot_entry_budget(overhead_bytes: usize) -> usize {
+    SNAPSHOT_FRAME_BYTES
+        .saturating_sub(overhead_bytes.saturating_add(SNAPSHOT_FRAME_MARGIN_BYTES))
+        .min(SNAPSHOT_PAYLOAD_BUDGET_BYTES)
+}
 
 /// The number of newest entries a snapshot carries.
 ///
@@ -3417,27 +3463,30 @@ pub struct SessionEntryWindow {
     pub trimmed_payloads: i64,
 }
 
-/// Shorten every oversized string in `value` in place, reporting whether
-/// anything was cut. Structure is preserved: the transcript codec reads named
-/// fields (`text`, `title`, nested `data`), so trimming has to leave those
-/// fields present and merely shorter.
-fn trim_snapshot_strings(value: &mut serde_json::Value) -> bool {
-    trim_snapshot_strings_at_key(value, None)
+/// Whether a string may be shortened at all.
+///
+/// Pasted images are durable history, not verbose textual detail. Cutting their
+/// base64 data produces a plausible-looking but undecodable URI and makes the
+/// image disappear after reload.
+fn is_trimmable(key: Option<&str>, text: &str) -> bool {
+    !(key == Some("dataUri") && text.starts_with("data:image/"))
 }
 
-fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>) -> bool {
+/// Shorten every string in `value` longer than `cap`, in place, reporting
+/// whether anything was cut. Structure is preserved: the transcript codec reads
+/// named fields (`text`, `title`, nested `data`), so trimming has to leave those
+/// fields present and merely shorter.
+fn trim_snapshot_strings(value: &mut serde_json::Value, cap: usize) -> bool {
+    trim_snapshot_strings_at_key(value, None, cap)
+}
+
+fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>, cap: usize) -> bool {
     match value {
         serde_json::Value::String(text) => {
-            // Pasted images are durable history, not verbose textual detail.
-            // Cutting their base64 data produces a plausible-looking but
-            // undecodable URI and makes the image disappear after reload.
-            if key == Some("dataUri") && text.starts_with("data:image/") {
+            if text.len() <= cap || !is_trimmable(key, text) {
                 return false;
             }
-            if text.len() <= SNAPSHOT_STRING_BYTES {
-                return false;
-            }
-            let mut end = SNAPSHOT_STRING_BYTES;
+            let mut end = cap;
             while end > 0 && !text.is_char_boundary(end) {
                 end -= 1;
             }
@@ -3447,86 +3496,150 @@ fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>
             true
         }
         serde_json::Value::Array(items) => items.iter_mut().fold(false, |trimmed, item| {
-            trim_snapshot_strings_at_key(item, None) || trimmed
+            trim_snapshot_strings_at_key(item, None, cap) || trimmed
         }),
         serde_json::Value::Object(fields) => {
             fields.iter_mut().fold(false, |trimmed, (name, field)| {
-                trim_snapshot_strings_at_key(field, Some(name)) || trimmed
+                trim_snapshot_strings_at_key(field, Some(name), cap) || trimmed
             })
         }
         _ => false,
     }
 }
 
-/// The newest `limit` ancestors of the active head, oldest-first, with
-/// oversized payload strings trimmed for display. `session_entries` stays the
-/// untrimmed read for callers that need real payloads (compaction, context
-/// projection); this one exists only to make the snapshot a bounded frame.
+/// The active branch: the session head and every entry it descends from.
+///
+/// Shared verbatim by the count and the page so the two can never disagree
+/// about which entries the window is a window onto.
+const ACTIVE_BRANCH_CTE: &str = "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
+         SELECT id,parent_entry_id,sequence FROM session_entries
+         WHERE session_id=?1
+           AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
+         UNION
+         SELECT parent.id,parent.parent_entry_id,parent.sequence
+         FROM session_entries parent
+         JOIN active_branch child ON parent.id=child.parent_entry_id
+         WHERE parent.session_id=?1
+     )";
+
+/// One read of the window at a given per-string ceiling, oldest-first.
+///
+/// `usize::MAX` means "do not trim", and is measured against the stored bytes
+/// exactly. Returns `None` once the accumulated payload crosses `budget`, so a
+/// caller can tighten the ceiling without ever holding an over-budget window in
+/// memory: the remaining rows are still drained to finish the statement, but
+/// their payload column is left unread.
+fn read_session_entry_window(
+    db: &Connection,
+    session_id: &str,
+    limit: usize,
+    cap: usize,
+    budget: usize,
+) -> Result<Option<(Vec<SessionEntry>, i64)>, BridgeError> {
+    let mut trimmed_payloads = 0i64;
+    let mut bytes = 0usize;
+    let mut over_budget = false;
+    let sql = format!(
+        "{ACTIVE_BRANCH_CTE}
+         SELECT entry.id,entry.session_id,entry.parent_entry_id,entry.sequence,entry.semantic_schema_version,entry.kind,entry.payload,entry.provider_event_id,entry.context_visibility,entry.token_estimate,entry.created_at
+         FROM active_branch branch
+         JOIN session_entries entry ON entry.id=branch.id
+         WHERE entry.session_id=?1
+         ORDER BY branch.sequence DESC LIMIT ?2"
+    );
+    let mut entries = query_with_params(db, &sql, params![session_id, limit as i64], |row| {
+        let mut payload = serde_json::Value::Null;
+        if !over_budget {
+            let raw: String = row.get(6).unwrap_or_default();
+            if cap == usize::MAX {
+                bytes += raw.len();
+                payload = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+            } else {
+                payload = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                if trim_snapshot_strings(&mut payload, cap) {
+                    trimmed_payloads += 1;
+                }
+                bytes += payload.to_string().len();
+            }
+            if bytes > budget {
+                over_budget = true;
+                payload = serde_json::Value::Null;
+            }
+        }
+        Ok(SessionEntry {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            parent_entry_id: row.get(2)?,
+            sequence: row.get(3)?,
+            semantic_schema_version: row.get(4)?,
+            kind: row.get(5)?,
+            payload,
+            provider_event_id: row.get(7)?,
+            context_visibility: row.get(8)?,
+            token_estimate: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    if over_budget {
+        return Ok(None);
+    }
+    entries.reverse();
+    Ok(Some((entries, trimmed_payloads)))
+}
+
+/// The newest `limit` ancestors of the active head, oldest-first, with payload
+/// strings shortened only as far as the frame actually demands.
+/// `session_entries` stays the untrimmed read for callers that need real
+/// payloads (compaction, context projection); this one exists only to make the
+/// snapshot a bounded frame.
 pub fn session_entry_window(
     db: &Connection,
     session_id: &str,
     limit: usize,
 ) -> Result<SessionEntryWindow, BridgeError> {
+    session_entry_window_with_budget(db, session_id, limit, SNAPSHOT_PAYLOAD_BUDGET_BYTES)
+}
+
+/// Same as [`session_entry_window`], but the caller supplies the entry-payload
+/// budget — typically [`snapshot_entry_budget`] of the snapshot's measured
+/// non-entry overhead, so a workspace heavy with usage/queue rows tightens the
+/// window before the full frame is assembled rather than after it overflows.
+pub fn session_entry_window_with_budget(
+    db: &Connection,
+    session_id: &str,
+    limit: usize,
+    entry_budget: usize,
+) -> Result<SessionEntryWindow, BridgeError> {
     let total: i64 = db.query_row(
-        "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
-             SELECT id,parent_entry_id,sequence FROM session_entries
-             WHERE session_id=?1
-               AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
-             UNION
-             SELECT parent.id,parent.parent_entry_id,parent.sequence
-             FROM session_entries parent
-             JOIN active_branch child ON parent.id=child.parent_entry_id
-             WHERE parent.session_id=?1
-         )
-         SELECT count(*) FROM active_branch",
+        &format!("{ACTIVE_BRANCH_CTE} SELECT count(*) FROM active_branch"),
         params![session_id],
         |row| row.get(0),
     )?;
-    let mut trimmed_payloads = 0i64;
-    let mut entries = query_with_params(
-        db,
-        "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
-             SELECT id,parent_entry_id,sequence FROM session_entries
-             WHERE session_id=?1
-               AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
-             UNION
-             SELECT parent.id,parent.parent_entry_id,parent.sequence
-             FROM session_entries parent
-             JOIN active_branch child ON parent.id=child.parent_entry_id
-             WHERE parent.session_id=?1
-         )
-         SELECT entry.id,entry.session_id,entry.parent_entry_id,entry.sequence,entry.semantic_schema_version,entry.kind,entry.payload,entry.provider_event_id,entry.context_visibility,entry.token_estimate,entry.created_at
-         FROM active_branch branch
-         JOIN session_entries entry ON entry.id=branch.id
-         WHERE entry.session_id=?1
-         ORDER BY branch.sequence DESC LIMIT ?2",
-        params![session_id, limit as i64],
-        |row| {
-            let mut payload = parse_json_column(row, 6);
-            if trim_snapshot_strings(&mut payload) {
-                trimmed_payloads += 1;
-            }
-            Ok(SessionEntry {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                parent_entry_id: row.get(2)?,
-                sequence: row.get(3)?,
-                semantic_schema_version: row.get(4)?,
-                kind: row.get(5)?,
-                payload,
-                provider_event_id: row.get(7)?,
-                context_visibility: row.get(8)?,
-                token_estimate: row.get(9)?,
-                created_at: row.get(10)?,
-            })
-        },
-    )?;
-    entries.reverse();
-    Ok(SessionEntryWindow {
+    let window = |cap, budget| read_session_entry_window(db, session_id, limit, cap, budget);
+    let assemble = |(entries, trimmed_payloads)| SessionEntryWindow {
         entries,
         total,
         trimmed_payloads,
-    })
+    };
+
+    // Untrimmed first. Nearly every session fits, and one that fits must reach
+    // the UI byte-identical to what is stored.
+    if let Some(read) = window(usize::MAX, entry_budget)? {
+        return Ok(assemble(read));
+    }
+    let (floor, rungs) = SNAPSHOT_STRING_CAPS
+        .split_last()
+        .expect("the cap ladder is never empty");
+    for &cap in rungs {
+        if let Some(read) = window(cap, entry_budget)? {
+            return Ok(assemble(read));
+        }
+    }
+    // The floor is forced: a session too large even at the tightest rung still
+    // has to render, and that rung is what every session used to get.
+    Ok(assemble(
+        window(*floor, usize::MAX)?.expect("an unbounded budget always fits"),
+    ))
 }
 
 pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionHead>, BridgeError> {
@@ -6828,34 +6941,28 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_window_trims_oversized_payload_strings_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = open(&dir.path().join("bridge.db")).unwrap();
-        seed_workspace(&db);
+    fn a_string_inside_the_cap_is_never_touched() {
+        let mut value = json!({"text": "short", "data": {"nested": "also short"}});
+        let before = value.clone();
+        assert!(!trim_snapshot_strings(&mut value, 4 * 1024));
+        assert_eq!(value, before, "nothing under the cap may be rewritten");
+    }
+
+    #[test]
+    fn trimming_preserves_payload_structure() {
         // The real shape that made a chat unopenable: a `command.started`
         // whose title is the whole command and whose nested data carries the
         // whole output.
-        let huge = "x".repeat(SNAPSHOT_STRING_BYTES * 3);
-        append_session_entry(
-            &db,
-            "s",
-            None,
-            "command.started",
-            &json!({
-                "itemId": "call-1",
-                "title": huge.clone(),
-                "status": "inProgress",
-                "data": {"state": {"metadata": {"output": huge.clone()}}},
-            }),
-            None,
-            "eligible",
-            Some(1),
-        )
-        .unwrap();
+        const CAP: usize = 4 * 1024;
+        let huge = "x".repeat(CAP * 3);
+        let mut payload = json!({
+            "itemId": "call-1",
+            "title": huge.clone(),
+            "status": "inProgress",
+            "data": {"state": {"metadata": {"output": huge.clone()}}},
+        });
+        assert!(trim_snapshot_strings(&mut payload, CAP));
 
-        let window = session_entry_window(&db, "s", 10).unwrap();
-        assert_eq!(window.trimmed_payloads, 1);
-        let payload = &window.entries[0].payload;
         // Structure survives: the codec reads these fields by name, so trimming
         // has to shorten them, never drop them.
         assert_eq!(payload["itemId"], json!("call-1"));
@@ -6874,39 +6981,17 @@ mod tests {
                 "truncation must be visible rather than silent: {text:.80}"
             );
         }
-
-        // Untrimmed reads are unaffected — compaction and context projection
-        // still need the real payload.
-        let full = session_entries(&db, "s").unwrap();
-        assert_eq!(full[0].payload["title"].as_str().unwrap().len(), huge.len());
     }
 
     #[test]
-    fn the_snapshot_window_preserves_durable_image_data_uris() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = open(&dir.path().join("bridge.db")).unwrap();
-        seed_workspace(&db);
-        let data_uri = format!(
-            "data:image/png;base64,{}",
-            "a".repeat(SNAPSHOT_STRING_BYTES * 3)
-        );
-        append_session_entry(
-            &db,
-            "s",
-            None,
-            "message.completed",
-            &json!({
-                "text": "x".repeat(SNAPSHOT_STRING_BYTES * 3),
-                "data": {"attachments": [{"mediaType": "image/png", "dataUri": data_uri.clone()}]},
-            }),
-            None,
-            "eligible",
-            Some(1),
-        )
-        .unwrap();
-
-        let window = session_entry_window(&db, "s", 10).unwrap();
-        let payload = &window.entries[0].payload;
+    fn trimming_preserves_durable_image_data_uris() {
+        const CAP: usize = 4 * 1024;
+        let data_uri = format!("data:image/png;base64,{}", "a".repeat(CAP * 3));
+        let mut payload = json!({
+            "text": "x".repeat(CAP * 3),
+            "data": {"attachments": [{"mediaType": "image/png", "dataUri": data_uri.clone()}]},
+        });
+        assert!(trim_snapshot_strings(&mut payload, CAP));
         assert!(payload["text"]
             .as_str()
             .unwrap()
@@ -6922,13 +7007,123 @@ mod tests {
     fn trimming_a_payload_never_splits_a_character() {
         // A multi-byte character straddling the cap: `String::truncate` panics
         // off a char boundary, so the cut walks back to one.
-        let filler = "e".repeat(SNAPSHOT_STRING_BYTES - 1);
+        const CAP: usize = 4 * 1024;
+        let filler = "e".repeat(CAP - 1);
         let mut value = json!({"text": format!("{filler}\u{1f600}tail")});
-        assert!(trim_snapshot_strings(&mut value));
+        assert!(trim_snapshot_strings(&mut value, CAP));
         let text = value["text"].as_str().unwrap();
         assert!(text.starts_with(&filler));
         assert!(!text.contains('\u{fffd}'), "no replacement character");
         assert!(text.contains("more bytes not shown"));
+    }
+
+    /// The regression guard for the bug the budget exists to fix.
+    ///
+    /// An ordinary answer a little over the old flat 4 KiB cap lost its tail —
+    /// the reported case was a `Sources:` list cut by `… 578 more bytes not
+    /// shown` — even though the whole snapshot was four orders of magnitude
+    /// under the frame ceiling. A session that fits must arrive byte-identical
+    /// to storage.
+    #[test]
+    fn the_snapshot_window_leaves_an_ordinary_session_untrimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let answer = format!(
+            "{}\n\nSources: [1] https://example.com",
+            "a".repeat(4 * 1024)
+        );
+        assert!(
+            answer.len() > 4 * 1024,
+            "the fixture must clear the old cap"
+        );
+        let mut parent: Option<String> = None;
+        for index in 0..20 {
+            let entry = append_session_entry(
+                &db,
+                "s",
+                parent.as_deref(),
+                "assistant.message",
+                &json!({"text": answer, "data": {"note": format!("turn {index}")}}),
+                None,
+                "eligible",
+                Some(1),
+            )
+            .unwrap();
+            parent = Some(entry.id);
+        }
+
+        let window = session_entry_window(&db, "s", SNAPSHOT_ENTRY_WINDOW).unwrap();
+        assert_eq!(window.trimmed_payloads, 0);
+        for entry in &window.entries {
+            assert_eq!(
+                entry.payload["text"].as_str().unwrap(),
+                answer,
+                "a message that fits the frame must not be shortened"
+            );
+        }
+        assert!(
+            !serde_json::to_string(&window.entries)
+                .unwrap()
+                .contains("more bytes not shown"),
+            "no truncation marker may appear anywhere in a session that fits"
+        );
+    }
+
+    /// The ladder must stop at the loosest rung that fits rather than dropping
+    /// straight to the floor: a session over budget still deserves as much of
+    /// its text as one frame can carry.
+    #[test]
+    fn the_snapshot_window_trims_no_harder_than_the_budget_requires() {
+        const STRING_BYTES: usize = 80 * 1024;
+        // Chosen so the untrimmed window (~27 MiB) exceeds the budget while the
+        // 64 KiB rung (~22 MiB) fits, leaving the two tighter rungs unused.
+        const ENTRIES: i64 = 350;
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let fat = "x".repeat(STRING_BYTES);
+        let transaction = db.unchecked_transaction().unwrap();
+        for index in 0..ENTRIES {
+            transaction
+                .execute(
+                    "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,context_visibility,token_estimate,created_at)
+                     VALUES(?1,'s',?2,?3,1,'assistant.message',?4,'eligible',1,'now')",
+                    params![
+                        format!("e-{index}"),
+                        (index > 0).then(|| format!("e-{}", index - 1)),
+                        index + 1,
+                        json!({"text": fat}).to_string(),
+                    ],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,resume_eligibility,updated_at)
+                 VALUES('s',?1,'fresh','fresh','now')",
+                params![format!("e-{}", ENTRIES - 1)],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        assert!(
+            ENTRIES as usize * STRING_BYTES > SNAPSHOT_PAYLOAD_BUDGET_BYTES,
+            "the fixture has to actually exceed the budget or this proves nothing"
+        );
+
+        let window = session_entry_window(&db, "s", SNAPSHOT_ENTRY_WINDOW).unwrap();
+        assert_eq!(window.trimmed_payloads, ENTRIES);
+        let text = window.entries[0].payload["text"].as_str().unwrap();
+        assert!(
+            text.len() > 64 * 1024,
+            "the 64 KiB rung fits, so nothing tighter may be chosen: {} bytes",
+            text.len()
+        );
+        assert!(text.len() < STRING_BYTES, "something had to be cut");
+        assert!(
+            serde_json::to_vec(&window.entries).unwrap().len() <= SNAPSHOT_PAYLOAD_BUDGET_BYTES,
+            "the chosen rung has to actually fit the budget"
+        );
     }
 
     #[test]
