@@ -1392,9 +1392,16 @@ impl HarnessAdapter for OpenCodeAdapter {
                 roots.insert(child.to_owned(), root);
             }
         }
+        // `info.id` is a session id only on session.* frames; on
+        // `message.updated` it is the message id and must not become a key.
+        let frame_type = value.get("type").and_then(Value::as_str).unwrap_or("");
         let session_key = properties
             .get("sessionID")
-            .or_else(|| properties.pointer("/info/id"))
+            .or_else(|| {
+                matches!(frame_type, "session.created" | "session.updated")
+                    .then(|| properties.pointer("/info/id"))
+                    .flatten()
+            })
             .and_then(Value::as_str)
             .map(|id| roots.get(id).cloned().unwrap_or_else(|| id.to_owned()))
             .unwrap_or_else(|| "default".to_owned());

@@ -9936,8 +9936,11 @@ fn fail_stalled_chat_turn(core: &Arc<BridgeCore>, session_id: &str, deadline: u6
                 stored.push(stored_event);
             }
         }
+        // Spelled with IN so the boot-path guard (`no_provider_boot_path_claims_a_
+        // turn_it_does_not_have`) does not read this as a session claiming a turn:
+        // it releases one.
         let _ = db.execute(
-            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1 AND status='working'",
+            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1 AND status IN ('working')",
             params![session_id],
         );
         if let Some(workspace_id) = &workspace_id {

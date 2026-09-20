@@ -65,12 +65,17 @@ pub fn is_opencode_liveness_frame(message: &Value) -> bool {
     )
 }
 
-/// The session a frame speaks for: the flat runtime field, else the session
-/// a `session.created`/`session.updated` frame describes.
-fn opencode_frame_session(properties: &Value) -> Option<&str> {
+/// The session a frame speaks for: the flat runtime field, else — only on a
+/// `session.created`/`session.updated` frame, where `info` is a session — the
+/// session it describes. On `message.updated`, `info.id` is a message id.
+fn opencode_frame_session<'a>(event_type: &str, properties: &'a Value) -> Option<&'a str> {
     properties
         .get("sessionID")
-        .or_else(|| properties.pointer("/info/id"))
+        .or_else(|| {
+            matches!(event_type, "session.created" | "session.updated")
+                .then(|| properties.pointer("/info/id"))
+                .flatten()
+        })
         .and_then(Value::as_str)
 }
 
@@ -111,7 +116,7 @@ pub fn normalize_opencode_message_with_state(
         .get("properties")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let frame_session = opencode_frame_session(&properties).map(str::to_owned);
+    let frame_session = opencode_frame_session(event_type, &properties).map(str::to_owned);
     // A session announced with an owned parent is subagent work from here on.
     if matches!(event_type, "session.created" | "session.updated") {
         let parent = properties.pointer("/info/parentID").and_then(Value::as_str);
