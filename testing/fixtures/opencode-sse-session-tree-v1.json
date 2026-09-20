@@ -1,5 +1,5 @@
 {
-  "provenance": "OpenCode 1.18.31 SSE transcript. Lines marked `capture` are verbatim frames from a local `opencode serve` (/event) with the ids anonymized: server.connected, session.created for a root and for a child created with parentID, and server.heartbeat. Lines marked `schema` were assembled from the runtime event schema (packages/schema/src/v1/session.ts) and the part shapes in src/transcript/fixtures/opencode-wire.json, a real 1.18.3 capture. No model requests were made.",
+  "provenance": "OpenCode 1.18.31 SSE transcript. Lines marked `capture` are verbatim frames from a local `opencode serve` (/event) with the ids anonymized: server.connected, session.created for a root and for a child created with parentID, and server.heartbeat. Lines marked `schema` were assembled from the runtime event schema (packages/schema/src/v1/session.ts) and the part shapes in src/transcript/fixtures/opencode-wire.json, a real 1.18.3 capture. No model requests were made. Two turns: the first delegates to a task child (and a nested grandchild) and completes; the second dies to an unattributed session.error, which is the skill/plugin failure shape.",
   "root": "ses_parent",
   "dispositions": {
     "own": "a frame of the root session",
@@ -374,21 +374,6 @@
     },
     {
       "source": "schema",
-      "expect": "admit",
-      "data": {
-        "type": "session.error",
-        "properties": {
-          "error": {
-            "name": "UnknownError",
-            "data": {
-              "message": "skill 'review' failed to load"
-            }
-          }
-        }
-      }
-    },
-    {
-      "source": "schema",
       "expect": "child",
       "data": {
         "type": "session.created",
@@ -417,6 +402,27 @@
               "updated": 1789938982881
             },
             "parentID": "ses_child"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_grandchild",
+          "info": {
+            "id": "msg_g1",
+            "sessionID": "ses_grandchild",
+            "role": "assistant",
+            "agent": "general",
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1789938983650
+            }
           }
         }
       }
@@ -584,13 +590,25 @@
       "source": "schema",
       "expect": "own",
       "data": {
-        "type": "session.error",
+        "type": "session.status",
         "properties": {
           "sessionID": "ses_parent",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "admit",
+      "data": {
+        "type": "session.error",
+        "properties": {
           "error": {
-            "name": "MessageAbortedError",
+            "name": "UnknownError",
             "data": {
-              "message": "aborted"
+              "message": "skill 'review' failed to load"
             }
           }
         }

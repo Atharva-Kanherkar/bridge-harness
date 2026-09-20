@@ -40,6 +40,38 @@ pub struct OpenCodeStreamState {
     /// `(modelID, providerID)` per assistant message, so a `step-finish` part
     /// can name the model that produced its tokens.
     message_models: HashMap<String, (Option<String>, Option<String>)>,
+    /// The session this state was opened for, learned from its first frame.
+    /// Frames from any other owned session are subagent work.
+    root_session: Option<String>,
+    /// Child sessions OpenCode's `task` tool created under the root (or under
+    /// another child), keyed by session id. Their frames are tagged, and their
+    /// lifecycle never drives the root turn.
+    children: HashMap<String, OpenCodeChildSession>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenCodeChildSession {
+    agent: Option<String>,
+    title: Option<String>,
+}
+
+/// Server-level frames that prove the OpenCode process is alive and say
+/// nothing about any session. The reader uses them as liveness ticks; they
+/// never become transcript rows and never count as turn progress.
+pub fn is_opencode_liveness_frame(message: &Value) -> bool {
+    matches!(
+        message.get("type").and_then(Value::as_str),
+        Some("server.heartbeat" | "server.connected")
+    )
+}
+
+/// The session a frame speaks for: the flat runtime field, else the session
+/// a `session.created`/`session.updated` frame describes.
+fn opencode_frame_session(properties: &Value) -> Option<&str> {
+    properties
+        .get("sessionID")
+        .or_else(|| properties.pointer("/info/id"))
+        .and_then(Value::as_str)
 }
 
 #[derive(Debug)]
@@ -69,6 +101,9 @@ pub fn normalize_opencode_message_with_state(
     message: &Value,
     state: &mut OpenCodeStreamState,
 ) -> Vec<NormalizedEvent> {
+    if is_opencode_liveness_frame(message) {
+        return vec![];
+    }
     let Some(event_type) = message.get("type").and_then(Value::as_str) else {
         return vec![];
     };
@@ -76,6 +111,97 @@ pub fn normalize_opencode_message_with_state(
         .get("properties")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    let frame_session = opencode_frame_session(&properties).map(str::to_owned);
+    // A session announced with an owned parent is subagent work from here on.
+    if matches!(event_type, "session.created" | "session.updated") {
+        let parent = properties.pointer("/info/parentID").and_then(Value::as_str);
+        let child = properties.pointer("/info/id").and_then(Value::as_str);
+        if let (Some(parent), Some(child)) = (parent, child) {
+            if state.root_session.is_none() {
+                state.root_session = Some(parent.to_owned());
+            }
+            let owned = state.root_session.as_deref() == Some(parent)
+                || state.children.contains_key(parent);
+            if owned {
+                state.children.insert(
+                    child.to_owned(),
+                    OpenCodeChildSession {
+                        agent: properties
+                            .pointer("/info/agent")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        title: properties
+                            .pointer("/info/title")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                    },
+                );
+                return vec![];
+            }
+        }
+    }
+    if let Some(session) = &frame_session {
+        if state.root_session.is_none() {
+            state.root_session = Some(session.clone());
+        }
+    }
+    let child = frame_session
+        .as_deref()
+        .and_then(|session| state.children.get(session).cloned().map(|info| (session.to_owned(), info)));
+    let Some((child_session, child_info)) = child else {
+        return normalize_opencode_root_frame(event_type, &properties, state);
+    };
+    match event_type {
+        // A child's turn is not the root's turn, and its plan, compaction and
+        // session records belong to it alone.
+        "session.status" | "session.idle" | "session.created" | "session.updated"
+        | "todo.updated" | "session.compacted" | "session.diff" => vec![],
+        // A dead subagent is news, but the root turn is still running: the
+        // parent's `task` part will settle it.
+        "session.error" => {
+            let mut event = with_data("error", &properties, properties.clone());
+            event.status = Some("warning".into());
+            event.title = Some("OpenCode subagent error".into());
+            event.text = opencode_error_text(&properties);
+            tag_subagent(&mut event, &child_session, &child_info);
+            vec![event]
+        }
+        _ => {
+            let mut events = normalize_opencode_root_frame(event_type, &properties, state);
+            for event in &mut events {
+                tag_subagent(event, &child_session, &child_info);
+            }
+            events
+        }
+    }
+}
+
+fn tag_subagent(event: &mut NormalizedEvent, session_id: &str, info: &OpenCodeChildSession) {
+    if !event.data.is_object() {
+        event.data = json!({});
+    }
+    event.data["subagent"] = json!({
+        "sessionId": session_id,
+        "agent": info.agent,
+        "title": info.title,
+    });
+}
+
+fn opencode_error_text(properties: &Value) -> Option<String> {
+    properties
+        .pointer("/error/data/message")
+        .or_else(|| properties.pointer("/error/message"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| properties.get("error").map(Value::to_string))
+}
+
+fn normalize_opencode_root_frame(
+    event_type: &str,
+    properties: &Value,
+    state: &mut OpenCodeStreamState,
+) -> Vec<NormalizedEvent> {
+    let properties = properties.clone();
     match event_type {
         "session.created" => vec![with_data(
             "session.started",
@@ -311,12 +437,7 @@ pub fn normalize_opencode_message_with_state(
             let mut event = with_data("error", &properties, properties.clone());
             event.status = Some("failed".into());
             event.title = Some("OpenCode error".into());
-            event.text = properties
-                .pointer("/error/data/message")
-                .or_else(|| properties.pointer("/error/message"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| properties.get("error").map(Value::to_string));
+            event.text = opencode_error_text(&properties);
             let mut ended = NormalizedEvent::new("turn.completed");
             ended.status = Some("failed".into());
             vec![event, ended]
@@ -2489,6 +2610,100 @@ mod tests {
             &mut state,
         );
         assert_eq!(next.len(), 1);
+    }
+
+    fn opencode_fixture_lines() -> Vec<Value> {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/opencode-sse-session-tree-v1.json"
+        ))
+        .unwrap();
+        fixture["lines"].as_array().unwrap().iter().map(|line| line["data"].clone()).collect()
+    }
+
+    #[test]
+    fn opencode_child_session_frames_are_tagged_as_subagent_work() {
+        let mut state = OpenCodeStreamState::default();
+        let mut events = Vec::new();
+        for frame in opencode_fixture_lines() {
+            // The adapter's filter drops the foreign lines before the
+            // normalizer ever sees them.
+            let session = frame.pointer("/properties/sessionID").and_then(Value::as_str);
+            if session == Some("ses_foreign") {
+                continue;
+            }
+            events.extend(normalize_opencode_message_with_state(&frame, &mut state));
+        }
+        let turn_boundaries: Vec<_> = events.iter().filter(|e| e.kind == "turn.started" || e.kind == "turn.completed").map(|e| (e.kind.as_str(), e.status.as_deref())).collect();
+        assert_eq!(
+            turn_boundaries,
+            vec![("turn.started", Some("working")), ("turn.completed", Some("completed")), ("turn.started", Some("working")), ("turn.completed", Some("failed"))],
+            "the child's busy/idle never opened or closed a turn; the root idle closed the first and the unattributed error failed the second"
+        );
+        let child_kinds: Vec<_> = events.iter().filter(|e| e.data["subagent"]["sessionId"] == "ses_child").map(|e| e.kind.as_str()).collect();
+        assert_eq!(child_kinds, vec!["reasoning.started", "reasoning.delta", "reasoning.completed", "command.completed", "message.completed"]);
+        let child_text = events.iter().find(|e| e.kind == "message.completed" && e.data["subagent"]["sessionId"] == "ses_child").unwrap();
+        assert_eq!(child_text.data["subagent"]["title"], "Look up the facts");
+        assert_eq!(child_text.text.as_deref(), Some("The answer is 42."));
+        // A grandchild is tagged with its own id, and the root's own rows carry no tag.
+        assert!(events.iter().any(|e| e.kind == "message.completed" && e.data["subagent"]["sessionId"] == "ses_grandchild"));
+        let root_text = events.iter().find(|e| e.kind == "message.completed" && e.text.as_deref() == Some("It is 42.")).unwrap();
+        assert!(root_text.data.get("subagent").is_none());
+        // The parent's task tool card is the root's, in both states.
+        assert_eq!(events.iter().filter(|e| e.kind.starts_with("tool.") && e.data.get("subagent").is_none() && e.title.as_deref() == Some("Look up the facts")).count(), 2);
+    }
+
+    #[test]
+    fn opencode_child_session_error_is_a_warning_not_a_turn_end() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"root","info":{"id":"root"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"root","status":{"type":"busy"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"kid","info":{"id":"kid","parentID":"root","agent":"explore","title":"Scan"}}}), &mut state);
+        let events = normalize_opencode_message_with_state(&json!({"type":"session.error","properties":{"sessionID":"kid","error":{"name":"UnknownError","data":{"message":"subagent crashed"}}}}), &mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+        assert_eq!(events[0].status.as_deref(), Some("warning"));
+        assert_eq!(events[0].text.as_deref(), Some("subagent crashed"));
+        assert_eq!(events[0].data["subagent"]["agent"], "explore");
+        // The root turn is still open: only its own idle closes it.
+        let idle = normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"root","status":{"type":"idle"}}}), &mut state);
+        assert_eq!(idle[0].kind, "turn.completed");
+        assert_eq!(idle[0].status.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn opencode_unattributed_session_error_still_fails_the_turn() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"root","status":{"type":"busy"}}}), &mut state);
+        let events = normalize_opencode_message_with_state(&json!({"type":"session.error","properties":{"error":{"name":"UnknownError","data":{"message":"skill failed to load"}}}}), &mut state);
+        assert_eq!(events.iter().map(|e| (e.kind.as_str(), e.status.as_deref())).collect::<Vec<_>>(), vec![("error", Some("failed")), ("turn.completed", Some("failed"))]);
+        assert_eq!(events[0].text.as_deref(), Some("skill failed to load"));
+        assert!(events[0].data.get("subagent").is_none());
+    }
+
+    #[test]
+    fn opencode_heartbeat_normalizes_to_nothing() {
+        let mut state = OpenCodeStreamState::default();
+        for frame in [json!({"id":"evt_1","type":"server.heartbeat","properties":{}}), json!({"id":"evt_0","type":"server.connected","properties":{}})] {
+            assert!(is_opencode_liveness_frame(&frame));
+            assert!(normalize_opencode_message_with_state(&frame, &mut state).is_empty(), "no provider.unknown row for {frame}");
+        }
+        assert!(!is_opencode_liveness_frame(&json!({"type":"session.status","properties":{}})));
+    }
+
+    #[test]
+    fn opencode_turn_completes_from_session_status_idle_alone() {
+        let mut state = OpenCodeStreamState::default();
+        let busy = json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}});
+        assert_eq!(normalize_opencode_message_with_state(&busy, &mut state)[0].kind, "turn.started");
+        let idle = json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"idle"}}});
+        let completed = normalize_opencode_message_with_state(&idle, &mut state);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].kind, "turn.completed");
+        // The deprecated fallback is still accepted, and never doubles the boundary.
+        assert!(normalize_opencode_message_with_state(&json!({"type":"session.idle","properties":{"sessionID":"ses_1"}}), &mut state).is_empty());
+        let mut fallback_only = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&busy, &mut fallback_only);
+        assert_eq!(normalize_opencode_message_with_state(&json!({"type":"session.idle","properties":{"sessionID":"ses_1"}}), &mut fallback_only)[0].kind, "turn.completed");
     }
 
     #[test]
