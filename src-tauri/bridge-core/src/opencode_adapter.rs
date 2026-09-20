@@ -539,6 +539,113 @@ fn http_error(action: &'static str) -> impl FnOnce(reqwest::Error) -> BridgeErro
     move |error| BridgeError::Adapter(format!("Failed to {action}: {error}"))
 }
 
+/// What the SSE reader does with one decoded `/event` frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameDisposition {
+    /// Ours: queue it for normalization.
+    Forward,
+    /// Another session on the same server. Counted, never queued.
+    Foreign,
+}
+
+/// Decides which frames on the shared `/event` bus belong to this runtime.
+///
+/// One `opencode serve` process is private to one Bridge session, but the bus
+/// still carries more than the root session's frames. The `task` tool creates
+/// a real child session with its own id and `info.parentID`, so the filter
+/// owns a *tree* of session ids rather than one. `session.error` may arrive
+/// with no `sessionID` at all (skill and plugin failures publish it that way),
+/// and `server.heartbeat` / `server.connected` never carry one; on a private
+/// server those are ours by construction and are forwarded so the turn can
+/// fail visibly and liveness can be measured.
+///
+/// The runtime event schema puts `sessionID` flat under `properties`; the
+/// published SDK types disagree and nest it under `part`. The flat field is
+/// read first and is what every captured frame carries; the nested shapes are
+/// a fallback so a schema drift degrades to "still attributed" rather than
+/// "every part update dropped".
+struct SessionFrameFilter {
+    root: String,
+    owned: HashSet<String>,
+    /// Foreign session ids already reported, so a busy stranger logs once.
+    reported_foreign: HashSet<String>,
+}
+
+impl SessionFrameFilter {
+    fn new(root: String) -> Self {
+        let mut owned = HashSet::new();
+        owned.insert(root.clone());
+        Self {
+            root,
+            owned,
+            reported_foreign: HashSet::new(),
+        }
+    }
+
+    fn is_child(&self, session_id: &str) -> bool {
+        session_id != self.root && self.owned.contains(session_id)
+    }
+
+    fn classify(&mut self, value: &Value) -> FrameDisposition {
+        let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+        if is_liveness_event(event_type) {
+            return FrameDisposition::Forward;
+        }
+        let properties = value.get("properties").unwrap_or(&Value::Null);
+        if matches!(event_type, "session.created" | "session.updated") {
+            let parent = properties
+                .pointer("/info/parentID")
+                .and_then(Value::as_str);
+            let child = properties.pointer("/info/id").and_then(Value::as_str);
+            if let (Some(parent), Some(child)) = (parent, child) {
+                if self.owned.contains(parent) {
+                    self.owned.insert(child.to_owned());
+                    return FrameDisposition::Forward;
+                }
+            }
+        }
+        match frame_session_id(properties) {
+            Some(session_id) if self.owned.contains(session_id) => FrameDisposition::Forward,
+            // An unattributed error on a private server can only be ours.
+            None if event_type == "session.error" => FrameDisposition::Forward,
+            _ => FrameDisposition::Foreign,
+        }
+    }
+
+    /// Leave evidence of a dropped frame without flooding stderr: one line
+    /// per distinct foreign session id (or once for id-less strangers).
+    fn note_foreign(&mut self, value: &Value) {
+        let session_id = value
+            .get("properties")
+            .and_then(frame_session_id)
+            .unwrap_or("<none>")
+            .to_owned();
+        if self.reported_foreign.insert(session_id.clone()) {
+            eprintln!(
+                "bridge: opencode session {} dropped a frame from foreign session {} ({})",
+                self.root,
+                session_id,
+                value.get("type").and_then(Value::as_str).unwrap_or("?")
+            );
+        }
+    }
+}
+
+/// Server-level frames that carry no session id and prove the process is alive.
+fn is_liveness_event(event_type: &str) -> bool {
+    matches!(event_type, "server.heartbeat" | "server.connected")
+}
+
+/// The session a frame belongs to: the flat runtime field first, then the
+/// nested shapes the SDK types describe.
+fn frame_session_id(properties: &Value) -> Option<&str> {
+    properties
+        .get("sessionID")
+        .or_else(|| properties.pointer("/part/sessionID"))
+        .or_else(|| properties.pointer("/info/sessionID"))
+        .and_then(Value::as_str)
+}
+
 fn spawn_event_stream(
     client: Client,
     base_url: String,
@@ -568,6 +675,7 @@ fn spawn_event_stream(
             return;
         }
         let mut reader = std::io::BufReader::new(response);
+        let mut filter = SessionFrameFilter::new(session_id.clone());
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
@@ -581,12 +689,13 @@ fn spawn_event_stream(
             let Ok(value) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
-            let belongs_to_session = value
-                .pointer("/properties/sessionID")
-                .and_then(Value::as_str)
-                == Some(session_id.as_str());
-            if !belongs_to_session {
-                continue;
+            match filter.classify(&value) {
+                FrameDisposition::Forward => {}
+                FrameDisposition::Foreign => {
+                    sender.record_foreign_drop();
+                    filter.note_foreign(&value);
+                    continue;
+                }
             }
             // Streaming deltas are the only sheddable frames: their terminal
             // `message.part.updated` carries the complete content. Everything
@@ -1505,6 +1614,122 @@ fn auth_state_from_data_dir(dir: Option<PathBuf>) -> AuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_tree_fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../testing/fixtures/opencode-sse-session-tree-v1.json"
+        ))
+        .expect("fixture is valid JSON")
+    }
+
+    #[test]
+    fn filter_admits_the_root_and_its_descendants_and_counts_the_rest() {
+        let mut filter = SessionFrameFilter::new("root".into());
+        let created = |id: &str, parent: Option<&str>| {
+            let mut info = json!({"id": id, "title": id});
+            if let Some(parent) = parent {
+                info["parentID"] = json!(parent);
+            }
+            json!({"type": "session.created", "properties": {"sessionID": id, "info": info}})
+        };
+        let part = |session: &str| {
+            json!({"type": "message.part.updated", "properties": {"sessionID": session, "part": {"id": "p", "messageID": "m", "type": "text"}}})
+        };
+        assert_eq!(filter.classify(&part("root")), FrameDisposition::Forward);
+        // A child announced with our id as parent joins the tree...
+        assert_eq!(filter.classify(&created("child", Some("root"))), FrameDisposition::Forward);
+        assert_eq!(filter.classify(&part("child")), FrameDisposition::Forward);
+        assert!(filter.is_child("child") && !filter.is_child("root"));
+        // ...transitively.
+        assert_eq!(filter.classify(&created("grandchild", Some("child"))), FrameDisposition::Forward);
+        assert_eq!(filter.classify(&part("grandchild")), FrameDisposition::Forward);
+        // A session with no parent, or a parent we do not own, stays foreign.
+        assert_eq!(filter.classify(&created("stranger", None)), FrameDisposition::Foreign);
+        assert_eq!(filter.classify(&created("orphan", Some("stranger"))), FrameDisposition::Foreign);
+        assert_eq!(filter.classify(&part("stranger")), FrameDisposition::Foreign);
+    }
+
+    #[test]
+    fn filter_admits_unattributed_session_errors_and_heartbeats() {
+        let mut filter = SessionFrameFilter::new("root".into());
+        assert_eq!(
+            filter.classify(&json!({"type": "session.error", "properties": {"error": {"message": "plugin died"}}})),
+            FrameDisposition::Forward
+        );
+        assert_eq!(
+            filter.classify(&json!({"type": "server.heartbeat", "properties": {}})),
+            FrameDisposition::Forward
+        );
+        assert_eq!(
+            filter.classify(&json!({"type": "server.connected", "properties": {}})),
+            FrameDisposition::Forward
+        );
+        // An error attributed to a stranger is still theirs.
+        assert_eq!(
+            filter.classify(&json!({"type": "session.error", "properties": {"sessionID": "other", "error": {}}})),
+            FrameDisposition::Foreign
+        );
+        // Any other id-less frame is not ours to guess at.
+        assert_eq!(
+            filter.classify(&json!({"type": "todo.updated", "properties": {"todos": []}})),
+            FrameDisposition::Foreign
+        );
+    }
+
+    #[test]
+    fn filter_reads_the_flat_session_id_first() {
+        // Runtime schema: `properties.sessionID` is flat. This is the shape the
+        // captured transcript carries and the one the filter must key on.
+        let mut filter = SessionFrameFilter::new("root".into());
+        let runtime_shape = json!({"type": "message.part.updated", "properties": {"sessionID": "root", "part": {"id": "p", "messageID": "m", "sessionID": "other", "type": "text"}}});
+        assert_eq!(filter.classify(&runtime_shape), FrameDisposition::Forward, "flat id wins even when the nested one disagrees");
+        // SDK types: the id only under `part`. Accepted as a fallback so a
+        // future drift attributes instead of dropping every part update.
+        let sdk_shape = json!({"type": "message.part.updated", "properties": {"part": {"id": "p", "messageID": "m", "sessionID": "root", "type": "text"}}});
+        assert_eq!(filter.classify(&sdk_shape), FrameDisposition::Forward);
+        let sdk_foreign = json!({"type": "message.part.updated", "properties": {"part": {"id": "p", "messageID": "m", "sessionID": "other", "type": "text"}}});
+        assert_eq!(filter.classify(&sdk_foreign), FrameDisposition::Foreign);
+    }
+
+    #[test]
+    fn session_tree_fixture_replays_with_the_recorded_dispositions() {
+        let fixture = session_tree_fixture();
+        let root = fixture["root"].as_str().unwrap();
+        let mut filter = SessionFrameFilter::new(root.into());
+        let (sender, _receiver, metrics) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        let mut foreign = 0;
+        for (index, line) in fixture["lines"].as_array().unwrap().iter().enumerate() {
+            let expect = line["expect"].as_str().unwrap();
+            let frame = &line["data"];
+            let disposition = filter.classify(frame);
+            let session = frame.get("properties").and_then(frame_session_id);
+            match expect {
+                "own" => {
+                    assert_eq!(disposition, FrameDisposition::Forward, "line {index}");
+                    assert!(session.is_some_and(|id| id == root), "line {index} is a root frame");
+                }
+                "child" => {
+                    assert_eq!(disposition, FrameDisposition::Forward, "line {index}");
+                    assert!(session.is_some_and(|id| filter.is_child(id)), "line {index} is child work");
+                }
+                "admit" => {
+                    assert_eq!(disposition, FrameDisposition::Forward, "line {index}");
+                    assert!(session.is_none(), "line {index} carries no session id");
+                }
+                "foreign" => {
+                    assert_eq!(disposition, FrameDisposition::Foreign, "line {index}");
+                    sender.record_foreign_drop();
+                    filter.note_foreign(frame);
+                    foreign += 1;
+                }
+                other => panic!("unknown disposition {other}"),
+            }
+        }
+        assert!(foreign > 0, "the fixture exercises the drop path");
+        assert_eq!(metrics.snapshot().dropped_foreign, foreign);
+        assert_eq!(filter.reported_foreign.len(), 1, "one stranger, logged once");
+    }
     #[test]
     fn image_attachments_keep_native_shapes_and_order() {
         let images = vec![

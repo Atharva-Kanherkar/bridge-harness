@@ -1,0 +1,600 @@
+{
+  "provenance": "OpenCode 1.18.31 SSE transcript. Lines marked `capture` are verbatim frames from a local `opencode serve` (/event) with the ids anonymized: server.connected, session.created for a root and for a child created with parentID, and server.heartbeat. Lines marked `schema` were assembled from the runtime event schema (packages/schema/src/v1/session.ts) and the part shapes in src/transcript/fixtures/opencode-wire.json, a real 1.18.3 capture. No model requests were made.",
+  "root": "ses_parent",
+  "dispositions": {
+    "own": "a frame of the root session",
+    "child": "a frame of a session whose parentID chain reaches the root",
+    "admit": "a frame with no session id that the runtime forwards anyway (liveness, unattributed error)",
+    "foreign": "dropped and counted"
+  },
+  "lines": [
+    {
+      "source": "capture",
+      "expect": "admit",
+      "data": {
+        "type": "server.connected",
+        "properties": {}
+      }
+    },
+    {
+      "source": "capture",
+      "expect": "own",
+      "data": {
+        "type": "session.created",
+        "properties": {
+          "sessionID": "ses_parent",
+          "info": {
+            "id": "ses_parent",
+            "slug": "slug",
+            "version": "1.18.31",
+            "projectID": "global",
+            "directory": "/repo",
+            "path": "",
+            "title": "Bridge session",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "time": {
+              "created": 1789938982881,
+              "updated": 1789938982881
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_parent",
+          "info": {
+            "id": "msg_u1",
+            "sessionID": "ses_parent",
+            "role": "user",
+            "time": {
+              "created": 1789938982900
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_parent",
+          "part": {
+            "id": "prt_u1",
+            "messageID": "msg_u1",
+            "sessionID": "ses_parent",
+            "type": "text",
+            "text": "Delegate the lookup."
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_parent",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_parent",
+          "info": {
+            "id": "msg_a1",
+            "sessionID": "ses_parent",
+            "role": "assistant",
+            "time": {
+              "created": 1789938982900
+            },
+            "agent": "build",
+            "mode": "build",
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "parentID": "msg_u1",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_parent",
+          "part": {
+            "id": "prt_task",
+            "messageID": "msg_a1",
+            "sessionID": "ses_parent",
+            "type": "tool",
+            "callID": "call_task",
+            "tool": "task",
+            "state": {
+              "status": "running",
+              "input": {
+                "description": "Look up the facts",
+                "subagent_type": "general"
+              },
+              "title": "Look up the facts",
+              "time": {
+                "start": 1789938983000
+              }
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "capture",
+      "expect": "child",
+      "data": {
+        "type": "session.created",
+        "properties": {
+          "sessionID": "ses_child",
+          "info": {
+            "id": "ses_child",
+            "slug": "slug",
+            "version": "1.18.31",
+            "projectID": "global",
+            "directory": "/repo",
+            "path": "",
+            "title": "Look up the facts",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "time": {
+              "created": 1789938982881,
+              "updated": 1789938982881
+            },
+            "parentID": "ses_parent"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_child",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_child",
+          "info": {
+            "id": "msg_c1",
+            "sessionID": "ses_child",
+            "role": "assistant",
+            "time": {
+              "created": 1789938982900
+            },
+            "agent": "build",
+            "mode": "build",
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "parentID": null,
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_child",
+          "part": {
+            "id": "prt_c_reason",
+            "messageID": "msg_c1",
+            "sessionID": "ses_child",
+            "type": "reasoning",
+            "text": "",
+            "time": {
+              "start": 1789938983100
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.part.delta",
+        "properties": {
+          "sessionID": "ses_child",
+          "messageID": "msg_c1",
+          "partID": "prt_c_reason",
+          "field": "text",
+          "delta": "Reading "
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_child",
+          "part": {
+            "id": "prt_c_reason",
+            "messageID": "msg_c1",
+            "sessionID": "ses_child",
+            "type": "reasoning",
+            "text": "Reading the file.",
+            "time": {
+              "start": 1789938983100,
+              "end": 1789938983200
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_child",
+          "part": {
+            "id": "prt_c_tool",
+            "messageID": "msg_c1",
+            "sessionID": "ses_child",
+            "type": "tool",
+            "callID": "call_bash",
+            "tool": "bash",
+            "state": {
+              "status": "completed",
+              "input": {
+                "command": "cat facts.txt"
+              },
+              "output": "42",
+              "title": "cat facts.txt",
+              "time": {
+                "start": 1789938983300,
+                "end": 1789938983400
+              }
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_child",
+          "part": {
+            "id": "prt_c_text",
+            "messageID": "msg_c1",
+            "sessionID": "ses_child",
+            "type": "text",
+            "text": "The answer is 42.",
+            "time": {
+              "start": 1789938983500,
+              "end": 1789938983600
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_child",
+          "status": {
+            "type": "idle"
+          }
+        }
+      }
+    },
+    {
+      "source": "capture",
+      "expect": "admit",
+      "data": {
+        "type": "server.heartbeat",
+        "properties": {}
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "admit",
+      "data": {
+        "type": "session.error",
+        "properties": {
+          "error": {
+            "name": "UnknownError",
+            "data": {
+              "message": "skill 'review' failed to load"
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "session.created",
+        "properties": {
+          "sessionID": "ses_grandchild",
+          "info": {
+            "id": "ses_grandchild",
+            "slug": "slug",
+            "version": "1.18.31",
+            "projectID": "global",
+            "directory": "/repo",
+            "path": "",
+            "title": "Nested lookup",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "time": {
+              "created": 1789938982881,
+              "updated": 1789938982881
+            },
+            "parentID": "ses_child"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "child",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_grandchild",
+          "part": {
+            "id": "prt_g_text",
+            "messageID": "msg_g1",
+            "sessionID": "ses_grandchild",
+            "type": "text",
+            "text": "nested",
+            "time": {
+              "start": 1,
+              "end": 2
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "foreign",
+      "data": {
+        "type": "session.created",
+        "properties": {
+          "sessionID": "ses_foreign",
+          "info": {
+            "id": "ses_foreign",
+            "slug": "slug",
+            "version": "1.18.31",
+            "projectID": "global",
+            "directory": "/repo",
+            "path": "",
+            "title": "Someone else's session",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "time": {
+              "created": 1789938982881,
+              "updated": 1789938982881
+            }
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "foreign",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_foreign",
+          "part": {
+            "id": "prt_f",
+            "messageID": "msg_f1",
+            "sessionID": "ses_foreign",
+            "type": "text",
+            "text": "not ours",
+            "time": {
+              "start": 1,
+              "end": 2
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "part": {
+            "id": "prt_sdk",
+            "messageID": "msg_a1",
+            "sessionID": "ses_parent",
+            "type": "step-start"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_parent",
+          "part": {
+            "id": "prt_task",
+            "messageID": "msg_a1",
+            "sessionID": "ses_parent",
+            "type": "tool",
+            "callID": "call_task",
+            "tool": "task",
+            "state": {
+              "status": "completed",
+              "input": {
+                "description": "Look up the facts",
+                "subagent_type": "general"
+              },
+              "output": "The answer is 42.",
+              "title": "Look up the facts",
+              "time": {
+                "start": 1789938983000,
+                "end": 1789938983700
+              }
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_parent",
+          "part": {
+            "id": "prt_a1",
+            "messageID": "msg_a1",
+            "sessionID": "ses_parent",
+            "type": "text",
+            "text": "It is 42.",
+            "time": {
+              "start": 1789938983800,
+              "end": 1789938983900
+            }
+          },
+          "time": 1789938982950
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_parent",
+          "status": {
+            "type": "idle"
+          }
+        }
+      }
+    },
+    {
+      "source": "schema",
+      "expect": "own",
+      "data": {
+        "type": "session.error",
+        "properties": {
+          "sessionID": "ses_parent",
+          "error": {
+            "name": "MessageAbortedError",
+            "data": {
+              "message": "aborted"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
