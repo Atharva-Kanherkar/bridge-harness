@@ -270,6 +270,7 @@ fn launch(
         session_id.clone(),
         sender,
         shutting_down.clone(),
+        EventStreamPolicy::default(),
     ) {
         stop_child(&mut child);
         drop_client_safely(client);
@@ -647,6 +648,170 @@ fn frame_session_id(properties: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+/// Backoff between reconnect attempts after the `/event` body ends while the
+/// server is still supposed to be alive. Five rungs, then the disconnect is
+/// surfaced as the turn error it always was.
+const RECONNECT_BACKOFF_SECONDS: [u64; 5] = [1, 2, 4, 8, 16];
+
+/// How the SSE reader behaves when its body ends. Production uses the
+/// constant schedule; tests inject millisecond rungs.
+#[derive(Debug, Clone)]
+struct EventStreamPolicy {
+    reconnect_backoff: Vec<Duration>,
+}
+
+impl Default for EventStreamPolicy {
+    fn default() -> Self {
+        Self {
+            reconnect_backoff: RECONNECT_BACKOFF_SECONDS
+                .iter()
+                .map(|seconds| Duration::from_secs(*seconds))
+                .collect(),
+        }
+    }
+}
+
+/// Why one `/event` body stopped yielding frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamEnd {
+    /// The consumer dropped the queue: nothing left to forward to.
+    ConsumerGone,
+    /// The HTTP body ended (server closed, proxy reset, read error).
+    BodyEnded,
+}
+
+fn connect_event_stream(
+    client: &Client,
+    base_url: &str,
+    directory: &str,
+) -> Result<Response, BridgeError> {
+    match client.get(endpoint(base_url, "/event", directory)).send() {
+        Ok(response) if response.status().is_success() => Ok(response),
+        Ok(response) => Err(BridgeError::Adapter(format!(
+            "Failed to connect to OpenCode event stream ({})",
+            response.status()
+        ))),
+        Err(error) => Err(http_error("connect to OpenCode event stream")(error)),
+    }
+}
+
+/// Forward one `/event` body's frames until it ends or the consumer leaves.
+fn pump_event_stream(
+    response: Response,
+    filter: &mut SessionFrameFilter,
+    sender: &crate::frame_queue::FrameSender,
+) -> StreamEnd {
+    let mut reader = std::io::BufReader::new(response);
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return StreamEnd::BodyEnded,
+            Ok(_) => {}
+        }
+        let Some(data) = line.trim_end().strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        match filter.classify(&value) {
+            FrameDisposition::Forward => {}
+            FrameDisposition::Foreign => {
+                sender.record_foreign_drop();
+                filter.note_foreign(&value);
+                continue;
+            }
+        }
+        // Streaming deltas are the only sheddable frames: their terminal
+        // `message.part.updated` carries the complete content. Everything
+        // else is durable and back-pressures this socket when the
+        // consumer stalls, instead of buffering without bound.
+        let transient = value.get("type").and_then(Value::as_str) == Some("message.part.delta");
+        let frame = format!("{value}\n");
+        let delivered = if transient {
+            sender.send_transient(frame).map(|_| ())
+        } else {
+            sender.send_durable(frame)
+        };
+        if delivered.is_err() {
+            return StreamEnd::ConsumerGone;
+        }
+    }
+}
+
+/// Close the gap a reconnect leaves. `/event` has no replay, so whatever the
+/// server published while the socket was down is gone; the session state it
+/// still holds is not. Re-emit the latest assistant message and its parts as
+/// the cumulative snapshots they are (the normalizer replaces by part id, so
+/// a repeat is idempotent), then ask whether the root session is still busy
+/// and, if not, close the turn that may have finished in the dark.
+fn resync_after_reconnect(
+    client: &Client,
+    base_url: &str,
+    directory: &str,
+    session_id: &str,
+    sender: &crate::frame_queue::FrameSender,
+) -> Result<(), crate::frame_queue::Disconnected> {
+    let mut messages_url = endpoint(base_url, &format!("/session/{session_id}/message"), directory);
+    messages_url.push_str("&limit=1");
+    let messages = client
+        .get(messages_url)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .ok()
+        .and_then(|response| checked_json(response, "resync the OpenCode session").ok())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let mut saw_message = false;
+    for message in &messages {
+        let info = message.get("info").cloned().unwrap_or(Value::Null);
+        if info.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        saw_message = true;
+        let updated = json!({
+            "type": "message.updated",
+            "properties": { "sessionID": session_id, "info": info }
+        });
+        sender.send_durable(format!("{updated}\n"))?;
+        for part in message.get("parts").and_then(Value::as_array).into_iter().flatten() {
+            let snapshot = json!({
+                "type": "message.part.updated",
+                "properties": { "sessionID": session_id, "part": part }
+            });
+            sender.send_durable(format!("{snapshot}\n"))?;
+        }
+    }
+    if !saw_message {
+        return Ok(());
+    }
+    // `/session/status` lists only sessions with a live status; an idle
+    // session is simply absent.
+    let status = client
+        .get(endpoint(base_url, "/session/status", directory))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .ok()
+        .and_then(|response| checked_json(response, "read OpenCode session status").ok());
+    let Some(status) = status else {
+        return Ok(());
+    };
+    let busy = status
+        .get(session_id)
+        .and_then(|entry| entry.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "idle");
+    if !busy {
+        let idle = json!({
+            "type": "session.status",
+            "properties": { "sessionID": session_id, "status": { "type": "idle" } }
+        });
+        sender.send_durable(format!("{idle}\n"))?;
+    }
+    Ok(())
+}
+
 fn spawn_event_stream(
     client: Client,
     base_url: String,
@@ -654,77 +819,59 @@ fn spawn_event_stream(
     session_id: String,
     sender: crate::frame_queue::FrameSender,
     shutting_down: Arc<AtomicBool>,
+    policy: EventStreamPolicy,
 ) -> Result<(), BridgeError> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let response = match client.get(endpoint(&base_url, "/event", &directory)).send() {
-            Ok(response) if response.status().is_success() => response,
-            Ok(response) => {
-                let _ = ready_sender.send(Err(BridgeError::Adapter(format!(
-                    "Failed to connect to OpenCode event stream ({})",
-                    response.status()
-                ))));
-                return;
-            }
+        let mut response = match connect_event_stream(&client, &base_url, &directory) {
+            Ok(response) => response,
             Err(error) => {
-                let _ =
-                    ready_sender.send(Err(http_error("connect to OpenCode event stream")(error)));
+                let _ = ready_sender.send(Err(error));
                 return;
             }
         };
         if ready_sender.send(Ok(())).is_err() {
             return;
         }
-        let mut reader = std::io::BufReader::new(response);
         let mut filter = SessionFrameFilter::new(session_id.clone());
         loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+            if pump_event_stream(response, &mut filter, &sender) == StreamEnd::ConsumerGone {
+                return;
             }
-            let Some(data) = line.trim_end().strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            let Ok(value) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-            match filter.classify(&value) {
-                FrameDisposition::Forward => {}
-                FrameDisposition::Foreign => {
-                    sender.record_foreign_drop();
-                    filter.note_foreign(&value);
-                    continue;
+            // During shutdown the body ending is expected.
+            if shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            // The server may still be alive and holding the session: a
+            // transient disconnect must not end streaming for good.
+            let mut reconnected = None;
+            for delay in &policy.reconnect_backoff {
+                thread::sleep(*delay);
+                if shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Ok(next) = connect_event_stream(&client, &base_url, &directory) {
+                    reconnected = Some(next);
+                    break;
                 }
             }
-            // Streaming deltas are the only sheddable frames: their terminal
-            // `message.part.updated` carries the complete content. Everything
-            // else is durable and back-pressures this socket when the
-            // consumer stalls, instead of buffering without bound.
-            let transient =
-                value.get("type").and_then(Value::as_str) == Some("message.part.delta");
-            let frame = format!("{value}\n");
-            let delivered = if transient {
-                sender.send_transient(frame).map(|_| ())
-            } else {
-                sender.send_durable(frame)
+            let Some(next) = reconnected else {
+                // Every retry failed. Otherwise the turn would silently appear
+                // finished, so surface the disconnect exactly once.
+                let error_event = json!({
+                    "type": "session.error",
+                    "properties": {
+                        "sessionID": session_id,
+                        "error": { "message": "OpenCode event stream disconnected unexpectedly" }
+                    }
+                });
+                let _ = sender.send_durable(format!("{error_event}\n"));
+                return;
             };
-            if delivered.is_err() {
-                break;
+            if resync_after_reconnect(&client, &base_url, &directory, &session_id, &sender).is_err() {
+                return;
             }
-        }
-        // The stream ended. During shutdown that is expected; otherwise the
-        // turn would silently appear finished, so surface the disconnect.
-        if !shutting_down.load(Ordering::SeqCst) {
-            let error_event = json!({
-                "type": "session.error",
-                "properties": {
-                    "sessionID": session_id,
-                    "error": { "message": "OpenCode event stream disconnected unexpectedly" }
-                }
-            });
-            let _ = sender.send_durable(format!("{error_event}\n"));
+            response = next;
         }
     });
     ready_receiver
@@ -1621,6 +1768,164 @@ mod tests {
             "../../../testing/fixtures/opencode-sse-session-tree-v1.json"
         ))
         .expect("fixture is valid JSON")
+    }
+
+    /// A loopback stand-in for `opencode serve` that scripts how `/event`
+    /// behaves per connection and answers the resync endpoints.
+    fn fake_opencode_server(refuse_reconnects: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+        use std::io::Write as _;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let event_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = paths.clone();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let seen = seen.clone();
+                let event_requests = event_requests.clone();
+                thread::spawn(move || {
+                    let mut head = std::io::BufReader::new(stream.try_clone().unwrap());
+                    let mut request_line = String::new();
+                    if head.read_line(&mut request_line).is_err() {
+                        return;
+                    }
+                    loop {
+                        let mut header = String::new();
+                        if head.read_line(&mut header).is_err() || header == "\r\n" || header.is_empty() {
+                            break;
+                        }
+                    }
+                    let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                    seen.lock().unwrap().push(path.clone());
+                    let json = |stream: &mut std::net::TcpStream, body: &str| {
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    };
+                    if path.starts_with("/event") {
+                        let attempt = event_requests.fetch_add(1, Ordering::SeqCst);
+                        if attempt >= 1 && (refuse_reconnects || attempt >= 2) {
+                            let _ = write!(stream, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            return;
+                        }
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+                        if attempt == 0 {
+                            // First body: one frame, then the server drops the socket.
+                            let _ = write!(stream, "data: {}\n\n", json!({"type":"session.status","properties":{"sessionID":"ses_root","status":{"type":"busy"}}}));
+                            let _ = stream.flush();
+                            return;
+                        }
+                        // Second body: alive again; hold it open for the test.
+                        let _ = write!(stream, "data: {}\n\n", json!({"type":"server.heartbeat","properties":{}}));
+                        let _ = stream.flush();
+                        thread::sleep(Duration::from_secs(3));
+                    } else if path.starts_with("/session/ses_root/message") {
+                        json(&mut stream, &json!([{
+                            "info": {"id": "msg_1", "role": "assistant", "sessionID": "ses_root", "time": {"created": 1, "completed": 2}},
+                            "parts": [{"id": "prt_1", "messageID": "msg_1", "sessionID": "ses_root", "type": "text", "text": "finished in the dark", "time": {"start": 1, "end": 2}}]
+                        }]).to_string());
+                    } else if path.starts_with("/session/status") {
+                        json(&mut stream, "{}");
+                    } else {
+                        let _ = write!(stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    }
+                });
+            }
+        });
+        (base_url, paths)
+    }
+
+    fn fast_policy() -> EventStreamPolicy {
+        EventStreamPolicy { reconnect_backoff: vec![Duration::from_millis(1); 5] }
+    }
+
+    fn frame_type(frame: &str) -> String {
+        let value: Value = serde_json::from_str(frame.trim()).unwrap();
+        value["type"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn stream_reconnects_after_a_dropped_body_and_resyncs_the_turn() {
+        let (base_url, paths) = fake_opencode_server(false);
+        let client = build_authenticated_client("pw").unwrap();
+        let (sender, receiver, _metrics) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        spawn_event_stream(
+            client,
+            base_url,
+            "/repo".into(),
+            "ses_root".into(),
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            fast_policy(),
+        )
+        .unwrap();
+        let mut frames = Vec::new();
+        for _ in 0..5 {
+            frames.push(receiver.recv().expect("the stream survives the drop"));
+        }
+        assert_eq!(
+            frames.iter().map(|frame| frame_type(frame)).collect::<Vec<_>>(),
+            vec!["session.status", "message.updated", "message.part.updated", "session.status", "server.heartbeat"],
+            "busy from the first body, the resynced snapshot, the synthetic idle, then the live stream again"
+        );
+        let idle: Value = serde_json::from_str(&frames[3]).unwrap();
+        assert_eq!(idle["properties"]["status"]["type"], "idle");
+        let snapshot: Value = serde_json::from_str(&frames[2]).unwrap();
+        assert_eq!(snapshot["properties"]["sessionID"], "ses_root", "the flat runtime shape the filter and normalizer read");
+        assert_eq!(snapshot["properties"]["part"]["text"], "finished in the dark");
+        let paths = paths.lock().unwrap();
+        assert!(paths.iter().any(|path| path.starts_with("/session/ses_root/message") && path.contains("limit=1")), "{paths:?}");
+        assert!(paths.iter().any(|path| path.starts_with("/session/status")), "{paths:?}");
+        assert_eq!(paths.iter().filter(|path| path.starts_with("/event")).count(), 2);
+    }
+
+    #[test]
+    fn stream_gives_up_after_the_retry_budget_with_one_disconnect_error() {
+        let (base_url, paths) = fake_opencode_server(true);
+        let client = build_authenticated_client("pw").unwrap();
+        let (sender, receiver, _metrics) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        spawn_event_stream(
+            client,
+            base_url,
+            "/repo".into(),
+            "ses_root".into(),
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            fast_policy(),
+        )
+        .unwrap();
+        assert_eq!(frame_type(&receiver.recv().unwrap()), "session.status");
+        let error = receiver.recv().unwrap();
+        assert_eq!(frame_type(&error), "session.error");
+        assert!(error.contains("disconnected unexpectedly"), "{error}");
+        assert!(receiver.recv().is_err(), "the reader thread ends after surfacing the disconnect once");
+        let paths = paths.lock().unwrap();
+        assert_eq!(paths.iter().filter(|path| path.starts_with("/event")).count(), 1 + RECONNECT_BACKOFF_SECONDS.len(), "{paths:?}");
+        assert!(!paths.iter().any(|path| path.starts_with("/session")), "no resync without a reconnect");
+    }
+
+    #[test]
+    fn shutdown_ends_the_stream_without_a_reconnect_or_an_error() {
+        let (base_url, paths) = fake_opencode_server(false);
+        let client = build_authenticated_client("pw").unwrap();
+        let (sender, receiver, _metrics) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        spawn_event_stream(
+            client,
+            base_url,
+            "/repo".into(),
+            "ses_root".into(),
+            sender,
+            shutting_down.clone(),
+            EventStreamPolicy { reconnect_backoff: vec![Duration::from_millis(200)] },
+        )
+        .unwrap();
+        assert_eq!(frame_type(&receiver.recv().unwrap()), "session.status");
+        shutting_down.store(true, Ordering::SeqCst);
+        assert!(receiver.recv().is_err(), "no synthetic error after a deliberate stop");
+        assert_eq!(paths.lock().unwrap().iter().filter(|path| path.starts_with("/event")).count(), 1);
     }
 
     #[test]
