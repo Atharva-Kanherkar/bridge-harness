@@ -2,7 +2,7 @@ import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, Square, SquareTerminal, Wrench, X } from "lucide-react";
-import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
@@ -256,6 +256,20 @@ function TerminalBlock({ command, output }: { command?: string; output?: string 
 /// the patch was sliced to its last 8,000 characters, which cut hunks in half
 /// and left the gutter lying about line numbers. What the model wrote is the
 /// most important thing on the screen, so it is what the row shows by default.
+/// Marks a row as a subagent's work. Achromatic, like the rest of the chrome:
+/// the point is attribution, not emphasis. The full task title travels in the
+/// tooltip so the label can stay one word.
+function SubagentChip({ item }: { item: ConversationItem }) {
+  const source = subagentSource(item);
+  const label = subagentLabel(item);
+  if (!source || !label) return null;
+  return <span
+    data-subagent={source.sessionId}
+    title={source.title ? `Subagent: ${source.title}` : "Subagent work"}
+    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-px text-[10px] leading-4 text-muted-foreground"
+  ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span>;
+}
+
 const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) {
   const call = toolCallDisplay(item);
   const live = call.status === "running";
@@ -297,6 +311,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
           >
             <span className="shrink-0 text-muted-foreground" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
             <span className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
+            <SubagentChip item={item}/>
           </button>
           {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
           {path && (fileRef
@@ -1111,6 +1126,7 @@ const MessageRow = memo(function MessageRow({ item, onRemember }: { item: Conver
   // No bubble, no card: the agent writes straight onto the canvas, in body
   // ink a step under `foreground` so prose reads as text rather than chrome.
   return <div className="group w-full min-w-0 text-[14px] text-body">
+    {subagentSource(item) && <div className="mb-1"><SubagentChip item={item}/></div>}
     {/* A reply whose first token has not landed is the same statement a
         streaming thought makes, so it draws the same mark. */}
     {isStreamingText(item.status) && !item.text.trim() ? <ThinkingMark/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
@@ -1275,7 +1291,7 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
       <div data-thinking="streaming" className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
         <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true"/>
         <div className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 text-[12px] font-medium text-muted-foreground">Thinking…<ThinkingMark/></span>
+          <span className="flex items-center gap-2 text-[12px] font-medium text-muted-foreground">Thinking…<ThinkingMark/><SubagentChip item={item}/></span>
           {lines.length > 0 && <div className="mt-1.5 space-y-0.5">
             {lines.map((line, index) => <p key={index} className={`whitespace-pre-wrap break-words text-[12px] leading-relaxed ${index === lines.length - 1 ? "text-muted-foreground" : "text-muted-foreground"}`}>{line}</p>)}
           </div>}
@@ -1291,6 +1307,7 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
           <span className="font-medium">{label}</span>
           {lastLine && <span className="ml-2 font-normal text-muted-foreground">{lastLine}</span>}
         </span>
+        <SubagentChip item={item}/>
         <ChevronRight size={12} className="ml-auto shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true"/>
       </summary>
       <div className="border-t border-border px-3.5 py-3 text-muted-foreground sm:px-4">

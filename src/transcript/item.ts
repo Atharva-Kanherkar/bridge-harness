@@ -103,6 +103,38 @@ export function itemSignature(item: ConversationItem): string {
   ].join("\u0000");
 }
 
+/**
+ * The subagent session a row came from, when the backend stamped one.
+ *
+ * OpenCode's `task` tool runs a real child session. Its rows land in the
+ * parent transcript with `data.subagent`, and a reader needs to see that a
+ * tool call or a paragraph is the subagent's work, not the parent's.
+ */
+export interface SubagentSource {
+  sessionId: string;
+  agent?: string;
+  title?: string;
+}
+
+export function subagentSource(item: Pick<ConversationItem, "data">): SubagentSource | undefined {
+  const raw = item.data.subagent;
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.sessionId !== "string" || record.sessionId === "") return undefined;
+  return {
+    sessionId: record.sessionId,
+    agent: typeof record.agent === "string" && record.agent !== "" ? record.agent : undefined,
+    title: typeof record.title === "string" && record.title !== "" ? record.title : undefined,
+  };
+}
+
+/** What to call the subagent in a row label: its agent name, else its task title, else the generic word. */
+export function subagentLabel(item: Pick<ConversationItem, "data">): string | undefined {
+  const source = subagentSource(item);
+  if (!source) return undefined;
+  return source.agent ?? source.title ?? "subagent";
+}
+
 /** Whether two rows are the same row, saying the same thing. */
 export function sameItem(left: ConversationItem, right: ConversationItem): boolean {
   return left === right || itemSignature(left) === itemSignature(right);
