@@ -126,6 +126,15 @@ it("renders no archive action when the host cannot archive", () => {
   expect(archiveButton()).toBeUndefined();
 });
 
+it("places the archive action before the harness mark", () => {
+  mount({ onArchiveChat: noop });
+  const button = archiveButton();
+  const mark = button?.parentElement?.querySelector("[data-harness]");
+  expect(button).toBeTruthy();
+  expect(mark).toBeTruthy();
+  expect(button!.compareDocumentPosition(mark!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
 // The reachability guard. A component test proves the row works; only this
 // proves a desktop user can get to it.
 it("is wired from App, so the affordance is reachable in the real app", () => {
