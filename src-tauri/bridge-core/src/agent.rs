@@ -1165,10 +1165,36 @@ fn claude_tool_family(name: &str) -> ClaudeToolFamily {
 /// `content_block_start` (input may still be empty) or the assistant snapshot
 /// (full input). Both go out under the same item id, so the snapshot refines
 /// the streamed card instead of duplicating it.
+/// Where a Claude tool call is in its life when Bridge learns about it.
+///
+/// Claude Code streams a `tool_use` block's *start* as soon as the model
+/// begins writing the call, then streams the arguments token by token; the
+/// tool itself only runs once the whole assistant message has landed. A
+/// long command or PR body can take minutes to write, and during that time
+/// nothing is executing — Claude Code's own UI shows the model composing,
+/// not a running tool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClaudeToolPhase {
+    /// `content_block_start`: the model is still writing the arguments.
+    Preparing,
+    /// The assistant snapshot: arguments complete, execution begins now.
+    Running,
+}
+
+impl ClaudeToolPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            ClaudeToolPhase::Preparing => "preparing",
+            ClaudeToolPhase::Running => "running",
+        }
+    }
+}
+
 fn claude_tool_started(
     message: &Value,
     block: &Value,
     state: &mut ClaudeStreamState,
+    phase: ClaudeToolPhase,
 ) -> NormalizedEvent {
     let tool_id = block
         .get("id")
@@ -1177,18 +1203,27 @@ fn claude_tool_started(
         .to_owned();
     let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
     let family = claude_tool_family(name);
-    // Keep the first start time when the snapshot repeats the streamed block.
+    // The clock the card's duration reads starts when the tool actually runs.
+    // The streamed start only registers the call; the snapshot (re)starts the
+    // clock so minutes of argument streaming never show up as run time.
+    let now = Instant::now();
     state
         .tool_calls
         .entry(tool_id.clone())
+        .and_modify(|call| {
+            if phase == ClaudeToolPhase::Running {
+                call.started_at = now;
+            }
+        })
         .or_insert(ClaudeToolCall {
             family,
-            started_at: Instant::now(),
+            started_at: now,
         });
     let mut event = with_data(&family.kind("started"), message, block.clone());
     event.item_id = Some(tool_id);
     event.title = Some(name.to_owned());
     event.status = Some("inProgress".into());
+    event.data["phase"] = Value::String(phase.as_str().to_owned());
     let input = block.get("input").cloned().unwrap_or(Value::Null);
     match family {
         ClaudeToolFamily::Command => {
@@ -1499,7 +1534,12 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
-                "tool_use" => vec![claude_tool_started(message, &block, state)],
+                "tool_use" => vec![claude_tool_started(
+                    message,
+                    &block,
+                    state,
+                    ClaudeToolPhase::Preparing,
+                )],
                 "thinking" => {
                     let id = claude_thinking_id(
                         &message_id,
@@ -1593,7 +1633,12 @@ fn normalize_claude_assistant(
         let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
         match part_type {
             "tool_use" => {
-                events.push(claude_tool_started(message, &part, state));
+                events.push(claude_tool_started(
+                    message,
+                    &part,
+                    state,
+                    ClaudeToolPhase::Running,
+                ));
             }
             "thinking" => {
                 if let Some(thinking) = part.get("thinking").and_then(Value::as_str) {
@@ -2484,6 +2529,41 @@ mod tests {
         assert_eq!(snapshot[0].kind, "command.started");
         assert_eq!(snapshot[0].item_id, streamed[0].item_id);
         assert_eq!(snapshot[0].title.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn claude_tool_phase_and_duration_start_at_the_snapshot() {
+        let mut state = ClaudeStreamState::default();
+        let streamed = normalize_claude_message_with_state(
+            &json!({
+                "type":"stream_event",
+                "event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"t1","name":"Bash"}}
+            }),
+            &mut state,
+        );
+        // The model is still writing the arguments: nothing runs yet.
+        assert_eq!(streamed[0].data["phase"], "preparing");
+        assert_eq!(streamed[0].status.as_deref(), Some("inProgress"));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let snapshot = normalize_claude_message_with_state(
+            &json!({
+                "type":"assistant",
+                "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create"}}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(snapshot[0].data["phase"], "running");
+        let completed = normalize_claude_message_with_state(
+            &json!({
+                "type":"user",
+                "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}
+            }),
+            &mut state,
+        );
+        // The card's duration is run time, not the time the model spent
+        // composing the call.
+        let duration = completed[0].data["durationMs"].as_u64().unwrap();
+        assert!(duration < 40, "duration {duration}ms includes argument streaming");
     }
 
     #[test]

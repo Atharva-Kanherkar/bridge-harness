@@ -3027,11 +3027,18 @@ fn handle_agent_value_timed(
             // *entire* message is the machine block. Recognised before anything
             // persists or publishes, so neither a valid checkpoint's JSON nor a
             // refusal to write one can land in the conversation as prose.
-            let pending_compaction =
+            // Only a checkpoint turn can carry a checkpoint reply, and
+            // `checkpoint_turn_active` is already true whenever a foreground
+            // request is pending — so an ordinary turn skips the lookup
+            // rather than re-walking the branch for every streamed event.
+            let pending_compaction = if checkpoint_turn_active {
                 compaction_controller::CompactionController::pending(&db, session_id)
                     .ok()
                     .flatten()
-                    .filter(|pending| !pending.background);
+                    .filter(|pending| !pending.background)
+            } else {
+                None
+            };
             let is_checkpoint_reply = checkpoint_turn_active
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
@@ -9475,6 +9482,20 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
     };
 }
 
+/// How often terminal worker worktrees are collected. Reclaiming disk is
+/// not urgent; keeping the database lock free for live frames is.
+const WORKTREE_RELEASE_INTERVAL: Duration = Duration::from_secs(30);
+
+fn worktree_release_due() -> bool {
+    static LAST_RELEASE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST_RELEASE.lock().unwrap();
+    if last.is_some_and(|last| last.elapsed() < WORKTREE_RELEASE_INTERVAL) {
+        return false;
+    }
+    *last = Some(std::time::Instant::now());
+    true
+}
+
 fn maintain_worker_pool(core: &Arc<BridgeCore>) {
     let state = core.clone();
     let expired = worker_pool::WorkerPool::warm_workers_due(&state.db.lock().unwrap(), Utc::now())
@@ -9648,8 +9669,11 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
 
     // A worker that was warm when its output was adopted keeps its worktree, so
     // resuming it does not land in a deleted directory. Collect those once the
-    // worker can no longer be resumed.
-    {
+    // worker can no longer be resumed. The collector runs Git in each candidate
+    // worktree while holding the database, and a stopped worker with real
+    // changes stays a candidate forever — so it runs on its own slow cadence,
+    // not on every one-second tick, or live streams stall behind `git status`.
+    if worktree_release_due() {
         let db = state.db.lock().unwrap();
         let _ = worker_adoption::release_terminal_worktrees(&db);
     }

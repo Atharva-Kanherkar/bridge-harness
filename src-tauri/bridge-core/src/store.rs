@@ -60,6 +60,14 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )?;
+    // Per-frame lookups ask "does this session have any compaction marker?"
+    // and "which entries of this kind exist?"; without this index each one
+    // walked every entry of the session. Idempotent and cheap to build, so it
+    // lives here rather than behind a schema version (which would also copy
+    // the whole store as a migration backup).
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);",
+    )?;
     // Chats created before titles existed still read "Orchestrator"; name them
     // from what they already contain. Local-only, so opening stays cheap.
     let _ = crate::session_titles::backfill_from_messages(&connection);
