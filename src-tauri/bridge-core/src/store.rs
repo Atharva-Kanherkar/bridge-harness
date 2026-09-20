@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 58;
+const LATEST_SCHEMA_VERSION: i64 = 59;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -694,6 +694,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "work_evidence", "source_activity_at", "TEXT")?;
             }
             58 => migration_58_connector_inbox(&transaction)?,
+            59 => crate::memory_extraction::install_run_modes(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -4846,6 +4847,8 @@ mod tests {
             "session_entries",
             "session_heads",
             "memory_records",
+            "memory_extraction_settings",
+            "memory_extraction_runs",
             "prompt_section_revisions",
             "worker_leases",
             "worker_runtime",

@@ -142,25 +142,36 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **1.16**),
+- its `protocolVersion` (this document describes **1.17**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
-**Versioning policy:** a *major* bump is breaking; a *minor* bump is additive
-(new methods, notifications, or optional fields). A server accepts a client
-when majors match and the client's minor is not newer than the server's.
-Incompatible clients are rejected with the stable code **2000
+**Versioning policy:** a *major* bump is breaking; a *minor* bump is normally
+additive (new methods, notifications, or optional fields). A server accepts a
+client when majors match and the client's minor is not newer than the server's,
+except for an explicitly documented minimum-client boundary. Version 1.17 is
+such a boundary because an older client cannot represent persisted Automatic
+memory behavior. Incompatible clients are rejected with the stable code **2000
 `incompatible_protocol`**, with both versions in `error.data`.
+
+**1.17 adds automatic memory extraction.** `memory/update_extraction_settings`
+accepts `auto_apply`; a 1.17 client rejects an older daemon that would refuse
+that setting rather than silently changing its memory behavior. A 1.17 daemon
+also rejects older clients because they cannot display or disable an already
+persisted automatic setting.
 
 **1.16 adds opt-in dashboard history.** `usage/summary` accepts the optional
 `includeDashboard` flag. Only opted-in requests can receive dashboard buckets
-with unavailable (`null`) session counts. Requests from older clients retain
-their local-only integer session counts; source origin is an optional field.
+with unavailable (`null`) session counts. On a 1.16 daemon, requests from older
+clients retained their local-only integer session counts; source origin is an
+optional field. Version 1.17's minimum-client boundary supersedes that handshake
+compatibility.
 
 **1.7 adds worker prompt proposal grants and attributed prompt revisions.**
 An older daemon must reject a new client during handshake so it cannot silently
-discard `workerPromptProposalRoles` when saving the permission policy. Older
-clients remain compatible with the current daemon.
+discard `workerPromptProposalRoles` when saving the permission policy. From 1.7
+through 1.16, newer daemons remained compatible with older clients; version
+1.17's documented minimum-client boundary ends that compatibility.
 
 **1.0 is a breaking bump, not a stability claim.** Opening `HarnessId` (below)
 widened a value domain that appears in *results*, so a 0.x client — whose
@@ -179,9 +190,8 @@ remote-capable transports (the daemon) require it, and nothing ever echoes it.
 compatibility adapter maps an invoke to its method by name alone, and a test
 in the shell crate keeps the registry 1:1 with `generate_handler![...]`.
 
-Domains: `approvals`, `browser`, `completion`, `config`, `health`,
-`learning`, `marketplace`, `models`, `projects`, `routing`, `sessions`,
-`skills`, `slash`, `state`, `terminal`, `workspaces`.
+The generated registry is the authoritative domain list; clients should read
+its method rows rather than copy a hand-maintained enumeration that can drift.
 
 ### Params
 

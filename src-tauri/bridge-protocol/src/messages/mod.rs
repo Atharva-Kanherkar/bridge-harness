@@ -10,8 +10,10 @@
 //!
 //! Params structs first contracted in protocol 0.5 refuse unknown fields. The
 //! 19 params schemas published before 0.5 stay open until the next major
-//! version: minor versions are additive, so a 0.5 server must continue to
-//! accept every document the 0.4 schemas allowed.
+//! version: minor payload-schema changes are additive, so a 0.5 server must
+//! continue to accept every document the 0.4 schemas allowed. Handshake
+//! acceptance can still declare a documented minimum-client boundary when an
+//! older client cannot safely represent new persisted behavior.
 //!
 //! Results are contracted wherever a wire DTO exists — including the
 //! aggregate `BridgeState` and `SessionForestSnapshot` trees. The remaining

@@ -2089,8 +2089,9 @@ export const bridgeApi = {
         ...(model ? { model } : {}),
       });
     }
-    if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it. Use remember or propose.");
-    if (mode !== "remember" && mode !== "propose") throw new Error(`Unknown extraction mode '${mode}'. Use remember or propose.`);
+    if (mode !== "remember" && mode !== "propose" && mode !== "auto_apply") {
+      throw new Error(`Unknown extraction mode '${mode}'. Use remember, propose, or auto_apply.`);
+    }
     if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
     mockExtractionSettings = { ...mockExtractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
     return structuredClone(mockExtractionSettings);

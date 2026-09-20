@@ -196,8 +196,8 @@ export function MemoryDialog({
     setKind("preference");
   };
   const setMode = (mode: string) => act(async () => {
-    const next = mode === "propose"
-      ? await bridgeApi.updateExtractionSettings("propose", profileHarness, profileModel)
+    const next = mode === "propose" || mode === "auto_apply"
+      ? await bridgeApi.updateExtractionSettings(mode, profileHarness, profileModel)
       : await bridgeApi.updateExtractionSettings(mode);
     setSettings(next);
   });
@@ -223,7 +223,7 @@ export function MemoryDialog({
             type="checkbox"
             checked={injection ?? true}
             disabled={busy || injection === undefined}
-            aria-label="Use pins in new chats"
+            aria-label="Use active memory in new chats"
             onChange={event => {
               const next = event.target.checked;
               void act(async () => {
@@ -232,7 +232,7 @@ export function MemoryDialog({
               });
             }}
           />
-          Use these pins when starting a new conversation.
+          Use active memory when starting a new conversation.
         </label>
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="relative mr-1.5 min-w-40 flex-1">
@@ -263,7 +263,7 @@ export function MemoryDialog({
                 <p className="whitespace-pre-wrap break-words text-sm text-foreground">{record.body}</p>
                 <p className="mt-1 text-caption text-muted-foreground">
                   <span className="font-medium">{record.kind}</span> · {new Date(record.createdAt).toLocaleDateString()}
-                  {record.provenance === "model_proposal" && <> · suggested</>}
+                  {record.provenance === "model_proposal" && <> · extracted</>}
                   {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
                   {record.supersedes && <> · replaced an earlier pin</>}
                   {(statById.get(record.id)?.recalls ?? 0) > 0 && (
@@ -345,11 +345,11 @@ export function MemoryDialog({
         <div className="space-y-2">
           <p className="text-[12px] font-medium text-muted-foreground">After a chat turn</p>
           <div className="flex flex-wrap items-center gap-1.5">
-            <button type="button" aria-pressed={settings?.mode === "remember"} className={tabClass(settings?.mode === "remember")} disabled={busy} onClick={() => void setMode("remember")}>Remember</button>
-            <button type="button" aria-pressed={settings?.mode === "propose"} className={tabClass(settings?.mode === "propose")} disabled={busy} onClick={() => void setMode("propose")}>Propose</button>
-            <button type="button" aria-pressed={false} className={`${tabClass(false)} opacity-45`} disabled title="Auto-apply needs the replay bench before it can exist.">Auto-apply</button>
+            <button type="button" aria-pressed={settings?.mode === "remember"} className={tabClass(settings?.mode === "remember")} disabled={busy} onClick={() => void setMode("remember")}>Manual only</button>
+            <button type="button" aria-pressed={settings?.mode === "propose"} className={tabClass(settings?.mode === "propose")} disabled={busy} onClick={() => void setMode("propose")}>Review first</button>
+            <button type="button" aria-pressed={settings?.mode === "auto_apply"} className={tabClass(settings?.mode === "auto_apply")} disabled={busy} onClick={() => void setMode("auto_apply")}>Automatic</button>
           </div>
-          <p className="text-[12px] leading-relaxed text-muted-foreground">Propose reviews each finished turn on the chat's own model and queues suggestions here — nothing activates without you. Pin a helper to run every review on one model instead. Remember saves only what you ask.</p>
+          <p className="text-[12px] leading-relaxed text-muted-foreground">Review first queues each validated extraction that fits the memory budget. Automatic promotes only 90%+ candidates that cite and match a stable user message from the same chat, with no likely conflict or forgotten match; other validated candidates that fit the budget stay here for review. Invalid, unsafe, duplicate, or over-budget output is refused. Manual only stops future extraction; existing active memory stays active, and new memory is saved only when you ask. Pin a helper to run extraction on one model instead.</p>
           <div className="flex flex-wrap items-center gap-2">
             <select className={`${fieldClass} h-9 w-40`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
               <option value="">Chat's own model</option>
@@ -362,7 +362,7 @@ export function MemoryDialog({
           </div>
           {settings?.lastRun && (
             <p className="text-caption tabular-nums text-muted-foreground">
-              Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} proposed · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
+              Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} extracted · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
             </p>
           )}
         </div>
@@ -393,7 +393,7 @@ export function MemoryDialog({
           ))}
           {proposed !== undefined && proposed.length === 0 && (
             <li className="rounded-xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
-              Nothing to review. Proposals from finished turns land here when Propose is on.
+              Nothing to review. Validated Review-first candidates and Automatic deferrals land here when they fit the memory budget.
             </li>
           )}
         </ul>

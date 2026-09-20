@@ -18,8 +18,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 ///
 /// Versioning policy: a **major** bump means breaking changes (clients must
 /// upgrade); a **minor** bump means additive changes (new methods,
-/// notifications, or optional fields). A server accepts a client when the
-/// majors match and the client's minor is not newer than the server's.
+/// notifications, or optional fields). Ordinarily a server accepts a client
+/// when the majors match and the client's minor is not newer than the server's.
+/// Protocol 1.17 is also a minimum-client boundary: an older client cannot
+/// represent or disable a persisted automatic-memory setting, so a 1.17-or-
+/// newer daemon must reject it rather than run invisible automatic behavior.
 ///
 /// **1.0 is a breaking bump, not a stability claim.** Opening `HarnessId`
 /// widened a value domain that appears in *results*: a session can now report
@@ -63,9 +66,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.14 adds overview summary visibility and separate provider status items.**
 /// **1.15 supports expandable favorites; only favorites appear in provider tabs.**
 /// **1.16 adds dashboard history origins and nullable usage session counts.**
+/// **1.17 enables the `auto_apply` memory extraction mode.** A new client must
+/// not pair with an older daemon that still rejects that persisted setting,
+/// and an older client must not pair with a daemon that may already hold it.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 16,
+    minor: 17,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -78,7 +84,12 @@ pub struct ProtocolVersion {
 impl ProtocolVersion {
     /// Whether a server at `self` can serve a client that expects `client`.
     pub fn accepts(self, client: ProtocolVersion) -> bool {
-        self.major == client.major && client.minor <= self.minor
+        const AUTOMATIC_MEMORY_MINOR: u32 = 17;
+        self.major == client.major
+            && client.minor <= self.minor
+            && !(self.major == 1
+                && self.minor >= AUTOMATIC_MEMORY_MINOR
+                && client.minor < AUTOMATIC_MEMORY_MINOR)
     }
 }
 
@@ -173,14 +184,12 @@ mod tests {
     fn menu_bar_client_rejects_daemon_without_usage_overview() {
         let older = ProtocolVersion { major: 1, minor: 8 };
         assert!(!older.accepts(PROTOCOL_VERSION));
-        assert!(PROTOCOL_VERSION.accepts(older));
     }
 
     #[test]
     fn menu_layout_client_rejects_daemon_without_customization() {
         let older = ProtocolVersion { major: 1, minor: 9 };
         assert!(!older.accepts(PROTOCOL_VERSION));
-        assert!(PROTOCOL_VERSION.accepts(older));
     }
 
     #[test]
@@ -211,7 +220,6 @@ mod tests {
             },
         ] {
             assert!(!older.accepts(PROTOCOL_VERSION));
-            assert!(PROTOCOL_VERSION.accepts(older));
         }
     }
 
@@ -231,9 +239,21 @@ mod tests {
 
     #[test]
     fn dashboard_history_client_rejects_a_daemon_without_account_history() {
-        let older = ProtocolVersion { major: 1, minor: 15 };
+        let older = ProtocolVersion {
+            major: 1,
+            minor: 15,
+        };
         assert!(!older.accepts(PROTOCOL_VERSION));
-        assert!(PROTOCOL_VERSION.accepts(older));
+    }
+
+    #[test]
+    fn automatic_memory_is_a_bidirectional_compatibility_boundary() {
+        let before_automatic_memory = ProtocolVersion {
+            major: 1,
+            minor: 16,
+        };
+        assert!(!before_automatic_memory.accepts(PROTOCOL_VERSION));
+        assert!(!PROTOCOL_VERSION.accepts(before_automatic_memory));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {
@@ -254,8 +274,6 @@ mod tests {
         assert_eq!(response.server.name, "bridge");
         assert_eq!(response.server.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(response.capabilities, MethodName::domains());
-        let older_minor_is_fine = negotiate(&request(PROTOCOL_VERSION.major, 0));
-        assert!(older_minor_is_fine.is_ok());
     }
 
     #[test]
@@ -263,6 +281,7 @@ mod tests {
         for incompatible in [
             request(PROTOCOL_VERSION.major + 1, 0),
             request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor + 1),
+            request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor - 1),
         ] {
             let error = negotiate(&incompatible).unwrap_err();
             assert_eq!(error.code, ErrorCode::IncompatibleProtocol.code());
@@ -280,7 +299,6 @@ mod tests {
     fn persistent_terminal_clients_reject_daemons_without_snapshot_recovery() {
         let before_terminal_history = ProtocolVersion { major: 1, minor: 7 };
         assert!(!before_terminal_history.accepts(PROTOCOL_VERSION));
-        assert!(PROTOCOL_VERSION.accepts(before_terminal_history));
     }
 
     #[test]
@@ -289,10 +307,6 @@ mod tests {
         assert!(
             !daemon_before_worker_grants.accepts(PROTOCOL_VERSION),
             "a stale daemon would silently discard workerPromptProposalRoles on save"
-        );
-        assert!(
-            PROTOCOL_VERSION.accepts(daemon_before_worker_grants),
-            "the added permission field remains compatible with older clients"
         );
     }
 
@@ -321,7 +335,7 @@ mod tests {
 
     #[test]
     fn handshake_shapes_round_trip() {
-        let request = request(PROTOCOL_VERSION.major, 0);
+        let request = request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor);
         let encoded = serde_json::to_string(&request).unwrap();
         assert_eq!(
             serde_json::from_str::<HandshakeRequest>(&encoded).unwrap(),
@@ -333,7 +347,7 @@ mod tests {
         );
         assert!(
             !encoded.contains("authToken"),
-            "an absent token stays off the wire — pre-0.6 requests are still valid"
+            "an absent token stays off the wire"
         );
         let response = negotiate(&request).unwrap();
         let encoded = serde_json::to_string(&response).unwrap();
