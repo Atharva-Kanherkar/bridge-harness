@@ -537,3 +537,10 @@ describe("fork breadcrumbs in the session rail", () => {
     expect(html).not.toContain("forked from");
   });
 });
+
+describe("portable chat ids", () => {
+  it("offers a copy-id button on every row", () => {
+    const html = render({ chats: [session("chat-1", { label: "Kyoto" })] });
+    expect(html).toContain('Copy chat ID chat-1');
+  });
+});

@@ -265,6 +265,50 @@ pub struct ForkSessionResult {
     pub fidelity: String,
 }
 
+/// `sessions/resolve_reference`'s request: turn a session id, a forest entry
+/// id, a `brio_…` public alias, or an `@session:…` mention into a typed
+/// descriptor the UI can render as a chip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveReferenceParams {
+    pub id: String,
+}
+
+/// The typed answer. `Unknown` is the single shape for both "this id belongs
+/// to nothing" and "this id exists but you may not see it" — resolution never
+/// leaks existence across the authorization boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolveReferenceResult {
+    Session {
+        session_id: String,
+        label: String,
+        harness: String,
+        workspace_id: Option<String>,
+        parent_session_id: Option<String>,
+        depth: i64,
+        restoration_mode: String,
+        continuation_fidelity: String,
+        active_entry_id: Option<String>,
+        latest_checkpoint_entry_id: Option<String>,
+        updated_at: Option<String>,
+        authorized: bool,
+    },
+    Entry {
+        session_id: String,
+        entry_id: String,
+        entry_kind: String,
+        sequence: i64,
+        summary: String,
+        created_at: String,
+        authorized: bool,
+    },
+    Unknown {
+        authorized: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateWorkspaceSessionParams {

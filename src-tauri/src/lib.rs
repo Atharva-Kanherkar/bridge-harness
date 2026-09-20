@@ -1297,6 +1297,16 @@ async fn create_aside_chat(
     )
 }
 
+/// Resolve a copied session/entry id or `brio_…` alias into a typed
+/// descriptor the composer renders as a chip.
+#[tauri::command]
+async fn resolve_reference(
+    id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ResolveReferenceResult, BridgeError> {
+    api::resolve_reference(state.inner(), &id)
+}
+
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
 #[tauri::command]
@@ -2444,6 +2454,7 @@ pub fn run() -> i32 {
             create_chat_id,
             create_aside_chat,
             fork_session,
+            resolve_reference,
             create_workspace_session,
             connect_workspace_folder,
             clone_workspace_repo,

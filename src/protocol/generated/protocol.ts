@@ -49,6 +49,7 @@ export type BridgeMethod =
   | "sessions/create_chat_id"
   | "sessions/create_aside_chat"
   | "sessions/fork_session"
+  | "sessions/resolve_reference"
   | "sessions/create_workspace_session"
   | "sessions/start_session"
   | "sessions/start_chat"
@@ -242,6 +243,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/create_chat_id", domain: "sessions", command: "create_chat_id" },
   { method: "sessions/create_aside_chat", domain: "sessions", command: "create_aside_chat" },
   { method: "sessions/fork_session", domain: "sessions", command: "fork_session" },
+  { method: "sessions/resolve_reference", domain: "sessions", command: "resolve_reference" },
   { method: "sessions/create_workspace_session", domain: "sessions", command: "create_workspace_session" },
   { method: "sessions/start_session", domain: "sessions", command: "start_session" },
   { method: "sessions/start_chat", domain: "sessions", command: "start_chat" },
@@ -497,6 +499,7 @@ export interface BridgeMethodParams {
   "sessions/create_chat_id": CreateChatIdParams;
   "sessions/create_aside_chat": CreateAsideChatParams;
   "sessions/fork_session": ForkSessionParams;
+  "sessions/resolve_reference": ResolveReferenceParams;
   "sessions/create_workspace_session": CreateWorkspaceSessionParams;
   "sessions/start_session": StartSessionParams;
   "sessions/start_chat": StartChatParams;
@@ -692,6 +695,7 @@ export interface BridgeMethodResults {
   "sessions/create_chat_id": CreateChatIdResult;
   "sessions/create_aside_chat": CreateAsideChatResult;
   "sessions/fork_session": ForkSessionResult;
+  "sessions/resolve_reference": ResolveReferenceResult;
   "sessions/create_workspace_session": BridgeState;
   "sessions/start_session": BridgeState;
   "sessions/start_chat": BridgeState;
@@ -2692,6 +2696,12 @@ export interface ForkSessionResult {
   snapshot: SessionForestSnapshot;
   state: BridgeState;
 }
+
+export interface ResolveReferenceParams {
+  id: string;
+}
+
+export type ResolveReferenceResult = { active_entry_id?: string | null; authorized: boolean; continuation_fidelity: string; depth: number; harness: string; kind: "session"; label: string; latest_checkpoint_entry_id?: string | null; parent_session_id?: string | null; restoration_mode: string; session_id: string; updated_at?: string | null; workspace_id?: string | null } | { authorized: boolean; created_at: string; entry_id: string; entry_kind: string; kind: "entry"; sequence: number; session_id: string; summary: string } | { authorized: boolean; kind: "unknown" };
 
 export interface CreateWorkspaceSessionParams {
   createWorktree?: boolean | null;
