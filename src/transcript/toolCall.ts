@@ -252,6 +252,13 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     status: readStatus(source.status),
   };
   const named = namedToolFacet(source, data);
+  // Claude streams a tool call's start before the model has finished writing
+  // its arguments; nothing runs until the snapshot lands. Say so, rather than
+  // claiming a command is running while it is still being composed.
+  if (data.phase === "preparing") {
+    named.doing = "Preparing";
+    named.target = text(data.name) ?? named.target;
+  }
   const command = named.command ?? (named.verb === "run" ? text(data.command) : undefined);
   return {
     ...common,

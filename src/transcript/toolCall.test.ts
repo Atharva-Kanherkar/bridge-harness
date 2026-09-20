@@ -22,6 +22,15 @@ describe("fallback tool action labels", () => {
       .toMatchObject({ doing, done, glyph, target: "Plan" });
   });
 
+  it("says a Claude tool is being prepared until its arguments have landed", () => {
+    // content_block_start: Bash named, no input yet, nothing running.
+    const preparing = readToolCall({ title: "Bash", text: "", status: "inProgress", surface: "activity", data: { type: "tool_use", name: "Bash", input: {}, phase: "preparing" } });
+    expect(preparing).toMatchObject({ doing: "Preparing", target: "Bash", status: "running" });
+    // The snapshot carries the command and the tool actually runs.
+    const running = readToolCall({ title: "gh pr create", text: "", status: "inProgress", surface: "activity", data: { type: "tool_use", name: "Bash", input: { command: "gh pr create" }, phase: "running" } });
+    expect(running).toMatchObject({ doing: "Running", target: "gh pr create" });
+  });
+
   it("preserves tool names and recognized categories", () => {
     expect(readToolCall({ title: "Context", text: "", surface: "activity", data: { name: "lookup_context" } }))
       .toMatchObject({ doing: "Using lookup_context", done: "Used lookup_context" });
