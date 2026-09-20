@@ -582,6 +582,7 @@ impl SessionFrameFilter {
         }
     }
 
+    #[cfg(test)]
     fn is_child(&self, session_id: &str) -> bool {
         session_id != self.root && self.owned.contains(session_id)
     }
