@@ -46,6 +46,15 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 - **Tests:** colocated `*.test.ts(x)` run under Vitest. Add coverage for logic in `utils`, `conversation`, `observability`, and `usage`.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `refactor:`, `chore:`). Describe the change; don't cite issue/PR numbers in code or messages.
 
+## Issues: two audiences, one issue
+
+**Every issue must have a `## For humans` section followed by a `## For agents` section. An issue without both is closed automatically** by [`.github/workflows/issue-format.yml`](.github/workflows/issue-format.yml) — commented, labelled `needs-format`, closed as not planned. Editing the body to add the sections reopens it.
+
+- **For humans** — TL;DR, a diagram, the system design, the high-level architecture, the decision and why. Short. Lead with the diagram; Bridge's own `diagram` grammar, not Mermaid.
+- **For agents** — repro, suspected cause with `file:line`, files and symbols to touch, wire/protocol changes, acceptance criteria, tests to add, what is out of scope. Exhaustive, because an agent that re-derives context re-derives it wrong.
+
+Start from a template in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE) and you pass by filling it in. `gh issue create` bypasses templates, so write both sections by hand. The rule lives in [`scripts/issue-format.mjs`](scripts/issue-format.mjs) and is tested under `bun run test`; the full spec, including the `format-exempt` escape hatch, is [`docs/issue-format.md`](docs/issue-format.md).
+
 ## Memory surface
 
 Memory has exactly **one** surface: the Memory screen (`src/components/MemoryDialog.tsx`), a canvas view beside the sidebar like Projects, rendered in the app's normal Graphite & Paper chrome with the same tokens as every other screen. Do not build a second memory UI, a separate dark-only memory surface, or a parallel token family for it — that was tried (the "Memory Core" constellation) and removed. Analytics (recall stats, packet budget, consolidation log) live inside its Activity tab, achromatic like the rest of the chrome.
