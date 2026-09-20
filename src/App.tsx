@@ -55,6 +55,7 @@ import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
+import { ForkDialog } from "./components/ForkDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
@@ -225,6 +226,9 @@ function AppContent() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
+  const [forkDraft, setForkDraft] = useState<{ sessionId: string; entryId: string } | null>(null);
+  const [forkBusy, setForkBusy] = useState(false);
+  const [forkError, setForkError] = useState<string | null>(null);
   const [loadedForest, setForest] = useState<SessionForestSnapshot>();
   // Completion blocks while a child's changes live only in its own worktree, so
   // the user must be able to see and resolve that here — otherwise the session
@@ -1026,6 +1030,24 @@ function AppContent() {
     setAsideLifecycle(current => current?.sourceSessionId === id ? current : undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
+  }
+
+  // Fork the active chat at a message. The backend guarantees the parent is
+  // untouched; the UI switches to the fork as soon as it exists.
+  async function runFork(title: string | null, worktree: "shared" | "new") {
+    if (!forkDraft) return;
+    setForkBusy(true);
+    setForkError(null);
+    try {
+      const result = await bridgeApi.forkSession(forkDraft.sessionId, forkDraft.entryId, title, null, null, worktree);
+      setForkDraft(null);
+      setState(result.state);
+      openSession(result.sessionId);
+    } catch (reason) {
+      setForkError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setForkBusy(false);
+    }
   }
 
   // Archiving a chat files the conversation away and reclaims the checkout it
@@ -2768,6 +2790,16 @@ function AppContent() {
       onChooseFolder={() => { setNewProjectOpen(false); void createWorkspaceFromFolder(); }}
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
+    <ForkDialog
+      open={forkDraft !== null}
+      sessionLabel={state.sessions.find(candidate => candidate.id === forkDraft?.sessionId)?.label ?? "chat"}
+      sessionId={forkDraft?.sessionId ?? ""}
+      entryId={forkDraft?.entryId ?? ""}
+      busy={forkBusy}
+      error={forkError}
+      onFork={(title, worktree) => void runFork(title, worktree)}
+      onClose={() => { if (!forkBusy) { setForkDraft(null); setForkError(null); } }}
+    />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
   </div>;
 }
