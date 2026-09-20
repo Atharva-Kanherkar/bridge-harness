@@ -735,4 +735,56 @@ describe("AgentConversation", () => {
     expect(midTurn).toContain("Continuation fidelity degraded");
     expect(midTurn).toContain('role="alert"');
   });
+  it("reveals fork and rewind actions on hover for an entry-bearing message", async () => {
+    const onForkSession = vi.fn();
+    const onRewindEntry = vi.fn();
+    const forestEntries: SessionEntry[] = [{
+      id: "e-leaf", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2,
+      kind: "assistant.message", payload: { text: "first answer", itemId: "a1" },
+      providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now",
+    }];
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined}
+      forestEntries={forestEntries} activeLeafId="e-leaf" events={[]}
+      onForkSession={onForkSession} onRewindEntry={onRewindEntry} leafEntryIds={["e-leaf"]} />));
+    const fork = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here")!;
+    expect(fork).toBeTruthy();
+    await act(async () => fork.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onForkSession).toHaveBeenCalledWith("s", "e-leaf");
+    const rewind = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Rewind to here")!;
+    expect(rewind).toBeTruthy();
+    await act(async () => rewind.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onRewindEntry).toHaveBeenCalledWith("s", "e-leaf");
+    await act(async () => root.unmount());
+  });
+
+  it("hides rewind off the leaves and hides both actions in a read-only transcript", async () => {
+    const forestEntries: SessionEntry[] = [
+      { id: "e-q", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2,
+        kind: "user.message", payload: { text: "question", itemId: "q1" },
+        providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+      { id: "e-a", sessionId: "s", parentEntryId: "e-q", sequence: 2, semanticSchemaVersion: 2,
+        kind: "assistant.message", payload: { text: "answer", itemId: "a1" },
+        providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+    ];
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const onForkSession = vi.fn();
+    const onRewindEntry = vi.fn();
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined}
+      forestEntries={forestEntries} activeLeafId="e-a" events={[]}
+      onForkSession={onForkSession} onRewindEntry={onRewindEntry} leafEntryIds={["e-a"]} />));
+    // Fork is available on both rows; rewind only on the leaf.
+    const forks = [...container.querySelectorAll("button")].filter(button => button.getAttribute("aria-label") === "Fork from here");
+    expect(forks.length).toBe(2);
+    expect([...container.querySelectorAll("button")].filter(button => button.getAttribute("aria-label") === "Rewind to here")).toHaveLength(1);
+    await act(async () => forks[0].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onForkSession).toHaveBeenCalledWith("s", "e-q");
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined}
+      forestEntries={forestEntries} activeLeafId="e-a" events={[]} readOnly
+      onForkSession={onForkSession} onRewindEntry={onRewindEntry} leafEntryIds={["e-a"]} />));
+    expect([...container.querySelectorAll("button")].every(button => button.getAttribute("aria-label") !== "Fork from here")).toBe(true);
+    await act(async () => root.unmount());
+  });
 });

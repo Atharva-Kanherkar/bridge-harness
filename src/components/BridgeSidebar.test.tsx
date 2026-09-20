@@ -514,3 +514,26 @@ describe("BridgeSidebar without the worker panel", () => {
     expect(render({ workspaces: [] })).toContain("Memory");
   });
 });
+
+describe("fork breadcrumbs in the session rail", () => {
+  it("labels a forked chat with its parent and offers a jump target", () => {
+    const chats = [
+      session("parent-1", { label: "Kyoto" }),
+      session("fork-1", { label: "Alternate path", parentSessionId: "parent-1", depth: 1 }),
+    ];
+    const html = render({ chats });
+    expect(html).toContain("forked from Kyoto");
+    expect(html).toContain("Jump to parent Kyoto");
+  });
+
+  it("falls back to a generic label when the parent row is unknown", () => {
+    const chats = [session("fork-1", { label: "Orphan", parentSessionId: "gone", depth: 1 })];
+    const html = render({ chats });
+    expect(html).toContain("forked from session");
+  });
+
+  it("leaves ordinary chats unchanged", () => {
+    const html = render({ chats: [session("chat-1", { label: "Plain" })] });
+    expect(html).not.toContain("forked from");
+  });
+});

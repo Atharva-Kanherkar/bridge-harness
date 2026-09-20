@@ -903,4 +903,37 @@ describe("the dock in the session view", () => {
     expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
     expect(SHORTCUTS.some(shortcut => /Agent Fleet|Work board/i.test(shortcut.label))).toBe(false);
   });
+
+  it("forks a message into a new session and switches to it; rewind asks first", async () => {
+    await mountApp();
+    // Open the demo orchestrator; its transcript carries entry-bearing
+    // messages, so the hover actions exist in the DOM even before a hover
+    // reveals them.
+    await openWorkspaceSession("4");
+    // The transcript projects from the fetched forest; let the effects land.
+    await settle(8);
+    // Earlier tests mutate the shared mock (extra orchestrators, fresh
+    // forests), so find the chat whose transcript carries entry-bearing
+    // messages instead of assuming demo-1 is the first open.
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    await click(forkButton!);
+    expect(container.textContent).toContain("New branch of Orchestrator from this message");
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    // The fork is created and the app switches to it: the conversation header
+    // belongs to the forked session now.
+    expect(container.textContent).toContain("Fork of Orchestrator");
+    const rewind = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Rewind to here")!;
+    expect(rewind).toBeTruthy();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await click(rewind);
+    expect(confirm).toHaveBeenCalled();
+    confirm.mockRestore();
+  });
 });

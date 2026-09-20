@@ -1032,6 +1032,19 @@ function AppContent() {
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
   }
 
+  // Rewind a conversation head to an earlier entry. The confirmation lives
+  // at the call site (window.confirm in the hover affordance); this runs the
+  // rewind and refreshes the aggregate state.
+  async function rewindSessionEntry(sessionId: string, entryId: string) {
+    try {
+      await bridgeApi.activateSessionEntry(sessionId, entryId);
+      setState(await bridgeApi.state());
+      setForest(undefined);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   // Fork the active chat at a message. The backend guarantees the parent is
   // untouched; the UI switches to the fork as soon as it exists.
   async function runFork(title: string | null, worktree: "shared" | "new") {
@@ -2502,6 +2515,16 @@ function AppContent() {
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
+                  onForkSession={(snapshotSessionId, entryId) => {
+                    setForkError(null);
+                    setForkDraft({ sessionId: snapshotSessionId, entryId });
+                  }}
+                  onRewindEntry={(snapshotSessionId, entryId) => {
+                    if (window.confirm(`Rewind to this message? Everything after ${entryId} becomes inactive — no files are changed.`)) {
+                      void rewindSessionEntry(snapshotSessionId, entryId);
+                    }
+                  }}
+                  leafEntryIds={forest?.leaves.map(entry => entry.id)}
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
                 />

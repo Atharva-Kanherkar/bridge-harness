@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, GitFork, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -55,6 +55,8 @@ function ChatRow({
   time,
   onClick,
   onArchive,
+  forkLabel,
+  onJumpToParent,
 }: {
   chat: Session;
   active: boolean;
@@ -62,6 +64,8 @@ function ChatRow({
   time: string | null;
   onClick: () => void;
   onArchive?: () => void;
+  forkLabel?: string;
+  onJumpToParent?: () => void;
 }) {
   const name = chatName(chat);
   const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
@@ -89,10 +93,28 @@ function ChatRow({
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
-        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
-          {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
-          {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
-        </span>
+        {forkLabel ? (
+          <span className="flex min-w-0 items-center gap-1 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
+            <GitFork size={9} strokeWidth={1.6} className="shrink-0 text-faint" aria-hidden="true" />
+            <span className="truncate">forked from {forkLabel}</span>
+            {onJumpToParent && (
+              <button
+                type="button"
+                onClick={event => { event.stopPropagation(); onJumpToParent(); }}
+                title={`Jump to ${forkLabel}`}
+                aria-label={`Jump to parent ${forkLabel}`}
+                className="ml-auto shrink-0 rounded px-1 text-faint underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:opacity-100"
+              >
+                jump
+              </button>
+            )}
+          </span>
+        ) : (
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
+            {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
+            {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+          </span>
+        )}
       </span>
       {/* Muted at rest: a column of full-tint marks is the loudest thing in the
           rail and the chrome stays achromatic. The active row earns its tint. */}
@@ -654,7 +676,9 @@ export function BridgeSidebar({
                     onToggle={() => toggleFold(group.key)}
                   />
                 )}
-                {rows.map(chat => (
+                {rows.map(chat => {
+                const parent = chat.parentSessionId ? chats.find(candidate => candidate.id === chat.parentSessionId) : undefined;
+                return (
                   <ChatRow
                     key={chat.id}
                     chat={chat}
@@ -663,8 +687,11 @@ export function BridgeSidebar({
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
+                    forkLabel={chat.parentSessionId ? parent?.label ?? "session" : undefined}
+                    onJumpToParent={chat.parentSessionId ? () => onOpenSession(chat.parentSessionId!) : undefined}
                   />
-                ))}
+                );
+              })}
                 {capped && !folded && (
                   <button
                     type="button"
