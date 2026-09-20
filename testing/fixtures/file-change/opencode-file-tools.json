@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "provenance": "OpenCode message.part.updated tool parts for edit / write / apply_patch. edit/write carry state.input.filePath (and oldString/newString or content); apply_patch carries only state.input.patchText with *** Update File / *** Add File markers, plus per-file metadata.files after completion. Tool id apply_patch is the registered name; docs historically also list patch.",
+  "setup": {
+    "type": "message.updated",
+    "properties": {
+      "sessionID": "ses_1",
+      "info": { "id": "msg_1", "role": "assistant" }
+    }
+  },
+  "cases": [
+    {
+      "id": "opencode-edit",
+      "wire": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_1",
+          "part": {
+            "id": "prt_edit",
+            "sessionID": "ses_1",
+            "messageID": "msg_1",
+            "type": "tool",
+            "tool": "edit",
+            "state": {
+              "status": "completed",
+              "title": "src/lib.rs",
+              "input": {
+                "filePath": "src/lib.rs",
+                "oldString": "fn a() {}",
+                "newString": "fn a() { 1 }"
+              },
+              "output": "Edit applied successfully.",
+              "metadata": {
+                "diff": "Index: src/lib.rs\n===================================================================\n--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n",
+                "filediff": {
+                  "file": "src/lib.rs",
+                  "patch": "Index: src/lib.rs\n===================================================================\n--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n",
+                  "additions": 1,
+                  "deletions": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-write",
+      "wire": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_1",
+          "part": {
+            "id": "prt_write",
+            "sessionID": "ses_1",
+            "messageID": "msg_1",
+            "type": "tool",
+            "tool": "write",
+            "state": {
+              "status": "completed",
+              "title": "src/new.rs",
+              "input": {
+                "filePath": "src/new.rs",
+                "content": "pub fn n() {}"
+              },
+              "output": "Wrote file successfully."
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "opencode-apply-patch",
+      "wire": {
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_1",
+          "part": {
+            "id": "prt_patch",
+            "sessionID": "ses_1",
+            "messageID": "msg_1",
+            "type": "tool",
+            "tool": "apply_patch",
+            "state": {
+              "status": "completed",
+              "title": "src/lib.rs, src/main.rs",
+              "input": {
+                "patchText": "*** Begin Patch\n*** Update File: src/lib.rs\n@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n*** Update File: src/main.rs\n@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() { a() }\n*** End Patch\n"
+              },
+              "output": "Patch applied.",
+              "metadata": {
+                "diff": "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() { a() }\n",
+                "files": [
+                  {
+                    "file": "src/lib.rs",
+                    "type": "update",
+                    "patch": "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n",
+                    "additions": 1,
+                    "deletions": 1
+                  },
+                  {
+                    "file": "src/main.rs",
+                    "type": "update",
+                    "patch": "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() { a() }\n",
+                    "additions": 1,
+                    "deletions": 1
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

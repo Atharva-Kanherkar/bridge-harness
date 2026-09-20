@@ -492,7 +492,9 @@ describe("the dock in the session view", () => {
     await settle(2);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
     await click(dockToggle()!);
-    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "Connect your browser once");
+    // The extension-based BrowserSurface is paused; the dock's "browser" pane
+    // now renders the plain iframe-based SimpleBrowser.
+    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "No page open");
     const before = surface();
     expect(before).toBeTruthy();
 
@@ -510,28 +512,7 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
-    expect(dockAside()!.textContent).toContain("Connect your browser once");
-  });
-
-  it("raises waiting_for_you onto the switcher while another pane is active", async () => {
-    const waiting = {
-      transportConnected: true, extensionId: "ext", extensionPath: "/ext",
-      nativeHostInstalled: true, nativeHostManifestPath: "/m",
-      tabs: [{ id: 1, title: "Example", domain: "example.com", url: "https://example.com", attached: true }],
-      lease: { id: "lease-1", tabId: 1, domain: "example.com", permission: "read_only", grantedAt: "now", expiresAt: null },
-      status: "waiting_for_you", captureActive: false, captureError: null, screenshot: null,
-      screenshotRedactedRegions: 0, elements: [], viewport: null, promptInjectionSuspected: false,
-      tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
-      promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
-    };
-    const spy = vi.spyOn(bridgeApi, "browserBridgeState").mockResolvedValue(waiting as unknown as Awaited<ReturnType<typeof bridgeApi.browserBridgeState>>);
-    await mountApp();
-    await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit4", key: "4" });
-    await settle(3);
-    await key({ ...chord, code: "Digit1", key: "1" });
-    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
-    spy.mockRestore();
+    expect(dockAside()!.textContent).toContain("No page open");
   });
 
   // Contract: testing/feat-dock-terminal.md §4.
@@ -571,10 +552,7 @@ describe("the dock in the session view", () => {
     expect(tasksTab.textContent).toContain("1");
   });
 
-  // A worker session renders SteerComposer instead of the chat ComposerPill,
-  // so anything wired only into the latter (usage health included) silently
-  // disappears the moment you open a background worker.
-  it("keeps usage health reachable from a worker session's steer composer, not only the chat composer", async () => {
+  it("mounts the usage dot beside a worker's steer composer", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
@@ -585,16 +563,21 @@ describe("the dock in the session view", () => {
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label^="Open usage"]')).not.toBeNull();
   });
 
-  it("keeps usage health reachable on the pre-session Welcome view, where there is no composer to trail", async () => {
+  it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
-    // No session is selected yet: the pre-session Welcome screen keeps the
-    // title bar, and usage health must remain reachable from it — the move
-    // into the composer relocates the trigger, it does not remove it.
     expect(container.querySelector("header")).not.toBeNull();
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).not.toBeNull();
+    expect(container.querySelector('header [aria-label^="Open usage"]')).toBeNull();
+  });
+
+  it("mounts the usage dot at the chat composer's leading edge", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const dot = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Open usage"]');
+    expect(dot).not.toBeNull();
+    expect(dot!.getAttribute("aria-controls")).toBe("usage-dot-panel");
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {

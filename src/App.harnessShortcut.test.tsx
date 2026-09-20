@@ -73,7 +73,7 @@ describe("the $harness composer shortcut inside the app", () => {
     // Landed in a chat, not still on the welcome surface, and the harness
     // control names the harness the shortcut asked for rather than the
     // welcome screen's own default pick.
-    expect(container.querySelector('button[aria-label="New workspace"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Add project") ?? null).toBeNull();
     expect(container.textContent).toMatch(/Claude/);
 
     // The shortcut token itself never reached the model — only the message

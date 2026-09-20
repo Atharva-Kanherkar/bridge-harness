@@ -200,4 +200,20 @@ describe("clicking a GitHub link", () => {
     expect(chooser(), "a link to the old repository should not ask").toBeNull();
     expect(open).toHaveBeenCalledWith(`${repo}/pull/99`);
   });
+
+  it("does not open a pull request in a repository that changed while the chooser was open", async () => {
+    await openWorkspaceSession();
+    await clickLink(`${repo}/pull/42`);
+    expect(chooser()).not.toBeNull();
+
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({
+      availability: { status: "available" },
+      repository: { host: "github.com", owner: "someone", name: "elsewhere" },
+    });
+
+    await click(chooserButton("Open in Bridge")!);
+
+    expect(activePane()).not.toBe("GitHub");
+    expect(open).toHaveBeenCalledWith(`${repo}/pull/42`);
+  });
 });

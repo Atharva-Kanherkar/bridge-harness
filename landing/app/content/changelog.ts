@@ -7,6 +7,39 @@ export type ReleaseEntry = {
 
 export const releases: ReleaseEntry[] = [
   {
+    version: "0.5.9",
+    date: "September 16, 2026",
+    headline: "Database compatibility release",
+    bullets: [
+      "Includes the schema 58 migration for databases created by the current Bridge build.",
+      "Ships as a new macOS version so the compatible DMG is selected instead of the older 0.5.8 build.",
+    ],
+  },
+  {
+    version: "0.5.8",
+    date: "September 12, 2026",
+    headline: "Worker reports reach the parent",
+    bullets: [
+      "Corrects updater public-key encoding; the 0.5.7 build was rejected before publication, and the signing key is unchanged.",
+      "Worker results are saved with a pending notification and delivered in full when the parent can accept its next turn.",
+      "Busy or disconnected parents retain pending reports, and peek can recover a completed worker's summary, tests, and remaining work.",
+      "Request throttling no longer means an exhausted subscription, and rejected API keys get key-specific guidance.",
+      "Provider switches no longer relabel old errors, and live and stored copies of one failure render only once.",
+      "Changing credentials in an external terminal can still require refreshing the running provider process.",
+    ],
+  },
+  {
+    version: "0.5.6",
+    date: "September 11, 2026",
+    headline: "Images, agent setup, and Linux builds",
+    bullets: [
+      "Paste or upload an image straight into a Codex, OpenCode, or image-capable Cursor session.",
+      "Setup can install an agent and run its provider sign-in, and a recovered login keeps the draft you were writing.",
+      "Work shows only connected integration activity from the past 24 hours, timed by the source rather than by a cache refresh.",
+      "Debian, AppImage, and Arch candidates build alongside the signed macOS disk image.",
+    ],
+  },
+  {
     version: "0.5.5",
     date: "September 8, 2026",
     headline: "The Span app icon",

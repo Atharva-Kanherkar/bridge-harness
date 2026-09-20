@@ -261,31 +261,33 @@ function MathBlock({ tex }: { tex: string }) {
   );
 }
 
-function renderInline(text: string): React.ReactNode[] {
+function renderInline(text: string, allowLinks = true): React.ReactNode[] {
   return text.split(INLINE).filter(part => part !== "").map((part, index) => {
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <InlineCode key={index} text={part.slice(1, -1)} />;
     if (part.startsWith("\\(") && part.endsWith("\\)") && part.length > 4) return <InlineMath key={index} tex={part.slice(2, -2)} />;
     if (part.startsWith("$") && part.endsWith("$") && part.length > 2) return <InlineMath key={index} tex={part.slice(1, -1)} />;
-    if (part.startsWith("~~") && part.endsWith("~~") && part.length > 4) return <del key={index}>{renderInline(part.slice(2, -2))}</del>;
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2))}</strong>;
-    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
+    if (part.startsWith("~~") && part.endsWith("~~") && part.length > 4) return <del key={index}>{renderInline(part.slice(2, -2), allowLinks)}</del>;
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2), allowLinks)}</strong>;
+    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1), allowLinks)}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
     // A link only renders as an anchor when `externalLinks` would claim it.
     // Its click interceptor only hijacks `http(s)`/`mailto`; any other scheme
     // keeps the webview's default action, and the Tauri webview sets no CSP,
     // so a `javascript:` href in agent- or GitHub-authored markdown would run
     // in-app. Anything else keeps its label as text.
-    if (link) {
+    if (link && allowLinks) {
+      // Link labels may themselves be a URL (GitHub's normalizer emits this
+      // shape). Keep their inline formatting without creating a nested anchor.
       return isExternalUrl(link[2])
-        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1])}</a>
-        : <span key={index}>{renderInline(link[1])}</span>;
+        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>
+        : <span key={index}>{renderInline(link[1], false)}</span>;
     }
     // A URL an agent typed as prose is still a link the reader means to follow.
     // It goes through the same click interceptor as a written-out one, so a
     // GitHub address gets the same choice of where to open. The pattern admits
     // only `http(s)`, so it is already inside the gate above rather than a way
     // around it.
-    if (BARE_URL_ONLY.test(part)) return <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>;
+    if (allowLinks && BARE_URL_ONLY.test(part)) return <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>;
     return <TextRun key={index} text={part} />;
   });
 }

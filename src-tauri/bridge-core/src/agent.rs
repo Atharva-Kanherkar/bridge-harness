@@ -389,7 +389,7 @@ fn normalize_opencode_part(
             let tool = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
             let kind = if tool == "bash" {
                 format!("command.{suffix}")
-            } else if matches!(tool, "edit" | "write" | "patch") {
+            } else if is_opencode_file_tool(tool) {
                 format!("file_change.{suffix}")
             } else {
                 format!("tool.{suffix}")
@@ -414,9 +414,21 @@ fn normalize_opencode_part(
                 .or_else(|| part.pointer("/state/error"))
                 .and_then(Value::as_str)
                 .map(str::to_owned);
+            if is_opencode_file_tool(tool) {
+                stamp_file_change_fields(&mut event.data);
+                if file_change_title_is_generic(event.title.as_deref()) {
+                    if let Some(title) = file_change_title(&event.data) {
+                        event.title = Some(title);
+                    }
+                }
+            }
             vec![event]
         }
-        "patch" => vec![with_data("diff.updated", &part, part.clone())],
+        "patch" => {
+            let mut data = part.clone();
+            stamp_file_change_fields(&mut data);
+            vec![with_data("diff.updated", &part, data)]
+        }
         "step-start" => {
             // A tool loop has several model steps within ONE submitted turn.
             // Retain this fallback for streams that omit the initial busy,
@@ -688,7 +700,9 @@ pub fn normalize_codex_message_with_state(
             vec![native_compaction("codex", json!({}))]
         }
         "turn/diff/updated" | "item/fileChange/patchUpdated" => {
-            vec![with_data("diff.updated", &params, params.clone())]
+            let mut data = params.clone();
+            stamp_file_change_fields(&mut data);
+            vec![with_data("diff.updated", &params, data)]
         }
         "error" => {
             let mut event = with_data("error", &params, params.clone());
@@ -987,6 +1001,12 @@ fn normalize_item(
                 .join("");
             (!text.is_empty()).then_some(text)
         });
+    if item_type == "fileChange" {
+        stamp_file_change_fields(&mut event.data);
+        if event.title.is_none() {
+            event.title = file_change_title(&event.data);
+        }
+    }
     vec![event]
 }
 
@@ -1165,10 +1185,36 @@ fn claude_tool_family(name: &str) -> ClaudeToolFamily {
 /// `content_block_start` (input may still be empty) or the assistant snapshot
 /// (full input). Both go out under the same item id, so the snapshot refines
 /// the streamed card instead of duplicating it.
+/// Where a Claude tool call is in its life when Bridge learns about it.
+///
+/// Claude Code streams a `tool_use` block's *start* as soon as the model
+/// begins writing the call, then streams the arguments token by token; the
+/// tool itself only runs once the whole assistant message has landed. A
+/// long command or PR body can take minutes to write, and during that time
+/// nothing is executing — Claude Code's own UI shows the model composing,
+/// not a running tool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClaudeToolPhase {
+    /// `content_block_start`: the model is still writing the arguments.
+    Preparing,
+    /// The assistant snapshot: arguments complete, execution begins now.
+    Running,
+}
+
+impl ClaudeToolPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            ClaudeToolPhase::Preparing => "preparing",
+            ClaudeToolPhase::Running => "running",
+        }
+    }
+}
+
 fn claude_tool_started(
     message: &Value,
     block: &Value,
     state: &mut ClaudeStreamState,
+    phase: ClaudeToolPhase,
 ) -> NormalizedEvent {
     let tool_id = block
         .get("id")
@@ -1177,18 +1223,27 @@ fn claude_tool_started(
         .to_owned();
     let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
     let family = claude_tool_family(name);
-    // Keep the first start time when the snapshot repeats the streamed block.
+    // The clock the card's duration reads starts when the tool actually runs.
+    // The streamed start only registers the call; the snapshot (re)starts the
+    // clock so minutes of argument streaming never show up as run time.
+    let now = Instant::now();
     state
         .tool_calls
         .entry(tool_id.clone())
+        .and_modify(|call| {
+            if phase == ClaudeToolPhase::Running {
+                call.started_at = now;
+            }
+        })
         .or_insert(ClaudeToolCall {
             family,
-            started_at: Instant::now(),
+            started_at: now,
         });
     let mut event = with_data(&family.kind("started"), message, block.clone());
     event.item_id = Some(tool_id);
     event.title = Some(name.to_owned());
     event.status = Some("inProgress".into());
+    event.data["phase"] = Value::String(phase.as_str().to_owned());
     let input = block.get("input").cloned().unwrap_or(Value::Null);
     match family {
         ClaudeToolFamily::Command => {
@@ -1499,7 +1554,12 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
-                "tool_use" => vec![claude_tool_started(message, &block, state)],
+                "tool_use" => vec![claude_tool_started(
+                    message,
+                    &block,
+                    state,
+                    ClaudeToolPhase::Preparing,
+                )],
                 "thinking" => {
                     let id = claude_thinking_id(
                         &message_id,
@@ -1593,7 +1653,12 @@ fn normalize_claude_assistant(
         let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
         match part_type {
             "tool_use" => {
-                events.push(claude_tool_started(message, &part, state));
+                events.push(claude_tool_started(
+                    message,
+                    &part,
+                    state,
+                    ClaudeToolPhase::Running,
+                ));
             }
             "thinking" => {
                 if let Some(thinking) = part.get("thinking").and_then(Value::as_str) {
@@ -1806,6 +1871,373 @@ fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> 
     event.data["interactionKind"] = Value::String("permission".into());
     event.data["actions"] = permission_actions(true);
     Some(event)
+}
+
+fn is_opencode_file_tool(tool: &str) -> bool {
+    matches!(tool, "edit" | "write" | "patch" | "apply_patch" | "multiedit")
+}
+
+/// Stamp Claude-shaped `path`/`patch`/`additions`/`deletions` (or `paths[]`
+/// for a multi-file edit) onto a Codex `fileChange` or OpenCode file-tool
+/// payload. The frontend used to guess at those keys in the raw provider
+/// JSON; two of three providers did not put them where it looked, so the
+/// row fell back to the word "files".
+fn stamp_file_change_fields(data: &mut Value) {
+    let extracted = extract_file_change(data);
+    let Some(object) = data.as_object_mut() else {
+        return;
+    };
+    if json_nonempty_str(object.get("path")).is_none() {
+        if let Some(path) = extracted.paths.first() {
+            object.insert("path".into(), json!(path));
+        }
+    }
+    if extracted.paths.len() > 1 && object.get("paths").is_none() {
+        object.insert("paths".into(), json!(extracted.paths));
+    }
+    if json_nonempty_str(object.get("patch")).is_none() {
+        if let Some(patch) = extracted.patch {
+            object.insert("patch".into(), json!(patch));
+        }
+    }
+    if json_count(object.get("additions")).is_none() {
+        if let Some(additions) = extracted.additions {
+            object.insert("additions".into(), json!(additions));
+        }
+    }
+    if json_count(object.get("deletions")).is_none() {
+        if let Some(deletions) = extracted.deletions {
+            object.insert("deletions".into(), json!(deletions));
+        }
+    }
+}
+
+struct ExtractedFileChange {
+    paths: Vec<String>,
+    patch: Option<String>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+}
+
+fn extract_file_change(data: &Value) -> ExtractedFileChange {
+    let input = file_change_input(data);
+    let metadata = file_change_metadata(data);
+    let mut paths = Vec::new();
+    push_path(&mut paths, json_text(data, &["path", "file_path", "filePath"]));
+    push_path(
+        &mut paths,
+        json_text(input, &["file_path", "filePath", "path", "notebook_path"]),
+    );
+    push_path(
+        &mut paths,
+        json_text(metadata, &["filepath", "filePath", "file_path", "path"]),
+    );
+    push_path(
+        &mut paths,
+        metadata
+            .get("filediff")
+            .and_then(|filediff| json_text(filediff, &["file", "path"])),
+    );
+    collect_entry_paths(data.get("changes"), &mut paths);
+    collect_entry_paths(input.get("changes"), &mut paths);
+    collect_entry_paths(metadata.get("files"), &mut paths);
+    collect_entry_paths(data.get("files"), &mut paths);
+    if let Some(patch_text) = json_text(input, &["patchText", "patch_text"]) {
+        for path in paths_from_apply_patch(patch_text) {
+            push_path(&mut paths, Some(&path));
+        }
+    }
+
+    let change_patch = join_change_patches(data.get("changes"))
+        .or_else(|| join_change_patches(input.get("changes")));
+    let file_patch = join_file_patches(metadata.get("files"))
+        .or_else(|| join_file_patches(data.get("files")));
+    let patch = first_patch(data)
+        .or_else(|| {
+            metadata
+                .get("filediff")
+                .and_then(|filediff| json_patch(filediff, &["patch", "diff"]))
+        })
+        .or_else(|| first_patch(metadata))
+        .or_else(|| first_patch(input))
+        .map(str::to_owned)
+        .or(change_patch)
+        .or(file_patch)
+        .or_else(|| {
+            json_patch(input, &["patchText", "patch_text"])
+                .filter(|text| looks_like_patch(text))
+                .map(str::to_owned)
+        })
+        .or_else(|| synthesize_opencode_file_patch(input, paths.first().map(String::as_str)));
+
+    let mut additions = json_count(data.get("additions"))
+        .or_else(|| json_count(metadata.get("additions")))
+        .or_else(|| {
+            metadata
+                .get("filediff")
+                .and_then(|filediff| json_count(filediff.get("additions")))
+        })
+        .or_else(|| sum_entry_counts(metadata.get("files"), "additions"))
+        .or_else(|| sum_entry_counts(data.get("files"), "additions"))
+        .or_else(|| sum_entry_counts(data.get("changes"), "additions"));
+    let mut deletions = json_count(data.get("deletions"))
+        .or_else(|| json_count(metadata.get("deletions")))
+        .or_else(|| {
+            metadata
+                .get("filediff")
+                .and_then(|filediff| json_count(filediff.get("deletions")))
+        })
+        .or_else(|| sum_entry_counts(metadata.get("files"), "deletions"))
+        .or_else(|| sum_entry_counts(data.get("files"), "deletions"))
+        .or_else(|| sum_entry_counts(data.get("changes"), "deletions"));
+    if let Some(patch) = &patch {
+        if additions.is_none() || deletions.is_none() {
+            let (from_additions, from_deletions) = diffstat(patch);
+            additions = additions.or(Some(from_additions));
+            deletions = deletions.or(Some(from_deletions));
+        }
+    }
+
+    ExtractedFileChange {
+        paths,
+        patch,
+        additions,
+        deletions,
+    }
+}
+
+fn file_change_input(data: &Value) -> &Value {
+    data.pointer("/state/input")
+        .or_else(|| data.get("input"))
+        .unwrap_or(&Value::Null)
+}
+
+fn file_change_metadata(data: &Value) -> &Value {
+    data.pointer("/state/metadata")
+        .or_else(|| data.get("metadata"))
+        .unwrap_or(&Value::Null)
+}
+
+fn collect_entry_paths(entries: Option<&Value>, paths: &mut Vec<String>) {
+    let Some(entries) = entries.and_then(Value::as_array) else {
+        return;
+    };
+    for entry in entries {
+        push_path(
+            paths,
+            json_text(entry, &["path", "file", "filePath", "file_path"]),
+        );
+    }
+}
+
+fn join_change_patches(entries: Option<&Value>) -> Option<String> {
+    let entries = entries.and_then(Value::as_array)?;
+    let patches: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| {
+            let diff = json_patch(entry, &["diff", "patch", "unifiedDiff"])?;
+            let path = json_text(entry, &["path", "file", "filePath", "file_path"]).unwrap_or("file");
+            let kind = json_text(entry, &["kind", "type"]);
+            Some(normalize_provider_diff(path, kind, diff))
+        })
+        .collect();
+    (!patches.is_empty()).then(|| patches.join("\n"))
+}
+
+fn join_file_patches(entries: Option<&Value>) -> Option<String> {
+    let entries = entries.and_then(Value::as_array)?;
+    let patches: Vec<&str> = entries
+        .iter()
+        .filter_map(|entry| json_patch(entry, &["patch", "diff", "unifiedDiff"]))
+        .collect();
+    (!patches.is_empty()).then(|| patches.join("\n"))
+}
+
+fn normalize_provider_diff(path: &str, kind: Option<&str>, diff: &str) -> String {
+    if looks_like_patch(diff) {
+        return diff.to_owned();
+    }
+    match kind {
+        Some("add") | Some("added") => synthesize_file_patch(path, "", diff, true)
+            .unwrap_or_else(|| diff.to_owned()),
+        Some("delete") | Some("deleted") => synthesize_file_patch(path, diff, "", false)
+            .unwrap_or_else(|| diff.to_owned()),
+        _ => synthesize_file_patch(path, "", diff, false).unwrap_or_else(|| diff.to_owned()),
+    }
+}
+
+fn synthesize_opencode_file_patch(input: &Value, path: Option<&str>) -> Option<String> {
+    let path = path?;
+    if let Some(content) = json_patch(input, &["content", "new_source"]) {
+        return synthesize_file_patch(path, "", content, true);
+    }
+    let old = json_patch(input, &["oldString", "old_string"]).unwrap_or("");
+    let new = json_patch(input, &["newString", "new_string"]).unwrap_or("");
+    if old.is_empty() && new.is_empty() {
+        if let Some(edits) = input.get("edits").and_then(Value::as_array) {
+            let hunks: Vec<String> = edits
+                .iter()
+                .filter_map(|edit| {
+                    claude_diff_hunk(
+                        json_patch(edit, &["oldString", "old_string"]).unwrap_or(""),
+                        json_patch(edit, &["newString", "new_string"]).unwrap_or(""),
+                    )
+                })
+                .collect();
+            if hunks.is_empty() {
+                return None;
+            }
+            return Some(format!("--- a/{path}\n+++ b/{path}\n{}", hunks.join("\n")));
+        }
+        return None;
+    }
+    synthesize_file_patch(path, old, new, old.is_empty())
+}
+
+fn synthesize_file_patch(path: &str, old: &str, new: &str, created: bool) -> Option<String> {
+    let hunk = claude_diff_hunk(old, new)?;
+    let old_file = if created || old.is_empty() {
+        "/dev/null".to_owned()
+    } else {
+        format!("a/{path}")
+    };
+    Some(format!("--- {old_file}\n+++ b/{path}\n{hunk}"))
+}
+
+fn paths_from_apply_patch(text: &str) -> Vec<String> {
+    const MARKERS: [&str; 4] = [
+        "*** Update File: ",
+        "*** Add File: ",
+        "*** Delete File: ",
+        "*** Move to: ",
+    ];
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        for marker in MARKERS {
+            if let Some(path) = line.strip_prefix(marker) {
+                push_path(&mut paths, Some(path));
+            }
+        }
+    }
+    paths
+}
+
+fn first_patch(value: &Value) -> Option<&str> {
+    json_patch(value, &["patch", "diff", "unifiedDiff"])
+}
+
+fn json_patch<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+    })
+}
+
+fn looks_like_patch(text: &str) -> bool {
+    let sample = if text.len() > 4000 { &text[..4000] } else { text };
+    sample.contains("\n@@")
+        || sample.starts_with("@@")
+        || sample.contains("\ndiff --git ")
+        || sample.starts_with("diff --git ")
+        || sample.contains("\n*** Update File: ")
+        || sample.contains("\n*** Add File: ")
+        || sample.starts_with("*** Begin Patch")
+}
+
+fn diffstat(patch: &str) -> (u64, u64) {
+    let mut additions = 0_u64;
+    let mut deletions = 0_u64;
+    for line in patch.lines() {
+        if line.starts_with("+++")
+            || line.starts_with("---")
+            || line.starts_with("@@")
+            || line.starts_with("diff ")
+            || line.starts_with("index ")
+            || line.starts_with("Index:")
+            || line.starts_with("====")
+            || line.starts_with("***")
+            || line.starts_with('\\')
+        {
+            continue;
+        }
+        if line.starts_with('+') {
+            additions += 1;
+        } else if line.starts_with('-') {
+            deletions += 1;
+        }
+    }
+    (additions, deletions)
+}
+
+fn push_path(paths: &mut Vec<String>, candidate: Option<&str>) {
+    let Some(path) = candidate.map(str::trim).filter(|path| !path.is_empty()) else {
+        return;
+    };
+    if !paths.iter().any(|existing| existing == path) {
+        paths.push(path.to_owned());
+    }
+}
+
+fn json_text<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    })
+}
+
+fn json_nonempty_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+fn json_count(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().filter(|count| *count >= 0).map(|count| count as u64))
+}
+
+fn sum_entry_counts(entries: Option<&Value>, key: &str) -> Option<u64> {
+    let entries = entries.and_then(Value::as_array)?;
+    let mut total = 0_u64;
+    let mut found = false;
+    for entry in entries {
+        if let Some(count) = json_count(entry.get(key)) {
+            total += count;
+            found = true;
+        }
+    }
+    found.then_some(total)
+}
+
+fn file_change_title(data: &Value) -> Option<String> {
+    let path = json_nonempty_str(data.get("path"))
+        .or_else(|| {
+            data.get("paths")
+                .and_then(Value::as_array)
+                .and_then(|paths| paths.first())
+                .and_then(Value::as_str)
+        })?;
+    Some(
+        path.rsplit(['/', '\\'])
+            .find(|part| !part.is_empty())
+            .unwrap_or(path)
+            .to_owned(),
+    )
+}
+
+fn file_change_title_is_generic(title: Option<&str>) -> bool {
+    matches!(
+        title.map(str::trim),
+        None | Some("") | Some("edit") | Some("write") | Some("patch") | Some("apply_patch") | Some("multiedit") | Some("fileChange") | Some("tool")
+    )
 }
 
 fn with_data(kind: &str, params: &Value, data: Value) -> NormalizedEvent {
@@ -2484,6 +2916,41 @@ mod tests {
         assert_eq!(snapshot[0].kind, "command.started");
         assert_eq!(snapshot[0].item_id, streamed[0].item_id);
         assert_eq!(snapshot[0].title.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn claude_tool_phase_and_duration_start_at_the_snapshot() {
+        let mut state = ClaudeStreamState::default();
+        let streamed = normalize_claude_message_with_state(
+            &json!({
+                "type":"stream_event",
+                "event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"t1","name":"Bash"}}
+            }),
+            &mut state,
+        );
+        // The model is still writing the arguments: nothing runs yet.
+        assert_eq!(streamed[0].data["phase"], "preparing");
+        assert_eq!(streamed[0].status.as_deref(), Some("inProgress"));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let snapshot = normalize_claude_message_with_state(
+            &json!({
+                "type":"assistant",
+                "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create"}}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(snapshot[0].data["phase"], "running");
+        let completed = normalize_claude_message_with_state(
+            &json!({
+                "type":"user",
+                "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}
+            }),
+            &mut state,
+        );
+        // The card's duration is run time, not the time the model spent
+        // composing the call.
+        let duration = completed[0].data["durationMs"].as_u64().unwrap();
+        assert!(duration < 40, "duration {duration}ms includes argument streaming");
     }
 
     #[test]
@@ -3173,5 +3640,106 @@ mod tests {
         assert_eq!(rejected[0].kind, "question.settled");
         assert_eq!(rejected[0].status.as_deref(), Some("rejected"));
         assert_eq!(rejected[0].data["requestId"], "req_2");
+    }
+
+    fn fixture_case<'a>(doc: &'a Value, id: &str) -> &'a Value {
+        doc["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == id)
+            .unwrap_or_else(|| panic!("missing fixture case {id}"))
+            .get("wire")
+            .unwrap()
+    }
+
+    #[test]
+    fn normalizes_codex_file_change_fixture_into_canonical_fields() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/file-change/codex-fileChange.json"
+        ))
+        .unwrap();
+
+        let update = normalize_codex_message(fixture_case(&fixture, "codex-update"));
+        assert_eq!(update[0].kind, "file_change.completed");
+        assert_eq!(update[0].data["path"], "src/lib.rs");
+        assert_eq!(update[0].title.as_deref(), Some("lib.rs"));
+        assert_eq!(
+            update[0].data["patch"].as_str().unwrap(),
+            "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n"
+        );
+        assert_eq!(update[0].data["additions"], 1);
+        assert_eq!(update[0].data["deletions"], 1);
+        assert!(update[0].data.get("paths").is_none());
+
+        let added = normalize_codex_message(fixture_case(&fixture, "codex-add"));
+        assert_eq!(added[0].kind, "file_change.started");
+        assert_eq!(added[0].data["path"], "APPROVAL_DEMO.txt");
+        let add_patch = added[0].data["patch"].as_str().unwrap();
+        assert!(add_patch.contains("--- /dev/null"));
+        assert!(add_patch.contains("+++ b/APPROVAL_DEMO.txt"));
+        assert!(add_patch.contains("+Hello from Codex!"));
+        assert_eq!(added[0].data["additions"], 1);
+        assert_eq!(added[0].data["deletions"], 0);
+
+        let multi = normalize_codex_message(fixture_case(&fixture, "codex-multifile"));
+        assert_eq!(multi[0].kind, "file_change.completed");
+        assert_eq!(multi[0].data["path"], "src/lib.rs");
+        assert_eq!(
+            multi[0].data["paths"],
+            json!(["src/lib.rs", "src/main.rs"])
+        );
+        let multi_patch = multi[0].data["patch"].as_str().unwrap();
+        assert!(multi_patch.contains("+fn a() { 1 }"));
+        assert!(multi_patch.contains("+fn main() { a() }"));
+        assert_eq!(multi[0].data["additions"], 2);
+        assert_eq!(multi[0].data["deletions"], 2);
+    }
+
+    #[test]
+    fn normalizes_opencode_file_tool_fixtures_into_canonical_fields() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/file-change/opencode-file-tools.json"
+        ))
+        .unwrap();
+        let mut state = OpenCodeStreamState::default();
+        let _ = normalize_opencode_message_with_state(&fixture["setup"], &mut state);
+
+        let edit = normalize_opencode_message_with_state(
+            fixture_case(&fixture, "opencode-edit"),
+            &mut state,
+        );
+        assert_eq!(edit[0].kind, "file_change.completed");
+        assert_eq!(edit[0].data["path"], "src/lib.rs");
+        assert!(edit[0].data["patch"].as_str().unwrap().contains("+fn a() { 1 }"));
+        assert_eq!(edit[0].data["additions"], 1);
+        assert_eq!(edit[0].data["deletions"], 1);
+
+        let write = normalize_opencode_message_with_state(
+            fixture_case(&fixture, "opencode-write"),
+            &mut state,
+        );
+        assert_eq!(write[0].kind, "file_change.completed");
+        assert_eq!(write[0].data["path"], "src/new.rs");
+        let write_patch = write[0].data["patch"].as_str().unwrap();
+        assert!(write_patch.contains("--- /dev/null"));
+        assert!(write_patch.contains("+++ b/src/new.rs"));
+        assert!(write_patch.contains("+pub fn n() {}"));
+        assert_eq!(write[0].data["additions"], 1);
+        assert_eq!(write[0].data["deletions"], 0);
+
+        let patch = normalize_opencode_message_with_state(
+            fixture_case(&fixture, "opencode-apply-patch"),
+            &mut state,
+        );
+        assert_eq!(patch[0].kind, "file_change.completed");
+        assert_eq!(patch[0].data["path"], "src/lib.rs");
+        assert_eq!(
+            patch[0].data["paths"],
+            json!(["src/lib.rs", "src/main.rs"])
+        );
+        assert!(patch[0].data["patch"].as_str().unwrap().contains("+fn main() { a() }"));
+        assert_eq!(patch[0].data["additions"], 2);
+        assert_eq!(patch[0].data["deletions"], 2);
     }
 }

@@ -44,7 +44,8 @@ describe("makeUsageWindow", () => {
 
   it("serialises to the wire params with nulls where the contract wants them", () => {
     const params = summaryParams(makeUsageWindow(30, new Date("2026-09-09T12:00:00Z"), "UTC"), false);
-    expect(params).toEqual({ sinceDay: "2026-08-11", untilDay: "2026-09-09", timeZone: "UTC", resolution: "day", sinceTime: null, untilTime: null, includeImported: false, workspaceId: null });
+    expect(params).toEqual({ sinceDay: "2026-08-11", untilDay: "2026-09-09", timeZone: "UTC", resolution: "day", sinceTime: null, untilTime: null, includeImported: false, includeDashboard: false, workspaceId: null });
+    expect(summaryParams(makeUsageWindow(30, new Date("2026-09-09T12:00:00Z"), "UTC"), true).includeDashboard).toBe(true);
   });
 
   it("labels the window in words", () => {

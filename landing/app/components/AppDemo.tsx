@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { ArrowUp, BadgeCheck, GitBranch, LayoutGrid, Paperclip, PanelRight, Search, ShieldCheck } from "lucide-react";
 import ChangesDock from "./app/ChangesDock";
 import MissionGrid from "./app/MissionGrid";
@@ -12,6 +12,19 @@ const TYPE_MS = 1200;
 const STEP_MS = 900;
 const HOLD_MS = 3200;
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+const REDUCED = "(prefers-reduced-motion: reduce)";
+
+function useReducedMotion() {
+  return useSyncExternalStore(
+    notify => {
+      const query = window.matchMedia(REDUCED);
+      query.addEventListener("change", notify);
+      return () => query.removeEventListener("change", notify);
+    },
+    () => window.matchMedia(REDUCED).matches,
+    () => false,
+  );
+}
 
 /** One glyph per scene, so the strip reads as a place rather than a row of words. */
 const sceneIcon: Record<string, typeof GitBranch> = {
@@ -27,7 +40,7 @@ function stepCount(scene: Scene) {
   return (scene.entries?.length ?? 0) + (scene.prompt ? 1 : 0);
 }
 
-function usePlayback(scene: Scene, replay: number, onDone: () => void) {
+function usePlayback(scene: Scene, replay: number, paused: boolean, onDone: () => void) {
   const [typed, setTyped] = useState("");
   const [step, setStep] = useState(stepCount(scene));
   const [playing, setPlaying] = useState(false);
@@ -35,13 +48,17 @@ function usePlayback(scene: Scene, replay: number, onDone: () => void) {
   useEffect(() => { done.current = onDone; }, [onDone]);
 
   // Server-rendered markup holds the finished scene, so the demo is complete without
-  // JavaScript; playback only arms itself once mounted and motion is welcome.
+  // JavaScript; playback only arms itself once mounted and the visitor has not paused it.
+  // While paused the finished scene is shown, so a selected tab is readable at once.
   useIsomorphicLayoutEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (paused) {
+      setPlaying(false);
+      return;
+    }
     setTyped("");
     setStep(0);
     setPlaying(true);
-  }, [scene.id, replay]);
+  }, [scene.id, replay, paused]);
 
   useEffect(() => {
     if (!playing) return;
@@ -145,14 +162,23 @@ function ChatView({ scene, typed, step }: { scene: Scene; typed: string; step: n
 export default function AppDemo() {
   const [active, setActive] = useState(0);
   const [replay, setReplay] = useState(0);
+  // Auto-advance stops the moment a visitor takes over by clicking or focusing a tab, and stays
+  // stopped: the strip then only moves when they pick another tab (WCAG 2.2.2: moving content
+  // that runs longer than five seconds needs a stop the user controls, and a hover hold is not
+  // one). Reduced-motion visitors start paused; server markup is the finished scene either way.
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const reducedMotion = useReducedMotion();
+  const paused = choice ?? reducedMotion;
+  const setPaused = setChoice;
   const held = useRef(false);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
-  const [slider, setSlider] = useState<{ left: number; width: number } | null>(null);
+  const [slider, setSlider] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const scene = scenes[active];
 
   // The indicator is measured rather than fractioned, so it fits each label instead of
-  // forcing four columns to the width of the longest one.
+  // forcing four columns to the width of the longest one. Measuring top too means the
+  // indicator still tracks correctly when the tab list wraps onto a second row on mobile.
   useIsomorphicLayoutEffect(() => {
     const measure = () => {
       const tab = tabRefs.current[active];
@@ -160,7 +186,7 @@ export default function AppDemo() {
       if (!tab || !list) return;
       const a = tab.getBoundingClientRect();
       const b = list.getBoundingClientRect();
-      setSlider({ left: a.left - b.left, width: a.width });
+      setSlider({ left: a.left - b.left, top: a.top - b.top, width: a.width, height: a.height });
     };
     measure();
     window.addEventListener("resize", measure);
@@ -172,10 +198,11 @@ export default function AppDemo() {
     else setActive(index => (index + 1) % scenes.length);
   }, []);
 
-  const { typed, step } = usePlayback(scene, replay, onDone);
+  const { typed, step } = usePlayback(scene, replay, paused, onDone);
 
   function select(index: number) {
     const next = (index + scenes.length) % scenes.length;
+    setPaused(true);
     setActive(next);
     tabRefs.current[next]?.focus();
   }
@@ -197,18 +224,18 @@ export default function AppDemo() {
       onFocusCapture={() => { held.current = true; }}
       onBlurCapture={() => { held.current = false; }}
     >
-      <div className="-mx-4 mb-5 flex justify-center overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="-mx-4 mb-5 flex justify-center px-4 sm:overflow-x-auto sm:[scrollbar-width:none] sm:[&::-webkit-scrollbar]:hidden">
         <div
           ref={listRef}
           role="tablist"
           aria-label="What Bridge does"
-          className="relative flex h-10 w-max shrink-0 items-center rounded-full border border-border-card bg-card/50 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl motion-safe:animate-[entry-in_600ms_ease-out]"
+          className="relative flex w-full max-w-full flex-wrap items-center justify-center gap-1 rounded-2xl border border-border-card bg-card/50 p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl motion-safe:animate-[entry-in_600ms_ease-out] sm:h-10 sm:w-max sm:shrink-0 sm:flex-nowrap sm:justify-start sm:gap-0 sm:rounded-full sm:p-1"
         >
           {/* The slider the labels ride on. */}
           <span
             aria-hidden="true"
-            className="absolute inset-y-1 rounded-full bg-foreground/12 ring-1 ring-inset ring-foreground/20 transition-[transform,width] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
-            style={slider ? { width: slider.width, transform: `translateX(${slider.left}px)`, left: 0 } : { opacity: 0 }}
+            className="absolute left-0 top-0 rounded-full bg-foreground/12 ring-1 ring-inset ring-foreground/20 transition-[transform,width,height] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
+            style={slider ? { width: slider.width, height: slider.height, transform: `translate(${slider.left}px, ${slider.top}px)` } : { opacity: 0 }}
           />
 
           {scenes.map((item, i) => {
@@ -224,10 +251,11 @@ export default function AppDemo() {
                 aria-selected={selected}
                 aria-controls="scene-panel"
                 tabIndex={selected ? 0 : -1}
-                onClick={() => setActive(i)}
+                onClick={() => select(i)}
+                onFocus={() => setPaused(true)}
                 onKeyDown={event => onKeyDown(event, i)}
                 style={{ animationDelay: `${100 + i * 90}ms` }}
-                className={`group relative z-10 flex h-full items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-[12.5px] font-semibold transition-colors duration-300 motion-safe:animate-[rise_500ms_ease-out_backwards] ${
+                className={`group relative z-10 flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-[12.5px] font-semibold transition-colors duration-300 motion-safe:animate-[rise_500ms_ease-out_backwards] sm:h-full ${
                   selected ? "text-foreground" : "text-muted-foreground hover:text-foreground"
                 }`}
               >

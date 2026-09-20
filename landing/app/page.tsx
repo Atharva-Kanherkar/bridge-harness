@@ -6,6 +6,7 @@ import AppDemo from "./components/AppDemo";
 import ActionButton from "./components/ActionButton";
 import { latestReleaseUrl } from "./content/site";
 import DownloadButtons from "./components/DownloadButtons";
+import GithubButton from "./components/GithubButton";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
 
@@ -31,8 +32,9 @@ export default function Home() {
               Claude Code, Codex, Cursor, and OpenCode, running as one team in one window.
             </p>
 
-            <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-8 flex justify-center">
+            <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <DownloadButtons />
+              <GithubButton />
             </div>
           </div>
 

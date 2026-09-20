@@ -14,6 +14,15 @@
         "null"
       ]
     },
+    "offset": {
+      "description": "How many ranked hits to skip. The next page of a long forest; omitted requests start at the first hit.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "query": {
       "type": "string"
     },

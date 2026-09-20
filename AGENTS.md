@@ -42,8 +42,18 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 - **Fonts:** Geist Variable (`font-sans`) for body, Bricolage Grotesque Variable (`font-display`) for headings, Geist Mono Variable (`font-mono`) for code — loaded via `@fontsource-variable/*` in `main.tsx` and wired through `@theme` tokens.
 - **Glass:** macOS-style frosted glass comes from the `.u-glass` (panels), `.u-glass-popover` (menus/toasts/dialogs), `.u-glass-soft` (cards/rows/inputs), and `.u-segmented` / `.u-segmented-item` (segmented controls) classes in `src/index.css`. Prefer them over hand-rolled `bg-white/[0.0x] backdrop-blur-*` combinations.
 - **Transcript:** the conversation surface behaves the same for every agent, and [`docs/transcript-behavior-contract.md`](docs/transcript-behavior-contract.md) says exactly how: one thinking component, grouping invariants, stream-state meanings, and a harness id that is display and never behavior.
+- **Observability:** what Bridge records, what it deliberately does not, and how to read or export it is in [`docs/observability.md`](docs/observability.md). The transcript pane's facet, turn and problem rules live there too.
 - **Tests:** colocated `*.test.ts(x)` run under Vitest. Add coverage for logic in `utils`, `conversation`, `observability`, and `usage`.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `refactor:`, `chore:`). Describe the change; don't cite issue/PR numbers in code or messages.
+
+## Issues: two audiences, one issue
+
+**Every issue must have a `## For humans` section followed by a `## For agents` section. An issue without both is closed automatically** by [`.github/workflows/issue-format.yml`](.github/workflows/issue-format.yml) — commented, labelled `needs-format`, closed as not planned. Editing the body to add the sections reopens it.
+
+- **For humans** — TL;DR, a diagram, the system design, the high-level architecture, the decision and why. Short. Lead with the diagram; Bridge's own `diagram` grammar, not Mermaid.
+- **For agents** — repro, suspected cause with `file:line`, files and symbols to touch, wire/protocol changes, acceptance criteria, tests to add, what is out of scope. Exhaustive, because an agent that re-derives context re-derives it wrong.
+
+Start from a template in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE) and you pass by filling it in. `gh issue create` bypasses templates, so write both sections by hand. The rule lives in [`scripts/issue-format.mjs`](scripts/issue-format.mjs) and is tested under `bun run test`; the full spec, including the `format-exempt` escape hatch, is [`docs/issue-format.md`](docs/issue-format.md).
 
 ## Memory surface
 

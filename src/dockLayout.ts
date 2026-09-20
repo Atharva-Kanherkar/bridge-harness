@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 // persistence round-trip — so the split, the divider, and restart restore can
 // be asserted without mounting anything.
 
-export type DockPaneId = "changes" | "code" | "terminal" | "browser" | "transcript" | "tasks" | "github";
+export type DockPaneId = "changes" | "code" | "terminal" | "browser" | "transcript" | "tasks" | "github" | "inbox";
 
 export type DockState = {
   open: boolean;
@@ -26,7 +26,7 @@ export type DockAction =
   | { type: "set-width"; width: number; available: number }
   | { type: "toggle-expanded" };
 
-export const DOCK_PANES: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "github"];
+export const DOCK_PANES: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox"];
 
 export const MIN_DOCK_WIDTH = 320;
 export const MAX_DOCK_WIDTH = 760;

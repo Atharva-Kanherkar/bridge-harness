@@ -10,3 +10,4 @@ vite.config.d.ts
 
 .gstack/
 .generated/
+.vercel

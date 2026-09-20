@@ -89,7 +89,7 @@ fn owned_path_provenance(
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let mut trusted_paths = Vec::new();
     let mut source_entry_ids = Vec::new();
-    let prior_write_decision = branch.iter().find(|entry| {
+    let prior_write_decision = branch.iter().position(|entry| {
         entry.payload["turnId"] == turn_id
             && entry
                 .payload
@@ -104,7 +104,8 @@ fn owned_path_provenance(
                     | "delegation.rejected"
             )
     });
-    let user_entry = if let Some(decision) = prior_write_decision {
+    let user_entry = if let Some(index) = prior_write_decision {
+        let decision = &branch[index];
         let source_ids = decision
             .payload
             .pointer("/ownedPathProvenance/sourceEntryIds")
@@ -114,7 +115,7 @@ fn owned_path_provenance(
                 entry.kind == "user.message"
                     && ids.iter().any(|id| id.as_str() == Some(entry.id.as_str()))
             })
-        })
+        }).or_else(|| branch[..index].iter().rfind(|entry| entry.kind == "user.message"))
     } else {
         branch.iter().rfind(|entry| entry.kind == "user.message")
     };
@@ -263,30 +264,8 @@ fn trusted_path_token(token: &str, workspace: &Path) -> Option<String> {
     if !looks_like_path {
         return None;
     }
-    let normalized = policy::normalize_owned_pattern(token).ok()?;
-    let wildcard = normalized.find(['*', '?', '[']);
-    let base = wildcard
-        .map(|index| normalized[..index].trim_end_matches('/'))
-        .unwrap_or(normalized.as_str());
-    if base.is_empty() {
-        return None;
-    }
-    let resolved = workspace.join(base);
-    let workspace = workspace.canonicalize().ok()?;
-    let grounding_path = if resolved.exists() {
-        resolved.as_path()
-    } else if wildcard.is_none() {
-        resolved.parent().filter(|parent| parent.is_dir())?
-    } else {
-        return None;
-    };
-    let grounded = grounding_path.canonicalize().ok()?;
-    if !grounded.starts_with(&workspace)
-        || (resolved.is_dir() && subtree_has_escaping_symlink(&resolved, &workspace))
-    {
-        return None;
-    }
-    if wildcard.is_none() && resolved.is_dir() {
+    let normalized = approved_path_token(token, workspace)?;
+    if !normalized.contains(['*', '?', '[']) && workspace.join(&normalized).is_dir() {
         Some(format!("{normalized}/**"))
     } else {
         Some(normalized)
@@ -304,11 +283,21 @@ fn approved_path_token(token: &str, workspace: &Path) -> Option<String> {
     }
     let workspace = workspace.canonicalize().ok()?;
     let resolved = workspace.join(base);
-    let grounding_path = if resolved.exists() {
-        resolved.as_path()
-    } else {
-        resolved.parent().filter(|parent| parent.is_dir())?
-    };
+    // A scope can create an entire new directory tree. Ground it in the nearest
+    // existing ancestor, but never climb past a dangling symlink or I/O error.
+    let mut grounding_path = resolved.as_path();
+    loop {
+        match std::fs::symlink_metadata(grounding_path) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                grounding_path = grounding_path.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+    if grounding_path != resolved && !grounding_path.is_dir() {
+        return None;
+    }
     let grounded = grounding_path.canonicalize().ok()?;
     (grounded.starts_with(&workspace)
         && !(resolved.is_dir() && subtree_has_escaping_symlink(&resolved, &workspace)))
@@ -601,18 +590,15 @@ mod tests {
     }
 
     #[test]
-    fn new_file_scope_requires_existing_immediate_parent() {
+    fn new_nested_scopes_are_grounded_in_the_existing_workspace() {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(workspace.path().join("src")).unwrap();
-        assert!(
-            explicit_write_scope("Write scope: src/missing/deep/new.rs", workspace.path())
-                .is_empty()
-        );
-        std::fs::create_dir_all(workspace.path().join("src/missing/deep")).unwrap();
-        assert_eq!(
-            explicit_write_scope("Write scope: src/missing/deep/new.rs", workspace.path()),
-            vec!["src/missing/deep/new.rs"]
-        );
+        for path in ["src/missing/deep/new.rs", "testing/new/deep/**"] {
+            assert_eq!(explicit_write_scope(&format!("Write scope: {path}"), workspace.path()), vec![path]);
+            assert_eq!(approved_path_token(path, workspace.path()).as_deref(), Some(path));
+        }
+        std::fs::write(workspace.path().join("file"), "").unwrap();
+        assert!(approved_path_token("file/new/**", workspace.path()).is_none());
     }
 
     #[test]
@@ -638,6 +624,9 @@ mod tests {
         assert!(explicit_write_scope("Write scope: external/**", workspace.path()).is_empty());
         assert!(explicit_write_scope("Write scope: external/new.rs", workspace.path()).is_empty());
         assert!(approved_path_token("external/**", workspace.path()).is_none());
+        assert!(approved_path_token("external/new/deep/**", workspace.path()).is_none());
+        symlink(workspace.path().join("missing"), workspace.path().join("dangling")).unwrap();
+        assert!(approved_path_token("dangling/new/deep/**", workspace.path()).is_none());
         std::fs::create_dir_all(workspace.path().join("src")).unwrap();
         symlink(outside.path(), workspace.path().join("src/link")).unwrap();
         assert!(explicit_write_scope("Write scope: src/**", workspace.path()).is_empty());
@@ -763,6 +752,56 @@ mod tests {
             rechecked.outcome.reason,
             policy::RouteReason::OwnedPathProvenanceRequired
         );
+    }
+
+    #[test]
+    fn missing_source_ids_fall_back_only_before_the_first_write_decision() {
+        let workspace = tempfile::tempdir().unwrap();
+        let db = database(workspace.path());
+        let forest = SessionForest::new(&db);
+        let origin = forest.append("parent", EntryKind::UserMessage,
+            json!({"text":"Write scope: testing/new/deep/**"})).unwrap();
+        forest.append("parent", EntryKind::DelegationRejected,
+            json!({"requestId":"turn-a","turnId":"turn-a","request":request(&["testing/new/deep/**"]),
+                "ownedPathProvenance":{"trustedPaths":[],"sourceEntryIds":[]}})).unwrap();
+        forest.append("parent", EntryKind::UserMessage,
+            json!({"text":"Write scope: src/**"})).unwrap();
+        let provenance = owned_path_provenance(&db, "parent", "turn-a", workspace.path()).unwrap();
+        assert_eq!(provenance.trusted_paths, vec!["testing/new/deep/**"]);
+        assert_eq!(provenance.source_entry_ids, vec![origin.id]);
+    }
+
+    #[test]
+    fn cross_harness_approval_for_new_nested_paths_launches_once_without_reopening() {
+        use crate::live_turn::{reserve_worker_launch_outcome, resolve_policy_delegation_approval, WorkerReservationOutcome};
+        let workspace = tempfile::tempdir().unwrap();
+        let db = database(workspace.path());
+        db.execute("UPDATE sessions SET active_turn_id='turn-a' WHERE id='parent'", []).unwrap();
+        let mut directive = request(&["testing/new/deep/**"]);
+        directive.harness = Some("claude".into());
+        let outcome = reserve_worker_launch_outcome(&db, "parent", "turn-a", &directive, "model", true, None).unwrap();
+        assert!(matches!(outcome, WorkerReservationOutcome::AwaitingApproval(_)));
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM worker_queue", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        let approval = SessionForest::new(&db).active_branch("parent").unwrap().pop().unwrap();
+        let resolved = resolve_policy_delegation_approval(&db, "parent", approval.sequence, "accept", &approval.payload).unwrap();
+        let outcome = reserve_worker_launch_outcome(&db, "parent", &resolved.turn_id, &resolved.request, "model", true, None).unwrap();
+        assert!(matches!(outcome, WorkerReservationOutcome::Reserved(_)));
+        assert!(resolve_policy_delegation_approval(&db, "parent", approval.sequence, "accept", &approval.payload).is_err());
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(SessionForest::new(&db).active_branch("parent").unwrap().iter().filter(|entry| entry.kind == "approval.requested").count(), 1);
+    }
+
+    #[test]
+    fn resolved_scope_cannot_be_reoffered_as_an_actionable_approval() {
+        let workspace = tempfile::tempdir().unwrap();
+        let db = database(workspace.path());
+        let directive = request(&["testing/new/**"]);
+        PolicyCoordinator::decide_worker_route(&db, "parent", "turn-a", &directive, true).unwrap();
+        let approval = SessionForest::new(&db).active_branch("parent").unwrap().pop().unwrap();
+        crate::live_turn::resolve_policy_delegation_approval(&db, "parent", approval.sequence, "decline", &approval.payload).unwrap();
+        let error = PolicyCoordinator::decide_worker_route(&db, "parent", "turn-a", &directive, true).err().unwrap();
+        assert!(error.to_string().contains("already resolved"));
+        assert_eq!(SessionForest::new(&db).active_branch("parent").unwrap().iter().filter(|entry| entry.kind == "approval.requested").count(), 1);
     }
 
     #[test]

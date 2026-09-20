@@ -68,6 +68,7 @@ const type = async (field: HTMLInputElement | HTMLTextAreaElement, value: string
   Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(field, value);
   await act(async () => { field.dispatchEvent(new Event("input", { bubbles: true })); await flush(); });
 };
+const exactButton = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === text) as HTMLButtonElement;
 const buttonByText = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.includes(text)) as HTMLButtonElement;
 
 afterEach(async () => {
@@ -635,6 +636,85 @@ describe("GitHubPane", () => {
     await click(buttonByText("All issues"));
     await click(buttonByText("Stay inside Bridge"));
     expect(buttonByText("Reopen")).toBeDefined();
+  });
+
+  // The bug this replaces: a folder with no GitHub remote failed all three
+  // reads and the pane printed the raw resolution error three ways.
+  it("offers Connect instead of a raw resolution error when no repository resolves", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    const list = vi.spyOn(bridgeApi, "githubPullRequests").mockRejectedValue(new Error("could not resolve a GitHub repository for /Users/a/animevocab: fatal: not a git repository"));
+    const issues = vi.spyOn(bridgeApi, "githubIssues").mockRejectedValue(new Error("could not resolve a GitHub repository"));
+    await mount();
+
+    expect(host!.textContent).toContain("No GitHub repository connected");
+    expect(host!.textContent).not.toContain("fatal: not a git repository");
+    expect(host!.textContent).not.toContain("could not resolve");
+    // The reads that can only fail are never made.
+    expect(list).not.toHaveBeenCalled();
+    expect(issues).not.toHaveBeenCalled();
+  });
+
+  // Daemon-host mode throws the JSON envelope, not an Error. The pane used to
+  // print it verbatim — `{"code":1000,"kind":"invalid","message":"…"}`.
+  it("shows the human message from a daemon-host error envelope, not the envelope", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockRejectedValue(
+      '{"code":1000,"kind":"invalid","message":"GitHub CLI is unavailable"}',
+    );
+    await mount();
+
+    expect(host!.textContent).toContain("GitHub CLI is unavailable");
+    expect(host!.textContent).not.toContain('"code"');
+    expect(host!.textContent).not.toContain("kind");
+  });
+
+  it("connects the workspace to a pasted repository URL and reloads the surface", async () => {
+    const statusRead = vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    vi.spyOn(bridgeApi, "githubPullRequests").mockResolvedValue({ pullRequests: [summary] });
+    vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [] });
+    const connect = vi.spyOn(bridgeApi, "githubConnect").mockResolvedValue({
+      repository: { host: "github.com", owner: "bridge", name: "harness" }, initialized: true, replacedRemote: false,
+    });
+    await mount();
+
+    await click(buttonByText("Connect a repository"));
+    const field = document.body.querySelector<HTMLInputElement>('input[aria-label="Repository search or URL"]')!;
+    await type(field, "https://github.com/bridge/harness");
+    statusRead.mockResolvedValue(status);
+    await click(exactButton("Connect"));
+
+    expect(connect).toHaveBeenCalledWith("w", "https://github.com/bridge/harness");
+    expect(host!.textContent).toContain("Safe GitHub surface");
+  });
+
+  it("reports a failed repository search instead of claiming no matches", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    const search = vi.spyOn(bridgeApi, "searchGithubRepos").mockRejectedValue(new Error("GitHub CLI unavailable: gh is not installed"));
+    await mount();
+
+    await click(buttonByText("Connect a repository"));
+    const field = document.body.querySelector<HTMLInputElement>('input[aria-label="Repository search or URL"]')!;
+    await type(field, "harness");
+    await act(async () => { vi.advanceTimersByTime(300); await flush(); });
+
+    expect(search).toHaveBeenCalledWith("harness");
+    expect(document.body.textContent).toContain("GitHub CLI unavailable: gh is not installed");
+    // "No repository matches that" would send the user hunting for a repo that exists.
+    expect(document.body.textContent).not.toContain("No repository matches that");
+  });
+
+  it("keeps the connect failure on the dialog rather than dropping the user back to an error pane", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    vi.spyOn(bridgeApi, "githubConnect").mockRejectedValue(new Error("Enter a GitHub repository HTTPS or SSH URL"));
+    await mount();
+
+    await click(buttonByText("Connect a repository"));
+    const field = document.body.querySelector<HTMLInputElement>('input[aria-label="Repository search or URL"]')!;
+    await type(field, "https://github.com/bridge/harness");
+    await click(exactButton("Connect"));
+
+    expect(document.body.textContent).toContain("Enter a GitHub repository HTTPS or SSH URL");
+    expect(document.body.querySelector('input[aria-label="Repository search or URL"]')).not.toBeNull();
   });
 
   it("refetches the list when a CI-finished event lands for this workspace", async () => {

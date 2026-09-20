@@ -63,6 +63,17 @@ export interface TranscriptEnvelope {
   key?: string;
   /** First-arrival anchor preserved through live coalescing. */
   causalAnchor?: number;
+  /**
+   * Which runtime produced this frame, as the backend stamped it on
+   * `providerMeta.adapter` (live) or inside the stored payload (durable).
+   *
+   * A harness id, not a label — nothing under `src/transcript/` interprets it.
+   * It exists because a row outlives the session's current harness: after a
+   * chat is switched from Codex to OpenCode, the Codex failures already in the
+   * transcript are still Codex failures, and a card that reads the session's
+   * harness instead relabels history.
+   */
+  adapter?: string;
   /** The untyped remainder. Never branched on inside `src/transcript/`. */
   providerData: Record<string, unknown>;
 }

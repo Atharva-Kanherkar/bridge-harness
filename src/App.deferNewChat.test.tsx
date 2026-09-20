@@ -105,7 +105,7 @@ describe("deferred new-chat creation (#350)", () => {
 
     expect(totalCreates(creates)).toBe(0);
     // One draft surface, one composer — not two.
-    expect(container.querySelectorAll('button[aria-label="New workspace"]').length).toBe(1);
+    expect(Array.from(container.querySelectorAll("button")).filter(button => button.textContent?.trim() === "Add project").length).toBe(1);
   });
 
   it("the first submitted message creates exactly one session and leaves the draft", async () => {
@@ -121,9 +121,9 @@ describe("deferred new-chat creation (#350)", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
 
     expect(totalCreates(creates)).toBe(1);
-    // Left the welcome/draft surface — the welcome-only "New workspace" control is
+    // Left the welcome/draft surface — the welcome-only "Add project" control is
     // gone because we are now inside the created chat.
-    expect(container.querySelector('button[aria-label="New workspace"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Add project") ?? null).toBeNull();
   });
 
   it("an empty submit creates nothing and keeps the draft open", async () => {

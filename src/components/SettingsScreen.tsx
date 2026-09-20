@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../api";
+import { MenuBarSettingsPage } from "../features/menu-bar/MenuBarSettingsPage";
 import { profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
 import { useManagedAgents } from "./ManagedAgentsPanel";
@@ -32,8 +33,16 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onHealthChange = () => undefined, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onError: (message: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    void bridgeApi.onMenuBarSettings(() => { if (active) setSection("menuBar"); }).then(fn => {
+      if (active) off = fn; else fn();
+    });
+    return () => { active = false; off?.(); };
+  }, []);
   const [query, setQuery] = useState("");
   const [config, setConfig] = useState<ConfigState>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
@@ -56,7 +65,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const [saved, setSaved] = useState(false);
   // One copy of the runtime list, read by both the Harnesses list and a single
   // harness's detail page, so an install never has to be reported twice.
-  const managed = useManagedAgents();
+  const managed = useManagedAgents(undefined, onHealthChange);
 
   useEffect(() => {
     let active = true;
@@ -235,6 +244,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
 
       {section === "appearance" && <AppearancePage />}
+      {section === "menuBar" && <MenuBarSettingsPage />}
 
       {section === "permissions" && config && <PermissionsSection
         policy={config.permissionPolicy}
@@ -271,6 +281,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       />}
 
       {section === "harnesses" && config && <HarnessesPage
+        adapters={adapters}
         harnesses={config.harnesses}
         modelOptions={modelOptions}
         managed={managed}
@@ -287,6 +298,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         onResetHarness={resetHarness}
         onCatalog={catalog => { setOpenCodeCatalog(catalog); setOpenCodeDiscoveryError(undefined); }}
         onError={message => { setOpenCodeDiscoveryError(message); onError(message); }}
+        onAuthenticationChanged={onHealthChange}
       />}
 
       {section === "models" && modelSetup && <ModelsPage

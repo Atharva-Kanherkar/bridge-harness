@@ -23,6 +23,8 @@ use uuid::Uuid;
 
 const MINIMUM_VERSION: (u64, u64, u64) = (0, 153, 4);
 
+pub mod account;
+
 pub struct CodexRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
     pub child: Child,
@@ -700,6 +702,23 @@ impl Drop for CodexRuntime {
 /// payload is installed, and is never claimed or removed by Bridge.
 pub fn resolve_runtime() -> Option<std::path::PathBuf> {
     crate::managed_runtime::managed_entrypoint("codex").or_else(|| binary::resolve("codex"))
+        .or_else(bundled_app_runtime)
+}
+
+/// Finder launches do not inherit the Codex desktop app's augmented PATH.
+/// Resolve its already-installed CLI centrally so account reads and sessions
+/// use the same runtime. Explicit managed/PATH installations retain priority.
+fn bundled_app_runtime() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut roots = vec![PathBuf::from("/Applications")];
+        if let Some(home) = std::env::var_os("HOME") { roots.push(PathBuf::from(home).join("Applications")); }
+        return roots.into_iter().flat_map(|root| [root.join("Codex.app/Contents/Resources/codex"), root.join("ChatGPT.app/Contents/Resources/codex")])
+            .find(|path| path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0));
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 pub fn binary_version() -> Option<String> {

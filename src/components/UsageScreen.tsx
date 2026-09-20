@@ -225,9 +225,11 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   };
 
   const incompleteSources = preferences.includeImported
-    ? sources.filter(source => source.coverageState !== "complete" && source.coverageState !== "empty")
+    ? sources.filter(source => source.origin !== "dashboard" && source.coverageState !== "complete" && source.coverageState !== "empty")
     : [];
-  const historyIncomplete = preferences.includeImported && (scanning || scanFailed || incompleteSources.some(source => source.capability === "supported"));
+  const dashboardSources = preferences.includeImported ? summary?.sources.filter(source => source.origin === "dashboard") ?? [] : [];
+  const historyIncomplete = preferences.includeImported && (scanning || scanFailed || incompleteSources.some(source => source.capability === "supported")
+    || dashboardSources.some(source => source.coverageState !== "complete" && source.coverageState !== "empty"));
   const partialTotal = loading || historyIncomplete;
   const partialLabel = scanning ? "Loading history" : loading ? "Updating usage" : "History incomplete";
 
@@ -250,8 +252,12 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         <span className="ml-auto pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
       </div>
 
-      {report && (incompleteSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
-        {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is still loading.</li>)}
+      {report && (incompleteSources.length > 0 || dashboardSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
+        {incompleteSources.map(source => <li key={source.id}>{source.coverageState === "unsupported"
+          ? `${harnessLabel(source.agent)}: ${source.coverageReason ?? "History is unavailable."}`
+          : source.coverageState === "stale" || source.coverageState === "unreadable" ? `${harnessLabel(source.agent)} history needs a refresh.`
+          : `${harnessLabel(source.agent)} history is still loading.`}</li>)}
+        {dashboardSources.map(source => <li key={source.id}>{source.coverageReason}</li>)}
         {summary!.duplicatesDropped > 0 && <li>{formatCount(summary!.duplicatesDropped)} live records were counted once against their imported transcripts.</li>}
         {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} records have no known rate or complete pricing inputs; their cost is unknown, not free. Their tokens are included.</li>}
       </ul>}
@@ -297,7 +303,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             ["Uncached input", formatTokens(report.totals.uncachedInputTokens)],
             ["Output", formatTokens(report.totals.outputTokens)],
             ["Reasoning (in output)", formatTokens(report.totals.reasoningTokens)],
-            ["Cache savings", formatUsd(report.totals.cacheSavingsMicrousd)],
+            ["Local cache savings", formatUsd(report.totals.cacheSavingsMicrousd)],
           ].map(([label, value]) => <div key={label} className={cn(CARD, "py-3")}>
             <div className="text-[11px] text-muted-foreground">{label}</div>
             <div className="mt-0.5 text-ui font-medium tabular-nums text-foreground">{value}</div>
@@ -343,7 +349,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-ui font-medium text-foreground">History sources</h2>
-              <p className="text-caption text-muted-foreground">Local Claude Code, Codex, and OpenCode history. Only usage numbers are imported, never prompt or completion text.</p>
+              <p className="text-caption text-muted-foreground">Local Claude Code, Codex, and OpenCode history, plus Cursor dashboard usage. Only usage metadata is saved, never prompt or completion text.</p>
             </div>
             <button type="button" onClick={() => void scan()} disabled={scanning} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
               {scanning ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}Scan history
@@ -351,11 +357,11 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
           </div>
           {scanNote && <p role="status" className="mb-3 text-caption text-muted-foreground">{scanNote}</p>}
           <ul className="divide-y divide-border">
-            {sources.length === 0 && <li className="py-3 text-caption text-muted-foreground">No local history stores were found.</li>}
+            {sources.length === 0 && <li className="py-3 text-caption text-muted-foreground">No history sources were found.</li>}
             {sources.map(source => <li key={source.id} className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 py-2.5">
               <div className="min-w-0">
-                <div className="inline-flex items-center gap-2 text-ui text-foreground"><HarnessMark harness={source.agent} size={13} />{harnessLabel(source.agent)}<span className={cn("text-caption", coverageTone(source.coverageState))}>{coverageLabel(source.coverageState)}</span></div>
-                <p className="text-caption text-muted-foreground">{source.capability === "supported" ? "Local usage history" : "History is not available for this harness"}</p>
+                <div className="inline-flex items-center gap-2 text-ui text-foreground"><HarnessMark harness={source.agent} size={13} />{harnessLabel(source.agent)}<span className={cn("text-caption", coverageTone(source.coverageState))}>{source.origin === "dashboard" && source.coverageState === "unreadable" ? "Unavailable" : source.origin === "dashboard" && source.coverageState === "unsupported" ? "Disabled" : coverageLabel(source.coverageState)}</span></div>
+                <p className="text-caption text-muted-foreground">{source.origin === "dashboard" ? "Dashboard usage · last 30 days" : source.capability === "supported" ? "Local usage history" : "History is not available for this harness"}</p>
                 {(source.location || source.coverageReason || source.lastError) && <details className="mt-1 text-[11px] text-muted-foreground">
                   <summary className="w-fit cursor-pointer select-none hover:text-foreground">Technical details</summary>
                   <div className="mt-1 space-y-1 border-l border-border pl-2">
@@ -365,8 +371,13 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
                 </details>}
               </div>
               {source.capability === "supported" && <div className="text-right text-[11px] tabular-nums text-muted-foreground">
-                <div>{formatCount(source.recordsImported)} imported · {formatCount(source.recordsSkipped)} skipped</div>
-                <div>Last scan {relativeStamp(source.lastSuccessfulScanAt)}</div>
+                {source.origin === "dashboard" ? <>
+                  {source.coverageStartAt && <div>{formatCount(source.recordsImported)} cached events</div>}
+                  <div>Last update {relativeStamp(source.lastSuccessfulScanAt)}</div>
+                </> : <>
+                  <div>{formatCount(source.recordsImported)} imported · {formatCount(source.recordsSkipped)} skipped</div>
+                  <div>Last scan {relativeStamp(source.lastSuccessfulScanAt)}</div>
+                </>}
               </div>}
             </li>)}
           </ul>

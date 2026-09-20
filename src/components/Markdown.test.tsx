@@ -413,6 +413,11 @@ describe("bare URLs in prose", () => {
     expect(html.match(/<a /g)?.length).toBe(1);
   });
 
+  it("does not nest an autolink inside a markdown link whose label is the URL", () => {
+    const html = render("[https://example.test/x](https://example.test/x)");
+    expect(html.match(/<a /g)?.length).toBe(1);
+  });
+
   it("does not link a scheme it would never open", () => {
     expect(render("javascript:alert(1) and file:///etc/passwd")).not.toContain("<a ");
   });

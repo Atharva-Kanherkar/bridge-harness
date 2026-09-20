@@ -91,6 +91,7 @@ pub struct BridgeCore {
     /// separate from model adapters and their sidecars.
     pub github_surface: crate::github_surface::GithubSurface,
     pub github_poller: crate::github_poll::GithubPoller,
+    pub connector_poller: crate::connector_runs_live::ConnectorPoller,
     /// Last time each session produced adapter output, used by the worker
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
@@ -130,6 +131,7 @@ pub struct BridgeCore {
     /// being started fresh per request: process-start latency on every
     /// keystroke pause would make the feature unusable.
     pub suggestion_engine: SuggestionEngine,
+    pub usage_overview: crate::usage_overview::UsageOverviewService,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -318,6 +320,7 @@ impl BridgeCore {
             ),
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
@@ -327,6 +330,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
+            usage_overview: crate::usage_overview::UsageOverviewService::default(),
         }
     }
 
@@ -437,6 +441,7 @@ impl BridgeCore {
             browser_bridge,
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
@@ -446,6 +451,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
+            usage_overview: crate::usage_overview::UsageOverviewService::default(),
         })
     }
 }

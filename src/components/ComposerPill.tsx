@@ -1,6 +1,6 @@
 import type { ClipboardEvent, KeyboardEvent, MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react";
+import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComposerAttachment } from "@/pasteAttachments";
 
@@ -29,22 +29,11 @@ export type ComposerPillProps = {
   onStop?: () => void;
   /// Immediate feedback after Stop until the turn actually clears.
   stopping?: boolean;
-  onPlusClick?: () => void;
-  /// What the `+` control does on this surface, as the user reads it. A control
-  /// whose label and behaviour disagree is worse than no control, so the label
-  /// travels with the handler rather than being hardcoded here.
-  plusLabel?: string;
-  /// Set to explain why `+` is unavailable. Present means disabled, and the
-  /// reason becomes the tooltip — an unexplained dead control is the thing this
-  /// avoids.
-  plusUnavailableReason?: string;
   /// Lets the owner put the caret back in the composer after an action of its
-  /// own — opening the file picker from `+` is useless if the user then has to
-  /// click into the box to filter it.
+  /// own — opening the file picker is useless if the user then has to click
+  /// into the box to filter it.
   inputRef?: MutableRefObject<HTMLTextAreaElement | null>;
-  /// Sits immediately after `+`, at the composer's leading edge. The usage ring
-  /// rides here on a session so the health it reports is next to the box that
-  /// spends it, rather than a title-bar corner the session view no longer has.
+  /// Optional control immediately after the attachment button.
   leading?: ReactNode;
   trailing?: ReactNode;
   /// The model chip (ChatModelControl) that leads the controls row, below the
@@ -59,9 +48,6 @@ export type ComposerPillProps = {
   /// input → controls row → footer. When present it gets a top hairline and the
   /// recessed `bg-background` surface, so the frame visually contains it.
   footer?: ReactNode;
-  /// Which glyph the attach/plus button wears. Chat surfaces attach files, so they
-  /// pass "paperclip"; a surface whose `+` starts a new thing keeps the default plus.
-  plusIcon?: "plus" | "paperclip";
   className?: string;
   layout?: "hero" | "dock";
   autocomplete?: { controls: string; activeDescendant?: string };
@@ -92,16 +78,12 @@ export function ComposerPill({
   activeAction,
   onStop,
   stopping = false,
-  onPlusClick,
-  plusLabel = "Attach a file",
-  plusUnavailableReason,
   inputRef,
   leading,
   trailing,
   modelControl,
   accessControl,
   footer,
-  plusIcon = "plus",
   className,
   layout = "dock",
   autocomplete,
@@ -148,9 +130,7 @@ export function ComposerPill({
 
   return (
     <div className={cn("w-full", isHero ? "mx-auto max-w-3xl" : "mx-auto max-w-conversation-frame px-4 pb-3 pt-2 sm:px-8 sm:pb-4", className)}>
-      {/* The pill's own box, and the anchor a `leading` control can portal a
-          panel onto — `data-composer-frame` is how the usage panel matches the
-          composer's width instead of guessing at it. */}
+      {/* The pill's box also anchors any floating composer controls. */}
       <div data-composer-frame className="relative">
         <form
           className={cn(
@@ -278,18 +258,6 @@ export function ComposerPill({
                 }} />
                 <button type="button" disabled={locked} aria-label="Attach images" title="Attach images" onClick={() => attachmentInput.current?.click()} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><Paperclip className="h-4 w-4" aria-hidden="true" /></button>
               </>}
-              <button
-                type="button"
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
-                onClick={onPlusClick}
-                disabled={disabled || !onPlusClick || !!plusUnavailableReason}
-                aria-label={plusLabel}
-                title={plusUnavailableReason ?? plusLabel}
-              >
-                {plusIcon === "paperclip"
-                  ? <Paperclip className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-                  : <Plus className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
-              </button>
               {leading}
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling

@@ -103,7 +103,7 @@ fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::Discover
     Err(BridgeError::Adapter("Claude returned no model catalogue".into()))
 }
 
-fn configure_sdk_environment(command: &mut Command) {
+pub(crate) fn configure_sdk_environment(command: &mut Command) {
     match managed_sdk_module() {
         Some(module) => {
             command.env("BRIDGE_CLAUDE_SDK_ENTRY", module);
@@ -211,6 +211,15 @@ fn launch(
                 // own MCP configuration decides what exists. Empty for an
                 // exact-review policy, and the gate treats empty as no scope.
                 "readScopeServers": policy.read_scope_servers(),
+                // The single approved write, when this run carries one. Absent
+                // for every briefing and every connector read; present only
+                // after a human approved the literal text being sent.
+                "actionScope": policy.action_scope_config().map(|(server, intent, permitted)| json!({
+                    "server": server,
+                    "intent": intent,
+                    "permittedWords": permitted,
+                    "forbiddenWords": crate::briefing_policy::BriefingRuntimePolicy::action_forbidden_words(),
+                })),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
             }))
@@ -507,7 +516,7 @@ fn write_mode_label(mode: WriteMode) -> &'static str {
 /// Locate the Claude Agent SDK sidecar entrypoint. Honours an explicit
 /// `BRIDGE_CLAUDE_SIDECAR` override, then a bundled copy next to the executable
 /// (production), then the in-repo path (development).
-fn sidecar_entry() -> Result<PathBuf, BridgeError> {
+pub(crate) fn sidecar_entry() -> Result<PathBuf, BridgeError> {
     if let Ok(path) = std::env::var("BRIDGE_CLAUDE_SIDECAR") {
         let candidate = PathBuf::from(path);
         if candidate.exists() {

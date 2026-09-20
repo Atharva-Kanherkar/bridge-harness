@@ -1,8 +1,21 @@
 # Changelog
 
-## Unreleased
+## [0.5.9] - 2026-09-16
 
-### 0.5.6 candidate
+- Include migration 58 in the release so databases created by the current Bridge build open successfully.
+- Publish a new app version after the schema change so macOS does not retain or select the older 0.5.8 DMG.
+
+## [0.5.8] - 2026-09-12
+
+- Encode the existing updater public key as the minisign text box Tauri requires. The 0.5.7 build was rejected before publication; no signing key was replaced.
+
+- Persist worker-result notifications with their canonical result and deliver the complete report at the parent's next turn boundary. Busy or disconnected parents no longer lose a one-shot notification.
+- Recover completed worker reports through peek, keep pending deliveries across restarts, and preserve parent runtimes while work or result delivery is pending.
+- Distinguish request throttling from usage exhaustion and API-key failures from subscription sign-in failures.
+- Preserve the originating provider on historical errors and render each live/durable failure once without hiding later identical retries.
+- External terminal credential changes still require provider-process refresh; this release does not claim to fix stale credentials in a running provider.
+
+## [0.5.6] - 2026-09-11
 
 - Send pasted and uploaded images to Codex, OpenCode, and image-capable Cursor sessions.
 - Offer agent installation and provider sign-in during setup, with login recovery that preserves the draft.
