@@ -147,6 +147,7 @@ pub const fn requires_idle_session(dispatch: &slash::SlashDispatch) -> bool {
     matches!(
         dispatch,
         slash::SlashDispatch::Usage
+            | slash::SlashDispatch::Voice
             | slash::SlashDispatch::Compact { .. }
             | slash::SlashDispatch::Clear
             | slash::SlashDispatch::Unsupported { .. }

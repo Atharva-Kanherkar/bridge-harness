@@ -38,6 +38,7 @@ mod marketplace;
 mod memory;
 mod meter;
 mod usage_overview;
+mod voice;
 mod models;
 mod projects;
 mod routing;
@@ -68,6 +69,7 @@ pub use marketplace::*;
 pub use memory::*;
 pub use meter::*;
 pub use usage_overview::*;
+pub use voice::*;
 pub use models::*;
 pub use projects::*;
 pub use routing::*;
@@ -242,6 +244,11 @@ typed_methods![
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
     (StopSession, StopSessionParams, BridgeState),
+    (VoiceCapabilities, VoiceCapabilitiesParams, VoiceCapabilitiesResult),
+    (VoiceStart, VoiceStartParams, VoiceStartResult),
+    (VoiceAppend, VoiceAppendParams, UnitResult),
+    (VoiceStop, VoiceStopParams, UnitResult),
+    (VoiceCancel, VoiceCancelParams, UnitResult),
     // memory
     (SaveMemoryRecord, SaveMemoryRecordParams, MemoryRecord),
     (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),

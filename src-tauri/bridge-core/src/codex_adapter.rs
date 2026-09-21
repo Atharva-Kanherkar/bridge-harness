@@ -33,6 +33,7 @@ pub struct CodexRuntime {
     request_id: AtomicI64,
     sandbox_policy: Option<Value>,
     context_inventory: Mutex<Vec<AdapterContextInventory>>,
+    realtime_voice: bool,
     stopped: bool,
     stderr_tail: crate::adapters::StderrTail,
 }
@@ -235,9 +236,10 @@ fn launch(
         .ok_or_else(|| BridgeError::Invalid("Codex app-server stdout unavailable".into()))?;
     let writer = Arc::new(Mutex::new(stdin));
     let mut reader = BufReader::new(stdout);
+    let realtime_voice = supports_realtime_voice();
     write_value(
         &writer,
-        &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false,"requestAttestation":false}}}),
+        &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":realtime_voice,"requestAttestation":false}}}),
     )?;
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Handshake);
@@ -288,6 +290,7 @@ fn launch(
             request_id: AtomicI64::new(10),
             sandbox_policy,
             context_inventory: Mutex::new(codex_context_inventory(lifecycle_phase)?),
+            realtime_voice,
             stopped: false,
             stderr_tail,
         },
@@ -475,6 +478,47 @@ fn schema_supports_resume(schema: &str) -> bool {
     schema.contains("thread/resume") && schema.contains("ThreadResumeParams")
 }
 
+fn schema_supports_realtime_voice(schema: &str) -> bool {
+    ["thread/realtime/start", "thread/realtime/appendAudio", "thread/realtime/stop", "ThreadRealtimeStartParams", "ThreadRealtimeAppendAudioParams"]
+        .into_iter().all(|needle| schema.contains(needle))
+}
+
+fn realtime_start_params(thread_id: &str) -> Value {
+    json!({
+        "threadId": thread_id,
+        "outputModality": "text",
+        "clientManagedHandoffs": true,
+        "includeStartupContext": false,
+    })
+}
+
+fn realtime_append_audio_params(
+    thread_id: &str,
+    data: &str,
+    sample_rate: u32,
+    channels: u16,
+    samples_per_channel: u32,
+) -> Value {
+    json!({
+        "threadId": thread_id,
+        "audio": {
+            "data": data,
+            "sampleRate": sample_rate,
+            "numChannels": channels,
+            "samplesPerChannel": samples_per_channel,
+        },
+    })
+}
+
+fn realtime_stop_params(thread_id: &str) -> Value {
+    json!({"threadId": thread_id})
+}
+
+pub fn supports_realtime_voice() -> bool {
+    static SUPPORTS: OnceLock<bool> = OnceLock::new();
+    *SUPPORTS.get_or_init(|| schema_declares(schema_supports_realtime_voice))
+}
+
 impl CodexRuntime {
     fn terminate(&mut self) {
         if self.stopped {
@@ -522,6 +566,24 @@ impl CodexRuntime {
             &self.writer,
             &json!({"method":method,"id":id,"params":params}),
         )
+    }
+    fn start_voice_dictation(&self) -> Result<(), BridgeError> {
+        self.request("thread/realtime/start", realtime_start_params(&self.thread_id))
+    }
+    fn append_voice_audio(&self, data: &str, sample_rate: u32, channels: u16, samples_per_channel: u32) -> Result<(), BridgeError> {
+        self.request(
+            "thread/realtime/appendAudio",
+            realtime_append_audio_params(
+                &self.thread_id,
+                data,
+                sample_rate,
+                channels,
+                samples_per_channel,
+            ),
+        )
+    }
+    fn stop_voice_dictation(&self) -> Result<(), BridgeError> {
+        self.request("thread/realtime/stop", realtime_stop_params(&self.thread_id))
     }
 }
 
@@ -605,6 +667,10 @@ impl AdapterRuntime for CodexRuntime {
     fn send_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
         self.start_turn_with_images(text, context, images)
     }
+    fn supports_voice_dictation(&self) -> bool { self.realtime_voice }
+    fn voice_start(&self) -> Result<(), BridgeError> { self.start_voice_dictation() }
+    fn voice_append(&self, data: &str, sample_rate: u32, channels: u16, samples_per_channel: u32) -> Result<(), BridgeError> { self.append_voice_audio(data, sample_rate, channels, samples_per_channel) }
+    fn voice_stop(&self) -> Result<(), BridgeError> { self.stop_voice_dictation() }
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
     }
@@ -727,12 +793,33 @@ pub fn binary_version() -> Option<String> {
     binary::version_at(&resolve_runtime()?)
 }
 
+fn valid_version_suffix(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
+}
+
 pub fn is_supported_version(version: &str) -> bool {
     version
         .split_whitespace()
         .find_map(|token| {
             let token = token.strip_prefix('v').unwrap_or(token);
-            let parts = token.split('.').collect::<Vec<_>>();
+            let (without_build, build) = token
+                .split_once('+')
+                .map_or((token, None), |(version, build)| (version, Some(build)));
+            if build.is_some_and(|suffix| !valid_version_suffix(suffix)) {
+                return None;
+            }
+            let (numeric, prerelease) = match without_build.split_once('-') {
+                Some((numeric, suffix)) if valid_version_suffix(suffix) => (numeric, true),
+                Some(_) => return None,
+                None => (without_build, false),
+            };
+            let parts = numeric.split('.').collect::<Vec<_>>();
             if parts.len() != 3
                 || parts.iter().any(|part| {
                     part.is_empty()
@@ -744,12 +831,17 @@ pub fn is_supported_version(version: &str) -> bool {
                 return None;
             }
             Some((
-                parts[0].parse::<u64>().ok()?,
-                parts[1].parse::<u64>().ok()?,
-                parts[2].parse::<u64>().ok()?,
+                (
+                    parts[0].parse::<u64>().ok()?,
+                    parts[1].parse::<u64>().ok()?,
+                    parts[2].parse::<u64>().ok()?,
+                ),
+                prerelease,
             ))
         })
-        .is_some_and(|version| version >= MINIMUM_VERSION)
+        .is_some_and(|(version, prerelease)| {
+            version > MINIMUM_VERSION || (version == MINIMUM_VERSION && !prerelease)
+        })
 }
 
 fn ensure_supported_version(executable: &std::path::Path) -> Result<(), BridgeError> {
@@ -930,11 +1022,49 @@ mod tests {
     fn codex_version_gate_is_strict_and_matches_the_certified_runtime() {
         assert!(!is_supported_version("codex-cli 0.153.3"));
         assert!(is_supported_version("codex-cli 0.153.4"));
+        assert!(is_supported_version("codex-cli 0.153.4+bridge.1"));
+        assert!(is_supported_version("codex-cli 0.155.0-alpha.9.2"));
         assert!(is_supported_version("codex-cli 0.200.0"));
         assert!(is_supported_version("codex-cli 1.0.0"));
         assert!(!is_supported_version("build 9"));
         assert!(!is_supported_version("codex-cli 0.153"));
+        assert!(!is_supported_version("codex-cli 0.153.3-alpha.9"));
         assert!(!is_supported_version("codex-cli 0.153.4-beta.1"));
+        assert!(!is_supported_version("codex-cli 0.155.0-"));
+        assert!(!is_supported_version("codex-cli 0.155.0+"));
+    }
+
+    #[test]
+    fn realtime_voice_requires_the_complete_experimental_surface() {
+        let complete = "thread/realtime/start thread/realtime/appendAudio thread/realtime/stop ThreadRealtimeStartParams ThreadRealtimeAppendAudioParams";
+        assert!(schema_supports_realtime_voice(complete));
+        assert!(!schema_supports_realtime_voice("thread/realtime/start thread/realtime/appendAudio ThreadRealtimeStartParams ThreadRealtimeAppendAudioParams"));
+    }
+
+    #[test]
+    fn realtime_voice_requests_match_the_generated_codex_schema() {
+        assert_eq!(
+            realtime_start_params("thread-1"),
+            json!({
+                "threadId": "thread-1",
+                "outputModality": "text",
+                "clientManagedHandoffs": true,
+                "includeStartupContext": false,
+            })
+        );
+        assert_eq!(
+            realtime_append_audio_params("thread-1", "AAE=", 16_000, 1, 2),
+            json!({
+                "threadId": "thread-1",
+                "audio": {
+                    "data": "AAE=",
+                    "sampleRate": 16_000,
+                    "numChannels": 1,
+                    "samplesPerChannel": 2,
+                },
+            })
+        );
+        assert_eq!(realtime_stop_params("thread-1"), json!({"threadId":"thread-1"}));
     }
 
     #[test]

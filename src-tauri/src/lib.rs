@@ -1701,6 +1701,27 @@ async fn submit_input(
     .await
 }
 
+#[tauri::command]
+async fn voice_capabilities(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceCapabilitiesResult, BridgeError> {
+    api::voice_capabilities(state.inner(), bridge_protocol::messages::VoiceCapabilitiesParams { session_id })
+}
+#[tauri::command]
+async fn voice_start(session_id: String, provider: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceStartResult, BridgeError> {
+    api::voice_start(state.inner(), bridge_protocol::messages::VoiceStartParams { session_id, provider })
+}
+#[tauri::command]
+async fn voice_append(voice_session_id: String, sequence: u32, data: String, samples_per_channel: u32, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::voice_append(state.inner(), bridge_protocol::messages::VoiceAppendParams { voice_session_id, sequence, data, samples_per_channel })
+}
+#[tauri::command]
+async fn voice_stop(voice_session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::voice_stop(state.inner(), bridge_protocol::messages::VoiceStopParams { voice_session_id })
+}
+#[tauri::command]
+async fn voice_cancel(voice_session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::voice_cancel(state.inner(), bridge_protocol::messages::VoiceCancelParams { voice_session_id })
+}
+
 /// Directly reserve a configured specialist worker. The browser supplies only
 /// the token and objective; every execution characteristic is host-resolved.
 #[tauri::command]
@@ -2722,6 +2743,11 @@ pub fn run() -> i32 {
             prepare_turn,
             send_turn,
             submit_input,
+            voice_capabilities,
+            voice_start,
+            voice_append,
+            voice_stop,
+            voice_cancel,
             dispatch_agent_shortcut,
             list_workspace_files,
             list_workspace_tree,

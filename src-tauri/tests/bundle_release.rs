@@ -76,6 +76,26 @@ fn macos_bundle_ships_webkit_jit_entitlements() {
 }
 
 #[test]
+fn macos_bundle_declares_microphone_access() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
+    let manifest_body = std::fs::read_to_string(&manifest).expect("Info.plist is readable");
+    assert!(
+        manifest_body.contains("<key>NSMicrophoneUsageDescription</key>")
+            && manifest_body.contains("transcribe text into the composer"),
+        "the packaged app must explain composer dictation before macOS prompts for microphone access"
+    );
+
+    let entitlements = Path::new(env!("CARGO_MANIFEST_DIR")).join("entitlements.plist");
+    let entitlement_body =
+        std::fs::read_to_string(&entitlements).expect("entitlements.plist is readable");
+    assert!(
+        entitlement_body
+            .contains("<key>com.apple.security.device.audio-input</key>\n\t<true/>"),
+        "the signed app must retain the audio-input entitlement"
+    );
+}
+
+#[test]
 fn claude_sidecar_is_bundled_under_resources() {
     let parsed = tauri_conf();
     let resources = parsed["bundle"]["resources"]

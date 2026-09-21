@@ -147,6 +147,85 @@ describe("ComposerPill", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("starts dictation on key press and stops it on release", () => {
+    const onVoiceStart = vi.fn();
+    const onVoiceStop = vi.fn();
+    render({ voiceAvailable: true, onVoiceStart, onVoiceStop });
+    const mic = container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!;
+
+    act(() => mic.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true })));
+    act(() => mic.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true })));
+
+    expect(onVoiceStart).toHaveBeenCalledTimes(1);
+    expect(onVoiceStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an unavailable mic discoverable with its actual reason", () => {
+    const onVoiceStart = vi.fn();
+    render({ voiceAvailable: false, voiceUnavailableReason: "Start the Codex chat before dictating", onVoiceStart, onVoiceStop: vi.fn() });
+    const mic = container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!;
+    expect(mic).not.toBeNull();
+    expect(mic.disabled).toBe(true);
+    expect(mic.title).toBe("Start the Codex chat before dictating");
+    act(() => mic.click());
+    expect(onVoiceStart).not.toHaveBeenCalled();
+  });
+
+  it.each(["starting", "recording", "stopping"] as const)("protects the draft and blocks Send while %s", voiceState => {
+    const onSubmit = vi.fn();
+    render({ value: "original draft", voiceAvailable: true, voiceState, voicePreview: "spoken preview", onSubmit, onAttachFiles: vi.fn(), onVoiceStart: vi.fn(), onVoiceStop: vi.fn(), onVoiceCancel: vi.fn() });
+    expect(textarea().value).toBe("original draft");
+    expect(textarea().readOnly).toBe(true);
+    expect(attach()!.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.disabled).toBe(true);
+    expect(container.querySelector('[role="status"]')!.textContent).toContain("spoken preview");
+    expect(container.querySelector('button[aria-label="Cancel dictation"]')).not.toBeNull();
+    act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("Enter finishes recording without sending and Escape cancels", () => {
+    const onSubmit = vi.fn();
+    const onVoiceStop = vi.fn();
+    const onVoiceCancel = vi.fn();
+    render({ value: "draft", voiceAvailable: true, voiceState: "recording", onSubmit, onVoiceStart: vi.fn(), onVoiceStop, onVoiceCancel });
+    act(() => textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(onVoiceStop).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    act(() => textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(onVoiceCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts assistive-technology activation as a toggle", () => {
+    const onVoiceStart = vi.fn();
+    const onVoiceStop = vi.fn();
+    render({ voiceAvailable: true, onVoiceStart, onVoiceStop });
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!.click());
+    expect(onVoiceStart).toHaveBeenCalledTimes(1);
+    render({ voiceAvailable: true, voiceState: "recording", onVoiceStart, onVoiceStop });
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Stop dictating"]')!.click());
+    expect(onVoiceStop).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([100, 350])("handles a %i ms pointer press without cancelling on capture release", elapsed => {
+    const onVoiceStart = vi.fn();
+    const onVoiceStop = vi.fn();
+    const onVoiceCancel = vi.fn();
+    render({ voiceAvailable: true, onVoiceStart, onVoiceStop, onVoiceCancel });
+    const mic = container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!;
+    mic.setPointerCapture = vi.fn();
+    mic.hasPointerCapture = () => true;
+    mic.releasePointerCapture = () => { mic.dispatchEvent(new Event("lostpointercapture", { bubbles: true })); };
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    act(() => mic.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true })));
+    now.mockReturnValue(elapsed);
+    act(() => mic.dispatchEvent(new MouseEvent("pointerup", { button: 0, bubbles: true })));
+    now.mockRestore();
+    expect(onVoiceStart).toHaveBeenCalledTimes(1);
+    expect(onVoiceStop).toHaveBeenCalledTimes(elapsed >= 300 ? 1 : 0);
+    expect(onVoiceCancel).not.toHaveBeenCalled();
+  });
+
   describe("inline suggestions", () => {
     const putCaretAtEnd = (value: string) => {
       act(() => {

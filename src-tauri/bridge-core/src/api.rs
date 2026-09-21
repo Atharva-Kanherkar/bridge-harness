@@ -1609,6 +1609,12 @@ pub fn send_turn(
     live_turn::send_turn(core, session_id, text)
 }
 
+pub fn voice_capabilities(core: &Arc<BridgeCore>, params: wire::VoiceCapabilitiesParams) -> Result<wire::VoiceCapabilitiesResult, BridgeError> { crate::voice::capabilities(core, params) }
+pub fn voice_start(core: &Arc<BridgeCore>, params: wire::VoiceStartParams) -> Result<wire::VoiceStartResult, BridgeError> { crate::voice::start(core, params) }
+pub fn voice_append(core: &Arc<BridgeCore>, params: wire::VoiceAppendParams) -> Result<(), BridgeError> { crate::voice::append(core, params) }
+pub fn voice_stop(core: &Arc<BridgeCore>, params: wire::VoiceStopParams) -> Result<(), BridgeError> { crate::voice::stop(core, params) }
+pub fn voice_cancel(core: &Arc<BridgeCore>, params: wire::VoiceCancelParams) -> Result<(), BridgeError> { crate::voice::cancel(core, params) }
+
 /// Submit user input and let Bridge decide what to do with it: start a turn,
 /// steer the one already running, or durably queue it for the next phase
 /// boundary. The disposition comes back so the client can say which happened.

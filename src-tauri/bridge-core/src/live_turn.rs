@@ -2571,6 +2571,7 @@ fn handle_agent_value_timed(
     frame_timing: Option<FrameTiming>,
     expected_launch: Option<(&str, &str)>,
 ) {
+    if crate::voice::handle_codex_notification(core, session_id, value) { return; }
     // Codex account rate-limit frames (the reply to `account/rateLimits/read`
     // and its rolling push) are subscription telemetry, not conversation. Route
     // them straight to the ambient usage channel without persisting.
@@ -10396,6 +10397,10 @@ fn prepare_input(
     }
 
     let outbound = match dispatch {
+        slash::SlashDispatch::Voice => {
+            emit_local_assistant(core, session_id, &session_harness, "Voice dictation starts from the microphone in Bridge’s composer. It is currently available only for supported Codex chats.")?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
         slash::SlashDispatch::Usage => {
             state.refresh_account_usage()?;
             emit_local_assistant(

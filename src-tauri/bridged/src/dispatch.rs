@@ -273,6 +273,11 @@ pub fn dispatch(
             let p: wire::SubmitInputParams = decode(method, params)?;
             reply(api::submit_input_with_attachments(core, p.session_id, p.text, p.attachments.unwrap_or_default()))
         }
+        MethodName::VoiceCapabilities => { let p: wire::VoiceCapabilitiesParams = decode(method, params)?; reply(api::voice_capabilities(core, p)) }
+        MethodName::VoiceStart => { let p: wire::VoiceStartParams = decode(method, params)?; reply(api::voice_start(core, p)) }
+        MethodName::VoiceAppend => { let p: wire::VoiceAppendParams = decode(method, params)?; reply(api::voice_append(core, p)) }
+        MethodName::VoiceStop => { let p: wire::VoiceStopParams = decode(method, params)?; reply(api::voice_stop(core, p)) }
+        MethodName::VoiceCancel => { let p: wire::VoiceCancelParams = decode(method, params)?; reply(api::voice_cancel(core, p)) }
         MethodName::DispatchAgentShortcut => {
             let p: wire::DispatchAgentShortcutParams = decode(method, params)?;
             reply(api::dispatch_agent_shortcut(

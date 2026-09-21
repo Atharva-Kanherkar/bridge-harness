@@ -69,9 +69,10 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.17 enables the `auto_apply` memory extraction mode.** A new client must
 /// not pair with an older daemon that still rejects that persisted setting,
 /// and an older client must not pair with a daemon that may already hold it.
+/// **1.18 adds typed composer dictation and its transient transcript event.**
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 17,
+    minor: 18,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -281,7 +282,7 @@ mod tests {
         for incompatible in [
             request(PROTOCOL_VERSION.major + 1, 0),
             request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor + 1),
-            request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor - 1),
+            request(PROTOCOL_VERSION.major, 16),
         ] {
             let error = negotiate(&incompatible).unwrap_err();
             assert_eq!(error.code, ErrorCode::IncompatibleProtocol.code());

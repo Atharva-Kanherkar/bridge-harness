@@ -54,6 +54,8 @@ pub struct BridgeCore {
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub(crate) terminal_state: Mutex<Option<crate::terminal_workspace::StateSidecar>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    /// Live composer-dictation leases; transient by design.
+    pub voice: crate::voice::VoiceService,
     /// Input delivery holds a shared lease; idle reclamation takes an exclusive
     /// lease so it cannot retire a runtime between lookup and submission.
     pub input_activity: std::sync::RwLock<()>,
@@ -313,6 +315,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             terminal_state: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
+            voice: crate::voice::VoiceService::default(),
             input_activity: std::sync::RwLock::new(()),
             reader_launches: Mutex::new(HashMap::new()),
             detached_summaries: Mutex::new(HashMap::new()),
@@ -441,6 +444,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             terminal_state: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
+            voice: crate::voice::VoiceService::default(),
             input_activity: std::sync::RwLock::new(()),
             reader_launches: Mutex::new(HashMap::new()),
             detached_summaries: Mutex::new(HashMap::new()),
