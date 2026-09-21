@@ -1392,17 +1392,8 @@ impl HarnessAdapter for OpenCodeAdapter {
                 roots.insert(child.to_owned(), root);
             }
         }
-        // `info.id` is a session id only on session.* frames; on
-        // `message.updated` it is the message id and must not become a key.
         let frame_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-        let session_key = properties
-            .get("sessionID")
-            .or_else(|| {
-                matches!(frame_type, "session.created" | "session.updated")
-                    .then(|| properties.pointer("/info/id"))
-                    .flatten()
-            })
-            .and_then(Value::as_str)
+        let session_key = agent::opencode_frame_session(frame_type, properties)
             .map(|id| roots.get(id).cloned().unwrap_or_else(|| id.to_owned()))
             .unwrap_or_else(|| "default".to_owned());
         drop(roots);
@@ -2546,6 +2537,39 @@ mod tests {
         adapter.forget_session("root");
         assert!(adapter.session_roots.lock().unwrap().is_empty(), "the tree is forgotten with its root");
         assert!(adapter.streams.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn opencode_registry_routes_an_unattributed_error_to_the_root_stream_state() {
+        let adapter = OpenCodeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            session_roots: Mutex::new(HashMap::new()),
+            settings: RwLock::new(Default::default()),
+            catalog: Arc::new(RwLock::new(None)),
+            catalog_error: Arc::new(RwLock::new(None)),
+            model_catalog: Arc::new(RwLock::new(model_catalog::resolve(
+                "opencode",
+                Err("not discovered".into()),
+                &[],
+                None,
+                chrono::Utc::now(),
+            ))),
+            cache_path: None,
+        };
+        // Open a root turn.
+        assert_eq!(adapter.normalize(&serde_json::json!({"type": "session.created", "properties": {"sessionID": "root", "info": {"id": "root", "title": "root"}}})).first().map(|event| event.kind.as_str()), Some("session.started"));
+        let busy = adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "root", "status": {"type": "busy"}}}));
+        assert!(busy.iter().any(|event| event.kind == "turn.started"), "the root turn opens: {busy:?}");
+        // The reader stamps an id-less `session.error` with the root id before
+        // it reaches the queue; the registry must then fail the *root* turn —
+        // not a shared "default" state — so the next busy opens a fresh turn.
+        let stamped = serde_json::json!({"type": "session.error", "properties": {"sessionID": "root", "error": {"message": "plugin died"}}});
+        let failed = adapter.normalize(&stamped);
+        assert!(failed.iter().any(|event| event.kind == "error" && event.status.as_deref() == Some("failed")), "{failed:?}");
+        assert!(failed.iter().any(|event| event.kind == "turn.completed" && event.status.as_deref() == Some("failed")), "{failed:?}");
+        assert!(!adapter.streams.lock().unwrap().contains_key("default"), "no shared fallback state is created for a stamped error");
+        let next = adapter.normalize(&serde_json::json!({"type": "session.status", "properties": {"sessionID": "root", "status": {"type": "busy"}}}));
+        assert!(next.iter().any(|event| event.kind == "turn.started"), "the following turn opens with a fresh turn.started: {next:?}");
     }
 
     #[test]

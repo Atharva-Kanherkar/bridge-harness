@@ -71,7 +71,7 @@ export function ReviewerSettingsSection({ adapters }: { adapters: AdapterDescrip
         </div>} />;
       })}
     </SettingsGroup>
-    <SettingsGroup label="Reviewer instructions" note="Leave empty to use Bridge's default review instructions, shown as the placeholder. {number} expands to the pull request number. The worker still reviews read-only and posts one comment via gh.">
+    <SettingsGroup label="Reviewer instructions" note="Leave empty to use Bridge's default review instructions, shown as the placeholder. {number} expands to the pull request number. Claude and Codex review read-only; OpenCode reviews from an isolated worktree behind an approval. Every review posts one comment via gh and never approves, merges, or closes — custom instructions keep that guardrail.">
       <div className="px-3 py-2.5">
         <TextArea label="Reviewer instructions" disabled={busy} value={settings.systemPrompt} placeholder={defaultPrompt} rows={6} onChange={changePrompt} />
       </div>

@@ -633,18 +633,29 @@ pub fn github_review(
     // model profile fills whatever they leave unset, and its tier shapes the
     // worker. The profile's model is only used when its provider matches the
     // chosen harness, otherwise the launch path picks the harness's tier default.
-    let (resolved, reviewer_settings) = {
+    let (resolved, reviewer_settings, supports_read_only) = {
         let db = core.db.lock().unwrap();
+        let descriptors = core.adapter_registry.descriptors();
+        let supports_read_only = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == harness)
+            .map(|descriptor| {
+                descriptor.supports_sandbox(crate::model::SandboxMode::ReadOnly)
+            })
+            // An unknown descriptor is treated as unconstrained (read-only
+            // allowed) so a third-party harness is never forced isolated.
+            .unwrap_or(true);
         (
             crate::model_profiles::resolve_profile(
                 &db,
-                &core.adapter_registry.descriptors(),
+                &descriptors,
                 crate::model_profiles::ProfilePurpose::Reviewer,
             )?,
             crate::reviewer_settings::load(&db)?,
+            supports_read_only,
         )
     };
-    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number);
+    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only);
     let ReviewerLaunchPlan { capability_tier, effort, model, write_mode, objective } = plan;
 
     // Establish the parent orchestrator session. Reuse the caller's session when
@@ -744,15 +755,17 @@ pub(crate) struct ReviewerLaunchPlan {
 }
 
 /// Precedence: the reviewer settings for this harness, then the Reviewer model
-/// profile, then the harness default. OpenCode's local HTTP transport cannot
-/// run inside the offline read-only sandbox (refused at launch by design), so
-/// its reviewer runs isolated in its own worktree instead of failing to start;
-/// the policy engine still gates that with an approval.
+/// profile, then the harness default. A harness whose adapter descriptor does
+/// not advertise `read_only` cannot run inside the offline read-only sandbox
+/// (refused at launch by design), so its reviewer runs isolated in its own
+/// worktree instead of failing to start; the policy engine still gates that
+/// with an approval.
 pub(crate) fn reviewer_launch_plan(
     settings: &wire::ReviewerSettings,
     profile: Option<&crate::model_profiles::ResolvedProfile>,
     harness: &str,
     number: u64,
+    supports_read_only: bool,
 ) -> ReviewerLaunchPlan {
     let per_harness = settings.harnesses.get(harness);
     let (capability_tier, profile_effort, profile_model) = match profile {
@@ -774,10 +787,10 @@ pub(crate) fn reviewer_launch_plan(
         .and_then(|entry| entry.model.clone())
         .filter(|model| !model.trim().is_empty())
         .or(profile_model);
-    let write_mode = if harness == "opencode" {
-        delegation::WriteMode::Isolated
-    } else {
+    let write_mode = if supports_read_only {
         delegation::WriteMode::ReadOnly
+    } else {
+        delegation::WriteMode::Isolated
     };
     ReviewerLaunchPlan {
         capability_tier,
@@ -5474,25 +5487,38 @@ mod tests {
             used_fallback: false,
         };
         // Nothing configured: the profile speaks for its own provider only.
-        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9);
+        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true);
         assert_eq!((plain.model.as_deref(), plain.effort, plain.capability_tier), (Some("gpt-5-codex"), delegation::Effort::Medium, CapabilityTier::Standard));
         assert_eq!(plain.write_mode, delegation::WriteMode::ReadOnly);
         assert!(plain.objective.starts_with("Review pull request #9"));
-        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9);
+        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true);
         assert_eq!(other.model, None, "a Codex model is not handed to Claude");
         assert_eq!(other.effort, delegation::Effort::Medium);
         // Settings for the harness win over the profile.
         let mut settings = ReviewerSettings { system_prompt: "Check PR {number}.".into(), ..Default::default() };
         settings.harnesses.insert("claude".into(), ReviewerHarnessSettings { model: Some("claude-opus-5".into()), effort: Some(wire::Effort::Xhigh) });
-        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9);
+        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true);
         assert_eq!((configured.model.as_deref(), configured.effort), (Some("claude-opus-5"), delegation::Effort::Xhigh));
-        assert_eq!(configured.objective, "Check PR 9.");
+        assert!(configured.objective.starts_with("Check PR 9."), "{}", configured.objective);
+        assert!(configured.objective.contains("only post a comment"), "custom prompts keep the safety guardrail: {}", configured.objective);
         // No profile at all: strong tier, high effort, harness default model.
-        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9);
+        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true);
         assert_eq!((bare.model, bare.effort, bare.capability_tier), (None, delegation::Effort::High, CapabilityTier::Strong));
-        // OpenCode cannot run read-only: it reviews from an isolated worktree.
-        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9);
+        // A harness without read_only support reviews from an isolated worktree.
+        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false);
         assert_eq!(opencode.write_mode, delegation::WriteMode::Isolated);
+    }
+
+    #[test]
+    fn reviewer_launch_plan_uses_descriptor_sandbox_capability() {
+        use bridge_protocol::messages::ReviewerSettings;
+        use crate::delegation;
+        // The same harness id gets isolated iff its descriptor lacks read_only —
+        // no hard-coded name decides write access.
+        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false);
+        assert_eq!(isolated.write_mode, delegation::WriteMode::Isolated);
+        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true);
+        assert_eq!(readonly.write_mode, delegation::WriteMode::ReadOnly);
     }
 
     #[test]

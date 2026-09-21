@@ -65,12 +65,17 @@ pub fn is_opencode_liveness_frame(message: &Value) -> bool {
     )
 }
 
-/// The session a frame speaks for: the flat runtime field, else — only on a
-/// `session.created`/`session.updated` frame, where `info` is a session — the
-/// session it describes. On `message.updated`, `info.id` is a message id.
-fn opencode_frame_session<'a>(event_type: &str, properties: &'a Value) -> Option<&'a str> {
+/// The session a frame speaks for: the flat runtime field is authoritative;
+/// the SDK's nested shapes are fallbacks. `info.id` names a session only on
+/// `session.created` / `session.updated` — on `message.updated` it is a
+/// message id. The reader filter, registry router and normalizer all use this
+/// one interpretation so a frame cannot be admitted under one key and
+/// normalized under another.
+pub(crate) fn opencode_frame_session<'a>(event_type: &str, properties: &'a Value) -> Option<&'a str> {
     properties
         .get("sessionID")
+        .or_else(|| properties.pointer("/part/sessionID"))
+        .or_else(|| properties.pointer("/info/sessionID"))
         .or_else(|| {
             matches!(event_type, "session.created" | "session.updated")
                 .then(|| properties.pointer("/info/id"))

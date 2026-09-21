@@ -1,4 +1,5 @@
 use crate::{
+    agent,
     adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
     binary,
     context_inventory::{
@@ -560,11 +561,8 @@ enum FrameDisposition {
 /// server those are ours by construction and are forwarded so the turn can
 /// fail visibly and liveness can be measured.
 ///
-/// The runtime event schema puts `sessionID` flat under `properties`; the
-/// published SDK types disagree and nest it under `part`. The flat field is
-/// read first and is what every captured frame carries; the nested shapes are
-/// a fallback so a schema drift degrades to "still attributed" rather than
-/// "every part update dropped".
+/// Session attribution is shared with the adapter registry and normalizer, so
+/// a frame the reader admits cannot later fall into a different stream state.
 struct SessionFrameFilter {
     root: String,
     owned: HashSet<String>,
@@ -606,7 +604,7 @@ impl SessionFrameFilter {
                 }
             }
         }
-        match frame_session_id(properties) {
+        match agent::opencode_frame_session(event_type, properties) {
             Some(session_id) if self.owned.contains(session_id) => FrameDisposition::Forward,
             // An unattributed error on a private server can only be ours.
             None if event_type == "session.error" => FrameDisposition::Forward,
@@ -614,12 +612,45 @@ impl SessionFrameFilter {
         }
     }
 
+    /// An OpenCode `session.error` can omit its id. A private reader knows it
+    /// belongs to its root, but downstream code cannot infer that safely once
+    /// frames from multiple sessions share the adapter. Stamp it before it
+    /// reaches the queue so routing and normalization use the root state.
+    fn stamp_unattributed_error(&self, value: &mut Value) {
+        let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+        let attributed = value
+            .get("properties")
+            .and_then(|properties| agent::opencode_frame_session(event_type, properties))
+            .is_some();
+        if event_type != "session.error" || attributed {
+            return;
+        }
+        if !value.get("properties").is_some_and(Value::is_object) {
+            value["properties"] = json!({});
+        }
+        value["properties"]["sessionID"] = Value::String(self.root.clone());
+    }
+
+    /// Root first, then children in stable order. Reconnect recovery needs to
+    /// catch up every owned session, not just the parent which happened to own
+    /// the socket.
+    fn owned_sessions(&self) -> Vec<String> {
+        let mut sessions = self.owned.iter().cloned().collect::<Vec<_>>();
+        sessions.sort();
+        sessions.retain(|session| session != &self.root);
+        sessions.insert(0, self.root.clone());
+        sessions
+    }
+
     /// Leave evidence of a dropped frame without flooding stderr: one line
     /// per distinct foreign session id (or once for id-less strangers).
     fn note_foreign(&mut self, value: &Value) {
         let session_id = value
             .get("properties")
-            .and_then(frame_session_id)
+            .and_then(|properties| {
+                let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+                agent::opencode_frame_session(event_type, properties)
+            })
             .unwrap_or("<none>")
             .to_owned();
         if self.reported_foreign.insert(session_id.clone()) {
@@ -636,16 +667,6 @@ impl SessionFrameFilter {
 /// Server-level frames that carry no session id and prove the process is alive.
 fn is_liveness_event(event_type: &str) -> bool {
     matches!(event_type, "server.heartbeat" | "server.connected")
-}
-
-/// The session a frame belongs to: the flat runtime field first, then the
-/// nested shapes the SDK types describe.
-fn frame_session_id(properties: &Value) -> Option<&str> {
-    properties
-        .get("sessionID")
-        .or_else(|| properties.pointer("/part/sessionID"))
-        .or_else(|| properties.pointer("/info/sessionID"))
-        .and_then(Value::as_str)
 }
 
 /// Backoff between reconnect attempts after the `/event` body ends while the
@@ -712,11 +733,11 @@ fn pump_event_stream(
             continue;
         };
         let data = data.trim();
-        let Ok(value) = serde_json::from_str::<Value>(data) else {
+        let Ok(mut value) = serde_json::from_str::<Value>(data) else {
             continue;
         };
         match filter.classify(&value) {
-            FrameDisposition::Forward => {}
+            FrameDisposition::Forward => filter.stamp_unattributed_error(&mut value),
             FrameDisposition::Foreign => {
                 sender.record_foreign_drop();
                 filter.note_foreign(&value);
@@ -742,49 +763,48 @@ fn pump_event_stream(
 
 /// Close the gap a reconnect leaves. `/event` has no replay, so whatever the
 /// server published while the socket was down is gone; the session state it
-/// still holds is not. Re-emit the latest assistant message and its parts as
-/// the cumulative snapshots they are (the normalizer replaces by part id, so
-/// a repeat is idempotent), then ask whether the root session is still busy
-/// and, if not, close the turn that may have finished in the dark.
+/// still holds is not. Re-emit every assistant snapshot for the root and its
+/// already-known children (the normalizer replaces by part id, so repeats are
+/// idempotent), then independently ask whether the root is still busy.
 fn resync_after_reconnect(
     client: &Client,
     base_url: &str,
     directory: &str,
     session_id: &str,
+    owned_sessions: &[String],
     sender: &crate::frame_queue::FrameSender,
 ) -> Result<(), crate::frame_queue::Disconnected> {
-    let mut messages_url = endpoint(base_url, &format!("/session/{session_id}/message"), directory);
-    messages_url.push_str("&limit=1");
-    let messages = client
-        .get(messages_url)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .ok()
-        .and_then(|response| checked_json(response, "resync the OpenCode session").ok())
-        .and_then(|value| value.as_array().cloned())
-        .unwrap_or_default();
-    let mut saw_message = false;
-    for message in &messages {
-        let info = message.get("info").cloned().unwrap_or(Value::Null);
-        if info.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        saw_message = true;
-        let updated = json!({
-            "type": "message.updated",
-            "properties": { "sessionID": session_id, "info": info }
-        });
-        sender.send_durable(format!("{updated}\n"))?;
-        for part in message.get("parts").and_then(Value::as_array).into_iter().flatten() {
-            let snapshot = json!({
-                "type": "message.part.updated",
-                "properties": { "sessionID": session_id, "part": part }
+    for owned_session_id in owned_sessions {
+        let messages = client
+            .get(endpoint(
+                base_url,
+                &format!("/session/{owned_session_id}/message"),
+                directory,
+            ))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .ok()
+            .and_then(|response| checked_json(response, "resync the OpenCode session").ok())
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        for message in &messages {
+            let info = message.get("info").cloned().unwrap_or(Value::Null);
+            if info.get("role").and_then(Value::as_str) != Some("assistant") {
+                continue;
+            }
+            let updated = json!({
+                "type": "message.updated",
+                "properties": { "sessionID": owned_session_id, "info": info }
             });
-            sender.send_durable(format!("{snapshot}\n"))?;
+            sender.send_durable(format!("{updated}\n"))?;
+            for part in message.get("parts").and_then(Value::as_array).into_iter().flatten() {
+                let snapshot = json!({
+                    "type": "message.part.updated",
+                    "properties": { "sessionID": owned_session_id, "part": part }
+                });
+                sender.send_durable(format!("{snapshot}\n"))?;
+            }
         }
-    }
-    if !saw_message {
-        return Ok(());
     }
     // `/session/status` lists only sessions with a live status; an idle
     // session is simply absent.
@@ -868,7 +888,16 @@ fn spawn_event_stream(
                 let _ = sender.send_durable(format!("{error_event}\n"));
                 return;
             };
-            if resync_after_reconnect(&client, &base_url, &directory, &session_id, &sender).is_err() {
+            if resync_after_reconnect(
+                &client,
+                &base_url,
+                &directory,
+                &session_id,
+                &filter.owned_sessions(),
+                &sender,
+            )
+            .is_err()
+            {
                 return;
             }
             response = next;
@@ -1874,7 +1903,7 @@ mod tests {
         assert_eq!(snapshot["properties"]["sessionID"], "ses_root", "the flat runtime shape the filter and normalizer read");
         assert_eq!(snapshot["properties"]["part"]["text"], "finished in the dark");
         let paths = paths.lock().unwrap();
-        assert!(paths.iter().any(|path| path.starts_with("/session/ses_root/message") && path.contains("limit=1")), "{paths:?}");
+        assert!(!paths.iter().any(|path| path.contains("limit=")), "resync fetches full histories, never a limit=1 latest-message assumption: {paths:?}");
         assert!(paths.iter().any(|path| path.starts_with("/session/status")), "{paths:?}");
         assert_eq!(paths.iter().filter(|path| path.starts_with("/event")).count(), 2);
     }
@@ -2009,7 +2038,8 @@ mod tests {
             let expect = line["expect"].as_str().unwrap();
             let frame = &line["data"];
             let disposition = filter.classify(frame);
-            let session = frame.get("properties").and_then(frame_session_id);
+            let event_type = frame.get("type").and_then(Value::as_str).unwrap_or("");
+            let session = frame.get("properties").and_then(|properties| agent::opencode_frame_session(event_type, properties));
             match expect {
                 "own" => {
                     assert_eq!(disposition, FrameDisposition::Forward, "line {index}");
@@ -2035,6 +2065,199 @@ mod tests {
         assert!(foreign > 0, "the fixture exercises the drop path");
         assert_eq!(metrics.snapshot().dropped_foreign, foreign);
         assert_eq!(filter.reported_foreign.len(), 1, "one stranger, logged once");
+    }
+
+    #[test]
+    fn filter_stamps_an_unattributed_error_with_the_root_session() {
+        let mut filter = SessionFrameFilter::new("ses_root".into());
+        let mut error = json!({"type": "session.error", "properties": {"error": {"message": "plugin died"}}});
+        assert_eq!(
+            filter.classify(&error),
+            FrameDisposition::Forward,
+            "an id-less error on a private server is ours"
+        );
+        filter.stamp_unattributed_error(&mut error);
+        assert_eq!(error["properties"]["sessionID"], "ses_root");
+        // The stamped frame now keys to the root everywhere: the shared
+        // helper the registry router and normalizer use agrees with the
+        // filter, so it can never be forwarded then filed under "default".
+        let event_type = error.get("type").and_then(Value::as_str).unwrap_or("");
+        let session = error.get("properties").and_then(|properties| agent::opencode_frame_session(event_type, properties));
+        assert_eq!(session, Some("ses_root"));
+        // Attributed frames and non-errors pass through untouched.
+        let mut owned = json!({"type": "session.error", "properties": {"sessionID": "ses_root", "error": {}}});
+        filter.stamp_unattributed_error(&mut owned);
+        assert_eq!(owned["properties"]["sessionID"], "ses_root");
+        let mut heartbeat = json!({"type": "server.heartbeat", "properties": {}});
+        filter.stamp_unattributed_error(&mut heartbeat);
+        assert!(heartbeat["properties"].get("sessionID").is_none());
+        // Fallback session shapes use the same helper: an SDK-shaped owned
+        // frame admitted by the filter is not later keyed as default.
+        let sdk_shape = json!({"type": "message.part.updated", "properties": {"part": {"id": "p", "messageID": "m", "sessionID": "ses_root", "type": "text"}}});
+        assert_eq!(
+            agent::opencode_frame_session("message.part.updated", &sdk_shape["properties"]),
+            Some("ses_root")
+        );
+    }
+
+    /// A loopback server whose resync answers carry no assistant message: the
+    /// reader must still check `/session/status` and close a turn that
+    /// finished in the dark, without ever sending a `limit=1` query.
+    #[test]
+    fn stream_reconnects_when_no_assistant_snapshot_is_available() {
+        use std::io::Write as _;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = paths.clone();
+        let event_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let seen = seen.clone();
+                let event_requests = event_requests.clone();
+                thread::spawn(move || {
+                    let mut head = std::io::BufReader::new(stream.try_clone().unwrap());
+                    let mut request_line = String::new();
+                    if head.read_line(&mut request_line).is_err() {
+                        return;
+                    }
+                    loop {
+                        let mut header = String::new();
+                        if head.read_line(&mut header).is_err() || header == "\r\n" || header.is_empty() {
+                            break;
+                        }
+                    }
+                    let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                    seen.lock().unwrap().push(path.clone());
+                    let json = |stream: &mut std::net::TcpStream, body: &str| {
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    };
+                    if path.starts_with("/event") {
+                        let attempt = event_requests.fetch_add(1, Ordering::SeqCst);
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+                        if attempt == 0 {
+                            let _ = write!(stream, "data: {}\n\n", json!({"type":"session.status","properties":{"sessionID":"ses_root","status":{"type":"busy"}}}));
+                            let _ = stream.flush();
+                            return;
+                        }
+                        let _ = write!(stream, "data: {}\n\n", json!({"type":"server.heartbeat","properties":{}}));
+                        let _ = stream.flush();
+                        thread::sleep(Duration::from_secs(3));
+                    } else if path.starts_with("/session/ses_root/message") {
+                        // The turn finished in the dark with no assistant row —
+                        // e.g. the last message is the user's — so there is
+                        // nothing to replay, only a status to check.
+                        json(&mut stream, &json!([{
+                            "info": {"id": "msg_0", "role": "user", "sessionID": "ses_root", "time": {"created": 1}},
+                            "parts": []
+                        }]).to_string());
+                    } else if path.starts_with("/session/status") {
+                        json(&mut stream, "{}");
+                    } else {
+                        let _ = write!(stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    }
+                });
+            }
+        });
+        let client = build_authenticated_client("pw").unwrap();
+        let (sender, receiver, _metrics) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        spawn_event_stream(
+            client,
+            base_url,
+            "/repo".into(),
+            "ses_root".into(),
+            sender,
+            Arc::new(AtomicBool::new(false)),
+            fast_policy(),
+        )
+        .unwrap();
+        let mut frames = Vec::new();
+        for _ in 0..3 {
+            frames.push(receiver.recv().expect("busy, synthetic idle, then the live stream"));
+        }
+        assert_eq!(
+            frames.iter().map(|frame| frame_type(frame)).collect::<Vec<_>>(),
+            vec!["session.status", "session.status", "server.heartbeat"],
+            "no assistant snapshot, yet the turn still closes via status"
+        );
+        let idle: Value = serde_json::from_str(&frames[1]).unwrap();
+        assert_eq!(idle["properties"]["status"]["type"], "idle");
+        let paths = paths.lock().unwrap();
+        assert!(!paths.iter().any(|path| path.contains("limit=")), "no unverified limit=1 ordering assumption: {paths:?}");
+        assert!(paths.iter().any(|path| path.starts_with("/session/status")), "{paths:?}");
+    }
+
+    /// After a reconnect the reader replays every owned session — root and
+    /// already-known children — so a subagent mid-run when the socket drops
+    /// gets its catch-up too.
+    #[test]
+    fn resync_replays_owned_child_sessions_after_a_disconnect() {
+        let client = build_authenticated_client("pw").unwrap();
+        let (sender, receiver, _metrics) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        // Serve one assistant snapshot per owned session from a loopback
+        // server, then verify the replayed frames carry each session's id.
+        use std::io::Write as _;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                thread::spawn(move || {
+                    let mut head = std::io::BufReader::new(stream.try_clone().unwrap());
+                    let mut request_line = String::new();
+                    if head.read_line(&mut request_line).is_err() {
+                        return;
+                    }
+                    loop {
+                        let mut header = String::new();
+                        if head.read_line(&mut header).is_err() || header == "\r\n" || header.is_empty() {
+                            break;
+                        }
+                    }
+                    let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                    let json = |stream: &mut std::net::TcpStream, body: &str| {
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    };
+                    if path.starts_with("/session/") && path.contains("/message") {
+                        let session = path.split('/').nth(2).unwrap_or("ses_root");
+                        let short = &session[4..session.len().min(8)];
+                        json(&mut stream, &json!([{
+                            "info": {"id": format!("msg_{short}"), "role": "assistant", "sessionID": session, "time": {"created": 1, "completed": 2}},
+                            "parts": [{"id": format!("prt_{short}"), "messageID": format!("msg_{short}"), "sessionID": session, "type": "text", "text": format!("work from {session}"), "time": {"start": 1, "end": 2}}]
+                        }]).to_string());
+                    } else if path.starts_with("/session/status") {
+                        json(&mut stream, &json!({"ses_root": {"type": "busy"}}).to_string());
+                    } else {
+                        let _ = write!(stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    }
+                });
+            }
+        });
+        resync_after_reconnect(
+            &client,
+            &base_url,
+            "/repo",
+            "ses_root",
+            &["ses_root".to_owned(), "ses_child".to_owned()],
+            &sender,
+        )
+        .expect("resync delivers");
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..4 {
+            let frame = receiver.recv().expect("root + child snapshots");
+            let value: Value = serde_json::from_str(&frame).unwrap();
+            seen.insert((
+                value["type"].as_str().unwrap().to_owned(),
+                value["properties"]["sessionID"].as_str().unwrap().to_owned(),
+            ));
+        }
+        assert!(seen.contains(&("message.updated".to_owned(), "ses_root".to_owned())), "{seen:?}");
+        assert!(seen.contains(&("message.part.updated".to_owned(), "ses_root".to_owned())), "{seen:?}");
+        assert!(seen.contains(&("message.updated".to_owned(), "ses_child".to_owned())), "{seen:?}");
+        assert!(seen.contains(&("message.part.updated".to_owned(), "ses_child".to_owned())), "{seen:?}");
     }
     #[test]
     fn image_attachments_keep_native_shapes_and_order() {
