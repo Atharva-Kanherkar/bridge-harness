@@ -715,6 +715,16 @@ async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::m
 }
 
 #[tauri::command]
+async fn get_reviewer_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
+    api::get_reviewer_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
+    api::save_reviewer_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
     force: bool,
@@ -2577,6 +2587,8 @@ pub fn run() -> i32 {
             unarchive_chat,
             get_worker_settings,
             save_worker_settings,
+            get_reviewer_settings,
+            save_reviewer_settings,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,

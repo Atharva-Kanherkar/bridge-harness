@@ -471,6 +471,20 @@
       "resultSchema": "worker-settings.json"
     },
     {
+      "command": "get_reviewer_settings",
+      "domain": "config",
+      "method": "config/get_reviewer_settings",
+      "paramsSchema": null,
+      "resultSchema": "reviewer-settings-result.json"
+    },
+    {
+      "command": "save_reviewer_settings",
+      "domain": "config",
+      "method": "config/save_reviewer_settings",
+      "paramsSchema": "save-reviewer-settings-params.json",
+      "resultSchema": "reviewer-settings-result.json"
+    },
+    {
       "command": "list_archived_chats",
       "domain": "sessions",
       "method": "sessions/list_archived_chats",

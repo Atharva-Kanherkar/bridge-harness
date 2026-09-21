@@ -29,6 +29,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "menuBar", label: "Menu Bar icon", description: "Show the icon, quota used or remaining, and today's spend" },
   { section: "menuBar", label: "Providers & accounts", description: "Codex account, plan, token and model breakdown, refresh interval" },
   { section: "workers", label: "Worker limits and routing", description: "Default harness, concurrency, retries, failover, stall timeout and warm retention" },
+  { section: "workers", label: "Pull request reviewer", description: "Model, effort and instructions per harness for GitHub PR reviews" },
   { section: "archives", label: "Archived chats", description: "Search, read and unarchive conversations without restoring worktrees" },
   { section: "storage", label: "Worktree storage", description: "Disk usage, safe cleanup, repositories and retention" },
   { section: "appearance", label: "Mode", description: "Match macOS, Paper, or Graphite" },

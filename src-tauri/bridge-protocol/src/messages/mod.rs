@@ -297,6 +297,8 @@ typed_methods![
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
+    (GetReviewerSettings, _, ReviewerSettingsResult),
+    (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
     (UnarchiveChat, UnarchiveChatParams, UnitResult),
     // token and cost usage

@@ -14,7 +14,7 @@ import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
-import type { TurnImage, ArchivedChatsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -1141,6 +1141,10 @@ function mockConnectorDismiss(itemKey: string): ConnectorDismissResult {
   return { dismissed: true };
 }
 
+/// The default reviewer instructions the mock reports; the real text lives in
+/// `bridge_core::reviewer_settings` and reaches the UI through the result.
+const MOCK_REVIEWER_PROMPT = "Review pull request #{number} in this repository and post a concise, constructive review as a comment. Do not approve, merge, request changes, or close the PR.";
+
 export const bridgeApi = {
   discoverExternalImport: (params: DiscoverExternalImportParams): Promise<ExternalImportDiscovery> => {
     if (isTauri()) return call("imports/discover_external_import", params);
@@ -1848,6 +1852,14 @@ export const bridgeApi = {
   saveWorkerSettings: async (workspaceId: string, settings: WorkerSettings): Promise<WorkerSettings> => {
     if (isTauri()) return call("config/save_worker_settings", { workspaceId, settings });
     return structuredClone(settings);
+  },
+  reviewerSettings: async (): Promise<ReviewerSettingsResult> => {
+    if (isTauri()) return call("config/get_reviewer_settings");
+    return { settings: { harnesses: {}, systemPrompt: "" }, defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
+  },
+  saveReviewerSettings: async (settings: ReviewerSettings): Promise<ReviewerSettingsResult> => {
+    if (isTauri()) return call("config/save_reviewer_settings", { settings });
+    return { settings: structuredClone(settings), defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
   },
   unarchiveChat: async (sessionId: string): Promise<void> => {
     if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }

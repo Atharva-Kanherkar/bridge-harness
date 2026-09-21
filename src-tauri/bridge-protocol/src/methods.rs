@@ -112,6 +112,8 @@ methods![
     (ArchiveChat, "sessions", "archive_chat"),
     (GetWorkerSettings, "config", "get_worker_settings"),
     (SaveWorkerSettings, "config", "save_worker_settings"),
+    (GetReviewerSettings, "config", "get_reviewer_settings"),
+    (SaveReviewerSettings, "config", "save_reviewer_settings"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
     (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router

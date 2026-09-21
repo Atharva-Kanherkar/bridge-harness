@@ -629,26 +629,23 @@ pub fn github_review(
     // Validate the workspace exists before spending a session on it.
     core.workspace_path(workspace_id)?;
 
-    // Resolve the Reviewer model profile. Its tier/effort shape the worker; its
-    // model is only used when the profile's provider matches the chosen harness,
-    // otherwise the launch path picks the harness's tier default.
-    let resolved = {
+    // The reviewer settings name a model and effort per harness; the Reviewer
+    // model profile fills whatever they leave unset, and its tier shapes the
+    // worker. The profile's model is only used when its provider matches the
+    // chosen harness, otherwise the launch path picks the harness's tier default.
+    let (resolved, reviewer_settings) = {
         let db = core.db.lock().unwrap();
-        crate::model_profiles::resolve_profile(
-            &db,
-            &core.adapter_registry.descriptors(),
-            crate::model_profiles::ProfilePurpose::Reviewer,
-        )?
+        (
+            crate::model_profiles::resolve_profile(
+                &db,
+                &core.adapter_registry.descriptors(),
+                crate::model_profiles::ProfilePurpose::Reviewer,
+            )?,
+            crate::reviewer_settings::load(&db)?,
+        )
     };
-    let (capability_tier, effort, model) = match resolved {
-        Some(profile) => {
-            let model = (profile.provider == harness).then(|| profile.model.clone());
-            (profile.tier, profile.effort, model)
-        }
-        // Model setup is incomplete: fall back to a strong reviewer tier and let
-        // the launch path resolve the harness's tier default.
-        None => (CapabilityTier::Strong, delegation::Effort::High, None),
-    };
+    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number);
+    let ReviewerLaunchPlan { capability_tier, effort, model, write_mode, objective } = plan;
 
     // Establish the parent orchestrator session. Reuse the caller's session when
     // it exists and belongs to this workspace; otherwise mint a fresh one.
@@ -675,14 +672,6 @@ pub fn github_review(
     // user-driven retry (`retry-<uuid>`) does; no turn row is a precondition.
     let turn_id = format!("github-review-{}", Uuid::new_v4());
 
-    let objective = format!(
-        "Review pull request #{number} in this repository. Run `gh pr view {number}` and \
-         `gh pr diff {number}` to read the change, then post a concise, constructive code \
-         review as a comment using `gh pr comment {number} --body \"...\"`. Cite concrete \
-         files and line numbers; call out correctness bugs, risky changes, and missing tests. \
-         Do NOT approve, merge, request-changes, or close the PR — only post a comment."
-    );
-
     let directive = delegation::DelegationRequest {
         schema_version: delegation::SCHEMA_VERSION,
         role: delegation::WorkerRole::Research,
@@ -696,7 +685,7 @@ pub fn github_review(
         evidence_ids: Vec::new(),
         relevant_files: Vec::new(),
         owned_paths: Vec::new(),
-        write_mode: delegation::WriteMode::ReadOnly,
+        write_mode,
         capability_tier,
         effort,
         network_access: true,
@@ -725,7 +714,14 @@ pub fn github_review(
         live_turn::WorkerLaunchOutcome::AwaitingApproval => wire::GithubReviewResult {
             status: "awaitingApproval".into(),
             session_id: None,
-            message: "Review is pending an approval; resolve it to let the worker start.".into(),
+            message: if write_mode == delegation::WriteMode::Isolated {
+                format!(
+                    "Review with {harness} is pending an approval on the conversation: {harness} cannot run \
+                     read-only, so the reviewer gets its own isolated worktree. Approve it to start."
+                )
+            } else {
+                "Review is pending an approval; resolve it to let the worker start.".into()
+            },
         },
         live_turn::WorkerLaunchOutcome::Failed => wire::GithubReviewResult {
             status: "failed".into(),
@@ -734,6 +730,62 @@ pub fn github_review(
         },
     };
     Ok(result)
+}
+
+/// How the pull-request reviewer launches on one harness, decided before a
+/// session is spent on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReviewerLaunchPlan {
+    pub capability_tier: CapabilityTier,
+    pub effort: delegation::Effort,
+    pub model: Option<String>,
+    pub write_mode: delegation::WriteMode,
+    pub objective: String,
+}
+
+/// Precedence: the reviewer settings for this harness, then the Reviewer model
+/// profile, then the harness default. OpenCode's local HTTP transport cannot
+/// run inside the offline read-only sandbox (refused at launch by design), so
+/// its reviewer runs isolated in its own worktree instead of failing to start;
+/// the policy engine still gates that with an approval.
+pub(crate) fn reviewer_launch_plan(
+    settings: &wire::ReviewerSettings,
+    profile: Option<&crate::model_profiles::ResolvedProfile>,
+    harness: &str,
+    number: u64,
+) -> ReviewerLaunchPlan {
+    let per_harness = settings.harnesses.get(harness);
+    let (capability_tier, profile_effort, profile_model) = match profile {
+        Some(profile) => (
+            profile.tier,
+            Some(profile.effort),
+            (profile.provider == harness).then(|| profile.model.clone()),
+        ),
+        // Model setup is incomplete: a strong reviewer tier, and the launch
+        // path resolves the harness's tier default.
+        None => (CapabilityTier::Strong, None, None),
+    };
+    let effort = per_harness
+        .and_then(|entry| entry.effort)
+        .map(crate::reviewer_settings::effort_from_wire)
+        .or(profile_effort)
+        .unwrap_or(delegation::Effort::High);
+    let model = per_harness
+        .and_then(|entry| entry.model.clone())
+        .filter(|model| !model.trim().is_empty())
+        .or(profile_model);
+    let write_mode = if harness == "opencode" {
+        delegation::WriteMode::Isolated
+    } else {
+        delegation::WriteMode::ReadOnly
+    };
+    ReviewerLaunchPlan {
+        capability_tier,
+        effort,
+        model,
+        write_mode,
+        objective: crate::reviewer_settings::objective(settings, number),
+    }
 }
 
 fn is_cursor_bugbot(harness: &str) -> bool {
@@ -4006,6 +4058,14 @@ pub fn save_worker_settings(core: &Arc<BridgeCore>, workspace_id: &str, settings
     crate::worker_settings::save(&core.db.lock().unwrap(), workspace_id, settings)
 }
 
+pub fn get_reviewer_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewerSettingsResult, BridgeError> {
+    Ok(crate::reviewer_settings::view(crate::reviewer_settings::load(&core.db.lock().unwrap())?))
+}
+
+pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerSettings) -> Result<wire::ReviewerSettingsResult, BridgeError> {
+    Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
+}
+
 /// Every worktree Bridge knows about, with the last assessment of what may be
 /// done with it. A read: the sweep owns reclaiming.
 pub fn list_worktrees(
@@ -5393,6 +5453,46 @@ mod tests {
                 assert!(acted.message.starts_with("Declined:"), "{}: names the decline", case.id);
             }
         }
+    }
+
+    #[test]
+    fn reviewer_launch_plan_prefers_settings_then_profile_then_defaults() {
+        use bridge_protocol::messages::{self as wire, ReviewerHarnessSettings, ReviewerSettings};
+        use crate::{delegation, model::CapabilityTier};
+        let profile = crate::model_profiles::ResolvedProfile {
+            purpose: crate::model_profiles::ProfilePurpose::Reviewer,
+            profile_version: 1,
+            provider: "codex".into(),
+            model: "gpt-5-codex".into(),
+            tier: CapabilityTier::Standard,
+            effort: delegation::Effort::Medium,
+            selection_mode: crate::model_profiles::ProfileSelectionMode::Pinned,
+            pinned: true,
+            learning_enabled: false,
+            budget_preference: None,
+            latency_preference: None,
+            used_fallback: false,
+        };
+        // Nothing configured: the profile speaks for its own provider only.
+        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9);
+        assert_eq!((plain.model.as_deref(), plain.effort, plain.capability_tier), (Some("gpt-5-codex"), delegation::Effort::Medium, CapabilityTier::Standard));
+        assert_eq!(plain.write_mode, delegation::WriteMode::ReadOnly);
+        assert!(plain.objective.starts_with("Review pull request #9"));
+        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9);
+        assert_eq!(other.model, None, "a Codex model is not handed to Claude");
+        assert_eq!(other.effort, delegation::Effort::Medium);
+        // Settings for the harness win over the profile.
+        let mut settings = ReviewerSettings { system_prompt: "Check PR {number}.".into(), ..Default::default() };
+        settings.harnesses.insert("claude".into(), ReviewerHarnessSettings { model: Some("claude-opus-5".into()), effort: Some(wire::Effort::Xhigh) });
+        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9);
+        assert_eq!((configured.model.as_deref(), configured.effort), (Some("claude-opus-5"), delegation::Effort::Xhigh));
+        assert_eq!(configured.objective, "Check PR 9.");
+        // No profile at all: strong tier, high effort, harness default model.
+        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9);
+        assert_eq!((bare.model, bare.effort, bare.capability_tier), (None, delegation::Effort::High, CapabilityTier::Strong));
+        // OpenCode cannot run read-only: it reviews from an isolated worktree.
+        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9);
+        assert_eq!(opencode.write_mode, delegation::WriteMode::Isolated);
     }
 
     #[test]
