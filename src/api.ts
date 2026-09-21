@@ -7,14 +7,14 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
+import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
-import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
-import type { TurnImage, ArchivedChatsResult, WorkerSettings } from "./protocol/generated/protocol";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -50,8 +50,18 @@ import type {
   GithubActResult,
   GithubReviewResult,
   GithubCheckoutResult,
+  GithubConnectResult,
+  SearchGithubReposResult,
   GithubChecksResult,
   GithubIssueResult,
+  ConnectorActionRequest,
+  ConnectorActResult,
+  ConnectorDismissResult,
+  ConnectorInboxItem,
+  ConnectorInboxResult,
+  ConnectorListResult,
+  ConnectorRefreshResult,
+  ConnectorSetSettingsResult,
   GithubIssuesResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
@@ -66,9 +76,42 @@ import type {
   SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
+import type { MenuBarSettings, UsageOverviewSnapshot, ProviderUsageOverviews } from "./protocol/generated/protocol";
+import type {
+  ConnectorCardReadyPayload,
+  ConnectorItemArrivedPayload,
+  ConnectorItemResolvedPayload,
+} from "./connectorSurface";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+let mockMenuBarSettings: MenuBarSettings = {
+  schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: null, displayMode: "remaining", quotaWindow: "auto",
+  showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300,
+};
+
+// Mock-mode provider overviews so the chat's usage dot has something to draw
+// under `bun run dev`: a Codex account with a quiet session window and a busy
+// weekly one, and a Claude read that failed. Fresh at call time by design.
+function mockProviderUsageOverviews(): ProviderUsageOverviews {
+  const now = Math.floor(Date.now() / 1000);
+  const empty = { tokens: { status: "unavailable" as const }, costMicrousd: { status: "unavailable" as const }, models: [] };
+  return {
+    schemaVersion: 1,
+    generatedAt: now,
+    providers: [
+      {
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "dev@example.com", plan: "plus", observedAt: now - 30, coverage: "Mock data",
+        windows: [
+          { id: "session", label: "5-hour", usedPercent: { value: 4, source: "reported", status: "current" }, resetsAt: now + 4 * 3600, windowMinutes: 300 },
+          { id: "weekly", label: "Weekly", usedPercent: { value: 63, source: "reported", status: "current" }, resetsAt: now + 3 * 86400, windowMinutes: 10080 },
+        ],
+        today: empty, month: empty, error: null,
+      },
+      { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Claude Code usage SDK unavailable. Open Claude Code and check its sign-in." },
+    ],
+  };
+}
 
 // The typed protocol boundary. Every Tauri round-trip goes through these two
 // helpers, so params, results, and event names all come from the generated
@@ -353,7 +396,18 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     agentEvent(8, "session-1", "delegation.spawned", { itemId: "spawn-1w2", role: "system", status: "working", title: "Delegated to Verification · strong", text: "Run the auth test suite and confirm the token store migration is correct.", data: { childSessionId: "session-1w2", harness: "codex", requestedTier: "strong", model: "gpt-5.6-sol", modelLabel: "GPT Sol", effort: "xhigh", depth: 1 } }),
     agentEvent(9, "session-1w2", "message.completed", { itemId: "assistant-1w2", role: "assistant", status: "completed", text: "All 42 auth tests pass. Token store migration verified." }),
     agentEvent(10, "session-1", "delegation.result", { itemId: "result-1w2", role: "system", status: "completed", title: "Worker result", text: "[worker result] Verification · strong (STRONG TIER, runtime GPT Sol, effort xhigh) finished:\n\nAll 42 auth tests pass. Token store migration verified.", data: { childSessionId: "session-1w2", delivered: true } }),
-    agentEvent(11, "session-1", "delegation.result", { itemId: "result-1w", role: "system", status: "completed", title: "Worker result", text: "[worker result] Implementation · strong (STRONG TIER, runtime Fable, effort high) finished:\n\nAuth module refactored to the new token store.", data: { childSessionId: "session-1w", delivered: true } })
+    agentEvent(11, "session-1", "delegation.result", { itemId: "result-1w", role: "system", status: "completed", title: "Worker result", text: "[worker result] Implementation · strong (STRONG TIER, runtime Fable, effort high) finished:\n\nAuth module refactored to the new token store.", data: { childSessionId: "session-1w", delivered: true } }),
+    // A second turn, so the demo carries the things the transcript pane exists
+    // to show: a turn boundary with its stamped ordinal, a thought, a tool
+    // call that failed, and the turn's usage. Without one of each, mock mode
+    // renders an observability surface with nothing to observe.
+    agentEvent(12, "session-1", "turn.started", { status: "inProgress", data: { turnIndex: 1 } }),
+    agentEvent(13, "session-1", "message.completed", { itemId: "user-2", role: "user", status: "completed", text: "Run the full suite before we land this." }),
+    agentEvent(14, "session-1", "reasoning.completed", { itemId: "thought-1", status: "completed", text: "The migration touched the refresh path, so the auth suite is the one that actually exercises it. Running that before the whole tree." }),
+    agentEvent(15, "session-1", "tool.completed", { itemId: "tool-2", title: "bun test src/auth", status: "failed", data: { type: "commandExecution", exitCode: 1, durationMs: 8421, aggregatedOutput: "(fail) rotation invalidates the old token\n  expected: null\n  received: Token { scope: 'session' }\n\n 41 pass\n 1 fail" } }),
+    agentEvent(16, "session-1", "usage.updated", { status: "completed", data: { input_tokens: 18432, output_tokens: 611, cache_read_tokens: 16384, reasoning_tokens: 240, context_percent: 9 } }),
+    agentEvent(17, "session-1", "message.completed", { itemId: "assistant-2", role: "assistant", status: "completed", text: "One test fails: the old token still verifies after a rotate. Looking at the store now." }),
+    agentEvent(18, "session-1", "turn.completed", { status: "completed" })
   ]
 };
 
@@ -365,7 +419,7 @@ function forestEntry(id: string, sessionId: string, sequence: number, kind: stri
   return { id, sessionId, parentEntryId, sequence, semanticSchemaVersion: 2, kind, payload, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: now };
 }
 const demoEntries: SessionEntry[] = [
-  forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor." }, null),
+  forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor.", itemId: "user-1" }, null),
   forestEntry("entry-2", "session-1", 2, "checkpoint", { schemaVersion: 1, summary: "Policy and schema decisions are durable", decisions: ["SQLite is authoritative"] }, "entry-1"),
   forestEntry("entry-3", "session-1", 3, "assistant.message", { text: "Delegating implementation and verification." }, "entry-2"),
   forestEntry("entry-4a", "session-1", 4, "user.message", { text: "Try the direct implementation path." }, "entry-3"),
@@ -446,7 +500,7 @@ const mockConsolidationLog: MemoryConsolidationEntry[] = [
   { op: "group", detail: "3 records tied under conflict-group design-direction", day: 4 },
   { op: "retire", detail: "mem_d1c9 tombstoned", day: 2 },
 ];
-let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "remember" };
+let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
@@ -892,6 +946,205 @@ function browserWorkBoard(): WorkBoard {
   };
 }
 
+// ── Connector surface mocks ─────────────────────────────────────────────────
+// What `bun run dev` and the component tests see. Synthetic on purpose: the
+// real surface reads a live account, and a fixture that quoted one would put a
+// stranger's message in this repository. Shapes match the wire contract exactly.
+
+function mockConnectorList(): ConnectorListResult {
+  return {
+    connectors: [
+      { family: "slack", displayName: "Slack", server: "claude.ai Slack", harness: "claude", hasInbox: true, available: true, reason: null, explanation: null },
+      {
+        family: "gmail", displayName: "Gmail", server: "claude.ai Gmail", harness: "claude", hasInbox: false,
+        available: false, reason: "noResolver",
+        explanation: "Gmail has no in-app inbox yet — its ingress query and card template are not written.",
+      },
+      {
+        family: "linear", displayName: "Linear", server: null, harness: null, hasInbox: false,
+        available: false, reason: "notConfigured",
+        explanation: "No Linear MCP server is configured in this harness.",
+      },
+    ],
+  };
+}
+
+function mockInboxItem(
+  key: string,
+  overrides: Partial<ConnectorInboxItem> & Pick<ConnectorInboxItem, "channelLabel" | "author" | "text" | "receivedAt">,
+): ConnectorInboxItem {
+  return {
+    itemKey: key,
+    family: "slack",
+    channelId: key.split(":")[1] ?? "C000",
+    kind: "directMessage",
+    permalink: null,
+    state: "rendered",
+    card: null,
+    renderRejection: null,
+    resolution: null,
+    ...overrides,
+  } as ConnectorInboxItem;
+}
+
+const mockConnectorItems: ConnectorInboxItem[] = [
+  mockInboxItem("slack:D09KQ2M4A1X:1757756400.000100", {
+    channelLabel: "Nina Alvarez",
+    author: "Nina Alvarez",
+    kind: "directMessage",
+    text: "can you take a look at the release checklist before standup? the updater step is the one I'm unsure about",
+    receivedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+    state: "rendered",
+    card: {
+      itemKey: "slack:D09KQ2M4A1X:1757756400.000100",
+      headline: "Nina wants the release checklist reviewed before standup",
+      blocks: [
+        {
+          kind: "message",
+          author: "Nina Alvarez",
+          text: "can you take a look at the release checklist before standup? the updater step is the one I'm unsure about",
+          timestamp: new Date(Date.now() - 4 * 60_000).toISOString(),
+        },
+        { kind: "summary", text: "She is blocked on the updater step and standup is in 20 minutes." },
+        { kind: "fact", label: "Asked", value: "4 minutes ago" },
+      ],
+      suggestedReplies: [
+        "On it — reading the updater step now.",
+        "Looking before standup. The updater step changed on Tuesday, I'll flag anything stale.",
+      ],
+      harnessRendered: true,
+    },
+  }),
+  mockInboxItem("slack:C07R4TQ8ZKD:1757756100.000300", {
+    channelLabel: "#eng-alerts",
+    author: "Devesh Kumar",
+    kind: "mention",
+    text: "@atharva the nightly bundle job failed on the notarisation step again — same signature as last week?",
+    receivedAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+    state: "rendered",
+    card: {
+      itemKey: "slack:C07R4TQ8ZKD:1757756100.000300",
+      headline: "Devesh is asking whether the notarisation failure repeats last week's",
+      blocks: [
+        {
+          kind: "message",
+          author: "Devesh Kumar",
+          text: "@atharva the nightly bundle job failed on the notarisation step again — same signature as last week?",
+          timestamp: new Date(Date.now() - 11 * 60_000).toISOString(),
+        },
+        { kind: "context", text: "3 earlier messages in #eng-alerts about the nightly bundle." },
+        { kind: "fact", label: "Channel", value: "#eng-alerts" },
+      ],
+      suggestedReplies: ["Checking the signature now.", "Same one — it's the expired notarisation profile."],
+      harnessRendered: true,
+    },
+  }),
+  mockInboxItem("slack:C0A469VRHMH:1757755500.000900", {
+    channelLabel: "Design sync",
+    author: "Rinako Yoshizawa",
+    kind: "threadReply",
+    text: "the dock pane spacing looks right to me now, shipping it",
+    receivedAt: new Date(Date.now() - 21 * 60_000).toISOString(),
+    // Deliberately un-carded: this is what a notification looks like while its
+    // render run is still in flight, and what it stays as if that run fails.
+    state: "pending",
+  }),
+];
+
+const connectorArrivalListeners = new Set<(payload: ConnectorItemArrivedPayload) => void>();
+const connectorCardListeners = new Set<(payload: ConnectorCardReadyPayload) => void>();
+const connectorResolvedListeners = new Set<(payload: ConnectorItemResolvedPayload) => void>();
+const connectorInboxListeners = new Set<(payload: { family: string }) => void>();
+
+/**
+ * Replay one arrival in mock mode so `bun run dev` shows the actual sequence —
+ * a toast in Bridge's own wording, then the harness-rendered headline replacing
+ * it in place a beat later. Without this, mock mode could only ever show the
+ * resting state, and the part of the feature most worth reviewing is the part
+ * that happens when nobody asked for it.
+ */
+let mockArrivalScheduled = false;
+function scheduleMockConnectorArrival(): void {
+  if (mockArrivalScheduled || typeof window === "undefined") return;
+  mockArrivalScheduled = true;
+  const item = mockConnectorItems[0];
+  window.setTimeout(() => {
+    for (const listener of connectorArrivalListeners) {
+      listener({
+        family: "slack",
+        itemKey: item.itemKey,
+        headline: `${item.author} sent you a direct message`,
+        channelLabel: item.channelLabel,
+        author: item.author,
+      });
+    }
+    window.setTimeout(() => {
+      for (const listener of connectorCardListeners) {
+        listener({
+          family: "slack",
+          itemKey: item.itemKey,
+          headline: item.card?.headline ?? `${item.author} sent you a direct message`,
+          harnessRendered: true,
+        });
+      }
+      for (const listener of connectorInboxListeners) listener({ family: "slack" });
+    }, 1_400);
+  }, 900);
+}
+
+let mockIncludeReadMentions = false;
+
+function mockConnectorInbox(): ConnectorInboxResult {
+  const items = mockConnectorItems.filter(item => item.state !== "resolved");
+  return {
+    items,
+    unreadCount: items.length,
+    includeReadMentions: mockIncludeReadMentions,
+    poll: [
+      {
+        family: "slack",
+        lastAttemptAt: new Date(Date.now() - 20_000).toISOString(),
+        lastSuccessAt: new Date(Date.now() - 20_000).toISOString(),
+        degraded: null,
+      },
+    ],
+  };
+}
+
+function mockConnectorAct(itemKey: string, action: ConnectorActionRequest, approved?: boolean): ConnectorActResult {
+  const item = mockConnectorItems.find(candidate => candidate.itemKey === itemKey);
+  if (!item) return { status: "refused", reason: "that message is no longer in the inbox" };
+  if (item.state === "resolved") return { status: "refused", reason: "this message has already been dealt with" };
+  // The same two-call shape as the host: an undecided call is refused and hands
+  // back the effect, so the mock exercises the real approval flow rather than
+  // letting the UI shortcut it.
+  if (approved === undefined) {
+    const destination = item.kind === "directMessage" || item.channelLabel === item.author
+      ? item.author
+      : `${item.author} in ${item.channelLabel}`;
+    const effect = action.kind === "reply"
+      ? `Send to ${destination}:\n${action.text}`
+      : `React :${action.emoji}: to ${destination}'s message`;
+    return { status: "approvalRequired", effect };
+  }
+  if (!approved) return { status: "refused", reason: "the action was denied" };
+  item.state = "resolved";
+  item.resolution = action.kind === "reply" ? "replied" : "reacted";
+  return { status: "sent", itemKey };
+}
+
+function mockConnectorDismiss(itemKey: string): ConnectorDismissResult {
+  const item = mockConnectorItems.find(candidate => candidate.itemKey === itemKey);
+  if (!item || item.state === "resolved") return { dismissed: false };
+  item.state = "resolved";
+  item.resolution = "dismissed";
+  return { dismissed: true };
+}
+
+/// The default reviewer instructions the mock reports; the real text lives in
+/// `bridge_core::reviewer_settings` and reaches the UI through the result.
+const MOCK_REVIEWER_PROMPT = "Review pull request #{number} in this repository and post a concise, constructive review as a comment. Do not approve, merge, request changes, or close the PR.";
+
 export const bridgeApi = {
   discoverExternalImport: (params: DiscoverExternalImportParams): Promise<ExternalImportDiscovery> => {
     if (isTauri()) return call("imports/discover_external_import", params);
@@ -970,6 +1223,22 @@ export const bridgeApi = {
       createdAt: new Date().toISOString(),
     });
   },
+  connectorList: (refresh = false): Promise<ConnectorListResult> =>
+    isTauri() ? call("connectors/connector_list", { refresh }) : Promise.resolve(mockConnectorList()),
+  connectorInbox: (limit?: number): Promise<ConnectorInboxResult> =>
+    isTauri() ? call("connectors/connector_inbox", { limit: limit ?? null }) : Promise.resolve(mockConnectorInbox()),
+  connectorAct: (itemKey: string, action: ConnectorActionRequest, approved?: boolean): Promise<ConnectorActResult> =>
+    isTauri()
+      ? call("connectors/connector_act", { itemKey, action, approved: approved ?? null })
+      : Promise.resolve(mockConnectorAct(itemKey, action, approved)),
+  connectorDismiss: (itemKey: string): Promise<ConnectorDismissResult> =>
+    isTauri() ? call("connectors/connector_dismiss", { itemKey }) : Promise.resolve(mockConnectorDismiss(itemKey)),
+  connectorRefresh: (family: string): Promise<ConnectorRefreshResult> =>
+    isTauri() ? call("connectors/connector_refresh", { family }) : Promise.resolve({ announced: 0 }),
+  connectorSetSettings: (includeReadMentions: boolean): Promise<ConnectorSetSettingsResult> =>
+    isTauri()
+      ? call("connectors/connector_set_settings", { includeReadMentions })
+      : Promise.resolve(((mockIncludeReadMentions = includeReadMentions), { includeReadMentions })),
   githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
     isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
@@ -992,6 +1261,10 @@ export const bridgeApi = {
     isTauri() ? call("github/github_review", { workspaceId, number, harness, sessionId }) : Promise.resolve(mockGithubReview(number, harness)),
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
     isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
+  githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>
+    isTauri() ? call("github/github_connect", { workspaceId, remoteUrl }) : Promise.resolve(mockGithubConnect(remoteUrl)),
+  searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>
+    isTauri() ? call("workspaces/search_github_repos", { query }) : Promise.resolve(mockSearchGithubRepos(query)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   browserFrame: (afterRevision: number): Promise<BrowserFrame | null> => isTauri()
     ? call("browser/browser_frame", { afterRevision })
@@ -1191,6 +1464,54 @@ export const bridgeApi = {
     if (isTauri()) return call("meter/refresh_meter").then(() => undefined);
     return Promise.resolve();
   },
+  getMenuBarSettings: (): Promise<MenuBarSettings> => isTauri()
+    ? call("menu_bar/get_menu_bar_settings") : Promise.resolve(structuredClone(mockMenuBarSettings)),
+  saveMenuBarSettings: async (settings: MenuBarSettings): Promise<MenuBarSettings> => {
+    if (!isTauri()) { mockMenuBarSettings = structuredClone(settings); return structuredClone(settings); }
+    const saved = await call("menu_bar/save_menu_bar_settings", { settings });
+    const { emit } = await import("@tauri-apps/api/event");
+    // Persistence already succeeded. A missed presentation hint must not
+    // misreport the save; the native host also re-reads preferences on its tick.
+    await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
+    return saved;
+  },
+  getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => isTauri()
+    ? call("usage/get_provider_usage_overviews") : Promise.resolve(mockProviderUsageOverviews()),
+  refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
+    if (!isTauri()) return null;
+    const snapshot = await call("usage/refresh_provider_usage_overviews_interactive");
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined);
+    await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
+    return snapshot;
+  },
+  onProviderUsageOverviews: (handler: (snapshot: ProviderUsageOverviews) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<ProviderUsageOverviews>("bridge-provider-usage-overviews", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  connectMenuBarOpenCode: async (): Promise<void> => {
+    if (!isTauri()) throw new Error("Open Bridge desktop to connect OpenCode.");
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-menu-bar-connect-opencode");
+  },
+  onMenuBarConnection: (handler: (message: string) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<string>("bridge-menu-bar-connection", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  onMenuBarSettingsChanged: (handler: () => void): Promise<UnlistenFn> => isTauri()
+    ? listen("bridge-menu-bar-settings-changed", handler) : Promise.resolve(() => undefined),
+  getUsageOverview: (): Promise<UsageOverviewSnapshot | null> => isTauri()
+    ? call("usage/get_usage_overview") : Promise.resolve(null),
+  refreshUsageOverview: async (): Promise<UsageOverviewSnapshot | null> => {
+    if (!isTauri()) return null;
+    const snapshot = await call("usage/refresh_usage_overview");
+    const { emit } = await import("@tauri-apps/api/event");
+    await Promise.all([
+      emit("bridge-usage-overview", snapshot).catch(() => undefined),
+      emit("bridge-menu-bar-settings-changed").catch(() => undefined),
+    ]);
+    return snapshot;
+  },
+  onUsageOverview: (handler: (snapshot: UsageOverviewSnapshot) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<UsageOverviewSnapshot>("bridge-usage-overview", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  onMenuBarSettings: (handler: () => void): Promise<UnlistenFn> => isTauri()
+    ? listen("bridge-menu-bar-settings", handler) : Promise.resolve(() => undefined),
   // Opening and closing the meter is window work, so the shell does it. Same
   // channel pattern as `revealMainWindow`: the panel is positioned against the
   // status item's rect, which only the tray handler knows.
@@ -1532,6 +1853,14 @@ export const bridgeApi = {
     if (isTauri()) return call("config/save_worker_settings", { workspaceId, settings });
     return structuredClone(settings);
   },
+  reviewerSettings: async (): Promise<ReviewerSettingsResult> => {
+    if (isTauri()) return call("config/get_reviewer_settings");
+    return { settings: { harnesses: {}, systemPrompt: "" }, defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
+  },
+  saveReviewerSettings: async (settings: ReviewerSettings): Promise<ReviewerSettingsResult> => {
+    if (isTauri()) return call("config/save_reviewer_settings", { settings });
+    return { settings: structuredClone(settings), defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
+  },
   unarchiveChat: async (sessionId: string): Promise<void> => {
     if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
     throw new Error("Unarchiving a chat needs the desktop app");
@@ -1598,6 +1927,102 @@ export const bridgeApi = {
     forest.reasons.unshift({ id: nextEventId++, source: "session-forest", kind: "session.head_moved", entityId: sessionId, body: `Conversation head moved to ${entryId}; files were not changed`, createdAt: new Date().toISOString() });
     emitState(); return structuredClone(forest);
   },
+  resolveReference: async (id: string): Promise<ResolveReferenceResult> => {
+    if (isTauri()) return call("sessions/resolve_reference", { id }) as Promise<ResolveReferenceResult>;
+    const bare = id.replace(/^@session:/, "").replace(/^brio_/, "");
+    const session = mockState.sessions.find(candidate => candidate.id === bare || (candidate.id.replace(/-/g, "").startsWith(bare) && bare.length === 8));
+    if (session) {
+      const head = mockForests[session.id]?.head ?? null;
+      return {
+        kind: "session",
+        sessionId: session.id,
+        label: session.label,
+        harness: session.harness,
+        workspaceId: session.workspaceId ?? null,
+        parentSessionId: session.parentSessionId ?? null,
+        depth: session.depth ?? 0,
+        restorationMode: session.restorationMode,
+        continuationFidelity: session.continuationFidelity,
+        activeEntryId: head?.activeEntryId ?? null,
+        latestCheckpointEntryId: head?.latestCheckpointEntryId ?? null,
+        updatedAt: session.startedAt ?? null,
+        authorized: true,
+      };
+    }
+    for (const forest of Object.values(mockForests)) {
+      const entry = forest.entries.find(candidate => candidate.id === bare);
+      if (entry) {
+        const summary = String(entry.payload?.text ?? entry.payload?.summary ?? entry.payload?.title ?? "") || "";
+        return {
+          kind: "entry",
+          sessionId: forest.sessionId,
+          entryId: entry.id,
+          entryKind: entry.kind,
+          sequence: Number(entry.sequence),
+          summary,
+          createdAt: entry.createdAt,
+          authorized: true,
+        };
+      }
+    }
+    return { kind: "unknown", authorized: false };
+  },
+  forkSession: async (sessionId: string, entryId: string, title?: string | null, harness?: string | null, model?: string | null, worktreePolicy?: string | null): Promise<ForkSessionResult> => {
+    if (isTauri()) return call("sessions/fork_session", { sessionId, entryId, title, harness, model, worktreePolicy: worktreePolicy ?? "shared" }) as Promise<ForkSessionResult>;
+    const source = mockState.sessions.find(session => session.id === sessionId);
+    if (!source) throw new Error("Session to fork does not exist");
+    if (source.kind === "worker") throw new Error("Worker sessions cannot be forked; fork an orchestrator or direct chat");
+    const forest = mockForest(sessionId);
+    const cutoff = forest.entries.findIndex(entry => entry.id === entryId);
+    if (cutoff < 0) throw new Error("Entry is not in this session");
+    const prefix = forest.entries.slice(0, cutoff + 1);
+    const forkId = `fork-${nextEventId++}`;
+    const entries = prefix.map((entry, index) => ({
+      ...entry,
+      sessionId: forkId,
+      parentEntryId: index === 0 ? null : prefix[index - 1].id,
+      sequence: index + 1,
+      providerEventId: null,
+      createdAt: new Date().toISOString(),
+    }));
+    const checkpoint = [...entries].reverse().find(entry => entry.kind === "checkpoint");
+    const head: SessionForestSnapshot["head"] = {
+      sessionId: forkId,
+      activeEntryId: entries.at(-1)!.id,
+      nativeProviderSessionId: null,
+      restorationMode: "checkpoint_restored",
+      resumeEligibility: "checkpoint_restored",
+      latestCheckpointEntryId: checkpoint?.id ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+    mockForests[forkId] = { ...forest, sessionId: forkId, entries, head, leaves: [entries.at(-1)!] };
+    mockState.sessions.push({
+      ...source,
+      id: forkId,
+      label: title?.trim() || `Fork of ${source.label}`,
+      title: title?.trim() || `Fork of ${source.label}`,
+      harness: harness ?? source.harness,
+      model: model ?? source.model,
+      status: "idle",
+      activeTurnId: null,
+      providerSessionId: null,
+      // A fork is a top-level conversation, not a delegated worker: the
+      // agent-tree fields stay as the source had them and the lineage goes in
+      // the fork fields. Mirrors `fork_session_records`.
+      parentSessionId: null,
+      depth: source.depth ?? 0,
+      forkParentSessionId: sessionId,
+      forkParentEntryId: entryId,
+      restorationMode: "checkpoint_restored",
+      continuationFidelity: "projected_at_boundary",
+    });
+    mockState.events.unshift(
+      { id: nextEventId, source: "session-forest", kind: "fork.created", entityId: forkId, body: `Forked from ${sessionId} at ${entryId}`, createdAt: new Date().toISOString() },
+    );
+    nextEventId += 1;
+    emitState();
+    return { state: structuredClone(mockState) as BridgeState, sessionId: forkId, snapshot: structuredClone(mockForests[forkId]), fidelity: "projected_at_boundary" };
+  },
   compactSession: async (sessionId: string): Promise<void> => {
     if (isTauri()) return unit(call("sessions/compact_session", { sessionId }));
     if (!mockForests[sessionId]) mockForest(sessionId);
@@ -1617,9 +2042,14 @@ export const bridgeApi = {
     forest.reasons.unshift({ id: nextEventId++, source: "compaction", kind: "compaction.completed", entityId: sessionId, body: "manual", createdAt: new Date().toISOString() });
     emitState();
   },
-  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null): Promise<SearchSessionEntriesResult> => {
+  searchSessionEntries: async (sessionId: string, query: string, limit?: number | null, offset?: number | null): Promise<SearchSessionEntriesResult> => {
     if (isTauri()) {
-      return call("sessions/search_session_entries", limit != null ? { sessionId, query, limit } : { sessionId, query });
+      return call("sessions/search_session_entries", {
+        sessionId,
+        query,
+        ...(limit != null ? { limit } : {}),
+        ...(offset ? { offset } : {}),
+      });
     }
     if (!sessionId.trim()) throw new Error("Recall needs a session id; search cannot run across a workspace");
     const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -1632,7 +2062,6 @@ export const bridgeApi = {
         const body = `${entry.payload.text ?? ""} ${entry.payload.title ?? ""} ${entry.payload.summary ?? ""}`.toLowerCase();
         return tokens.every(token => body.includes(token));
       })
-      .slice(0, limit ?? 20)
       .map(entry => ({
         entryId: entry.id,
         kind: entry.kind,
@@ -1640,7 +2069,35 @@ export const bridgeApi = {
         snippet: String(entry.payload.text ?? entry.payload.summary ?? entry.payload.title ?? ""),
         createdAt: entry.createdAt,
       }));
-    return { sessionId, query, hits };
+    // Page the mock the same way the server does, so the Show more affordance
+    // is exercised by `bun run dev` and not only by the desktop app.
+    const size = limit ?? 20;
+    const start = offset ?? 0;
+    return { sessionId, query, hits: hits.slice(start, start + size), offset: start, hasMore: hits.length > start + size };
+  },
+  /**
+   * Write one session's durable record out as JSONL.
+   *
+   * The result is a path, never the transcript itself: a long session is
+   * megabytes, and the point of the export is an artifact you can grep, diff
+   * and hand to something that is not Bridge.
+   */
+  exportSessionTranscript: async (
+    sessionId: string,
+    options: { scope?: TranscriptExportScope; includeHidden?: boolean; destinationPath?: string } = {},
+  ): Promise<ExportSessionTranscriptResult> => {
+    if (isTauri()) {
+      return call("sessions/export_session_transcript", {
+        sessionId,
+        ...(options.scope ? { scope: options.scope } : {}),
+        ...(options.includeHidden != null ? { includeHidden: options.includeHidden } : {}),
+        ...(options.destinationPath ? { destinationPath: options.destinationPath } : {}),
+      });
+    }
+    // Mock mode has no filesystem. Reporting a plausible path would be a lie a
+    // reader could only catch by going to look for the file, so say plainly
+    // that the export needs the desktop app.
+    throw new Error("Exporting a transcript needs the desktop app; the browser preview has no session store to read.");
   },
   saveMemoryRecord: async (body: string, kind?: string | null, sessionId?: string | null): Promise<MemoryRecord> => {
     if (isTauri()) {
@@ -1740,9 +2197,10 @@ export const bridgeApi = {
         ...(model ? { model } : {}),
       });
     }
-    if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it. Use remember or propose.");
-    if (mode !== "remember" && mode !== "propose") throw new Error(`Unknown extraction mode '${mode}'. Use remember or propose.`);
-    if (mode === "propose" && (!harness || !model)) throw new Error("Propose mode needs a pinned harness and model to run on.");
+    if (mode !== "remember" && mode !== "propose" && mode !== "auto_apply") {
+      throw new Error(`Unknown extraction mode '${mode}'. Use remember, propose, or auto_apply.`);
+    }
+    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
     mockExtractionSettings = { ...mockExtractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
     return structuredClone(mockExtractionSettings);
   },
@@ -2106,6 +2564,27 @@ export const bridgeApi = {
     if (isTauri()) return subscribe<SessionStartupPayload>("session-startup", handler);
     return () => undefined;
   },
+  onConnectorItemArrived: async (handler: (payload: ConnectorItemArrivedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorItemArrivedPayload>("connectors/item_arrived", handler);
+    connectorArrivalListeners.add(handler);
+    scheduleMockConnectorArrival();
+    return () => connectorArrivalListeners.delete(handler);
+  },
+  onConnectorCardReady: async (handler: (payload: ConnectorCardReadyPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorCardReadyPayload>("connectors/card_ready", handler);
+    connectorCardListeners.add(handler);
+    return () => connectorCardListeners.delete(handler);
+  },
+  onConnectorItemResolved: async (handler: (payload: ConnectorItemResolvedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<ConnectorItemResolvedPayload>("connectors/item_resolved", handler);
+    connectorResolvedListeners.add(handler);
+    return () => connectorResolvedListeners.delete(handler);
+  },
+  onConnectorInboxChanged: async (handler: (payload: { family: string }) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<{ family: string }>("connectors/inbox_changed", handler);
+    connectorInboxListeners.add(handler);
+    return () => connectorInboxListeners.delete(handler);
+  },
   onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
@@ -2181,6 +2660,21 @@ const mockGithubPullRequests = (workspaceId: string): GithubPullRequestsResult =
 });
 
 const mockGithubStatus = (_workspaceId: string): GithubStatusResult => ({ availability: { status: "available" }, repository: { host: "github.com", owner: "Atharva-Kanherkar", name: "bridge-harness" } });
+const mockSearchGithubRepos = (query: string): SearchGithubReposResult => ({
+  repositories: ["Atharva-Kanherkar/bridge-harness", "Atharva-Kanherkar/animevocab", "rimo/rimo-frontend"]
+    .filter(nameWithOwner => nameWithOwner.toLowerCase().includes(query.trim().toLowerCase()))
+    .map(nameWithOwner => ({
+      nameWithOwner,
+      url: `https://github.com/${nameWithOwner}`,
+      sshUrl: `git@github.com:${nameWithOwner}.git`,
+      isPrivate: true,
+      pushedAt: new Date().toISOString(),
+    })),
+});
+const mockGithubConnect = (remoteUrl: string): GithubConnectResult => {
+  const [owner = "bridge", name = "harness"] = remoteUrl.replace(/\.git$/, "").replace(/\/$/, "").split(/[/:]/).slice(-2);
+  return { repository: { host: "github.com", owner, name }, initialized: false, replacedRemote: false };
+};
 const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
 const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
   confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };

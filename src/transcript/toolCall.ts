@@ -204,6 +204,10 @@ function readPath(data: Record<string, unknown>): string | undefined {
   const direct = text(input.file_path) ?? text(input.notebook_path) ?? text(input.path)
     ?? text(data.path) ?? text(stateInput.filePath) ?? text(stateInput.file_path) ?? text(stateInput.path);
   if (direct) return direct;
+  if (Array.isArray(data.paths) && data.paths.length) {
+    const first = text(data.paths[0]);
+    if (first) return first;
+  }
   // ACP names the files a call touched in `locations`.
   if (Array.isArray(locations) && locations.length) {
     const first = objectValue(locations[0]);
@@ -215,6 +219,34 @@ function readPath(data: Record<string, unknown>): string | undefined {
     return text(first.path);
   }
   return undefined;
+}
+
+/** Paths a file-change event names after bridge-core normalization. */
+function readPaths(data: Record<string, unknown>): string[] {
+  if (Array.isArray(data.paths)) {
+    return data.paths.filter((path): path is string => typeof path === "string" && !!path.trim());
+  }
+  if (Array.isArray(data.changes)) {
+    return data.changes.flatMap(change => {
+      const path = text(objectValue(change).path);
+      return path ? [path] : [];
+    });
+  }
+  return [];
+}
+
+/**
+ * A pathless file-change row used to render as the bare word "files". Prefer
+ * the files the event actually named, then the provider's own tool/type, so
+ * the label still says what kind of edit it was.
+ */
+function fileChangeTarget(file: string | undefined, data: Record<string, unknown>): string {
+  const paths = readPaths(data);
+  if (paths.length > 1) {
+    return `${basename(paths[0])} + ${paths.length - 1} more`;
+  }
+  if (file) return file;
+  return text(data.tool) ?? text(data.type) ?? text(data.name) ?? "file change";
 }
 
 function readStatus(status: string | undefined): ToolStatus {
@@ -307,6 +339,13 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     subagent,
   };
   const named = namedToolFacet(source, data);
+  // Claude streams a tool call's start before the model has finished writing
+  // its arguments; nothing runs until the snapshot lands. Say so, rather than
+  // claiming a command is running while it is still being composed.
+  if (data.phase === "preparing") {
+    named.doing = "Preparing";
+    named.target = text(data.name) ?? named.target;
+  }
   const command = named.command ?? (named.verb === "run" ? text(data.command) : undefined);
   return {
     ...common,
@@ -592,8 +631,9 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
       return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? (title || "command"), command };
     }
     if (key === "read") return { verb: "read", glyph: "file", doing: "Reading", done: "Read", target: file ?? "file" };
-    if (key === "edit" || key === "multiedit" || key === "notebookedit") return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: file ?? "file" };
-    if (key === "write") return { verb: "edit", glyph: "file-plus", doing: "Writing", done: "Wrote", target: file ?? "file" };
+    if (key === "edit" || key === "multiedit" || key === "notebookedit") return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: fileChangeTarget(file, data) };
+    if (key === "write") return { verb: "edit", glyph: "file-plus", doing: "Writing", done: "Wrote", target: fileChangeTarget(file, data) };
+    if (key === "patch" || key === "apply_patch") return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: fileChangeTarget(file, data) };
     if (key === "grep" || key === "glob") {
       const pattern = text(input.pattern);
       return { verb: "search", glyph: "search", doing: "Searching", done: "Searched", target: pattern ? `“${pattern}”` : "files" };
@@ -613,7 +653,7 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
 
   // Codex- and OpenCode-shaped items, identified by their item type.
   if (source.surface === "diff" || dataType.includes("patch") || dataType.includes("fileChange")) {
-    return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: file ?? "files" };
+    return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: fileChangeTarget(file, data) };
   }
   if (dataType === "readFile" || /^read /i.test(title)) {
     const named = file ?? (title.replace(/^read /i, "") || undefined);

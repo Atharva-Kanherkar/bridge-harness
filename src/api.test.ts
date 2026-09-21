@@ -62,6 +62,28 @@ describe("SQLite-shaped mock observability", () => {
     expect(reset.activeVersion).toBe(2);
   });
 
+  it("forks a session branch into an independent session without touching the parent", async () => {
+    const created = await bridgeApi.forkSession("session-1", "entry-5a", "Alternate path", null, null, "shared");
+    expect(created.fidelity).toBe("projected_at_boundary");
+    expect(created.sessionId).not.toBe("session-1");
+    expect(created.snapshot.head?.activeEntryId).toBe("entry-5a");
+    expect(created.snapshot.head?.restorationMode).toBe("checkpoint_restored");
+    expect(created.snapshot.entries.map(entry => entry.sequence)).toEqual([1, 2, 3, 4, 5]);
+    expect(created.snapshot.entries.every(entry => entry.sessionId === created.sessionId)).toBe(true);
+    expect(created.snapshot.entries.every(entry => entry.providerEventId === null)).toBe(true);
+    const fork = created.state.sessions.find(session => session.id === created.sessionId)!;
+    // Independent means top-level: the fork keeps the agent-tree fields the
+    // source had (so it can still delegate, be reclaimed, and be archived on
+    // its own) and records where it came from in the fork fields.
+    expect(fork).toMatchObject({ parentSessionId: null, depth: 0, forkParentSessionId: "session-1", forkParentEntryId: "entry-5a", label: "Alternate path", restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", status: "idle", providerSessionId: null, activeTurnId: null });
+    // The parent forest is untouched by the fork.
+    const parent = await bridgeApi.sessionForest("session-1");
+    expect(parent.entries).toHaveLength(17);
+    expect(parent.head?.activeEntryId).toBe("entry-raw");
+    await expect(bridgeApi.forkSession("session-1", "missing-entry", null, null, null, "shared")).rejects.toThrow("not in this session");
+    await expect(bridgeApi.forkSession("session-1w", "entry-1", null, null, null, "shared")).rejects.toThrow("Worker sessions cannot be forked");
+  });
+
   it("uses one learning runner and reports duplicate triggers as no-ops", async () => {
     const first = await bridgeApi.runLearning("manual", "w");
     expect(first).toMatchObject({ status: "noop", duplicate: false });

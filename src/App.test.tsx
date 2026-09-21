@@ -552,10 +552,7 @@ describe("the dock in the session view", () => {
     expect(tasksTab.textContent).toContain("1");
   });
 
-  // A worker session renders SteerComposer instead of the chat ComposerPill,
-  // so anything wired only into the latter (usage health included) silently
-  // disappears the moment you open a background worker.
-  it("keeps usage health reachable from a worker session's steer composer, not only the chat composer", async () => {
+  it("mounts the usage dot beside a worker's steer composer", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
@@ -566,16 +563,21 @@ describe("the dock in the session view", () => {
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label^="Open usage"]')).not.toBeNull();
   });
 
-  it("keeps usage health reachable on the pre-session Welcome view, where there is no composer to trail", async () => {
+  it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
-    // No session is selected yet: the pre-session Welcome screen keeps the
-    // title bar, and usage health must remain reachable from it — the move
-    // into the composer relocates the trigger, it does not remove it.
     expect(container.querySelector("header")).not.toBeNull();
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).not.toBeNull();
+    expect(container.querySelector('header [aria-label^="Open usage"]')).toBeNull();
+  });
+
+  it("mounts the usage dot at the chat composer's leading edge", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const dot = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Open usage"]');
+    expect(dot).not.toBeNull();
+    expect(dot!.getAttribute("aria-controls")).toBe("usage-dot-panel");
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
@@ -902,5 +904,88 @@ describe("the dock in the session view", () => {
     // menu item for either screen has to land here first.
     expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
     expect(SHORTCUTS.some(shortcut => /Agent Fleet|Work board/i.test(shortcut.label))).toBe(false);
+  });
+
+  it("forks a message into a new session and switches to it; rewind asks first", async () => {
+    await mountApp();
+    // Open the demo orchestrator; its transcript carries entry-bearing
+    // messages, so the hover actions exist in the DOM even before a hover
+    // reveals them.
+    await openWorkspaceSession("4");
+    // The transcript projects from the fetched forest; let the effects land.
+    await settle(8);
+    // Earlier tests mutate the shared mock (extra orchestrators, fresh
+    // forests), so find the chat whose transcript carries entry-bearing
+    // messages instead of assuming demo-1 is the first open.
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    await click(forkButton!);
+    expect(container.textContent).toContain("New branch of Orchestrator from this message");
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    // The fork is created and the app switches to it: the conversation header
+    // belongs to the forked session now.
+    expect(container.textContent).toContain("Fork of Orchestrator");
+    const rewind = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Rewind to here")!;
+    expect(rewind).toBeTruthy();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await click(rewind);
+    expect(confirm).toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("renders a pasted session reference as a chip and pulls it into the draft", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(6);
+    const textarea = composer()!;
+    await act(async () => {
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      nativeSet.call(textarea, "compare with @session:session-1");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle(8);
+    expect(container.textContent).toContain("Orchestrator");
+    const pull = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Pull Orchestrator"));
+    expect(pull).toBeTruthy();
+    await click(pull!);
+    expect(composer()!.value).toContain("[session Orchestrator — checkpoint present]");
+  });
+
+  // The regression that green per-component tests hid: the chat list drops
+  // every session with a `parentSessionId`, so a fork recorded as a worker
+  // opened once and then became unreachable — and the rail's own breadcrumb
+  // could never render. Drive it through the real App, not the component.
+  it("leaves a fork reachable in the rail, with a breadcrumb back to its source", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(8);
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    const before = chatRows().length;
+    await click(forkButton!);
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    await settle(8);
+    // The rail gained the fork, and it names where it came from.
+    const titles = chatRows().map(row => row.getAttribute("title") ?? "");
+    expect(chatRows().length).toBe(before + 1);
+    expect(titles.some(title => title.includes("Fork of"))).toBe(true);
+    expect(container.textContent).toContain("forked from");
+    // And it is still reachable after navigating away to another chat.
+    const other = chatRows().find(row => !(row.getAttribute("title") ?? "").includes("Fork of"))!;
+    await click(other);
+    await settle(4);
+    expect(chatRows().some(row => (row.getAttribute("title") ?? "").includes("Fork of"))).toBe(true);
   });
 });

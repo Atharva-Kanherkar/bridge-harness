@@ -159,6 +159,56 @@ fn browser_frame_polling_uses_the_typed_daemon_contract() {
 }
 
 #[test]
+fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("error").is_none());
+    let (initial, _) = client.call(1, "menu_bar/get_menu_bar_settings", None);
+    let mut settings = initial["result"].clone();
+    assert_eq!(settings["schemaVersion"], 1);
+    settings["displayMode"] = json!("used");
+    settings["quotaDisplayMode"] = json!("remaining");
+    settings["statusLayout"] = json!([["icon", "space", "fiveHourUsed"], ["weeklyRemaining"]]);
+    settings["openToOverview"] = json!(true);
+    settings["enabled"] = json!(false);
+    settings["claudeEnabled"] = json!(true);
+    settings["cursorEnabled"] = json!(true);
+    settings["opencodeEnabled"] = json!(true);
+    settings["selectedProvider"] = json!("cursor");
+    settings["opencodeWorkspace"] = json!("wrk_fixture");
+    let (saved, _) = client.call(2, "menu_bar/save_menu_bar_settings", Some(json!({"settings": settings})));
+    assert_eq!(saved["result"], settings);
+
+    let mut invalid = settings.clone();
+    invalid["refreshSeconds"] = json!(1);
+    let (rejected, _) = client.call(3, "menu_bar/save_menu_bar_settings", Some(json!({"settings": invalid})));
+    assert!(rejected.get("error").is_some());
+    let (usage, _) = client.call(4, "usage/get_usage_overview", None);
+    assert_eq!(usage["result"]["schemaVersion"], 1);
+    assert_eq!(usage["result"]["windows"], json!([]), "No observation must not create a fictitious session limit");
+    assert!(usage["result"]["today"]["costMicrousd"]["value"].is_null());
+    let (group, _) = client.call(6, "usage/get_provider_usage_overviews", None);
+    assert!(group.get("error").is_none());
+    let rows = group["result"]["providers"].as_array().unwrap();
+    assert_eq!(rows.iter().map(|r| r["provider"].as_str().unwrap()).collect::<Vec<_>>(), vec!["codex", "claude", "cursor", "opencode"]);
+    for row in rows { assert!(row["today"]["tokens"]["value"].is_null()); }
+    let (invalid_session, _) = client.call(7, "usage/save_opencode_usage_session", Some(json!({"cookie":"unrelated=secret","workspace":"wrk_fixture"})));
+    assert!(invalid_session.get("error").is_some());
+    assert!(!invalid_session.to_string().contains("secret"));
+    drop(client);
+    running.stop();
+
+    let restarted = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&restarted.socket_path);
+    assert!(client.handshake(&restarted.token).get("error").is_none());
+    let (loaded, _) = client.call(5, "menu_bar/get_menu_bar_settings", None);
+    assert_eq!(loaded["result"], settings);
+    drop(client);
+    restarted.stop();
+}
+
+#[test]
 fn a_session_is_created_driven_and_observed_end_to_end_over_the_socket() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());

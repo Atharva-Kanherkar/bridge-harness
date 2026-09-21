@@ -443,7 +443,10 @@ describe("BridgeSidebar harness marks", () => {
   it("mutes the mark at rest and tints only the active row", () => {
     const chats = [session("quiet", { title: "Quiet row", harness: "claude" }), session("loud", { title: "Loud row", harness: "claude" })];
     const html = render({ chats, activeSessionId: "loud" });
-    const row = (title: string) => html.split("<button").find(chunk => chunk.includes(title)) ?? "";
+    // Scope to the whole row wrapper, not to the first button in it: a row
+    // carries several buttons (copy id, archive) and the harness mark renders
+    // after them.
+    const row = (title: string) => html.split("group/row").find(chunk => chunk.includes(title)) ?? "";
     expect(row("Quiet row")).toContain("text-muted-foreground");
     expect(row("Quiet row")).not.toContain("text-harness-claude");
     expect(row("Loud row")).toContain("text-harness-claude");
@@ -512,5 +515,66 @@ describe("BridgeSidebar without the worker panel", () => {
   it("offers account Memory with no workspace at all", () => {
     // Account memory is not workspace memory; a plain chat reaches it too.
     expect(render({ workspaces: [] })).toContain("Memory");
+  });
+});
+
+describe("fork breadcrumbs in the session rail", () => {
+  // A fork is a top-level chat with `forkParentSessionId` set. It must never
+  // carry `parentSessionId` — App's chat list filters those out as workers —
+  // so these fixtures are shaped the way the backend actually writes a fork.
+  const forkOf = (id: string, source: string, label: string) =>
+    session(id, { label, forkParentSessionId: source, forkParentEntryId: "entry-7", depth: 0 });
+
+  it("labels a forked chat with its source and offers a jump target", () => {
+    const chats = [session("parent-1", { label: "Kyoto" }), forkOf("fork-1", "parent-1", "Alternate path")];
+    const html = render({ chats });
+    expect(html).toContain("forked from Kyoto");
+    expect(html).toContain("Jump to parent Kyoto");
+  });
+
+  it("falls back to a generic label when the source row is unknown", () => {
+    const html = render({ chats: [forkOf("fork-1", "gone", "Orphan")] });
+    expect(html).toContain("forked from session");
+  });
+
+  it("leaves ordinary chats unchanged", () => {
+    const html = render({ chats: [session("chat-1", { label: "Plain" })] });
+    expect(html).not.toContain("forked from");
+  });
+
+  it("never treats a delegated worker as a fork", () => {
+    const chats = [session("parent-1", { label: "Kyoto" }), session("worker-1", { label: "Worker", parentSessionId: "parent-1", depth: 1 })];
+    const html = render({ chats });
+    expect(html).not.toContain("forked from");
+  });
+
+  it("keeps the status and timestamp a fork row would otherwise lose", () => {
+    const chats = [session("parent-1", { label: "Kyoto" }), forkOf("fork-1", "parent-1", "Alternate path")];
+    const html = render({ chats, activeSessionId: "fork-1" });
+    const row = html.split("group/row").find(chunk => chunk.includes("Alternate path")) ?? "";
+    expect(row).toContain("forked from Kyoto");
+    // The status dot and the relative time still render on the fork's row.
+    expect(row).toMatch(/rounded-full/);
+    expect(row).toMatch(/tabular-nums/);
+  });
+
+  it("puts the jump control beside the row button, not inside it", () => {
+    const chats = [session("parent-1", { label: "Kyoto" }), forkOf("fork-1", "parent-1", "Alternate path")];
+    const html = render({ chats });
+    // A <button> may not contain another <button>. Walk the row's markup and
+    // assert the nesting never exceeds one.
+    let depth = 0;
+    let deepest = 0;
+    for (const token of html.match(/<button|<\/button>/g) ?? []) {
+      if (token === "<button") { depth += 1; deepest = Math.max(deepest, depth); } else { depth -= 1; }
+    }
+    expect(deepest).toBe(1);
+  });
+});
+
+describe("portable chat ids", () => {
+  it("offers a copy-id button on every row", () => {
+    const html = render({ chats: [session("chat-1", { label: "Kyoto" })] });
+    expect(html).toContain('Copy chat ID chat-1');
   });
 });

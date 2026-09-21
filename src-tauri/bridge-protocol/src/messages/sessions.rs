@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use super::common::HarnessId;
+use super::common::{HarnessId, JsSafeU64};
+use super::forest::SessionForestSnapshot;
 use super::state::BridgeState;
 
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
@@ -229,6 +230,100 @@ pub struct CreateAsideChatResult {
     pub session_id: String,
     pub handoff_status: String,
     pub fidelity: String,
+}
+
+/// `sessions/fork_session`'s request: branch a session's conversation at an
+/// entry into a new, independent session that begins with the parent's
+/// history up to that point. The parent is never modified.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForkSessionParams {
+    pub session_id: String,
+    pub entry_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Inherits the parent's harness when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    /// Inherits the parent's model when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `"shared"` — both sessions work the same repo path (default).
+    /// `"new"` — the fork gets its own Git worktree and branch.
+    pub worktree_policy: String,
+}
+
+/// `sessions/fork_session`'s result: app state (the sidebar can pick the fork
+/// up immediately), the exact committed fork id, and the fork's own forest
+/// snapshot so the UI can switch to it in one round trip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkSessionResult {
+    pub state: BridgeState,
+    pub session_id: String,
+    pub snapshot: SessionForestSnapshot,
+    pub fidelity: String,
+}
+
+/// `sessions/resolve_reference`'s request: turn a session id, a forest entry
+/// id, a `brio_…` public alias, or an `@session:…` mention into a typed
+/// descriptor the UI can render as a chip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveReferenceParams {
+    pub id: String,
+}
+
+/// The typed answer. `Unknown` is the single shape for both "this id belongs
+/// to nothing" and "this id exists but you may not see it" — resolution never
+/// leaks existence across the authorization boundary.
+/// `rename_all` on a tagged enum renames the *variants*, never the fields
+/// inside struct variants, and schemars 0.8 does not understand serde's
+/// `rename_all_fields`. So each multi-word field is renamed explicitly —
+/// otherwise this is the one snake_case shape on an all-camelCase wire, and
+/// the generated schema and the serialized payload disagree silently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolveReferenceResult {
+    Session {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        label: String,
+        harness: String,
+        #[serde(rename = "workspaceId")]
+        workspace_id: Option<String>,
+        #[serde(rename = "parentSessionId")]
+        parent_session_id: Option<String>,
+        depth: i64,
+        #[serde(rename = "restorationMode")]
+        restoration_mode: String,
+        #[serde(rename = "continuationFidelity")]
+        continuation_fidelity: String,
+        #[serde(rename = "activeEntryId")]
+        active_entry_id: Option<String>,
+        #[serde(rename = "latestCheckpointEntryId")]
+        latest_checkpoint_entry_id: Option<String>,
+        #[serde(rename = "updatedAt")]
+        updated_at: Option<String>,
+        authorized: bool,
+    },
+    Entry {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "entryId")]
+        entry_id: String,
+        #[serde(rename = "entryKind")]
+        entry_kind: String,
+        sequence: i64,
+        summary: String,
+        #[serde(rename = "createdAt")]
+        created_at: String,
+        authorized: bool,
+    },
+    Unknown {
+        authorized: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -499,6 +594,68 @@ pub struct SearchSessionEntriesParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 50))]
     pub limit: Option<u32>,
+    /// How many ranked hits to skip. The next page of a long forest; omitted
+    /// requests start at the first hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+}
+
+/// Which part of the forest `sessions/export_session_transcript` writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptExportScope {
+    /// Only the entries on the head's active branch — the conversation as it
+    /// currently reads.
+    ActiveBranch,
+    /// Every entry of the session, abandoned branches included — what actually
+    /// happened rather than what is currently shown.
+    Forest,
+}
+
+impl Default for TranscriptExportScope {
+    fn default() -> Self {
+        Self::Forest
+    }
+}
+
+/// Write one session's durable record out as newline-delimited JSON.
+///
+/// The export is a file, never an inline string: a long session is megabytes,
+/// and a result that large belongs on disk rather than in a JSON-RPC frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportSessionTranscriptParams {
+    pub session_id: String,
+    /// Omitted requests export the whole forest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<TranscriptExportScope>,
+    /// Whether to include the hidden control entries — turn boundaries, usage
+    /// and plan updates. Omitted requests include them: they are the part of
+    /// the record the rendered transcript cannot show.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_hidden: Option<bool>,
+    /// An absolute path to write. Omitted requests land under the data
+    /// directory's `exports/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+}
+
+/// Mirrors `bridge_core::transcript_export::TranscriptExport` — where the file
+/// landed and enough about it to verify the write without reopening it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSessionTranscriptResult {
+    pub session_id: String,
+    pub path: String,
+    pub scope: TranscriptExportScope,
+    pub schema_version: JsSafeU64,
+    pub line_count: JsSafeU64,
+    pub entry_count: JsSafeU64,
+    pub bytes: JsSafeU64,
+    /// `sha256:<hex>` over the entry lines only, so the digest is stable
+    /// against the export timestamp in the header.
+    pub digest: String,
+    pub exported_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -517,6 +674,15 @@ pub struct SearchSessionEntriesResult {
     pub session_id: String,
     pub query: String,
     pub hits: Vec<SessionRecallHit>,
+    /// Where this page started, echoed so a caller paging through a long
+    /// forest does not have to remember what it asked for.
+    #[serde(default)]
+    pub offset: u32,
+    /// Whether a further page exists. Answered by asking the database for one
+    /// more row than the page needs, so it is a fact rather than the guess
+    /// "the page came back full".
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 /// Mirrors `bridge_core::secret_interception::SecretInterception` — one

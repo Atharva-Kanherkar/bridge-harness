@@ -93,6 +93,22 @@ notifications![
     // client that missed it still sees the final rollup on its next refetch —
     // replaying a stale "CI finished" toast would be worse than dropping it.
     (GithubCiFinished, "github/ci_finished", Transient),
+    // A connector message Bridge had not seen before. Transient, like the CI
+    // rollup above, and for the same reason: at-most-once is guaranteed by the
+    // inbox ledger's unique insert rather than by replay, and a client that
+    // missed the live frame still sees the item on its next `connectors/inbox`
+    // read. Replaying yesterday's arrival as a fresh toast would be worse than
+    // dropping it.
+    (ConnectorItemArrived, "connectors/item_arrived", Transient),
+    // The rendered card for one already-announced item landed. The toast
+    // upgrades in place; the authoritative card comes from `connectors/inbox`.
+    (ConnectorCardReady, "connectors/card_ready", Transient),
+    // An approved reply or reaction finished. Carries whether it succeeded,
+    // because the item was claimed before the send and a failure is the user's
+    // cue to redo it.
+    (ConnectorItemResolved, "connectors/item_resolved", Transient),
+    // Refetch hint: something in one family's inbox changed.
+    (ConnectorInboxChanged, "connectors/inbox_changed", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent

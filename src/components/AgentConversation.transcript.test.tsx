@@ -326,7 +326,8 @@ describe("three layers", () => {
   });
 });
 
-describe("run trailer", () => {  const parallelCommand = (id: number, at: string) =>
+describe("run trailer", () => {
+  const parallelCommand = (id: number, at: string) =>
     event(id, "command.completed", {
       title: `cargo test ${id}`,
       createdAt: at,

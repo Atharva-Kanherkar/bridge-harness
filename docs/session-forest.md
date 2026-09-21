@@ -34,7 +34,7 @@ FTS5 indexes conversational `session_entries` (`user.message`, `assistant.messag
 
 The protocol method is `sessions/search_session_entries`. `/recall <query>` is Bridge-handled (it never auto-switches harness) and prints hits as a local assistant card. The session toolbar search box is the same API. Hits stay in this session even after the chat has ended.
 
-This is not the memory ledger and not router learning. Account pins are a separately keyed product: named `account:local`, explicit save only. See [memory-ledger.md](./memory-ledger.md).
+This is not the memory ledger and not router learning. Account memory is a separately keyed product named `account:local`; it can come from an explicit pin, a reviewed extraction, or the separately controlled automatic-extraction mode. See [memory-ledger.md](./memory-ledger.md).
 
 ## Three independent trees
 

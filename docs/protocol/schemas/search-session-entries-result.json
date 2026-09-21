@@ -32,11 +32,23 @@
     }
   },
   "properties": {
+    "hasMore": {
+      "default": false,
+      "description": "Whether a further page exists. Answered by asking the database for one more row than the page needs, so it is a fact rather than the guess \"the page came back full\".",
+      "type": "boolean"
+    },
     "hits": {
       "items": {
         "$ref": "#/definitions/SessionRecallHit"
       },
       "type": "array"
+    },
+    "offset": {
+      "default": 0,
+      "description": "Where this page started, echoed so a caller paging through a long forest does not have to remember what it asked for.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "query": {
       "type": "string"

@@ -682,7 +682,7 @@ fn usage_payloads_mirror_core() {
         cost_source: CostSource::ModelPriced,
         records: 2,
         unpriced_records: 0,
-        sessions: 1,
+        sessions: Some(1),
     };
     assert_mirrors::<wire::UsageSummaryResult>(&UsageSummary {
         since_day: "2026-01-01".into(),
@@ -692,6 +692,7 @@ fn usage_payloads_mirror_core() {
         buckets: vec![bucket(None), bucket(Some("2026-01-01T05:00:00Z"))],
         sources: vec![UsageSummarySource {
             id: "claude-home".into(),
+            origin: Default::default(),
             agent: "claude".into(),
             provider: "anthropic".into(),
             coverage_state: "partial".into(),
@@ -733,6 +734,7 @@ fn usage_history_payloads_mirror_core() {
     assert_same_wire_value(&ImporterCapability::Unsupported, &wire::UsageImporterCapability::Unsupported);
     assert_mirrors::<wire::ListHistorySourcesResult>(&vec![crate::usage_history::UsageHistorySource {
         id: "claude-0123456789abcdef".into(),
+        origin: Default::default(),
         agent: "claude".into(),
         provider: "anthropic".into(),
         location: "/Users/me/.claude/projects".into(),
@@ -1060,6 +1062,8 @@ fn populated_session() -> model::Session {
         title: Some("Fix tests".into()),
         kind: "orchestrator".into(),
         cwd: Some("/repos/demo".into()),
+        fork_parent_session_id: Some("s-0".into()),
+        fork_parent_entry_id: Some("e-9".into()),
     }
 }
 

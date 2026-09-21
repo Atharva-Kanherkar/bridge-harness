@@ -2,12 +2,12 @@ import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, Square, SquareTerminal, Wrench, X } from "lucide-react";
-import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
-import { describeError } from "../errors";
+import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
 import { FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
@@ -30,6 +30,17 @@ type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
+}
+
+/**
+ * What the pane knows about the session an error row sits in: its current
+ * runtime and that runtime's usage meter. Both are fallbacks — see `ErrorCard`
+ * for why a row's own runtime wins.
+ */
+interface ErrorContext {
+  harness?: string;
+  provider?: string;
+  snapshot: UsageSnapshot | null;
 }
 
 // A conversation of prose messages, live tool-call cards, clickable thinking,
@@ -277,6 +288,20 @@ function SubagentBlock({ agentType, prompt, output, live }: { agentType?: string
 /// the patch was sliced to its last 8,000 characters, which cut hunks in half
 /// and left the gutter lying about line numbers. What the model wrote is the
 /// most important thing on the screen, so it is what the row shows by default.
+/// Marks a row as a subagent's work. Achromatic, like the rest of the chrome:
+/// the point is attribution, not emphasis. The full task title travels in the
+/// tooltip so the label can stay one word.
+function SubagentChip({ item }: { item: ConversationItem }) {
+  const source = subagentSource(item);
+  const label = subagentLabel(item);
+  if (!source || !label) return null;
+  return <span
+    data-subagent={source.sessionId}
+    title={source.title ? `Subagent: ${source.title}` : "Subagent work"}
+    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-px text-[10px] leading-4 text-muted-foreground"
+  ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span>;
+}
+
 const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) {
   const call = toolCallDisplay(item);
   const live = call.status === "running";
@@ -318,6 +343,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
           >
             <span className="shrink-0 text-muted-foreground" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
             <span className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
+            <SubagentChip item={item}/>
           </button>
           {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
           {path && (fileRef
@@ -582,7 +608,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -657,7 +683,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // An image-only send has no words yet — its optimistic row is the image, so
   // an empty-text row would render as a blank bubble.
   const optimistic = pendingMessages.filter(text => text.trim().length > 0 && !existingUserTexts.has(text.trim()));
-  const errorContext = { provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
+  // The session's *current* runtime, and its meter. Only a fallback: a row
+  // that knows which runtime raised it outranks both (see `ErrorCard`).
+  const errorContext: ErrorContext = { harness: session?.harness ?? undefined, provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
   // Content-addressed, occurrence-counted keys for the optimistic bubbles: when
   // an earlier pending message lands as a real message, the bubbles after it
   // keep their identity — one ghost fades, and no survivor flips its text.
@@ -724,7 +752,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} errorContext={errorContext}/>
+              <ItemView item={entry.item} sessionId={session?.id} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -1118,11 +1146,46 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
 /// second, and a settled message that re-renders on each of them is most of
 /// what made a hundred-step turn stop responding. Streaming prose still
 /// re-renders on every chunk, because its text length moves.
-const MessageRow = memo(function MessageRow({ item, onRemember }: { item: ConversationItem; onRemember?: (text: string) => void }) {
+const MessageRow = memo(function MessageRow({ item, sessionId, onRemember, onForkSession, onRewind, rewindable }: { item: ConversationItem; sessionId?: string; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean }) {
+  const rememberButton = item.role === "assistant" && onRemember && item.status !== "streaming" && item.text.trim() !== "" ? (
+    <button
+      type="button"
+      aria-label="Remember this"
+      title="Remember this"
+      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:opacity-100"
+      onClick={() => onRemember(item.text)}
+    ><Pin size={12} aria-hidden="true" />Remember this</button>
+  ) : null;
+  const forkButton = onForkSession && item.entryId && item.status !== "streaming" ? (
+    <button
+      type="button"
+      aria-label="Fork from here"
+      title="Fork this conversation at this message"
+      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+      onClick={() => onForkSession(sessionId ?? "", item.entryId!)}
+    ><GitFork size={12} aria-hidden="true" />Fork from here</button>
+  ) : null;
+  const rewindButton = onRewind && item.entryId && item.status !== "streaming" && rewindable ? (
+    <button
+      type="button"
+      aria-label="Rewind to here"
+      title="Make this message the conversation head (files are not changed)"
+      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+      onClick={() => onRewind(sessionId ?? "", item.entryId!)}
+    ><RotateCcw size={12} aria-hidden="true" />Rewind to here</button>
+  ) : null;
+  const hoverActions = rememberButton || forkButton || rewindButton ? (
+    <div className="mt-1 flex flex-wrap items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {rememberButton}
+      {forkButton}
+      {rewindButton}
+    </div>
+  ) : null;
   if (item.role === "user") {
     const attachments = attachmentUris(item.data);
     return <div className={BUBBLE}>
       <MentionText text={item.text}/>
+      {hoverActions}
       {attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
         {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
       </div>}
@@ -1131,24 +1194,17 @@ const MessageRow = memo(function MessageRow({ item, onRemember }: { item: Conver
   // No bubble, no card: the agent writes straight onto the canvas, in body
   // ink a step under `foreground` so prose reads as text rather than chrome.
   return <div className="group w-full min-w-0 text-[14px] text-body">
+    {subagentSource(item) && <div className="mb-1"><SubagentChip item={item}/></div>}
     {/* A reply whose first token has not landed is the same statement a
         streaming thought makes, so it draws the same mark. */}
     {isStreamingText(item.status) && !item.text.trim() ? <ThinkingMark/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
-    {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
-      <button
-        type="button"
-        aria-label="Remember this"
-        title="Remember this"
-        className="mt-1 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-        onClick={() => onRemember(item.text)}
-      ><Pin size={12} aria-hidden="true" />Remember this</button>
-    )}
+    {hoverActions}
   </div>;
-}, (previous, next) => previous.onRemember === next.onRemember && sameItem(previous.item, next.item));
+}, (previous, next) => previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
 
-function ItemView({ item, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, sessionId, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
-  if (item.type === "message") return <MessageRow item={item} onRemember={onRemember}/>;
+  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -1175,9 +1231,18 @@ function ItemView({ item, workers, now, readOnly, onResolve, onAnswerQuestion, o
 /// arrives a beat after the card, so the eye is drawn to the mark that says
 /// *what kind* of interruption this is. No shake — a graphite-and-paper
 /// transcript should not flinch.
-function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
-  const described = describeError(item.text, errorContext);
-  const isUsage = described.kind === "usage-limit";
+function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContext?: ErrorContext }) {
+  // The runtime that raised this failure, which is not necessarily the one the
+  // chat is set to now: switching a chat from Codex to OpenCode used to relabel
+  // every Codex failure above the switch as an OpenCode one, and hand it
+  // OpenCode's meter to quote a reset from. A row that came in with its own
+  // adapter stamp keeps it, and the session's meter only travels with it when
+  // the two agree.
+  const harness = item.harness ?? errorContext?.harness;
+  const provider = providerLabel(harness) ?? errorContext?.provider;
+  const sameRuntime = !item.harness || !errorContext?.harness || item.harness === errorContext.harness;
+  const described = describeError(item.text, { provider, snapshot: sameRuntime ? errorContext?.snapshot : null });
+  const isUsage = isThrottleKind(described.kind);
   const transition = useMotionTransition(MOTION_DURATION.tick, MOTION_DURATION.reveal);
   // A rate limit is a wait, not a failure — it gets the tick. A real error
   // is the one place a full wash is warranted.
@@ -1286,7 +1351,7 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
       <div data-thinking="streaming" className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
         <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true"/>
         <div className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 text-[12px] font-medium text-muted-foreground">Thinking…<ThinkingMark/></span>
+          <span className="flex items-center gap-2 text-[12px] font-medium text-muted-foreground">Thinking…<ThinkingMark/><SubagentChip item={item}/></span>
           {lines.length > 0 && <div className="mt-1.5 space-y-0.5">
             {lines.map((line, index) => <p key={index} className={`whitespace-pre-wrap break-words text-[12px] leading-relaxed ${index === lines.length - 1 ? "text-muted-foreground" : "text-muted-foreground"}`}>{line}</p>)}
           </div>}
@@ -1302,6 +1367,7 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
           <span className="font-medium">{label}</span>
           {lastLine && <span className="ml-2 font-normal text-muted-foreground">{lastLine}</span>}
         </span>
+        <SubagentChip item={item}/>
         <ChevronRight size={12} className="ml-auto shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true"/>
       </summary>
       <div className="border-t border-border px-3.5 py-3 text-muted-foreground sm:px-4">

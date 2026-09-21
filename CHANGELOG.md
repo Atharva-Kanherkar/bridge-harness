@@ -1,8 +1,35 @@
 # Changelog
 
-## Unreleased
+## [0.5.10] - 2026-09-21
 
-### 0.5.6 candidate
+- Notify on macOS when a session needs attention. The glass toast does not reset while unrelated UI renders, and a refused connector poll stays queued. The inbox can include mentions that are already read.
+- Bring the usage dot back to the chat and headline the tightest window. Usage refresh stays isolated per account.
+- Mission Control can close a chat and hide worker sessions. The live badge counts active pinned workers.
+- Offer Connect when GitHub has no resolved repository, and ask where a pasted GitHub link should open.
+- Propose memory extraction on the chat's own model, and promote safe memories automatically.
+- Bound snapshot frames so a full payload, including non-entry overhead, stays inside the string cap.
+- Show Codex and OpenCode file changes as named rows and keep patch newlines.
+- Stop reloading the session forest on every Claude frame, and time tools from execution.
+- Keep OpenCode turns attached to the session tree, reconnect the event stream with backoff, and label subagent rows. A stall watchdog treats provider heartbeats as liveness rather than progress.
+- Review a pull request with a configurable reviewer. OpenCode reviews run from an isolated worktree.
+- Put the sidebar archive action before the harness mark.
+
+## [0.5.9] - 2026-09-16
+
+- Include migration 58 in the release so databases created by the current Bridge build open successfully.
+- Publish a new app version after the schema change so macOS does not retain or select the older 0.5.8 DMG.
+
+## [0.5.8] - 2026-09-12
+
+- Encode the existing updater public key as the minisign text box Tauri requires. The 0.5.7 build was rejected before publication; no signing key was replaced.
+
+- Persist worker-result notifications with their canonical result and deliver the complete report at the parent's next turn boundary. Busy or disconnected parents no longer lose a one-shot notification.
+- Recover completed worker reports through peek, keep pending deliveries across restarts, and preserve parent runtimes while work or result delivery is pending.
+- Distinguish request throttling from usage exhaustion and API-key failures from subscription sign-in failures.
+- Preserve the originating provider on historical errors and render each live/durable failure once without hiding later identical retries.
+- External terminal credential changes still require provider-process refresh; this release does not claim to fix stale credentials in a running provider.
+
+## [0.5.6] - 2026-09-11
 
 - Send pasted and uploaded images to Codex, OpenCode, and image-capable Cursor sessions.
 - Offer agent installation and provider sign-in during setup, with login recovery that preserves the draft.

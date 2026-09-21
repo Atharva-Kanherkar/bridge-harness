@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ BarChart3, Copy, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, GitFork, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -9,6 +9,7 @@ import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
+import { toPublicAlias } from "../referenceChip";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 import {
@@ -55,6 +56,8 @@ function ChatRow({
   time,
   onClick,
   onArchive,
+  forkLabel,
+  onJumpToParent,
 }: {
   chat: Session;
   active: boolean;
@@ -62,6 +65,8 @@ function ChatRow({
   time: string | null;
   onClick: () => void;
   onArchive?: () => void;
+  forkLabel?: string;
+  onJumpToParent?: () => void;
 }) {
   const name = chatName(chat);
   const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
@@ -83,36 +88,64 @@ function ChatRow({
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
+        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] text-left font-sans transition-colors active:scale-[0.99]",
         indented ? "pl-7" : "pl-2",
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+        {/* The fork origin is extra context, not a replacement for the status
+            line: a fork still has to show whether it is working and when it
+            last moved, like any other chat. */}
         <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
           {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
           {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+          {forkLabel && <>
+            {(status || time) && <span aria-hidden="true">·</span>}
+            <GitFork size={9} strokeWidth={1.6} className="shrink-0 text-faint" aria-hidden="true" />
+            <span className="truncate">forked from {forkLabel}</span>
+          </>}
         </span>
       </span>
-      {/* Muted at rest: a column of full-tint marks is the loudest thing in the
-          rail and the chrome stays achromatic. The active row earns its tint. */}
-      <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground")} />
     </button>
-    {/* Revealed on hover or keyboard focus, never at rest: a column of archive
-        buttons down the rail would compete with the chat names for attention,
-        and this is a rarely-wanted action. Achromatic like the rest of the
-        chrome — it is not a warning, it is filing something away. */}
+    {/* Revealed on hover or keyboard focus: the copy-id button, then the
+        archive button. The id copies as the public `brio_…` alias the
+        composer recognizes. Achromatic like the rest of the chrome. */}
+    <button
+      type="button"
+      onClick={event => { event.stopPropagation(); void navigator.clipboard?.writeText(toPublicAlias(chat.id)); }}
+      title="Copy chat ID"
+      aria-label={`Copy chat ID ${chat.id}`}
+      className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+    >
+      <Copy size={12} strokeWidth={1.7} aria-hidden="true" />
+    </button>
+    {/* Sibling of the row button, never a descendant of it: a <button> inside
+        a <button> is invalid HTML and browsers treat the inner control
+        unpredictably. */}
+    {onJumpToParent && forkLabel && (
+      <button
+        type="button"
+        onClick={event => { event.stopPropagation(); onJumpToParent(); }}
+        title={`Jump to ${forkLabel}`}
+        aria-label={`Jump to parent ${forkLabel}`}
+        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+      >
+        <GitFork size={12} strokeWidth={1.7} aria-hidden="true" />
+      </button>
+    )}
     {onArchive && (
       <button
         type="button"
         onClick={event => { event.stopPropagation(); onArchive(); }}
         title={`Archive ${name}`}
         aria-label={`Archive ${name}`}
-        className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
       >
         <Archive size={12} strokeWidth={1.7} aria-hidden="true" />
       </button>
     )}
+    <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
   );
 }
@@ -654,7 +687,12 @@ export function BridgeSidebar({
                     onToggle={() => toggleFold(group.key)}
                   />
                 )}
-                {rows.map(chat => (
+                {rows.map(chat => {
+                // `forkParentSessionId`, not `parentSessionId`: the latter
+                // names a delegated worker, and workers never reach this list.
+                const forkedFrom = chat.forkParentSessionId;
+                const source = forkedFrom ? chats.find(candidate => candidate.id === forkedFrom) : undefined;
+                return (
                   <ChatRow
                     key={chat.id}
                     chat={chat}
@@ -663,8 +701,11 @@ export function BridgeSidebar({
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
+                    forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
+                    onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                   />
-                ))}
+                );
+              })}
                 {capped && !folded && (
                   <button
                     type="button"

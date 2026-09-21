@@ -209,6 +209,7 @@ pub fn gather(core: &Arc<BridgeCore>, window_days: i64) -> Result<InsightInput, 
                 time_zone: time_zone.clone(),
                 workspace_id: None,
                 include_imported: true,
+                include_dashboard: false,
                 since_time: None,
                 until_time: None,
             },
@@ -268,7 +269,7 @@ pub fn build_input(
         entry.processed_tokens += tokens;
         entry.cost_microusd += bucket.cost_microusd;
         entry.records += bucket.records;
-        entry.sessions += bucket.sessions;
+        entry.sessions += bucket.sessions.unwrap_or(0);
         let day = by_day.entry(bucket.day.clone()).or_insert_with(|| wire::UsageInsightDay {
             day: bucket.day.clone(),
             processed_tokens: 0,
@@ -818,7 +819,7 @@ mod tests {
             cost_source: CostSource::ModelPriced,
             records: 1,
             unpriced_records: 0,
-            sessions: 1,
+            sessions: Some(1),
         }
     }
 

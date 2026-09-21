@@ -7,6 +7,17 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+test("updater public key is an encoded minisign box, not raw key bytes", () => {
+  const config = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json")));
+  const box = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(config.plugins.updater.pubkey, "base64"));
+  const [comment, key] = box.trim().split(/\r?\n/);
+  assert.match(comment, /^untrusted comment: /);
+  const bytes = Buffer.from(key, "base64");
+  assert.equal(bytes.length, 42);
+  assert.equal(bytes.subarray(0, 2).toString(), "Ed");
+  assert.equal(key, "RWT4/NpOZ0FS0jYSgOK3Tzp5hECYrogjQl7/R0U7FZ2jAtKFVR1ma3eg", "encoding repair must preserve the existing signing key");
+});
+
 const credentialNames = ["APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID", "APPLE_API_KEY", "APPLE_API_KEY_PATH", "APPLE_API_ISSUER", "APPLE_SIGNING_IDENTITY", "BRIDGE_RELEASE_ENV"];
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "bridge-release-test-"));
@@ -106,7 +117,7 @@ test("sidecar staging invalidates changed locks and keeps the last complete tree
   cpSync(join(root, "scripts/prepare-claude-sidecar.sh"), script);
   const src = join(dir, "sidecar/claude-agent");
   mkdirSync(src, { recursive: true });
-  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs"]) writeFileSync(join(src, name), "export {};\n");
+  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs", "usage.mjs"]) writeFileSync(join(src, name), "export {};\n");
   writeFileSync(join(src, "options.mjs"), "import './read-only.mjs';\n");
   writeFileSync(join(src, "package.json"), '{"dependencies":{"@anthropic-ai/claude-agent-sdk":"1.0.0"}}');
   writeFileSync(join(src, "package-lock.json"), '{"fixtureLock":1}');
@@ -175,7 +186,7 @@ printf '%s' 'new target build' > "$ALTERNATE_APP/build-marker"
   const events = join(dir, "events");
   writeFileSync(events, "");
   const out = spawnSync("/bin/sh", [join(scripts, "release-dmg.sh")], {
-    env: { ...env, BRIDGE_RELEASE_ENV: join(dir, "no-release-env"), APPLE_ID: "example@test.invalid", APPLE_PASSWORD: "FIXTURE", APPLE_TEAM_ID: "TESTTEAM", ALTERNATE_APP: join(dir, "other-target/Bridge.app"), EVENTS: events, TMPDIR: dir }, encoding: "utf8",
+    env: { ...env, BRIDGE_RELEASE_ENV: join(dir, "no-release-env"), APPLE_ID: "example@test.invalid", APPLE_PASSWORD: "FIXTURE", APPLE_TEAM_ID: "TESTTEAM", TAURI_SIGNING_PRIVATE_KEY: "fixture-key", ALTERNATE_APP: join(dir, "other-target/Bridge.app"), EVENTS: events, TMPDIR: dir }, encoding: "utf8",
   });
   assert.notEqual(out.status, 0);
   assert.match(out.stderr, /did not produce the expected Bridge.app/);
@@ -190,6 +201,10 @@ test("GitHub release remains a draft if uploading its verified assets fails", (t
   const script = step.split("        run: |\n")[1].split("\n").map(line => line.replace(/^          /, "")).join("\n");
   mkdirSync(join(dir, "src-tauri"));
   writeFileSync(join(dir, "src-tauri/tauri.conf.json"), '{"version":"0.5.2"}');
+  const arch = process.arch === "arm64" ? "aarch64" : "x64";
+  const dmgDir = join(dir, "src-tauri/target/release/bundle/dmg");
+  mkdirSync(dmgDir, { recursive: true });
+  writeFileSync(join(dmgDir, `Bridge_0.5.2_${arch}.app.tar.gz.sig`), "fixture-signature");
   const events = join(dir, "events");
   executable(join(dir, "bin/gh"), `#!/usr/bin/env node
 const fs = require("fs"), args = process.argv.slice(2);

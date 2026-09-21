@@ -105,6 +105,7 @@ export function summaryParams(window: UsageWindow, includeImported: boolean): Su
     sinceTime: window.sinceTime ?? null,
     untilTime: window.untilTime ?? null,
     includeImported,
+    includeDashboard: includeImported,
     workspaceId: null,
   };
 }

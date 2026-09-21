@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./types";
+import { authModeFromText } from "./errors";
 import { readWireKind } from "./transcript/wire";
 import type { UsageProvider } from "./usage";
 
@@ -6,6 +7,11 @@ import type { UsageProvider } from "./usage";
  * be a policy refusal and must never open an unrelated login flow. */
 export function needsProviderSignIn(harness: string, message: string): UsageProvider | null {
   if (!["codex", "claude", "cursor", "opencode"].includes(harness)) return null;
+  // A rejected API key is not an expired session. Opening the subscription
+  // sign-in for it sends the user through a flow that cannot fix their key —
+  // and, for someone who just replaced a subscription with a key on purpose,
+  // undoes the thing they meant to do.
+  if (authModeFromText(message) === "api-key") return null;
   const expired = /(?:token|credentials?|session).{0,20}expired|expired (?:token|credentials?)|not (?:logged|signed) in|authentication (?:failed|required)|please (?:log|sign) ?in|re-?authenticate|invalid (?:access|refresh) token|\b401\s+(?:unauthorized|authentication)|refresh token.{0,80}(?:already used|revoked)/i;
   return expired.test(message) ? harness as UsageProvider : null;
 }

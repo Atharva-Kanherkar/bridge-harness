@@ -7,7 +7,7 @@ import type { UsageProvider } from "../usage";
 import { isAbsent, sourceLine, stateLabel, useManagedAgents } from "./ManagedAgentsPanel";
 import { HarnessMark } from "./harnessMarks";
 import { ModelProfileEditor } from "./ModelProfileEditor";
-import { ProviderLoginPane } from "./UsageWidget";
+import { ProviderLoginPane } from "./ProviderLoginPane";
 
 type Stage = "agents" | "models";
 

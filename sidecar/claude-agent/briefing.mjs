@@ -27,30 +27,54 @@ function allow(toolUseID) {
   return { behavior: "allow", ...(toolUseID ? { toolUseID } : {}) };
 }
 
-// The name prefixes that make a connector tool a read under a scoped policy.
+// The verbs that make a connector tool a read under a scoped policy. Matched as
+// a *word*, anywhere in the name — MCP servers namespace by server first
+// (`slack_read_thread`), so a prefix rule recognises no real connector tool.
 // Mirrors READ_TOOL_VERBS in bridge-core/src/briefing_policy.rs — the Rust side
 // is the authority, and a test on each side pins the same vocabulary. Fail
 // closed: an unrecognised verb is not a read.
-const READ_TOOL_VERBS = ["search", "read", "list", "get", "query", "fetch", "find"];
+const READ_TOOL_VERBS = new Set(["search", "read", "list", "get", "query", "fetch", "find"]);
 const MUTATION_WORDS = new Set([
-  "add", "approve", "create", "delete", "edit", "merge", "patch", "post", "publish",
-  "put", "reject", "remove", "send", "set", "update", "write",
+  "add", "approve", "archive", "ban", "create", "delete", "destroy", "edit", "invite", "kick",
+  "merge", "patch", "post", "publish", "put", "reject", "remove", "rename", "schedule", "send",
+  "set", "update", "upload", "write",
 ]);
+
+/** Split `mcp__<server>__<tool>` into its parts, or null. */
+function splitWireName(toolName) {
+  if (!toolName.startsWith("mcp__")) return null;
+  const rest = toolName.slice("mcp__".length);
+  const split = rest.indexOf("__");
+  if (split <= 0) return null;
+  const server = rest.slice(0, split);
+  const original = rest.slice(split + 2);
+  if (!original || original !== original.toLowerCase()) return null;
+  return { server, bare: original, words: original.split(/[_-]/) };
+}
 
 /** Is `mcp__<server>__<tool>` a read-verb tool on a scoped server? */
 function isScopedRead(toolName, readScopeServers) {
-  if (!readScopeServers.size || !toolName.startsWith("mcp__")) return false;
-  const rest = toolName.slice("mcp__".length);
-  const split = rest.indexOf("__");
-  if (split <= 0) return false;
-  const server = rest.slice(0, split);
-  const original = rest.slice(split + 2);
-  const bare = original.toLowerCase();
-  if (!bare || !readScopeServers.has(server)) return false;
-  if (original !== bare || bare.split(/[_-]/).some((word) => MUTATION_WORDS.has(word))) return false;
-  return READ_TOOL_VERBS.some(
-    (verb) => bare === verb || (bare.startsWith(verb) && ["_", "-"].includes(bare[verb.length])),
-  );
+  if (!readScopeServers.size) return false;
+  const parts = splitWireName(toolName);
+  if (!parts || !readScopeServers.has(parts.server)) return false;
+  if (parts.words.some((word) => MUTATION_WORDS.has(word))) return false;
+  return parts.words.some((word) => READ_TOOL_VERBS.has(word));
+}
+
+/**
+ * Is this the one write an approved connector action may perform?
+ *
+ * Reached only when Rust compiled an action policy, which it only does for a run
+ * carrying an `AuthorizedAction` — i.e. after a human approved the literal text
+ * being sent. The gate still checks independently rather than trusting that:
+ * right server, the intent's own word present, no forbidden word anywhere.
+ */
+function isApprovedAction(toolName, actionScope) {
+  if (!actionScope) return false;
+  const parts = splitWireName(toolName);
+  if (!parts || parts.server !== actionScope.server) return false;
+  if (parts.words.some((word) => actionScope.forbiddenWords.has(word))) return false;
+  return parts.words.some((word) => actionScope.permittedWords.has(word));
 }
 
 /**
@@ -58,14 +82,30 @@ function isScopedRead(toolName, readScopeServers) {
  * briefing run has nobody to wait for and a promise that resolves on human input
  * is a hung background job.
  */
-export function makeBriefingGate({ allowedTools = [], readScopeServers = [], maxArgumentBytes = 8192 } = {}) {
+export function makeBriefingGate({
+  allowedTools = [],
+  readScopeServers = [],
+  actionScope = null,
+  maxArgumentBytes = 8192,
+} = {}) {
   // A Set, so matching is exact by construction rather than by a comparison
   // somebody might later relax into a prefix test.
   const reviewed = new Set(allowedTools);
   const scoped = new Set(readScopeServers);
+  const action = actionScope
+    ? {
+        server: actionScope.server,
+        permittedWords: new Set(actionScope.permittedWords ?? []),
+        forbiddenWords: new Set(actionScope.forbiddenWords ?? []),
+      }
+    : null;
   return async function canUseTool(toolName, input, options = {}) {
     const toolUseID = options?.toolUseID;
-    if (!reviewed.has(toolName) && !isScopedRead(toolName, scoped)) {
+    if (
+      !reviewed.has(toolName) &&
+      !isScopedRead(toolName, scoped) &&
+      !isApprovedAction(toolName, action)
+    ) {
       return deny(
         `\`${toolName}\` is not one of the reviewed connector reads for this briefing run`,
         toolUseID,
@@ -103,6 +143,7 @@ export function briefingOptions(briefing, mcpServers = {}) {
   const allowedServers = new Set([
     ...(briefing?.allowedServers ?? []),
     ...(briefing?.readScopeServers ?? []),
+    ...(briefing?.actionScope ? [briefing.actionScope.server] : []),
   ]);
   const scopedMcpServers = Object.fromEntries(
     Object.entries(mcpServers).filter(([name]) => allowedServers.has(name)),
@@ -117,6 +158,7 @@ export function briefingOptions(briefing, mcpServers = {}) {
     canUseTool: makeBriefingGate({
       allowedTools: briefing?.allowedTools ?? [],
       readScopeServers: briefing?.readScopeServers ?? [],
+      actionScope: briefing?.actionScope ?? null,
       maxArgumentBytes: briefing?.maxArgumentBytes,
     }),
     // Only the reviewed connectors, and only as declared here.
