@@ -905,4 +905,69 @@ describe("the dock in the session view", () => {
     expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
     expect(SHORTCUTS.some(shortcut => /Agent Fleet|Work board/i.test(shortcut.label))).toBe(false);
   });
+
+  it("forks a message into a new session and switches to it; rewind asks first", async () => {
+    await mountApp();
+    // Open the demo orchestrator; its transcript carries entry-bearing
+    // messages, so the hover actions exist in the DOM even before a hover
+    // reveals them.
+    await openWorkspaceSession("4");
+    // The transcript projects from the fetched forest; let the effects land.
+    await settle(8);
+    // Earlier tests mutate the shared mock (extra orchestrators, fresh
+    // forests), so find the chat whose transcript carries entry-bearing
+    // messages instead of assuming demo-1 is the first open.
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    await click(forkButton!);
+    expect(container.textContent).toContain("New branch of Orchestrator from this message");
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    // The fork is created and the app switches to it: the conversation header
+    // belongs to the forked session now.
+    expect(container.textContent).toContain("Fork of Orchestrator");
+    const rewind = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Rewind to here")!;
+    expect(rewind).toBeTruthy();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await click(rewind);
+    expect(confirm).toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  // The regression that green per-component tests hid: the chat list drops
+  // every session with a `parentSessionId`, so a fork recorded as a worker
+  // opened once and then became unreachable — and the rail's own breadcrumb
+  // could never render. Drive it through the real App, not the component.
+  it("leaves a fork reachable in the rail, with a breadcrumb back to its source", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(8);
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    const before = chatRows().length;
+    await click(forkButton!);
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    await settle(8);
+    // The rail gained the fork, and it names where it came from.
+    const titles = chatRows().map(row => row.getAttribute("title") ?? "");
+    expect(chatRows().length).toBe(before + 1);
+    expect(titles.some(title => title.includes("Fork of"))).toBe(true);
+    expect(container.textContent).toContain("forked from");
+    // And it is still reachable after navigating away to another chat.
+    const other = chatRows().find(row => !(row.getAttribute("title") ?? "").includes("Fork of"))!;
+    await click(other);
+    await settle(4);
+    expect(chatRows().some(row => (row.getAttribute("title") ?? "").includes("Fork of"))).toBe(true);
+  });
 });

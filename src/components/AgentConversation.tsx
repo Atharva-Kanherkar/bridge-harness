@@ -575,7 +575,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -719,7 +719,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} errorContext={errorContext}/>
+              <ItemView item={entry.item} sessionId={session?.id} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -1113,11 +1113,46 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
 /// second, and a settled message that re-renders on each of them is most of
 /// what made a hundred-step turn stop responding. Streaming prose still
 /// re-renders on every chunk, because its text length moves.
-const MessageRow = memo(function MessageRow({ item, onRemember }: { item: ConversationItem; onRemember?: (text: string) => void }) {
+const MessageRow = memo(function MessageRow({ item, sessionId, onRemember, onForkSession, onRewind, rewindable }: { item: ConversationItem; sessionId?: string; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean }) {
+  const rememberButton = item.role === "assistant" && onRemember && item.status !== "streaming" && item.text.trim() !== "" ? (
+    <button
+      type="button"
+      aria-label="Remember this"
+      title="Remember this"
+      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:opacity-100"
+      onClick={() => onRemember(item.text)}
+    ><Pin size={12} aria-hidden="true" />Remember this</button>
+  ) : null;
+  const forkButton = onForkSession && item.entryId && item.status !== "streaming" ? (
+    <button
+      type="button"
+      aria-label="Fork from here"
+      title="Fork this conversation at this message"
+      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+      onClick={() => onForkSession(sessionId ?? "", item.entryId!)}
+    ><GitFork size={12} aria-hidden="true" />Fork from here</button>
+  ) : null;
+  const rewindButton = onRewind && item.entryId && item.status !== "streaming" && rewindable ? (
+    <button
+      type="button"
+      aria-label="Rewind to here"
+      title="Make this message the conversation head (files are not changed)"
+      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+      onClick={() => onRewind(sessionId ?? "", item.entryId!)}
+    ><RotateCcw size={12} aria-hidden="true" />Rewind to here</button>
+  ) : null;
+  const hoverActions = rememberButton || forkButton || rewindButton ? (
+    <div className="mt-1 flex flex-wrap items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {rememberButton}
+      {forkButton}
+      {rewindButton}
+    </div>
+  ) : null;
   if (item.role === "user") {
     const attachments = attachmentUris(item.data);
     return <div className={BUBBLE}>
       <MentionText text={item.text}/>
+      {hoverActions}
       {attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
         {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
       </div>}
@@ -1130,21 +1165,13 @@ const MessageRow = memo(function MessageRow({ item, onRemember }: { item: Conver
     {/* A reply whose first token has not landed is the same statement a
         streaming thought makes, so it draws the same mark. */}
     {isStreamingText(item.status) && !item.text.trim() ? <ThinkingMark/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
-    {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
-      <button
-        type="button"
-        aria-label="Remember this"
-        title="Remember this"
-        className="mt-1 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-        onClick={() => onRemember(item.text)}
-      ><Pin size={12} aria-hidden="true" />Remember this</button>
-    )}
+    {hoverActions}
   </div>;
-}, (previous, next) => previous.onRemember === next.onRemember && sameItem(previous.item, next.item));
+}, (previous, next) => previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
 
-function ItemView({ item, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: ErrorContext }) {
+function ItemView({ item, sessionId, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
-  if (item.type === "message") return <MessageRow item={item} onRemember={onRemember}/>;
+  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
