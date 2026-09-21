@@ -938,4 +938,36 @@ describe("the dock in the session view", () => {
     expect(confirm).toHaveBeenCalled();
     confirm.mockRestore();
   });
+
+  // The regression that green per-component tests hid: the chat list drops
+  // every session with a `parentSessionId`, so a fork recorded as a worker
+  // opened once and then became unreachable — and the rail's own breadcrumb
+  // could never render. Drive it through the real App, not the component.
+  it("leaves a fork reachable in the rail, with a breadcrumb back to its source", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(8);
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    const before = chatRows().length;
+    await click(forkButton!);
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    await settle(8);
+    // The rail gained the fork, and it names where it came from.
+    const titles = chatRows().map(row => row.getAttribute("title") ?? "");
+    expect(chatRows().length).toBe(before + 1);
+    expect(titles.some(title => title.includes("Fork of"))).toBe(true);
+    expect(container.textContent).toContain("forked from");
+    // And it is still reachable after navigating away to another chat.
+    const other = chatRows().find(row => !(row.getAttribute("title") ?? "").includes("Fork of"))!;
+    await click(other);
+    await settle(4);
+    expect(chatRows().some(row => (row.getAttribute("title") ?? "").includes("Fork of"))).toBe(true);
+  });
 });
