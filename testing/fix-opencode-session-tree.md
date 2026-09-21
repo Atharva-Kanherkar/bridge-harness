@@ -142,3 +142,55 @@ N/A — a live subagent run needs a paid model. Manual path below.
    completes exactly once.
 4. Kill the OpenCode server mid-turn (`kill -9`): exactly one "event stream
    disconnected unexpectedly" card after the retries, never a spinner.
+
+---
+
+# Addendum — GitHub PR reviewer: OpenCode launch and reviewer settings
+
+Added to the same PR after the first review. The GitHub pane's "Review with
+OpenCode" failed with "opencode cannot run a read_only worker", and the
+reviewer's model, effort and instructions were not user-configurable.
+
+## Functional Behavior
+
+- `github/github_review` with `opencode` launches the review worker with
+  `writeMode: isolated` instead of `readOnly` (OpenCode's HTTP transport
+  cannot run in the offline sandbox, by design). A research worker with no
+  owned paths goes through the policy engine's approval gate, so the result
+  is `awaitingApproval` with a message that says so; it never returns
+  `failed` for this reason. Claude and Codex keep `readOnly`.
+- New global reviewer settings (`config/get_reviewer_settings`,
+  `config/save_reviewer_settings`): per harness (`claude`, `codex`,
+  `opencode`) an optional model id and optional effort, plus an optional
+  system prompt. Stored in `configuration_entries` under
+  `kind='reviewer_settings'`, `id='global'`.
+- `github_review` resolves, in order: the reviewer setting for the chosen
+  harness, then the Reviewer model profile (model only when its provider is
+  the chosen harness), then the harness tier default. Effort resolves the same
+  way. An empty system prompt means Bridge's default review instructions; a
+  non-empty one replaces them, with `{number}` expanded to the PR number.
+- Saving rejects unknown harness ids and a prompt longer than 20 000 chars.
+- Settings → Workers gains a "Pull request reviewer" group: model and effort
+  selects per harness (models from each adapter's catalog, "Harness default"
+  and "Profile default" as the empty choices), a prompt textarea whose
+  placeholder is the default text, and a reset control.
+- The GitHub pane's harness menu notes that OpenCode runs in an isolated
+  worktree and needs an approval.
+
+## Unit Tests
+
+- `reviewer_settings::tests::round_trips_and_defaults` — load with nothing stored is the default; save then load returns the saved value.
+- `reviewer_settings::tests::rejects_unknown_harnesses_and_oversized_prompts`.
+- `reviewer_settings::tests::objective_uses_the_default_or_the_custom_prompt_with_the_number_expanded`.
+- `api::tests::reviewer_launch_plan_prefers_settings_then_profile_then_defaults` — pure planning function: model/effort precedence and OpenCode's isolated write mode.
+- Frontend `src/components/settings/ReviewerSettingsSection.test.tsx` — loads settings, edits model/effort/prompt, saves, and never reports a failed save as saved.
+- Frontend `src/components/GitHubPane.test.tsx` — the OpenCode menu item carries the isolated-worktree note.
+
+## Smoke Tests
+
+- `bun run check`, `bun run build`, `bun run test` green; protocol artifacts regenerated (new schemas checked in).
+
+## Manual
+
+- Settings → Workers → Pull request reviewer: pick a model and effort for Codex, save, reload settings and see them persist.
+- GitHub pane → Review → OpenCode: an approval appears on the conversation instead of a launch failure; approving it starts the worker.
