@@ -1,4 +1,4 @@
-use crate::{delegation::{Effort, WorkerRole}, opencode_adapter::OpenCodeSettings, BridgeError};
+use crate::{claude_adapter::WorkerCredentialSource, delegation::{Effort, WorkerRole}, opencode_adapter::OpenCodeSettings, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -208,7 +208,28 @@ fn validate_harness(config: &HarnessConfig) -> Result<(), BridgeError> {
     if config.id == "opencode" {
         opencode_settings(Some(config))?;
     }
+    if config.id == "claude" {
+        claude_settings(Some(config))?;
+    }
     validate_prompt(&config.system_prompt)
+}
+
+/// The Claude harness's typed advanced settings. Unknown fields are refused,
+/// which is also what keeps a pasted token out of the configuration store:
+/// the source names *where* a credential comes from, never the credential.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ClaudeSettings {
+    pub worker_credential_source: WorkerCredentialSource,
+}
+
+pub fn claude_settings(config: Option<&HarnessConfig>) -> Result<ClaudeSettings, BridgeError> {
+    let Some(config) = config else {
+        return Ok(ClaudeSettings::default());
+    };
+    serde_json::from_value(config.advanced.clone()).map_err(|error| {
+        BridgeError::Invalid(format!("invalid Claude Code advanced configuration: {error}"))
+    })
 }
 
 pub fn opencode_settings(config: Option<&HarnessConfig>) -> Result<OpenCodeSettings, BridgeError> {
@@ -1046,6 +1067,45 @@ mod tests {
         ] {
             opencode.advanced = invalid;
             assert!(save_harness(&db, opencode.clone()).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod claude_settings_tests {
+    use super::*;
+    use crate::store;
+
+    fn claude(db: &Connection) -> HarnessConfig {
+        state(db).unwrap().harnesses.into_iter().find(|item| item.id == "claude").unwrap()
+    }
+
+    #[test]
+    fn claude_worker_credential_source_parses_defaults_and_refuses_secrets() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut config = claude(&db);
+        assert_eq!(claude_settings(None).unwrap().worker_credential_source, WorkerCredentialSource::Auto);
+        assert_eq!(claude_settings(Some(&config)).unwrap().worker_credential_source, WorkerCredentialSource::Auto);
+
+        for (wire, expected) in [
+            ("auto", WorkerCredentialSource::Auto),
+            ("environment", WorkerCredentialSource::Environment),
+            ("none", WorkerCredentialSource::Disabled),
+        ] {
+            config.advanced = json!({ "workerCredentialSource": wire });
+            let saved = save_harness(&db, config.clone()).unwrap();
+            let stored = saved.harnesses.into_iter().find(|item| item.id == "claude").unwrap();
+            assert_eq!(claude_settings(Some(&stored)).unwrap().worker_credential_source, expected);
+        }
+
+        for invalid in [
+            json!({ "workerCredentialSource": "keychain-please" }),
+            json!({ "workerCredentialSource": 1 }),
+            json!({ "token": "must-never-be-persisted" }),
+            json!({ "oauthToken": "must-never-be-persisted" }),
+        ] {
+            config.advanced = invalid.clone();
+            assert!(save_harness(&db, config.clone()).is_err(), "accepted {invalid}");
         }
     }
 }

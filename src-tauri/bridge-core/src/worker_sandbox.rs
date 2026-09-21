@@ -10,6 +10,7 @@ use std::{
     process::Command,
 };
 use uuid::Uuid;
+use crate::claude_adapter::WorkerCredentialSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOnlySandbox {
@@ -23,6 +24,11 @@ pub struct ReadOnlySandbox {
     /// from `network_allowed` — the provider runtime itself is cloud-backed
     /// and dies on its first model API call without egress.
     runtime_network_denied: bool,
+    /// Where a Claude worker in this sandbox gets its credential: the sandbox
+    /// redirects `CLAUDE_CONFIG_DIR`, which is exactly what hides the user's
+    /// own sign-in from the sidecar. Defaults to automatic; set from the
+    /// Claude harness configuration at launch.
+    claude_credential_source: WorkerCredentialSource,
 }
 
 impl ReadOnlySandbox {
@@ -65,6 +71,7 @@ impl ReadOnlySandbox {
                 output_dir,
                 network_allowed: request.network_access,
                 runtime_network_denied,
+                claude_credential_source: WorkerCredentialSource::default(),
             })
         })();
         if result.is_err() {
@@ -83,6 +90,15 @@ impl ReadOnlySandbox {
 
     pub fn runtime_network_denied(&self) -> bool {
         self.runtime_network_denied
+    }
+
+    pub fn claude_credential_source(&self) -> WorkerCredentialSource {
+        self.claude_credential_source
+    }
+
+    pub fn with_claude_credential_source(mut self, source: WorkerCredentialSource) -> Self {
+        self.claude_credential_source = source;
+        self
     }
 
     pub fn cleanup(&self) {
@@ -596,5 +612,17 @@ mod tests {
         let mut claude_runtime = claude.runtime;
         claude_runtime.stop(ShutdownReason::Completed);
         claude_sandbox.cleanup();
+    }
+
+    #[test]
+    fn a_sandbox_defaults_to_automatic_credentials_and_carries_a_configured_source() {
+        let workspace = tempfile::tempdir().unwrap();
+        let sandbox = ReadOnlySandbox::create_with_runtime_network("s", workspace.path(), &request(), false).unwrap();
+        assert_eq!(sandbox.claude_credential_source(), WorkerCredentialSource::Auto);
+        let configured = sandbox.clone().with_claude_credential_source(WorkerCredentialSource::Environment);
+        assert_eq!(configured.claude_credential_source(), WorkerCredentialSource::Environment);
+        // Only the source changed; the isolation the sandbox describes did not.
+        assert_eq!(configured.output_dir(), sandbox.output_dir());
+        sandbox.cleanup();
     }
 }
