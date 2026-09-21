@@ -10,8 +10,10 @@
 //!
 //! Params structs first contracted in protocol 0.5 refuse unknown fields. The
 //! 19 params schemas published before 0.5 stay open until the next major
-//! version: minor versions are additive, so a 0.5 server must continue to
-//! accept every document the 0.4 schemas allowed.
+//! version: minor payload-schema changes are additive, so a 0.5 server must
+//! continue to accept every document the 0.4 schemas allowed. Handshake
+//! acceptance can still declare a documented minimum-client boundary when an
+//! older client cannot safely represent new persisted behavior.
 //!
 //! Results are contracted wherever a wire DTO exists — including the
 //! aggregate `BridgeState` and `SessionForestSnapshot` trees. The remaining
@@ -27,6 +29,7 @@ mod browser;
 mod common;
 mod completion;
 mod config;
+mod connectors;
 mod forest;
 mod github;
 mod imports;
@@ -34,6 +37,7 @@ mod learning;
 mod marketplace;
 mod memory;
 mod meter;
+mod usage_overview;
 mod models;
 mod projects;
 mod routing;
@@ -55,6 +59,7 @@ pub use browser::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
+pub use connectors::*;
 pub use forest::*;
 pub use github::*;
 pub use imports::*;
@@ -62,6 +67,7 @@ pub use learning::*;
 pub use marketplace::*;
 pub use memory::*;
 pub use meter::*;
+pub use usage_overview::*;
 pub use models::*;
 pub use projects::*;
 pub use routing::*;
@@ -173,6 +179,14 @@ typed_methods![
     (GithubAct, GithubActParams, GithubActResult),
     (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
+    (GithubConnect, GithubConnectParams, GithubConnectResult),
+    // connectors — in-app surfaces over the harness's own MCP servers
+    (ConnectorList, ConnectorListParams, ConnectorListResult),
+    (ConnectorInbox, ConnectorInboxParams, ConnectorInboxResult),
+    (ConnectorAct, ConnectorActParams, ConnectorActResult),
+    (ConnectorDismiss, ConnectorDismissParams, ConnectorDismissResult),
+    (ConnectorSetSettings, ConnectorSetSettingsParams, ConnectorSetSettingsResult),
+    (ConnectorRefresh, ConnectorRefreshParams, ConnectorRefreshResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),
     (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, BridgeState),
@@ -223,6 +237,7 @@ typed_methods![
     ),
     (CompactSession, CompactSessionParams, UnitResult),
     (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
+    (ExportSessionTranscript, ExportSessionTranscriptParams, ExportSessionTranscriptResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
     (RefreshAccountUsage, _, UnitResult),
@@ -284,6 +299,8 @@ typed_methods![
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
+    (GetReviewerSettings, _, ReviewerSettingsResult),
+    (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
     (UnarchiveChat, UnarchiveChatParams, UnitResult),
     // token and cost usage
@@ -297,6 +314,14 @@ typed_methods![
     (UsageInsights, InsightsParams, UsageInsightsResult),
     (GetMeterSnapshot, _, MeterRegistry),
     (RefreshMeter, _, UnitResult),
+    (SaveOpencodeUsageSession, SaveOpencodeUsageSessionParams, UnitResult),
+    (GetProviderUsageOverviews, _, ProviderUsageOverviews),
+    (RefreshProviderUsageOverviews, _, ProviderUsageOverviews),
+    (RefreshProviderUsageOverviewsInteractive, _, ProviderUsageOverviews),
+    (GetUsageOverview, _, UsageOverviewSnapshot),
+    (RefreshUsageOverview, _, UsageOverviewSnapshot),
+    (GetMenuBarSettings, _, MenuBarSettings),
+    (SaveMenuBarSettings, SaveMenuBarSettingsParams, MenuBarSettings),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),

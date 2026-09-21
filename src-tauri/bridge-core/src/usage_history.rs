@@ -19,6 +19,8 @@ pub const MAX_RECORDS_PER_SCAN: usize = 10_000;
 #[serde(rename_all = "camelCase")]
 pub struct UsageHistorySource {
     pub id: String,
+    #[serde(default)]
+    pub origin: bridge_protocol::messages::UsageHistoryOrigin,
     pub agent: String,
     pub provider: String,
     pub location: String,
@@ -79,6 +81,7 @@ pub fn list_history_sources(
         let indexed = indexed_source(db, &id)?;
         let mut source = UsageHistorySource {
             id,
+            origin: Default::default(),
             agent: discovered.agent.clone(),
             provider: discovered.provider.clone(),
             location: discovered.location.to_string_lossy().into_owned(),

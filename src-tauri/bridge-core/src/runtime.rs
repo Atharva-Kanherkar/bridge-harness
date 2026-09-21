@@ -91,10 +91,18 @@ pub struct BridgeCore {
     /// separate from model adapters and their sidecars.
     pub github_surface: crate::github_surface::GithubSurface,
     pub github_poller: crate::github_poll::GithubPoller,
+    pub connector_poller: crate::connector_runs_live::ConnectorPoller,
     /// Last time each session produced adapter output, used by the worker
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
     pub worker_activity: Mutex<HashMap<String, std::time::Instant>>,
+    /// Last progress frame per chat (depth-0) session, read by the chat-turn
+    /// stall watchdog. Separate from `worker_activity` so the per-second worker
+    /// watchdog never scans chats and never probes `worker_runtime` for them.
+    /// An entry exists only while a reader serves an active turn; it is
+    /// removed on every terminal boundary (`turn.completed`, approval wait,
+    /// reader teardown).
+    pub chat_activity: Mutex<HashMap<String, std::time::Instant>>,
     /// Sessions where the user clicked Stop and an interrupt is in flight.
     /// The provider's reaction to that interrupt (an aborted-turn error,
     /// a broken pipe, a non-zero exit) races the teardown in `stop_session`,
@@ -130,6 +138,7 @@ pub struct BridgeCore {
     /// being started fresh per request: process-start latency on every
     /// keystroke pause would make the feature unusable.
     pub suggestion_engine: SuggestionEngine,
+    pub usage_overview: crate::usage_overview::UsageOverviewService,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -318,8 +327,10 @@ impl BridgeCore {
             ),
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
+            chat_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events: EventBus::new(),
@@ -327,6 +338,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
+            usage_overview: crate::usage_overview::UsageOverviewService::default(),
         }
     }
 
@@ -437,8 +449,10 @@ impl BridgeCore {
             browser_bridge,
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
+            chat_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events,
@@ -446,6 +460,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
+            usage_overview: crate::usage_overview::UsageOverviewService::default(),
         })
     }
 }

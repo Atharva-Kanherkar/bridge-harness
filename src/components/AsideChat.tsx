@@ -1,7 +1,6 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUpRight, FileText, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
 import { ComposerPill } from "./ComposerPill";
@@ -11,7 +10,7 @@ import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../u
 import { bridgeApi } from "../api";
 import { mergeForestSnapshot } from "../forest";
 import { startSerialPoll } from "../polling";
-import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
+import { applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
 import { scheduleSuggestion } from "../suggestionTypeahead";
 import { activeTurnAction } from "../sessionInput";
 import { SIDE_CHAT_COMMANDS } from "../sideChat";
@@ -260,10 +259,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     inputRef.current?.focus();
   };
 
-  // The `+` control, mirroring the main composer's `attachFile`: the system
-  // file dialog inside the desktop shell, turning picks into `@path`
-  // mentions. Outside Tauri there is no dialog and the aside has no mention
-  // picker of its own, so it drops a bare `@` for the user to keep typing.
   function applySlash(command: SlashCommand) {
     setDraft(`/${command.name} `);
     setSlashIndex(0);
@@ -289,25 +284,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
       if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(index => Math.max(index - 1, 0)); return; }
       if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
       if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
-    }
-  }
-
-  async function attachFile() {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      setDraft(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
-      inputRef.current?.focus();
-      return;
-    }
-    try {
-      const picked = await open({ multiple: true, title: "Attach files" });
-      if (picked == null) return;
-      const paths = (Array.isArray(picked) ? picked : [picked]).filter((path): path is string => typeof path === "string");
-      if (paths.length === 0) return;
-      setDraft(current => paths.reduce(appendFileMention, current));
-    } catch (e) {
-      setComposerError(e instanceof Error ? e.message : String(e));
-    } finally {
-      inputRef.current?.focus();
     }
   }
 
@@ -449,7 +425,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               placeholder={`Ask ${harnessLabel(session.harness)}…`}
               working={working}
               activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
-              onPlusClick={() => void attachFile()}
               inputRef={inputRef}
             />
           </div>

@@ -60,6 +60,14 @@ methods![
     (GithubAct, "github", "github_act"),
     (GithubReview, "github", "github_review"),
     (GithubCheckout, "github", "github_checkout"),
+    (GithubConnect, "github", "github_connect"),
+    // connectors — in-app surfaces over the harness's own authenticated MCP servers
+    (ConnectorList, "connectors", "connector_list"),
+    (ConnectorInbox, "connectors", "connector_inbox"),
+    (ConnectorAct, "connectors", "connector_act"),
+    (ConnectorDismiss, "connectors", "connector_dismiss"),
+    (ConnectorRefresh, "connectors", "connector_refresh"),
+    (ConnectorSetSettings, "connectors", "connector_set_settings"),
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),
     (ConnectWorkspaceFolder, "workspaces", "connect_workspace_folder"),
@@ -98,6 +106,7 @@ methods![
     (DispatchAgentShortcut, "sessions", "dispatch_agent_shortcut"),
     (CompactSession, "sessions", "compact_session"),
     (SearchSessionEntries, "sessions", "search_session_entries"),
+    (ExportSessionTranscript, "sessions", "export_session_transcript"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
@@ -105,6 +114,8 @@ methods![
     (ArchiveChat, "sessions", "archive_chat"),
     (GetWorkerSettings, "config", "get_worker_settings"),
     (SaveWorkerSettings, "config", "save_worker_settings"),
+    (GetReviewerSettings, "config", "get_reviewer_settings"),
+    (SaveReviewerSettings, "config", "save_reviewer_settings"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
     (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
@@ -176,6 +187,14 @@ methods![
     // menu-bar meter (CodexBar port)
     (GetMeterSnapshot, "meter", "get_meter_snapshot"),
     (RefreshMeter, "meter", "refresh_meter"),
+    (SaveOpencodeUsageSession, "usage", "save_opencode_usage_session"),
+    (GetProviderUsageOverviews, "usage", "get_provider_usage_overviews"),
+    (RefreshProviderUsageOverviews, "usage", "refresh_provider_usage_overviews"),
+    (RefreshProviderUsageOverviewsInteractive, "usage", "refresh_provider_usage_overviews_interactive"),
+    (GetUsageOverview, "usage", "get_usage_overview"),
+    (RefreshUsageOverview, "usage", "refresh_usage_overview"),
+    (GetMenuBarSettings, "menu_bar", "get_menu_bar_settings"),
+    (SaveMenuBarSettings, "menu_bar", "save_menu_bar_settings"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

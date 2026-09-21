@@ -55,6 +55,22 @@
     },
     {
       "delivery": "transient",
+      "notification": "connectors/item_arrived"
+    },
+    {
+      "delivery": "transient",
+      "notification": "connectors/card_ready"
+    },
+    {
+      "delivery": "transient",
+      "notification": "connectors/item_resolved"
+    },
+    {
+      "delivery": "transient",
+      "notification": "connectors/inbox_changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]

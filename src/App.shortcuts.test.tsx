@@ -74,7 +74,8 @@ async function press(init: KeyboardEventInit) {
 const composerField = () => [...container.querySelectorAll<HTMLTextAreaElement>("textarea")]
   .find(field => field.placeholder.startsWith("Ask Bridge"));
 
-const onWelcome = () => container.querySelector('button[aria-label="New workspace"]') !== null;
+const addProject = () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Add project") ?? null;
+const onWelcome = () => addProject() !== null;
 
 // Turn an open draft into a real chat by sending its first message.
 async function sendFirst(text: string) {

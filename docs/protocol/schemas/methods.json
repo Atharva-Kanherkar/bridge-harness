@@ -128,6 +128,55 @@
       "resultSchema": "github-checkout-result.json"
     },
     {
+      "command": "github_connect",
+      "domain": "github",
+      "method": "github/github_connect",
+      "paramsSchema": "github-connect-params.json",
+      "resultSchema": "github-connect-result.json"
+    },
+    {
+      "command": "connector_list",
+      "domain": "connectors",
+      "method": "connectors/connector_list",
+      "paramsSchema": "connector-list-params.json",
+      "resultSchema": "connector-list-result.json"
+    },
+    {
+      "command": "connector_inbox",
+      "domain": "connectors",
+      "method": "connectors/connector_inbox",
+      "paramsSchema": "connector-inbox-params.json",
+      "resultSchema": "connector-inbox-result.json"
+    },
+    {
+      "command": "connector_act",
+      "domain": "connectors",
+      "method": "connectors/connector_act",
+      "paramsSchema": "connector-act-params.json",
+      "resultSchema": "connector-act-result.json"
+    },
+    {
+      "command": "connector_dismiss",
+      "domain": "connectors",
+      "method": "connectors/connector_dismiss",
+      "paramsSchema": "connector-dismiss-params.json",
+      "resultSchema": "connector-dismiss-result.json"
+    },
+    {
+      "command": "connector_refresh",
+      "domain": "connectors",
+      "method": "connectors/connector_refresh",
+      "paramsSchema": "connector-refresh-params.json",
+      "resultSchema": "connector-refresh-result.json"
+    },
+    {
+      "command": "connector_set_settings",
+      "domain": "connectors",
+      "method": "connectors/connector_set_settings",
+      "paramsSchema": "connector-set-settings-params.json",
+      "resultSchema": "connector-set-settings-result.json"
+    },
+    {
       "command": "create_workspace",
       "domain": "workspaces",
       "method": "workspaces/create_workspace",
@@ -380,6 +429,13 @@
       "resultSchema": "search-session-entries-result.json"
     },
     {
+      "command": "export_session_transcript",
+      "domain": "sessions",
+      "method": "sessions/export_session_transcript",
+      "paramsSchema": "export-session-transcript-params.json",
+      "resultSchema": "export-session-transcript-result.json"
+    },
+    {
       "command": "interrupt_turn",
       "domain": "sessions",
       "method": "sessions/interrupt_turn",
@@ -427,6 +483,20 @@
       "method": "config/save_worker_settings",
       "paramsSchema": "save-worker-settings-params.json",
       "resultSchema": "worker-settings.json"
+    },
+    {
+      "command": "get_reviewer_settings",
+      "domain": "config",
+      "method": "config/get_reviewer_settings",
+      "paramsSchema": null,
+      "resultSchema": "reviewer-settings-result.json"
+    },
+    {
+      "command": "save_reviewer_settings",
+      "domain": "config",
+      "method": "config/save_reviewer_settings",
+      "paramsSchema": "save-reviewer-settings-params.json",
+      "resultSchema": "reviewer-settings-result.json"
     },
     {
       "command": "list_archived_chats",
@@ -826,6 +896,62 @@
       "method": "meter/refresh_meter",
       "paramsSchema": null,
       "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "save_opencode_usage_session",
+      "domain": "usage",
+      "method": "usage/save_opencode_usage_session",
+      "paramsSchema": "save-opencode-usage-session-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "get_provider_usage_overviews",
+      "domain": "usage",
+      "method": "usage/get_provider_usage_overviews",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "refresh_provider_usage_overviews",
+      "domain": "usage",
+      "method": "usage/refresh_provider_usage_overviews",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "refresh_provider_usage_overviews_interactive",
+      "domain": "usage",
+      "method": "usage/refresh_provider_usage_overviews_interactive",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "get_usage_overview",
+      "domain": "usage",
+      "method": "usage/get_usage_overview",
+      "paramsSchema": null,
+      "resultSchema": "usage-overview-snapshot.json"
+    },
+    {
+      "command": "refresh_usage_overview",
+      "domain": "usage",
+      "method": "usage/refresh_usage_overview",
+      "paramsSchema": null,
+      "resultSchema": "usage-overview-snapshot.json"
+    },
+    {
+      "command": "get_menu_bar_settings",
+      "domain": "menu_bar",
+      "method": "menu_bar/get_menu_bar_settings",
+      "paramsSchema": null,
+      "resultSchema": "menu-bar-settings.json"
+    },
+    {
+      "command": "save_menu_bar_settings",
+      "domain": "menu_bar",
+      "method": "menu_bar/save_menu_bar_settings",
+      "paramsSchema": "save-menu-bar-settings-params.json",
+      "resultSchema": "menu-bar-settings.json"
     },
     {
       "command": "get_router_preferences",
@@ -1348,7 +1474,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 8
+    "minor": 17
   },
   "reserved": {
     "cancel": "$/cancel",

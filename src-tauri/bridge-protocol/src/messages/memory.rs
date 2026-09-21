@@ -117,9 +117,14 @@ pub struct RejectMemoryRecordParams {
     pub record_id: String,
 }
 
-/// Extraction is opt-in per scope. `remember` is the default and means nothing
-/// automatic; `propose` runs the pinned profile after turns. `auto_apply` does
-/// not exist until a replay bench can justify it.
+/// Extraction has three account-local modes. `propose` is the safe default and
+/// queues every gated candidate for review. `remember` stops future extraction;
+/// new memory is then saved only explicitly, while existing active extracted
+/// records remain active. `auto_apply` runs the same extractor but promotes
+/// only candidates at or above 90% confidence grounded in a cited, visible user
+/// message and cleared by the deterministic stability, tombstone, and conflict
+/// guards. Other validated candidates that fit the scope budget remain proposed
+/// for review; invalid, unsafe, duplicate, or over-budget output is refused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateExtractionSettingsParams {

@@ -198,3 +198,125 @@ describe("TranscriptPane entries", () => {
     expect(onRevealEntry).toHaveBeenCalledWith("e2");
   });
 });
+
+// Contract: testing/feat-session-observability.md §C1–C7.
+
+describe("TranscriptPane observability", () => {
+  const busyStream = () => [
+    event(1, 1, "turn.started"),
+    event(2, 2, "reasoning.completed", { status: "completed", text: "The reader holds the lock." }),
+    event(3, 3, "tool.completed", { status: "failed", title: "cargo test" }),
+    event(4, 4, "assistant.message", { text: "I could not run the tests." }),
+    event(5, 5, "turn.completed", { status: "completed" }),
+  ];
+
+  const mountStream = async (events: AgentEvent[] = busyStream(), overrides: Record<string, unknown> = {}) => {
+    const loader = vi.fn<TranscriptLoader>().mockResolvedValue([]);
+    await mount(<TranscriptPane sessionId="s" events={events} loadOlder={loader} {...overrides} />);
+  };
+
+  const chip = (label: string) => [...container.querySelectorAll("button")]
+    .find(button => button.getAttribute("aria-pressed") !== null && button.textContent?.startsWith(label));
+
+  it("counts each facet on its own chip", async () => {
+    await mountStream();
+    expect(chip("All")?.textContent).toBe("All5");
+    expect(chip("Thinking")?.textContent).toBe("Thinking1");
+    expect(chip("Tools")?.textContent).toBe("Tools1");
+    expect(chip("Turns")?.textContent).toBe("Turns2");
+    expect(chip("Messages")?.textContent).toBe("Messages1");
+  });
+
+  it("reports the problem count while a different facet is selected", async () => {
+    // The whole point: a reader who never clicks Problems still learns there
+    // is one.
+    await mountStream();
+    expect(chip("Problems")?.textContent).toBe("Problems1");
+    await click(chip("Messages")!);
+    const footer = [...container.querySelectorAll("span")].find(span => span.textContent?.endsWith("problem"));
+    expect(footer?.textContent).toBe("1 problem");
+  });
+
+  it("shows only the failures when problems is selected", async () => {
+    await mountStream();
+    await click(chip("Problems")!);
+    expect(container.textContent).toContain("cargo test");
+    expect(container.textContent).not.toContain("The reader holds the lock.");
+    expect(container.textContent).toContain("1 of 5 events");
+  });
+
+  it("marks a failed row so it reads as a failure before it is opened", async () => {
+    await mountStream();
+    expect(container.querySelector('[aria-label="This tool call failed."]')).toBeTruthy();
+  });
+
+  it("composes the text filter with the selected facet", async () => {
+    await mountStream();
+    await click(chip("Tools")!);
+    const search = container.querySelector('input[type="search"]') as HTMLInputElement;
+    // React tracks the last value it saw on the node, so assigning `.value`
+    // directly is silently ignored the second time. Go through the native
+    // setter, which is what updates the tracker.
+    const type = async (value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      await act(async () => {
+        setter.call(search, value);
+        search.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await type("cargo");
+    expect(container.textContent).toContain("1 of 5 events");
+    await type("nothing-here");
+    expect(container.textContent).toContain("Nothing matches the filter.");
+  });
+
+  it("numbers each row with the turn it fell in", async () => {
+    await mountStream([
+      event(1, 1, "session.status"),
+      event(2, 2, "turn.started"),
+      event(3, 3, "assistant.message", { text: "one" }),
+      event(4, 4, "turn.started"),
+      event(5, 5, "assistant.message", { text: "two" }),
+    ]);
+    const turns = [...container.querySelectorAll('span[title^="Turn "]')].map(span => span.textContent);
+    expect(turns).toEqual(["t0", "t1", "t1", "t2", "t2"]);
+  });
+
+  it("shows a settled thought's text rather than its status", async () => {
+    await mountStream();
+    expect(container.textContent).toContain("The reader holds the lock.");
+  });
+
+  it("distinguishes an empty stream from a filtered-out one", async () => {
+    await mountStream([]);
+    expect(container.textContent).toContain("No events recorded for this session yet.");
+    expect(container.textContent).not.toContain("Nothing matches the filter.");
+  });
+
+  it("exports the record and shows where it landed", async () => {
+    const exportTranscript = vi.fn().mockResolvedValue({
+      sessionId: "s", path: "/data/exports/s-20260913T101500000Z.jsonl", scope: "forest",
+      schemaVersion: 1, lineCount: 7, entryCount: 5, bytes: 2048, digest: "sha256:abc", exportedAt: "2026-09-13T10:15:00Z",
+    });
+    await mountStream(busyStream(), { exportTranscript });
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Export JSONL"))!);
+    await act(async () => { await Promise.resolve(); });
+    expect(exportTranscript).toHaveBeenCalledWith("s");
+    expect(container.textContent).toContain("/data/exports/s-20260913T101500000Z.jsonl");
+    expect(container.textContent).toContain("Wrote 7 lines");
+
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Copy path"))!);
+    expect(clipboard).toHaveBeenCalledWith("/data/exports/s-20260913T101500000Z.jsonl");
+  });
+
+  it("says why an export failed and leaves the pane usable", async () => {
+    const exportTranscript = vi.fn().mockRejectedValue(new Error("disk is full"));
+    await mountStream(busyStream(), { exportTranscript });
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Export JSONL"))!);
+    await act(async () => { await Promise.resolve(); });
+    expect(container.textContent).toContain("Export failed: disk is full");
+    // Still a working pane, not a dead one.
+    await click(chip("Problems")!);
+    expect(container.textContent).toContain("1 of 5 events");
+  });
+});

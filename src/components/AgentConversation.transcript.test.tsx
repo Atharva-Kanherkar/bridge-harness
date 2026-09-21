@@ -326,6 +326,43 @@ describe("three layers", () => {
   });
 });
 
+/**
+ * A failure names the runtime that raised it — not the one the chat happens to
+ * be set to now. Switching a chat from Codex to OpenCode used to relabel every
+ * Codex failure above the switch, so a user who moved providers to escape a
+ * Codex limit was told OpenCode was out of usage too.
+ */
+describe("error cards", () => {
+  const failure = (overrides: Partial<AgentEvent> = {}) => event(1, "error", {
+    status: "failed", itemId: null, title: "Agent error", ...overrides,
+  });
+
+  it("keeps a Codex failure attributed to Codex after the chat moves to OpenCode", () => {
+    act(() => {
+      root.render(<AgentConversation
+        session={{ ...session, harness: "opencode" } as Session}
+        events={[failure({ text: "You've hit your usage limit.", providerMeta: { adapter: "codex" } })]}
+        onResolve={() => {}}
+      />);
+    });
+    expect(host.textContent).toContain("Codex usage limit reached");
+    expect(host.textContent).not.toContain("OpenCode usage limit");
+    expect(host.textContent).not.toContain("OpenCode reports");
+  });
+
+  it("does not call a 429 an exhausted plan", () => {
+    mount([failure({ text: "429 Too Many Requests", providerMeta: { adapter: "opencode" } })]);
+    expect(host.textContent).toContain("OpenCode is rate limiting");
+    expect(host.textContent).not.toContain("usage limit");
+  });
+
+  it("sends a rejected API key to the key, not to /login", () => {
+    mount([failure({ text: "401 invalid api key provided", providerMeta: { adapter: "codex" } })]);
+    expect(host.textContent).toContain("Codex rejected its API key");
+    expect(host.textContent).toContain("a different credential");
+  });
+});
+
 describe("run trailer", () => {
   const parallelCommand = (id: number, at: string) =>
     event(id, "command.completed", {

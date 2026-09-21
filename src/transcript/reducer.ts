@@ -526,6 +526,9 @@ function upsert(
     createdAt: envelope.createdAt, ...seed,
   });
   item.eventId = envelope.eventId;
+  // First writer wins: a row is attributed to the runtime that opened it, not
+  // to whichever one happened to send its last update.
+  if (!item.harness && envelope.adapter) item.harness = envelope.adapter;
   // A row keyed by its own item id owns that id; a row that merely mentions one
   // (an approval about a tool call) does not.
   if (envelope.itemId && envelope.key === envelope.itemId) item.itemId = envelope.itemId;

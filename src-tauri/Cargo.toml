@@ -1,11 +1,11 @@
 [workspace]
-members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged"]
+members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged", "bridge-menu-bar"]
 
 # Single version for every crate in the workspace: bridge-core reports
 # CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
 # never drift from the application version.
 [workspace.package]
-version = "0.5.6"
+version = "0.5.9"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -40,6 +40,9 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
@@ -64,6 +67,7 @@ incremental = false
 # Use typed public AppKit APIs for the material behind the webview. Native
 # titlebar controls remain under AppKit's control.
 [target.'cfg(target_os = "macos")'.dependencies]
+bridge-menu-bar = { path = "bridge-menu-bar" }
 dispatch2 = "0.3"
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder", "NSColor", "NSVisualEffectView", "NSUserInterfaceItemIdentification", "objc2-quartz-core"] }

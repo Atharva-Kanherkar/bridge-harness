@@ -1,0 +1,2 @@
+```bridge-connector-card
+{"itemKey":"slack:D0BKKG51DJM:1789041929.055829","headline":"Truncated mid-card","blocks":[{"kind":"context","text":"the response was cut off

@@ -20,12 +20,13 @@ One product, one audit writer. Mid-session pins apply from the next session.
   scope enter; proposed, rejected, superseded, and tombstoned are the
   exclusion classes, each audited by code. A body carrying an envelope tag or
   a secret marker is excluded as unsafe rather than escaped into the prompt.
-- Rank is deterministic: explicit pins first (newest first), then approved
-  suggestions by confidence. Each selection carries a reason string.
+- Rank is deterministic: explicit pins first (newest first), then extracted
+  memories by confidence. Each selection carries a reason string; it does not
+  claim that an automatically promoted item received human approval.
 - The budget is a hard character cap. Over budget degrades by dropping whole
   records — never truncating one mid-body — and the floor is no packet at all.
-- The rendered packet names itself as the user's pinned account memory, cites
-  every item by id, and states that it is not conversation instructions.
+- The rendered packet names itself as Bridge account memory, cites every item
+  by id, and states that it is not conversation instructions.
 - The packet rides `variable_section("memory_packet", ...)` only. The stable
   prefix hash is bytewise unchanged when memory content changes.
 

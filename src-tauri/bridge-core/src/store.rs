@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 58;
+const LATEST_SCHEMA_VERSION: i64 = 60;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +59,14 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     }
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+    )?;
+    // Per-frame lookups ask "does this session have any compaction marker?"
+    // and "which entries of this kind exist?"; without this index each one
+    // walked every entry of the session. Idempotent and cheap to build, so it
+    // lives here rather than behind a schema version (which would also copy
+    // the whole store as a migration backup).
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_session_entries_session_kind ON session_entries(session_id, kind);",
     )?;
     // Chats created before titles existed still read "Orchestrator"; name them
     // from what they already contain. Local-only, so opening stays cheap.
@@ -693,9 +701,11 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "work_tasks", "source_activity_at", "TEXT")?;
                 add_column_if_missing(&transaction, "work_evidence", "source_activity_at", "TEXT")?;
             }
+            58 => migration_58_connector_inbox(&transaction)?,
+            59 => crate::memory_extraction::install_run_modes(&transaction)?,
             // Fork origin on the sessions table: which parent entry a session
             // was forked from, and which worktree policy the fork chose.
-            58 => {
+            60 => {
                 add_column_if_missing(&transaction, "sessions", "fork_parent_entry_id", "TEXT")?;
                 add_column_if_missing(&transaction, "sessions", "fork_worktree_policy", "TEXT")?;
             }
@@ -954,6 +964,46 @@ fn migration_49_worker_repair_budget(transaction: &Transaction<'_>) -> Result<()
 /// cooldown the router checks in addition to live session state, so the next
 /// delegation in this workspace routes around a harness that just failed for
 /// quota reasons instead of picking it again and hitting the same wall.
+/// The connector inbox: one row per message Bridge has announced.
+///
+/// `item_key` is the primary key and that is the whole dedup mechanism — an
+/// arrival is new exactly when its insert succeeds. Polling re-reads an
+/// overlapping window every cycle, so without this the surface would re-announce
+/// its backlog on every poll and again on every restart.
+///
+/// Nothing here is a credential. Bridge holds no connector token; these rows are
+/// message envelopes and bodies the user can already read in the source app.
+fn migration_58_connector_inbox(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS connector_inbox_items (
+            item_key TEXT PRIMARY KEY,
+            family TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            channel_label TEXT NOT NULL,
+            message_ts TEXT NOT NULL,
+            author TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('direct_message','mention','thread_reply')),
+            body TEXT NOT NULL,
+            permalink TEXT,
+            received_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending','rendered','resolved')),
+            card TEXT,
+            render_rejection TEXT,
+            resolution TEXT,
+            resolved_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS connector_inbox_items_unresolved
+             ON connector_inbox_items(state, received_at DESC);
+         CREATE TABLE IF NOT EXISTS connector_poll_state (
+            family TEXT PRIMARY KEY,
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            degraded TEXT
+         );",
+    )?;
+    Ok(())
+}
+
 fn migration_48_harness_quota_cooldowns(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS harness_quota_cooldowns (
@@ -3292,6 +3342,9 @@ fn session_entries_to_events(
                     .get("protocolVersion")
                     .and_then(serde_json::Value::as_i64)
                     .is_some();
+            let provider_meta = error_forest_identity(
+                &entry.id, &entry.kind, payload.get("providerMeta").unwrap_or(&serde_json::json!({})),
+            );
             Ok(AgentEvent {
                 id: entry.sequence,
                 session_id: entry.session_id,
@@ -3318,10 +3371,7 @@ fn session_entries_to_events(
                 } else {
                     payload.clone()
                 },
-                provider_meta: payload
-                    .get("providerMeta")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
+                provider_meta,
                 created_at: entry.created_at,
             })
         })
@@ -3355,16 +3405,62 @@ pub fn session_entries(
     )
 }
 
-/// The display ceiling for one string inside a snapshot payload.
+/// The per-string ceilings a snapshot falls back through, loosest first, when
+/// one session's payloads cannot fit a single frame.
 ///
-/// A transcript row renders a preview, never a 50 KB heredoc. The whole forest
-/// travels to the UI as a single JSON frame, and untrimmed payloads made that
-/// frame unopenable: one real chat's `command.started` entries alone held
-/// 115 MB, because each one carries the full command text as its `title` and
-/// the full command output under `data`. Past the daemon's 64 MB frame ceiling
-/// the read fails and takes the whole connection down, so an old chat did not
-/// load slowly — it did not load at all.
-const SNAPSHOT_STRING_BYTES: usize = 4 * 1024;
+/// The whole forest travels to the UI as a single JSON frame, and untrimmed
+/// payloads made that frame unopenable: one real chat's `command.started`
+/// entries alone held 115 MB, because each one carries the full command text as
+/// its `title` and the full command output under `data`. Past the daemon's
+/// 64 MB frame ceiling the read fails and takes the whole connection down, so
+/// an old chat did not load slowly — it did not load at all.
+///
+/// The flat 4 KiB cap that fixed it charged every chat for that one chat's
+/// sins. An ordinary 4.6 KiB answer lost its closing `Sources:` list to
+/// `… 578 more bytes not shown` for a snapshot four orders of magnitude under
+/// the ceiling, and because the dropped bytes are reachable only through
+/// `session_entries`, the rendered transcript quietly disagreed with stored
+/// history. So trimming is now the exception: a window is read untrimmed first
+/// and walks this ladder only when it does not fit
+/// [`SNAPSHOT_PAYLOAD_BUDGET_BYTES`], stopping at the first rung that does. The
+/// ladder bottoms out at the old 4 KiB, so no session is ever trimmed harder
+/// than it already was.
+const SNAPSHOT_STRING_CAPS: [usize; 5] = [1024 * 1024, 256 * 1024, 64 * 1024, 16 * 1024, 4 * 1024];
+
+/// The payload bytes one window may carry before [`SNAPSHOT_STRING_CAPS`]
+/// applies.
+///
+/// Deliberately well under `bridge_client::MAX_SERVER_FRAME_BYTES` (64 MB).
+/// Entry payloads are the bulk of a snapshot but not all of it — leases, worker
+/// runtimes, usage and reason events ride in the same frame — and re-encoding
+/// stored JSON can only grow it, so the budget keeps better than 2x headroom
+/// rather than spending the frame right up to its edge.
+///
+/// This is the *default* entry budget, used when the caller has not measured
+/// the snapshot's non-entry overhead. `sessions::session_forest_snapshot_*`
+/// tightens it further once that overhead is known (Codex P1 on this PR:
+/// usage/queue rows could otherwise push a 24 MiB window over the 64 MiB
+/// frame).
+pub const SNAPSHOT_PAYLOAD_BUDGET_BYTES: usize = 24 * 1024 * 1024;
+
+/// The daemon frame ceiling the snapshot must fit. Mirrors
+/// `bridge_client::MAX_SERVER_FRAME_BYTES`; duplicated here so `store` does
+/// not depend on the transport crate for a constant.
+pub const SNAPSHOT_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// Headroom reserved for the snapshot's non-entry fields (head, leaves,
+/// divergence states, completion summary, JSON framing) when deriving the
+/// entry budget from measured overhead.
+pub const SNAPSHOT_FRAME_MARGIN_BYTES: usize = 4 * 1024 * 1024;
+
+/// Derive the entry-payload budget from the snapshot's measured non-entry
+/// overhead: whatever the frame has left after overhead and margin, capped at
+/// the default so ordinary snapshots behave exactly as before.
+pub fn snapshot_entry_budget(overhead_bytes: usize) -> usize {
+    SNAPSHOT_FRAME_BYTES
+        .saturating_sub(overhead_bytes.saturating_add(SNAPSHOT_FRAME_MARGIN_BYTES))
+        .min(SNAPSHOT_PAYLOAD_BUDGET_BYTES)
+}
 
 /// The number of newest entries a snapshot carries.
 ///
@@ -3382,27 +3478,30 @@ pub struct SessionEntryWindow {
     pub trimmed_payloads: i64,
 }
 
-/// Shorten every oversized string in `value` in place, reporting whether
-/// anything was cut. Structure is preserved: the transcript codec reads named
-/// fields (`text`, `title`, nested `data`), so trimming has to leave those
-/// fields present and merely shorter.
-fn trim_snapshot_strings(value: &mut serde_json::Value) -> bool {
-    trim_snapshot_strings_at_key(value, None)
+/// Whether a string may be shortened at all.
+///
+/// Pasted images are durable history, not verbose textual detail. Cutting their
+/// base64 data produces a plausible-looking but undecodable URI and makes the
+/// image disappear after reload.
+fn is_trimmable(key: Option<&str>, text: &str) -> bool {
+    !(key == Some("dataUri") && text.starts_with("data:image/"))
 }
 
-fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>) -> bool {
+/// Shorten every string in `value` longer than `cap`, in place, reporting
+/// whether anything was cut. Structure is preserved: the transcript codec reads
+/// named fields (`text`, `title`, nested `data`), so trimming has to leave those
+/// fields present and merely shorter.
+fn trim_snapshot_strings(value: &mut serde_json::Value, cap: usize) -> bool {
+    trim_snapshot_strings_at_key(value, None, cap)
+}
+
+fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>, cap: usize) -> bool {
     match value {
         serde_json::Value::String(text) => {
-            // Pasted images are durable history, not verbose textual detail.
-            // Cutting their base64 data produces a plausible-looking but
-            // undecodable URI and makes the image disappear after reload.
-            if key == Some("dataUri") && text.starts_with("data:image/") {
+            if text.len() <= cap || !is_trimmable(key, text) {
                 return false;
             }
-            if text.len() <= SNAPSHOT_STRING_BYTES {
-                return false;
-            }
-            let mut end = SNAPSHOT_STRING_BYTES;
+            let mut end = cap;
             while end > 0 && !text.is_char_boundary(end) {
                 end -= 1;
             }
@@ -3412,86 +3511,150 @@ fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>
             true
         }
         serde_json::Value::Array(items) => items.iter_mut().fold(false, |trimmed, item| {
-            trim_snapshot_strings_at_key(item, None) || trimmed
+            trim_snapshot_strings_at_key(item, None, cap) || trimmed
         }),
         serde_json::Value::Object(fields) => {
             fields.iter_mut().fold(false, |trimmed, (name, field)| {
-                trim_snapshot_strings_at_key(field, Some(name)) || trimmed
+                trim_snapshot_strings_at_key(field, Some(name), cap) || trimmed
             })
         }
         _ => false,
     }
 }
 
-/// The newest `limit` ancestors of the active head, oldest-first, with
-/// oversized payload strings trimmed for display. `session_entries` stays the
-/// untrimmed read for callers that need real payloads (compaction, context
-/// projection); this one exists only to make the snapshot a bounded frame.
+/// The active branch: the session head and every entry it descends from.
+///
+/// Shared verbatim by the count and the page so the two can never disagree
+/// about which entries the window is a window onto.
+const ACTIVE_BRANCH_CTE: &str = "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
+         SELECT id,parent_entry_id,sequence FROM session_entries
+         WHERE session_id=?1
+           AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
+         UNION
+         SELECT parent.id,parent.parent_entry_id,parent.sequence
+         FROM session_entries parent
+         JOIN active_branch child ON parent.id=child.parent_entry_id
+         WHERE parent.session_id=?1
+     )";
+
+/// One read of the window at a given per-string ceiling, oldest-first.
+///
+/// `usize::MAX` means "do not trim", and is measured against the stored bytes
+/// exactly. Returns `None` once the accumulated payload crosses `budget`, so a
+/// caller can tighten the ceiling without ever holding an over-budget window in
+/// memory: the remaining rows are still drained to finish the statement, but
+/// their payload column is left unread.
+fn read_session_entry_window(
+    db: &Connection,
+    session_id: &str,
+    limit: usize,
+    cap: usize,
+    budget: usize,
+) -> Result<Option<(Vec<SessionEntry>, i64)>, BridgeError> {
+    let mut trimmed_payloads = 0i64;
+    let mut bytes = 0usize;
+    let mut over_budget = false;
+    let sql = format!(
+        "{ACTIVE_BRANCH_CTE}
+         SELECT entry.id,entry.session_id,entry.parent_entry_id,entry.sequence,entry.semantic_schema_version,entry.kind,entry.payload,entry.provider_event_id,entry.context_visibility,entry.token_estimate,entry.created_at
+         FROM active_branch branch
+         JOIN session_entries entry ON entry.id=branch.id
+         WHERE entry.session_id=?1
+         ORDER BY branch.sequence DESC LIMIT ?2"
+    );
+    let mut entries = query_with_params(db, &sql, params![session_id, limit as i64], |row| {
+        let mut payload = serde_json::Value::Null;
+        if !over_budget {
+            let raw: String = row.get(6).unwrap_or_default();
+            if cap == usize::MAX {
+                bytes += raw.len();
+                payload = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+            } else {
+                payload = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                if trim_snapshot_strings(&mut payload, cap) {
+                    trimmed_payloads += 1;
+                }
+                bytes += payload.to_string().len();
+            }
+            if bytes > budget {
+                over_budget = true;
+                payload = serde_json::Value::Null;
+            }
+        }
+        Ok(SessionEntry {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            parent_entry_id: row.get(2)?,
+            sequence: row.get(3)?,
+            semantic_schema_version: row.get(4)?,
+            kind: row.get(5)?,
+            payload,
+            provider_event_id: row.get(7)?,
+            context_visibility: row.get(8)?,
+            token_estimate: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    if over_budget {
+        return Ok(None);
+    }
+    entries.reverse();
+    Ok(Some((entries, trimmed_payloads)))
+}
+
+/// The newest `limit` ancestors of the active head, oldest-first, with payload
+/// strings shortened only as far as the frame actually demands.
+/// `session_entries` stays the untrimmed read for callers that need real
+/// payloads (compaction, context projection); this one exists only to make the
+/// snapshot a bounded frame.
 pub fn session_entry_window(
     db: &Connection,
     session_id: &str,
     limit: usize,
 ) -> Result<SessionEntryWindow, BridgeError> {
+    session_entry_window_with_budget(db, session_id, limit, SNAPSHOT_PAYLOAD_BUDGET_BYTES)
+}
+
+/// Same as [`session_entry_window`], but the caller supplies the entry-payload
+/// budget — typically [`snapshot_entry_budget`] of the snapshot's measured
+/// non-entry overhead, so a workspace heavy with usage/queue rows tightens the
+/// window before the full frame is assembled rather than after it overflows.
+pub fn session_entry_window_with_budget(
+    db: &Connection,
+    session_id: &str,
+    limit: usize,
+    entry_budget: usize,
+) -> Result<SessionEntryWindow, BridgeError> {
     let total: i64 = db.query_row(
-        "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
-             SELECT id,parent_entry_id,sequence FROM session_entries
-             WHERE session_id=?1
-               AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
-             UNION
-             SELECT parent.id,parent.parent_entry_id,parent.sequence
-             FROM session_entries parent
-             JOIN active_branch child ON parent.id=child.parent_entry_id
-             WHERE parent.session_id=?1
-         )
-         SELECT count(*) FROM active_branch",
+        &format!("{ACTIVE_BRANCH_CTE} SELECT count(*) FROM active_branch"),
         params![session_id],
         |row| row.get(0),
     )?;
-    let mut trimmed_payloads = 0i64;
-    let mut entries = query_with_params(
-        db,
-        "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
-             SELECT id,parent_entry_id,sequence FROM session_entries
-             WHERE session_id=?1
-               AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
-             UNION
-             SELECT parent.id,parent.parent_entry_id,parent.sequence
-             FROM session_entries parent
-             JOIN active_branch child ON parent.id=child.parent_entry_id
-             WHERE parent.session_id=?1
-         )
-         SELECT entry.id,entry.session_id,entry.parent_entry_id,entry.sequence,entry.semantic_schema_version,entry.kind,entry.payload,entry.provider_event_id,entry.context_visibility,entry.token_estimate,entry.created_at
-         FROM active_branch branch
-         JOIN session_entries entry ON entry.id=branch.id
-         WHERE entry.session_id=?1
-         ORDER BY branch.sequence DESC LIMIT ?2",
-        params![session_id, limit as i64],
-        |row| {
-            let mut payload = parse_json_column(row, 6);
-            if trim_snapshot_strings(&mut payload) {
-                trimmed_payloads += 1;
-            }
-            Ok(SessionEntry {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                parent_entry_id: row.get(2)?,
-                sequence: row.get(3)?,
-                semantic_schema_version: row.get(4)?,
-                kind: row.get(5)?,
-                payload,
-                provider_event_id: row.get(7)?,
-                context_visibility: row.get(8)?,
-                token_estimate: row.get(9)?,
-                created_at: row.get(10)?,
-            })
-        },
-    )?;
-    entries.reverse();
-    Ok(SessionEntryWindow {
+    let window = |cap, budget| read_session_entry_window(db, session_id, limit, cap, budget);
+    let assemble = |(entries, trimmed_payloads)| SessionEntryWindow {
         entries,
         total,
         trimmed_payloads,
-    })
+    };
+
+    // Untrimmed first. Nearly every session fits, and one that fits must reach
+    // the UI byte-identical to what is stored.
+    if let Some(read) = window(usize::MAX, entry_budget)? {
+        return Ok(assemble(read));
+    }
+    let (floor, rungs) = SNAPSHOT_STRING_CAPS
+        .split_last()
+        .expect("the cap ladder is never empty");
+    for &cap in rungs {
+        if let Some(read) = window(cap, entry_budget)? {
+            return Ok(assemble(read));
+        }
+    }
+    // The floor is forced: a session too large even at the tightest rung still
+    // has to render, and that rung is what every session used to get.
+    Ok(assemble(
+        window(*floor, usize::MAX)?.expect("an unbounded budget always fits"),
+    ))
 }
 
 pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionHead>, BridgeError> {
@@ -3924,6 +4087,27 @@ fn parse_json_column(row: &rusqlite::Row<'_>, index: usize) -> serde_json::Value
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// Runtime control records: durable evidence of what actually happened that is
+/// nevertheless not conversation.
+///
+/// Turn boundaries, per-turn usage and the agent's plan are how a reader
+/// reconstructs *where* a session spent its time and *where* it failed, so
+/// dropping them left the forest unable to answer the questions an
+/// observability surface exists to answer. They are stored, but stored
+/// [`HIDDEN_VISIBILITY`]: the context projector admits only `eligible` entries
+/// and the recall trigger indexes only `eligible`/`visible`, so recording them
+/// widens the record without widening either the prompt or search.
+const HIDDEN_CONTROL_KINDS: [&str; 4] = [
+    "turn.started",
+    "turn.completed",
+    "usage.updated",
+    "plan.updated",
+];
+
+/// Written, replayed and exported — never projected into model context and
+/// never an FTS recall hit.
+const HIDDEN_VISIBILITY: &str = "hidden";
+
 pub fn session_event(
     db: &Connection,
     session_id: &str,
@@ -3935,6 +4119,13 @@ pub fn session_event(
     let stored = session_event_in_transaction(&transaction, session_id, event, provider_meta)?;
     transaction.commit()?;
     Ok(stored)
+}
+
+fn error_forest_identity(entry_id: &str, kind: &str, provider_meta: &serde_json::Value) -> serde_json::Value {
+    if !matches!(kind, "error" | "runtime.failed") { return provider_meta.clone(); }
+    let mut meta = provider_meta.as_object().cloned().unwrap_or_default();
+    meta.insert("bridgeEntryId".into(), serde_json::Value::String(entry_id.to_owned()));
+    serde_json::Value::Object(meta)
 }
 
 /// Append a durable agent event inside a caller-owned transaction.
@@ -3963,7 +4154,7 @@ pub(crate) fn session_event_in_transaction(
             |row| row.get(0),
         )
         .unwrap_or_else(|_| session_id.to_owned());
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "protocolVersion": 1,
         "itemId": event.item_id,
         "role": event.role,
@@ -3974,6 +4165,33 @@ pub(crate) fn session_event_in_transaction(
         "providerMeta": provider_meta,
         "traceId": trace_id,
     });
+    // Stamp the turn's ordinal onto the boundary that opens it.
+    //
+    // Every reader wants to say "this happened in turn 3", and every reader
+    // that derives it by counting boundaries gets a different answer from a
+    // different window: a transcript showing the newest page counts from
+    // whatever it loaded, while an export counts from the session's start.
+    // Recording the ordinal once, here, is what makes those answers the same
+    // answer — the same reason the export writes `turnIndex` out rather than
+    // leaving each consumer to compute one.
+    if event.kind == "turn.started" {
+        let ordinal: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='turn.started'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        // Into `data`, not the payload root: replay projects a stored entry
+        // back to an `AgentEvent` by lifting `data`, so an ordinal written
+        // beside it would exist in the database and be invisible to every
+        // client reading the stream.
+        if !payload["data"].is_object() {
+            payload["data"] = serde_json::json!({});
+        }
+        payload["data"]["turnIndex"] = serde_json::json!(ordinal + 1);
+    }
+    let payload = payload;
     let mut final_kind = event.kind.as_str();
     if final_kind == "message.completed" {
         final_kind = if event.role.as_deref() == Some("user") {
@@ -3993,16 +4211,13 @@ pub(crate) fn session_event_in_transaction(
         // Keep as is, it maps directly.
     } else if final_kind.ends_with(".delta")
         || final_kind.ends_with(".progress")
-        || final_kind == "turn.started"
-        || final_kind == "turn.completed"
-        || final_kind == "usage.updated"
-        || final_kind == "plan.updated"
         || final_kind == "question.settled"
     {
-        // Do not store transient or internal events in the immutable forest.
-        // `question.settled` is a control signal telling `live_turn.rs` to
-        // resolve an existing `approval.requested` row; it is not itself a
-        // durable conversation item.
+        // Streaming frames and one control signal are the only events that
+        // leave no trace. A delta is worthless once its terminal event lands
+        // carrying the whole content, and `question.settled` merely tells
+        // `live_turn.rs` to resolve an existing `approval.requested` row; it
+        // is not itself a durable conversation item.
         return Ok(AgentEvent {
             id: 0,
             session_id: session_id.into(),
@@ -4027,7 +4242,11 @@ pub(crate) fn session_event_in_transaction(
         final_kind,
         &payload,
         event.item_id.as_deref(),
-        "eligible",
+        if HIDDEN_CONTROL_KINDS.contains(&final_kind) {
+            HIDDEN_VISIBILITY
+        } else {
+            "eligible"
+        },
         None,
     )?;
     Ok(AgentEvent {
@@ -4042,7 +4261,7 @@ pub(crate) fn session_event_in_transaction(
         title: event.title.clone(),
         text: event.text.clone(),
         data: event.data.clone(),
-        provider_meta: provider_meta.clone(),
+        provider_meta: error_forest_identity(&entry.id, &event.kind, provider_meta),
         created_at: entry.created_at,
     })
 }
@@ -4051,6 +4270,117 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn observability_db() -> Connection {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','codex','Chat','ready','reported')", []).unwrap();
+        db
+    }
+
+    fn record(db: &Connection, kind: &str, data: serde_json::Value) -> AgentEvent {
+        let mut event = crate::agent::NormalizedEvent::new(kind);
+        event.data = data;
+        session_event(db, "s", &event, &json!({"adapter":"codex"})).unwrap()
+    }
+
+    fn visibility(db: &Connection, kind: &str) -> String {
+        db.query_row(
+            "SELECT context_visibility FROM session_entries WHERE session_id='s' AND kind=?1",
+            params![kind],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn turn_boundaries_are_durable_but_never_context_eligible() {
+        // Where a turn began is the spine an observability read hangs off. It
+        // used to be dropped, so a reloaded forest could not say which events
+        // belonged to which turn.
+        let db = observability_db();
+        let started = record(&db, "turn.started", json!({"turnId":"t-1"}));
+        let completed = record(&db, "turn.completed", json!({"turnId":"t-1","status":"completed"}));
+
+        assert!(started.sequence > 0, "a turn boundary is history now");
+        assert!(completed.sequence > 0);
+        assert_eq!(visibility(&db, "turn.started"), "hidden");
+        assert_eq!(visibility(&db, "turn.completed"), "hidden");
+
+        // It replays with its kind intact, which is what lets a reader group
+        // the stream by turn after a restart.
+        let replayed = session_events_tail(&db, "s", 10).unwrap();
+        let kinds = replayed.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["turn.started", "turn.completed"]);
+        assert_eq!(replayed[0].data["turnId"], "t-1");
+    }
+
+    #[test]
+    fn usage_and_plan_updates_are_recorded_as_hidden_history() {
+        let db = observability_db();
+        record(&db, "usage.updated", json!({"input_tokens":1200,"output_tokens":340}));
+        record(&db, "plan.updated", json!({"steps":[{"title":"read the code","status":"completed"}]}));
+
+        assert_eq!(visibility(&db, "usage.updated"), "hidden");
+        assert_eq!(visibility(&db, "plan.updated"), "hidden");
+
+        let replayed = session_events_tail(&db, "s", 10).unwrap();
+        let usage = replayed.iter().find(|event| event.kind == "usage.updated").unwrap();
+        assert_eq!(usage.data["input_tokens"], 1200);
+        let plan = replayed.iter().find(|event| event.kind == "plan.updated").unwrap();
+        assert_eq!(plan.data["steps"][0]["title"], "read the code");
+    }
+
+    #[test]
+    fn streaming_frames_are_still_never_stored() {
+        // Widening the record must not turn the delta stream into storage: a
+        // terminal event already carries the whole content a delta was
+        // building, so persisting both would duplicate every message.
+        let db = observability_db();
+        for kind in ["message.delta", "reasoning.delta", "tool.progress", "question.settled"] {
+            let stored = record(&db, kind, json!({"text":"partial"}));
+            assert_eq!(stored.sequence, 0, "{kind} must stay transient");
+        }
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='s'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "transient frames wrote a row");
+    }
+
+    #[test]
+    fn a_recorded_control_entry_is_not_a_recall_hit() {
+        // The record widens; search does not. A token count is not something a
+        // reader means to find when they search their own words.
+        let db = observability_db();
+        record(&db, "usage.updated", json!({"text":"parliamentarian","input_tokens":9}));
+        let mut spoken = crate::agent::NormalizedEvent::new("message.completed");
+        spoken.role = Some("user".into());
+        spoken.text = Some("parliamentarian".into());
+        session_event(&db, "s", &spoken, &json!({})).unwrap();
+
+        let hits = crate::session_recall::search(&db, "s", "parliamentarian", None).unwrap();
+        assert_eq!(hits.hits.len(), 1, "only the spoken message is findable");
+        assert_eq!(hits.hits[0].kind, "user.message");
+    }
+
+    #[test]
+    fn errors_keep_their_forest_identity_live_and_on_legacy_replay() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','codex','Chat','ready','reported')", []).unwrap();
+        let mut event = crate::agent::NormalizedEvent::new("error");
+        event.text = Some("429 Too Many Requests".into());
+        event.status = Some("failed".into());
+        let live = session_event(&db, "s", &event, &json!({"adapter":"codex"})).unwrap();
+        let entries = session_entries(&db, "s").unwrap();
+        assert_eq!(live.provider_meta["bridgeEntryId"], entries[0].id);
+        assert_eq!(live.provider_meta["adapter"], "codex");
+        // Old persisted payloads never carried the stamp. Replay derives it
+        // from the immutable forest row, not a sequence or an autoincrement.
+        assert!(entries[0].payload["providerMeta"].get("bridgeEntryId").is_none());
+        let replayed = session_entries_to_events(&db, entries).unwrap();
+        assert_eq!(replayed[0].provider_meta, live.provider_meta);
+        let second = session_event(&db, "s", &event, &json!({"adapter":"codex"})).unwrap();
+        assert_ne!(second.provider_meta["bridgeEntryId"], live.provider_meta["bridgeEntryId"]);
+    }
 
     #[test]
     fn a_native_compaction_is_durable_history() {
@@ -4531,6 +4861,8 @@ mod tests {
             "session_entries",
             "session_heads",
             "memory_records",
+            "memory_extraction_settings",
+            "memory_extraction_runs",
             "prompt_section_revisions",
             "worker_leases",
             "worker_runtime",
@@ -5277,6 +5609,8 @@ mod tests {
             "routing_evaluation_settings",
             "memory_consolidation_runs",
             "memory_consolidation_settings",
+            "connector_inbox_items",
+            "connector_poll_state",
         ] {
             assert!(
                 db.query_row(
@@ -6624,34 +6958,28 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_window_trims_oversized_payload_strings_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = open(&dir.path().join("bridge.db")).unwrap();
-        seed_workspace(&db);
+    fn a_string_inside_the_cap_is_never_touched() {
+        let mut value = json!({"text": "short", "data": {"nested": "also short"}});
+        let before = value.clone();
+        assert!(!trim_snapshot_strings(&mut value, 4 * 1024));
+        assert_eq!(value, before, "nothing under the cap may be rewritten");
+    }
+
+    #[test]
+    fn trimming_preserves_payload_structure() {
         // The real shape that made a chat unopenable: a `command.started`
         // whose title is the whole command and whose nested data carries the
         // whole output.
-        let huge = "x".repeat(SNAPSHOT_STRING_BYTES * 3);
-        append_session_entry(
-            &db,
-            "s",
-            None,
-            "command.started",
-            &json!({
-                "itemId": "call-1",
-                "title": huge.clone(),
-                "status": "inProgress",
-                "data": {"state": {"metadata": {"output": huge.clone()}}},
-            }),
-            None,
-            "eligible",
-            Some(1),
-        )
-        .unwrap();
+        const CAP: usize = 4 * 1024;
+        let huge = "x".repeat(CAP * 3);
+        let mut payload = json!({
+            "itemId": "call-1",
+            "title": huge.clone(),
+            "status": "inProgress",
+            "data": {"state": {"metadata": {"output": huge.clone()}}},
+        });
+        assert!(trim_snapshot_strings(&mut payload, CAP));
 
-        let window = session_entry_window(&db, "s", 10).unwrap();
-        assert_eq!(window.trimmed_payloads, 1);
-        let payload = &window.entries[0].payload;
         // Structure survives: the codec reads these fields by name, so trimming
         // has to shorten them, never drop them.
         assert_eq!(payload["itemId"], json!("call-1"));
@@ -6670,39 +6998,17 @@ mod tests {
                 "truncation must be visible rather than silent: {text:.80}"
             );
         }
-
-        // Untrimmed reads are unaffected — compaction and context projection
-        // still need the real payload.
-        let full = session_entries(&db, "s").unwrap();
-        assert_eq!(full[0].payload["title"].as_str().unwrap().len(), huge.len());
     }
 
     #[test]
-    fn the_snapshot_window_preserves_durable_image_data_uris() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = open(&dir.path().join("bridge.db")).unwrap();
-        seed_workspace(&db);
-        let data_uri = format!(
-            "data:image/png;base64,{}",
-            "a".repeat(SNAPSHOT_STRING_BYTES * 3)
-        );
-        append_session_entry(
-            &db,
-            "s",
-            None,
-            "message.completed",
-            &json!({
-                "text": "x".repeat(SNAPSHOT_STRING_BYTES * 3),
-                "data": {"attachments": [{"mediaType": "image/png", "dataUri": data_uri.clone()}]},
-            }),
-            None,
-            "eligible",
-            Some(1),
-        )
-        .unwrap();
-
-        let window = session_entry_window(&db, "s", 10).unwrap();
-        let payload = &window.entries[0].payload;
+    fn trimming_preserves_durable_image_data_uris() {
+        const CAP: usize = 4 * 1024;
+        let data_uri = format!("data:image/png;base64,{}", "a".repeat(CAP * 3));
+        let mut payload = json!({
+            "text": "x".repeat(CAP * 3),
+            "data": {"attachments": [{"mediaType": "image/png", "dataUri": data_uri.clone()}]},
+        });
+        assert!(trim_snapshot_strings(&mut payload, CAP));
         assert!(payload["text"]
             .as_str()
             .unwrap()
@@ -6718,13 +7024,123 @@ mod tests {
     fn trimming_a_payload_never_splits_a_character() {
         // A multi-byte character straddling the cap: `String::truncate` panics
         // off a char boundary, so the cut walks back to one.
-        let filler = "e".repeat(SNAPSHOT_STRING_BYTES - 1);
+        const CAP: usize = 4 * 1024;
+        let filler = "e".repeat(CAP - 1);
         let mut value = json!({"text": format!("{filler}\u{1f600}tail")});
-        assert!(trim_snapshot_strings(&mut value));
+        assert!(trim_snapshot_strings(&mut value, CAP));
         let text = value["text"].as_str().unwrap();
         assert!(text.starts_with(&filler));
         assert!(!text.contains('\u{fffd}'), "no replacement character");
         assert!(text.contains("more bytes not shown"));
+    }
+
+    /// The regression guard for the bug the budget exists to fix.
+    ///
+    /// An ordinary answer a little over the old flat 4 KiB cap lost its tail —
+    /// the reported case was a `Sources:` list cut by `… 578 more bytes not
+    /// shown` — even though the whole snapshot was four orders of magnitude
+    /// under the frame ceiling. A session that fits must arrive byte-identical
+    /// to storage.
+    #[test]
+    fn the_snapshot_window_leaves_an_ordinary_session_untrimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let answer = format!(
+            "{}\n\nSources: [1] https://example.com",
+            "a".repeat(4 * 1024)
+        );
+        assert!(
+            answer.len() > 4 * 1024,
+            "the fixture must clear the old cap"
+        );
+        let mut parent: Option<String> = None;
+        for index in 0..20 {
+            let entry = append_session_entry(
+                &db,
+                "s",
+                parent.as_deref(),
+                "assistant.message",
+                &json!({"text": answer, "data": {"note": format!("turn {index}")}}),
+                None,
+                "eligible",
+                Some(1),
+            )
+            .unwrap();
+            parent = Some(entry.id);
+        }
+
+        let window = session_entry_window(&db, "s", SNAPSHOT_ENTRY_WINDOW).unwrap();
+        assert_eq!(window.trimmed_payloads, 0);
+        for entry in &window.entries {
+            assert_eq!(
+                entry.payload["text"].as_str().unwrap(),
+                answer,
+                "a message that fits the frame must not be shortened"
+            );
+        }
+        assert!(
+            !serde_json::to_string(&window.entries)
+                .unwrap()
+                .contains("more bytes not shown"),
+            "no truncation marker may appear anywhere in a session that fits"
+        );
+    }
+
+    /// The ladder must stop at the loosest rung that fits rather than dropping
+    /// straight to the floor: a session over budget still deserves as much of
+    /// its text as one frame can carry.
+    #[test]
+    fn the_snapshot_window_trims_no_harder_than_the_budget_requires() {
+        const STRING_BYTES: usize = 80 * 1024;
+        // Chosen so the untrimmed window (~27 MiB) exceeds the budget while the
+        // 64 KiB rung (~22 MiB) fits, leaving the two tighter rungs unused.
+        const ENTRIES: i64 = 350;
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let fat = "x".repeat(STRING_BYTES);
+        let transaction = db.unchecked_transaction().unwrap();
+        for index in 0..ENTRIES {
+            transaction
+                .execute(
+                    "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,context_visibility,token_estimate,created_at)
+                     VALUES(?1,'s',?2,?3,1,'assistant.message',?4,'eligible',1,'now')",
+                    params![
+                        format!("e-{index}"),
+                        (index > 0).then(|| format!("e-{}", index - 1)),
+                        index + 1,
+                        json!({"text": fat}).to_string(),
+                    ],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,resume_eligibility,updated_at)
+                 VALUES('s',?1,'fresh','fresh','now')",
+                params![format!("e-{}", ENTRIES - 1)],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        assert!(
+            ENTRIES as usize * STRING_BYTES > SNAPSHOT_PAYLOAD_BUDGET_BYTES,
+            "the fixture has to actually exceed the budget or this proves nothing"
+        );
+
+        let window = session_entry_window(&db, "s", SNAPSHOT_ENTRY_WINDOW).unwrap();
+        assert_eq!(window.trimmed_payloads, ENTRIES);
+        let text = window.entries[0].payload["text"].as_str().unwrap();
+        assert!(
+            text.len() > 64 * 1024,
+            "the 64 KiB rung fits, so nothing tighter may be chosen: {} bytes",
+            text.len()
+        );
+        assert!(text.len() < STRING_BYTES, "something had to be cut");
+        assert!(
+            serde_json::to_vec(&window.entries).unwrap().len() <= SNAPSHOT_PAYLOAD_BUDGET_BYTES,
+            "the chosen rung has to actually fit the budget"
+        );
     }
 
     #[test]
@@ -7477,7 +7893,7 @@ mod tests {
             VALUES('legacy','slack','slack.message','Old task','old',1,8000,'now','now');
             ALTER TABLE work_tasks DROP COLUMN source_activity_at;
             ALTER TABLE work_evidence DROP COLUMN source_activity_at;
-            DELETE FROM schema_version WHERE version IN (57, 58);").unwrap();
+            DELETE FROM schema_version WHERE version>=57;").unwrap();
         drop(db);
         let db = open(&path).unwrap();
         let (title, date): (String, Option<String>) = db.query_row("SELECT title,source_activity_at FROM work_tasks WHERE id='legacy'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();

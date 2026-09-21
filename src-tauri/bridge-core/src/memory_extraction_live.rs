@@ -1,5 +1,5 @@
-//! The production extraction run: a hidden bounded session on the pinned
-//! harness and model.
+//! The production extraction run: a hidden bounded session on the resolved
+//! profile — the pinned helper, else the conversation's own harness and model.
 //!
 //! Same shape as the live briefing run, smaller in every dimension: the
 //! session is `kind = 'extraction'` so no surface lists it; the briefing
@@ -46,7 +46,15 @@ pub fn start_extraction_maintenance(core: Arc<BridgeCore>) {
 }
 
 pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
-    let ClaimedExtraction { run_id, scope_key, session_id, lease_owner, harness, model } = claimed;
+    let ClaimedExtraction {
+        run_id,
+        scope_key,
+        session_id,
+        lease_owner,
+        mode,
+        harness,
+        model,
+    } = claimed;
 
     let digest = {
         let db = core.db.lock().unwrap();
@@ -55,45 +63,96 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedExtraction) {
     let digest = match digest {
         Ok(Some(digest)) => digest,
         Ok(None) => {
-            settle(core, &run_id, &lease_owner, "completed", Some("empty_digest"), &harness, &model, None, None);
+            settle(
+                core,
+                &run_id,
+                &lease_owner,
+                "completed",
+                Some("empty_digest"),
+                &harness,
+                &model,
+                None,
+                None,
+            );
             return;
         }
         Err(error) => {
-            settle(core, &run_id, &lease_owner, "failed", Some(&error.to_string()), &harness, &model, None, None);
+            settle(
+                core,
+                &run_id,
+                &lease_owner,
+                "failed",
+                Some(&error.to_string()),
+                &harness,
+                &model,
+                None,
+                None,
+            );
             return;
         }
     };
 
-    let output = match one_bounded_turn(core, &harness, &model, &digest.text) {
+    let output = match one_bounded_turn(core, &harness, model.as_deref(), &digest.text) {
         Ok(output) => output,
         Err(detail) => {
-            settle(core, &run_id, &lease_owner, "failed", Some(&detail), &harness, &model, Some(&digest.sha256), None);
+            settle(
+                core,
+                &run_id,
+                &lease_owner,
+                "failed",
+                Some(&detail),
+                &harness,
+                &model,
+                Some(&digest.sha256),
+                None,
+            );
             return;
         }
     };
 
     let report = {
         let db = core.db.lock().unwrap();
-        memory_extraction::gate_and_insert(&db, &scope_key, &session_id, &output.text)
+        memory_extraction::gate_and_insert(&db, &scope_key, &session_id, &mode, &output.text)
     };
     match report {
         Ok(report) => {
             if report.written > 0 {
-                core.events.publish(CoreEvent::MemoryChanged { scope_key: scope_key.clone() });
+                core.events.publish(CoreEvent::MemoryChanged {
+                    scope_key: scope_key.clone(),
+                });
             }
             let detail = format!(
-                "written {} invalid {} duplicates {} refused {}",
-                report.written, report.invalid, report.duplicates, report.refused
+                "written {} activated {} review {} invalid {} duplicates {} refused {}",
+                report.written,
+                report.activated,
+                report.queued_for_review,
+                report.invalid,
+                report.duplicates,
+                report.refused
             );
             settle(
-                core, &run_id, &lease_owner, "completed", Some(&detail), &harness, &model,
-                Some(&digest.sha256), Some((&output, report.written as i64)),
+                core,
+                &run_id,
+                &lease_owner,
+                "completed",
+                Some(&detail),
+                &harness,
+                &model,
+                Some(&digest.sha256),
+                Some((&output, report.written as i64)),
             );
         }
         Err(error) => {
             settle(
-                core, &run_id, &lease_owner, "failed", Some(&error.to_string()), &harness, &model,
-                Some(&digest.sha256), Some((&output, 0)),
+                core,
+                &run_id,
+                &lease_owner,
+                "failed",
+                Some(&error.to_string()),
+                &harness,
+                &model,
+                Some(&digest.sha256),
+                Some((&output, 0)),
             );
         }
     }
@@ -107,7 +166,7 @@ fn settle(
     status: &str,
     detail: Option<&str>,
     harness: &str,
-    model: &str,
+    model: &Option<String>,
     prompt_digest: Option<&str>,
     output: Option<(&ExtractionOutput, i64)>,
 ) {
@@ -117,8 +176,17 @@ fn settle(
     };
     let db = core.db.lock().unwrap();
     let _ = memory_extraction::settle(
-        &db, run_id, lease_owner, status, detail, Some(harness), Some(model),
-        prompt_digest, tokens, spend, proposals,
+        &db,
+        run_id,
+        lease_owner,
+        status,
+        detail,
+        Some(harness),
+        model.as_deref(),
+        prompt_digest,
+        tokens,
+        spend,
+        proposals,
     );
 }
 
@@ -127,7 +195,7 @@ fn settle(
 fn one_bounded_turn(
     core: &Arc<BridgeCore>,
     harness: &str,
-    model: &str,
+    model: Option<&str>,
     digest: &str,
 ) -> Result<ExtractionOutput, String> {
     let limits = wire::WorkBriefLimits {
@@ -159,7 +227,7 @@ fn one_bounded_turn(
         harness,
         StartRequest {
             cwd: &cwd,
-            model: Some(model),
+            model,
             effort: None,
             instructions: Some(&instructions),
             write_mode: None,
@@ -210,7 +278,9 @@ fn one_bounded_turn(
         }
         match receiver.recv_timeout(StdDuration::from_secs(1)) {
             Ok(line) => {
-                let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
                 match message.get("type").and_then(Value::as_str) {
                     Some("assistant") => {
                         let blocks = message
@@ -231,8 +301,14 @@ fn one_bounded_turn(
                     }
                     Some("result") => {
                         if let Some(usage) = message.get("usage") {
-                            tokens += usage.get("input_tokens").and_then(Value::as_i64).unwrap_or(0);
-                            tokens += usage.get("output_tokens").and_then(Value::as_i64).unwrap_or(0);
+                            tokens += usage
+                                .get("input_tokens")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
+                            tokens += usage
+                                .get("output_tokens")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0);
                         }
                         if let Some(cost) = message.get("total_cost_usd").and_then(Value::as_f64) {
                             spend += (cost * 1_000_000.0).round() as i64;
@@ -253,7 +329,11 @@ fn one_bounded_turn(
         Ok(()) => {
             runtime.stop(ShutdownReason::Completed);
             settle_session(core, &session_id, "ended");
-            Ok(ExtractionOutput { text, observed_tokens: tokens, spend_microusd: spend })
+            Ok(ExtractionOutput {
+                text,
+                observed_tokens: tokens,
+                spend_microusd: spend,
+            })
         }
         Err(detail) => {
             runtime.stop(ShutdownReason::Failed);
