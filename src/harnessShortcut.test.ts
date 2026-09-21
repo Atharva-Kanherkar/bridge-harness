@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
+import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 
 describe("parseHarnessShortcut", () => {
   it("splits a completed shortcut into harness id and message", () => {
@@ -30,6 +30,10 @@ describe("parseHarnessShortcut", () => {
   it("does not fire on a mid-sentence $ (e.g. talking about money)", () => {
     expect(parseHarnessShortcut("it costs $5 more than expected")).toBeNull();
   });
+
+  it("does not treat a leading currency amount as routing intent", () => {
+    expect(parseHarnessShortcut("$5 is cheaper than expected")).toBeNull();
+  });
 });
 
 describe("harnessShortcutQuery", () => {
@@ -41,5 +45,15 @@ describe("harnessShortcutQuery", () => {
   it("is undefined once a message follows, or with no $ at all", () => {
     expect(harnessShortcutQuery("$codex hi")).toBeUndefined();
     expect(harnessShortcutQuery("hello")).toBeUndefined();
+  });
+});
+
+describe("closestHarnessShortcut", () => {
+  it("suggests one clearly close harness id", () => {
+    expect(closestHarnessShortcut("claud", ["codex", "claude", "opencode"])).toBe("claude");
+  });
+
+  it("does not guess when no harness id is close", () => {
+    expect(closestHarnessShortcut("hanress", ["codex", "claude", "opencode"])).toBeUndefined();
   });
 });
