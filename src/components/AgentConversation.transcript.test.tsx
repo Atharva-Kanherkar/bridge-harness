@@ -326,8 +326,7 @@ describe("three layers", () => {
   });
 });
 
-describe("run trailer", () => {
-  const parallelCommand = (id: number, at: string) =>
+describe("run trailer", () => {  const parallelCommand = (id: number, at: string) =>
     event(id, "command.completed", {
       title: `cargo test ${id}`,
       createdAt: at,
@@ -340,5 +339,56 @@ describe("run trailer", () => {
     mount([parallelCommand(1, "2026-01-01T00:00:00.000Z"), parallelCommand(2, "2026-01-01T00:00:00.000Z")]);
     expect(host.textContent).toContain("Worked for 10s");
     expect(host.textContent).not.toContain("20s");
+  });
+});
+
+describe("harness subagents (issue #667)", () => {
+  const subagentDone = () => event(1, "tool.completed", {
+    itemId: "task-1",
+    title: "Task",
+    text: "Auth lives in src/auth.ts with a session cookie.",
+    data: {
+      name: "Task",
+      input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" },
+    },
+  });
+
+  async function openSubagentRow(events: AgentEvent[]) {
+    mount(events);
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+  }
+
+  it("opens into the prompt that was sent and the result that came back", async () => {
+    await openSubagentRow([subagentDone()]);
+    expect(host.textContent).toContain("Subagent · Explore");
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Auth lives in src/auth.ts");
+  });
+
+  it("shows the prompt while the subagent is still running", async () => {
+    mount([event(1, "tool.started", {
+      itemId: "task-1",
+      title: "Task",
+      status: "inProgress",
+      data: {
+        name: "Task",
+        input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" },
+      },
+    })]);
+    act(() => buttonWith("Using 1 tool")!.click());
+    act(() => buttonWith("Delegating Explore auth")!.click());
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("the result will appear here");
+  });
+
+  it("leaves ordinary tool rows exactly as before", async () => {
+    mount([event(1, "tool.completed", {
+      title: "Read",
+      data: { name: "Read", input: { file_path: "src/lib.rs" } },
+      text: "fn a() {}\n",
+    })]);
+    expect(host.textContent).not.toContain("Subagent");
+    expect(host.textContent).not.toContain("Asked");
   });
 });

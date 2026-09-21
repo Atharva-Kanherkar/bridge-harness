@@ -237,6 +237,38 @@ function TerminalBlock({ command, output }: { command?: string; output?: string 
   </div>;
 }
 
+/// A harness-spawned nested subagent's detail: which agent was named, what it
+/// was asked, and what it returned. The row label already says
+/// Delegating/Delegated <description>; this is the inspectable half — the
+/// prompt the parent sent in, then the result — so a minutes-long subagent is
+/// not one pulse with nothing under it. Keyed off the normalized subagent
+/// facet, never off which harness produced the call.
+function SubagentBlock({ agentType, prompt, output, live }: { agentType?: string; prompt?: string; output?: string; live: boolean }) {
+  return (
+    <div className="space-y-2.5 bg-code px-3.5 py-2.5">
+      {agentType && (
+        <p className="flex items-center gap-1.5">
+          <span className="shrink-0 rounded-full border border-border px-1.5 py-px font-mono text-[11px] text-muted-foreground">Subagent · {agentType}</span>
+        </p>
+      )}
+      {prompt && (
+        <div>
+          <p className="pb-1 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">Asked</p>
+          <CappedOutput text={prompt} className="max-h-[200px] overflow-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground"/>
+        </div>
+      )}
+      {output ? (
+        <div>
+          <p className="pb-1 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">Result</p>
+          <CappedOutput text={output} className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-muted-foreground"/>
+        </div>
+      ) : live ? (
+        <p className="text-[12px] text-muted-foreground">Working — the result will appear here.</p>
+      ) : null}
+    </div>
+  );
+}
+
 /// One tool call in three layers: a glanceable summary row, the body it opens
 /// into, and — for a patch — the remaining hunks one more click away.
 ///
@@ -250,7 +282,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
   const live = call.status === "running";
   const failed = call.status === "failed";
   const succeeded = call.status === "completed";
-  const body = call.patch ? "patch" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
+  const body = call.patch ? "patch" : call.subagent ? "subagent" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
   // `null` is "nobody has decided yet", which is not the same as closed: a patch
   // arriving mid-stream should still open the row, while a reader who collapsed
   // one keeps it collapsed.
@@ -315,6 +347,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
         </div>
         <Disclosure open={open} className="border-t border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
+          {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} live={live}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>
