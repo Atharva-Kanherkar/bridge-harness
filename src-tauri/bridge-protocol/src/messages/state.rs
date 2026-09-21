@@ -122,6 +122,11 @@ pub struct Session {
     pub title: Option<String>,
     pub kind: String,
     pub cwd: Option<String>,
+    /// Conversation lineage, not agent lineage. A fork is a top-level chat:
+    /// `parent_session_id` stays null and `depth` stays the source's, so these
+    /// are what distinguishes a fork from a delegated worker.
+    pub fork_parent_session_id: Option<String>,
+    pub fork_parent_entry_id: Option<String>,
 }
 
 /// Mirrors `bridge_core::model::BridgeEvent` — the audit/event feed rows.
@@ -349,6 +354,8 @@ mod tests {
                 title: None,
                 kind: "orchestrator".into(),
                 cwd: Some("/repos/demo".into()),
+                fork_parent_session_id: None,
+                fork_parent_entry_id: None,
             }],
             events: vec![BridgeEvent {
                 id: JsSafeI64::new(9).unwrap(),

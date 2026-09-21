@@ -1062,6 +1062,8 @@ fn populated_session() -> model::Session {
         title: Some("Fix tests".into()),
         kind: "orchestrator".into(),
         cwd: Some("/repos/demo".into()),
+        fork_parent_session_id: Some("s-0".into()),
+        fork_parent_entry_id: Some("e-9".into()),
     }
 }
 

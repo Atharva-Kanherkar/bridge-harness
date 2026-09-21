@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 59;
+const LATEST_SCHEMA_VERSION: i64 = 60;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -703,6 +703,16 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             }
             58 => migration_58_connector_inbox(&transaction)?,
             59 => crate::memory_extraction::install_run_modes(&transaction)?,
+            // Fork origin on the sessions table. Deliberately separate from
+            // `parent_session_id`/`depth`, which name the *agent* tree
+            // (orchestrator -> policy-authorized worker). A fork is a
+            // conversation-tree relation: an independent top-level chat that
+            // happens to remember where its history came from.
+            60 => {
+                add_column_if_missing(&transaction, "sessions", "fork_parent_session_id", "TEXT")?;
+                add_column_if_missing(&transaction, "sessions", "fork_parent_entry_id", "TEXT")?;
+                add_column_if_missing(&transaction, "sessions", "fork_worktree_policy", "TEXT")?;
+            }
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -2934,9 +2944,9 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
     let sessions = query(db, "WITH RECURSIVE archived(id) AS (
              SELECT id FROM sessions WHERE archived_at IS NOT NULL
              UNION SELECT s.id FROM sessions s JOIN archived a ON s.parent_session_id=a.id
-         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
+         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
          WHERE NOT EXISTS(SELECT 1 FROM archived a WHERE a.id=s.id)
-         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)? }))?;
+         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
