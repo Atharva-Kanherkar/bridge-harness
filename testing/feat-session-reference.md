@@ -79,3 +79,22 @@ integration test above.
 
 Manual pass: copy a chat ID from the sidebar, paste into another chat's
 composer, see the chip, pull it in as context.
+
+## Wire contract
+
+- The descriptor is built as the typed `ResolveReferenceResult`, not as a
+  hand-rolled `serde_json::Value`, so the compiler holds the contract instead
+  of a payload that can only fail at runtime.
+- Every multi-word field serializes camelCase, like the rest of the wire.
+  `rename_all` on a tagged enum renames variants, not struct-variant fields,
+  and schemars 0.8 ignores `rename_all_fields` — so each field is renamed
+  explicitly and a test asserts the serialized keys.
+- Resolution round-trips: what the core emits must deserialize back into the
+  wire type. Direct-JSON assertions and the frontend mock both skip that step.
+
+## Resolution edge cases
+
+- An 8-hex alias matching more than one session resolves to `unknown` rather
+  than picking whichever row the planner reached first.
+- A chat with no `session_heads` row yet (nothing appended) resolves to a
+  descriptor with `restorationMode: "fresh"`, not an error.

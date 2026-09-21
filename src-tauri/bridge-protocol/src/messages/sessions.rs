@@ -277,30 +277,47 @@ pub struct ResolveReferenceParams {
 /// The typed answer. `Unknown` is the single shape for both "this id belongs
 /// to nothing" and "this id exists but you may not see it" — resolution never
 /// leaks existence across the authorization boundary.
+/// `rename_all` on a tagged enum renames the *variants*, never the fields
+/// inside struct variants, and schemars 0.8 does not understand serde's
+/// `rename_all_fields`. So each multi-word field is renamed explicitly —
+/// otherwise this is the one snake_case shape on an all-camelCase wire, and
+/// the generated schema and the serialized payload disagree silently.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename_all = "snake_case")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResolveReferenceResult {
     Session {
+        #[serde(rename = "sessionId")]
         session_id: String,
         label: String,
         harness: String,
+        #[serde(rename = "workspaceId")]
         workspace_id: Option<String>,
+        #[serde(rename = "parentSessionId")]
         parent_session_id: Option<String>,
         depth: i64,
+        #[serde(rename = "restorationMode")]
         restoration_mode: String,
+        #[serde(rename = "continuationFidelity")]
         continuation_fidelity: String,
+        #[serde(rename = "activeEntryId")]
         active_entry_id: Option<String>,
+        #[serde(rename = "latestCheckpointEntryId")]
         latest_checkpoint_entry_id: Option<String>,
+        #[serde(rename = "updatedAt")]
         updated_at: Option<String>,
         authorized: bool,
     },
     Entry {
+        #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(rename = "entryId")]
         entry_id: String,
+        #[serde(rename = "entryKind")]
         entry_kind: String,
         sequence: i64,
         summary: String,
+        #[serde(rename = "createdAt")]
         created_at: String,
         authorized: bool,
     },

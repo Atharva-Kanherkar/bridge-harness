@@ -3011,7 +3011,7 @@ export interface ResolveReferenceParams {
   id: string;
 }
 
-export type ResolveReferenceResult = { active_entry_id?: string | null; authorized: boolean; continuation_fidelity: string; depth: number; harness: string; kind: "session"; label: string; latest_checkpoint_entry_id?: string | null; parent_session_id?: string | null; restoration_mode: string; session_id: string; updated_at?: string | null; workspace_id?: string | null } | { authorized: boolean; created_at: string; entry_id: string; entry_kind: string; kind: "entry"; sequence: number; session_id: string; summary: string } | { authorized: boolean; kind: "unknown" };
+export type ResolveReferenceResult = { activeEntryId?: string | null; authorized: boolean; continuationFidelity: string; depth: number; harness: string; kind: "session"; label: string; latestCheckpointEntryId?: string | null; parentSessionId?: string | null; restorationMode: string; sessionId: string; updatedAt?: string | null; workspaceId?: string | null } | { authorized: boolean; createdAt: string; entryId: string; entryKind: string; kind: "entry"; sequence: number; sessionId: string; summary: string } | { authorized: boolean; kind: "unknown" };
 
 export interface CreateWorkspaceSessionParams {
   createWorktree?: boolean | null;

@@ -25,6 +25,11 @@ export function referenceAlias(token: string): string {
   return bare.startsWith("brio_") ? bare : toPublicAlias(bare);
 }
 
+/** The leading fragment of an id, for a label that has nothing better. */
+function shortId(id: string | undefined): string {
+  return (id ?? "").slice(0, 8) || "unknown";
+}
+
 export type ReferenceChipModel = {
   token: string;
   alias: string;
@@ -37,7 +42,7 @@ export function chipSummary(reference: ResolveReferenceResult): string {
     case "session":
       return reference.label;
     case "entry":
-      return reference.summary ? `${reference.summary}` : `entry ${reference.entry_id.slice(0, 8)}`;
+      return reference.summary || `entry ${shortId(reference.entryId)}`;
     case "unknown":
       return "Unknown reference";
   }
@@ -47,9 +52,9 @@ export function chipSummary(reference: ResolveReferenceResult): string {
 export function chipDetail(reference: ResolveReferenceResult): string {
   switch (reference.kind) {
     case "session":
-      return `${reference.harness} · ${reference.restoration_mode}${reference.workspace_id ? " · workspace" : ""}${reference.parent_session_id ? " · fork" : ""}`;
+      return `${reference.harness} · ${reference.restorationMode}${reference.workspaceId ? " · workspace" : ""}${reference.parentSessionId ? " · fork" : ""}`;
     case "entry":
-      return `${reference.entry_kind} · #${reference.sequence}`;
+      return `${reference.entryKind} · #${reference.sequence}`;
     case "unknown":
       return "no such session or entry";
   }
@@ -59,9 +64,9 @@ export function chipDetail(reference: ResolveReferenceResult): string {
 export function referencePullText(reference: ResolveReferenceResult): string {
   switch (reference.kind) {
     case "session":
-      return `[session ${reference.label} — checkpoint ${reference.latest_checkpoint_entry_id ? "present" : "none"}]`;
+      return `[session ${reference.label} — checkpoint ${reference.latestCheckpointEntryId ? "present" : "none"}]`;
     case "entry":
-      return reference.summary ? `> ${reference.summary}` : `[entry ${reference.entry_id.slice(0, 8)}]`;
+      return reference.summary ? `> ${reference.summary}` : `[entry ${shortId(reference.entryId)}]`;
     case "unknown":
       return "";
   }

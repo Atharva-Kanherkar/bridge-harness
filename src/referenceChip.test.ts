@@ -10,17 +10,17 @@ import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 type SessionRef = Extract<ResolveReferenceResult, { kind: "session" }>;
 const sessionRef = (overrides: Partial<SessionRef> = {}): SessionRef => ({
   kind: "session",
-  session_id: "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  sessionId: "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   label: "Kyoto",
   harness: "codex",
-  workspace_id: null,
-  parent_session_id: "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  workspaceId: null,
+  parentSessionId: "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   depth: 1,
-  restoration_mode: "checkpoint_restored",
-  continuation_fidelity: "projected_at_boundary",
-  active_entry_id: null,
-  latest_checkpoint_entry_id: "chk-1",
-  updated_at: "now",
+  restorationMode: "checkpoint_restored",
+  continuationFidelity: "projected_at_boundary",
+  activeEntryId: null,
+  latestCheckpointEntryId: "chk-1",
+  updatedAt: "now",
   authorized: true,
   ...overrides,
 });
@@ -43,27 +43,27 @@ describe("reference chips", () => {
   });
 
   it("pulls a checkpoint summary into the draft for sessions", () => {
-    expect(referencePullText(sessionRef({ latest_checkpoint_entry_id: "chk-1" })))
+    expect(referencePullText(sessionRef({ latestCheckpointEntryId: "chk-1" })))
       .toContain("checkpoint present");
-    expect(referencePullText(sessionRef({ latest_checkpoint_entry_id: null })))
+    expect(referencePullText(sessionRef({ latestCheckpointEntryId: null })))
       .toContain("checkpoint none");
   });
 
   it("pulls entry summaries as quotes and unknown references pull nothing", async () => {
     const entry: ResolveReferenceResult = {
       kind: "entry",
-      session_id: "s",
-      entry_id: "44444444-4444-4444-8444-444444444444",
-      entry_kind: "user.message",
+      sessionId: "s",
+      entryId: "44444444-4444-4444-8444-444444444444",
+      entryKind: "user.message",
       sequence: 1,
       summary: "A question about the rail",
-      created_at: "now",
+      createdAt: "now",
       authorized: true,
     };
     expect(referencePullText(entry)).toBe("> A question about the rail");
     expect(referencePullText({ kind: "unknown", authorized: false })).toBe("");
     const resolved = sessionRef();
     
-    expect(resolved.parent_session_id).toBeTruthy();
+    expect(resolved.parentSessionId).toBeTruthy();
   });
 });

@@ -1367,7 +1367,10 @@ pub fn resolve_reference(
     core: &Arc<BridgeCore>,
     id: &str,
 ) -> Result<wire::ResolveReferenceResult, BridgeError> {
-    protocol_wire(core.resolve_reference(id)?)
+    // Returned straight through, not round-tripped through `serde_json::Value`:
+    // the core builds the wire type itself, so the compiler holds the contract
+    // rather than a hand-written payload that only fails at runtime.
+    core.resolve_reference(id)
 }
 
 /// Fork a session's conversation branch at an entry. Returns the exact fork

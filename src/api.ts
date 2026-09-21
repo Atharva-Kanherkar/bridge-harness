@@ -1935,17 +1935,17 @@ export const bridgeApi = {
       const head = mockForests[session.id]?.head ?? null;
       return {
         kind: "session",
-        session_id: session.id,
+        sessionId: session.id,
         label: session.label,
         harness: session.harness,
-        workspace_id: session.workspaceId ?? null,
-        parent_session_id: session.parentSessionId ?? null,
+        workspaceId: session.workspaceId ?? null,
+        parentSessionId: session.parentSessionId ?? null,
         depth: session.depth ?? 0,
-        restoration_mode: session.restorationMode,
-        continuation_fidelity: session.continuationFidelity,
-        active_entry_id: head?.activeEntryId ?? null,
-        latest_checkpoint_entry_id: head?.latestCheckpointEntryId ?? null,
-        updated_at: session.startedAt ?? null,
+        restorationMode: session.restorationMode,
+        continuationFidelity: session.continuationFidelity,
+        activeEntryId: head?.activeEntryId ?? null,
+        latestCheckpointEntryId: head?.latestCheckpointEntryId ?? null,
+        updatedAt: session.startedAt ?? null,
         authorized: true,
       };
     }
@@ -1955,12 +1955,12 @@ export const bridgeApi = {
         const summary = String(entry.payload?.text ?? entry.payload?.summary ?? entry.payload?.title ?? "") || "";
         return {
           kind: "entry",
-          session_id: forest.sessionId,
-          entry_id: entry.id,
-          entry_kind: entry.kind,
+          sessionId: forest.sessionId,
+          entryId: entry.id,
+          entryKind: entry.kind,
           sequence: Number(entry.sequence),
           summary,
-          created_at: entry.createdAt,
+          createdAt: entry.createdAt,
           authorized: true,
         };
       }
