@@ -225,11 +225,20 @@ or provider-selection behavior. The independent service follows below.
 Validation: production frontend build and Rust workspace check passed; 174
 protocol tests plus two doctests passed, including generated-artifact and
 bidirectional stale-version checks. The focused run passed 64 frontend voice
-tests, 22 native voice tests, and 33 event/ACP-event tests. The full frontend run
-passed 2,351 tests before three additional controller tests were added and passed
-in the focused run. Full native workspace/release tests and live packaged audio
-have not been rerun for this milestone. No source/cache cleanup or model download
-was required. Commits remain local; no push or PR is implied.
+tests, 22 native voice tests, and 33 event/ACP-event tests. The final full frontend
+run passed all 2,354 tests across 195 files. Two daemon-dispatch tests additionally
+verify fresh-draft setup probing, explicit local start failure, no adapter/session
+creation, and rejection of unknown providers or the old ownerless contract.
+
+The broad `cargo test -p bridged voice_` invocation passed those two tests but
+then failed to launch a separate integration-test target: disk exhaustion during
+`rust-objcopy` left a 2,240-byte nonexecutable artifact. Only that confirmed
+generated artifact was removed, so a future build will recreate it. The exact
+`cargo test -p bridged --lib voice_` rerun passed both tests. This was not a product
+test failure or a passing full native run. Full native workspace/release tests
+and live packaged audio remain unverified for this milestone; disk space was
+about 551 MiB at the follow-up check. No source files or unrelated caches were
+removed and no model was downloaded. Commits remain local; no push or PR is implied.
 
 ### Part 1 — Immediate safety and honest diagnostics
 

@@ -1054,6 +1054,42 @@ mod tests {
     }
 
     #[test]
+    fn voice_probe_before_chat_creation_reports_setup_without_selecting_a_provider() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let result = dispatch(&core, MethodName::VoiceCapabilities, Some(json!({}))).unwrap();
+        assert!(result.get("sessionId").is_none());
+        assert!(result.get("selectedProvider").is_none());
+        let local = result["providers"].as_array().unwrap().iter()
+            .find(|provider| provider["provider"] == "local").unwrap();
+        assert_eq!(local["state"], "needsSetup");
+        assert_eq!(local["processing"], "onDevice");
+        assert_eq!(local["recoveryAction"], "setup");
+
+        let error = dispatch(&core, MethodName::VoiceStart,
+            Some(json!({"ownerKey":"fresh-draft", "provider":"local"}))).unwrap_err();
+        assert!(error.message.contains("setup"));
+        assert!(core.adapters.lock().unwrap().is_empty());
+        assert_eq!(core.db.lock().unwrap().query_row("SELECT count(*) FROM sessions", [],
+            |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn voice_dispatch_rejects_unknown_providers_and_the_old_ownerless_contract() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        for params in [
+            json!({"ownerKey":"draft", "provider":"automatic"}),
+            json!({"sessionId":"chat", "provider":"codex"}),
+            json!({"ownerKey":"draft", "provider":"local", "fallback":"codex"}),
+        ] {
+            let error = dispatch(&core, MethodName::VoiceStart, Some(params)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        }
+        assert!(core.adapters.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn the_work_board_is_served_and_takes_no_parameters() {
         let fixture = tempfile::tempdir().unwrap();
         let core = core(fixture.path());
