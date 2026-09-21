@@ -7,7 +7,7 @@ export const blogPath = "/blog";
 export const downloadPath = "/download";
 // Keep the primary CTA on the actual stable DMG. GitHub resolves `latest` to
 // the newest non-draft release without making the landing page wait on the API.
-export const macDownloadPath = `${repoUrl}/releases/latest/download/Bridge_0.5.9_aarch64.dmg`;
+export const macDownloadPath = `${repoUrl}/releases/latest/download/Bridge_0.5.10_aarch64.dmg`;
 export const linuxDownloadPath = `${downloadPath}/linux`;
 export const changelogPath = "/changelog";
 export const comparePath = "/compare";

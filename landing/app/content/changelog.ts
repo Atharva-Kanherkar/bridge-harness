@@ -7,6 +7,19 @@ export type ReleaseEntry = {
 
 export const releases: ReleaseEntry[] = [
   {
+    version: "0.5.10",
+    date: "September 21, 2026",
+    headline: "OpenCode sessions, attention alerts, and memory",
+    bullets: [
+      "macOS attention alerts use a glass toast that stays put while unrelated UI renders.",
+      "The usage dot is back on the chat and headlines the tightest window, with usage refresh isolated per account.",
+      "Mission Control can close a chat and hide worker sessions. The live badge counts active pinned workers.",
+      "Memory extraction is proposed on the chat's own model, and safe memories can promote automatically.",
+      "OpenCode turns stay on the session tree, the event stream reconnects with backoff, and subagent rows are labeled. A stall watchdog treats provider heartbeats as liveness rather than progress.",
+      "GitHub offers Connect when no repository resolves, and a pasted GitHub link asks where it should open.",
+    ],
+  },
+  {
     version: "0.5.9",
     date: "September 16, 2026",
     headline: "Database compatibility release",
