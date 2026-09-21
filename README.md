@@ -14,6 +14,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Atharva-Kanherkar/bridge-harness/actions/workflows/ci.yml"><img src="https://github.com/Atharva-Kanherkar/bridge-harness/actions/workflows/ci.yml/badge.svg" alt="CI status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Atharva-Kanherkar/bridge-harness" alt="MIT License" /></a>
+  <a href="https://github.com/Atharva-Kanherkar/bridge-harness/issues"><img src="https://img.shields.io/github/issues/Atharva-Kanherkar/bridge-harness" alt="Open issues" /></a>
+</p>
+
+<p align="center">
   <sub>macOS 12+ · Apple Silicon · Early-stage, under active development</sub>
 </p>
 
@@ -158,8 +164,11 @@ Approvals, history, and usage tracking are on from the start.
 - [docs/protocol/README.md](docs/protocol/README.md) — the RPC contract between the app and the runtime
 - [docs/work-brief.md](docs/work-brief.md) — the daily work briefing
 
-<details>
-<summary><strong>Building from source &amp; contributing</strong></summary>
+## Contributing
+
+Bridge is **Tauri 2 + Rust** (`src-tauri/`) with a **React / TypeScript / Vite** frontend and **Tailwind CSS v4**. [CONTRIBUTING.md](CONTRIBUTING.md) covers Bun setup, `bun run build` / `test` / `check`, and the PR process. UI and agent conventions live in [AGENTS.md](AGENTS.md).
+
+**Quickstart from source:**
 
 ```sh
 git clone https://github.com/Atharva-Kanherkar/bridge-harness.git
@@ -169,16 +178,7 @@ bun run dev        # fast frontend iteration (mock data, no Rust shell)
 bun run tauri dev  # full desktop app
 ```
 
-Before opening a PR:
-
-```sh
-bun run build
-bun run test
-```
-
-Keep changes focused, follow [AGENTS.md](AGENTS.md) (Tailwind CSS v4 only, colocated tests), and use Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
-
-</details>
+Before opening a PR, run `bun run build` and `bun run test`. Use Conventional Commits for commit and PR titles (`feat:`, `fix:`, `docs:`, `chore:`).
 
 ## License
 

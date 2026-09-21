@@ -1,0 +1,29 @@
+name: First interaction
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: |
+            Thanks for opening an issue on Bridge.
+
+            Every issue needs **`## For humans`** and **`## For agents`** sections — see [docs/issue-format.md](https://github.com/Atharva-Kanherkar/bridge-harness/blob/main/docs/issue-format.md). Issues missing either section are closed automatically until the body is updated.
+
+            Pick a template under **New issue** (`bug`, `feature`, or `audit`) to get the right shape.
+          pr-message: |
+            Thanks for contributing to Bridge.
+
+            Please use a **Conventional Commit** PR title (`feat:`, `fix:`, `chore:`, …) and run `bun run build` and `bun run test` before merge. See [CONTRIBUTING.md](https://github.com/Atharva-Kanherkar/bridge-harness/blob/main/CONTRIBUTING.md) and [AGENTS.md](https://github.com/Atharva-Kanherkar/bridge-harness/blob/main/AGENTS.md) for setup and conventions.
