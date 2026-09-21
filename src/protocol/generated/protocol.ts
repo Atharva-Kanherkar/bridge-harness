@@ -74,6 +74,8 @@ export type BridgeMethod =
   | "sessions/archive_chat"
   | "config/get_worker_settings"
   | "config/save_worker_settings"
+  | "config/get_reviewer_settings"
+  | "config/save_reviewer_settings"
   | "sessions/list_archived_chats"
   | "sessions/unarchive_chat"
   | "memory/save_memory_record"
@@ -282,6 +284,8 @@ export const BRIDGE_METHODS = [
   { method: "sessions/archive_chat", domain: "sessions", command: "archive_chat" },
   { method: "config/get_worker_settings", domain: "config", command: "get_worker_settings" },
   { method: "config/save_worker_settings", domain: "config", command: "save_worker_settings" },
+  { method: "config/get_reviewer_settings", domain: "config", command: "get_reviewer_settings" },
+  { method: "config/save_reviewer_settings", domain: "config", command: "save_reviewer_settings" },
   { method: "sessions/list_archived_chats", domain: "sessions", command: "list_archived_chats" },
   { method: "sessions/unarchive_chat", domain: "sessions", command: "unarchive_chat" },
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
@@ -605,6 +609,8 @@ export interface BridgeMethodParams {
   "sessions/archive_chat": ArchiveChatParams;
   "config/get_worker_settings": GetWorkerSettingsParams;
   "config/save_worker_settings": SaveWorkerSettingsParams;
+  "config/get_reviewer_settings": undefined;
+  "config/save_reviewer_settings": SaveReviewerSettingsParams;
   "sessions/list_archived_chats": ListArchivedChatsParams;
   "sessions/unarchive_chat": UnarchiveChatParams;
   "usage/summary": SummaryParams;
@@ -770,6 +776,8 @@ export interface BridgeMethodResults {
   "sessions/archive_chat": ArchiveChatResult;
   "config/get_worker_settings": WorkerSettings;
   "config/save_worker_settings": WorkerSettings;
+  "config/get_reviewer_settings": ReviewerSettingsResult;
+  "config/save_reviewer_settings": ReviewerSettingsResult;
   "sessions/list_archived_chats": ArchivedChatsResult;
   "sessions/unarchive_chat": UnitResult;
   "memory/save_memory_record": MemoryRecord;
@@ -1773,6 +1781,16 @@ export interface ReviewThread {
   line?: number | null;
   originalLine?: number | null;
   path: string;
+}
+
+export interface ReviewerHarnessSettings {
+  effort?: Effort | null;
+  model?: string | null;
+}
+
+export interface ReviewerSettings {
+  harnesses?: Record<string, ReviewerHarnessSettings>;
+  systemPrompt?: string;
 }
 
 export type RiskTier = "low" | "medium" | "high";
@@ -3431,6 +3449,15 @@ export interface GetWorkerSettingsParams {
 export interface SaveWorkerSettingsParams {
   settings: WorkerSettings;
   workspaceId: string;
+}
+
+export interface ReviewerSettingsResult {
+  defaultSystemPrompt: string;
+  settings: ReviewerSettings;
+}
+
+export interface SaveReviewerSettingsParams {
+  settings: ReviewerSettings;
 }
 
 export interface ListArchivedChatsParams {

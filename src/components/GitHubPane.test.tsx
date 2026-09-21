@@ -358,6 +358,10 @@ describe("GitHubPane", () => {
     await click(buttonByText("Review"));
     expect(host!.textContent).toContain("RUN REVIEW WITH");
     expect(review).not.toHaveBeenCalled();
+    // OpenCode cannot review read-only; the menu says what it does instead.
+    const opencode = [...host!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.includes("OpenCode"))!;
+    expect(opencode.textContent).toContain("isolated worktree, needs approval");
+    expect([...host!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.startsWith("Codex"))!.textContent).toBe("Codex");
 
     await click(buttonByText("Codex"));
     expect(review).toHaveBeenCalledWith("w", 1, "codex", "sess-1");

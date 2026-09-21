@@ -896,13 +896,15 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
 
 type PendingAction = { statement: string; requiresBody: boolean; body?: string; build: (body: string) => GithubAction };
 
-/** The harnesses a subagent review can run under. The model comes from the
- * Reviewer profile in settings, so the user only picks the agent. Cursor
- * Bugbot is not a local worker: it posts `cursor review` on the PR. */
-const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
+/** The harnesses a subagent review can run under. Model, effort and
+ * instructions come from Settings → Workers → Pull request reviewer, so the
+ * user only picks the agent here. OpenCode cannot run read-only, so its
+ * reviewer works from an isolated worktree behind an approval. Cursor Bugbot
+ * is not a local worker: it posts `cursor review` on the PR. */
+const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string; note?: string }> = [
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
-  { id: "opencode", label: "OpenCode" },
+  { id: "opencode", label: "OpenCode", note: "isolated worktree, needs approval" },
   { id: "bugbot", label: "Cursor Bugbot" },
 ];
 
@@ -1157,6 +1159,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
             {REVIEW_HARNESSES.map(choice => <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview(choice.id)} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-foreground transition-colors hover:bg-accent disabled:opacity-50">
               <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+              {choice.note && <span className="shrink-0 text-[10.5px] text-muted-foreground">{choice.note}</span>}
             </button>)}
           </div>}
           {reviewNotice && <p role="status" className={cn("animate-page-mount mt-2 rounded-md border px-2.5 py-1.5 text-[12px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}

@@ -2199,12 +2199,16 @@ fn cleanup_reader_state(
         core.adapter_registry
             .forget_session(adapter_id, provider_session_id);
     }
-    if tracks_worker && active_provider.is_none() {
-        core.worker_activity.lock().unwrap().remove(session_id);
-        core.worker_activity_persisted
-            .lock()
-            .unwrap()
-            .remove(session_id);
+    if active_provider.is_none() {
+        if tracks_worker {
+            core.worker_activity.lock().unwrap().remove(session_id);
+            core.worker_activity_persisted
+                .lock()
+                .unwrap()
+                .remove(session_id);
+        } else {
+            drop_chat_liveness(core, session_id);
+        }
     }
 }
 
@@ -2248,11 +2252,9 @@ fn spawn_reader_thread(
             .ok()
             .flatten()
             .is_some();
-        // Seed a heartbeat so a worker that never emits a single line still has
-        // a baseline the stall watchdog can measure from.
-        if tracks_worker {
-            record_worker_activity(&core, &session_id);
-        }
+        // Seed a heartbeat so a session that never emits a single line still
+        // has a baseline the stall watchdogs can measure from.
+        record_session_activity(&core, &session_id, tracks_worker);
         // Set once this launch is observed serving a detached model-switch
         // summary, so its exit skips live-session teardown even after the
         // detached entry has been cleaned up.
@@ -2270,12 +2272,19 @@ fn spawn_reader_thread(
                     if !launch_active {
                         break;
                     }
-                    // Every line proves liveness — refresh the heartbeat before
-                    // normalization so tool-run and reasoning frames all count.
-                    if tracks_worker {
-                        record_worker_activity(&core, &session_id);
-                    }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                        // A provider's server-level heartbeat proves the process
+                        // is alive and nothing more. It must not count as turn
+                        // progress — the chat watchdog exists precisely for a
+                        // turn that is wedged behind a healthy heartbeat — and
+                        // it has no conversation content to hand the handler.
+                        if agent::is_opencode_liveness_frame(&value) {
+                            continue;
+                        }
+                        // Every other line proves progress — refresh the
+                        // heartbeat before normalization so tool-run and
+                        // reasoning frames all count.
+                        record_session_activity(&core, &session_id, tracks_worker);
                         // A detached model-switch summary runtime shares this
                         // session id with the incoming model. Its frames drive
                         // only the checkpoint pipeline and must never reach the
@@ -3483,6 +3492,10 @@ fn handle_agent_value_timed(
     }
 
     if turn_completed {
+        // The turn is terminal: the chat watchdog must stop measuring this
+        // session until its reader serves the next turn. Workers never hold
+        // a chat entry, so this is a no-op for them.
+        drop_chat_liveness(&state, session_id);
         // Name the chat now rather than at creation: a session has nothing to be
         // named after until it has said something, and Claude writes its own title
         // a turn or two in.
@@ -8851,6 +8864,33 @@ fn reset_worker_heartbeat(state: &BridgeCore, session_id: &str) {
         .insert(session_id.to_string(), std::time::Instant::now());
 }
 
+/// A progress frame arrived for `session_id`. Workers keep the heartbeat in
+/// `worker_activity` (mirrored into `worker_runtime` for the fleet UI);
+/// chats keep theirs in `chat_activity` so the per-second worker watchdog
+/// never scans a chat session or probes `worker_runtime` for it.
+fn record_session_activity(core: &Arc<BridgeCore>, session_id: &str, tracks_worker: bool) {
+    if tracks_worker {
+        record_worker_activity(core, session_id);
+    } else {
+        reset_chat_heartbeat(core, session_id);
+    }
+}
+
+/// Refresh a chat session's liveness heartbeat for the chat-turn watchdog.
+fn reset_chat_heartbeat(state: &BridgeCore, session_id: &str) {
+    state
+        .chat_activity
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), std::time::Instant::now());
+}
+
+/// A chat turn reached a terminal boundary: drop its liveness entry so the
+/// chat watchdog stops measuring a session with nothing in flight.
+fn drop_chat_liveness(state: &BridgeCore, session_id: &str) {
+    state.chat_activity.lock().unwrap().remove(session_id);
+}
+
 fn record_worker_activity(core: &Arc<BridgeCore>, session_id: &str) {
     let state = core.clone();
     reset_worker_heartbeat(&state, session_id);
@@ -8876,6 +8916,17 @@ fn record_worker_activity(core: &Arc<BridgeCore>, session_id: &str) {
 fn worker_silence_secs(state: &BridgeCore, session_id: &str) -> Option<u64> {
     state
         .worker_activity
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|seen| seen.elapsed().as_secs())
+}
+
+/// Seconds since a chat session last produced a progress frame, if its reader
+/// still has a turn in flight.
+fn chat_silence_secs(state: &BridgeCore, session_id: &str) -> Option<u64> {
+    state
+        .chat_activity
         .lock()
         .unwrap()
         .get(session_id)
@@ -9747,8 +9798,214 @@ pub fn start_worker_maintenance(core: Arc<BridgeCore>) {
             thread::sleep(Duration::from_secs(1));
             idle.maintain(&core);
             maintain_worker_pool(&core);
+            maintain_chat_liveness(&core);
         }
     });
+}
+
+/// A user's own chat turn (depth 0, status `working`) whose provider has
+/// emitted no progress frame for this long is treated as wedged. Mirrors the
+/// worker watchdog's window; healthy providers stream far more often.
+pub const CHAT_STALL_TIMEOUT_SECONDS: u64 = 600;
+
+/// The same deadline while a tool, command or file change of the current turn
+/// is still open. A tool legitimately goes quiet far longer than reasoning
+/// does — a build or a test suite emits nothing until it ends — so a single
+/// deadline would fire on every long tool call.
+pub const CHAT_TOOL_STALL_TIMEOUT_SECONDS: u64 = 1800;
+
+const CHAT_STALLED_OBSERVED: &str = "chat.stalled_observed";
+
+/// Stall watchdog for non-worker sessions.
+///
+/// The worker watchdog is keyed off `worker_runtime` and settles a typed
+/// result to the parent; a chat has no parent to report to and no result to
+/// type, so a wedged turn used to spin forever — the TCP socket stays warm
+/// (OpenCode heartbeats every 10 s) so the EOF path never fires either. This
+/// pass resolves such a turn to one visible, recoverable error and hands the
+/// session back to the user with its adapter still alive.
+///
+/// Detection reads the chat-only heartbeat map first so the common case (no
+/// silent sessions) touches neither the adapter map nor the DB. `waiting`
+/// (approval pending) and `checkpointing` are deliberately idle and excluded;
+/// workers (depth > 0) keep their own path on `worker_activity`.
+fn maintain_chat_liveness(core: &Arc<BridgeCore>) {
+    let state = core.clone();
+    let silent_ids: Vec<(String, u64)> = {
+        let activity = state.chat_activity.lock().unwrap();
+        activity
+            .iter()
+            .map(|(session_id, seen)| (session_id.clone(), seen.elapsed().as_secs()))
+            .filter(|(_, silent)| *silent >= CHAT_STALL_TIMEOUT_SECONDS)
+            .collect()
+    };
+    if silent_ids.is_empty() {
+        return;
+    }
+    let alive: Vec<(String, u64)> = {
+        let adapters = state.adapters.lock().unwrap();
+        silent_ids
+            .into_iter()
+            .filter(|(session_id, _)| adapters.contains_key(session_id))
+            .collect()
+    };
+    for (session_id, silent) in alive {
+        let deadline = {
+            let db = state.db.lock().unwrap();
+            chat_stall_deadline(&db, &session_id)
+        };
+        if let Some(deadline) = deadline {
+            if silent >= deadline {
+                fail_stalled_chat_turn(core, &session_id, deadline);
+            }
+        }
+    }
+}
+
+/// The silence a working chat session may accumulate before it is stalled,
+/// or `None` when the session is not a candidate at all.
+fn chat_stall_deadline(db: &Connection, session_id: &str) -> Option<u64> {
+    let working: bool = db
+        .query_row(
+            "SELECT status='working' AND COALESCE(depth,0)=0 FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !working {
+        return None;
+    }
+    // A tool of the current turn that has started and not yet completed. The
+    // turn boundary is the last durable `turn.started`; open means no later
+    // `*.completed` for the same item (`provider_event_id` holds the item id).
+    // A started row with no item id can never be matched by a completion, so
+    // it must not pin the session to the long deadline — it is ignored here
+    // and the turn stalls on the normal ten-minute deadline instead.
+    let tool_open: bool = db
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM session_entries started
+                WHERE started.session_id=?1
+                  AND started.kind IN ('tool.started','command.started','file_change.started')
+                  AND started.provider_event_id IS NOT NULL
+                  AND started.sequence > COALESCE((SELECT MAX(sequence) FROM session_entries WHERE session_id=?1 AND kind='turn.started'), 0)
+                  AND NOT EXISTS(
+                    SELECT 1 FROM session_entries done
+                    WHERE done.session_id=?1
+                      AND done.provider_event_id IS NOT NULL
+                      AND done.provider_event_id=started.provider_event_id
+                      AND done.kind IN ('tool.completed','command.completed','file_change.completed')
+                      AND done.sequence > started.sequence))",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    Some(if tool_open {
+        CHAT_TOOL_STALL_TIMEOUT_SECONDS
+    } else {
+        CHAT_STALL_TIMEOUT_SECONDS
+    })
+}
+
+/// Resolve a wedged chat turn: interrupt the provider, record one error and
+/// a failed turn boundary, and return the session to `ready` with its adapter
+/// intact so the next message needs no restart.
+fn fail_stalled_chat_turn(core: &Arc<BridgeCore>, session_id: &str, deadline: u64) {
+    let state = core.clone();
+    // (1) Re-confirm silence under the lock — output that landed since the
+    // snapshot must win over a synthetic failure.
+    match chat_silence_secs(&state, session_id) {
+        Some(silent) if silent >= deadline => {}
+        _ => return,
+    }
+    // Reset first: a second tick must not stall the same turn twice while
+    // the provider takes its time reacting to the interrupt.
+    reset_chat_heartbeat(&state, session_id);
+    // (2) The interrupt makes the provider emit an aborted-turn error that
+    // looks like a crash. The stall card is the one the user should see, so
+    // let the existing stop path swallow the provoked one.
+    state
+        .user_stop_requested
+        .lock()
+        .unwrap()
+        .insert(session_id.to_owned());
+    let interrupted = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|runtime| runtime.interrupt().is_ok())
+        .unwrap_or(false);
+    let (harness, workspace_id): (String, Option<String>) = {
+        let db = state.db.lock().unwrap();
+        match db.query_row(
+            "SELECT harness, workspace_id FROM sessions WHERE id=?1 AND status='working' AND COALESCE(depth,0)=0",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(row) => row,
+            // Settled by a real frame between the snapshot and now.
+            Err(_) => return,
+        }
+    };
+    let mut error = agent::NormalizedEvent::new("error");
+    error.status = Some("failed".into());
+    error.title = Some("Turn stalled".into());
+    error.text = Some(format!(
+        "The provider produced no output for {} minutes, so Bridge interrupted the turn. \
+         Send a message to continue; the session is still running.",
+        deadline / 60
+    ));
+    error.data = serde_json::json!({
+        "bridgeStall": true,
+        "deadlineSeconds": deadline,
+        "interrupted": interrupted,
+    });
+    let mut ended = agent::NormalizedEvent::new("turn.completed");
+    ended.status = Some("failed".into());
+    ended.data = serde_json::json!({ "bridgeStall": true });
+    let provider_meta = serde_json::json!({ "adapter": harness, "bridgeStall": true });
+    let stored: Vec<AgentEvent> = {
+        let db = state.db.lock().unwrap();
+        let mut stored = Vec::new();
+        for event in [&error, &ended] {
+            if let Ok(stored_event) = store::session_event(&db, session_id, event, &provider_meta) {
+                stored.push(stored_event);
+            }
+        }
+        // Spelled with IN so the boot-path guard (`no_provider_boot_path_claims_a_
+        // turn_it_does_not_have`) does not read this as a session claiming a turn:
+        // it releases one.
+        let _ = db.execute(
+            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1 AND status IN ('working')",
+            params![session_id],
+        );
+        if let Some(workspace_id) = &workspace_id {
+            let _ = db.execute(
+                "UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",
+                params![workspace_id],
+            );
+        }
+        // Bridge's own observation, kept apart from the conversation.
+        let _ = store::event(
+            &db,
+            "supervisor",
+            CHAT_STALLED_OBSERVED,
+            session_id,
+            &format!("no output for {deadline}s; interrupted={interrupted}"),
+        );
+        stored
+    };
+    if let Some(runtime) = state.adapters.lock().unwrap().get(session_id) {
+        *runtime.current_turn().lock().unwrap() = None;
+    }
+    // The turn is terminal: stop measuring this chat until its reader serves
+    // the next turn.
+    drop_chat_liveness(&state, session_id);
+    for event in stored {
+        state.events.publish(CoreEvent::Agent(event));
+    }
+    state.events.publish(CoreEvent::StateChanged);
 }
 
 /// How often the check runner looks for work. Deliberately unhurried: a planned
@@ -16686,6 +16943,282 @@ mod retry_settlement_tests {
         Arc<Mutex<Vec<String>>>,
         std::sync::MutexGuard<'static, ()>,
     );
+
+    /// A live chat adapter that only counts interrupts and stays registered.
+    struct ChatSpyRuntime {
+        interrupts: Arc<Mutex<u32>>,
+        current_turn: Arc<Mutex<Option<String>>>,
+    }
+
+    impl adapters::AdapterRuntime for ChatSpyRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "spy"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            self.current_turn.clone()
+        }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            *self.interrupts.lock().unwrap() += 1;
+            Ok(())
+        }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn stop(&mut self, _: adapters::ShutdownReason) {}
+    }
+
+    /// A depth-0 OpenCode chat mid-turn, with a live adapter and no worker row.
+    fn core_with_working_chat() -> (tempfile::TempDir, Arc<BridgeCore>, Arc<Mutex<u32>>, std::sync::MutexGuard<'static, ()>) {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,active_turn_id) VALUES('chat','w','opencode','Chat','working','reported',0,'orchestrator','turn-1')", []).unwrap();
+        }
+        let interrupts = Arc::new(Mutex::new(0));
+        let core = Arc::new(core);
+        core.adapters.lock().unwrap().insert(
+            "chat".into(),
+            Box::new(ChatSpyRuntime { interrupts: interrupts.clone(), current_turn: Arc::new(Mutex::new(Some("turn-1".into()))) }),
+        );
+        (fixture, core, interrupts, managed_root)
+    }
+
+    fn chat_status(core: &BridgeCore) -> (String, Option<String>) {
+        core.db.lock().unwrap().query_row("SELECT status, active_turn_id FROM sessions WHERE id='chat'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+    }
+
+    fn chat_entry_kinds(core: &BridgeCore) -> Vec<(String, Option<String>)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT kind, json_extract(payload,'$.status') FROM session_entries WHERE session_id='chat' ORDER BY sequence").unwrap();
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    fn silent_for(core: &BridgeCore, session_id: &str, seconds: u64) {
+        core.chat_activity.lock().unwrap().insert(session_id.into(), std::time::Instant::now() - Duration::from_secs(seconds));
+    }
+
+    fn silent_worker_for(core: &BridgeCore, session_id: &str, seconds: u64) {
+        core.worker_activity.lock().unwrap().insert(session_id.into(), std::time::Instant::now() - Duration::from_secs(seconds));
+    }
+
+    #[test]
+    fn a_silent_chat_turn_is_resolved_to_a_recoverable_error() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS - 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0, "one second short of the deadline is not a stall");
+        assert_eq!(chat_status(&core).0, "working");
+
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1, "the provider was interrupted");
+        assert_eq!(chat_status(&core), ("ready".into(), None), "the session is handed back, not failed or stopped");
+        assert!(core.adapters.lock().unwrap().contains_key("chat"), "the adapter stays alive for the next message");
+        let kinds = chat_entry_kinds(&core);
+        assert_eq!(kinds, vec![("error".into(), Some("failed".into())), ("turn.completed".into(), Some("failed".into()))]);
+        let (title, stall): (String, bool) = core.db.lock().unwrap().query_row(
+            "SELECT json_extract(payload,'$.title'), json_extract(payload,'$.data.bridgeStall') FROM session_entries WHERE session_id='chat' AND kind='error'",
+            [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(title, "Turn stalled");
+        assert!(stall);
+        assert!(core.user_stop_requested.lock().unwrap().contains("chat"), "the error the interrupt provokes will be swallowed");
+        let observed: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM events WHERE kind=?1 AND entity_id='chat'", params![CHAT_STALLED_OBSERVED], |row| row.get(0)).unwrap();
+        assert_eq!(observed, 1);
+        // The heartbeat was reset, so the next tick does not stall it again.
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1);
+        assert_eq!(chat_entry_kinds(&core).len(), 2);
+    }
+
+    #[test]
+    fn a_running_tool_extends_the_chat_stall_deadline() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        {
+            let db = core.db.lock().unwrap();
+            let mut started = agent::NormalizedEvent::new("turn.started");
+            started.status = Some("working".into());
+            store::session_event(&db, "chat", &started, &serde_json::json!({})).unwrap();
+            let mut tool = agent::NormalizedEvent::new("command.started");
+            tool.item_id = Some("call-1".into());
+            tool.status = Some("inProgress".into());
+            store::session_event(&db, "chat", &tool, &serde_json::json!({})).unwrap();
+        }
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS + 100);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0, "a running command buys the longer window");
+        assert_eq!(chat_status(&core).0, "working");
+
+        // Once the command completes the short window applies again.
+        {
+            let db = core.db.lock().unwrap();
+            let mut done = agent::NormalizedEvent::new("command.completed");
+            done.item_id = Some("call-1".into());
+            done.status = Some("completed".into());
+            store::session_event(&db, "chat", &done, &serde_json::json!({})).unwrap();
+        }
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1);
+        assert_eq!(chat_status(&core).0, "ready");
+    }
+
+    #[test]
+    fn an_open_tool_still_stalls_past_the_long_deadline() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        {
+            let db = core.db.lock().unwrap();
+            let mut tool = agent::NormalizedEvent::new("tool.started");
+            tool.item_id = Some("call-1".into());
+            store::session_event(&db, "chat", &tool, &serde_json::json!({})).unwrap();
+        }
+        silent_for(&core, "chat", CHAT_TOOL_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1);
+        assert_eq!(chat_status(&core).0, "ready");
+    }
+
+    #[test]
+    fn a_null_item_id_does_not_extend_the_chat_stall_deadline() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        {
+            let db = core.db.lock().unwrap();
+            let mut started = agent::NormalizedEvent::new("turn.started");
+            started.status = Some("working".into());
+            store::session_event(&db, "chat", &started, &serde_json::json!({})).unwrap();
+            // A started tool with no item id can never be matched by a
+            // completion; it must not pin the session to the 30-minute window.
+            let tool = agent::NormalizedEvent::new("tool.started");
+            assert!(tool.item_id.is_none());
+            store::session_event(&db, "chat", &tool, &serde_json::json!({})).unwrap();
+        }
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1, "an unattributed start stalls on the short deadline");
+        assert_eq!(chat_status(&core).0, "ready");
+    }
+
+    #[test]
+    fn chat_liveness_is_not_scanned_by_the_worker_watchdog() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        // A chat progress frame lands in the chat map only.
+        record_session_activity(&core, "chat", false);
+        assert!(core.chat_activity.lock().unwrap().contains_key("chat"));
+        assert!(!core.worker_activity.lock().unwrap().contains_key("chat"));
+        // Age it past the worker watchdog's 60 s scan floor: the worker pass
+        // must still leave the chat alone — no worker_runtime row exists for
+        // it and no probe may settle or interrupt it.
+        silent_for(&core, "chat", 700);
+        assert!(!core.worker_activity.lock().unwrap().contains_key("chat"), "chats never enter the worker map");
+        maintain_worker_pool(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0);
+        assert_eq!(chat_status(&core).0, "working");
+        assert!(core.adapters.lock().unwrap().contains_key("chat"));
+    }
+
+    #[test]
+    fn waiting_and_worker_sessions_are_not_chat_stalled() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='waiting' WHERE id='chat'", []).unwrap();
+        silent_for(&core, "chat", CHAT_TOOL_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0, "an approval wait is deliberately idle");
+        assert_eq!(chat_status(&core).0, "waiting");
+        assert!(chat_entry_kinds(&core).is_empty());
+        drop(_guard);
+
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        silent_worker_for(&core, "child", CHAT_TOOL_STALL_TIMEOUT_SECONDS + 1);
+        // A worker heartbeat must never land in the chat map, so the chat
+        // watchdog leaves it alone even when deeply silent.
+        assert!(core.chat_activity.lock().unwrap().get("child").is_none());
+        maintain_chat_liveness(&core);
+        assert!(sent.lock().unwrap().is_empty(), "a worker belongs to the worker watchdog");
+        let status: String = core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='child'", [], |row| row.get(0)).unwrap();
+        assert_eq!(status, "working");
+    }
+
+    /// A `BufRead` fed line by line from a test, so the reader thread can be
+    /// observed between frames.
+    struct FedLines(std::sync::mpsc::Receiver<String>, Vec<u8>, usize);
+
+    impl std::io::Read for FedLines {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let available = self.fill_buf()?;
+            let count = available.len().min(out.len());
+            out[..count].copy_from_slice(&available[..count]);
+            self.consume(count);
+            Ok(count)
+        }
+    }
+
+    impl std::io::BufRead for FedLines {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if self.2 >= self.1.len() {
+                match self.0.recv() {
+                    Ok(line) => {
+                        self.1 = line.into_bytes();
+                        self.2 = 0;
+                    }
+                    Err(_) => {
+                        self.1.clear();
+                        self.2 = 0;
+                    }
+                }
+            }
+            Ok(&self.1[self.2..])
+        }
+        fn consume(&mut self, amount: usize) {
+            self.2 += amount;
+        }
+    }
+
+    fn silence_secs(core: &BridgeCore) -> f64 {
+        core.chat_activity.lock().unwrap().get("chat").map(|seen| seen.elapsed().as_secs_f64()).unwrap_or(f64::NAN)
+    }
+
+    #[test]
+    fn heartbeat_frames_do_not_refresh_progress() {
+        let (_fixture, core, _interrupts, _guard) = core_with_working_chat();
+        let (feed, lines) = std::sync::mpsc::channel::<String>();
+        spawn_reader_thread(
+            core.clone(),
+            "chat".into(),
+            "opencode".into(),
+            "now".into(),
+            "spy".into(),
+            0,
+            Arc::new(Mutex::new(Some("turn-1".into()))),
+            Box::new(FedLines(lines, Vec::new(), 0)),
+        );
+        // The launch seeds a baseline; age it so a refresh is observable.
+        thread::sleep(Duration::from_millis(50));
+        silent_for(&core, "chat", 300);
+        feed.send("{\"type\":\"server.heartbeat\",\"properties\":{}}\n".into()).unwrap();
+        feed.send("{\"type\":\"server.connected\",\"properties\":{}}\n".into()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        assert!(silence_secs(&core) > 299.0, "a heartbeat is liveness, not progress: {}", silence_secs(&core));
+        feed.send("{\"type\":\"session.status\",\"properties\":{\"sessionID\":\"spy\",\"status\":{\"type\":\"busy\"}}}\n".into()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while silence_secs(&core) > 1.0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(silence_secs(&core) < 1.0, "a real frame refreshes progress: {}", silence_secs(&core));
+        drop(feed);
+    }
 
     fn core_with_working_worker() -> WorkerFixture {
         let managed_root = managed_root_guard();

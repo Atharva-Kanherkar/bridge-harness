@@ -541,6 +541,11 @@ pub fn dispatch(
             let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
             reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
         }
+        MethodName::GetReviewerSettings => reply(api::get_reviewer_settings(core)),
+        MethodName::SaveReviewerSettings => {
+            let p: wire::SaveReviewerSettingsParams = decode(method, params)?;
+            reply(api::save_reviewer_settings(core, &p.settings))
+        }
         MethodName::UnarchiveChat => {
             let p: wire::UnarchiveChatParams = decode(method, params)?;
             reply(api::unarchive_chat(core, &p.session_id))

@@ -31,6 +31,23 @@ describe("reduceTranscript", () => {
     expect(items[0].tool).toMatchObject({ verb: "run", command: "bun test", exitCode: 0 });
   });
 
+  it("keeps a subagent stamp on tool, message and reasoning rows", () => {
+    const subagent = { sessionId: "ses_child", agent: "general", title: "Look up the facts" };
+    const items = reduce([
+      live(1, "turn.started", { status: "working" }),
+      live(2, "tool.started", { itemId: "task", title: "Look up the facts", status: "inProgress", data: { tool: "task" } }),
+      live(3, "reasoning.completed", { itemId: "r1", status: "completed", text: "Reading the file.", data: { subagent } }),
+      live(4, "command.completed", { itemId: "c1", title: "cat facts.txt", status: "completed", data: { command: "cat facts.txt", subagent } }),
+      live(5, "message.completed", { itemId: "m1", role: "assistant", status: "completed", text: "The answer is 42.", data: { subagent } }),
+      live(6, "message.completed", { itemId: "m2", role: "assistant", status: "completed", text: "It is 42.", data: {} }),
+    ]);
+    const stamped = items.filter(item => item.data.subagent !== undefined).map(item => item.type);
+    expect(stamped).toEqual(["reasoning", "activity", "message"]);
+    expect(items.find(item => item.itemId === "task")?.data.subagent).toBeUndefined();
+    expect(items.find(item => item.itemId === "m2")?.data.subagent).toBeUndefined();
+    expect(items.find(item => item.itemId === "c1")?.data.subagent).toEqual(subagent);
+  });
+
   it("folds a replayed lifecycle by item id, across two forest entries", () => {
     const items = reduceTranscript([
       normalizeSessionEntry(entry("e1", null, "command.started", { itemId: "c", status: "inProgress", data: { command: "bun test" } }, 1))!,
