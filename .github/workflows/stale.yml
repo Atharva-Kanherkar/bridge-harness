@@ -1,0 +1,32 @@
+name: Stale issues and PRs
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-stale: 30
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: epic,good first issue,priority:high,priority-high,security,pinned
+          exempt-pr-labels: epic,good first issue,priority:high,priority-high,security,pinned
+          stale-issue-message: >
+            This issue has been inactive for 30 days and is marked stale.
+            If it is still relevant, comment or remove the `stale` label; otherwise it will be closed in 14 days.
+          stale-pr-message: >
+            This pull request has been inactive for 30 days and is marked stale.
+            If work continues, comment or remove the `stale` label; otherwise it will be closed in 14 days.
+          close-issue-message: Closed due to prolonged inactivity. Reopen or open a fresh issue if the work is still needed.
+          close-pr-message: Closed due to prolonged inactivity. Reopen or open a new PR if the work should continue.

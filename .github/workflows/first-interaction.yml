@@ -1,0 +1,23 @@
+name: First interaction
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  greeting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: |
+            Thanks for opening an issue. Bridge issues need **## For humans** and **## For agents** sections — see [docs/issue-format.md](https://github.com/Atharva-Kanherkar/bridge-harness/blob/main/docs/issue-format.md) and the templates under `.github/ISSUE_TEMPLATE/`. Issues missing either section are closed automatically until the body is fixed.
+          pr-message: |
+            Thanks for the pull request. Please use a [Conventional Commits](https://www.conventionalcommits.org/) title (`feat:`, `fix:`, `chore:`, …), keep the change focused, and ensure `bun run build` and `bun run test` pass. See [CONTRIBUTING.md](https://github.com/Atharva-Kanherkar/bridge-harness/blob/main/CONTRIBUTING.md) and [AGENTS.md](https://github.com/Atharva-Kanherkar/bridge-harness/blob/main/AGENTS.md).
