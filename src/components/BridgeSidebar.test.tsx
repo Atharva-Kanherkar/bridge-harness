@@ -443,7 +443,10 @@ describe("BridgeSidebar harness marks", () => {
   it("mutes the mark at rest and tints only the active row", () => {
     const chats = [session("quiet", { title: "Quiet row", harness: "claude" }), session("loud", { title: "Loud row", harness: "claude" })];
     const html = render({ chats, activeSessionId: "loud" });
-    const row = (title: string) => html.split("<button").find(chunk => chunk.includes(title)) ?? "";
+    // Scope to the whole row wrapper, not to the first button in it: a row
+    // carries several buttons (copy id, archive) and the harness mark renders
+    // after them.
+    const row = (title: string) => html.split("group/row").find(chunk => chunk.includes(title)) ?? "";
     expect(row("Quiet row")).toContain("text-muted-foreground");
     expect(row("Quiet row")).not.toContain("text-harness-claude");
     expect(row("Loud row")).toContain("text-harness-claude");
