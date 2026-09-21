@@ -194,3 +194,69 @@ reviewer's model, effort and instructions were not user-configurable.
 
 - Settings → Workers → Pull request reviewer: pick a model and effort for Codex, save, reload settings and see them persist.
 - GitHub pane → Review → OpenCode: an approval appears on the conversation instead of a launch failure; approving it starts the worker.
+
+---
+
+# Review remediation — follow-up contract
+
+The PR review found gaps in the first implementation. This follow-up locks the
+remediation before code changes.
+
+## Functional Behavior
+
+- An id-less OpenCode `session.error` is stamped with the reader's root
+  `properties.sessionID` before it enters the queue. It therefore normalizes
+  against the active root stream, closes that root turn exactly once, and a
+  later root `session.status {busy}` opens a fresh turn normally.
+- Filter, adapter routing, and normalizer use one session-id helper: flat
+  `properties.sessionID`, then `/part/sessionID`, then `/info/sessionID`, then
+  `info.id` solely on `session.created` / `session.updated`. A fallback-shaped
+  owned frame can never be forwarded then keyed as `default`.
+- Worker and chat liveness use separate in-memory maps. The worker watchdog
+  never scans chat sessions or queries `worker_runtime` for them. A chat entry
+  exists only while its reader serves an active turn and is removed on every
+  terminal boundary or reader teardown.
+- Reconnect resync fetches all messages for the root and every owned child
+  session (no unverified `limit=1` ordering assumption), replays every
+  assistant snapshot, and always checks root status even when no assistant
+  message was returned. A root absent from `/session/status` emits synthetic
+  idle and closes the turn.
+- A started tool / command / file change lacking an item id does not count as
+  permanently open; it uses the normal ten-minute chat deadline.
+- Reviewer write mode derives from the selected adapter descriptor's advertised
+  sandbox modes: a harness without `read_only` gets an isolated worktree;
+  another id with the same capability gets the same treatment without a
+  hard-coded name.
+- Custom reviewer instructions retain the mandatory no-approve / no-merge /
+  no-request-changes / no-close guardrail. Settings copy accurately describes
+  Claude/Codex read-only reviews and OpenCode's approval-gated isolated
+  worktree. Reviewer-setting keys are canonicalized through the harness
+  normalizer, rather than a local hard-coded list.
+
+## Unit Tests
+
+- `adapters::tests::opencode_registry_routes_an_unattributed_error_to_the_root_stream_state` — the adapter-level path produces root error + completion and permits the next `busy` to start a turn.
+- `opencode_adapter::tests::filter_stamps_an_unattributed_error_with_the_root_session` — queue-bound id-less errors gain the root id; fallback session shapes use the same helper.
+- `opencode_adapter::tests::stream_reconnects_when_no_assistant_snapshot_is_available` — status is still checked and emits idle; no `limit=1` query is sent.
+- `opencode_adapter::tests::resync_replays_owned_child_sessions_after_a_disconnect` — known child sessions are fetched and replayed after reconnect.
+- `live_turn::tests::a_null_item_id_does_not_extend_the_chat_stall_deadline` — an unattributed started tool stalls after the short deadline.
+- `live_turn::tests::chat_liveness_is_not_scanned_by_the_worker_watchdog` — active chats use the chat map and do not generate worker-runtime probes.
+- `api::tests::reviewer_launch_plan_uses_descriptor_sandbox_capability` — a non-read-only descriptor gets isolated mode without depending on its id.
+- `reviewer_settings::tests::custom_objective_retains_the_safety_guardrail` and canonicalization coverage for accepted harness aliases.
+
+## Smoke Tests
+
+- `bun run check`, `bun run build`, `bun run test` green.
+- `cargo run -p bridge-protocol --bin generate-protocol-artifacts` produces no diff.
+
+## E2E Tests
+
+N/A — this changes in-process routing and recovery; the existing paid-model
+manual OpenCode task path remains the E2E test.
+
+## Manual
+
+1. Start an OpenCode review with the adapter whose descriptor lacks
+   `read_only`; confirm the approval describes its isolated worktree.
+2. In Settings → Workers, enter custom reviewer instructions and inspect the
+   launched worker's objective: the no-approve/no-merge guardrail remains.
