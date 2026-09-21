@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
+import type { VoiceProviderId } from "./protocol/generated/protocol";
 import { VoiceCapture } from "./voiceCapture";
 import { VoiceDictationController, type VoiceDraft, type VoiceView } from "./voiceDictation";
 
 type Options = {
   ownerKey?: string;
+  sessionId?: string;
+  provider: VoiceProviderId;
   harness?: string;
   kind?: string;
   runtimeStatus?: string;
@@ -18,10 +21,11 @@ export function useVoiceDictation(options: Options) {
   const latest = useRef(options);
   latest.current = options;
   const [view, setView] = useState<VoiceView>({ state: "idle", preview: "" });
-  const [capability, setCapability] = useState({ available: false, reason: "Checking dictation availability…" });
+  const [capability, setCapability] = useState({ scope: "", available: false, reason: "Checking dictation availability…" });
   const [listening, setListening] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
+  const scope = JSON.stringify([options.ownerKey, options.sessionId, options.provider, options.harness, options.kind, options.runtimeStatus, options.working, refresh]);
   const [controller] = useState(() => new VoiceDictationController({
     transport: {
       start: bridgeApi.voiceStart,
@@ -61,34 +65,35 @@ export function useVoiceDictation(options: Options) {
 
   useEffect(() => {
     let current = true;
-    setCapability({ available: false, reason: "Checking dictation availability…" });
-    if (!options.ownerKey || options.working || options.kind !== "direct") {
-      setCapability({ available: false, reason: options.working
-        ? "Wait for the current turn to finish before dictating."
-        : "Dictation currently requires a live direct chat. Local dictation setup is not installed yet." });
+    setCapability({ scope, available: false, reason: "Checking dictation availability…" });
+    if (options.working) {
+      setCapability({ scope, available: false, reason: "Wait for the current turn to finish before dictating." });
       return;
     }
-    void bridgeApi.voiceCapabilities(options.ownerKey).then(result => {
+    void bridgeApi.voiceCapabilities(options.sessionId).then(result => {
       if (!current) return;
-      const provider = result.providers.find(item => item.provider === "codex");
-      setCapability({ available: provider?.available ?? false,
+      const provider = result.providers.find(item => item.provider === options.provider);
+      setCapability({ scope, available: !!options.ownerKey && provider?.state === "ready",
         reason: provider?.unavailableReason ?? "No dictation provider is ready." });
     }).catch(() => {
-      if (current) setCapability({ available: false, reason: "Could not check dictation availability. Retry." });
+      if (current) setCapability({ scope, available: false, reason: "Could not check dictation availability. Retry." });
     });
     return () => { current = false; };
-  }, [options.ownerKey, options.harness, options.kind, options.runtimeStatus, options.working, refresh]);
+  }, [scope, options.ownerKey, options.sessionId, options.provider, options.harness, options.kind, options.runtimeStatus, options.working, refresh]);
 
   // Check every commit, including updates from shortcuts and restored drafts.
   useLayoutEffect(() => { controller.draftChanged(); });
-  useLayoutEffect(() => () => { controller.cancel(); }, [controller, options.ownerKey, options.harness, options.kind, options.runtimeStatus, options.working]);
+  useLayoutEffect(() => () => { controller.cancel(); }, [controller, options.ownerKey, options.sessionId, options.provider, options.harness, options.kind, options.runtimeStatus, options.working]);
+
+  const currentCapability = capability.scope === scope;
+  const available = currentCapability && capability.available && listening;
 
   return {
     ...view,
-    available: capability.available && listening,
-    unavailableReason: subscriptionError ?? (capability.available && !listening ? "Connecting to dictation events…" : capability.reason),
+    available,
+    unavailableReason: subscriptionError ?? (!currentCapability ? "Checking dictation availability…" : capability.available && !listening ? "Connecting to dictation events…" : capability.reason),
     active: view.state === "starting" || view.state === "recording" || view.state === "stopping",
-    start: () => capability.available && listening ? controller.start("codex") : Promise.resolve(),
+    start: () => available ? controller.start(options.provider) : Promise.resolve(),
     stop: () => controller.stop(),
     cancel: () => controller.cancel(),
     isActive: () => controller.active,

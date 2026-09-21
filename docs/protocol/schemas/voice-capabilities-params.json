@@ -4,12 +4,12 @@
   "additionalProperties": false,
   "properties": {
     "sessionId": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
-  "required": [
-    "sessionId"
-  ],
   "title": "VoiceCapabilitiesParams",
   "type": "object"
 }

@@ -12,13 +12,13 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const contract: VoiceStartResult = {
-  sessionId: "chat-1", voiceSessionId: "voice-1", provider: "codex",
+  ownerKey: "chat-1", sessionId: "chat-1", voiceSessionId: "voice-1", provider: "codex",
   encoding: "pcm_s16_le", sampleRate: 16_000, channels: 1,
   maxChunkBytes: 65_536, maxSessionBytes: 4 * 1024 * 1024,
 };
 const pcm = (bytes = 3200): VoiceChunk => ({ data: "A".repeat(Math.ceil(bytes / 3) * 4), samplesPerChannel: bytes / 2 });
 function setup() {
-  let draft: VoiceDraft = { ownerKey: "chat-1", text: "before  after\n", revision: 0, selectionStart: 7, selectionEnd: 7 };
+  let draft: VoiceDraft = { ownerKey: "chat-1", sessionId: "chat-1", text: "before  after\n", revision: 0, selectionStart: 7, selectionEnd: 7 };
   const transport = {
     start: vi.fn().mockResolvedValue(contract), append: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined), cancel: vi.fn().mockResolvedValue(undefined),
@@ -34,7 +34,7 @@ function setup() {
   const commit = vi.fn();
   const controller = new VoiceDictationController({ transport, capture: startCapture, readDraft: () => draft, changed, commit });
   const event = (kind: VoiceTranscriptPayload["kind"], fields: Partial<VoiceTranscriptPayload> = {}) => {
-    controller.receive({ voiceSessionId: "voice-1", sessionId: "chat-1", provider: "codex", kind, ...fields });
+    controller.receive({ voiceSessionId: "voice-1", ownerKey: "chat-1", sessionId: "chat-1", provider: "codex", kind, ...fields });
   };
   return {
     controller, transport, capture, startCapture, commit, event,
@@ -59,6 +59,43 @@ describe("dictation draft insertion", () => {
 });
 
 describe("dictation ownership", () => {
+  it("handles revisable local speech in a fresh draft without a coding session", async () => {
+    const s = setup();
+    s.edit({ ownerKey: "fresh", sessionId: undefined });
+    s.transport.start.mockResolvedValue({ ...contract, ownerKey: "fresh", sessionId: null, provider: "local" });
+    const scope = { ownerKey: "fresh", sessionId: null, provider: "local" as const };
+    await s.controller.start("local");
+    expect(s.transport.start).toHaveBeenCalledWith("fresh", "local", undefined);
+    s.event("started", scope);
+    s.event("partial", { ...scope, text: "write a cash" });
+    s.event("partial", { ...scope, text: "write a cache" });
+    expect(s.view().preview).toBe("write a cache");
+    expect(s.commit).not.toHaveBeenCalled();
+    s.event("final", { ...scope, text: "write a cache" });
+    s.event("closed", scope);
+    expect(s.commit).toHaveBeenCalledWith("before write a cache after\n", 20);
+  });
+
+  it("accepts an empty final that retracts an inaccurate partial", async () => {
+    const s = setup();
+    await s.ready();
+    s.event("partial", { text: "noise" });
+    s.event("final", { text: "" });
+    s.event("closed");
+    expect(s.view().state).toBe("idle");
+    expect(s.commit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a wrong owner even when the voice and coding session IDs match", async () => {
+    const s = setup();
+    await s.ready();
+    s.event("partial", { ownerKey: "other", text: "wrong" });
+    s.event("closed", { ownerKey: "other" });
+    expect(s.view()).toEqual({ state: "recording", preview: "" });
+    expect(s.commit).not.toHaveBeenCalled();
+    s.controller.cancel();
+  });
+
   it("waits for ready, previews without editing, and commits only on terminal completion", async () => {
     const s = setup();
     await s.controller.start("codex");

@@ -9,11 +9,24 @@
       ],
       "type": "string"
     },
+    "VoiceAvailability": {
+      "enum": [
+        "ready",
+        "needsSetup",
+        "unsupported",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "VoiceProcessingLocation": {
+      "enum": [
+        "onDevice",
+        "remote"
+      ],
+      "type": "string"
+    },
     "VoiceProviderCapability": {
       "properties": {
-        "available": {
-          "type": "boolean"
-        },
         "channels": {
           "format": "uint16",
           "minimum": 0.0,
@@ -32,13 +45,35 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "processing": {
+          "$ref": "#/definitions/VoiceProcessingLocation"
+        },
         "provider": {
-          "type": "string"
+          "$ref": "#/definitions/VoiceProviderId"
+        },
+        "recoveryAction": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/VoiceRecoveryAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "sampleRate": {
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "state": {
+          "$ref": "#/definitions/VoiceAvailability"
+        },
+        "supportedLocales": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "unavailableReason": {
           "type": [
@@ -48,15 +83,31 @@
         }
       },
       "required": [
-        "available",
         "channels",
         "encoding",
         "maxChunkBytes",
         "maxSessionBytes",
+        "processing",
         "provider",
-        "sampleRate"
+        "sampleRate",
+        "state",
+        "supportedLocales"
       ],
       "type": "object"
+    },
+    "VoiceProviderId": {
+      "enum": [
+        "local",
+        "codex"
+      ],
+      "type": "string"
+    },
+    "VoiceRecoveryAction": {
+      "enum": [
+        "setup",
+        "retry"
+      ],
+      "type": "string"
     }
   },
   "properties": {
@@ -67,18 +118,24 @@
       "type": "array"
     },
     "selectedProvider": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/VoiceProviderId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sessionId": {
       "type": [
         "string",
         "null"
       ]
-    },
-    "sessionId": {
-      "type": "string"
     }
   },
   "required": [
-    "providers",
-    "sessionId"
+    "providers"
   ],
   "title": "VoiceCapabilitiesResult",
   "type": "object"

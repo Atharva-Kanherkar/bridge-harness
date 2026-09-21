@@ -1702,24 +1702,29 @@ async fn submit_input(
 }
 
 #[tauri::command]
-async fn voice_capabilities(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceCapabilitiesResult, BridgeError> {
-    api::voice_capabilities(state.inner(), bridge_protocol::messages::VoiceCapabilitiesParams { session_id })
+async fn voice_capabilities(session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceCapabilitiesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Voice capabilities", move || api::voice_capabilities(&core, bridge_protocol::messages::VoiceCapabilitiesParams { session_id })).await
 }
 #[tauri::command]
-async fn voice_start(session_id: String, provider: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceStartResult, BridgeError> {
-    api::voice_start(state.inner(), bridge_protocol::messages::VoiceStartParams { session_id, provider })
+async fn voice_start(owner_key: String, session_id: Option<String>, provider: bridge_protocol::messages::VoiceProviderId, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceStartResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Voice startup", move || api::voice_start(&core, bridge_protocol::messages::VoiceStartParams { owner_key, session_id, provider })).await
 }
 #[tauri::command]
 async fn voice_append(voice_session_id: String, sequence: u32, data: String, samples_per_channel: u32, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    api::voice_append(state.inner(), bridge_protocol::messages::VoiceAppendParams { voice_session_id, sequence, data, samples_per_channel })
+    let core = state.inner().clone();
+    blocking("Voice delivery", move || api::voice_append(&core, bridge_protocol::messages::VoiceAppendParams { voice_session_id, sequence, data, samples_per_channel })).await
 }
 #[tauri::command]
 async fn voice_stop(voice_session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    api::voice_stop(state.inner(), bridge_protocol::messages::VoiceStopParams { voice_session_id })
+    let core = state.inner().clone();
+    blocking("Voice finalization", move || api::voice_stop(&core, bridge_protocol::messages::VoiceStopParams { voice_session_id })).await
 }
 #[tauri::command]
 async fn voice_cancel(voice_session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    api::voice_cancel(state.inner(), bridge_protocol::messages::VoiceCancelParams { voice_session_id })
+    let core = state.inner().clone();
+    blocking("Voice cancellation", move || api::voice_cancel(&core, bridge_protocol::messages::VoiceCancelParams { voice_session_id })).await
 }
 
 /// Directly reserve a configured specialist worker. The browser supplies only

@@ -1,4 +1,4 @@
-import type { VoiceStartResult } from "./protocol/generated/protocol";
+import type { VoiceStartResult, VoiceProviderId } from "./protocol/generated/protocol";
 import type { VoiceTranscriptPayload as VoiceTranscriptEvent } from "./api";
 import { applyVoiceTranscriptDraft, type VoiceChunk, type VoiceDraftTranscript } from "./voiceCapture";
 
@@ -6,6 +6,7 @@ export type VoiceState = "idle" | "starting" | "recording" | "stopping" | "error
 export type VoiceView = { state: VoiceState; preview: string; error?: string };
 export type VoiceDraft = {
   ownerKey: string;
+  sessionId?: string;
   text: string;
   revision: number;
   selectionStart: number;
@@ -13,7 +14,7 @@ export type VoiceDraft = {
 };
 export type VoiceCaptureHandle = { stop(): Promise<void> };
 export type VoiceTransport = {
-  start(ownerKey: string, provider: string): Promise<VoiceStartResult>;
+  start(ownerKey: string, provider: VoiceProviderId, sessionId?: string): Promise<VoiceStartResult>;
   append(id: string, sequence: number, data: string, samples: number): Promise<void>;
   stop(id: string): Promise<void>;
   cancel(id: string): Promise<void>;
@@ -37,7 +38,7 @@ const MAX_TRANSCRIPT_CHARS = 64_000;
 
 type Take = {
   draft: VoiceDraft;
-  provider: string;
+  provider: VoiceProviderId;
   state: VoiceState;
   id?: string;
   contract?: VoiceStartResult;
@@ -57,7 +58,7 @@ type Take = {
 };
 
 function sameDraft(left: VoiceDraft, right: VoiceDraft): boolean {
-  return left.ownerKey === right.ownerKey && left.revision === right.revision && left.text === right.text;
+  return left.ownerKey === right.ownerKey && left.sessionId === right.sessionId && left.revision === right.revision && left.text === right.text;
 }
 
 /** Preserve all surrounding text and replace exactly the captured selection. */
@@ -87,7 +88,7 @@ export class VoiceDictationController {
     }
   }
 
-  async start(provider: string): Promise<void> {
+  async start(provider: VoiceProviderId): Promise<void> {
     if (this.take) return;
     const take: Take = {
       draft: this.deps.readDraft(), provider, state: "starting", ready: false,
@@ -101,11 +102,11 @@ export class VoiceDictationController {
       const capture = await this.deps.capture(chunk => this.enqueue(take, chunk), error => this.fail(take, error.message));
       if (!this.owns(take)) { void capture.stop().catch(() => undefined); return; }
       take.capture = capture;
-      const started = await this.deps.transport.start(take.draft.ownerKey, provider);
+      const started = await this.deps.transport.start(take.draft.ownerKey, provider, take.draft.sessionId);
       if (!this.owns(take)) { void this.deps.transport.cancel(started.voiceSessionId).catch(() => undefined); return; }
       take.id = started.voiceSessionId;
       take.contract = started;
-      if (started.sessionId !== take.draft.ownerKey || started.provider !== provider ||
+      if (started.ownerKey !== take.draft.ownerKey || (started.sessionId ?? undefined) !== take.draft.sessionId || started.provider !== provider ||
           started.encoding !== "pcm_s16_le" || started.sampleRate !== 16_000 || started.channels !== 1 ||
           started.maxChunkBytes <= 0 || started.maxSessionBytes <= 0) {
         throw new Error("The dictation provider returned an unsupported audio contract.");
@@ -123,7 +124,7 @@ export class VoiceDictationController {
 
   receive(event: VoiceTranscriptEvent): void {
     const take = this.take;
-    if (!take || event.sessionId !== take.draft.ownerKey || event.provider !== take.provider || !this.owns(take)) return;
+    if (!take || event.ownerKey !== take.draft.ownerKey || (event.sessionId ?? undefined) !== take.draft.sessionId || event.provider !== take.provider || !this.owns(take)) return;
     if (!take.id) {
       const chars = (event.text?.length ?? 0) + (event.error?.length ?? 0);
       if (take.early.length >= MAX_EARLY_EVENTS || take.earlyChars + chars > MAX_TRANSCRIPT_CHARS) {
@@ -145,7 +146,7 @@ export class VoiceDictationController {
       this.publish(take);
       this.pump(take);
     }
-    if ((event.kind === "delta" || event.kind === "final") && event.text) {
+    if ((event.kind === "partial" || event.kind === "delta" || event.kind === "final") && typeof event.text === "string") {
       const transcript = applyVoiceTranscriptDraft(take.transcript, event.kind, event.text);
       if (transcript.finalized.length + transcript.provisional.length > MAX_TRANSCRIPT_CHARS) {
         this.fail(take, "The dictation transcript exceeded its safety limit.");

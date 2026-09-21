@@ -8,6 +8,13 @@
         "pcm_s16_le"
       ],
       "type": "string"
+    },
+    "VoiceProviderId": {
+      "enum": [
+        "local",
+        "codex"
+      ],
+      "type": "string"
     }
   },
   "properties": {
@@ -29,8 +36,11 @@
       "minimum": 0.0,
       "type": "integer"
     },
-    "provider": {
+    "ownerKey": {
       "type": "string"
+    },
+    "provider": {
+      "$ref": "#/definitions/VoiceProviderId"
     },
     "sampleRate": {
       "format": "uint32",
@@ -38,7 +48,10 @@
       "type": "integer"
     },
     "sessionId": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "voiceSessionId": {
       "type": "string"
@@ -49,9 +62,9 @@
     "encoding",
     "maxChunkBytes",
     "maxSessionBytes",
+    "ownerKey",
     "provider",
     "sampleRate",
-    "sessionId",
     "voiceSessionId"
   ],
   "title": "VoiceStartResult",

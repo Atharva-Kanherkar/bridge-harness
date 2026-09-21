@@ -15,7 +15,7 @@ import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
-import type { VoiceCapabilitiesResult, VoiceStartResult } from "./protocol/generated/protocol";
+import type { VoiceCapabilitiesResult, VoiceStartResult, VoiceProviderId, VoiceTranscriptEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -152,14 +152,7 @@ const unit = (result: Promise<null>): Promise<void> => result.then(() => undefin
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
-export type VoiceTranscriptPayload = {
-  voiceSessionId: string;
-  sessionId: string;
-  provider: string;
-  kind: "started" | "delta" | "final" | "error" | "closed";
-  text?: string | null;
-  error?: string | null;
-};
+export type VoiceTranscriptPayload = VoiceTranscriptEvent;
 type GithubChecksChangedPayload = { workspaceId: string; number: number };
 const githubCiListeners = new Set<(payload: GithubCiFinishedPayload) => void>();
 // Browser-mode stand-in for the daemon's global `agent-event` fan-out. Every
@@ -2410,14 +2403,16 @@ export const bridgeApi = {
     await bridgeApi.sendTurn(sessionId, text);
     return { disposition: "startedNewTurn", interceptions: [] };
   },
-  voiceCapabilities: (sessionId: string): Promise<VoiceCapabilitiesResult> => isTauri()
+  voiceCapabilities: (sessionId?: string): Promise<VoiceCapabilitiesResult> => isTauri()
     ? call("voice/voice_capabilities", { sessionId })
     : Promise.resolve({
         sessionId,
         selectedProvider: null,
         providers: [{
-          provider: "codex",
-          available: false,
+          provider: "local",
+          state: "unsupported",
+          processing: "onDevice",
+          supportedLocales: [],
           unavailableReason: "Voice dictation requires the desktop runtime",
           encoding: "pcm_s16_le",
           sampleRate: 16_000,
@@ -2426,8 +2421,8 @@ export const bridgeApi = {
           maxSessionBytes: 4_194_304,
         }],
       }),
-  voiceStart: (sessionId: string, provider = "codex"): Promise<VoiceStartResult> =>
-    call("voice/voice_start", { sessionId, provider }),
+  voiceStart: (ownerKey: string, provider: VoiceProviderId, sessionId?: string): Promise<VoiceStartResult> =>
+    call("voice/voice_start", { ownerKey, sessionId, provider }),
   voiceAppend: (voiceSessionId: string, sequence: number, data: string, samplesPerChannel: number): Promise<void> =>
     unit(call("voice/voice_append", { voiceSessionId, sequence, data, samplesPerChannel })),
   voiceStop: (voiceSessionId: string): Promise<void> =>

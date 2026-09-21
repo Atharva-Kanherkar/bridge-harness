@@ -10,9 +10,10 @@ export type VoiceDraftTranscript = {
 
 export function applyVoiceTranscriptDraft(
   current: VoiceDraftTranscript,
-  kind: "delta" | "final",
+  kind: "partial" | "delta" | "final",
   text: string,
 ): VoiceDraftTranscript {
+  if (kind === "partial") return { ...current, provisional: text };
   if (kind === "delta") {
     return { ...current, provisional: current.provisional + text };
   }

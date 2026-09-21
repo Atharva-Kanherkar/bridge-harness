@@ -197,9 +197,39 @@ production model choice. The primary model card also corrects the reference
 download script's Apache-2.0 claim: the ASR weights name the NVIDIA Open Model
 License. Broader accuracy, baseline Macs, and license notices remain release gates.
 
-The independent service/fake-provider contract and typed protocol evolution are
-the next implementation slice. No production runtime dependency, automatic
-model installation, or provider-selection behavior was changed by this spike.
+The spike changed no production runtime dependency, automatic model installation,
+or provider-selection behavior. The independent service follows below.
+
+### Progress: independent service foundation (2026-09-22)
+
+- Added a daemon-owned local provider/stream interface and bounded worker service.
+  It has no coding-adapter, database, microphone, credential, or download dependency.
+  Test-only fake inference proves fresh-draft start, PCM delivery, revised partials,
+  finalization, and cleanup without creating a coding session.
+- Protocol 1.19 separates `ownerKey` from optional `sessionId`, types provider and
+  capability states, discloses on-device versus remote processing, and generates
+  the transcript event schema and TypeScript. Older clients and daemons reject
+  this changed contract rather than misinterpreting fresh-draft events.
+- Added two-frame native backpressure, strict PCM/sequence/byte limits, bounded
+  startup/RPC waits, active idle expiry, and take-specific cancellation. Ownership
+  remains busy until the engine actually releases; delayed results cannot enter
+  a replacement take. Real native-helper kill/reap is still Part 3 work.
+- Updated controller/hook ownership checks and partial-replacement semantics.
+  Explicit local selection cannot fall back to ready Codex. Capability results
+  are invalidated synchronously when owner/provider/context changes. The React
+  review retained stable subscriptions and primitive effect dependencies.
+- Production local speech intentionally reports `needsSetup`: there is no shipped
+  fake engine or automatic model download. The visible app still explicitly uses
+  experimental Codex until the provider/settings UI and native helper are wired.
+
+Validation: production frontend build and Rust workspace check passed; 174
+protocol tests plus two doctests passed, including generated-artifact and
+bidirectional stale-version checks. The focused run passed 64 frontend voice
+tests, 22 native voice tests, and 33 event/ACP-event tests. The full frontend run
+passed 2,351 tests before three additional controller tests were added and passed
+in the focused run. Full native workspace/release tests and live packaged audio
+have not been rerun for this milestone. No source/cache cleanup or model download
+was required. Commits remain local; no push or PR is implied.
 
 ### Part 1 — Immediate safety and honest diagnostics
 

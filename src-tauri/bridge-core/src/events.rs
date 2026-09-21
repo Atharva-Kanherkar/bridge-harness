@@ -410,8 +410,9 @@ mod tests {
             },
             CoreEvent::VoiceTranscript(bridge_protocol::messages::VoiceTranscriptEvent {
                 voice_session_id: "voice-1".into(),
-                session_id: "s".into(),
-                provider: "codex".into(),
+                owner_key: "draft-s".into(),
+                session_id: Some("s".into()),
+                provider: bridge_protocol::messages::VoiceProviderId::Codex,
                 kind: bridge_protocol::messages::VoiceTranscriptKind::Delta,
                 text: Some("hello".into()),
                 error: None,

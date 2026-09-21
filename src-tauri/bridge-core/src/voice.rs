@@ -1,8 +1,9 @@
 //! Session-safe composer dictation.
 //!
-//! Audio stays on the provider's supported realtime transport. Bridge owns the
-//! lease, bounds, sequencing, and transient transcript routing so a late frame
-//! can never edit a different chat's draft.
+//! Local speech is independent of coding sessions. The legacy Codex transport
+//! remains explicit and experimental; there is no cross-provider fallback.
+
+pub mod local;
 
 use crate::{events::CoreEvent, BridgeCore, BridgeError};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -19,6 +20,7 @@ pub const MAX_SESSION_BYTES: u32 = 4 * 1024 * 1024;
 #[derive(Debug, Clone)]
 struct ActiveVoiceSession {
     id: String,
+    owner_key: String,
     session_id: String,
     provider_thread_id: String,
     next_sequence: u32,
@@ -29,6 +31,8 @@ struct ActiveVoiceSession {
 #[derive(Default)]
 pub struct VoiceService {
     sessions: Mutex<HashMap<String, ActiveVoiceSession>>,
+    admission: Mutex<()>,
+    pub local: local::LocalVoiceService,
 }
 
 #[derive(Debug)]
@@ -62,12 +66,23 @@ fn binding(core: &BridgeCore, session_id: &str) -> Result<SessionBinding, Bridge
 }
 
 fn capability(
-    available: bool,
+    provider: wire::VoiceProviderId,
+    state: wire::VoiceAvailability,
     unavailable_reason: Option<String>,
 ) -> wire::VoiceProviderCapability {
     wire::VoiceProviderCapability {
-        provider: "codex".into(),
-        available,
+        provider,
+        state,
+        processing: match provider {
+            wire::VoiceProviderId::Local => wire::VoiceProcessingLocation::OnDevice,
+            wire::VoiceProviderId::Codex => wire::VoiceProcessingLocation::Remote,
+        },
+        supported_locales: vec![],
+        recovery_action: match state {
+            wire::VoiceAvailability::NeedsSetup => Some(wire::VoiceRecoveryAction::Setup),
+            wire::VoiceAvailability::Failed => Some(wire::VoiceRecoveryAction::Retry),
+            _ => None,
+        },
         unavailable_reason,
         encoding: wire::VoiceAudioEncoding::PcmS16Le,
         sample_rate: SAMPLE_RATE,
@@ -81,7 +96,36 @@ pub fn capabilities(
     core: &BridgeCore,
     params: wire::VoiceCapabilitiesParams,
 ) -> Result<wire::VoiceCapabilitiesResult, BridgeError> {
-    let session = binding(core, &params.session_id)?;
+    // Missing/stale coding sessions affect only the experimental provider.
+    // The local probe must work before any session row or adapter exists.
+    let codex = match params.session_id.as_deref() {
+        Some(id) => match codex_capability(core, id) {
+            Ok(capability) => capability,
+            Err(_) => capability(
+                wire::VoiceProviderId::Codex,
+                wire::VoiceAvailability::Unsupported,
+                Some("The coding session is not available for experimental Codex dictation".into()),
+            ),
+        },
+        None => capability(
+            wire::VoiceProviderId::Codex,
+            wire::VoiceAvailability::Unsupported,
+            Some("Experimental Codex dictation requires a live Codex chat".into()),
+        ),
+    };
+    Ok(wire::VoiceCapabilitiesResult {
+        session_id: params.session_id,
+        // Probing cannot opt a user into a provider or an external account.
+        selected_provider: None,
+        providers: vec![core.voice.local.capability(), codex],
+    })
+}
+
+fn codex_capability(
+    core: &BridgeCore,
+    session_id: &str,
+) -> Result<wire::VoiceProviderCapability, BridgeError> {
+    let session = binding(core, session_id)?;
     let reason = if session.harness != "codex" {
         Some("Voice dictation is currently available for Codex chats only".into())
     } else if session.kind != "direct" {
@@ -90,36 +134,67 @@ pub fn capabilities(
         Some("Wait for the current turn to finish before dictating".into())
     } else {
         let adapters = core.adapters.lock().unwrap();
-        match adapters.get(&params.session_id) {
+        match adapters.get(session_id) {
             Some(runtime) if runtime.supports_voice_dictation() => None,
             Some(_) => Some("This Codex runtime does not expose realtime dictation".into()),
             None => Some("Start the Codex chat before dictating".into()),
         }
     };
-    Ok(wire::VoiceCapabilitiesResult {
+    Ok(capability(
+        wire::VoiceProviderId::Codex,
+        if reason.is_none() {
+            wire::VoiceAvailability::Ready
+        } else {
+            wire::VoiceAvailability::Unsupported
+        },
+        reason,
+    ))
+}
+
+fn start_result(id: String, params: wire::VoiceStartParams) -> wire::VoiceStartResult {
+    wire::VoiceStartResult {
+        voice_session_id: id,
+        owner_key: params.owner_key,
         session_id: params.session_id,
-        selected_provider: reason.is_none().then(|| "codex".into()),
-        providers: vec![capability(reason.is_none(), reason)],
-    })
+        provider: params.provider,
+        encoding: wire::VoiceAudioEncoding::PcmS16Le,
+        sample_rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        max_chunk_bytes: MAX_CHUNK_BYTES,
+        max_session_bytes: MAX_SESSION_BYTES,
+    }
 }
 
 pub fn start(
     core: &BridgeCore,
     params: wire::VoiceStartParams,
 ) -> Result<wire::VoiceStartResult, BridgeError> {
-    if params.provider != "codex" {
+    if params.owner_key.trim().is_empty() || params.owner_key.len() > 256 {
         return Err(BridgeError::Invalid(
-            "Voice dictation does not implicitly fall back between providers".into(),
+            "Voice draft owner must contain 1 to 256 bytes".into(),
         ));
     }
-    let supported = capabilities(
-        core,
-        wire::VoiceCapabilitiesParams {
-            session_id: params.session_id.clone(),
-        },
-    )?;
-    let provider = &supported.providers[0];
-    if !provider.available {
+    let _admission = core.voice.admission.lock().unwrap();
+    // Preserve the legacy transport's opportunistic expiry until its separate
+    // active-watchdog/correlated-close rework lands. Local takes expire actively.
+    core.voice
+        .sessions
+        .lock()
+        .unwrap()
+        .retain(|_, voice| voice.created_at.elapsed() < std::time::Duration::from_secs(300));
+    if core.voice.local.is_busy() || !core.voice.sessions.lock().unwrap().is_empty() {
+        return Err(BridgeError::Invalid(
+            "A dictation is active or still releasing its engine".into(),
+        ));
+    }
+    if params.provider == wire::VoiceProviderId::Local {
+        return core.voice.local.start(params, core.events.clone());
+    }
+    let session_id = params.session_id.as_deref().ok_or_else(|| {
+        BridgeError::Invalid("Experimental Codex dictation requires a coding session".into())
+    })?;
+    let provider = codex_capability(core, session_id)?;
+    if provider.state != wire::VoiceAvailability::Ready {
         return Err(BridgeError::Invalid(
             provider
                 .unavailable_reason
@@ -127,28 +202,19 @@ pub fn start(
                 .unwrap_or_else(|| "Voice unavailable".into()),
         ));
     }
-    let session = binding(core, &params.session_id)?;
+    let session = binding(core, session_id)?;
     let provider_thread_id = session
         .provider_session_id
         .ok_or_else(|| BridgeError::Invalid("The Codex chat has no live provider thread".into()))?;
     let id = Uuid::new_v4().to_string();
     {
         let mut sessions = core.voice.sessions.lock().unwrap();
-        sessions
-            .retain(|_, voice| voice.created_at.elapsed() < std::time::Duration::from_secs(300));
-        if sessions
-            .values()
-            .any(|voice| voice.session_id == params.session_id)
-        {
-            return Err(BridgeError::Invalid(
-                "A voice dictation is already active for this chat".into(),
-            ));
-        }
         sessions.insert(
             id.clone(),
             ActiveVoiceSession {
                 id: id.clone(),
-                session_id: params.session_id.clone(),
+                owner_key: params.owner_key.clone(),
+                session_id: session_id.to_owned(),
                 provider_thread_id,
                 next_sequence: 0,
                 total_bytes: 0,
@@ -158,27 +224,20 @@ pub fn start(
     }
     // Keep lookup failure inside the result: an early `?` here used to skip
     // lease cleanup if the runtime disappeared after the capability check.
-    let result = match core.adapters.lock().unwrap().get(&params.session_id) {
+    let result = match core.adapters.lock().unwrap().get(session_id) {
         Some(runtime) => runtime.voice_start(),
-        None => Err(BridgeError::Invalid("The Codex runtime is not active".into())),
+        None => Err(BridgeError::Invalid(
+            "The Codex runtime is not active".into(),
+        )),
     };
     if let Err(error) = result {
         core.voice.sessions.lock().unwrap().remove(&id);
         return Err(error);
     }
-    Ok(wire::VoiceStartResult {
-        voice_session_id: id,
-        session_id: params.session_id,
-        provider: "codex".into(),
-        encoding: wire::VoiceAudioEncoding::PcmS16Le,
-        sample_rate: SAMPLE_RATE,
-        channels: CHANNELS,
-        max_chunk_bytes: MAX_CHUNK_BYTES,
-        max_session_bytes: MAX_SESSION_BYTES,
-    })
+    Ok(start_result(id, params))
 }
 
-pub fn append(core: &BridgeCore, params: wire::VoiceAppendParams) -> Result<(), BridgeError> {
+fn decode_audio(params: &wire::VoiceAppendParams) -> Result<Vec<u8>, BridgeError> {
     // Bound the encoded input before allocating the decoded buffer. Transport
     // limits should not rely on a well-behaved frontend.
     if params.data.len() > (MAX_CHUNK_BYTES as usize).div_ceil(3) * 4 {
@@ -194,11 +253,21 @@ pub fn append(core: &BridgeCore, params: wire::VoiceAppendParams) -> Result<(), 
             "Voice audio chunk exceeds the negotiated limit".into(),
         ));
     }
-    if bytes.is_empty() || bytes.len() != params.samples_per_channel as usize * 2 * CHANNELS as usize {
+    if bytes.is_empty()
+        || bytes.len() != params.samples_per_channel as usize * 2 * CHANNELS as usize
+    {
         return Err(BridgeError::Invalid(
             "Voice sample count does not match PCM payload size".into(),
         ));
     }
+    Ok(bytes)
+}
+
+pub fn append(core: &BridgeCore, params: wire::VoiceAppendParams) -> Result<(), BridgeError> {
+    if core.voice.local.contains(&params.voice_session_id) {
+        return core.voice.local.append(params);
+    }
+    let bytes = decode_audio(&params)?;
     // Serialize writes for one voice session and commit the sequence only
     // after the provider accepted the frame. A failed or partial transport
     // write makes the lease unusable rather than inviting an ambiguous retry.
@@ -251,6 +320,9 @@ pub fn append(core: &BridgeCore, params: wire::VoiceAppendParams) -> Result<(), 
 }
 
 pub fn stop(core: &BridgeCore, params: wire::VoiceStopParams) -> Result<(), BridgeError> {
+    if core.voice.local.contains(&params.voice_session_id) {
+        return core.voice.local.stop(&params.voice_session_id);
+    }
     let session_id = core
         .voice
         .sessions
@@ -278,6 +350,10 @@ pub fn stop(core: &BridgeCore, params: wire::VoiceStopParams) -> Result<(), Brid
 }
 
 pub fn cancel(core: &BridgeCore, params: wire::VoiceCancelParams) -> Result<(), BridgeError> {
+    if core.voice.local.contains(&params.voice_session_id) {
+        core.voice.local.cancel(&params.voice_session_id);
+        return Ok(());
+    }
     let Some(voice) = core
         .voice
         .sessions
@@ -365,8 +441,9 @@ pub fn handle_codex_notification(
     core.events
         .publish(CoreEvent::VoiceTranscript(wire::VoiceTranscriptEvent {
             voice_session_id: voice.id.clone(),
-            session_id: voice.session_id,
-            provider: "codex".into(),
+            owner_key: voice.owner_key,
+            session_id: Some(voice.session_id),
+            provider: wire::VoiceProviderId::Codex,
             kind,
             text,
             error,
@@ -389,6 +466,7 @@ mod tests {
             "voice-1".into(),
             ActiveVoiceSession {
                 id: "voice-1".into(),
+                owner_key: "draft-1".into(),
                 session_id: "chat-1".into(),
                 provider_thread_id: "thread-1".into(),
                 next_sequence: 0,
@@ -400,7 +478,11 @@ mod tests {
 
     #[test]
     fn pcm_contract_is_bounded_and_explicit() {
-        let cap = capability(true, None);
+        let cap = capability(
+            wire::VoiceProviderId::Codex,
+            wire::VoiceAvailability::Ready,
+            None,
+        );
         assert_eq!(cap.sample_rate, 16_000);
         assert_eq!(cap.channels, 1);
         assert_eq!(cap.encoding, wire::VoiceAudioEncoding::PcmS16Le);

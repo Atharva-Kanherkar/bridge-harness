@@ -28,6 +28,16 @@ describe("voice capture conversion", () => {
 });
 
 describe("voice draft projection", () => {
+  it("replaces revised hypotheses, including empty retractions, without duplication", () => {
+    let value = { finalized: "", provisional: "" };
+    value = applyVoiceTranscriptDraft(value, "partial", "write a cash");
+    value = applyVoiceTranscriptDraft(value, "partial", "write a cache");
+    expect(value.provisional).toBe("write a cache");
+    value = applyVoiceTranscriptDraft(value, "partial", "");
+    expect(value.provisional).toBe("");
+    value = applyVoiceTranscriptDraft(value, "final", "write a cache");
+    expect(value).toEqual({ finalized: "write a cache", provisional: "" });
+  });
   it("preserves the existing draft and replaces only the provisional phrase", () => {
     let transcript = applyVoiceTranscriptDraft(
       { finalized: "", provisional: "" },

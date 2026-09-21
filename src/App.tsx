@@ -986,6 +986,9 @@ function AppContent() {
   );
   const voice = useVoiceDictation({
     ownerKey: composerOwnerRef.current,
+    sessionId: session?.id,
+    // Keep the existing experimental path explicit until Voice settings land.
+    provider: "codex",
     harness: session?.harness,
     kind: session?.kind,
     runtimeStatus: session?.status,
@@ -993,7 +996,7 @@ function AppContent() {
     readDraft: () => {
       const draft = composerDraftRef.current;
       const textarea = composerRef.current;
-      return { ...draft, ownerKey: composerOwnerRef.current ?? "inactive-draft",
+      return { ...draft, ownerKey: composerOwnerRef.current ?? "inactive-draft", sessionId: session?.id,
         selectionStart: textarea?.selectionStart ?? draft.text.length,
         selectionEnd: textarea?.selectionEnd ?? draft.text.length };
     },

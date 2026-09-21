@@ -10,8 +10,9 @@ Codex app-server process, and writes only the user-role transcript into the
 composer. It never submits the draft automatically.
 
 The user approved opt-in local, harness-independent dictation on 2026-09-21;
-delivery is tracked in `docs/plans/voice-dictation-rework.md`. That engine and its
-setup flow are not yet implemented. Claude's internal speech endpoint and implicit
+delivery is tracked in `docs/plans/voice-dictation-rework.md`. The independent
+daemon service and test-only fake engine now exist; the native engine and its
+setup flow are not yet connected. Claude's internal speech endpoint and implicit
 cross-provider fallback remain excluded. Other harnesses show a disabled mic with
 an unavailable reason, rather than hiding the control.
 
@@ -33,24 +34,47 @@ an unavailable reason, rather than hiding the control.
 5. **Live validation and delivery — pending.** Exercise an authenticated Codex
    session with macOS microphone permission, collect acceptance evidence, and
    prepare the PR.
-6. **Independent local provider — approved, pending.** Evaluate and implement an
-   opt-in local engine with explicit model setup and no coding-session prerequisite.
+6. **Independent local provider — foundation implemented.** Native evaluation is
+   recorded separately. The daemon-owned provider/stream boundary accepts fresh
+   draft owners, without a coding session, database mutation, adapter launch, or
+   credential lookup. A test-only fake verifies the contract. The production
+   service reports `needsSetup`; real engine integration and setup remain pending.
 
 ## Protocol
 
 - Protocol 1.18 adds `voice/capabilities`, `voice/start`, `voice/append`,
   `voice/stop`, and `voice/cancel`.
+- Protocol 1.19 separates required `ownerKey` from optional `sessionId`, types
+  provider IDs, exposes `ready`/`needsSetup`/`unsupported`/`failed` capability
+  states and processing location, and adds replacement `partial` hypotheses.
+  Old clients/daemons are rejected in both directions. Transcript payloads now
+  have generated schemas/TypeScript rather than a hand-maintained frontend shape.
 - Every live operation after start is addressed by an opaque `voiceSessionId`.
 - Chunks carry a zero-based, strictly increasing sequence and are bounded both
   per chunk and per session.
-- `voice-transcript` is transient. Every payload carries the Bridge session id,
-  voice session id, provider, kind, and text/error fields appropriate to the
-  kind.
+- `voice-transcript` is transient. Every payload carries the draft owner key,
+  optional coding-session id, voice session id, provider, kind, and text/error
+  fields appropriate to the kind. Only a `partial` replaces the current
+  provisional hypothesis; a legacy `delta` appends to it.
 - The client rejects frames for cancelled, completed, replaced, or wrong-provider
   voice IDs. Backend correlation of late frames across reuse of a provider thread
   is not yet proven; this is a release blocker for the experimental Codex path.
 
 ## Provider behavior
+
+- Capabilities can be probed without any coding session. They never install/load
+  a local model, select a provider, or fall back to another provider.
+- Local takes use one worker and a two-frame bounded input channel, validate
+  sequence/PCM/chunk/total limits, and hold their busy slot until engine cleanup
+  finishes. Startup and RPC waits are bounded; idle takes expire actively.
+  Late replies after cancellation or deadline cannot emit a fresh take's text.
+- Future real-engine implementations must honor the cancellation token and
+  supervise/kill/reap their helper process. A non-cooperative engine currently
+  remains busy until it returns; the service deliberately cannot start additional
+  workers around a stuck one. This is not yet a hard-kill native implementation.
+- Engine failures expose fixed diagnostic messages, not raw engine errors,
+  audio payloads, or transcript text. Fake providers are available only in tests,
+  never through a runtime setting or a shipped fallback.
 
 - Codex is offered only when the installed experimental schema contains the
   complete realtime request surface and the live app-server was initialized with
@@ -91,6 +115,10 @@ an unavailable reason, rather than hiding the control.
 - Codex adapter tests for schema detection and exact realtime request shapes.
 - Composer tests for mic states and draft preservation.
 - Frontend capture tests for PCM conversion/resampling and cleanup.
+- Independent service tests: fresh draft without a coding session, explicit
+  setup state/no fallback, sequential/revisable hypotheses, startup/append
+  timeout with retained engine ownership, active expiry, drop cleanup, stale
+  take IDs, malformed/oversized/over-budget PCM, and queue backpressure.
 - `bun run build` and `bun run test` are green.
 - Packaged macOS configuration contains the microphone usage description and
   audio-input entitlement; no provider credential is required by packaging

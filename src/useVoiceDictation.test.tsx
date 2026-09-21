@@ -21,12 +21,12 @@ let listener: (event: VoiceTranscriptPayload) => void;
 const off = vi.fn();
 const captureStop = vi.fn();
 const commit = vi.fn();
-const available = { sessionId: "chat", providers: [{ provider: "codex", available: true }] };
+const available = { sessionId: "chat", providers: [{ provider: "codex", state: "ready" }] };
 
-function Harness({ harness = "codex", owner = "chat" }: { harness?: string; owner?: string }) {
+function Harness({ harness = "codex", owner = "chat", provider = "codex", fresh = false }: { harness?: string; owner?: string; provider?: "local" | "codex"; fresh?: boolean }) {
   voice = useVoiceDictation({
-    ownerKey: owner, harness, kind: "direct", runtimeStatus: "idle", working: false,
-    readDraft: () => ({ ownerKey: owner, text: "draft", revision: 0, selectionStart: 5, selectionEnd: 5 }),
+    ownerKey: owner, sessionId: fresh ? undefined : owner, provider, harness, kind: "direct", runtimeStatus: "idle", working: false,
+    readDraft: () => ({ ownerKey: owner, sessionId: fresh ? undefined : owner, text: "draft", revision: 0, selectionStart: 5, selectionEnd: 5 }),
     commit,
   });
   return <span>{voice.state}</span>;
@@ -39,7 +39,7 @@ beforeEach(() => {
   mocks.capture.mockResolvedValue({ stop: captureStop });
   mocks.voiceCapabilities.mockResolvedValue(available);
   mocks.onVoiceTranscript.mockImplementation(async handler => { listener = handler; return off; });
-  mocks.voiceStart.mockResolvedValue({ sessionId: "chat", voiceSessionId: "take", provider: "codex",
+  mocks.voiceStart.mockResolvedValue({ ownerKey: "chat", sessionId: "chat", voiceSessionId: "take", provider: "codex",
     encoding: "pcm_s16_le", sampleRate: 16_000, channels: 1, maxChunkBytes: 65536, maxSessionBytes: 4194304 });
   mocks.voiceCancel.mockResolvedValue(undefined);
   container = document.createElement("div");
@@ -52,7 +52,7 @@ it("refreshes capability on a harness change without requiring a different chat 
   await act(async () => root.render(<Harness />));
   expect(voice.available).toBe(true);
   mocks.voiceCapabilities.mockResolvedValue({ ...available,
-    providers: [{ provider: "codex", available: false, unavailableReason: "Codex only" }] });
+    providers: [{ provider: "codex", state: "unsupported", unavailableReason: "Codex only" }] });
   await act(async () => root.render(<Harness harness="claude" />));
   expect(voice.available).toBe(false);
   expect(voice.unavailableReason).toBe("Codex only");
@@ -64,12 +64,12 @@ it("cleans StrictMode subscriptions and cancels capture when its owner changes",
   expect(mocks.onVoiceTranscript).toHaveBeenCalledTimes(2);
   expect(off).toHaveBeenCalledTimes(1);
   await act(async () => { await voice.start(); });
-  act(() => listener({ sessionId: "chat", voiceSessionId: "take", provider: "codex", kind: "started" }));
+  act(() => listener({ ownerKey: "chat", sessionId: "chat", voiceSessionId: "take", provider: "codex", kind: "started" }));
   expect(voice.state).toBe("recording");
   await act(async () => root.render(<StrictMode><Harness owner="other" /></StrictMode>));
   expect(captureStop).toHaveBeenCalledTimes(1);
   expect(mocks.voiceCancel).toHaveBeenCalledWith("take");
-  act(() => listener({ sessionId: "chat", voiceSessionId: "take", provider: "codex", kind: "final", text: "late" }));
+  act(() => listener({ ownerKey: "chat", sessionId: "chat", voiceSessionId: "take", provider: "codex", kind: "final", text: "late" }));
   expect(commit).not.toHaveBeenCalled();
 });
 
@@ -86,11 +86,37 @@ it("releases a delayed subscription after the hook has unmounted", async () => {
 it("cancels a take when the document is hidden", async () => {
   await act(async () => root.render(<Harness />));
   await act(async () => { await voice.start(); });
-  act(() => listener({ sessionId: "chat", voiceSessionId: "take", provider: "codex", kind: "started" }));
+  act(() => listener({ ownerKey: "chat", sessionId: "chat", voiceSessionId: "take", provider: "codex", kind: "started" }));
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
   act(() => document.dispatchEvent(new Event("visibilitychange")));
   visibility.mockRestore();
   expect(captureStop).toHaveBeenCalledTimes(1);
   expect(mocks.voiceCancel).toHaveBeenCalledWith("take");
   expect(voice.state).toBe("idle");
+});
+
+it("probes and starts local dictation on a fresh Claude draft without a coding session", async () => {
+  mocks.voiceCapabilities.mockResolvedValue({ providers: [{ provider: "local", state: "ready" }] });
+  mocks.voiceStart.mockResolvedValue({ ownerKey: "draft-1", voiceSessionId: "take", provider: "local",
+    encoding: "pcm_s16_le", sampleRate: 16_000, channels: 1, maxChunkBytes: 65536, maxSessionBytes: 4194304 });
+  await act(async () => root.render(<Harness fresh harness="claude" owner="draft-1" provider="local" />));
+  expect(mocks.voiceCapabilities).toHaveBeenCalledWith(undefined);
+  expect(voice.available).toBe(true);
+  await act(async () => { await voice.start(); });
+  expect(mocks.voiceStart).toHaveBeenCalledWith("draft-1", "local", undefined);
+  act(() => listener({ ownerKey: "draft-1", voiceSessionId: "take", provider: "local", kind: "started" }));
+  expect(voice.state).toBe("recording");
+});
+
+it("never falls back to ready Codex when selected local speech needs setup", async () => {
+  mocks.voiceCapabilities.mockResolvedValue({ providers: [
+    { provider: "codex", state: "ready" },
+    { provider: "local", state: "needsSetup", unavailableReason: "Install the local model" },
+  ] });
+  await act(async () => root.render(<Harness provider="local" />));
+  expect(voice.available).toBe(false);
+  expect(voice.unavailableReason).toBe("Install the local model");
+  await act(async () => { await voice.start(); });
+  expect(mocks.capture).not.toHaveBeenCalled();
+  expect(mocks.voiceStart).not.toHaveBeenCalled();
 });
