@@ -82,7 +82,7 @@ describe("UsageScreen", () => {
   it("renders the cost summary with provenance, coverage, and de-duplication notes", async () => {
     await mount();
     expect(summarySpy).toHaveBeenCalledTimes(2);
-    expect(summarySpy.mock.calls[0][0]).toMatchObject({ resolution: "day", includeImported: true });
+    expect(summarySpy.mock.calls[0][0]).toMatchObject({ resolution: "day", includeImported: true, includeDashboard: true });
     expect(text()).toContain("$4.50");
     expect(text()).toContain("API estimate");
     expect(text()).toContain("Partly unpriced");
@@ -105,6 +105,66 @@ describe("UsageScreen", () => {
     expect(text()).toContain("1.5M");
     expect(container.querySelector('svg[role="img"]')?.getAttribute("aria-label")).toBe("Daily processed tokens by harness");
     expect(JSON.parse(stored.get(USAGE_PREFERENCES_KEY)!)).toMatchObject({ metric: "tokens" });
+  });
+
+  it("includes dashboard totals and shows Cursor as cached account history", async () => {
+    const cursor: UsageHistorySource = {
+      ...source, id: "cursor:dashboard", agent: "cursor", provider: "cursor", origin: "dashboard",
+      location: "https://cursor.com/dashboard", coverageState: "complete", recordsImported: 25,
+      coverageStartAt: "2026-08-15T00:00:00Z", coverageEndAt: "2026-09-13T12:00:00Z",
+      lastSuccessfulScanAt: "2026-09-13T12:00:00Z", coverageReason: "Dashboard history as of the last update.",
+    };
+    vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([cursor]);
+    summarySpy.mockImplementation(async params => ({
+      ...summaryFor(params), duplicatesDropped: 0,
+      buckets: [bucket(params.untilDay, "cursor", "cursor-model", 2_000_000, 12_500_000, { sessions: null, costSource: "provider_reported" })],
+      sources: [cursor],
+    }));
+    await mount();
+    expect(text()).toContain("$12.50");
+    expect(text()).toContain("Dashboard usage · last 30 days");
+    expect(text()).toContain("25 cached events");
+    expect(text()).not.toContain("Cursor history is still loading");
+    expect(text()).not.toContain("Unsupported");
+    expect(text()).not.toContain("25 imported");
+    expect(text()).not.toContain("Partial total");
+    click(buttonByText("Tokens"));
+    await flush();
+    expect(text()).toContain("2M");
+    expect(summarySpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps stale dashboard totals visible and explains unsupported hourly coverage", async () => {
+    vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([]);
+    summarySpy.mockImplementation(async params => ({
+      ...summaryFor(params), duplicatesDropped: 0,
+      buckets: params.resolution === "day" ? [bucket(params.untilDay, "cursor", "cursor-model", 10, 12_500_000, { sessions: null })] : [],
+      sources: [{ id: "cursor:dashboard", origin: "dashboard", agent: "cursor", provider: "cursor", recordsImported: 1, recordsSkipped: 0, lastSuccessfulScanAt: "2026-09-13T12:00:00Z",
+        coverageState: params.resolution === "day" ? "stale" : "unsupported",
+        coverageReason: params.resolution === "day" ? "Showing last-known Cursor usage." : "Cursor dashboard history supports daily totals. Choose 7d or longer to include it." }],
+    }));
+    await mount();
+    expect(text()).toContain("$12.50");
+    expect(text()).toContain("Showing last-known Cursor usage.");
+    expect(text()).toContain("History incomplete");
+    click(buttonByText("24h"));
+    await flush();
+    expect(text()).toContain("Choose 7d or longer");
+    expect(text()).not.toContain("$12.50");
+    expect(text()).not.toContain("Cursor history is still loading");
+  });
+
+  it("labels a known dashboard cost subtotal when some events are unpriced", async () => {
+    vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([]);
+    summarySpy.mockImplementation(async params => ({
+      ...summaryFor(params), duplicatesDropped: 0, sources: [],
+      buckets: [bucket(params.untilDay, "cursor", "partly-priced", 10, 12_500_000, { sessions: null, costSource: "unpriced", unpricedRecords: 1 })],
+    }));
+    await mount();
+    expect(text()).toContain("$12.50");
+    expect(text()).toContain("Partly unpriced");
+    expect(text()).toContain("1 records have no known rate");
+    expect(text()).toContain("their cost is unknown, not free");
   });
 
   it("refetches at hour resolution for the 24h window", async () => {

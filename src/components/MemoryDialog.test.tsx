@@ -82,8 +82,7 @@ beforeEach(() => {
   }));
   vi.spyOn(bridgeApi, "getExtractionSettings").mockImplementation(async () => structuredClone(extractionSettings));
   vi.spyOn(bridgeApi, "updateExtractionSettings").mockImplementation(async (mode, harness, model) => {
-    if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it.");
-    if (mode === "propose" && (!harness || !model)) throw new Error("Propose mode needs a pinned harness and model to run on.");
+    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
     extractionSettings = { ...extractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
     return structuredClone(extractionSettings);
   });
@@ -359,7 +358,7 @@ describe("MemoryDialog edit", () => {
     expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
   });
 
-  it("an approved suggestion is chipped as suggested; explicit pins are not", async () => {
+  it("an extracted memory is labeled honestly; explicit pins are not", async () => {
     store.push({
       ...record("r-approved", "Ships behind a flag", "decision"),
       provenance: "model_proposal",
@@ -367,10 +366,10 @@ describe("MemoryDialog edit", () => {
     });
     mount();
     await flush();
-    expect(container.textContent).toContain("suggested");
+    expect(container.textContent).toContain("extracted");
     expect(container.textContent).toContain("76% confident");
     const explicitRow = [...container.querySelectorAll("li")].find(item => item.textContent?.includes("Works in IST"))!;
-    expect(explicitRow.textContent).not.toContain("suggested");
+    expect(explicitRow.textContent).not.toContain("extracted");
     expect(explicitRow.textContent).not.toContain("% confident");
   });
 });
@@ -385,8 +384,9 @@ describe("MemoryDialog injection toggle", () => {
     });
     mount();
     await flush();
-    const toggle = document.querySelector<HTMLInputElement>('[aria-label="Use pins in new chats"]')!;
+    const toggle = document.querySelector<HTMLInputElement>('[aria-label="Use active memory in new chats"]')!;
     expect(toggle.checked).toBe(true);
+    expect(container.textContent).toContain("Use active memory when starting a new conversation.");
     act(() => { toggle.click(); });
     await flush();
     expect(bridgeApi.setMemoryInjection).toHaveBeenCalledWith(false);
@@ -429,26 +429,98 @@ describe("MemoryDialog review queue", () => {
     expect(container.textContent).not.toContain("Deploys only on Fridays");
   });
 
-  it("speaks memory words, and auto-apply is visibly disabled until the bench exists", async () => {
+  it("offers explicit manual, review-first, and automatic modes with the safeguards explained", async () => {
     mount();
     await flush();
     click(buttonByText("Review queue"));
-    expect(container.textContent).toContain("Remember");
-    expect(container.textContent).toContain("Propose");
-    const autoApply = buttonByText("Auto-apply");
-    expect(autoApply.disabled).toBe(true);
-    expect(autoApply.title).toContain("replay bench");
+    expect(container.textContent).toContain("Manual only");
+    expect(container.textContent).toContain("Review first");
+    expect(container.textContent).toContain("Automatic");
+    expect(container.textContent).toContain("90%+");
+    expect(container.textContent).toContain("other validated candidates that fit the budget stay here for review");
+    expect(container.textContent).toContain("Invalid, unsafe, duplicate, or over-budget output is refused");
+    expect(container.textContent).toContain("existing active memory stays active");
   });
 
-  it("propose without a pinned profile is refused and the mode does not flip", async () => {
+  it("review first without a pinned helper runs on the chat's own model", async () => {
     const onError = vi.fn();
     mount({ onError });
     await flush();
     click(buttonByText("Review queue"));
-    click(buttonByText("Propose"));
+    expect(buttonByText("Manual only").getAttribute("aria-pressed")).toBe("true");
+    click(buttonByText("Review first"));
     await flush();
-    expect(onError).toHaveBeenCalledWith(expect.stringContaining("pinned harness and model"));
-    expect(buttonByText("Remember").getAttribute("aria-pressed")).toBe("true");
+    expect(onError).not.toHaveBeenCalled();
+    expect(buttonByText("Review first").getAttribute("aria-pressed")).toBe("true");
+    expect(extractionSettings.harness).toBeFalsy();
+    expect(extractionSettings.model).toBeFalsy();
+    expect(container.textContent).toContain("Chat's own model");
+  });
+
+  it("automatic is selectable and keeps the chat-own-model profile when unpinned", async () => {
+    const onError = vi.fn();
+    mount({ onError });
+    await flush();
+    click(buttonByText("Review queue"));
+    click(buttonByText("Automatic"));
+    await flush();
+    expect(onError).not.toHaveBeenCalled();
+    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply", "", "");
+    expect(buttonByText("Automatic").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("automatic forwards the selected extraction helper and model", async () => {
+    mount({
+      adapters: [{
+        id: "claude",
+        label: "Claude",
+        available: true,
+        authState: "signed_in",
+        version: "test",
+        unavailableReason: null,
+        capabilities: [],
+        models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }],
+        defaultModel: "sonnet",
+      }],
+    });
+    await flush();
+    click(buttonByText("Review queue"));
+    const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(harness, "claude");
+      harness.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction model"]')!;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(model, "sonnet");
+      model.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    click(buttonByText("Automatic"));
+    await flush();
+    expect(bridgeApi.updateExtractionSettings).toHaveBeenCalledWith("auto_apply", "claude", "sonnet");
+    expect(buttonByText("Automatic").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a helper pinned without a model is refused and the mode stays put", async () => {
+    const onError = vi.fn();
+    mount({
+      onError,
+      adapters: [{ id: "claude", label: "Claude", available: true, authState: "authenticated", capabilities: [], models: [] } as never],
+    });
+    await flush();
+    click(buttonByText("Review queue"));
+    const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(harness, "claude");
+      harness.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    click(buttonByText("Review first"));
+    await flush();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("both a helper and a model"));
+    expect(buttonByText("Manual only").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("the last run's observed spend is on screen", async () => {
@@ -463,6 +535,7 @@ describe("MemoryDialog review queue", () => {
     await flush();
     click(buttonByText("Review queue"));
     expect(container.textContent).toContain("Last run completed");
+    expect(container.textContent).toContain("2 extracted");
     expect(container.textContent).toContain("$0.0017");
   });
 });

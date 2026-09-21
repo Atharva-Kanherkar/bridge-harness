@@ -8,6 +8,7 @@ cd "$project_root"
 release_load_env
 release_require_identity
 release_require_credentials
+release_require_updater_key
 
 # A caller's Cargo target override must not make us validate a stale bundle at
 # the default path after compiling somewhere else.
@@ -75,3 +76,15 @@ dmg="$project_root/src-tauri/target/release/bundle/dmg/Bridge_${app_version}_${d
 mv "$release_tmp/Bridge.dmg" "$dmg"
 (cd "$(dirname -- "$dmg")" && shasum -a 256 "$(basename -- "$dmg")") > "$dmg.sha256"
 echo "Verified public release: $dmg"
+
+# `createUpdaterArtifacts` made the app-target build above also emit a signed
+# tar.gz next to the .app; carry it alongside the DMG under the same
+# version/arch naming so the release workflow can publish both from one place.
+updater_tar="$project_root/src-tauri/target/release/bundle/macos/Bridge.app.tar.gz"
+updater_sig="$updater_tar.sig"
+if [ ! -f "$updater_tar" ] || [ ! -f "$updater_sig" ]; then
+  echo "release: expected signed updater artifacts at $updater_tar; check TAURI_SIGNING_PRIVATE_KEY and createUpdaterArtifacts." >&2
+  exit 1
+fi
+cp "$updater_tar" "$project_root/src-tauri/target/release/bundle/dmg/Bridge_${app_version}_${dmg_arch}.app.tar.gz"
+cp "$updater_sig" "$project_root/src-tauri/target/release/bundle/dmg/Bridge_${app_version}_${dmg_arch}.app.tar.gz.sig"

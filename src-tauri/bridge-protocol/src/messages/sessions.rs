@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use super::common::HarnessId;
+use super::common::{HarnessId, JsSafeU64};
 use super::forest::SessionForestSnapshot;
 use super::state::BridgeState;
 
@@ -533,6 +533,68 @@ pub struct SearchSessionEntriesParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 50))]
     pub limit: Option<u32>,
+    /// How many ranked hits to skip. The next page of a long forest; omitted
+    /// requests start at the first hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+}
+
+/// Which part of the forest `sessions/export_session_transcript` writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptExportScope {
+    /// Only the entries on the head's active branch — the conversation as it
+    /// currently reads.
+    ActiveBranch,
+    /// Every entry of the session, abandoned branches included — what actually
+    /// happened rather than what is currently shown.
+    Forest,
+}
+
+impl Default for TranscriptExportScope {
+    fn default() -> Self {
+        Self::Forest
+    }
+}
+
+/// Write one session's durable record out as newline-delimited JSON.
+///
+/// The export is a file, never an inline string: a long session is megabytes,
+/// and a result that large belongs on disk rather than in a JSON-RPC frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportSessionTranscriptParams {
+    pub session_id: String,
+    /// Omitted requests export the whole forest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<TranscriptExportScope>,
+    /// Whether to include the hidden control entries — turn boundaries, usage
+    /// and plan updates. Omitted requests include them: they are the part of
+    /// the record the rendered transcript cannot show.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_hidden: Option<bool>,
+    /// An absolute path to write. Omitted requests land under the data
+    /// directory's `exports/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+}
+
+/// Mirrors `bridge_core::transcript_export::TranscriptExport` — where the file
+/// landed and enough about it to verify the write without reopening it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSessionTranscriptResult {
+    pub session_id: String,
+    pub path: String,
+    pub scope: TranscriptExportScope,
+    pub schema_version: JsSafeU64,
+    pub line_count: JsSafeU64,
+    pub entry_count: JsSafeU64,
+    pub bytes: JsSafeU64,
+    /// `sha256:<hex>` over the entry lines only, so the digest is stable
+    /// against the export timestamp in the header.
+    pub digest: String,
+    pub exported_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -551,6 +613,15 @@ pub struct SearchSessionEntriesResult {
     pub session_id: String,
     pub query: String,
     pub hits: Vec<SessionRecallHit>,
+    /// Where this page started, echoed so a caller paging through a long
+    /// forest does not have to remember what it asked for.
+    #[serde(default)]
+    pub offset: u32,
+    /// Whether a further page exists. Answered by asking the database for one
+    /// more row than the page needs, so it is a fact rather than the guess
+    /// "the page came back full".
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 /// Mirrors `bridge_core::secret_interception::SecretInterception` — one

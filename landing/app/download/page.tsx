@@ -92,7 +92,7 @@ export default function Download() {
         <p className="mt-4 text-[14px] leading-6 text-muted-foreground">
           On Linux, run <code className="font-mono text-[12.5px]">sha256sum -c</code> with the checksum filename supplied in the release.
         </p>
-        <p className="mt-4 text-[13px] leading-6 text-faint">
+        <p className="mt-4 text-[13px] leading-6 text-muted-foreground">
           The macOS build is signed as {signingIdentity}. If you built from source yourself the binary is ad-hoc signed instead, and
           macOS will ask you to confirm before opening it.
         </p>

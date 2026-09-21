@@ -8,7 +8,8 @@
 
 import type { ReactNode } from "react";
 import { useThemePreference, type EffortSelectorStyle, type ThemePreference, type ThemeSkin } from "../../theme";
-import { SettingsGroup, SettingsPage } from "./kit";
+import { useShowWorkerChatsInMissionControl } from "../../missionControlSettings";
+import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 import { cn } from "@/lib/utils";
 
 /** A tile previews either two swatches or a drawn figure, never both. */
@@ -102,6 +103,7 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
 
 export function AppearancePage() {
   const { preference, resolved, setPreference, skin, setSkin, effortSelector, setEffortSelector } = useThemePreference();
+  const [showWorkerChats, setShowWorkerChats] = useShowWorkerChatsInMissionControl();
   return <SettingsPage
     title="Appearance"
     description={`Bridge follows macOS by default. Currently showing ${resolved === "dark" ? "graphite" : "paper"}.`}
@@ -114,6 +116,13 @@ export function AppearancePage() {
     </SettingsGroup>
     <SettingsGroup label="Thinking control" note="How the model picker sets reasoning effort">
       <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="@min-[580px]/settings:grid-cols-3" />
+    </SettingsGroup>
+    <SettingsGroup label="Mission Control">
+      <SettingsRow
+        label="Show worker chats in Mission Control"
+        description="Off by default: only the orchestrator chat surfaces automatically. Turn on to also surface the workers it delegates to."
+        control={<Switch label="Show worker chats in Mission Control" checked={showWorkerChats} onChange={setShowWorkerChats} />}
+      />
     </SettingsGroup>
   </SettingsPage>;
 }

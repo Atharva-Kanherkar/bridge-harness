@@ -9,8 +9,11 @@
   --foreground: #e4e4e4;
   --body: #c9c9c9;
   --muted-foreground: #8b8b8b;
-  --faint: #6b6b6b;
-  --faint-2: #4a4a4a;
+  /* The two dim greys diverge from the app palette on purpose: on #000 the app's #6b6b6b is
+   * 3.94:1 and #4a4a4a is 2.37:1. Marketing copy has to clear WCAG 1.4.3 (4.5:1 for text) and
+   * 1.4.11 (3:1 for meaningful non-text), so the site uses #777777 (4.69:1) and #5f5f5f (3.29:1). */
+  --faint: #777777;
+  --faint-2: #5f5f5f;
   --border: #1e1e1e;
   --border-card: #242424;
   --input: #242424;

@@ -1,0 +1,495 @@
+{
+  "settings": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "codexEnabled": true,
+    "displayMode": "remaining",
+    "quotaWindow": "session",
+    "showAccount": true,
+    "showTokens": true,
+    "showCost": true,
+    "refreshSeconds": 300,
+    "claudeEnabled": false,
+    "cursorEnabled": false,
+    "opencodeEnabled": false,
+    "selectedProvider": "codex",
+    "pinnedProviders": ["codex", "claude", "cursor"],
+    "opencodeWorkspace": null,
+    "quotaDisplayMode": "used",
+    "openToOverview": true,
+    "iconStyle": "bridge",
+    "statusLayout": [],
+    "showHistory": true,
+    "showOverviewSummary": true,
+    "separateProviderIcons": false
+  },
+  "usage": {
+    "schemaVersion": 1,
+    "generatedAt": 100,
+    "providers": [
+      {
+        "schemaVersion": 1,
+        "generatedAt": 100,
+        "provider": "codex",
+        "account": "person@example.test",
+        "plan": "pro",
+        "observedAt": 100,
+        "windows": [
+          {
+            "id": "session",
+            "label": "Session",
+            "usedPercent": {
+              "value": 0.0,
+              "source": "reported",
+              "status": "current"
+            },
+            "resetsAt": 3700,
+            "windowMinutes": 300
+          },
+          {
+            "id": "weekly",
+            "label": "Weekly",
+            "usedPercent": {
+              "value": 42.0,
+              "source": "reported",
+              "status": "stale"
+            },
+            "resetsAt": 604900,
+            "windowMinutes": 10080
+          }
+        ],
+        "today": {
+          "tokens": {
+            "value": 60.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": 1200000.0,
+            "source": "estimated",
+            "status": "current"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "month": {
+          "tokens": {
+            "value": 90.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": null,
+            "source": null,
+            "status": "unavailable"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "coverage": "Recorded on this Mac",
+        "error": null
+      },
+      {
+        "schemaVersion": 1,
+        "generatedAt": 100,
+        "provider": "claude",
+        "account": "fixture@example.test",
+        "plan": "Max",
+        "observedAt": 100,
+        "windows": [
+          {
+            "id": "session",
+            "label": "Session",
+            "usedPercent": {
+              "value": 24.0,
+              "source": "reported",
+              "status": "current"
+            },
+            "resetsAt": 2000000000,
+            "windowMinutes": 300
+          }
+        ],
+        "today": {
+          "tokens": {
+            "value": 60.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": 1200000.0,
+            "source": "estimated",
+            "status": "current"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "month": {
+          "tokens": {
+            "value": 90.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": null,
+            "source": null,
+            "status": "unavailable"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "coverage": "Recorded on this Mac",
+        "error": null
+      },
+      {
+        "schemaVersion": 1,
+        "generatedAt": 100,
+        "provider": "cursor",
+        "account": "fixture@example.test",
+        "plan": "Pro",
+        "observedAt": 100,
+        "windows": [
+          {
+            "id": "monthly",
+            "label": "Billing cycle",
+            "usedPercent": {
+              "value": 0.36,
+              "source": "reported",
+              "status": "current"
+            },
+            "resetsAt": 2000000000,
+            "windowMinutes": null
+          }
+        ],
+        "today": {
+          "tokens": {
+            "value": 60.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": 1200000.0,
+            "source": "estimated",
+            "status": "current"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "month": {
+          "tokens": {
+            "value": 90.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": null,
+            "source": null,
+            "status": "unavailable"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "coverage": "Recorded on this Mac",
+        "error": null,
+        "accountMetrics": [
+          {
+            "id": "spend",
+            "label": "Account spend",
+            "value": {
+              "value": 1000000.0,
+              "source": "reported",
+              "status": "current"
+            }
+          }
+        ]
+      },
+      {
+        "schemaVersion": 1,
+        "generatedAt": 100,
+        "provider": "opencode",
+        "account": "wrk_fixture",
+        "plan": "Zen pay as you go",
+        "observedAt": 100,
+        "windows": [
+          {
+            "id": "monthly",
+            "label": "Billing cycle",
+            "usedPercent": {
+              "value": 12.5,
+              "source": "reported",
+              "status": "current"
+            },
+            "resetsAt": 2000000000,
+            "windowMinutes": null
+          }
+        ],
+        "today": {
+          "tokens": {
+            "value": 60.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": 1200000.0,
+            "source": "estimated",
+            "status": "current"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "month": {
+          "tokens": {
+            "value": 90.0,
+            "source": "measured",
+            "status": "current"
+          },
+          "costMicrousd": {
+            "value": null,
+            "source": null,
+            "status": "unavailable"
+          },
+          "models": [
+            {
+              "model": "fixture-model",
+              "inputTokens": {
+                "value": 10.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "outputTokens": {
+                "value": 20.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "cacheTokens": {
+                "value": 30.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "totalTokens": {
+                "value": 60.0,
+                "source": "measured",
+                "status": "current"
+              },
+              "costMicrousd": {
+                "value": 1200000.0,
+                "source": "estimated",
+                "status": "current"
+              }
+            }
+          ]
+        },
+        "coverage": "Recorded on this Mac",
+        "error": null,
+        "accountMetrics": [
+          {
+            "id": "spend",
+            "label": "Account spend",
+            "value": {
+              "value": 2500000.0,
+              "source": "reported",
+              "status": "current"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "refreshing": false,
+  "error": null
+}

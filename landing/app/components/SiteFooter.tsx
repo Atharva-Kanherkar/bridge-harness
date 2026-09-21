@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { blogPath, changelogPath, docsPath, downloadPath, issuesUrl, repoUrl } from "../content/site";
+import { blogPath, changelogPath, comparePath, docsPath, downloadPath, issuesUrl, repoUrl } from "../content/site";
 
 const columns = [
   {
     title: "Product",
     links: [
       { label: "Download", href: downloadPath },
+      { label: "Compare", href: comparePath },
       { label: "Changelog", href: changelogPath },
       { label: "Docs", href: docsPath },
       { label: "Blog", href: blogPath },
@@ -32,7 +33,7 @@ export default function SiteFooter() {
         </div>
         {columns.map((column) => (
           <nav key={column.title} className="text-[13px]">
-            <h3 className="text-[11px] uppercase tracking-wider text-faint">{column.title}</h3>
+            <h3 className="text-[11px] uppercase tracking-wider text-muted-foreground">{column.title}</h3>
             <ul className="mt-3 flex flex-col gap-2 text-muted-foreground">
               {column.links.map((link) => (
                 <li key={link.label}>

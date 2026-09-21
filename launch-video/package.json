@@ -1,0 +1,35 @@
+{
+  "name": "bridge-launch-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1472",
+    "build": "tsc --noEmit && vite build",
+    "studio": "remotion studio src/index.tsx",
+    "render": "node render.mjs && node watch.mjs",
+    "stills": "node render.mjs --stills",
+    "prepare:assets": "python3 prepare.py",
+    "test": "node verify.mjs",
+    "test:preview": "node preview-check.mjs",
+    "preview": "vite preview --host 127.0.0.1 --port 1473"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.523",
+    "@remotion/cli": "4.0.523",
+    "@remotion/player": "4.0.523",
+    "@remotion/renderer": "4.0.523",
+    "@remotion/tailwind-v4": "4.0.523",
+    "lucide-react": "0.468.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.523"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.2",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "@vitejs/plugin-react": "4.7.0",
+    "typescript": "5.6.3",
+    "vite": "6.4.3"
+  }
+}

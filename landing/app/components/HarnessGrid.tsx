@@ -44,7 +44,7 @@ export default function HarnessGrid() {
           </div>
         </div>
 
-        <p className="reveal mt-6 text-center text-[13px] text-faint">And many more harnesses coming soon.</p>
+        <p className="reveal mt-6 text-center text-[13px] text-muted-foreground">And many more harnesses coming soon.</p>
       </div>
     </section>
   );

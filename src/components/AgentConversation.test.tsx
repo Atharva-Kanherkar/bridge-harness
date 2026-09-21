@@ -63,6 +63,32 @@ describe("AgentConversation", () => {
     await unmount();
   });
 
+  it("labels a subagent's tool row and leaves the parent's own row unlabelled", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const subagent = { sessionId: "ses_child", agent: "general", title: "Look up the facts" };
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "tool.started", { itemId: "task", title: "Look up the facts", status: "completed", data: { tool: "task" } }),
+      event(2, "command.completed", { itemId: "c1", title: "cat facts.txt", status: "completed", data: { command: "cat facts.txt", subagent } }),
+    ]} />));
+    const group = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-expanded") !== null);
+    if (group && group.getAttribute("aria-expanded") === "false") await act(async () => {
+      group.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const chips = [...container.querySelectorAll<HTMLElement>("[data-subagent]")];
+    expect(chips.map(chip => chip.dataset.subagent)).toEqual(["ses_child"]);
+    expect(chips[0].textContent).toContain("general");
+    expect(chips[0].title).toBe("Subagent: Look up the facts");
+    const rows = [...container.querySelectorAll<HTMLElement>("[data-tool-row]")];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector("[data-subagent]")).toBeNull();
+    expect(rows[1].querySelector("[data-subagent]")).not.toBeNull();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
   it("leaves the tool path inert without an opener", async () => {
     const { container, unmount } = await mountConversation({});
     expect(container.querySelector('[title="src/App.tsx"]')?.textContent).toBe("src");

@@ -147,6 +147,55 @@ describe("normalized conversation reducer",()=>{
     expect(assistant[0].text).toBe("Hi — what would you like to work on in Bridge?");
     expect(assistant[0].entryId).toBe("e2");
   });
+  /**
+   * One failure, read twice.
+   *
+   * An error frame carries no provider item id, so its live row keys on the
+   * event id and its durable twin on the forest entry — ids from two different
+   * spaces that can never agree. Once the forest caught up, every usage limit
+   * and every sign-in failure was drawn a second time, which is how a single
+   * exhausted provider came to look like a provider failing on a loop.
+   */
+  it("draws one failure once across the two projections",()=>{
+    const text = "You've hit your usage limit. Try again at Sep 7th, 11:35 AM.";
+    const live = reduceConversation([event(999,"error",{status:"failed",title:"Agent error",text,providerMeta:{adapter:"codex",bridgeEntryId:"e9"}})]);
+    const durable = projectSessionConversation([
+      entry("e9",null,"error",{title:"Agent error",text,status:"failed",providerMeta:{adapter:"codex"}},9),
+    ], "e9");
+    expect(live.filter(item=>item.type==="error")).toHaveLength(1);
+    expect(durable.filter(item=>item.type==="error")).toHaveLength(1);
+    const merged = mergeConversationProjections(durable, live).filter(item=>item.type==="error");
+    expect(merged).toHaveLength(1);
+    // The durable row is the survivor: it is the one the reader can branch from.
+    expect(merged[0].entryId).toBe("e9");
+    expect(merged[0].harness).toBe("codex");
+  });
+  it("keeps two distinct failures that happen to say the same thing",()=>{
+    const text = "429 Too Many Requests";
+    const live = reduceConversation([
+      event(9,"error",{status:"failed",text,providerMeta:{bridgeEntryId:"e9"}}),
+      event(11,"error",{status:"failed",text}),
+    ]);
+    const durable = projectSessionConversation([entry("e9",null,"error",{text,status:"failed"},9)], "e9");
+    // One is the durable row's twin; the second retry is its own failure.
+    expect(mergeConversationProjections(durable, live).filter(item=>item.type==="error")).toHaveLength(2);
+  });
+  it("keeps a failure the forest has not caught up with yet",()=>{
+    const live = reduceConversation([event(9,"error",{status:"failed",text:"boom"})]);
+    expect(mergeConversationProjections([], live).filter(item=>item.type==="error")).toHaveLength(1);
+  });
+  it("keeps a new identical failure after the old live event leaves the window",()=>{
+    const text = "429 Too Many Requests";
+    const durable = projectSessionConversation([entry("e9",null,"error",{text,status:"failed"},9)], "e9");
+    const live = reduceConversation([event(11,"error",{status:"failed",text})]);
+    expect(mergeConversationProjections(durable, live).filter(item=>item.type==="error")).toHaveLength(2);
+  });
+  it("stamps an error row with the runtime that raised it",()=>{
+    const items = reduceConversation([
+      event(9,"error",{status:"failed",text:"429 Too Many Requests",providerMeta:{adapter:"opencode"}}),
+    ]);
+    expect(items[0].harness).toBe("opencode");
+  });
   it("keeps two completed assistant replies that happen to share wording",()=>{
     const live = reduceConversation([
       event(1,"message.completed",{itemId:"m1",role:"assistant",status:"completed",text:"Done."}),
@@ -564,6 +613,25 @@ describe("toolCallDisplay", () => {
       }));
       expect(display.patch).toBe(`${PATCH}\n@@ -9 +9 @@\n+c`);
       expect(display.path).toBe("a.rs");
+      expect(display.target).toBe("a.rs + 1 more");
+    });
+
+    it("names a pathless file change from the tool or type, not the word files", () => {
+      const typed = toolCallDisplay(call({ type: "diff", data: { type: "fileChange" } }));
+      expect(typed.target).toBe("fileChange");
+      expect(typed.done).toBe("Edited");
+      const tooled = toolCallDisplay(call({ type: "diff", data: { type: "tool", tool: "apply_patch" } }));
+      expect(tooled.target).toBe("apply_patch");
+    });
+
+    it("lists a multi-file change from paths[]", () => {
+      const display = toolCallDisplay(call({
+        type: "diff",
+        data: { paths: ["src/lib.rs", "src/main.rs"], patch: PATCH, additions: 2, deletions: 2 },
+      }));
+      expect(display.path).toBe("src/lib.rs");
+      expect(display.target).toBe("lib.rs + 1 more");
+      expect(display.additions).toBe(2);
     });
 
     it("falls back to the body when the body is unmistakably a diff", () => {

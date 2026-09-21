@@ -37,8 +37,12 @@
           "type": "integer"
         },
         "sessions": {
+          "description": "Unavailable for account dashboards without session identifiers.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "totals": {
           "$ref": "#/definitions/UsageBucketTotals"
@@ -56,7 +60,6 @@
         "harness",
         "model",
         "records",
-        "sessions",
         "totals",
         "unpricedRecords"
       ],
@@ -101,6 +104,13 @@
         "provider_reported",
         "model_priced",
         "unpriced"
+      ],
+      "type": "string"
+    },
+    "UsageHistoryOrigin": {
+      "enum": [
+        "local",
+        "dashboard"
       ],
       "type": "string"
     },
@@ -172,6 +182,14 @@
             "string",
             "null"
           ]
+        },
+        "origin": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UsageHistoryOrigin"
+            }
+          ],
+          "default": "local"
         },
         "provider": {
           "type": "string"

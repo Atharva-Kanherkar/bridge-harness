@@ -7,6 +7,7 @@ import { isActiveSession, MissionControl } from "./MissionControl";
 import { minimumSize, MISSION_LAYOUT_KEY, parseLayout } from "./missionControl/layout";
 import { SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
 import { leafIds, type PaneNode } from "../terminal/layout";
+import { SHOW_WORKER_CHATS_STORAGE_KEY } from "../missionControlSettings";
 
 vi.mock("../api", () => ({
   bridgeApi: {
@@ -98,6 +99,7 @@ it("recognizes active turns and lifecycle transitions across harnesses", () => {
 });
 
 it("removes completed workers despite a cached working runtime", async () => {
+  localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
   vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), workerRuntimes: [{ sessionId: "w", lifecycleState: "working", resultStatus: "pending" }] } as SessionForestSnapshot));
   await render({ sessions: [session("w", "working", { parentSessionId: "a" })] });
   expect(tiles()).toEqual(["w"]);
@@ -179,6 +181,7 @@ it("focuses a session from the tile header and maximizes a tile", async () => {
 });
 
 it("offers Stop only for workers and routes it to onStopWorker", async () => {
+  localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
   const stop = vi.fn().mockResolvedValue(undefined);
   await render({ sessions: [session("a", "working"), session("w", "working", { parentSessionId: "a" })], onStopWorker: stop });
   expect(host.querySelector("[data-session-id='a'] button[aria-label='Stop worker']")).toBeNull();
@@ -224,7 +227,7 @@ it("accepts an idle sidebar chat into an empty grid and persists it until remove
   act(() => root.unmount()); root = createRoot(host);
   await render({ sessions });
   expect(tiles()).toEqual(["idle"]);
-  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Remove from Mission Control']")!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Close chat']")!.click());
   expect(tiles()).toEqual([]);
   expect(savedLayout().pinnedSessionIds).toEqual([]);
 });
@@ -296,6 +299,12 @@ it("treats old saved layouts as unpinned and validates stored pins", () => {
   expect(parseLayout(JSON.stringify({ version: 1, root, pinnedSessionIds: ["a", "a", "missing", 7] })).pinnedSessionIds).toEqual(["a"]);
 });
 
+it("treats old saved layouts as having nothing dismissed and dedupes stored dismissals", () => {
+  const root = { type: "leaf", leafId: "a" };
+  expect(parseLayout(JSON.stringify({ version: 1, root })).dismissedSessionIds).toEqual([]);
+  expect(parseLayout(JSON.stringify({ version: 1, root, dismissedSessionIds: ["gone", "gone", 7, null] })).dismissedSessionIds).toEqual(["gone"]);
+});
+
 it("pins from the tile header and keeps the chat visible after completion and reopening", async () => {
   await render({ sessions: [session("a", "working")] });
   await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
@@ -305,17 +314,97 @@ it("pins from the tile header and keeps the chat visible after completion and re
   act(() => root.unmount()); root = createRoot(host);
   await render({ sessions: [session("a", "completed")] });
   expect(tiles()).toEqual(["a"]);
-  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Remove from Mission Control']")!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Close chat']")!.click());
   expect(tiles()).toEqual([]);
 });
 
 it("unpins an active chat without stopping it and removes it when work finishes", async () => {
   await render({ sessions: [session("a", "working")] });
   await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
-  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Unpin chat (stays while active)']")!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Unpin chat']")!.click());
   expect(tiles()).toEqual(["a"]);
   expect(savedLayout().pinnedSessionIds).toEqual([]);
   expect(bridgeApi.interruptTurn).not.toHaveBeenCalled();
   await render({ sessions: [session("a", "completed")] });
   expect(tiles()).toEqual([]);
+});
+
+it("closes an active, unpinned tile immediately and keeps it closed on rerender", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  expect(tiles().sort()).toEqual(["a", "b"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='a'] button[aria-label='Close chat']")!.click());
+  expect(tiles()).toEqual(["b"]);
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
+});
+
+it("closing a tile does not stop its worker or interrupt its turn", async () => {
+  localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
+  const stop = vi.fn().mockResolvedValue(undefined);
+  await render({ sessions: [session("a", "working"), session("w", "working", { parentSessionId: "a" })], onStopWorker: stop });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='w'] button[aria-label='Close chat']")!.click());
+  expect(stop).not.toHaveBeenCalled();
+  expect(bridgeApi.interruptTurn).not.toHaveBeenCalled();
+});
+
+it("closing a pinned tile clears its pin along with removing it", async () => {
+  await render({ sessions: [session("a", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
+  expect(savedLayout().pinnedSessionIds).toEqual(["a"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Close chat']")!.click());
+  expect(tiles()).toEqual([]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+});
+
+it("brings a closed chat back once it is dragged in from the sidebar again", async () => {
+  await render({ sessions: [session("a", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Close chat']")!.click());
+  expect(tiles()).toEqual([]);
+  const data = transfer(SIDEBAR_CHAT_DRAG, "a");
+  const canvas = host.querySelector("main")!;
+  await dragEvent(canvas, "drop", data);
+  expect(tiles()).toEqual(["a"]);
+});
+
+it("hides worker chats from Mission Control by default, but keeps the orchestrator visible", async () => {
+  await render({ sessions: [session("a", "working"), session("w", "working", { parentSessionId: "a" })] });
+  expect(tiles()).toEqual(["a"]);
+});
+
+it("still shows a pinned worker chat even with the default worker-visibility setting", async () => {
+  await render({ sessions: [session("a", "working"), session("w", "working", { parentSessionId: "a" })] });
+  const data = transfer(SIDEBAR_CHAT_DRAG, "w");
+  const canvas = host.querySelector("main")!;
+  await dragEvent(canvas, "drop", data);
+  expect(tiles().sort()).toEqual(["a", "w"]);
+  // The pinned worker is hidden from the visibility filter but still active,
+  // so the badge must count it too, not just the auto-surfaced chats.
+  expect(host.textContent).toContain("2 live");
+});
+
+it("shows worker chats once the setting is turned on", async () => {
+  localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
+  await render({ sessions: [session("a", "working"), session("w", "working", { parentSessionId: "a" })] });
+  expect(tiles().sort()).toEqual(["a", "w"]);
+});
+
+it("live-syncs worker visibility from an external write, without remounting or re-rendering with new props", async () => {
+  const sessions = [session("a", "working"), session("w", "working", { parentSessionId: "a" })];
+  await render({ sessions });
+  expect(tiles()).toEqual(["a"]);
+
+  // Simulates another window (e.g. Settings) flipping the preference: the
+  // mounted MissionControl instance must pick this up through its own
+  // storage-event listener, with no new props and no remount.
+  await act(async () => {
+    localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
+    window.dispatchEvent(new Event("storage"));
+  });
+  expect(tiles().sort()).toEqual(["a", "w"]);
+
+  await act(async () => {
+    localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "false");
+    window.dispatchEvent(new Event("storage"));
+  });
+  expect(tiles()).toEqual(["a"]);
 });

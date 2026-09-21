@@ -25,3 +25,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## CodexBar native Menu Bar reference and provider icons
+
+The provider SVG marks embedded in `src-tauri/bridge-menu-bar/swift/ProviderIcon.swift`
+come from CodexBar's `Sources/CodexBar/Resources/ProviderIcon-*.svg` at revision
+928166f. Native overview summary and separate status-item presentation follow its
+`OverviewSpendSummary`, `ProviderBrandIcon`, and `StatusItemController` patterns,
+adapted to Bridge's shared Rust snapshots. See
+[the included MIT license](docs/third-party/CodexBar-LICENSE.txt).

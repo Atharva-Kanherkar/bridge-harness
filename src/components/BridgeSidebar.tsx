@@ -87,7 +87,7 @@ function ChatRow({
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
+        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] text-left font-sans transition-colors active:scale-[0.99]",
         indented ? "pl-7" : "pl-2",
       )}
     >
@@ -116,25 +116,19 @@ function ChatRow({
           </span>
         )}
       </span>
-      {/* Muted at rest: a column of full-tint marks is the loudest thing in the
-          rail and the chrome stays achromatic. The active row earns its tint. */}
-      <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground")} />
     </button>
-    {/* Revealed on hover or keyboard focus, never at rest: a column of archive
-        buttons down the rail would compete with the chat names for attention,
-        and this is a rarely-wanted action. Achromatic like the rest of the
-        chrome — it is not a warning, it is filing something away. */}
     {onArchive && (
       <button
         type="button"
         onClick={event => { event.stopPropagation(); onArchive(); }}
         title={`Archive ${name}`}
         aria-label={`Archive ${name}`}
-        className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
       >
         <Archive size={12} strokeWidth={1.7} aria-hidden="true" />
       </button>
     )}
+    <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
   );
 }

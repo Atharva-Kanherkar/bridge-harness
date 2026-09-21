@@ -22,8 +22,9 @@ Every visible field is a field something writes.
 
 ## Chips render only what a writer populated
 
-- A row whose provenance is `model_proposal` (an approved proposal) is chipped
-  as suggested; a `user_explicit` row carries no provenance chip.
+- A row whose provenance is `model_proposal` (an extracted record, whether
+  manually approved or automatically promoted) is chipped as extracted; a
+  `user_explicit` row carries no provenance chip.
 - Confidence renders only when present. An explicit pin shows no confidence —
   no badge at zero applies to metadata too.
 - A record carrying `supersedes` says it replaced an earlier pin.

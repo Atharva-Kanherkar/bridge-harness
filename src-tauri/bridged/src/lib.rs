@@ -59,6 +59,11 @@ pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// before proceeding to adapter teardown anyway.
 pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Emitted by the `bridged` executable only after its accept loop stops and
+/// graceful shutdown finishes. Packaged-app acceptance uses this daemon-side
+/// acknowledgement together with the desktop wrapper's exit status.
+pub const CLEAN_SHUTDOWN_MARKER: &str = "bridged: graceful shutdown complete";
+
 pub const SOCKET_FILE_NAME: &str = "bridged.sock";
 pub const TOKEN_FILE_NAME: &str = "daemon.token";
 
@@ -253,6 +258,7 @@ impl Daemon {
         bridge_core::live_turn::start_learning_maintenance(core.clone());
         bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
         bridge_core::github_poll::start_github_poll_maintenance(core.clone());
+        bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
         bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
         bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
         bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
@@ -274,6 +280,7 @@ impl Daemon {
     pub fn shutdown(&self, drain_timeout: Duration) {
         self.state.ready.store(false, Ordering::SeqCst);
         self.state.shutting_down.store(true, Ordering::SeqCst);
+        bridge_core::provider_usage::shutdown();
         let deadline = Instant::now() + drain_timeout;
         while self.state.connections.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));
