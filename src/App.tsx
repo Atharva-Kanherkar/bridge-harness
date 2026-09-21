@@ -7,6 +7,8 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, u
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { findReferences, referenceAlias, referencePullText, type ReferenceChipModel } from "./referenceChip";
+import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
@@ -218,6 +220,8 @@ function AppContent() {
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
   const [composer, setComposer] = useState("");
+  const [referenceChips, setReferenceChips] = useState<ReferenceChipModel[]>([]);
+  const resolvedReferences = useRef(new Map<string, ResolveReferenceResult>());
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [asideSlashCommands, setAsideSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -267,6 +271,33 @@ function AppContent() {
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
   const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
+  // Reference chips: `brio_…` aliases and `@session:` mentions in the draft are
+  // resolved before send and shown as chips above the composer. An unresolved
+  // token stays plain text — the chip is never a broken promise.
+  const refreshReferences = (text: string) => {
+    const tokens = findReferences(text);
+    const missing = tokens.filter(token => !resolvedReferences.current.has(token));
+    if (missing.length === 0) {
+      setReferenceChips(tokens.map(token => ({ token, alias: referenceAlias(token), resolved: resolvedReferences.current.get(token)! })));
+      return;
+    }
+    void Promise.all(missing.map(token => bridgeApi.resolveReference(token)))
+      .then(results => {
+        missing.forEach((token, index) => resolvedReferences.current.set(token, results[index]));
+        setReferenceChips(tokens.map(token => ({ token, alias: referenceAlias(token), resolved: resolvedReferences.current.get(token)! })));
+      })
+      .catch(() => { /* a failed resolve leaves the token as literal text */ });
+  };
+  const useResolvedReference = (chip: ReferenceChipModel) => {
+    const pull = referencePullText(chip.resolved);
+    if (!pull) {
+      resolvedReferences.current.delete(chip.token);
+      setReferenceChips(current => current.filter(candidate => candidate.token !== chip.token));
+      return;
+    }
+    setComposer(current => current.replace(chip.token, pull));
+  };
+
   const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
   const suggestionGeneration = useRef(0);
   // Shown once per fallback episode, not on every debounce firing while the
@@ -2794,7 +2825,7 @@ function AppContent() {
                   <ComposerPill
                     layout="dock"
                     value={composer}
-                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
+                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); refreshReferences(value); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     onPaste={handleComposerPaste}
@@ -2810,6 +2841,8 @@ function AppContent() {
                     } : undefined}
                     suggestion={draftSuggestion?.suggestion}
                     onAcceptSuggestion={acceptSuggestion}
+                    references={referenceChips}
+                    onUseReference={useResolvedReference}
                     placeholder={turnActive ? "Send a follow-up…" : "Message Bridge…"}
                     disabled={!session}
                     working={turnActive}

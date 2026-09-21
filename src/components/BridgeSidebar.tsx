@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, GitFork, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ BarChart3, Copy, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, GitFork, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -9,6 +9,7 @@ import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
+import { toPublicAlias } from "../referenceChip";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 import {
@@ -106,6 +107,18 @@ function ChatRow({
           </>}
         </span>
       </span>
+    </button>
+    {/* Revealed on hover or keyboard focus: the copy-id button, then the
+        archive button. The id copies as the public `brio_…` alias the
+        composer recognizes. Achromatic like the rest of the chrome. */}
+    <button
+      type="button"
+      onClick={event => { event.stopPropagation(); void navigator.clipboard?.writeText(toPublicAlias(chat.id)); }}
+      title="Copy chat ID"
+      aria-label={`Copy chat ID ${chat.id}`}
+      className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+    >
+      <Copy size={12} strokeWidth={1.7} aria-hidden="true" />
     </button>
     {/* Sibling of the row button, never a descendant of it: a <button> inside
         a <button> is invalid HTML and browsers treat the inner control

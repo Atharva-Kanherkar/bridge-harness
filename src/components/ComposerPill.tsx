@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComposerAttachment } from "@/pasteAttachments";
+import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceChip";
 
 export type ComposerPillProps = {
   value: string;
@@ -59,6 +60,10 @@ export type ComposerPillProps = {
   /// Accept `suggestion` — appends it to `value`. Bound to Tab, and only when
   /// a suggestion is showing and the caret is still at the end of the draft.
   onAcceptSuggestion?: () => void;
+  /** Reference chips for `brio_…`/`@session:` tokens currently in the draft. */
+  references?: ReferenceChipModel[];
+  /** Pull a chip's checkpoint/entry summary into the draft. */
+  onUseReference?: (chip: ReferenceChipModel) => void;
 };
 
 const ACTIVE_ACTION_LABEL = { steer: "Steer", queue: "Queue" } as const;
@@ -89,6 +94,8 @@ export function ComposerPill({
   autocomplete,
   suggestion,
   onAcceptSuggestion,
+  references = [],
+  onUseReference,
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -148,6 +155,34 @@ export function ComposerPill({
         >
           {/* Keep workspace metadata outside the writing surface. */}
           <div className={cn("flex flex-col gap-1", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3 py-2")}>
+          {references.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 px-1 pt-0.5">
+              {references.map(chip => {
+                const unknown = chip.resolved.kind === "unknown";
+                return (
+                  <span
+                    key={chip.token}
+                    className={cn(
+                      "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] leading-4",
+                      unknown ? "border-warning/40 bg-warning/10 text-warning" : "border-border bg-accent/60 text-foreground",
+                    )}
+                    title={chip.token}
+                  >
+                    <span className="truncate font-medium">{chipSummary(chip.resolved)}</span>
+                    <span className="truncate text-muted-foreground">{chipDetail(chip.resolved)}</span>
+                    {!unknown && onUseReference && (
+                      <button
+                        type="button"
+                        aria-label={`Pull ${chipSummary(chip.resolved)} into this chat`}
+                        className="rounded-full px-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        onClick={() => onUseReference(chip)}
+                      >+</button>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          )}
           {hasAttachments && (
             <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
               {attachments!.map(attachment => (

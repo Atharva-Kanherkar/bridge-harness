@@ -217,6 +217,7 @@ typed_methods![
     (CreateChatId, CreateChatIdParams, CreateChatIdResult),
     (CreateAsideChat, CreateAsideChatParams, CreateAsideChatResult),
     (ForkSession, ForkSessionParams, ForkSessionResult),
+    (ResolveReference, ResolveReferenceParams, ResolveReferenceResult),
     (CreateWorkspaceSession, CreateWorkspaceSessionParams, BridgeState),
     (StartSession, StartSessionParams, BridgeState),
     (StartChat, StartChatParams, BridgeState),

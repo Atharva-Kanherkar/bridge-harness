@@ -939,6 +939,24 @@ describe("the dock in the session view", () => {
     confirm.mockRestore();
   });
 
+  it("renders a pasted session reference as a chip and pulls it into the draft", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(6);
+    const textarea = composer()!;
+    await act(async () => {
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      nativeSet.call(textarea, "compare with @session:session-1");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle(8);
+    expect(container.textContent).toContain("Orchestrator");
+    const pull = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Pull Orchestrator"));
+    expect(pull).toBeTruthy();
+    await click(pull!);
+    expect(composer()!.value).toContain("[session Orchestrator — checkpoint present]");
+  });
+
   // The regression that green per-component tests hid: the chat list drops
   // every session with a `parentSessionId`, so a fork recorded as a worker
   // opened once and then became unreachable — and the rail's own breadcrumb

@@ -1360,6 +1360,19 @@ pub fn create_aside_chat(
     })
 }
 
+/// Resolve a session id, entry id, or `brio_…` alias into its typed
+/// descriptor. `Unknown` is the single shape for both missing ids and
+/// unauthorized ones, so resolution never leaks existence.
+pub fn resolve_reference(
+    core: &Arc<BridgeCore>,
+    id: &str,
+) -> Result<wire::ResolveReferenceResult, BridgeError> {
+    // Returned straight through, not round-tripped through `serde_json::Value`:
+    // the core builds the wire type itself, so the compiler holds the contract
+    // rather than a hand-written payload that only fails at runtime.
+    core.resolve_reference(id)
+}
+
 /// Fork a session's conversation branch at an entry. Returns the exact fork
 /// id, its own forest snapshot, and the app state so the sidebar can switch
 /// to the fork immediately. The parent is never modified.

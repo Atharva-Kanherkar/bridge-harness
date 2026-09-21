@@ -94,6 +94,7 @@ methods![
     (CreateChatId, "sessions", "create_chat_id"),
     (CreateAsideChat, "sessions", "create_aside_chat"),
     (ForkSession, "sessions", "fork_session"),
+    (ResolveReference, "sessions", "resolve_reference"),
     (CreateWorkspaceSession, "sessions", "create_workspace_session"),
     (StartSession, "sessions", "start_session"),
     (StartChat, "sessions", "start_chat"),

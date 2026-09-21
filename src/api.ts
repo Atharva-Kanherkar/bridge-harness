@@ -13,7 +13,7 @@ import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, Summ
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
-import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult } from "./protocol/generated/protocol";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
@@ -1926,6 +1926,46 @@ export const bridgeApi = {
     if (forest.head) forest.head.activeEntryId = entryId;
     forest.reasons.unshift({ id: nextEventId++, source: "session-forest", kind: "session.head_moved", entityId: sessionId, body: `Conversation head moved to ${entryId}; files were not changed`, createdAt: new Date().toISOString() });
     emitState(); return structuredClone(forest);
+  },
+  resolveReference: async (id: string): Promise<ResolveReferenceResult> => {
+    if (isTauri()) return call("sessions/resolve_reference", { id }) as Promise<ResolveReferenceResult>;
+    const bare = id.replace(/^@session:/, "").replace(/^brio_/, "");
+    const session = mockState.sessions.find(candidate => candidate.id === bare || (candidate.id.replace(/-/g, "").startsWith(bare) && bare.length === 8));
+    if (session) {
+      const head = mockForests[session.id]?.head ?? null;
+      return {
+        kind: "session",
+        sessionId: session.id,
+        label: session.label,
+        harness: session.harness,
+        workspaceId: session.workspaceId ?? null,
+        parentSessionId: session.parentSessionId ?? null,
+        depth: session.depth ?? 0,
+        restorationMode: session.restorationMode,
+        continuationFidelity: session.continuationFidelity,
+        activeEntryId: head?.activeEntryId ?? null,
+        latestCheckpointEntryId: head?.latestCheckpointEntryId ?? null,
+        updatedAt: session.startedAt ?? null,
+        authorized: true,
+      };
+    }
+    for (const forest of Object.values(mockForests)) {
+      const entry = forest.entries.find(candidate => candidate.id === bare);
+      if (entry) {
+        const summary = String(entry.payload?.text ?? entry.payload?.summary ?? entry.payload?.title ?? "") || "";
+        return {
+          kind: "entry",
+          sessionId: forest.sessionId,
+          entryId: entry.id,
+          entryKind: entry.kind,
+          sequence: Number(entry.sequence),
+          summary,
+          createdAt: entry.createdAt,
+          authorized: true,
+        };
+      }
+    }
+    return { kind: "unknown", authorized: false };
   },
   forkSession: async (sessionId: string, entryId: string, title?: string | null, harness?: string | null, model?: string | null, worktreePolicy?: string | null): Promise<ForkSessionResult> => {
     if (isTauri()) return call("sessions/fork_session", { sessionId, entryId, title, harness, model, worktreePolicy: worktreePolicy ?? "shared" }) as Promise<ForkSessionResult>;

@@ -941,6 +941,10 @@ pub fn dispatch(
                 &p.worktree_policy,
             ))
         }
+        MethodName::ResolveReference => {
+            let p: wire::ResolveReferenceParams = decode(method, params)?;
+            reply(api::resolve_reference(core, &p.id))
+        }
         MethodName::ExecuteAutomationAction => {
             let p: wire::ExecuteAutomationActionParams = decode(method, params)?;
             reply(api::execute_automation_action(

@@ -345,6 +345,13 @@
       "resultSchema": "fork-session-result.json"
     },
     {
+      "command": "resolve_reference",
+      "domain": "sessions",
+      "method": "sessions/resolve_reference",
+      "paramsSchema": "resolve-reference-params.json",
+      "resultSchema": "resolve-reference-result.json"
+    },
+    {
       "command": "create_workspace_session",
       "domain": "sessions",
       "method": "sessions/create_workspace_session",

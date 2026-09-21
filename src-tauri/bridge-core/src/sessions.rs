@@ -444,6 +444,16 @@ impl BridgeCore {
         Ok((fork_id, snapshot, ContinuationFidelity::ProjectedAtBoundary.as_str().into()))
     }
 
+    /// Resolve a session id, entry id, or `brio_…` alias into a typed
+    /// descriptor for the composer chip. Never leaks existence.
+    pub fn resolve_reference(
+        &self,
+        id: &str,
+    ) -> Result<bridge_protocol::messages::ResolveReferenceResult, BridgeError> {
+        let db = self.db.lock().unwrap();
+        resolve_reference_records(&db, id)
+    }
+
     /// The session's repository path, if any. Hosts resolve this under the
     /// lock, then compute the repository state outside it — Git may be slow
     /// on large repositories or during index contention.
@@ -1582,6 +1592,159 @@ pub fn activate_session_entry_records(
     let snapshot = session_forest_snapshot(&transaction, session_id)?;
     transaction.commit()?;
     Ok(snapshot)
+}
+
+/// Resolve a session id, a forest entry id, or a public alias into a typed,
+/// renderable descriptor. The single `Unknown` shape covers both ids that
+/// exist nowhere and ids a caller may not see, so resolution never leaks
+/// existence; malformed input is a typed error, not an `Unknown`.
+pub(crate) fn resolve_reference_records(
+    db: &Connection,
+    id: &str,
+) -> Result<bridge_protocol::messages::ResolveReferenceResult, BridgeError> {
+    use bridge_protocol::messages::ResolveReferenceResult;
+    let raw = id.trim();
+    if raw.is_empty() {
+        return Err(BridgeError::Invalid("Reference id must not be empty".into()));
+    }
+    // `@session:` mentions and `brio_` aliases both resolve through the alias
+    // parser; everything else is treated as a raw uuid-shaped id.
+    let candidate = raw.strip_prefix("@session:").unwrap_or(raw);
+    let candidate = candidate
+        .strip_prefix("brio_")
+        .map(str::to_string)
+        .unwrap_or_else(|| candidate.to_string());
+    if candidate.is_empty() || !candidate.chars().all(|character| character.is_ascii_hexdigit() || character == '-') {
+        return Err(BridgeError::Invalid(format!(
+            "Malformed reference {id:?}; expected a session id, entry id, or brio_ alias"
+        )));
+    }
+    // Public aliases are the first 8 hex chars of the uuid. A prefix that
+    // matches more than one session resolves to `Unknown` rather than picking
+    // silently — ambiguity must never guess.
+    let alias_query = if candidate.len() == 8 && !candidate.contains('-') {
+        format!("{}%", candidate)
+    } else {
+        String::new()
+    };
+    let session_id: Option<String> = if !alias_query.is_empty() {
+        // Take two: `query_row` would hand back whichever row the planner
+        // reached first and say nothing about the second, which is exactly the
+        // silent guess this must not make.
+        let matches: Vec<String> = db
+            .prepare("SELECT id FROM sessions WHERE id LIKE ?1 ORDER BY id LIMIT 2")?
+            .query_map(params![alias_query], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        match matches.len() {
+            1 => Some(matches.into_iter().next().expect("one match")),
+            _ => None,
+        }
+    } else if candidate.contains('-') {
+        db.query_row(
+            "SELECT id FROM sessions WHERE id=?1",
+            params![candidate],
+            |row| row.get(0),
+        )
+        .optional()?
+    } else {
+        None
+    };
+    if let Some(session_id) = session_id {
+        let row: (String, String, Option<String>, Option<String>, i64, String, String, Option<String>, Option<String>) = db.query_row(
+            // LEFT JOIN: a chat that has not appended an entry yet has no
+            // `session_heads` row, and an inner join turned resolving it into
+            // a hard error instead of a descriptor.
+            "SELECT label,harness,workspace_id,parent_session_id,depth,
+                    COALESCE(session_heads.restoration_mode,'fresh'),continuation_fidelity,
+                    session_heads.active_entry_id,session_heads.updated_at
+             FROM sessions LEFT JOIN session_heads ON session_heads.session_id = sessions.id WHERE sessions.id=?1",
+            params![session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )?;
+        let (label, harness, workspace_id, parent_session_id, depth, restoration_mode, continuation_fidelity, active_entry_id, updated_at) = row;
+        let latest_checkpoint_entry_id: Option<String> = db
+            .query_row(
+                "SELECT id FROM session_entries WHERE session_id=?1 AND kind='checkpoint' ORDER BY sequence DESC LIMIT 1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        return Ok(ResolveReferenceResult::Session {
+            session_id,
+            label,
+            harness,
+            workspace_id,
+            parent_session_id,
+            depth,
+            restoration_mode,
+            continuation_fidelity,
+            active_entry_id,
+            latest_checkpoint_entry_id,
+            updated_at,
+            authorized: true,
+        });
+    }
+    // Entry ids are raw uuids (globally unique, unaliased).
+    if candidate.contains('-') {
+        let row: Option<(String, String, String, i64, String, String)> = db
+            .query_row(
+                "SELECT s.id, s.session_id, s.kind, s.sequence, s.payload, s.created_at
+                 FROM session_entries s WHERE s.id=?1",
+                params![candidate],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        if let Some((_entry_id, session_id, kind, sequence, payload, created_at)) = row {
+            let payload_value = serde_json::from_str::<serde_json::Value>(&payload).unwrap_or_default();
+            let summary = payload_value
+                .get("summary")
+                .or_else(|| payload_value.get("title"))
+                .or_else(|| payload_value.get("text"))
+                .and_then(serde_json::Value::as_str)
+                .map(|text| {
+                    let trimmed = text.trim();
+                    if trimmed.chars().count() > 80 {
+                        let mut out = trimmed.chars().take(77).collect::<String>();
+                        out.push_str("…");
+                        out
+                    } else {
+                        trimmed.to_string()
+                    }
+                })
+                .unwrap_or_default();
+            return Ok(ResolveReferenceResult::Entry {
+                session_id,
+                entry_id: candidate,
+                entry_kind: kind,
+                sequence,
+                summary,
+                created_at,
+                authorized: true,
+            });
+        }
+    }
+    Ok(ResolveReferenceResult::Unknown { authorized: false })
 }
 
 /// The durable half of a session fork, in one transaction. Returns the new
@@ -5040,5 +5203,178 @@ mod fork_tests {
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "a failed worktree fork must not write any rows");
+    }
+}
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Resolve, then serialize exactly as the daemon does. Asserting on the
+    /// serialized value rather than the Rust enum is the point: the defect
+    /// this suite exists to catch was a field-casing mismatch that only ever
+    /// appeared on the wire.
+    fn wire(db: &Connection, id: &str) -> serde_json::Value {
+        serde_json::to_value(resolve_reference_records(db, id).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn resolve_reference_resolves_a_session_id_to_its_descriptor() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa',NULL,'codex','Orchestrator','idle','estimated','direct',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,resume_eligibility,updated_at) VALUES('11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa',NULL,'checkpoint_restored','checkpoint_restored','2026-09-19T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let value = wire(&db, "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert_eq!(value["kind"], "session");
+        assert_eq!(value["label"], "Orchestrator");
+        assert_eq!(value["harness"], "codex");
+        assert_eq!(value["depth"], 0);
+        assert_eq!(value["restorationMode"], "checkpoint_restored");
+        assert_eq!(value["authorized"], true);
+    }
+
+    #[test]
+    fn resolve_reference_resolves_an_entry_id_to_its_entry_descriptor() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb',NULL,'codex','Chat','idle','estimated','direct',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('44444444-4444-4444-8444-444444444444','22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb',NULL,1,'user.message',?1,'now')",
+            params![json!({ "text": "A question about the rail grouping layout decisions and their fallout." }).to_string()],
+        )
+        .unwrap();
+        let value = wire(&db, "44444444-4444-4444-8444-444444444444");
+        assert_eq!(value["kind"], "entry");
+        assert_eq!(value["sessionId"], "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        assert_eq!(value["entryKind"], "user.message");
+        assert_eq!(value["sequence"], 1);
+        assert!(value["summary"].as_str().unwrap().starts_with("A question about the rail"));
+        assert_eq!(value["authorized"], true);
+    }
+
+    #[test]
+    fn resolve_reference_accepts_the_public_alias_and_the_mention_spelling() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('33333333-cccc-4ccc-8ccc-cccccccccccc',NULL,'claude','Kyoto','idle','estimated','direct',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session_heads(session_id,restoration_mode,resume_eligibility,updated_at) VALUES('33333333-cccc-4ccc-8ccc-cccccccccccc','hot','native','now')",
+            [],
+        )
+        .unwrap();
+        for spelling in ["brio_33333333", "@session:brio_33333333", "@session:33333333-cccc-4ccc-8ccc-cccccccccccc"] {
+            let value = wire(&db, spelling);
+            assert_eq!(value["kind"], "session", "{spelling}");
+            assert_eq!(value["sessionId"], "33333333-cccc-4ccc-8ccc-cccccccccccc", "{spelling}");
+            assert_eq!(value["label"], "Kyoto", "{spelling}");
+        }
+    }
+
+    /// The payload has to survive the conversion the daemon performs. This is
+    /// the round trip that a direct-JSON assertion and a hand-written frontend
+    /// mock both skip, and it is where the snake_case/camelCase split hid.
+    #[test]
+    fn resolve_reference_round_trips_through_the_wire_type() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('66666666-6666-4666-8666-666666666666',NULL,'codex','Orchestrator','idle','estimated','direct',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO session_heads(session_id,restoration_mode,resume_eligibility,updated_at) VALUES('66666666-6666-4666-8666-666666666666','fresh','fresh','now')",
+            [],
+        )
+        .unwrap();
+        for id in ["66666666-6666-4666-8666-666666666666", "brio_66666666", "0000000a-0000-4000-8000-00000000000a"] {
+            let resolved = resolve_reference_records(&db, id).unwrap();
+            let encoded = serde_json::to_value(&resolved).unwrap();
+            let decoded: bridge_protocol::messages::ResolveReferenceResult =
+                serde_json::from_value(encoded.clone())
+                    .unwrap_or_else(|error| panic!("{id} does not survive the wire: {error} ({encoded})"));
+            assert_eq!(decoded, resolved, "{id}");
+        }
+        // Every multi-word key is camelCase, like the rest of the wire.
+        let value = wire(&db, "66666666-6666-4666-8666-666666666666");
+        for key in ["sessionId", "workspaceId", "parentSessionId", "restorationMode", "continuationFidelity", "activeEntryId", "latestCheckpointEntryId", "updatedAt"] {
+            assert!(value.get(key).is_some(), "missing {key} in {value}");
+        }
+        assert!(
+            value.as_object().unwrap().keys().all(|key| !key.contains('_')),
+            "no snake_case keys on the wire, got {value}",
+        );
+    }
+
+    /// The alias is 8 hex characters, so two sessions can share one. Picking
+    /// either would point the chip at a conversation the reader did not name.
+    #[test]
+    fn resolve_reference_refuses_an_ambiguous_alias_instead_of_guessing() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        for (id, label) in [
+            ("abcd1234-1111-4111-8111-111111111111", "Kyoto"),
+            ("abcd1234-2222-4222-8222-222222222222", "Osaka"),
+        ] {
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES(?1,NULL,'codex',?2,'idle','estimated','direct',0)",
+                params![id, label],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_heads(session_id,restoration_mode,resume_eligibility,updated_at) VALUES(?1,'fresh','fresh','now')",
+                params![id],
+            )
+            .unwrap();
+        }
+        assert_eq!(wire(&db, "brio_abcd1234"), json!({ "kind": "unknown", "authorized": false }));
+        // An unambiguous alias still resolves, and to the right one.
+        let only = wire(&db, "abcd1234-2222-4222-8222-222222222222");
+        assert_eq!(only["label"], "Osaka");
+    }
+
+    /// A chat that has not appended an entry yet has no `session_heads` row.
+    /// It is still a chat, and naming it must not be an error.
+    #[test]
+    fn resolve_reference_describes_a_chat_that_has_no_head_row_yet() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,depth) VALUES('55555555-5555-4555-8555-555555555555',NULL,'codex','Brand new','idle','estimated','direct',0)",
+            [],
+        )
+        .unwrap();
+        let value = wire(&db, "55555555-5555-4555-8555-555555555555");
+        assert_eq!(value["kind"], "session");
+        assert_eq!(value["label"], "Brand new");
+        assert_eq!(value["restorationMode"], "fresh");
+        assert_eq!(value["activeEntryId"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn resolve_reference_does_not_leak_existence() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let missing = wire(&db, "99999999-9999-4999-8999-999999999999");
+        let never_was = wire(&db, "deadbeef-dead-4ead-8ead-deaddeaddead");
+        assert_eq!(missing, json!({ "kind": "unknown", "authorized": false }));
+        assert_eq!(never_was, json!({ "kind": "unknown", "authorized": false }));
+    }
+
+    #[test]
+    fn resolve_reference_rejects_malformed_ids() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        for bad in ["", "   ", "brio_####", "@session:", "not an id!"] {
+            assert!(resolve_reference_records(&db, bad).is_err(), "{bad:?} must be rejected");
+        }
     }
 }
