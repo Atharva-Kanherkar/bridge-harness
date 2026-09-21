@@ -19,8 +19,15 @@ New protocol method `sessions/fork_session`:
     known harness names / non-empty model strings.
 - Creates a new session that is a **copy of the parent's branch prefix up to
   and including the fork point**:
-  - new `sessions` row: fresh UUID id, `parent_session_id` = parent,
-    `depth` = parent.depth + 1, `kind` inherited, harness/model inherited
+  - new `sessions` row: fresh UUID id, `kind` inherited, harness/model
+    inherited, and the conversation lineage in `fork_parent_session_id` /
+    `fork_parent_entry_id`
+  - the agent-tree columns are untouched: `parent_session_id` stays NULL and
+    `depth` stays the source's. A fork is a top-level chat, so it keeps the
+    delegation budget, the idle-runtime reclaim, the archive identity, and the
+    place in the sidebar that a `parent_session_id` would cost it
+  - a `new`-policy fork registers its checkout in `worktrees`, so it counts
+    against capacity and every reclaim path can find it
     (or overridden), `status='idle'`, `metric_source='estimated'`,
     `continuation_fidelity='projected_at_boundary'`, title = supplied or
     `Fork of <parent label>`;

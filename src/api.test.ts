@@ -72,7 +72,10 @@ describe("SQLite-shaped mock observability", () => {
     expect(created.snapshot.entries.every(entry => entry.sessionId === created.sessionId)).toBe(true);
     expect(created.snapshot.entries.every(entry => entry.providerEventId === null)).toBe(true);
     const fork = created.state.sessions.find(session => session.id === created.sessionId)!;
-    expect(fork).toMatchObject({ parentSessionId: "session-1", depth: 1, label: "Alternate path", restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", status: "idle", providerSessionId: null, activeTurnId: null });
+    // Independent means top-level: the fork keeps the agent-tree fields the
+    // source had (so it can still delegate, be reclaimed, and be archived on
+    // its own) and records where it came from in the fork fields.
+    expect(fork).toMatchObject({ parentSessionId: null, depth: 0, forkParentSessionId: "session-1", forkParentEntryId: "entry-5a", label: "Alternate path", restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", status: "idle", providerSessionId: null, activeTurnId: null });
     // The parent forest is untouched by the fork.
     const parent = await bridgeApi.sessionForest("session-1");
     expect(parent.entries).toHaveLength(17);

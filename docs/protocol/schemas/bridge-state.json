@@ -152,6 +152,19 @@
             "null"
           ]
         },
+        "forkParentEntryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forkParentSessionId": {
+          "description": "Conversation lineage, not agent lineage. A fork is a top-level chat: `parent_session_id` stays null and `depth` stays the source's, so these are what distinguishes a fork from a delegated worker.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "harness": {
           "allOf": [
             {
