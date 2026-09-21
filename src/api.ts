@@ -1966,8 +1966,13 @@ export const bridgeApi = {
       status: "idle",
       activeTurnId: null,
       providerSessionId: null,
-      parentSessionId: sessionId,
-      depth: (source.depth ?? 0) + 1,
+      // A fork is a top-level conversation, not a delegated worker: the
+      // agent-tree fields stay as the source had them and the lineage goes in
+      // the fork fields. Mirrors `fork_session_records`.
+      parentSessionId: null,
+      depth: source.depth ?? 0,
+      forkParentSessionId: sessionId,
+      forkParentEntryId: entryId,
       restorationMode: "checkpoint_restored",
       continuationFidelity: "projected_at_boundary",
     });
