@@ -49,6 +49,25 @@ export interface ToolCallDisplay {
   /** Everything else it produced. */
   output?: string;
   status: ToolStatus;
+  /**
+   * A harness-spawned nested subagent (issue #667): the model asked its own
+   * runtime to run a subagent, outside any Bridge delegation. Present only
+   * when the normalized tool shape carries a task-like payload (a `Task`
+   * tool name, or a collab-agent item type); never inferred from prose.
+   */
+  subagent?: SubagentFacet;
+}
+
+/**
+ * The task payload a nested subagent call carries: what it was asked to do
+ * (`prompt`), what it was called (`description`), and which agent was named
+ * (`agentType`). All three are provider vocabulary, read from the tool input
+ * bag — never from a harness id.
+ */
+export interface SubagentFacet {
+  agentType?: string;
+  description?: string;
+  prompt?: string;
 }
 
 /**
@@ -237,11 +256,46 @@ function readOutput(source: ToolCallSource, data: Record<string, unknown>): stri
   return body;
 }
 
+/**
+ * A harness-spawned nested subagent, read off the normalized tool shape.
+ *
+ * Recognized provider-neutrally: a `Task`-named tool (any casing, `name` or
+ * `tool`, top level or nested under the part's `state.input`), or a
+ * collab-agent item type. A `dynamicToolCall`/`mcpToolCall` is only claimed
+ * when it carries both a subagent-type field and a prompt field, so generic
+ * MCP tools never become subagent rows. An ACP `kind: "other"` without a task
+ * payload stays a generic tool row.
+ */
+function readSubagent(source: ToolCallSource, data: Record<string, unknown>): SubagentFacet | undefined {
+  const state = objectValue(data.state);
+  const input = { ...objectValue(data.input), ...objectValue(state.input) };
+  const name = (text(data.name) ?? text(data.tool) ?? "").toLowerCase();
+  const dataType = String(data.type ?? "");
+  const isTaskName = name === "task";
+  const isCollabAgent = dataType === "collabAgentToolCall";
+  const pickType = (bag: Record<string, unknown>): string | undefined =>
+    text(bag.subagent_type) ?? text(bag.subagentType) ?? text(bag.agent) ?? text(bag.agentType) ?? text(bag.mode);
+  const pickPrompt = (bag: Record<string, unknown>): string | undefined =>
+    text(bag.prompt) ?? text(bag.task) ?? text(bag.instructions) ?? text(bag.query);
+  const hasTypeField = pickType(input) ?? pickType(data);
+  const hasPromptField = pickPrompt(input) ?? pickPrompt(data);
+  const isTaskLikeDynamic = (dataType === "dynamicToolCall" || dataType === "mcpToolCall") && hasTypeField !== undefined && hasPromptField !== undefined;
+  if (!isTaskName && !isCollabAgent && !isTaskLikeDynamic) return undefined;
+  const toolName = text(data.name) ?? text(data.tool);
+  const agentType = pickType(input) ?? pickType(data);
+  const description = text(input.description) ?? text(input.taskName) ?? text(input.label) ?? text(input.summary)
+    ?? text(data.description) ?? (source.title && source.title !== toolName ? source.title : undefined);
+  const prompt = pickPrompt(input) ?? pickPrompt(data);
+  if (!agentType && !description && !prompt) return undefined;
+  return { agentType, description, prompt };
+}
+
 /** Read one tool call's display shape out of whatever the provider sent. */
 export function readToolCall(source: ToolCallSource): ToolCallDisplay {
   const data = source.data;
   const path = readPath(data);
   const output = readOutput(source, data);
+  const subagent = readSubagent(source, data);
   const common = {
     path,
     output,
@@ -250,6 +304,7 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     durationMs: numberValue(data.durationMs),
     exitCode: readExitCode(data),
     status: readStatus(source.status),
+    subagent,
   };
   const named = namedToolFacet(source, data);
   const command = named.command ?? (named.verb === "run" ? text(data.command) : undefined);
