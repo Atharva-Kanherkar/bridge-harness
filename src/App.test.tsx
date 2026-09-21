@@ -660,6 +660,32 @@ describe("the dock in the session view", () => {
     expect(container.querySelector("h1")!.textContent).toBe("New aside");
   });
 
+  it("rejects an unknown $harness inside a chat and preserves the draft", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    const createAside = vi.spyOn(bridgeApi, "createAsideChat");
+    const prepareTurn = vi.spyOn(bridgeApi, "prepareTurn");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "$hanress review this");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await settle(2);
+
+    expect(box.value).toBe("$hanress review this");
+    const alert = [...container.querySelectorAll('[role="alert"]')]
+      .find(element => element.textContent?.includes("Unknown harness $hanress"));
+    expect(alert?.textContent).toContain("Available harnesses:");
+    expect(createAside).not.toHaveBeenCalled();
+    expect(prepareTurn).not.toHaveBeenCalled();
+    createAside.mockRestore();
+    prepareTurn.mockRestore();
+  });
+
   // Contract: testing/fix-side-chat-model.md. A side chat begins on a resolved
   // model, not the bare adapter default. Opened from a Claude chat, a $codex
   // aside must start on Codex's Standard model (GPT Terra), where the old code

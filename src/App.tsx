@@ -10,7 +10,7 @@ import { appendFileMention, applyFileMention as insertFileMention, fileMentionQu
 import { findReferences, referenceAlias, referencePullText, type ReferenceChipModel } from "./referenceChip";
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
-import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
+import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
@@ -117,6 +117,19 @@ const CodePanel = lazy(() => import("./components/CodePanel").then(module => ({ 
 // a static import here would drag it into the startup bundle for everyone,
 // including sessions that never open a diff.
 const InlineFileEditor = lazy(() => import("./components/editor/InlineFileEditor").then(module => ({ default: module.InlineFileEditor })));
+
+type HarnessShortcutOpenResult =
+  | { kind: "notShortcut" }
+  | { kind: "opened" }
+  | { kind: "unknownHarness"; requested: string; availableHarnessIds: string[]; suggestion?: string }
+  | { kind: "unavailableHarness"; message: string };
+
+function harnessShortcutError(result: Exclude<HarnessShortcutOpenResult, { kind: "notShortcut" | "opened" }>): string {
+  if (result.kind === "unavailableHarness") return result.message;
+  const available = result.availableHarnessIds.map(id => `$${id}`).join(", ");
+  const suggestion = result.suggestion ? ` Did you mean $${result.suggestion}?` : "";
+  return `Unknown harness $${result.requested}.${suggestion} Available harnesses: ${available || "none"}.`;
+}
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
@@ -232,6 +245,7 @@ function AppContent() {
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [harnessShortcutIndex, setHarnessShortcutIndex] = useState(0);
   const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
+  const [harnessShortcutFailure, setHarnessShortcutFailure] = useState<string>();
   const [agentShortcutIndex, setAgentShortcutIndex] = useState(0);
   const [agentShortcutDismissed, setAgentShortcutDismissed] = useState(false);
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
@@ -1541,16 +1555,27 @@ function AppContent() {
   // session is open and starts a fresh direct chat pinned to that harness,
   // handing it the rest of the text as its first message — plus a projected
   // handoff brief of this conversation, so the question has its context.
-  // Returns whether the text was a shortcut at all, so the caller knows
-  // whether to fall back to its own normal send path.
-  async function openHarnessShortcut(text: string, alreadyLocked = false): Promise<boolean> {
+  // The discriminated result keeps a command-shaped typo distinct from normal
+  // chat text. Callers must consume unknown or unavailable harnesses without
+  // clearing the draft or falling through to a provider.
+  async function openHarnessShortcut(text: string, alreadyLocked = false): Promise<HarnessShortcutOpenResult> {
     const shortcut = parseHarnessShortcut(text);
-    if (!shortcut) return false;
+    if (!shortcut) return { kind: "notShortcut" };
     const adapter = adapters.find(item => item.id.toLowerCase() === shortcut.harnessId.toLowerCase());
-    if (!adapter) return false;
+    if (!adapter) {
+      const availableHarnessIds = adapters.filter(item => item.available).map(item => item.id);
+      return {
+        kind: "unknownHarness",
+        requested: shortcut.harnessId,
+        availableHarnessIds,
+        suggestion: closestHarnessShortcut(shortcut.harnessId, availableHarnessIds),
+      };
+    }
     if (!adapter.available) {
-      setError(`${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`);
-      return true;
+      return {
+        kind: "unavailableHarness",
+        message: `${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`,
+      };
     }
     // Inside a conversation the shortcut is a delegation the user makes, not a
     // navigation: the new agent opens as an aside floating over this chat, and
@@ -1558,10 +1583,10 @@ function AppContent() {
     // still becomes the new chat.
     if (session) {
       await openAside(adapter, shortcut.rest, session.id);
-      return true;
+      return { kind: "opened" };
     }
     await openNewChat(shortcut.rest, adapter, alreadyLocked);
-    return true;
+    return { kind: "opened" };
   }
 
   // Create the aside session, hand it the projected brief of the conversation
@@ -1669,7 +1694,13 @@ function AppContent() {
     if (newChatPendingRef.current) return false;
     newChatPendingRef.current = true;
     try {
-      if (text && initialAttachments.length === 0 && await openHarnessShortcut(text, true)) return false;
+      if (text && initialAttachments.length === 0) {
+        const shortcut = await openHarnessShortcut(text, true);
+        if (shortcut.kind !== "notShortcut") {
+          setHarnessShortcutFailure(shortcut.kind === "opened" ? undefined : harnessShortcutError(shortcut));
+          return false;
+        }
+      }
       // A bare repo URL or "owner/repo" typed into the welcome composer is a
       // project to open, not a chat message — resolve and land in it directly
       // instead of making the user go through a separate "add a project" flow.
@@ -2019,7 +2050,16 @@ function AppContent() {
     // session like any other message.
     if (submittedText && sentAttachments.length === 0) {
       try {
-        if (await openHarnessShortcut(submittedText)) { setComposer(""); return; }
+        const shortcut = await openHarnessShortcut(submittedText);
+        if (shortcut.kind !== "notShortcut") {
+          if (shortcut.kind === "opened") {
+            setHarnessShortcutFailure(undefined);
+            setComposer("");
+          } else {
+            setHarnessShortcutFailure(harnessShortcutError(shortcut));
+          }
+          return;
+        }
       } catch {
         // The aside lifecycle owns the inline recovery state. Keep the source
         // draft untouched so Enter is also a valid retry path.
@@ -2825,7 +2865,7 @@ function AppContent() {
                   <ComposerPill
                     layout="dock"
                     value={composer}
-                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); refreshReferences(value); }}
+                    onChange={value => { setComposer(value); setHarnessShortcutFailure(undefined); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); refreshReferences(value); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     onPaste={handleComposerPaste}
@@ -2872,6 +2912,7 @@ function AppContent() {
                       onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
                     />}
                   />
+                  {harnessShortcutFailure && <p role="alert" className="mx-4 mt-2 text-[11px] text-destructive sm:mx-6">{harnessShortcutFailure}</p>}
                 </div>}
               </div>
             </>
@@ -2970,6 +3011,8 @@ function AppContent() {
           // held on the draft (#350), created on submit — not started immediately.
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
+        harnessShortcutFailure={harnessShortcutFailure}
+        onDraftChange={() => setHarnessShortcutFailure(undefined)}
         onNewWorkspace={() => void createWorkspaceFromFolder()}
         onHealthChange={invalidateHealth}
       />}
@@ -3093,7 +3136,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -3103,6 +3146,8 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   busy: boolean;
   canStartChat: boolean;
   onStartChat: (text?: string, attachments?: ComposerAttachment[]) => Promise<boolean>;
+  harnessShortcutFailure?: string;
+  onDraftChange: () => void;
   onNewWorkspace: () => void;
   onHealthChange: () => void;
   workspaces: Workspace[];
@@ -3175,7 +3220,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
     <ComposerPill
       layout="hero"
       value={draft}
-      onChange={setDraft}
+      onChange={value => { setDraft(value); onDraftChange(); }}
       onSubmit={submit}
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
       onPaste={handlePaste}
@@ -3208,7 +3253,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
         onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
       /> : undefined}
     />
-    {composerError && <p className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError}</p>}
+    {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
       <span>{greeting.hint}</span>
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>

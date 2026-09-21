@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { bridgeApi } from "./api";
 
 // `$harness message` is a shortcut typed into the composer, not a feature
 // with its own button — so it's only trustworthy exercised through the real
@@ -89,5 +90,20 @@ describe("the $harness composer shortcut inside the app", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
 
     expect(container.textContent).toMatch(/\$5 is cheaper than I expected/);
+  });
+
+  it("rejects an unknown alphabetic harness on Welcome and keeps the draft", async () => {
+    const composer = composerField()!;
+    const createChat = vi.spyOn(bridgeApi, "createChat");
+    await type(composer, "$hanress review this");
+    await act(async () => pressEnter(composer));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
+
+    expect(composer.value).toBe("$hanress review this");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Unknown harness $hanress");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("$codex");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("$claude");
+    expect(createChat).not.toHaveBeenCalled();
+    createChat.mockRestore();
   });
 });
