@@ -414,7 +414,7 @@ impl BridgeCore {
             let branch = format!("bridge/fork/{id_hint}");
             git::validate_repo(&repo)?;
             git::create_worktree(&repo, &path, &branch)?;
-            Some((path, repo))
+            Some(ForkWorktree { path, branch, repo_root: repo })
         } else {
             None
         };
@@ -427,13 +427,13 @@ impl BridgeCore {
             harness,
             model,
             worktree_policy,
-            worktree_path.as_ref().map(|(path, _)| path.as_path()),
+            worktree_path.as_ref(),
         ) {
             Ok(id) => id,
             Err(error) => {
                 drop(db);
-                if let Some((path, repo)) = worktree_path {
-                    let _ = git::remove_worktree(&repo, &path);
+                if let Some(worktree) = worktree_path {
+                    let _ = git::remove_worktree(&worktree.repo_root, &worktree.path);
                 }
                 return Err(error);
             }
@@ -1416,6 +1416,14 @@ fn chat_label(title: Option<&str>) -> String {
         .to_string()
 }
 
+/// A checkout cut for a fork, carried from the Git half of the operation into
+/// the durable half so the inventory row and the session row commit together.
+pub(crate) struct ForkWorktree {
+    pub path: PathBuf,
+    pub branch: String,
+    pub repo_root: PathBuf,
+}
+
 /// A short, greppable id fragment for fork branches and worktree paths.
 fn short_id() -> String {
     Uuid::new_v4().to_string().chars().take(8).collect()
@@ -1743,21 +1751,16 @@ pub(crate) fn fork_session_records(
     harness: Option<&Harness>,
     model: Option<&str>,
     worktree_policy: &str,
-    worktree_path: Option<&Path>,
+    worktree: Option<&ForkWorktree>,
 ) -> Result<String, BridgeError> {
     if !matches!(worktree_policy, "shared" | "new") {
         return Err(BridgeError::Invalid(format!(
             "Unsupported worktree policy {worktree_policy:?}; expected \"shared\" or \"new\""
         )));
     }
-    if worktree_policy == "new" && worktree_path.is_none() {
+    if (worktree_policy == "new") != worktree.is_some() {
         return Err(BridgeError::Invalid(
-            "Worktree policy \"new\" requires a prepared worktree path".into(),
-        ));
-    }
-    if (worktree_policy == "shared") != worktree_path.is_none() {
-        return Err(BridgeError::Invalid(
-            "Worktree path must accompany exactly the \"new\" policy".into(),
+            "A prepared worktree must accompany exactly the \"new\" policy".into(),
         ));
     }
     let transaction = db.unchecked_transaction()?;
@@ -1820,13 +1823,22 @@ pub(crate) fn fork_session_records(
             parent_title.as_deref().unwrap_or("session")
         )),
     ));
-    let cwd = match worktree_path {
-        Some(path) => Some(path.to_string_lossy().into_owned()),
+    let cwd = match worktree {
+        Some(worktree) => Some(worktree.path.to_string_lossy().into_owned()),
         None => cwd,
     };
+    // A fork is a conversation-tree relation, not an agent-tree one. Writing
+    // it into `parent_session_id`/`depth` would file the fork as a delegated
+    // worker: the delegation depth gate (`policy::max_depth`, default 1) would
+    // refuse every worker it tried to spawn, `runtime_budget::maintain` would
+    // never release its idle provider process, `list_archived_chats` would
+    // sweep it under its source, and the sidebar — which excludes anything
+    // with a `parent_session_id` so workers stay out of the chat list — would
+    // hide it entirely. So the fork stays top-level and records its origin in
+    // its own columns.
     transaction.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,parent_session_id,continuation_fidelity,fork_parent_entry_id,fork_worktree_policy)
-         VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,?10,'projected_at_boundary',?11,?12)",
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,parent_session_id,continuation_fidelity,fork_parent_session_id,fork_parent_entry_id,fork_worktree_policy)
+         VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,NULL,'projected_at_boundary',?10,?11,?12)",
         params![
             id,
             parent_workspace_id,
@@ -1836,7 +1848,7 @@ pub(crate) fn fork_session_records(
             kind,
             title,
             cwd,
-            parent_depth + 1,
+            parent_depth,
             session_id,
             entry_id,
             worktree_policy,
@@ -1887,6 +1899,24 @@ pub(crate) fn fork_session_records(
             chrono::Utc::now().to_rfc3339(),
         ],
     )?;
+    if let Some(worktree) = worktree {
+        // Same class of leak the orchestrator path already closed: a checkout
+        // named only by `sessions.cwd` is invisible to capacity accounting and
+        // to every reclaim path, so nothing could ever find it again. Give it
+        // an owned inventory row in the transaction that creates its session.
+        crate::worktree_registry::register(
+            &transaction,
+            &crate::worktree_registry::NewWorktree {
+                kind: crate::worktree_registry::KIND_ORCHESTRATOR.to_owned(),
+                repo_root: worktree.repo_root.to_string_lossy().into_owned(),
+                path: worktree.path.to_string_lossy().into_owned(),
+                branch: Some(worktree.branch.clone()),
+                owner_session_id: Some(id.clone()),
+                owner_workspace_id: parent_workspace_id.clone(),
+                base_commit: None,
+            },
+        )?;
+    }
     store::event(
         &transaction,
         "session-forest",
@@ -4766,7 +4796,7 @@ mod fork_tests {
         (root.id, checkpoint.id, fork_point.id, leaf.id)
     }
 
-    fn fork_ok(db: &Connection, entry: &str, policy: &str, worktree: Option<&Path>) -> String {
+    fn fork_ok(db: &Connection, entry: &str, policy: &str, worktree: Option<&ForkWorktree>) -> String {
         fork_session_records(db, "parent", entry, None, None, None, policy, worktree).unwrap()
     }
 
@@ -4791,9 +4821,9 @@ mod fork_tests {
         assert_eq!(head.resume_eligibility, ResumeEligibility::CheckpointRestored);
         let copied_checkpoint = entries[1].clone();
         assert_eq!(head.latest_checkpoint_entry_id.as_deref(), Some(copied_checkpoint.id.as_str()));
-        let row: (Option<String>, i64, String, String, Option<String>, String) = db
+        let row: (Option<String>, i64, String, String, Option<String>, Option<String>, String) = db
             .query_row(
-                "SELECT parent_session_id,depth,kind,continuation_fidelity,fork_parent_entry_id,fork_worktree_policy FROM sessions WHERE id=?1",
+                "SELECT parent_session_id,depth,kind,continuation_fidelity,fork_parent_session_id,fork_parent_entry_id,fork_worktree_policy FROM sessions WHERE id=?1",
                 params![id],
                 |row| {
                     Ok((
@@ -4803,23 +4833,98 @@ mod fork_tests {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
             .unwrap();
+        // The fork is top-level: the agent-tree columns stay exactly as the
+        // source had them, and the lineage lives in the fork columns.
         assert_eq!(
             row,
             (
-                Some("parent".into()),
-                1,
+                None,
+                0,
                 "direct".into(),
                 "projected_at_boundary".into(),
+                Some("parent".into()),
                 Some(fork_point.clone()),
                 "shared".into(),
             )
         );
         // The untouched remaining branch of the parent is not part of the fork.
         assert!(!store::session_entries(&db, &id).unwrap().iter().any(|entry| entry.id == leaf));
+    }
+
+    /// A fork is a conversation, not a delegated worker. Every one of these
+    /// gates reads an agent-tree column, and each was a real regression while
+    /// the fork wrote its lineage into `parent_session_id`/`depth`.
+    #[test]
+    fn fork_stays_out_of_the_agent_tree() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let (_root, _checkpoint, fork_point, _leaf) = seed_forkable_chat(&db);
+        let fork = fork_ok(&db, &fork_point, "shared", None);
+
+        // 1. The delegation depth gate: a fork must be able to spawn workers
+        //    exactly as freely as the chat it came from.
+        let depth: i64 = db
+            .query_row("SELECT depth FROM sessions WHERE id=?1", params![fork], |row| row.get(0))
+            .unwrap();
+        assert_eq!(depth, 0, "a fork inherits the source's depth, never depth + 1");
+        assert!(
+            depth < crate::delegation::DEFAULT_MAX_DEPTH,
+            "a fork must sit below the delegation depth limit like any top-level chat",
+        );
+
+        // 2. `runtime_budget::maintain` only reclaims idle provider processes
+        //    for parentless direct/orchestrator chats.
+        let releasable: bool = db
+            .query_row(
+                "SELECT parent_session_id IS NULL AND kind IN ('direct','orchestrator')
+                 AND status IN ('ready','idle','stopped') AND active_turn_id IS NULL
+                 FROM sessions WHERE id=?1",
+                params![fork],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(releasable, "a fork's idle provider process must be reclaimable");
+
+        // 3. `list_archived_chats` walks `parent_session_id` as the family
+        //    tree, so a fork must not hide under the chat it forked from.
+        db.execute("UPDATE sessions SET archived_at='now' WHERE id IN ('parent',?1)", params![fork])
+            .unwrap();
+        let roots: Vec<String> = db
+            .prepare(
+                "WITH RECURSIVE family(root_id,id) AS (
+                     SELECT id,id FROM sessions WHERE archived_at IS NOT NULL
+                     UNION
+                     SELECT f.root_id,s.id FROM sessions s JOIN family f ON s.parent_session_id=f.id
+                 )
+                 SELECT s.id FROM sessions s WHERE s.archived_at IS NOT NULL
+                   AND NOT EXISTS(SELECT 1 FROM family f WHERE f.id=s.id AND f.root_id<>s.id)",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(roots.contains(&fork), "a fork must archive as its own conversation");
+    }
+
+    /// The lineage the UI needs has to survive to the row the client reads —
+    /// otherwise the sidebar cannot tell a fork from any other chat.
+    #[test]
+    fn fork_lineage_reaches_the_client_session_row() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let (_root, _checkpoint, fork_point, _leaf) = seed_forkable_chat(&db);
+        let fork = fork_ok(&db, &fork_point, "shared", None);
+        let state = store::state(&db).unwrap();
+        let row = state.sessions.iter().find(|session| session.id == fork).expect("fork is a session");
+        assert_eq!(row.fork_parent_session_id.as_deref(), Some("parent"));
+        assert_eq!(row.fork_parent_entry_id.as_deref(), Some(fork_point.as_str()));
+        assert_eq!(row.parent_session_id, None, "a fork is not a worker");
+        let source = state.sessions.iter().find(|session| session.id == "parent").unwrap();
+        assert_eq!(source.fork_parent_session_id, None, "the source is not itself a fork");
     }
 
     #[test]
@@ -4999,17 +5104,42 @@ mod fork_tests {
             .fork_session("parent", &fork_point.id, None, None, None, "new")
             .unwrap();
         assert_eq!(fidelity, "projected_at_boundary");
-        let (cwd, policy): (Option<String>, String) = core
+        let (fork_id, cwd, policy): (String, Option<String>, String) = core
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT cwd,fork_worktree_policy FROM sessions WHERE parent_session_id='parent'",
+                "SELECT id,cwd,fork_worktree_policy FROM sessions WHERE fork_parent_session_id='parent'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
+        // The checkout must be in the inventory, or it counts against no
+        // capacity budget and no reclaim path can ever find it again.
+        let registered: (String, Option<String>) = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT path,branch FROM worktrees WHERE owner_session_id=?1",
+                params![fork_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the fork's worktree must be registered");
         drop(core);
+        // The registry stores the canonical path; on macOS that resolves the
+        // /var -> /private/var symlink, so compare canonicalized forms.
+        let canonical = |path: &str| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        assert_eq!(
+            canonical(&registered.0),
+            canonical(cwd.as_deref().unwrap()),
+            "the registry names the fork's checkout",
+        );
+        assert!(
+            registered.1.as_deref().is_some_and(|branch| branch.starts_with("bridge/fork/")),
+            "the registry records the fork branch, got {:?}",
+            registered.1,
+        );
         assert_eq!(policy, "new", "the session must record the new-worktree policy");
         let cwd_owned = cwd.unwrap();
         let path = Path::new(&cwd_owned);

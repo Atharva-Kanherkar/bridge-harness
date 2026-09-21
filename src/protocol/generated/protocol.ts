@@ -1876,6 +1876,8 @@ export interface Session {
   depth?: JsSafeI64 | null;
   effort?: string | null;
   endedAt?: string | null;
+  forkParentEntryId?: string | null;
+  forkParentSessionId?: string | null;
   harness: StoredHarnessId;
   id: string;
   kind: string;

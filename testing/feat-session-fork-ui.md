@@ -81,3 +81,15 @@ N/A — desktop app; covered by the component tests above and the manual pass.
 Manual pass (documented for the reviewer): `bun run tauri dev`, open a chat,
 hover a message → Fork from here → dialog shows both policies → share → the
 fork opens; sidebar shows "forked from"; rewind on a leaf asks and rewinds.
+
+## Fork rows in the session rail
+
+- A fork is identified by `forkParentSessionId`, never by `parentSessionId`:
+  the chat list filters out every session that has a `parentSessionId` so
+  delegated workers stay out of it, so a fork marked that way would vanish.
+- A fork row keeps its status dot and relative time; the "forked from <source>"
+  breadcrumb is appended to that line rather than replacing it.
+- The jump-to-source control is a sibling of the row button, not a descendant:
+  a `<button>` inside a `<button>` is invalid HTML.
+- End-to-end: forking from the transcript adds a row to the rail, and the fork
+  is still reachable there after navigating to another chat.

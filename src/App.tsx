@@ -2723,7 +2723,9 @@ function AppContent() {
                     setForkDraft({ sessionId: snapshotSessionId, entryId });
                   }}
                   onRewindEntry={(snapshotSessionId, entryId) => {
-                    if (window.confirm(`Rewind to this message? Everything after ${entryId} becomes inactive — no files are changed.`)) {
+                    // Naming the entry id here told the reader nothing — it is
+                    // a uuid. Describe the effect instead.
+                    if (window.confirm("Rewind to this message? Everything after it becomes inactive. Your history is kept and no files are changed.")) {
                       void rewindSessionEntry(snapshotSessionId, entryId);
                     }
                   }}

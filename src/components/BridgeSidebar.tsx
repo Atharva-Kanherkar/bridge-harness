@@ -94,28 +94,18 @@ function ChatRow({
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
-        {forkLabel ? (
-          <span className="flex min-w-0 items-center gap-1 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
+        {/* The fork origin is extra context, not a replacement for the status
+            line: a fork still has to show whether it is working and when it
+            last moved, like any other chat. */}
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
+          {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
+          {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+          {forkLabel && <>
+            {(status || time) && <span aria-hidden="true">·</span>}
             <GitFork size={9} strokeWidth={1.6} className="shrink-0 text-faint" aria-hidden="true" />
             <span className="truncate">forked from {forkLabel}</span>
-            {onJumpToParent && (
-              <button
-                type="button"
-                onClick={event => { event.stopPropagation(); onJumpToParent(); }}
-                title={`Jump to ${forkLabel}`}
-                aria-label={`Jump to parent ${forkLabel}`}
-                className="ml-auto shrink-0 rounded px-1 text-faint underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:opacity-100"
-              >
-                jump
-              </button>
-            )}
-          </span>
-        ) : (
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
-            {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
-            {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
-          </span>
-        )}
+          </>}
+        </span>
       </span>
     </button>
     {/* Revealed on hover or keyboard focus: the copy-id button, then the
@@ -130,6 +120,20 @@ function ChatRow({
     >
       <Copy size={12} strokeWidth={1.7} aria-hidden="true" />
     </button>
+    {/* Sibling of the row button, never a descendant of it: a <button> inside
+        a <button> is invalid HTML and browsers treat the inner control
+        unpredictably. */}
+    {onJumpToParent && forkLabel && (
+      <button
+        type="button"
+        onClick={event => { event.stopPropagation(); onJumpToParent(); }}
+        title={`Jump to ${forkLabel}`}
+        aria-label={`Jump to parent ${forkLabel}`}
+        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+      >
+        <GitFork size={12} strokeWidth={1.7} aria-hidden="true" />
+      </button>
+    )}
     {onArchive && (
       <button
         type="button"
@@ -684,7 +688,10 @@ export function BridgeSidebar({
                   />
                 )}
                 {rows.map(chat => {
-                const parent = chat.parentSessionId ? chats.find(candidate => candidate.id === chat.parentSessionId) : undefined;
+                // `forkParentSessionId`, not `parentSessionId`: the latter
+                // names a delegated worker, and workers never reach this list.
+                const forkedFrom = chat.forkParentSessionId;
+                const source = forkedFrom ? chats.find(candidate => candidate.id === forkedFrom) : undefined;
                 return (
                   <ChatRow
                     key={chat.id}
@@ -694,8 +701,8 @@ export function BridgeSidebar({
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
-                    forkLabel={chat.parentSessionId ? parent?.label ?? "session" : undefined}
-                    onJumpToParent={chat.parentSessionId ? () => onOpenSession(chat.parentSessionId!) : undefined}
+                    forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
+                    onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                   />
                 );
               })}
