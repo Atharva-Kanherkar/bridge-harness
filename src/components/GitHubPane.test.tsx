@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import { GitHubPane } from "./GitHubPane";
 import type { GithubPullRequestResult, GithubStatusResult } from "../protocol/generated/protocol";
+import type { GithubLinkView } from "../githubLinks";
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
@@ -67,6 +68,7 @@ const type = async (field: HTMLInputElement | HTMLTextAreaElement, value: string
   Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(field, value);
   await act(async () => { field.dispatchEvent(new Event("input", { bubbles: true })); await flush(); });
 };
+const exactButton = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.trim() === text) as HTMLButtonElement;
 const buttonByText = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.includes(text)) as HTMLButtonElement;
 
 afterEach(async () => {
@@ -356,6 +358,10 @@ describe("GitHubPane", () => {
     await click(buttonByText("Review"));
     expect(host!.textContent).toContain("RUN REVIEW WITH");
     expect(review).not.toHaveBeenCalled();
+    // OpenCode cannot review read-only; the menu says what it does instead.
+    const opencode = [...host!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.includes("OpenCode"))!;
+    expect(opencode.textContent).toContain("isolated worktree, needs approval");
+    expect([...host!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.startsWith("Codex"))!.textContent).toBe("Codex");
 
     await click(buttonByText("Codex"));
     expect(review).toHaveBeenCalledWith("w", 1, "codex", "sess-1");
@@ -636,6 +642,85 @@ describe("GitHubPane", () => {
     expect(buttonByText("Reopen")).toBeDefined();
   });
 
+  // The bug this replaces: a folder with no GitHub remote failed all three
+  // reads and the pane printed the raw resolution error three ways.
+  it("offers Connect instead of a raw resolution error when no repository resolves", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    const list = vi.spyOn(bridgeApi, "githubPullRequests").mockRejectedValue(new Error("could not resolve a GitHub repository for /Users/a/animevocab: fatal: not a git repository"));
+    const issues = vi.spyOn(bridgeApi, "githubIssues").mockRejectedValue(new Error("could not resolve a GitHub repository"));
+    await mount();
+
+    expect(host!.textContent).toContain("No GitHub repository connected");
+    expect(host!.textContent).not.toContain("fatal: not a git repository");
+    expect(host!.textContent).not.toContain("could not resolve");
+    // The reads that can only fail are never made.
+    expect(list).not.toHaveBeenCalled();
+    expect(issues).not.toHaveBeenCalled();
+  });
+
+  // Daemon-host mode throws the JSON envelope, not an Error. The pane used to
+  // print it verbatim — `{"code":1000,"kind":"invalid","message":"…"}`.
+  it("shows the human message from a daemon-host error envelope, not the envelope", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockRejectedValue(
+      '{"code":1000,"kind":"invalid","message":"GitHub CLI is unavailable"}',
+    );
+    await mount();
+
+    expect(host!.textContent).toContain("GitHub CLI is unavailable");
+    expect(host!.textContent).not.toContain('"code"');
+    expect(host!.textContent).not.toContain("kind");
+  });
+
+  it("connects the workspace to a pasted repository URL and reloads the surface", async () => {
+    const statusRead = vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    vi.spyOn(bridgeApi, "githubPullRequests").mockResolvedValue({ pullRequests: [summary] });
+    vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [] });
+    const connect = vi.spyOn(bridgeApi, "githubConnect").mockResolvedValue({
+      repository: { host: "github.com", owner: "bridge", name: "harness" }, initialized: true, replacedRemote: false,
+    });
+    await mount();
+
+    await click(buttonByText("Connect a repository"));
+    const field = document.body.querySelector<HTMLInputElement>('input[aria-label="Repository search or URL"]')!;
+    await type(field, "https://github.com/bridge/harness");
+    statusRead.mockResolvedValue(status);
+    await click(exactButton("Connect"));
+
+    expect(connect).toHaveBeenCalledWith("w", "https://github.com/bridge/harness");
+    expect(host!.textContent).toContain("Safe GitHub surface");
+  });
+
+  it("reports a failed repository search instead of claiming no matches", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    const search = vi.spyOn(bridgeApi, "searchGithubRepos").mockRejectedValue(new Error("GitHub CLI unavailable: gh is not installed"));
+    await mount();
+
+    await click(buttonByText("Connect a repository"));
+    const field = document.body.querySelector<HTMLInputElement>('input[aria-label="Repository search or URL"]')!;
+    await type(field, "harness");
+    await act(async () => { vi.advanceTimersByTime(300); await flush(); });
+
+    expect(search).toHaveBeenCalledWith("harness");
+    expect(document.body.textContent).toContain("GitHub CLI unavailable: gh is not installed");
+    // "No repository matches that" would send the user hunting for a repo that exists.
+    expect(document.body.textContent).not.toContain("No repository matches that");
+  });
+
+  it("keeps the connect failure on the dialog rather than dropping the user back to an error pane", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({ availability: { status: "available" }, repository: null });
+    vi.spyOn(bridgeApi, "githubConnect").mockRejectedValue(new Error("Enter a GitHub repository HTTPS or SSH URL"));
+    await mount();
+
+    await click(buttonByText("Connect a repository"));
+    const field = document.body.querySelector<HTMLInputElement>('input[aria-label="Repository search or URL"]')!;
+    await type(field, "https://github.com/bridge/harness");
+    await click(exactButton("Connect"));
+
+    expect(document.body.textContent).toContain("Enter a GitHub repository HTTPS or SSH URL");
+    expect(document.body.querySelector('input[aria-label="Repository search or URL"]')).not.toBeNull();
+  });
+
   it("refetches the list when a CI-finished event lands for this workspace", async () => {
     const list = mockReads();
     let fire: ((payload: { workspaceId: string; number: number }) => void) | undefined;
@@ -646,5 +731,119 @@ describe("GitHubPane", () => {
     expect(list.mock.calls.length).toBe(before);
     await act(async () => { fire?.({ workspaceId: "w", number: 1 }); await flush(); });
     expect(list.mock.calls.length).toBe(before + 1);
+  });
+});
+
+describe("GitHubPane deep links", () => {
+  const issues = () => {
+    vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [{
+      number: 17, title: "Stay inside Bridge", state: "open", author: { login: "atharva" }, labels: [],
+      createdAt: "now", updatedAt: "now", url: "https://example.test/issues/17",
+    }] });
+    return vi.spyOn(bridgeApi, "githubIssue").mockResolvedValue({ issue: {
+      summary: { number: 17, title: "Stay inside Bridge", state: "open", author: { login: "atharva" }, labels: [], createdAt: "now", updatedAt: "now", url: "https://example.test/issues/17" },
+      body: "Issue body", comments: [{ id: "i1", author: { login: "reviewer" }, body: "Issue comment", createdAt: "now", url: "https://example.test" }],
+    } });
+  };
+  const overview = () => vi.spyOn(bridgeApi, "githubRepository").mockResolvedValue({ nameWithOwner: "bridge/harness", description: "Repository overview", visibility: "PRIVATE", defaultBranch: "main", primaryLanguage: "Rust", url: "https://example.test", openIssues: 1, openPullRequests: 2, labels: [] });
+  const detailTabs = () => [...document.body.querySelectorAll<HTMLButtonElement>('[aria-label="Pull request detail"] button[role="tab"]')];
+  const selectedDetailTab = () => detailTabs().find(tab => tab.getAttribute("aria-selected") === "true")?.textContent;
+  const detailTab = (name: string) => detailTabs().find(tab => tab.textContent?.startsWith(name))!;
+
+  it("opens the pull request a pull intent names", async () => {
+    mockReads();
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "conversation" }, nonce: 1 } });
+
+    expect(host!.textContent).toContain("Main conversation comment");
+    expect(selectedDetailTab()).toContain("conversation");
+  });
+
+  it("selects the sub-tab a pull intent names", async () => {
+    mockReads();
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "changes" }, nonce: 1 } });
+    expect(selectedDetailTab()).toContain("changes");
+    expect(host!.querySelector('section[aria-label="Changed files"]')).not.toBeNull();
+
+    await act(async () => { root?.render(<GitHubPane workspaceId="w" workspaceBranch="main" onJumpToFile={() => undefined} intent={{ view: { kind: "pull", number: 1, tab: "checks" }, nonce: 2 }} />); await flush(); });
+    expect(selectedDetailTab()).toContain("checks");
+  });
+
+  it("opens the issue an issue intent names", async () => {
+    mockReads(); issues(); overview();
+    await mount({ intent: { view: { kind: "issue", number: 17 }, nonce: 1 } });
+
+    expect(host!.querySelector('button[aria-label="Issues"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(host!.textContent).toContain("Issue comment");
+  });
+
+  it("shows a list or overview intent with nothing selected", async () => {
+    mockReads(); issues(); overview();
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "conversation" }, nonce: 1 } });
+    expect(host!.textContent).toContain("Main conversation comment");
+
+    const render = async (view: GithubLinkView, nonce: number) => {
+      await act(async () => { root?.render(<GitHubPane workspaceId="w" workspaceBranch="main" onJumpToFile={() => undefined} intent={{ view, nonce }} />); await flush(); });
+    };
+
+    await render({ kind: "issues" }, 2);
+    expect(host!.querySelector('button[aria-label="Issues"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(host!.textContent).toContain("Stay inside Bridge");
+    expect(host!.textContent).not.toContain("Issue comment");
+
+    await render({ kind: "repository" }, 3);
+    expect(host!.textContent).toContain("Repository overview");
+
+    await render({ kind: "pulls" }, 4);
+    expect(host!.querySelector('button[aria-label="Pull requests"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(host!.textContent).not.toContain("Main conversation comment");
+  });
+
+  it("re-fires on a new nonce and stays put on a re-render", async () => {
+    mockReads();
+    const detailRead = vi.spyOn(bridgeApi, "githubPullRequest");
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "conversation" }, nonce: 1 } });
+    const opened = detailRead.mock.calls.length;
+
+    const render = async (nonce: number) => {
+      await act(async () => { root?.render(<GitHubPane workspaceId="w" workspaceBranch="main" onJumpToFile={() => undefined} intent={{ view: { kind: "pull", number: 1, tab: "conversation" }, nonce }} />); await flush(); });
+    };
+
+    await render(1);
+    expect(detailRead.mock.calls.length).toBe(opened);
+    await render(2);
+    expect(detailRead.mock.calls.length).toBe(opened + 1);
+  });
+
+  it("marks the affordances whose whole point is to leave the app", async () => {
+    mockReads();
+    // A patch past the pane's line cap is what puts the full-diff escape on
+    // screen; the diff it points at is the one the pane just refused to show.
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      files: [{ path: "src/api.ts", previousPath: null, status: "modified", additions: 700, deletions: 0, patch: ["@@ -1 +1 @@", ...Array.from({ length: 700 }, (_, line) => `+line ${line}`)].join("\n") }],
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+
+    const marked = (selector: string) => host!.querySelector(selector)?.hasAttribute("data-system-browser");
+    // Every "open on GitHub" affordance goes through one component, so the
+    // rule is asserted over all of them rather than anchor by anchor.
+    const allOpenOnGithubMarked = () => {
+      const anchors = [...host!.querySelectorAll('a[aria-label$="on GitHub"]')];
+      expect(anchors.length, "no open-on-GitHub affordance rendered").toBeGreaterThan(0);
+      return anchors.every(anchor => anchor.hasAttribute("data-system-browser"));
+    };
+    expect(marked('a[aria-label="Open #1 on GitHub"]')).toBe(true);
+    expect(allOpenOnGithubMarked()).toBe(true);
+
+    await click(detailTab("changes"));
+    expect(host!.textContent).toContain("view the full diff on GitHub");
+    expect(marked('a[href="https://example.test/pr/1/files"]')).toBe(true);
+
+    await click(detailTab("checks"));
+    // A log URL is often shaped `/pull/<n>/checks`, which the pane would
+    // otherwise swallow into a checks list holding no logs.
+    expect(marked('a[aria-label="Open logs for build on GitHub"]')).toBe(true);
+    expect(allOpenOnGithubMarked()).toBe(true);
   });
 });

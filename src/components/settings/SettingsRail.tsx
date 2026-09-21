@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 
 const SECTION_ICONS: Record<Section, Icon> = {
   appearance: Sun,
+  menuBar: SlidersHorizontal,
   permissions: ShieldCheck,
   composer: Keyboard,
   agents: Robot,

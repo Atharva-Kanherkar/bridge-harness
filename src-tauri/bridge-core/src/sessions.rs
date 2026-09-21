@@ -1471,12 +1471,42 @@ pub fn session_forest_snapshot_with_repository_state(
     )?;
     let workspace_id = workspace_id.unwrap_or_default();
     let config = crate::worker_settings::policy(db, &workspace_id)?;
+    // Non-entry fields ride in the same 64 MiB frame as the entries. Budget
+    // only the payloads and a heavy workspace (usage/queue rows) could push
+    // the assembled snapshot over the ceiling — Codex P1 on this fix. So load
+    // the non-entry side first, measure it, and tighten the entry budget to
+    // whatever the frame has left. Ordinary workspaces measure in kilobytes,
+    // leaving the default 24 MiB entry budget untouched.
+    let head = store::session_head(db, session_id)?;
+    let leaves = session_forest::SessionForest::new(db)
+        .branch_leaves(session_id)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let worker_leases = store::worker_leases(db, &workspace_id)?;
+    let worker_runtimes = store::worker_runtimes(db, &workspace_id)?;
+    let worker_queue = store::worker_queue_requests(db, &workspace_id)?;
+    let usage = store::usage_ledger(db, &workspace_id, None)?;
+    let reasons =
+        store::workspace_reason_events(db, &workspace_id, store::SNAPSHOT_REASON_WINDOW)?;
+    let completion = completion::latest_summary(db, session_id)?;
+    let overhead_bytes = serde_json::to_vec(&(
+        &head,
+        &leaves,
+        &worker_leases,
+        &worker_runtimes,
+        &worker_queue,
+        &usage,
+        &reasons,
+        &completion,
+    ))
+    .map(|bytes| bytes.len())
+    .unwrap_or(store::SNAPSHOT_PAYLOAD_BUDGET_BYTES);
+    let entry_budget = store::snapshot_entry_budget(overhead_bytes);
     // Bounded on purpose. The untrimmed read of a long chat reached 129 MB of
     // payload, which is both slow to parse twice (here and in the renderer)
     // and past the daemon's frame ceiling, so it failed the open outright.
-    let window = store::session_entry_window(db, session_id, store::SNAPSHOT_ENTRY_WINDOW)?;
+    let window =
+        store::session_entry_window_with_budget(db, session_id, store::SNAPSHOT_ENTRY_WINDOW, entry_budget)?;
     let entries = window.entries;
-    let head = store::session_head(db, session_id)?;
     let selected_state = head
         .as_ref()
         .and_then(|head| head.active_entry_id.as_deref())
@@ -1500,14 +1530,12 @@ pub fn session_forest_snapshot_with_repository_state(
         session_id: session_id.to_owned(),
         entries,
         head,
-        leaves: session_forest::SessionForest::new(db)
-            .branch_leaves(session_id)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
-        worker_leases: store::worker_leases(db, &workspace_id)?,
-        worker_runtimes: store::worker_runtimes(db, &workspace_id)?,
-        worker_queue: store::worker_queue_requests(db, &workspace_id)?,
-        usage: store::usage_ledger(db, &workspace_id, None)?,
-        reasons: store::workspace_reason_events(db, &workspace_id, store::SNAPSHOT_REASON_WINDOW)?,
+        leaves,
+        worker_leases,
+        worker_runtimes,
+        worker_queue,
+        usage,
+        reasons,
         policy_limits: PolicyLimits {
             max_workers_per_turn: config.max_workers_per_turn as i64,
             max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
@@ -1518,7 +1546,7 @@ pub fn session_forest_snapshot_with_repository_state(
             selected_state,
             current_state,
         },
-        completion: completion::latest_summary(db, session_id)?,
+        completion,
         entry_window: crate::model::SessionEntryWindowSummary {
             returned: entries_returned,
             total: window.total,

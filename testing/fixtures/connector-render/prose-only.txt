@@ -1,0 +1,2 @@
+I couldn't open that thread — the channel returned a not_in_channel error, so I
+have nothing to render a card from.

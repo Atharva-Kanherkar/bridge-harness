@@ -47,6 +47,8 @@ pub struct UsageSummaryRequest {
     #[serde(default)]
     pub workspace_id: Option<String>,
     pub include_imported: bool,
+    #[serde(default)]
+    pub include_dashboard: bool,
     /// Exact UTC bounds, required for hour resolution: inclusive start and
     /// exclusive end, at most 24 hours apart.
     #[serde(default)]
@@ -92,7 +94,7 @@ pub struct UsageBucket {
     pub cost_source: CostSource,
     pub records: i64,
     pub unpriced_records: i64,
-    pub sessions: i64,
+    pub sessions: Option<i64>,
 }
 
 /// A history importer's standing, read from `agent_usage_sources`.
@@ -100,6 +102,8 @@ pub struct UsageBucket {
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummarySource {
     pub id: String,
+    #[serde(default)]
+    pub origin: bridge_protocol::messages::UsageHistoryOrigin,
     pub agent: String,
     pub provider: String,
     pub coverage_state: String,
@@ -314,7 +318,7 @@ pub fn aggregate(
             cost_source: resolve_cost_source(&bucket),
             records: bucket.records,
             unpriced_records: bucket.unpriced_records,
-            sessions: bucket.sessions.len() as i64,
+            sessions: Some(bucket.sessions.len() as i64),
         })
         .collect())
 }
@@ -502,6 +506,7 @@ fn sources(db: &Connection) -> Result<Vec<UsageSummarySource>, BridgeError> {
     let rows = statement.query_map([], |row| {
         Ok(UsageSummarySource {
             id: row.get(0)?,
+            origin: Default::default(),
             agent: row.get(1)?,
             provider: row.get(2)?,
             coverage_state: row.get(3)?,
@@ -516,21 +521,35 @@ fn sources(db: &Connection) -> Result<Vec<UsageSummarySource>, BridgeError> {
 
 /// The `usage/summary` body.
 pub fn summarize(db: &Connection, request: &UsageSummaryRequest) -> Result<UsageSummary, BridgeError> {
+    summarize_excluding(db, request, None)
+}
+
+/// An account dashboard is an exclusive authority for its harness. Select it
+/// before aggregation so its local rows cannot inflate counts or totals.
+pub(crate) fn summarize_excluding(
+    db: &Connection,
+    request: &UsageSummaryRequest,
+    excluded_harness: Option<&str>,
+) -> Result<UsageSummary, BridgeError> {
     let started = Instant::now();
     let window = Window::parse(request)?;
     let bounds = window.coarse_bounds();
     let pricing = Pricing::load(db)?;
 
     let live = live_rows(db, request, bounds)?;
-    let (imported, native_sessions) = if request.include_imported {
+    let (mut imported, native_sessions) = if request.include_imported {
         imported_rows(db, bounds)?
     } else {
         (Vec::new(), HashSet::new())
     };
 
+    imported.retain(|row| Some(row.harness.as_str()) != excluded_harness);
     let mut duplicates_dropped = 0_i64;
     let mut inputs: Vec<UsageInput> = Vec::with_capacity(live.len() + imported.len());
     for row in live {
+        if Some(row.input.harness.as_str()) == excluded_harness {
+            continue;
+        }
         let covered = row
             .provider_session_id
             .as_deref()
@@ -575,6 +594,7 @@ mod tests {
             time_zone: zone.map(str::to_owned),
             workspace_id: None,
             include_imported: false,
+            include_dashboard: false,
             since_time: None,
             until_time: None,
         }
@@ -667,7 +687,7 @@ mod tests {
         assert_eq!(unpriced[0].unpriced_records, 2);
         assert_eq!(unpriced[0].totals.output_tokens, 20, "tokens still count");
         assert_eq!(unpriced[0].totals.reasoning_tokens, 10);
-        assert_eq!(unpriced[0].sessions, 2);
+        assert_eq!(unpriced[0].sessions, Some(2));
 
         // Only unpriced when nothing priced: one priced row lifts the bucket.
         let partly = aggregate(&window, &pricing, [
@@ -768,7 +788,7 @@ mod tests {
         assert_eq!(live_only.imported_records, 0);
         assert_eq!(live_only.buckets.len(), 1);
         assert_eq!(live_only.buckets[0].cost_microusd, 12_000);
-        assert_eq!(live_only.buckets[0].sessions, 2);
+        assert_eq!(live_only.buckets[0].sessions, Some(2));
         assert_eq!(live_only.pricing.status, "bundled");
         assert_eq!(live_only.sources.len(), 1);
 
@@ -793,7 +813,7 @@ mod tests {
         assert_eq!(bucket.cost_microusd, 7_000 + 5_000 + 6_000);
         assert_eq!(bucket.cost_source, CostSource::ProviderReported);
         assert_eq!(bucket.totals.cache_read_tokens, 100);
-        assert_eq!(bucket.sessions, 2, "live-alone plus native-1");
+        assert_eq!(bucket.sessions, Some(2), "live-alone plus native-1");
 
         request.workspace_id = Some("elsewhere".into());
         let scoped = summarize(&db, &request).unwrap();

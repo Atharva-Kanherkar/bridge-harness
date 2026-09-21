@@ -51,6 +51,13 @@ release_require_identity() {
   fi
 }
 
+release_require_updater_key() {
+  if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+    echo "release: TAURI_SIGNING_PRIVATE_KEY is required to sign updater artifacts." >&2
+    return 1
+  fi
+}
+
 release_notarize() {
   release_submission=$1
   release_result=$2

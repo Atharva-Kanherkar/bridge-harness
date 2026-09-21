@@ -1,5 +1,5 @@
 //! Bound retained idle provider processes across all harnesses. Active turns,
-//! approvals, workers, pending input and lifecycle operations are never victims.
+//! approvals, workers, pending results/input and lifecycle operations are never victims.
 //! History and provider session IDs remain on disk for the normal resume path.
 use crate::{
     adapters::ShutdownReason, events::CoreEvent, runtime::BridgeCore,
@@ -13,6 +13,17 @@ use std::{
 
 const MAX_IDLE_RUNTIMES: usize = 2;
 const IDLE_TTL: Duration = Duration::from_secs(120);
+
+fn can_release(db: &rusqlite::Connection, id: &str) -> bool {
+    db.query_row(
+        "SELECT parent_session_id IS NULL AND kind IN ('direct','orchestrator')
+         AND status IN ('ready','idle','stopped') AND active_turn_id IS NULL
+         AND NOT EXISTS(SELECT 1 FROM worker_runtime WHERE parent_session_id=sessions.id AND result_status='pending')
+         AND NOT EXISTS(SELECT 1 FROM durable_outbox WHERE destination='parent' AND event_type='worker.result' AND status='pending' AND json_extract(payload,'$.report.parent_session_id')=sessions.id)
+         AND NOT EXISTS(SELECT 1 FROM queued_session_input WHERE session_id=sessions.id AND state IN ('queued','claiming'))
+         FROM sessions WHERE id=?1", [id], |row| row.get::<_, bool>(0),
+    ).unwrap_or(false)
+}
 
 #[derive(Default)]
 pub(crate) struct IdleRuntimes {
@@ -56,11 +67,7 @@ impl IdleRuntimes {
                 return;
             };
             adapters.iter().filter_map(|(id, runtime)| {
-                let idle = db.query_row(
-                    "SELECT parent_session_id IS NULL AND kind IN ('direct','orchestrator')
-                     AND status IN ('ready','idle','stopped') AND active_turn_id IS NULL
-                     AND NOT EXISTS(SELECT 1 FROM queued_session_input WHERE session_id=sessions.id AND state IN ('queued','claiming'))
-                     FROM sessions WHERE id=?1", [id], |row| row.get::<_, bool>(0)).unwrap_or(false);
+                let idle = can_release(&db, id);
                 (idle && runtime.current_turn().lock().unwrap().is_none()).then(|| (id.clone(), runtime.process_id()))
             }).collect::<Vec<_>>()
         };
@@ -75,7 +82,7 @@ impl IdleRuntimes {
                 let Ok(mut adapters) = core.adapters.try_lock() else {
                     continue;
                 };
-                let still_idle = db.query_row("SELECT status IN ('ready','idle','stopped') AND active_turn_id IS NULL FROM sessions WHERE id=?1", [&id], |row| row.get::<_, bool>(0)).unwrap_or(false);
+                let still_idle = can_release(&db, &id);
                 if !still_idle {
                     continue;
                 }
@@ -202,6 +209,23 @@ mod tests {
         // Active/approval/startup sessions are absent from the eligible set.
         assert!(pool.candidates(&[], now + IDLE_TTL).is_empty());
         assert!(pool.seen.is_empty());
+    }
+
+    #[test]
+    fn a_parent_waiting_for_a_worker_or_result_is_not_idle_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(dir.path());
+        let db = core.db.lock().unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES('parent','codex','Parent','ready','reported','orchestrator')", []).unwrap();
+        assert!(can_release(&db, "parent"));
+        db.execute("INSERT INTO sessions(id,harness,label,status,metric_source,parent_session_id) VALUES('child','codex','Worker','working','reported','parent')", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at) VALUES('child','parent','working','research','key','pending','now')", []).unwrap();
+        assert!(!can_release(&db, "parent"));
+        db.execute("UPDATE worker_runtime SET result_status='reported' WHERE session_id='child'", []).unwrap();
+        db.execute("INSERT INTO durable_outbox(id,destination,event_type,payload,idempotency_key,status,next_attempt_at,created_at) VALUES('result','parent','worker.result','{\"report\":{\"parent_session_id\":\"parent\"}}','result','pending','now','now')", []).unwrap();
+        assert!(!can_release(&db, "parent"));
+        db.execute("UPDATE durable_outbox SET status='delivered' WHERE id='result'", []).unwrap();
+        assert!(can_release(&db, "parent"));
     }
     #[test]
     fn a_new_process_or_resumed_activity_restarts_the_idle_deadline() {

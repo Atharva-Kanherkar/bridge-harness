@@ -2,7 +2,11 @@
 # Required secrets: APPLE_CERTIFICATE (base64 Developer ID Application .p12),
 # APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY, and
 # APPLE_API_KEY_P8. APPLE_API_ISSUER is required for Team API keys; omit it for
-# Individual API keys. No artifact is published until all verification passes.
+# Individual API keys. Also required: TAURI_SIGNING_PRIVATE_KEY, to sign the
+# app updater artifact consumed by the in-app updater (the key has no
+# password); the matching public key is committed in
+# src-tauri/tauri.conf.json. No artifact is published until all verification
+# passes.
 name: Release macOS DMG
 
 on:
@@ -40,9 +44,10 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           missing=
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_P8; do
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_P8 TAURI_SIGNING_PRIVATE_KEY; do
             if [ -z "${!name}" ]; then
               missing="$missing $name"
             fi
@@ -84,15 +89,18 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/bridge-auth.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: sh scripts/release-dmg.sh
 
-      - name: Retain verified DMG and checksum
+      - name: Retain verified DMG and updater artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Bridge-macOS-verified
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/dmg/*.dmg.sha256
+            src-tauri/target/release/bundle/dmg/*.app.tar.gz
+            src-tauri/target/release/bundle/dmg/*.app.tar.gz.sig
           if-no-files-found: error
 
       # A manual run from a branch only retains a verified artifact. Publishing
@@ -109,8 +117,27 @@ jobs:
             *) exit 1 ;;
           esac
           dmg="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.dmg"
+          updater_tar="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.app.tar.gz"
+          updater_sig_value=$(cat "$updater_tar.sig")
+          pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          node -e '
+            const fs = require("fs");
+            const [, version, pubDate, sig, tarName, arch] = process.argv;
+            const manifest = {
+              version,
+              notes: "See CHANGELOG.md for changes.",
+              pub_date: pubDate,
+              platforms: {
+                [`darwin-${arch}`]: {
+                  signature: sig,
+                  url: `https://github.com/Atharva-Kanherkar/bridge-harness/releases/latest/download/${tarName}`,
+                },
+              },
+            };
+            fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2));
+          ' "$version" "$pub_date" "$updater_sig_value" "$(basename -- "$updater_tar")" "$arch"
           printf '%s\n' "Signed and notarized macOS release. See CHANGELOG.md for changes." "Claude requires Node 18 or later on PATH." > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$GITHUB_REF_NAME" "$dmg" "$dmg.sha256" --verify-tag --draft --title "Bridge v$version" --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release create "$GITHUB_REF_NAME" "$dmg" "$dmg.sha256" "$updater_tar" "$updater_tar.sig" latest.json --verify-tag --draft --title "Bridge v$version" --notes-file "$RUNNER_TEMP/release-notes.md"
           gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Remove temporary signing credentials

@@ -77,6 +77,16 @@ pub fn search(
     query: &str,
     limit: Option<u32>,
 ) -> Result<SearchSessionEntriesResult, BridgeError> {
+    search_page(db, session_id, query, limit, None)
+}
+
+pub fn search_page(
+    db: &Connection,
+    session_id: &str,
+    query: &str,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<SearchSessionEntriesResult, BridgeError> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return Err(BridgeError::Invalid(
@@ -92,6 +102,7 @@ pub fn search(
         return Err(BridgeError::Invalid("Chat session does not exist".into()));
     }
     let limit = resolve_limit(limit)?;
+    let offset = i64::from(offset.unwrap_or(0));
     let match_query = fts_match_query(query)?;
     let mut statement = db.prepare(
         "SELECT
@@ -106,10 +117,12 @@ pub fn search(
          WHERE session_entry_fts.session_id = ?1
            AND session_entry_fts MATCH ?2
          ORDER BY rank, e.sequence
-         LIMIT ?3",
+         LIMIT ?3 OFFSET ?4",
     )?;
-    let hits = statement
-        .query_map(params![session_id, match_query, limit], |row| {
+    // One more row than the page needs: whether another page exists is then a
+    // fact from the database, not the guess "this page came back full".
+    let mut hits = statement
+        .query_map(params![session_id, match_query, limit + 1, offset], |row| {
             let snippet: String = row.get::<_, Option<String>>(3)?.unwrap_or_default();
             let body: String = row.get::<_, Option<String>>(4)?.unwrap_or_default();
             let snippet = if snippet.trim().is_empty() {
@@ -126,10 +139,14 @@ pub fn search(
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    let has_more = hits.len() as i64 > limit;
+    hits.truncate(limit as usize);
     Ok(SearchSessionEntriesResult {
         session_id: session_id.to_owned(),
         query: query.trim().to_owned(),
         hits,
+        offset: offset as u32,
+        has_more,
     })
 }
 
@@ -229,6 +246,85 @@ mod tests {
 
     fn add_message(db: &Connection, session_id: &str, kind: &str, payload: serde_json::Value) {
         append_session_entry(db, session_id, None, kind, &payload, None, "eligible", None).unwrap();
+    }
+
+    #[test]
+    fn a_full_page_says_there_is_another_and_the_last_page_does_not() {
+        // "Did the page come back full?" is a guess that is wrong exactly when
+        // the total is a multiple of the page size, which is when a reader
+        // would be shown a Show more button leading to nothing.
+        let (_dir, db) = recall_db();
+        insert_chat(&db, "s", false);
+        for index in 0..7 {
+            add_message(&db, "s", "user.message", json!({"text": format!("migration {index}")}));
+        }
+
+        let first = search_page(&db, "s", "migration", Some(3), None).unwrap();
+        assert_eq!(first.hits.len(), 3);
+        assert_eq!(first.offset, 0);
+        assert!(first.has_more);
+
+        let last = search_page(&db, "s", "migration", Some(3), Some(6)).unwrap();
+        assert_eq!(last.hits.len(), 1);
+        assert_eq!(last.offset, 6);
+        assert!(!last.has_more, "the final page must not offer another");
+
+        // The exact-multiple case: three pages of three over nine hits.
+        add_message(&db, "s", "user.message", json!({"text":"migration 7"}));
+        add_message(&db, "s", "user.message", json!({"text":"migration 8"}));
+        let third = search_page(&db, "s", "migration", Some(3), Some(6)).unwrap();
+        assert_eq!(third.hits.len(), 3);
+        assert!(!third.has_more, "a full final page still has nothing after it");
+    }
+
+    #[test]
+    fn paging_walks_every_hit_exactly_once() {
+        let (_dir, db) = recall_db();
+        insert_chat(&db, "s", false);
+        for index in 0..10 {
+            add_message(&db, "s", "user.message", json!({"text": format!("parliament {index}")}));
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = search_page(&db, "s", "parliament", Some(4), Some(offset)).unwrap();
+            seen.extend(page.hits.iter().map(|hit| hit.entry_id.clone()));
+            if !page.has_more {
+                break;
+            }
+            offset += 4;
+        }
+        assert_eq!(seen.len(), 10);
+        let unique: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), 10, "a page boundary repeated or dropped a hit");
+    }
+
+    #[test]
+    fn an_offset_past_the_end_is_an_empty_final_page_not_an_error() {
+        let (_dir, db) = recall_db();
+        insert_chat(&db, "s", false);
+        add_message(&db, "s", "user.message", json!({"text":"only one"}));
+        let page = search_page(&db, "s", "one", Some(5), Some(50)).unwrap();
+        assert!(page.hits.is_empty());
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn hidden_control_entries_are_never_recall_hits() {
+        // Recording turn boundaries and usage widened the durable record; it
+        // must not have widened search. A reader searching their own words
+        // does not mean to find a token count.
+        let (_dir, db) = recall_db();
+        insert_chat(&db, "s", false);
+        append_session_entry(
+            &db, "s", None, "usage.updated", &json!({"text":"parliamentarian"}), None, "hidden", None,
+        )
+        .unwrap();
+        add_message(&db, "s", "user.message", json!({"text":"parliamentarian"}));
+
+        let found = search(&db, "s", "parliamentarian", None).unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].kind, "user.message");
     }
 
     #[test]

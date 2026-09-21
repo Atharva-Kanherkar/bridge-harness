@@ -21,10 +21,18 @@ pub struct SessionSupervisor;
 /// deserialized back into a typed `WorkerResult`.
 pub const REPOSITORY_EVIDENCE_KEY: &str = "_bridgeRepoEvidence";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReportedWorkerResult {
     pub parent_session_id: String,
     pub evidence_id: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct WorkerResultDelivery {
+    pub report: ReportedWorkerResult,
+    pub child_session_id: String,
+    pub result: WorkerResult,
+    pub repository: Option<serde_json::Value>,
 }
 
 impl SessionSupervisor {
@@ -292,11 +300,32 @@ impl SessionSupervisor {
             params![session_id, result.status.as_str(), now],
         )?;
         learning_router::record_worker_outcome(&transaction, session_id, result)?;
-        transaction.commit()?;
-        Ok(Some(ReportedWorkerResult {
+        let report = ReportedWorkerResult {
             parent_session_id,
             evidence_id: parent_entry.id,
-        }))
+        };
+        // A stored result is not a model delivery receipt. Commit the delivery
+        // obligation with the result so a crash or absent parent cannot lose it.
+        crate::store::enqueue_outbox(&transaction, &crate::model::OutboxMessage {
+            id: report.evidence_id.clone(),
+            destination: "parent".into(),
+            event_type: "worker.result".into(),
+            payload: serde_json::to_value(WorkerResultDelivery {
+                report: report.clone(),
+                child_session_id: session_id.to_owned(),
+                result: result.clone(),
+                repository: evidence.cloned(),
+            }).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            idempotency_key: format!("worker-result:{}", report.evidence_id),
+            status: "pending".into(),
+            attempt_count: 0,
+            next_attempt_at: now.clone(),
+            last_error: None,
+            created_at: now,
+            delivered_at: None,
+        })?;
+        transaction.commit()?;
+        Ok(Some(report))
     }
 
     pub fn worker_evidence(
@@ -664,6 +693,11 @@ mod tests {
         assert_eq!(evidence[0].evidence_id, reported.evidence_id);
         assert_eq!(evidence[0].child_session_id, "child");
         assert_eq!(evidence[0].result, result);
+        let pending: i64 = db.query_row(
+            "SELECT COUNT(*) FROM durable_outbox WHERE event_type='worker.result' AND status='pending' AND id=?1",
+            params![reported.evidence_id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(pending, 1, "storing the result must also persist its delivery obligation");
         let child_result_id = store::session_entries(&db, "child")
             .unwrap()
             .last()
@@ -676,6 +710,10 @@ mod tests {
             None
         );
         assert_eq!(store::outstanding_children(&db, "parent").unwrap(), 0);
+        let notifications: i64 = db.query_row(
+            "SELECT COUNT(*) FROM durable_outbox WHERE event_type='worker.result'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(notifications, 1, "duplicate reports must not duplicate delivery");
         assert_eq!(
             store::session_entries(&db, "child")
                 .unwrap()

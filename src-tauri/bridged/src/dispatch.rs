@@ -69,6 +69,30 @@ pub fn dispatch(
             let p: wire::GithubMergeConfigParams = decode(method, params)?;
             reply(api::github_merge_config(core, &p.workspace_id))
         }
+        MethodName::ConnectorList => {
+            let p: wire::ConnectorListParams = decode(method, params)?;
+            reply(api::connector_list(core, p.refresh))
+        }
+        MethodName::ConnectorInbox => {
+            let p: wire::ConnectorInboxParams = decode(method, params)?;
+            reply(api::connector_inbox(core, p.limit))
+        }
+        MethodName::ConnectorAct => {
+            let p: wire::ConnectorActParams = decode(method, params)?;
+            reply(api::connector_act(core, &p.item_key, p.action, p.approved))
+        }
+        MethodName::ConnectorSetSettings => {
+            let p: wire::ConnectorSetSettingsParams = decode(method, params)?;
+            reply(api::connector_set_settings(core, p.include_read_mentions))
+        }
+        MethodName::ConnectorDismiss => {
+            let p: wire::ConnectorDismissParams = decode(method, params)?;
+            reply(api::connector_dismiss(core, &p.item_key))
+        }
+        MethodName::ConnectorRefresh => {
+            let p: wire::ConnectorRefreshParams = decode(method, params)?;
+            reply(api::connector_refresh(core, &p.family))
+        }
         MethodName::GithubAct => {
             let p: wire::GithubActParams = decode(method, params)?;
             reply(api::github_act(core, &p.workspace_id, p.action, p.confirmed))
@@ -80,6 +104,10 @@ pub fn dispatch(
         MethodName::GithubCheckout => {
             let p: wire::GithubCheckoutParams = decode(method, params)?;
             reply(api::github_checkout(core, &p.workspace_id, p.number))
+        }
+        MethodName::GithubConnect => {
+            let p: wire::GithubConnectParams = decode(method, params)?;
+            reply(api::github_connect(core, &p.workspace_id, &p.remote_url))
         }
 
         MethodName::AddProject => {
@@ -265,6 +293,17 @@ pub fn dispatch(
                 &p.session_id,
                 &p.query,
                 p.limit,
+                p.offset,
+            ))
+        }
+        MethodName::ExportSessionTranscript => {
+            let p: wire::ExportSessionTranscriptParams = decode(method, params)?;
+            reply(api::export_session_transcript(
+                core,
+                &p.session_id,
+                p.scope,
+                p.include_hidden,
+                p.destination_path.as_deref(),
             ))
         }
         MethodName::SaveMemoryRecord => {
@@ -503,6 +542,11 @@ pub fn dispatch(
             let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
             reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
         }
+        MethodName::GetReviewerSettings => reply(api::get_reviewer_settings(core)),
+        MethodName::SaveReviewerSettings => {
+            let p: wire::SaveReviewerSettingsParams = decode(method, params)?;
+            reply(api::save_reviewer_settings(core, &p.settings))
+        }
         MethodName::UnarchiveChat => {
             let p: wire::UnarchiveChatParams = decode(method, params)?;
             reply(api::unarchive_chat(core, &p.session_id))
@@ -544,6 +588,20 @@ pub fn dispatch(
         }
         MethodName::GetMeterSnapshot => reply(Ok(api::meter_snapshot())),
         MethodName::RefreshMeter => reply(api::refresh_meter(core)),
+        MethodName::SaveOpencodeUsageSession => {
+            let p: wire::SaveOpencodeUsageSessionParams = decode(method, params)?;
+            reply(api::save_opencode_usage_session(core, &p.cookie, &p.workspace))
+        }
+        MethodName::GetProviderUsageOverviews => reply(api::get_provider_usage_overviews(core)),
+        MethodName::RefreshProviderUsageOverviews => reply(api::refresh_provider_usage_overviews(core)),
+        MethodName::RefreshProviderUsageOverviewsInteractive => reply(api::refresh_provider_usage_overviews_interactive(core)),
+        MethodName::GetUsageOverview => reply(api::get_usage_overview(core)),
+        MethodName::RefreshUsageOverview => reply(api::refresh_usage_overview(core)),
+        MethodName::GetMenuBarSettings => reply(api::get_menu_bar_settings(core)),
+        MethodName::SaveMenuBarSettings => {
+            let p: wire::SaveMenuBarSettingsParams = decode(method, params)?;
+            reply(api::save_menu_bar_settings(core, &p.settings))
+        }
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

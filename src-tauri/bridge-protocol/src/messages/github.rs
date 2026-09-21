@@ -485,6 +485,31 @@ pub struct GithubCheckoutResult {
     pub reused: bool,
 }
 
+// --- connecting a workspace to a GitHub repository -------------------------
+
+/// Point a workspace at a GitHub repository. The pane offers this instead of
+/// reporting a resolution failure: a folder that is not a git repository yet,
+/// or one with no GitHub remote, is a setup step rather than an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubConnectParams {
+    pub workspace_id: String,
+    /// A GitHub HTTPS or SSH remote URL. Validated before any git call runs.
+    pub remote_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubConnectResult {
+    /// The repository the workspace now resolves to — proof the connection
+    /// took, not just that the git commands exited zero.
+    pub repository: GithubRepository,
+    /// `true` when the folder had no git repository and one was initialized.
+    pub initialized: bool,
+    /// `true` when an existing `origin` was repointed rather than added.
+    pub replaced_remote: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +536,33 @@ mod tests {
             path: "/data/worktrees/github/pr-344-feat-x".into(),
             branch: "feat/x".into(),
             reused: true,
+        };
+        assert_eq!(round_trip(&result), result);
+    }
+
+    #[test]
+    fn github_connect_payloads_round_trip_camel_case_and_reject_unknown_fields() {
+        let params = GithubConnectParams {
+            workspace_id: "workspace-1".into(),
+            remote_url: "https://github.com/bridge/harness".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"workspaceId": "workspace-1", "remoteUrl": "https://github.com/bridge/harness"})
+        );
+        assert_eq!(round_trip(&params), params);
+        assert!(serde_json::from_value::<GithubConnectParams>(
+            json!({"workspaceId": "w", "remoteUrl": "https://github.com/a/b", "extra": true})
+        )
+        .is_err());
+        let result = GithubConnectResult {
+            repository: GithubRepository {
+                host: "github.com".into(),
+                owner: "bridge".into(),
+                name: "harness".into(),
+            },
+            initialized: true,
+            replaced_remote: false,
         };
         assert_eq!(round_trip(&result), result);
     }

@@ -232,6 +232,15 @@ pub struct BriefingRuntimePolicy {
     /// The tool list this policy was compiled against, so drift is detectable
     /// rather than something the run discovers by succeeding at the wrong thing.
     compiled_against: Vec<String>,
+    /// The one write this policy authorises, when it authorises one at all.
+    ///
+    /// `None` for every briefing and every connector *read* run — those are
+    /// read-only and the verb rule above is the whole story. `Some` only for a
+    /// connector **action** run, which is reached exclusively through
+    /// `connector_runs::authorize`, i.e. after a human approved the literal text
+    /// that will be sent. Without this, `compile_scoped`'s mutation-word ban
+    /// denies `slack_send_message` and an approved reply silently never sends.
+    action_scope: Option<ActionScope>,
     /// Servers whose **read-verb** tools are allowed without per-identity review.
     ///
     /// The harness-run briefing's mode: Bridge holds no tool inventory there —
@@ -242,32 +251,95 @@ pub struct BriefingRuntimePolicy {
     read_scope_servers: Vec<String>,
 }
 
-/// The name prefixes that make a connector tool a read under a scoped policy.
-/// Anything else — `post_`, `send_`, `create_`, `update_`, `delete_`, and every
-/// verb this list does not name — is denied. Fail closed: an unrecognised verb
-/// is not a read.
+/// What a single approved connector action is allowed to do.
+///
+/// Deliberately an enum of *intents* rather than a tool name: Bridge holds no
+/// inventory of the harness's tools, so it cannot name `slack_send_message`. It
+/// can say "this run was approved to reply, and nothing else".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionIntent {
+    Reply,
+    React,
+}
+
+impl ActionIntent {
+    /// Mutation words a run carrying this intent may call. Narrow on purpose:
+    /// `Reply` cannot react and `React` cannot send.
+    pub fn permitted_words(self) -> &'static [&'static str] {
+        match self {
+            Self::Reply => &["send", "post", "reply"],
+            Self::React => &["add", "react"],
+        }
+    }
+}
+
+/// One server, one intent. Both must match for a mutation to be allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ActionScope {
+    server: String,
+    intent: ActionIntent,
+}
+
+/// Words that are never permitted by an action scope, whatever the intent.
+///
+/// An approval is for sending a message, so a tool that also deletes, merges, or
+/// approves something is not the tool that approval covered. Checked *after* the
+/// intent words so a name containing both loses.
+const ACTION_FORBIDDEN_WORDS: &[&str] = &[
+    "approve", "delete", "destroy", "edit", "merge", "patch", "publish", "put", "reject",
+    "remove", "set", "update", "write",
+];
+
+/// The verbs that make a connector tool a read under a scoped policy.
+///
+/// Matched as a **word**, anywhere in the name — not as a prefix. MCP servers
+/// conventionally namespace their tools by server first (`slack_read_thread`,
+/// `slack_search_public_and_private`), so a prefix rule recognises none of them
+/// and a scoped policy that looked correct denied every real connector read.
+///
+/// Fail closed remains the rule: a name is a read only if it carries one of
+/// these words *and* none of [`MUTATION_TOOL_WORDS`], which is checked first.
 pub const READ_TOOL_VERBS: &[&str] = &["search", "read", "list", "get", "query", "fetch", "find"];
+
+/// Words that disqualify a name from ever being a read, whatever else it says.
+///
+/// Broader than the verbs a tool might use to mutate: anything here is an effect
+/// nobody reviewing a *read* policy agreed to, so a compound name carrying one
+/// loses even if it also carries `get` or `list`.
 const MUTATION_TOOL_WORDS: &[&str] = &[
-    "add", "approve", "create", "delete", "edit", "merge", "patch", "post", "publish", "put",
-    "reject", "remove", "send", "set", "update", "write",
+    "add", "approve", "archive", "ban", "create", "delete", "destroy", "edit", "invite", "kick",
+    "merge", "patch", "post", "publish", "put", "reject", "remove", "rename", "schedule", "send",
+    "set", "update", "upload", "write",
 ];
 
 /// Is this bare tool name (the segment after `mcp__<server>__`) a read?
 fn is_read_verb_tool(tool: &str) -> bool {
     let lowered = tool.to_lowercase();
-    if lowered != tool
-        || lowered
-            .split(['_', '-'])
-            .any(|word| MUTATION_TOOL_WORDS.contains(&word))
-    {
+    if lowered != tool {
         return false;
     }
-    READ_TOOL_VERBS.iter().any(|verb| {
-        lowered == *verb
-            || lowered
-                .strip_prefix(verb)
-                .is_some_and(|rest| rest.starts_with('_') || rest.starts_with('-'))
-    })
+    let words: Vec<&str> = lowered.split(['_', '-']).collect();
+    if words.iter().any(|word| MUTATION_TOOL_WORDS.contains(word)) {
+        return false;
+    }
+    words.iter().any(|word| READ_TOOL_VERBS.contains(word))
+}
+
+/// Does this bare tool name carry the intent's verb and nothing forbidden?
+///
+/// Word-wise rather than substring: `send_message` matches `send`, and
+/// `resend_all` does not, because the second is not the tool anybody approved.
+fn permits_action(tool: &str, intent: ActionIntent) -> bool {
+    let lowered = tool.to_lowercase();
+    if lowered != tool {
+        return false;
+    }
+    let words: Vec<&str> = lowered.split(['_', '-']).collect();
+    if words.iter().any(|word| ACTION_FORBIDDEN_WORDS.contains(word)) {
+        return false;
+    }
+    words.iter().any(|word| intent.permitted_words().contains(word))
 }
 
 /// Split a provider wire name into its `mcp__<server>__<tool>` parts.
@@ -338,6 +410,7 @@ impl BriefingRuntimePolicy {
             limits,
             max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
             compiled_against,
+            action_scope: None,
             read_scope_servers: Vec::new(),
         })
     }
@@ -374,8 +447,30 @@ impl BriefingRuntimePolicy {
             limits,
             max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
             compiled_against: Vec::new(),
+            action_scope: None,
             read_scope_servers: scope,
         })
+    }
+
+    /// Compile a policy for **one approved connector action**.
+    ///
+    /// Identical to [`Self::compile_scoped`] — same single server, same
+    /// fail-closed read rule, same ceilings — plus exactly one narrow addition:
+    /// mutation tools on that server whose names carry this intent's words and
+    /// none of [`ACTION_FORBIDDEN_WORDS`].
+    ///
+    /// The authority for that addition is not in this module. It is
+    /// `connector_runs::authorize`, which will not produce the `AuthorizedAction`
+    /// this run needs until a human has approved the literal text being sent.
+    /// This function is the mechanism; the approval is the reason.
+    pub fn compile_action(
+        server: String,
+        intent: ActionIntent,
+        limits: wire::WorkBriefLimits,
+    ) -> Result<Self, BriefingUnsupported> {
+        let mut policy = Self::compile_scoped(vec![server.clone()], limits)?;
+        policy.action_scope = Some(ActionScope { server, intent });
+        Ok(policy)
     }
 
     /// Refuse a briefing run that also asked for a writable tree.
@@ -422,9 +517,16 @@ impl BriefingRuntimePolicy {
         // name of the exact `mcp__<server>__<tool>` shape can reach this arm,
         // so a bare built-in like `Bash` never does.
         if let Some((server, bare)) = split_wire_name(tool) {
-            if self.read_scope_servers.iter().any(|scoped| scoped == server)
-                && is_read_verb_tool(bare)
-            {
+            let scoped_read =
+                self.read_scope_servers.iter().any(|scoped| scoped == server) && is_read_verb_tool(bare);
+            // The approved write, if this policy carries one. Same shape of
+            // check as the read rule and just as fail-closed: the server must
+            // match, the intent's word must be present, and no forbidden word
+            // may be.
+            let approved_write = self.action_scope.as_ref().is_some_and(|scope| {
+                scope.server == server && permits_action(bare, scope.intent)
+            });
+            if scoped_read || approved_write {
                 if argument_bytes > self.max_argument_bytes {
                     return ToolDecision::Deny(BriefingDenial::ArgumentsTooLarge {
                         tool: tool.to_owned(),
@@ -449,6 +551,26 @@ impl BriefingRuntimePolicy {
     }
 
     /// The reviewed identities, for an adapter rendering its allowlist.
+    /// The server and intent of the one approved write, for the adapter gate.
+    /// `None` for every read-only policy.
+    pub fn action_scope_config(&self) -> Option<(String, &'static str, Vec<String>)> {
+        self.action_scope.as_ref().map(|scope| {
+            (
+                scope.server.clone(),
+                match scope.intent {
+                    ActionIntent::Reply => "reply",
+                    ActionIntent::React => "react",
+                },
+                scope.intent.permitted_words().iter().map(|word| (*word).to_owned()).collect(),
+            )
+        })
+    }
+
+    /// Words no action scope may ever call, mirrored to the adapter gate.
+    pub fn action_forbidden_words() -> Vec<String> {
+        ACTION_FORBIDDEN_WORDS.iter().map(|word| (*word).to_owned()).collect()
+    }
+
     pub fn allowed_wire_names(&self) -> Vec<String> {
         self.allowed.iter().map(BriefingToolIdentity::wire_name).collect()
     }
@@ -1004,6 +1126,104 @@ impl BriefingToolEvent {
 
 #[cfg(test)]
 mod tests {
+
+    // ── Approved connector actions ──────────────────────────────────────────
+    // The read rule bans every mutation word, which is correct for a briefing
+    // and was silently fatal for connector replies: `slack_send_message`
+    // contains "send", so an approved reply was denied by policy and never
+    // sent. These pin the narrow exception that fixes it.
+
+    fn action_limits() -> wire::WorkBriefLimits {
+        wire::WorkBriefLimits {
+            max_wall_seconds: 60,
+            max_turns: 2,
+            max_tool_calls: 2,
+            max_output_tokens: Some(200),
+            cost_ceiling_microusd: Some(5_000),
+        }
+    }
+
+    #[test]
+    fn an_approved_reply_may_call_the_send_tool_a_briefing_could_not() {
+        let policy =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::Reply, action_limits())
+                .unwrap();
+        assert!(matches!(policy.decide("mcp__slack__slack_send_message", 100), ToolDecision::Allow));
+        // The same tool under a read-only scoped policy stays denied, so the
+        // briefing path is untouched by this.
+        let read_only =
+            BriefingRuntimePolicy::compile_scoped(vec!["slack".into()], action_limits()).unwrap();
+        assert!(!matches!(read_only.decide("mcp__slack__slack_send_message", 100), ToolDecision::Allow));
+    }
+
+    #[test]
+    fn an_action_policy_still_allows_the_reads_the_run_may_need() {
+        let policy =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::Reply, action_limits())
+                .unwrap();
+        assert!(matches!(policy.decide("mcp__slack__slack_read_thread", 100), ToolDecision::Allow));
+    }
+
+    #[test]
+    fn an_intent_cannot_perform_the_other_intents_write() {
+        let reply =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::Reply, action_limits())
+                .unwrap();
+        // Approval was for sending a message. Reacting is a different effect
+        // the user did not read.
+        assert!(!matches!(reply.decide("mcp__slack__slack_add_reaction", 100), ToolDecision::Allow));
+
+        let react =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::React, action_limits())
+                .unwrap();
+        assert!(matches!(react.decide("mcp__slack__slack_add_reaction", 100), ToolDecision::Allow));
+        assert!(!matches!(react.decide("mcp__slack__slack_send_message", 100), ToolDecision::Allow));
+    }
+
+    #[test]
+    fn an_action_scope_reaches_only_its_own_server() {
+        let policy =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::Reply, action_limits())
+                .unwrap();
+        assert!(!matches!(policy.decide("mcp__gmail__send_message", 100), ToolDecision::Allow));
+    }
+
+    #[test]
+    fn a_destructive_tool_is_denied_even_when_it_carries_the_intents_verb() {
+        let policy =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::Reply, action_limits())
+                .unwrap();
+        // An approval to send a message is not an approval to send-and-delete,
+        // whatever the tool decided to call itself.
+        for tool in [
+            "mcp__slack__send_and_delete_message",
+            "mcp__slack__post_and_remove",
+            "mcp__slack__reply_and_merge",
+        ] {
+            assert!(!matches!(policy.decide(tool, 100), ToolDecision::Allow), "{tool} was allowed");
+        }
+    }
+
+    #[test]
+    fn action_matching_is_word_wise_not_substring() {
+        let policy =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::Reply, action_limits())
+                .unwrap();
+        // "resend" is not "send": a tool nobody approved must not ride in on a
+        // shared substring.
+        assert!(!matches!(policy.decide("mcp__slack__resend_all_messages", 100), ToolDecision::Allow));
+        assert!(!matches!(policy.decide("mcp__slack__SEND_MESSAGE", 100), ToolDecision::Allow));
+    }
+
+    #[test]
+    fn built_ins_stay_denied_under_an_action_policy() {
+        let policy =
+            BriefingRuntimePolicy::compile_action("slack".into(), ActionIntent::Reply, action_limits())
+                .unwrap();
+        for tool in ["Bash", "Write", "Edit", "send_message"] {
+            assert!(!matches!(policy.decide(tool, 100), ToolDecision::Allow), "{tool} was allowed");
+        }
+    }
     use super::*;
 
     fn limits() -> wire::WorkBriefLimits {

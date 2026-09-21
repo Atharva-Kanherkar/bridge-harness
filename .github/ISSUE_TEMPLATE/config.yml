@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Issue format rule
+    url: https://github.com/Atharva-Kanherkar/bridge-harness/blob/main/docs/issue-format.md
+    about: Every issue needs a "For humans" and a "For agents" section, or it is closed automatically.

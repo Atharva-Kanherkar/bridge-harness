@@ -1,0 +1,3 @@
+```bridge-connector-card
+{"itemKey":"slack:C0A0M847ZDK:1789116361.394429","headline":"A card about a different message","blocks":[{"kind":"context","text":"drifted"}],"suggestedReplies":[],"harnessRendered":true}
+```

@@ -12,7 +12,7 @@ import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
-import { openExternalUrl } from "./externalLinks";
+import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
@@ -22,7 +22,7 @@ import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
-import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
@@ -36,7 +36,18 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
+import { ConnectorPane } from "./components/ConnectorPane";
+import { ConnectorToasts } from "./components/ConnectorToasts";
+import { reduceToasts, type ConnectorToast } from "./connectorSurface";
+import { UpdateToast } from "./components/UpdateToast";
+import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
+import { notifyAttention } from "./attention";
+import { attentionCopy, attentionToastKey } from "./attentionCopy";
+import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
+import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
+import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
 import { TasksPane } from "./components/TasksPane";
@@ -50,6 +61,7 @@ const AgentFleet = lazy(() => import("./components/AgentFleet").then(module => (
 const MissionControl = lazy(() => import("./components/MissionControl").then(module => ({ default: module.MissionControl })));
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
+import { overviewUsage } from "./usageOverview";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
@@ -59,7 +71,8 @@ import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
-import { UsageWidget, ProviderLoginPane } from "./components/UsageWidget";
+import { ProviderLoginPane } from "./components/ProviderLoginPane";
+import { ChatUsageDot } from "./components/UsageDot";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
@@ -77,8 +90,8 @@ import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setL
 import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
-import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
-import { describeError, errorMessage } from "./errors";
+import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
+import { describeError, errorMessage, isThrottleKind } from "./errors";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
@@ -258,19 +271,12 @@ function AppContent() {
   const [agentDispatchNotice, setAgentDispatchNotice] = useState<string>();
   const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
-  const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
-  // Menu-bar meter popover (CodexBar companion): opened from the Usage screen
-  // or the native tray's left-click; live windows come from the same
-  // account-usage channel as the usage ring.
-  const [meterRefreshing, setMeterRefreshing] = useState(false);
   // These handlers must be initialized before the startup effects subscribe.
   // The first render returns the loading shell, so handlers declared below
   // that return leave the tray listener with an uninitialized closure forever.
   const refreshMeter = useCallback(() => {
-    setMeterRefreshing(true);
-    bridgeApi.refreshMeter()
-      .catch(value => setError(errorMessage(value)))
-      .finally(() => setMeterRefreshing(false));
+    Promise.all([bridgeApi.refreshMeter(), bridgeApi.refreshUsageOverview()])
+      .catch(value => setError(errorMessage(value)));
   }, []);
   // The meter lives in the menu bar, in its own window. Opening it from the
   // Usage screen opens that same panel rather than a second, in-app copy —
@@ -359,11 +365,13 @@ function AppContent() {
       offAgent = fn;
     });
     void bridgeApi.onAccountUsage(payload => {
+      // Codex quota comes from the versioned shared overview. A legacy
+      // rollout tick must not overwrite it with an inferred fresh zero.
+      if (payload.provider === "codex") return;
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
       // An unreadable frame means the provider has no current limits — its
-      // last window reset with nothing running, say. Dropping the snapshot is
-      // what stops the old percentage sitting in the ring after it expired;
-      // the samples series is history and is deliberately left alone.
+      // last window reset with nothing running, say. Dropping the snapshot
+      // keeps error explanations from using a limit that has expired.
       if (!snapshot) {
         setUsageByProvider(current => {
           if (!(payload.provider in current)) return current;
@@ -374,18 +382,10 @@ function AppContent() {
         return;
       }
       setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
-      if (snapshot.windows.length) {
-        const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
-        setUsageSamples(current => ({
-          ...current,
-          [payload.provider]: [...(current[payload.provider] ?? []), { usedPercent, capturedAt: snapshot.capturedAt }].slice(-24),
-        }));
-      }
     }).then(fn => offUsage = fn);
     // Native tray (menu-bar meter companion): left-click opens the meter
     // popover, the tray menu's refresh triggers a shared usage refresh. Both
-    // route through the same handlers as the in-app controls so the registry
-    // loads and the spinner spins on every path.
+    // route through the same handler as the Usage screen refresh.
     let offMeter: (() => void) | undefined;
     // The tray opens the panel itself, natively — the app is not involved in
     // showing the meter, which is what stops a menu-bar click raising the
@@ -399,6 +399,36 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, openMeter, refreshMeter, reload]);
+  // Attention notifications: diff every `state.sessions` refresh for status
+  // transitions across visible sessions (hidden kinds filtered inside
+  // `diffAttentionEvents`), not just the open one, so a background chat that
+  // starts waiting on the human still surfaces a notification.
+  // In-app glass toasts always enqueue; `notifyAttention` still gates the OS
+  // banner on Bridge not being focused.
+  const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
+  const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
+  useEffect(() => {
+    const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
+    previousAttentionSessionsRef.current = state.sessions;
+    if (!events.length) return;
+    const nextToasts: AttentionToast[] = [];
+    for (const event of events) {
+      const copy = attentionCopy(event);
+      const key = attentionToastKey(event);
+      nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
+      void notifyAttention(copy.headline, copy.detail);
+    }
+    setAttentionToasts(current => {
+      // A chat can revisit the same key (waiting → working → waiting) before
+      // its first card's TTL elapses. Replace rather than skip so the card
+      // reflects the latest event and restarts its countdown.
+      let merged = current;
+      for (const toast of nextToasts) {
+        merged = [...merged.filter(item => item.key !== toast.key), toast];
+      }
+      return merged.slice(-3);
+    });
+  }, [state.sessions]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -470,6 +500,9 @@ function AppContent() {
   // The new-thread hero names the project when it can, dotted-underlined.
   const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
   const hasRepo = !!workspace?.path;
+  // The workspace a GitHub link could be routed into, if any — the same
+  // condition that decides whether the pane is available at all.
+  const githubWorkspaceId = hasRepo ? workspace?.id : undefined;
   const isDirectChat = session?.kind === "direct";
   const importedSourceFingerprint = useMemo(() => {
     if (session?.kind !== "imported") return undefined;
@@ -510,6 +543,13 @@ function AppContent() {
     const attention = statuses.some(item => (item.status.tone === "failed" || item.status.tone === "stalled") && !acknowledgedTasks.has(item.id));
     return { running, attention };
   }, [forest?.workerRuntimes, visibleSessions, terminalActivity?.running, acknowledgedTasks]);
+  // Connector inbox state, declared here because the dock descriptor below
+  // reads its unread count. The rest of the glue is further down.
+  const [connectorToasts, setConnectorToasts] = useState<ConnectorToast[]>([]);
+  const [connectorUnread, setConnectorUnread] = useState(0);
+  const [connectorFocus, setConnectorFocus] = useState<string>();
+  const connectorAttention = connectorToasts.some(toast => !toast.settled);
+
   const dockPanes: DockPaneDescriptor[] = [
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
@@ -518,6 +558,9 @@ function AppContent() {
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
+    // Always available: an inbox is about an account, not a repository, so
+    // gating it on a worktree would hide it exactly where a direct chat is.
+    { id: "inbox", label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
@@ -561,20 +604,91 @@ function AppContent() {
   }
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
-  // Deep links into the GitHub dock pane (sidebar rows, CI toasts), the
-  // CI-finished notification stack, and jump-to-diff from a review comment.
+  // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
+  // anywhere in the app), the CI-finished notification stack, and
+  // jump-to-diff from a review comment.
   const githubIntentNonce = useRef(0);
-  const [githubIntent, setGithubIntent] = useState<{ number: number; nonce: number }>();
+  const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
 
-  function openPullRequestPane(number: number) {
+  const openGithubPane = useCallback((view: GithubLinkView) => {
     githubIntentNonce.current += 1;
-    setGithubIntent({ number, nonce: githubIntentNonce.current });
+    setGithubIntent({ view, nonce: githubIntentNonce.current });
     setView("workspace");
     setParadigm("single");
     dispatchDock({ type: "open-pane", pane: "github" });
+  }, [dispatchDock]);
+
+  function openPullRequestPane(number: number) {
+    openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
+
+  // Which repository a workspace is on is read when the link is clicked and
+  // again when the reader confirms the inline destination. The pane resolves
+  // the repository itself, server-side and at call time, from the workspace's
+  // remote — so an identity remembered across either pause could route the
+  // same number into a different repository and expose its write actions.
+  const githubWorkspaceIdRef = useRef(githubWorkspaceId);
+  githubWorkspaceIdRef.current = githubWorkspaceId;
+  const resolveGithubRepository = useCallback(async (id: string): Promise<GithubRepository | null> => {
+    try {
+      const status = await bridgeApi.githubStatus(id);
+      return status.availability.status === "available" ? status.repository ?? null : null;
+    } catch {
+      // No `gh`, signed out, no remote: nothing to route into.
+      return null;
+    }
+  }, []);
+
+  // A GitHub link the pane can render belongs in the pane, not in the OS
+  // browser. Anything else — another repository, a view the pane does not
+  // have, a chat with no worktree — is declined here and leaves the app
+  // exactly as it did before.
+  // A GitHub link the pane could render is a question, not a decision: the
+  // reader is asked where to open it. Only a link with somewhere to go inline
+  // is worth asking about — another repository, a view the pane does not have,
+  // a chat with no worktree — those have one destination, so they take it
+  // silently and leave, exactly as they did before any of this.
+  const [githubLinkChoice, setGithubLinkChoice] = useState<{ url: string; link: GithubLink; workspaceId: string }>();
+  const routeGithubLink = useCallback(async (url: string): Promise<boolean> => {
+    const link = parseGithubLink(url);
+    if (!link || !githubWorkspaceId) return false;
+    const repository = await resolveGithubRepository(githubWorkspaceId);
+    // Resolving can take a `gh` round-trip, and the reader may have moved on
+    // in the meantime; a pane intent aimed at the workspace they left would
+    // open the wrong repository's PR under the same number.
+    if (githubWorkspaceIdRef.current !== githubWorkspaceId) return false;
+    if (!githubLinkMatchesRepository(link, repository)) return false;
+    // Taken: the question is now on screen, so nothing may open behind it.
+    setGithubLinkChoice({ url, link, workspaceId: githubWorkspaceId });
+    return true;
+  }, [githubWorkspaceId, resolveGithubRepository]);
+
+  const confirmGithubLinkInline = useCallback(async (): Promise<void> => {
+    const choice = githubLinkChoice;
+    if (!choice) return;
+    setGithubLinkChoice(undefined);
+
+    const repository = githubWorkspaceIdRef.current === choice.workspaceId
+      ? await resolveGithubRepository(choice.workspaceId)
+      : null;
+    if (
+      githubWorkspaceIdRef.current !== choice.workspaceId
+      || !githubLinkMatchesRepository(choice.link, repository)
+    ) {
+      // The link no longer has an inline destination. Preserve the click by
+      // taking the same system-browser fallback as a route declined up front.
+      await openInSystemBrowser(choice.url);
+      return;
+    }
+    openGithubPane(choice.link.view);
+  }, [githubLinkChoice, openGithubPane, resolveGithubRepository]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeGithubLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeGithubLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -603,6 +717,56 @@ function AppContent() {
       setGithubToasts(current => current.some(item => item.key === key) ? current : [...current.slice(-3), { key, payload }]);
     }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
     return () => { active = false; off?.(); };
+  }, []);
+
+  // ── Connector surface glue ─────────────────────────────────────────────────
+  // Inbound connector notifications and the deep link from a toast into the
+  // Inbox dock pane. The stack is reduced by `connectorSurface.reduceToasts`,
+  // which upgrades a toast in place when its card lands rather than stacking a
+  // second card for the same message.
+  function openConnectorItem(itemKey: string) {
+    setConnectorToasts(current => current.filter(toast => toast.itemKey !== itemKey));
+    setConnectorFocus(itemKey);
+    setView("workspace");
+    dispatchDock({ type: "open-pane", pane: "inbox" });
+  }
+
+  useEffect(() => {
+    let active = true;
+    const stops: Array<() => void> = [];
+    const track = (pending: Promise<() => void>) => {
+      void pending.then(stop => { if (active) stops.push(stop); else stop(); });
+    };
+    track(bridgeApi.onConnectorItemArrived(payload => {
+      if (active) setConnectorToasts(current => reduceToasts(current, { type: "arrived", payload }));
+    }));
+    track(bridgeApi.onConnectorCardReady(payload => {
+      if (active) setConnectorToasts(current => reduceToasts(current, { type: "card", payload }));
+    }));
+    track(bridgeApi.onConnectorItemResolved(payload => {
+      if (active) setConnectorToasts(current => reduceToasts(current, { type: "resolved", payload }));
+    }));
+    // The authoritative unread count, read here rather than only inside the
+    // pane. The pane mounts lazily — it does not exist until the dock has shown
+    // it once — and arrival events are transient and never replayed, so a launch
+    // with unresolved items from a previous session showed neither a badge nor a
+    // toast until the user happened to open Inbox.
+    const hydrate = () => {
+      void bridgeApi.connectorInbox().then(inbox => {
+        if (active) setConnectorUnread(inbox.unreadCount);
+      }).catch(() => undefined);
+    };
+    hydrate();
+    track(bridgeApi.onConnectorInboxChanged(() => { if (active) hydrate(); }));
+    return () => { active = false; for (const stop of stops) stop(); };
+  }, []);
+
+  // ── App update notification ────────────────────────────────────────────────
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo>();
+  useEffect(() => {
+    let active = true;
+    void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); });
+    return () => { active = false; };
   }, []);
 
   // The fallback hint is a pointer, not a state — it fades on its own.
@@ -700,6 +864,32 @@ function AppContent() {
   // an opinion: sending someone hunting through Agents for the switch they just
   // clicked "click to change" on is the wrong end of the promise.
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("agents");
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    void bridgeApi.onMenuBarSettings(() => {
+      if (active) { setSettingsSection("menuBar"); setView("settings"); }
+    }).then(fn => { if (active) off = fn; else fn(); });
+    return () => { active = false; off?.(); };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    let latest = -Infinity;
+    const accept = (value: Awaited<ReturnType<typeof bridgeApi.getUsageOverview>>) => {
+      if (!active || !value || value.generatedAt < latest) return;
+      latest = value.generatedAt;
+      const snapshot = overviewUsage(value);
+      setUsageByProvider(current => {
+        const next = { ...current };
+        if (snapshot) next.codex = snapshot; else delete next.codex;
+        return next;
+      });
+    };
+    void bridgeApi.onUsageOverview(accept).then(fn => { if (active) off = fn; else fn(); });
+    void bridgeApi.getUsageOverview().then(accept).catch(() => undefined);
+    return () => { active = false; off?.(); };
+  }, []);
   const autoApprovals = useMemo(
     () => state.events.filter(event => event.kind === "approval.auto_allowed"),
     [state.events],
@@ -717,10 +907,6 @@ function AppContent() {
     () => (session ? queuedFollowUps(session.id, state.events).length : 0),
     [session, state.events],
   );
-  const usageHistory = useMemo(() => buildUsageHistory(forest?.usage ?? [], state.sessions), [forest?.usage, state.sessions]);
-  const cacheDiagnostics = useMemo(() => buildCacheDiagnostics(forest?.usage ?? []), [forest?.usage]);
-  const latestContext = session?.contextPercent ?? usageHistory.find(entry => entry.contextPercent != null)?.contextPercent;
-  const latestContextSource = session?.contextPercent != null ? session.metricSource as import("./usage").MetricSource : usageHistory.find(entry => entry.contextPercent != null)?.source;
   const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
@@ -970,7 +1156,13 @@ function AppContent() {
   // Poll real subscription usage for every provider, independent of the chat on screen.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
-    return startSerialPoll(() => bridgeApi.refreshAccountUsage().catch(() => undefined), 30_000);
+    return startSerialPoll(() => Promise.all([
+      bridgeApi.refreshAccountUsage().catch(() => undefined),
+      // Preserve the main window's usage updates on every platform, including
+      // when the native menu or its provider is disabled. Hidden windows leave
+      // collection cadence to the menu's own saved preferences.
+      document.visibilityState === "hidden" ? Promise.resolve() : bridgeApi.refreshUsageOverview().catch(() => undefined),
+    ]).then(() => undefined), 30_000);
   }, [adaptersReady]);
 
   // Drop an optimistic message once its real user turn arrives from the
@@ -1971,25 +2163,6 @@ function AppContent() {
   // paths become `@path` mentions, which the backend reads as bounded,
   // secret-sanitized, untrusted context at submit time. The draft is never
   // touched, only added to.
-  async function attachFile() {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      // No system dialog outside the desktop shell; fall back to the workspace
-      // picker `@` drives rather than doing nothing.
-      setMentionDismissed(false);
-      setMentionIndex(0);
-      setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
-      composerRef.current?.focus();
-      return;
-    }
-    try {
-      const picked = await open({ multiple: true, title: "Attach files" });
-      if (picked == null) return;
-      const paths = (Array.isArray(picked) ? picked : [picked]).filter(path => typeof path === "string");
-      if (paths.length === 0) return;
-      setComposer(current => paths.reduce(appendFileMention, current));
-    } catch (e) { setError(errorMessage(e)); }
-    finally { composerRef.current?.focus(); }
-  }
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
   function applyFileMention(path: string) {
@@ -2193,10 +2366,10 @@ function AppContent() {
     }
   };
   const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
-  const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
-  const usageWidget = <UsageWidget {...usageProps} />;
-  const usageRing = <UsageWidget compact {...usageProps} />;
-  const titleBarActions = <>{usageWidget}</>;
+  // The usage dot beside the composer reads the same provider overviews the
+  // menu-bar meter does, so the health it reports is next to the box that
+  // spends it and never disagrees with the status item.
+  const usageDot = <ChatUsageDot adapters={health?.adapters} onOpenUsage={() => setView("usage")} onSignIn={provider => setLoginProvider(provider)} />;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2264,7 +2437,6 @@ function AppContent() {
       onOpenNav={() => setNavOpen(true)}
       leading={sidebarNav}
       sidebarHidden={sidebarCollapsed}
-      actions={titleBarActions}
     />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
@@ -2512,7 +2684,7 @@ function AppContent() {
                     the orchestrator is told so it does not fight the change. */}
                 {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
-                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={usageWidget}/>
+                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={usageDot}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -2598,8 +2770,7 @@ function AppContent() {
                     stopping={stopping}
                     onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
-                    onPlusClick={() => void attachFile()}
-                    leading={usageRing}
+                    leading={usageDot}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
@@ -2665,6 +2836,11 @@ function AppContent() {
                 )}
                 onRevealEntry={revealEntryInConversation}
               />;
+              // Before the workspace guard: an inbox is about an account, not a
+              // tree, and the dock advertises it as always available. Left
+              // below this line it rendered nothing in exactly the direct-chat
+              // case the always-available descriptor exists to support.
+              if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
               if (!workspace) return null;
               /* Keyed on the workspace: these panes hold open buffers, shells,
                  and relative paths, and none of that survives a change of tree.
@@ -2725,7 +2901,7 @@ function AppContent() {
         snapshot: session ? usageByProvider[session.harness as UsageProvider] : undefined,
       });
       return (
-        <Alert variant={described.kind === "usage-limit" ? "warning" : "error"} className="u-overlay fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] rounded-xl sm:right-[18px] sm:bottom-[18px]">
+        <Alert variant={isThrottleKind(described.kind) ? "warning" : "error"} className="u-overlay fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] rounded-xl sm:right-[18px] sm:bottom-[18px]">
           <AlertTitle>{described.title}</AlertTitle>
           <AlertDescription>{described.message}</AlertDescription>
           <AlertAction>
@@ -2734,6 +2910,30 @@ function AppContent() {
         </Alert>
       );
     })()}
+    {githubLinkChoice && <GithubLinkDestinationDialog
+      subject={describeGithubLink(githubLinkChoice.link)}
+      repository={`${githubLinkChoice.link.owner}/${githubLinkChoice.link.name}`}
+      url={githubLinkChoice.url}
+      onOpenInline={() => void confirmGithubLinkInline()}
+      onOpenInBrowser={() => { void openInSystemBrowser(githubLinkChoice.url); setGithubLinkChoice(undefined); }}
+      onCancel={() => setGithubLinkChoice(undefined)}
+    />}
+
+    <AttentionToasts
+      toasts={attentionToasts}
+      onOpen={toast => {
+        setAttentionToasts(current => current.filter(item => item.key !== toast.key));
+        openSession(toast.sessionId);
+      }}
+      onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
+    />
+    {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
+    <ConnectorToasts
+      toasts={connectorToasts}
+      suppressed={dock.open && dock.pane === "inbox"}
+      onOpen={toast => openConnectorItem(toast.itemKey)}
+      onDismiss={key => setConnectorToasts(current => reduceToasts(current, { type: "dismiss", key }))}
+    />
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
@@ -2742,6 +2942,13 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
+    {availableUpdate && (
+      <UpdateToast
+        update={availableUpdate}
+        onInstall={installUpdateAndRestart}
+        onDismiss={() => setAvailableUpdate(undefined)}
+      />
+    )}
 
     <Dialog open={loginProvider !== null} onOpenChange={open => { if (!open) setLoginProvider(null); }}>
       <DialogContent>
@@ -2892,11 +3099,6 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // check. Gating the whole composer on canStartChat would block adding
       // a project before any adapter is installed.
       disabled={busy}
-      // There is no conversation or folder here yet, so the structural `+`
-      // still creates a workspace. Clipboard images are first-turn content and
-      // use the paste path above instead of pretending to be repository files.
-      plusLabel="New workspace"
-      onPlusClick={onNewWorkspace}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
@@ -2921,6 +3123,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       <span>{greeting.hint}</span>
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
     </div>
+    {workspaces.length === 0 && <div className="mt-6 flex justify-center">
+      <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
+    </div>}
     {workspaces.length > 0 && <section aria-label="Choose a project" className="mt-9 border-t border-border pt-5">
       <div className="mb-3 flex items-center justify-between"><h2 className="text-[12px] font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
       <div className="grid gap-2 sm:grid-cols-2">{workspaces.slice(0, 4).map(item => <button key={item.id} type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={workspace?.id === item.id} className={cn("flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50", workspace?.id === item.id ? "border-ring/50 bg-selection" : "border-border bg-card hover:border-input")}>

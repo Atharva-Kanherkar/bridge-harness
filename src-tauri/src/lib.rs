@@ -7,6 +7,7 @@ pub mod agent_batch;
 pub mod daemon_host;
 pub mod menu;
 pub mod meter_tray;
+mod menu_bar;
 pub mod window_chrome;
 mod diagnostics;
 
@@ -118,6 +119,42 @@ async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc
 }
 
 #[tauri::command]
+async fn connector_list(refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorListResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector list", move || api::connector_list(&core, refresh)).await
+}
+
+#[tauri::command]
+async fn connector_inbox(limit: Option<u32>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorInboxResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector inbox", move || api::connector_inbox(&core, limit)).await
+}
+
+#[tauri::command]
+async fn connector_act(item_key: String, action: wire::ConnectorActionRequest, approved: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorActResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector action", move || api::connector_act(&core, &item_key, action, approved)).await
+}
+
+#[tauri::command]
+async fn connector_set_settings(include_read_mentions: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorSetSettingsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector settings", move || api::connector_set_settings(&core, include_read_mentions)).await
+}
+
+#[tauri::command]
+async fn connector_dismiss(item_key: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorDismissResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector dismiss", move || api::connector_dismiss(&core, &item_key)).await
+}
+
+#[tauri::command]
+async fn connector_refresh(family: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::ConnectorRefreshResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connector refresh", move || api::connector_refresh(&core, &family)).await
+}
+
+#[tauri::command]
 async fn github_prs(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestsResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub pull-request list", move || api::github_prs(&core, &workspace_id)).await
@@ -175,6 +212,12 @@ async fn github_review(workspace_id: String, number: u64, harness: String, sessi
 async fn github_checkout(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubCheckoutResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub PR checkout", move || api::github_checkout(&core, &workspace_id, number)).await
+}
+
+#[tauri::command]
+async fn github_connect(workspace_id: String, remote_url: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubConnectResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub repository connect", move || api::github_connect(&core, &workspace_id, &remote_url)).await
 }
 
 #[tauri::command]
@@ -672,6 +715,16 @@ async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::m
 }
 
 #[tauri::command]
+async fn get_reviewer_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
+    api::get_reviewer_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
+    api::save_reviewer_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
     force: bool,
@@ -712,6 +765,7 @@ async fn summary(
     time_zone: Option<String>,
     workspace_id: Option<String>,
     include_imported: bool,
+    include_dashboard: Option<bool>,
     since_time: Option<String>,
     until_time: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
@@ -724,6 +778,7 @@ async fn summary(
         time_zone,
         workspace_id,
         include_imported,
+        include_dashboard: include_dashboard.unwrap_or(false),
         since_time,
         until_time,
     };
@@ -824,6 +879,54 @@ async fn scan_history(
 #[tauri::command]
 async fn get_meter_snapshot() -> bridge_core::meter::MeterRegistry {
     api::meter_snapshot()
+}
+
+#[tauri::command]
+async fn save_opencode_usage_session(cookie: String, workspace: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connect OpenCode usage", move || api::save_opencode_usage_session(&core, &cookie, &workspace)).await
+}
+
+#[tauri::command]
+async fn get_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Provider usage", move || api::get_provider_usage_overviews(&core)).await
+}
+
+#[tauri::command]
+async fn refresh_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Refresh provider usage", move || api::refresh_provider_usage_overviews(&core)).await
+}
+
+#[tauri::command]
+async fn refresh_provider_usage_overviews_interactive(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Refresh provider usage interactively", move || api::refresh_provider_usage_overviews_interactive(&core)).await
+}
+
+#[tauri::command]
+async fn get_usage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Usage overview", move || api::get_usage_overview(&core)).await
+}
+
+#[tauri::command]
+async fn refresh_usage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Refresh usage overview", move || api::refresh_usage_overview(&core)).await
+}
+
+#[tauri::command]
+async fn get_menu_bar_settings(state: State<'_, Arc<BridgeCore>>) -> Result<wire::MenuBarSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Menu Bar settings", move || api::get_menu_bar_settings(&core)).await
+}
+
+#[tauri::command]
+async fn save_menu_bar_settings(settings: wire::MenuBarSettings, state: State<'_, Arc<BridgeCore>>) -> Result<wire::MenuBarSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Save Menu Bar settings", move || api::save_menu_bar_settings(&core, &settings)).await
 }
 
 #[tauri::command]
@@ -1674,11 +1777,33 @@ async fn search_session_entries(
     session_id: String,
     query: String,
     limit: Option<u32>,
+    offset: Option<u32>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Session recall", move || {
-        api::search_session_entries(&core, &session_id, &query, limit)
+        api::search_session_entries(&core, &session_id, &query, limit, offset)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn export_session_transcript(
+    session_id: String,
+    scope: Option<bridge_protocol::messages::TranscriptExportScope>,
+    include_hidden: Option<bool>,
+    destination_path: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ExportSessionTranscriptResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Transcript export", move || {
+        api::export_session_transcript(
+            &core,
+            &session_id,
+            scope,
+            include_hidden,
+            destination_path.as_deref(),
+        )
     })
     .await
 }
@@ -2054,6 +2179,104 @@ pub enum HostMode {
     Failed(String),
 }
 
+const PACKAGED_SMOKE_ENV: &str = "BRIDGE_PACKAGED_SMOKE";
+const PACKAGED_SMOKE_LINK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const PACKAGED_SMOKE_PASS_MARKER: &str = "bridge: packaged smoke health check passed";
+const PACKAGED_SMOKE_FAIL_MARKER: &str = "bridge: packaged smoke health check failed:";
+
+fn packaged_smoke_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+}
+
+fn packaged_smoke_database_path(data_dir: Option<&std::ffi::OsStr>) -> Result<PathBuf, String> {
+    let data_dir = data_dir
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "BRIDGE_DATA_DIR must be set for the packaged smoke test".to_owned())?;
+    if !data_dir.is_absolute() {
+        return Err("BRIDGE_DATA_DIR must be an absolute path for the packaged smoke test".into());
+    }
+    Ok(data_dir.join("bridge.db"))
+}
+
+fn validate_packaged_smoke_health(
+    health: &serde_json::Value,
+    expected_database: &std::path::Path,
+) -> Result<(), String> {
+    if health.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("health/health did not report ok=true".into());
+    }
+    let database = health
+        .get("database")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "health/health did not report a database path".to_owned())?;
+    if std::path::Path::new(database) != expected_database {
+        return Err(format!(
+            "health/health reported database {}, expected {}",
+            database,
+            expected_database.display()
+        ));
+    }
+    Ok(())
+}
+
+fn fail_packaged_smoke(app: &AppHandle, message: impl std::fmt::Display) {
+    eprintln!("{PACKAGED_SMOKE_FAIL_MARKER} {message}");
+    app.exit(1);
+}
+
+fn start_packaged_smoke(app: &AppHandle, host: Option<&HostMode>) {
+    let runtime = match host {
+        Some(HostMode::Daemon(runtime)) => runtime,
+        Some(HostMode::Embedded) => {
+            fail_packaged_smoke(app, "desktop selected the embedded host");
+            return;
+        }
+        Some(HostMode::Failed(message)) => {
+            fail_packaged_smoke(app, message);
+            return;
+        }
+        None => {
+            fail_packaged_smoke(app, "desktop host was not initialized");
+            return;
+        }
+    };
+    let data_dir = std::env::var_os("BRIDGE_DATA_DIR");
+    let expected_database = match packaged_smoke_database_path(data_dir.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            fail_packaged_smoke(app, error);
+            return;
+        }
+    };
+    let proxy = runtime.proxy.clone();
+    let app_for_probe = app.clone();
+    let spawn = std::thread::Builder::new()
+        .name("packaged-smoke-health".into())
+        .spawn(move || {
+            let result = proxy
+                .call_within(
+                    bridge_protocol::MethodName::Health,
+                    None,
+                    PACKAGED_SMOKE_LINK_WAIT,
+                )
+                .and_then(|health| validate_packaged_smoke_health(&health, &expected_database));
+            match result {
+                Ok(()) => {
+                    eprintln!(
+                        "{PACKAGED_SMOKE_PASS_MARKER}: {}",
+                        expected_database.display()
+                    );
+                    app_for_probe.exit(0);
+                }
+                Err(error) => fail_packaged_smoke(&app_for_probe, error),
+            }
+        });
+    if let Err(error) = spawn {
+        fail_packaged_smoke(app, format!("could not start health probe: {error}"));
+    }
+}
+
 pub struct DaemonHostRuntime {
     proxy: Arc<daemon_host::DaemonProxy>,
     stop: Arc<std::sync::atomic::AtomicBool>,
@@ -2115,7 +2338,7 @@ fn select_host(
         let _ = panel_handle.run_on_main_thread(move || {
             if hide {
                 meter_tray::hide_panel(&handle);
-            } else {
+            } else if !menu_bar::show() {
                 meter_tray::toggle_panel(&handle, None);
             }
         });
@@ -2298,6 +2521,7 @@ fn setup_embedded(
     live_turn::start_learning_maintenance(core.clone());
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
     bridge_core::github_poll::start_github_poll_maintenance(core.clone());
+    bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
@@ -2308,6 +2532,7 @@ fn setup_embedded(
 }
 
 pub fn run() -> i32 {
+    let packaged_smoke = packaged_smoke_requested(std::env::var_os(PACKAGED_SMOKE_ENV).as_deref());
     let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
     let setup_slot = host.clone();
     let exit_host = host.clone();
@@ -2318,6 +2543,12 @@ pub fn run() -> i32 {
             preview_external_import,
             commit_external_import,
             github_status,
+            connector_list,
+            connector_inbox,
+            connector_act,
+            connector_dismiss,
+            connector_set_settings,
+            connector_refresh,
             github_prs,
             github_pr,
             github_checks,
@@ -2328,6 +2559,7 @@ pub fn run() -> i32 {
             github_act,
             github_review,
             github_checkout,
+            github_connect,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,
@@ -2384,6 +2616,8 @@ pub fn run() -> i32 {
             unarchive_chat,
             get_worker_settings,
             save_worker_settings,
+            get_reviewer_settings,
+            save_reviewer_settings,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,
@@ -2397,6 +2631,14 @@ pub fn run() -> i32 {
             scan_history,
             insights,
             get_meter_snapshot,
+            save_opencode_usage_session,
+            get_provider_usage_overviews,
+            refresh_provider_usage_overviews,
+            refresh_provider_usage_overviews_interactive,
+            get_usage_overview,
+            refresh_usage_overview,
+            get_menu_bar_settings,
+            save_menu_bar_settings,
             refresh_meter,
             register_verifier_manifest,
             verifier_candidates,
@@ -2476,6 +2718,7 @@ pub fn run() -> i32 {
             write_workspace_file,
             compact_session,
             search_session_entries,
+            export_session_transcript,
             save_memory_record,
             list_memory_records,
             delete_memory_record,
@@ -2515,6 +2758,9 @@ pub fn run() -> i32 {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .menu(|handle| menu::build(handle))
         .on_menu_event(menu::dispatch)
         .setup(move |app| {
@@ -2526,8 +2772,14 @@ pub fn run() -> i32 {
             // The menu-bar meter is best-effort: neither the panel nor the
             // tray may fail startup. The panel is built hidden and up front so
             // the first click shows a rendered window rather than booting one.
-            let _ = meter_tray::build_panel(app);
-            let _ = meter_tray::build(app);
+            let native_menu = if result.is_ok() {
+                diagnostics::native_boundary(|| menu_bar::install(app, setup_slot.clone())).and_then(|r| r)
+            } else { Ok(false) };
+            if !matches!(native_menu, Ok(true)) {
+                if let Err(error) = native_menu { diagnostics::record(&format!("Native Menu Bar unavailable: {error}")); }
+                let _ = meter_tray::build_panel(app);
+                let _ = meter_tray::build(app);
+            }
             if let Err(error) = result {
                 let message = format!("Bridge could not start: {error}");
                 diagnostics::record(&message);
@@ -2595,7 +2847,9 @@ pub fn run() -> i32 {
     diagnostics::install(app.path().app_log_dir().ok());
     app.run_return(move |app, event| {
         if matches!(event, tauri::RunEvent::Ready) {
-            if let Some(HostMode::Failed(message)) = exit_host.get() {
+            if packaged_smoke {
+                start_packaged_smoke(app, exit_host.get());
+            } else if let Some(HostMode::Failed(message)) = exit_host.get() {
                 use tauri_plugin_dialog::DialogExt;
                 let mut detail = message.clone();
                 if let Some(path) = diagnostics::path() {
@@ -2613,6 +2867,8 @@ pub fn run() -> i32 {
             }
         }
         if matches!(event, tauri::RunEvent::Exit) {
+            menu_bar::shutdown();
+            bridge_core::provider_usage::shutdown();
             if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
                 runtime.shutdown();
             }
@@ -2642,6 +2898,52 @@ mod tests {
     use std::process::Command;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    #[test]
+    fn packaged_smoke_requires_exact_opt_in() {
+        assert!(packaged_smoke_requested(Some(std::ffi::OsStr::new("1"))));
+        for value in [None, Some(""), Some("0"), Some("true"), Some("01")] {
+            assert!(!packaged_smoke_requested(value.map(std::ffi::OsStr::new)));
+        }
+    }
+
+    #[test]
+    fn packaged_smoke_database_path_requires_an_absolute_override() {
+        assert_eq!(
+            packaged_smoke_database_path(Some(std::ffi::OsStr::new("/tmp/bridge-smoke"))).unwrap(),
+            PathBuf::from("/tmp/bridge-smoke/bridge.db")
+        );
+        for value in [None, Some(""), Some("relative/data")] {
+            assert!(packaged_smoke_database_path(value.map(std::ffi::OsStr::new)).is_err());
+        }
+    }
+
+    #[test]
+    fn packaged_smoke_health_requires_ok_and_the_isolated_database() {
+        let expected = Path::new("/tmp/bridge-smoke/bridge.db");
+        assert!(validate_packaged_smoke_health(
+            &serde_json::json!({
+                "ok": true,
+                "database": "/tmp/bridge-smoke/bridge.db",
+            }),
+            expected,
+        )
+        .is_ok());
+
+        for health in [
+            serde_json::json!({
+                "ok": false,
+                "database": "/tmp/bridge-smoke/bridge.db",
+            }),
+            serde_json::json!({ "ok": true }),
+            serde_json::json!({
+                "ok": true,
+                "database": "/tmp/another-bridge/bridge.db",
+            }),
+        ] {
+            assert!(validate_packaged_smoke_health(&health, expected).is_err());
+        }
+    }
 
     #[test]
     fn daemon_runtime_shutdown_stops_and_joins_its_supervisor() {
@@ -3837,7 +4139,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(matches!(second, WorkerReservationOutcome::Queued));
+        assert!(matches!(second, WorkerReservationOutcome::Queued(_)));
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM sessions WHERE workspace_id='w'",
@@ -3848,14 +4150,14 @@ mod tests {
             2
         );
         let entries = store::session_entries(&db, "parent").unwrap();
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 4);
         assert_eq!(entries[2].kind, "delegation.requested");
         assert_eq!(entries[2].payload["decision"], "queue");
         assert_eq!(entries[2].payload["reason"], "writer_conflict");
     }
 
     #[test]
-    fn policy_defers_cross_harness_reservation_until_phase_boundary() {
+    fn policy_reserves_cross_harness_children_without_waiting_for_parent_boundary() {
         let db = policy_fixture();
         db.execute(
             "UPDATE sessions SET active_turn_id='turn-cross' WHERE id='parent'",
@@ -3874,7 +4176,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(matches!(outcome, WorkerReservationOutcome::Queued));
+        assert!(matches!(outcome, WorkerReservationOutcome::Reserved(_)));
         assert_eq!(
             db.query_row(
                 "SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'",
@@ -3882,22 +4184,13 @@ mod tests {
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),
-            0
+            1
         );
         assert_eq!(
-            db.query_row("SELECT queue_status FROM worker_queue", [], |row| row
-                .get::<_, String>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_queue", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
-            "queued"
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .unwrap(),
-            "handoff.deferred_for_phase_boundary"
+            0
         );
     }
 
@@ -4195,15 +4488,15 @@ mod tests {
                 .unwrap(),
             0
         );
-        reserve_worker_launch(
+        let retry = reserve_worker_launch(
             &db,
             "parent",
             "turn-decline",
             &request,
             "gpt-5.6-terra",
             true,
-        )
-        .unwrap();
+        );
+        assert!(retry.err().unwrap().to_string().contains("already resolved"));
         assert_eq!(
             store::session_entries(&db, "parent")
                 .unwrap()

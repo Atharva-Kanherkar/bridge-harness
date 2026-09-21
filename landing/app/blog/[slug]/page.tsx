@@ -29,7 +29,7 @@ export default async function BlogPost({ params }: PageProps<"/blog/[slug]">) {
         <Link href="/blog" className="text-[13px] text-muted-foreground hover:text-foreground">
           Blog
         </Link>
-        <time dateTime={post.iso} className="mt-8 block text-[13px] text-faint">
+        <time dateTime={post.iso} className="mt-8 block text-[13px] text-muted-foreground">
           {post.date}
         </time>
         <h1 className="mt-2 font-display text-4xl leading-tight tracking-[-0.01em] sm:text-5xl">{post.title}</h1>
