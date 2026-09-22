@@ -908,6 +908,13 @@ async fn refresh_provider_usage_overviews_interactive(state: State<'_, Arc<Bridg
 }
 
 #[tauri::command]
+async fn redeem_provider_usage_reset(state: State<'_, Arc<BridgeCore>>, provider: String, credit_id: Option<String>, idempotency_key: String) -> Result<wire::RedeemProviderUsageResetResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = wire::RedeemProviderUsageResetParams { provider, credit_id, idempotency_key };
+    blocking("Redeem provider usage reset", move || api::redeem_provider_usage_reset(&core, &params)).await
+}
+
+#[tauri::command]
 async fn get_usage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     let core = state.inner().clone();
     blocking("Usage overview", move || api::get_usage_overview(&core)).await
@@ -2647,6 +2654,7 @@ pub fn run() -> i32 {
             get_provider_usage_overviews,
             refresh_provider_usage_overviews,
             refresh_provider_usage_overviews_interactive,
+            redeem_provider_usage_reset,
             get_usage_overview,
             refresh_usage_overview,
             get_menu_bar_settings,

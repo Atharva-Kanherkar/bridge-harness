@@ -4062,6 +4062,10 @@ pub fn refresh_provider_usage_overviews_interactive(core: &Arc<BridgeCore>) -> R
     crate::usage_overview::refresh_providers_interactive(core)
 }
 
+pub fn redeem_provider_usage_reset(core: &Arc<BridgeCore>, params: &wire::RedeemProviderUsageResetParams) -> Result<wire::RedeemProviderUsageResetResult, BridgeError> {
+    crate::usage_overview::redeem_reset(core, params)
+}
+
 pub fn get_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     crate::usage_overview::snapshot(core)
 }
