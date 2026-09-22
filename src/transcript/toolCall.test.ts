@@ -57,6 +57,15 @@ describe("harness subagent facet (issue #667)", () => {
     expect(tool.subagent).toMatchObject({ description: "Research", prompt: "Dig in" });
   });
 
+  it("recognizes Claude's Agent tool as a subagent call", () => {
+    const tool = readToolCall({
+      title: "Agent", text: "", status: "inProgress", surface: "activity",
+      data: { name: "Agent", input: { description: "Investigate", prompt: "Check the logs", agent: "Investigate" } },
+    });
+    expect(tool).toMatchObject({ verb: "tool", glyph: "fork", doing: "Delegating", target: "Investigate" });
+    expect(tool.subagent).toEqual({ agentType: "Investigate", description: "Investigate", prompt: "Check the logs" });
+  });
+
   it("recognizes a collab-agent item type", () => {
     const tool = readToolCall({
       title: "Explore", text: "done", surface: "activity",
@@ -75,8 +84,42 @@ describe("harness subagent facet (issue #667)", () => {
     }
   });
 
+  it("preserves a bare collab-agent lifecycle record and surfaces its child result", () => {
+    const tool = readToolCall({
+      title: "Explore", text: "", status: "completed", surface: "activity",
+      data: {
+        type: "collabAgentToolCall",
+        threadId: "t-child",
+        agentsStates: { "t-child": { status: "completed", message: "Found three call sites." } },
+      },
+    });
+    expect(tool.subagent).toMatchObject({ status: "completed" });
+    expect(tool.output).toBe("Found three call sites.");
+  });
+
+  it("reads child lifecycle status from agentsStates", () => {
+    const running = readToolCall({
+      title: "Explore", text: "", status: "completed", surface: "activity",
+      data: { type: "collabAgentToolCall", threadId: "t-child", agentsStates: { "t-child": { status: "inProgress" } } },
+    });
+    const failed = readToolCall({
+      title: "Explore", text: "", status: "completed", surface: "activity",
+      data: { type: "collabAgentToolCall", threadId: "t-child", agentsStates: { "t-child": { status: "failed" } } },
+    });
+    expect(running.subagent?.status).toBe("running");
+    expect(failed.subagent?.status).toBe("failed");
+  });
+
   it("does not claim ACP other-kind rows without a task payload", () => {
     expect(readToolCall({ title: "Plan", text: "", surface: "activity", data: { kind: "other" } }).subagent).toBeUndefined();
+  });
+
+  it("reads Codex dynamic tool calls from the arguments bag", () => {
+    const tool = readToolCall({
+      title: "d", text: "", surface: "activity",
+      data: { type: "dynamicToolCall", arguments: { description: "Refactor", prompt: "Consolidate handlers", subagent_type: "Refactor" } },
+    });
+    expect(tool.subagent).toEqual({ agentType: "Refactor", description: "Refactor", prompt: "Consolidate handlers" });
   });
 
   it("does not claim dynamic tool calls without both type and prompt fields", () => {

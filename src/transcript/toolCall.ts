@@ -63,11 +63,17 @@ export interface ToolCallDisplay {
  * (`prompt`), what it was called (`description`), and which agent was named
  * (`agentType`). All three are provider vocabulary, read from the tool input
  * bag — never from a harness id.
+ *
+ * A collab-agent lifecycle record may have none of those fields but still
+ * carries a child status in `agentsStates`; `status` surfaces that lifecycle
+ * so the UI does not conflate "parent tool call completed" with "child
+ * subagent finished".
  */
 export interface SubagentFacet {
   agentType?: string;
   description?: string;
   prompt?: string;
+  status?: "running" | "completed" | "failed";
 }
 
 /**
@@ -275,11 +281,22 @@ function acpContentText(data: Record<string, unknown>): string | undefined {
   return joined || undefined;
 }
 
+/** Read a child subagent's result out of a Codex `agentsStates` bag. */
+function readAgentsStatesOutput(data: Record<string, unknown>): string | undefined {
+  const state = objectValue(data.state);
+  const agentsStates = objectValue(data.agentsStates) ?? objectValue(state.agentsStates);
+  if (!agentsStates || Object.keys(agentsStates).length === 0) return undefined;
+  const threadId = text(data.threadId) ?? text(state.threadId);
+  const entry = threadId ? objectValue(agentsStates[threadId]) : objectValue(Object.values(agentsStates)[0]);
+  return text(entry.message) ?? text(entry.output);
+}
+
 /** The output behind a tool row: explicit output, else the item's own body. */
 function readOutput(source: ToolCallSource, data: Record<string, unknown>): string | undefined {
   const state = objectValue(data.state);
   const direct = text(data.aggregatedOutput) ?? text(data.output) ?? text(state.output)
-    ?? acpContentText(data);
+    ?? acpContentText(data)
+    ?? readAgentsStatesOutput(data);
   if (direct) return direct;
   const body = source.text ?? "";
   if (!body.trim()) return undefined;
@@ -298,12 +315,26 @@ function readOutput(source: ToolCallSource, data: Record<string, unknown>): stri
  * MCP tools never become subagent rows. An ACP `kind: "other"` without a task
  * payload stays a generic tool row.
  */
+/** Read a child subagent's lifecycle status out of a Codex `agentsStates` bag. */
+function readAgentLifecycleStatus(data: Record<string, unknown>): SubagentFacet["status"] | undefined {
+  const state = objectValue(data.state);
+  const agentsStates = objectValue(data.agentsStates) ?? objectValue(state.agentsStates);
+  if (!agentsStates || Object.keys(agentsStates).length === 0) return undefined;
+  const threadId = text(data.threadId) ?? text(state.threadId);
+  const entry = threadId ? objectValue(agentsStates[threadId]) : objectValue(Object.values(agentsStates)[0]);
+  const status = text(entry.status);
+  if (status === "inProgress" || status === "streaming" || status === "running") return "running";
+  if (status === "failed" || status === "error") return "failed";
+  if (status === "completed") return "completed";
+  return undefined;
+}
+
 function readSubagent(source: ToolCallSource, data: Record<string, unknown>): SubagentFacet | undefined {
   const state = objectValue(data.state);
-  const input = { ...objectValue(data.input), ...objectValue(state.input) };
+  const input = { ...objectValue(data.input), ...objectValue(state.input), ...objectValue(data.arguments) };
   const name = (text(data.name) ?? text(data.tool) ?? "").toLowerCase();
   const dataType = String(data.type ?? "");
-  const isTaskName = name === "task";
+  const isTaskName = name === "task" || name === "agent";
   const isCollabAgent = dataType === "collabAgentToolCall";
   const pickType = (bag: Record<string, unknown>): string | undefined =>
     text(bag.subagent_type) ?? text(bag.subagentType) ?? text(bag.agent) ?? text(bag.agentType) ?? text(bag.mode);
@@ -318,8 +349,12 @@ function readSubagent(source: ToolCallSource, data: Record<string, unknown>): Su
   const description = text(input.description) ?? text(input.taskName) ?? text(input.label) ?? text(input.summary)
     ?? text(data.description) ?? (source.title && source.title !== toolName ? source.title : undefined);
   const prompt = pickPrompt(input) ?? pickPrompt(data);
-  if (!agentType && !description && !prompt) return undefined;
-  return { agentType, description, prompt };
+  const lifecycleStatus = readAgentLifecycleStatus(data);
+  // A bare collab-agent lifecycle record (e.g. a completed `wait`) may carry
+  // neither type, description, nor prompt, but it still owns a child result
+  // that the transcript should surface.
+  if (!agentType && !description && !prompt && !isCollabAgent) return undefined;
+  return { agentType, description, prompt, status: lifecycleStatus };
 }
 
 /** Read one tool call's display shape out of whatever the provider sent. */
@@ -640,7 +675,7 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
     }
     if (key === "websearch") return { verb: "search", glyph: "globe", doing: "Searching the web", done: "Searched the web", target: text(input.query) };
     if (key === "webfetch") return { verb: "search", glyph: "globe", doing: "Fetching", done: "Fetched", target: text(input.url) };
-    if (key === "task") return { verb: "tool", glyph: "fork", doing: "Delegating", done: "Delegated", target: text(input.description) };
+    if (key === "task" || key === "agent") return { verb: "tool", glyph: "fork", doing: "Delegating", done: "Delegated", target: text(input.description) };
     if (key === "todowrite") return { verb: "tool", glyph: "list", doing: "Updating tasks", done: "Updated tasks" };
     if (key.startsWith("mcp__")) {
       const parts = name.replace(/^mcp__/, "").split("__");

@@ -254,12 +254,15 @@ function TerminalBlock({ command, output }: { command?: string; output?: string 
 /// prompt the parent sent in, then the result — so a minutes-long subagent is
 /// not one pulse with nothing under it. Keyed off the normalized subagent
 /// facet, never off which harness produced the call.
-function SubagentBlock({ agentType, prompt, output, live }: { agentType?: string; prompt?: string; output?: string; live: boolean }) {
+function SubagentBlock({ agentType, prompt, output, status, live }: { agentType?: string; prompt?: string; output?: string; status?: "running" | "completed" | "failed"; live?: boolean }) {
+  const childStatus = status ?? (live ? "running" : "completed");
+  const isRunning = childStatus === "running";
+  const isFailed = childStatus === "failed";
   return (
     <div className="space-y-3 bg-card px-3.5 py-3 sm:px-4">
       <header className="flex items-center gap-2">
-        {live ? <PulseDot size={7}/> : <Check size={12} className="text-success" aria-hidden="true"/>}
-        <span className="text-[12px] font-medium text-foreground">{live ? "Running subagent" : "Subagent finished"}</span>
+        {isRunning ? <PulseDot size={7}/> : isFailed ? <X size={12} className="text-destructive" aria-hidden="true"/> : <Check size={12} className="text-success" aria-hidden="true"/>}
+        <span className="text-[12px] font-medium text-foreground">{isRunning ? "Running subagent" : isFailed ? "Subagent failed" : "Subagent finished"}</span>
         {agentType && (
           <span className="ml-auto inline-flex items-center rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
             {agentType}
@@ -269,7 +272,7 @@ function SubagentBlock({ agentType, prompt, output, live }: { agentType?: string
       {prompt && <SubagentSection label="Asked" text={prompt} markdown />}
       {output ? (
         <SubagentSection label="Result" text={output} />
-      ) : live ? (
+      ) : isRunning ? (
         <p className="text-[12px] text-muted-foreground">Working — the result will appear here.</p>
       ) : null}
     </div>
@@ -390,7 +393,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
         </div>
         <Disclosure open={open} className="border-t border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
-          {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} live={live}/>}
+          {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} status={call.subagent?.status} live={live}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>

@@ -393,4 +393,39 @@ describe("harness subagents (issue #667)", () => {
     expect(host.textContent).not.toContain("Subagent");
     expect(host.textContent).not.toContain("Asked");
   });
+
+  it("shows a running child even when the parent tool call is completed", async () => {
+    mount([event(1, "tool.completed", {
+      itemId: "task-1",
+      title: "Task",
+      status: "completed",
+      data: {
+        name: "Task",
+        input: { description: "Explore auth", prompt: "Map the login flow" },
+        threadId: "t-child",
+        agentsStates: { "t-child": { status: "inProgress" } },
+      },
+    })]);
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+    expect(host.textContent).toContain("Running subagent");
+  });
+
+  it("shows a failed child status instead of a green check", async () => {
+    mount([event(1, "tool.completed", {
+      itemId: "task-1",
+      title: "Task",
+      status: "completed",
+      data: {
+        name: "Task",
+        input: { description: "Explore auth", prompt: "Map the login flow" },
+        threadId: "t-child",
+        agentsStates: { "t-child": { status: "failed" } },
+      },
+    })]);
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+    expect(host.textContent).toContain("Subagent failed");
+    expect(host.textContent).not.toContain("Subagent finished");
+  });
 });
