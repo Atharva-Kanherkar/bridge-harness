@@ -671,7 +671,7 @@ pub fn github_review(
             // orchestrator session (depth 0) with no isolated worktree — the
             // worker gets its own read-only sandbox at launch.
             let operation = core.workspace_operation(workspace_id);
-            let _operation = operation.lock().unwrap();
+            let _operation = crate::runtime::lock_operation(&operation);
             let plan = core.plan_workspace_session(workspace_id, false)?;
             let new_id = plan.session_id().to_owned();
             core.persist_workspace_session(plan, None)?;
@@ -982,7 +982,7 @@ pub fn connect_workspace_folder(
         return Err(BridgeError::Invalid("workspace does not exist".into()));
     }
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     let still_exists: bool = core.db.lock().unwrap().query_row(
         "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=?1)",
         params![workspace_id],
@@ -1046,7 +1046,7 @@ fn with_workspace_lock<T>(
     body: impl FnOnce() -> T,
 ) -> T {
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     body()
 }
 
@@ -1056,7 +1056,7 @@ fn with_optional_workspace_lock<T>(
     body: impl FnOnce() -> T,
 ) -> T {
     let operation = workspace_id.map(|workspace_id| core.workspace_operation(workspace_id));
-    let _operation = operation.as_ref().map(|operation| operation.lock().unwrap());
+    let _operation = operation.as_ref().map(|operation| crate::runtime::lock_operation(operation));
     body()
 }
 
@@ -1219,7 +1219,7 @@ pub fn archive_workspace(
     // snapshot failure below cannot leave listeners unaware of it.
     core.workspace_path(workspace_id)?;
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     if core
         .runtimes
         .lock()
@@ -1404,7 +1404,7 @@ pub fn create_workspace_session(
 ) -> Result<BridgeState, BridgeError> {
     core.workspace_path(workspace_id)?;
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     let plan = core.plan_workspace_session(workspace_id, create_worktree)?;
     let worktree = match plan.worktree_source().map(str::to_owned) {
         Some(source) => Some(sessions::prepare_orchestrator_worktree(
@@ -4326,7 +4326,7 @@ pub fn adopt_worker_worktree(
             BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
         })?;
     let workspace_operation = core.workspace_operation(&workspace_id);
-    let _workspace_operation = workspace_operation.lock().unwrap();
+    let _workspace_operation = crate::runtime::lock_operation(&workspace_operation);
     if core
         .runtimes
         .lock()
@@ -4400,7 +4400,7 @@ pub fn discard_worker_worktree(
             BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
         })?;
     let workspace_operation = core.workspace_operation(&workspace_id);
-    let _workspace_operation = workspace_operation.lock().unwrap();
+    let _workspace_operation = crate::runtime::lock_operation(&workspace_operation);
     let plan = {
         let db = core.db.lock().unwrap();
         worker_adoption::plan_discard(&db, session_id)?

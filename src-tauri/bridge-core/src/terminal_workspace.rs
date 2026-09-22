@@ -1,6 +1,6 @@
 //! Persistent terminal workspaces. Rust owns PTYs; the same xterm headless
 //! engine used by Orca owns VT checkpoints and the ordered output journal.
-use crate::{events::CoreEvent, BridgeCore, BridgeError, RuntimeSession};
+use crate::{diagnostics, events::CoreEvent, BridgeCore, BridgeError, RuntimeSession};
 use base64::Engine;
 use bridge_protocol::messages::{
     CreateTerminalParams, TerminalFrame, TerminalRecord, TerminalSnapshot, TerminalWorkspace,
@@ -156,7 +156,7 @@ pub fn snapshot(
     terminal: &str,
 ) -> Result<TerminalSnapshot, BridgeError> {
     let operation = core.workspace_operation(workspace);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     snapshot_inner(core, workspace, terminal)
 }
 
@@ -191,7 +191,7 @@ pub fn workspace(
     workspace_id: &str,
 ) -> Result<TerminalWorkspace, BridgeError> {
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     core.workspace_path(workspace_id)?;
     let mut terminals: Vec<TerminalRecord> =
         state_call(core, json!({"op":"list", "workspaceId":workspace_id}))?;
@@ -252,7 +252,7 @@ pub fn create(
     let workspace_path = core.workspace_path(workspace_id)?;
     let runtime_id = key(workspace_id, terminal_id);
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal create")?;
     if is_live(core, workspace_id, terminal_id) {
         return Ok(snapshot_inner(core, workspace_id, terminal_id)?.record);
@@ -378,7 +378,7 @@ pub fn create(
             ) {
                 Ok(response) => response,
                 Err(error) => {
-                    eprintln!("terminal history failed: {error}");
+                    diagnostics::record(&format!("terminal history failed: {error}"));
                     break;
                 }
             };

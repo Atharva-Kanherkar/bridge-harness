@@ -7,6 +7,7 @@ use crate::{
         ContextSegmentObservation,
     },
     delegation::WriteMode,
+    diagnostics,
     model::{AuthState, CapabilityTier, ModelOption},
     BridgeError,
 };
@@ -654,12 +655,12 @@ impl SessionFrameFilter {
             .unwrap_or("<none>")
             .to_owned();
         if self.reported_foreign.insert(session_id.clone()) {
-            eprintln!(
+            diagnostics::record(&format!(
                 "bridge: opencode session {} dropped a frame from foreign session {} ({})",
                 self.root,
                 session_id,
                 value.get("type").and_then(Value::as_str).unwrap_or("?")
-            );
+            ));
         }
     }
 }

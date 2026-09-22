@@ -1,6 +1,6 @@
 //! Persisted Bridge prompt-section overrides and append-only revision history.
 
-use crate::{prompt_compiler::PromptCompiler, prompts, BridgeError};
+use crate::{diagnostics, prompt_compiler::PromptCompiler, prompts, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -152,10 +152,10 @@ pub fn current_state(
         Err(error) => {
             // A corrupt or forward-incompatible payload should not hard-fail
             // every session launch. Fall back to the compiled default.
-            eprintln!(
+            diagnostics::record(&format!(
                 "bridge-core: falling back to default prompt section state for {:?}: {}",
                 key, error
-            );
+            ));
             return Ok(PromptSectionState::Default);
         }
     };
