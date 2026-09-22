@@ -134,6 +134,43 @@ describe("the runtime list", () => {
     }
   });
 
+  // A managed payload stays receipt-valid forever, so a runtime installed under
+  // an older pin kept winning silently and a newly released provider model never
+  // appeared. Update is the only surface that lets a user fix that.
+  it("a_payload_behind_its_pin_offers_update_and_names_the_target_version", async () => {
+    const install = vi.spyOn(bridgeApi, "installManagedAgent").mockResolvedValue({
+      agentId: "codex",
+      kind: "install",
+      outcome: "installed",
+      status: agent({ version: "0.155.1", pinnedVersion: "0.155.1", updateAvailable: false }),
+    });
+    const view = await render([agent({ updateAvailable: true, pinnedVersion: "0.155.1" })]);
+    expect(view.text()).toContain("update to 0.155.1");
+
+    await view.click(view.button("Update"));
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(install).toHaveBeenCalledWith("codex");
+    // The returned status is applied, so the offer clears rather than lingering
+    // over a runtime that is now current.
+    expect(view.button("Update")).toBeNull();
+    expect(view.text()).not.toContain("update to");
+    await view.unmount();
+  });
+
+  it("an_up_to_date_or_unowned_runtime_offers_no_update", async () => {
+    for (const overrides of [
+      { updateAvailable: false, pinnedVersion: "0.147.0" },
+      { state: "external", backing: "external", removable: false, updateAvailable: false } as const,
+      // Repair comes first: a drifted payload is not an out-of-date one, and
+      // offering both would ask the user to choose between them.
+      { state: "repairable", backing: "managed", updateAvailable: true } as const,
+    ]) {
+      const view = await render([agent(overrides)]);
+      expect(view.button("Update"), JSON.stringify(overrides)).toBeNull();
+      await view.unmount();
+    }
+  });
+
   it("shows authentication actions only when the provider is known to be signed out", async () => {
     const signedIn = await render([agent()]);
     expect(signedIn.text()).toContain("Signed in");

@@ -848,11 +848,11 @@ pub fn dispatch(
         }
         MethodName::InstallManagedAgent => {
             let p: wire::InstallManagedAgentParams = decode(method, params)?;
-            reply_managed(api::install_managed_agent(&p.agent_id))
+            reply_managed(api::install_managed_agent(core, &p.agent_id))
         }
         MethodName::RepairManagedAgent => {
             let p: wire::RepairManagedAgentParams = decode(method, params)?;
-            reply_managed(api::repair_managed_agent(&p.agent_id))
+            reply_managed(api::repair_managed_agent(core, &p.agent_id))
         }
         MethodName::UninstallManagedAgent => {
             let p: wire::UninstallManagedAgentParams = decode(method, params)?;

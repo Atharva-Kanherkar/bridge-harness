@@ -2860,19 +2860,21 @@ const mockManagedAgents: ManagedAgentList = {
     {
       agentId: "claude", label: "Claude Code", state: "ready", backing: "managed", removable: true,
       executable: "/managed-runtimes/agents/claude/installations/a1b2c3/payload/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
-      version: "0.3.209", consecutiveFailures: 0,
+      // Deliberately behind the pin: mock mode is where the Update action is
+      // developed and reviewed, so one runtime has to have an update waiting.
+      version: "0.3.209", pinnedVersion: "0.3.280", updateAvailable: true, consecutiveFailures: 0,
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,
-      executable: "/opt/homebrew/bin/codex", version: "0.147.0", consecutiveFailures: 0,
+      executable: "/opt/homebrew/bin/codex", version: "0.147.0", updateAvailable: false, consecutiveFailures: 0,
     },
     {
       agentId: "cursor", label: "Cursor", state: "external", backing: "external", removable: false,
-      executable: "/Users/demo/.local/bin/cursor-agent", consecutiveFailures: 0,
+      executable: "/Users/demo/.local/bin/cursor-agent", updateAvailable: false, consecutiveFailures: 0,
     },
     {
       agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false,
-      consecutiveFailures: 0,
+      updateAvailable: false, consecutiveFailures: 0,
     },
   ],
 };
@@ -2884,12 +2886,14 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
     if (!agent.removable) return Promise.reject(new Error(`${agent.label} is user-managed; Bridge will not remove it`));
     const status: ManagedAgentStatus = {
       ...structuredClone(agent), state: "not_installed", backing: "none", removable: false,
-      executable: undefined, version: undefined,
+      executable: undefined, version: undefined, updateAvailable: false,
     };
     return Promise.resolve({ agentId, kind, outcome: "removed", status });
   }
   const status: ManagedAgentStatus = {
-    ...structuredClone(agent), state: "ready", backing: "managed", removable: true, version: "0.0.0-mock",
+    // An install lands the pinned version, so the update it answered is gone.
+    ...structuredClone(agent), state: "ready", backing: "managed", removable: true,
+    version: agent.pinnedVersion ?? "0.0.0-mock", updateAvailable: false,
   };
   return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
 }

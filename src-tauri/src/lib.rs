@@ -514,17 +514,19 @@ async fn inspect_managed_agent(
 #[tauri::command]
 async fn install_managed_agent(
     agent_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
-    api::install_managed_agent(&agent_id)
+    api::install_managed_agent(&state, &agent_id)
 }
 
 #[tauri::command]
 async fn repair_managed_agent(
     agent_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
-    api::repair_managed_agent(&agent_id)
+    api::repair_managed_agent(&state, &agent_id)
 }
 
 #[tauri::command]
