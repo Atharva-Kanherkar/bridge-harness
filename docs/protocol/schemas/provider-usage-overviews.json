@@ -180,6 +180,16 @@
             "null"
           ]
         },
+        "resetCredits": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UsageResetCredits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "schemaVersion": {
           "format": "uint32",
           "minimum": 0.0,
@@ -258,6 +268,96 @@
         "id",
         "label",
         "usedPercent"
+      ],
+      "type": "object"
+    },
+    "UsageResetCredit": {
+      "properties": {
+        "clears": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "grantedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "program": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requiresLimit": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usableNow": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "clears",
+        "id"
+      ],
+      "type": "object"
+    },
+    "UsageResetCredits": {
+      "properties": {
+        "availableCount": {
+          "description": "None means the provider did not report a count; it is never zero.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "credits": {
+          "items": {
+            "$ref": "#/definitions/UsageResetCredit"
+          },
+          "type": "array"
+        },
+        "detailsKnown": {
+          "type": "boolean"
+        },
+        "nextExpiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "credits",
+        "detailsKnown"
       ],
       "type": "object"
     }

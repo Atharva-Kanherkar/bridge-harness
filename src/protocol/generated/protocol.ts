@@ -139,6 +139,7 @@ export type BridgeMethod =
   | "usage/get_provider_usage_overviews"
   | "usage/refresh_provider_usage_overviews"
   | "usage/refresh_provider_usage_overviews_interactive"
+  | "usage/redeem_provider_usage_reset"
   | "usage/get_usage_overview"
   | "usage/refresh_usage_overview"
   | "menu_bar/get_menu_bar_settings"
@@ -351,6 +352,7 @@ export const BRIDGE_METHODS = [
   { method: "usage/get_provider_usage_overviews", domain: "usage", command: "get_provider_usage_overviews" },
   { method: "usage/refresh_provider_usage_overviews", domain: "usage", command: "refresh_provider_usage_overviews" },
   { method: "usage/refresh_provider_usage_overviews_interactive", domain: "usage", command: "refresh_provider_usage_overviews_interactive" },
+  { method: "usage/redeem_provider_usage_reset", domain: "usage", command: "redeem_provider_usage_reset" },
   { method: "usage/get_usage_overview", domain: "usage", command: "get_usage_overview" },
   { method: "usage/refresh_usage_overview", domain: "usage", command: "refresh_usage_overview" },
   { method: "menu_bar/get_menu_bar_settings", domain: "menu_bar", command: "get_menu_bar_settings" },
@@ -633,6 +635,7 @@ export interface BridgeMethodParams {
   "usage/get_provider_usage_overviews": undefined;
   "usage/refresh_provider_usage_overviews": undefined;
   "usage/refresh_provider_usage_overviews_interactive": undefined;
+  "usage/redeem_provider_usage_reset": RedeemProviderUsageResetParams;
   "usage/get_usage_overview": undefined;
   "usage/refresh_usage_overview": undefined;
   "menu_bar/get_menu_bar_settings": undefined;
@@ -847,6 +850,7 @@ export interface BridgeMethodResults {
   "usage/get_provider_usage_overviews": ProviderUsageOverviews;
   "usage/refresh_provider_usage_overviews": ProviderUsageOverviews;
   "usage/refresh_provider_usage_overviews_interactive": ProviderUsageOverviews;
+  "usage/redeem_provider_usage_reset": RedeemProviderUsageResetResult;
   "usage/get_usage_overview": UsageOverviewSnapshot;
   "usage/refresh_usage_overview": UsageOverviewSnapshot;
   "menu_bar/get_menu_bar_settings": MenuBarSettings;
@@ -2202,6 +2206,7 @@ export interface UsageOverviewSnapshot {
   plan?: string | null;
   provider: string;
   quotaSource?: string | null;
+  resetCredits?: UsageResetCredits | null;
   schemaVersion: number;
   today: UsagePeriodOverview;
   windows: UsageQuotaWindow[];
@@ -2237,6 +2242,24 @@ export interface UsageQuotaWindow {
   resetsAt?: number | null;
   usedPercent: UsageMetric;
   windowMinutes?: number | null;
+}
+
+export interface UsageResetCredit {
+  clears: string[];
+  expiresAt?: number | null;
+  grantedAt?: number | null;
+  id: string;
+  program?: string | null;
+  requiresLimit?: boolean | null;
+  title?: string | null;
+  usableNow?: boolean | null;
+}
+
+export interface UsageResetCredits {
+  availableCount?: number | null;
+  credits: UsageResetCredit[];
+  detailsKnown: boolean;
+  nextExpiresAt?: number | null;
 }
 
 export type UsageResolution = "day" | "hour";
@@ -3594,6 +3617,20 @@ export interface ProviderUsageOverviews {
   generatedAt: number;
   providers: UsageOverviewSnapshot[];
   schemaVersion: number;
+}
+
+export interface RedeemProviderUsageResetParams {
+  creditId?: string | null;
+  idempotencyKey: string;
+  provider: string;
+}
+
+export interface RedeemProviderUsageResetResult {
+  cleared: string[];
+  cooldownUntil?: number | null;
+  outcome: string;
+  resetsLeft?: number | null;
+  weeklyResetsAt?: number | null;
 }
 
 export interface SaveMenuBarSettingsParams {

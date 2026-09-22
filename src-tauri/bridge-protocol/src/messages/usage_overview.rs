@@ -98,6 +98,8 @@ pub struct UsageOverviewSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_source: Option<String>,
     pub windows: Vec<UsageQuotaWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<UsageResetCredits>,
     /// Provider-reported account amounts, separate from the device ledger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub account_metrics: Vec<UsageAccountMetric>,
@@ -109,6 +111,47 @@ pub struct UsageOverviewSnapshot {
     /// The ledger currently covers this device, not an entire billing account.
     pub coverage: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageResetCredits {
+    /// None means the provider did not report a count; it is never zero.
+    pub available_count: Option<u32>,
+    pub details_known: bool,
+    pub credits: Vec<UsageResetCredit>,
+    pub next_expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageResetCredit {
+    pub id: String,
+    pub title: Option<String>,
+    pub expires_at: Option<i64>,
+    pub granted_at: Option<i64>,
+    pub clears: Vec<String>,
+    pub usable_now: Option<bool>,
+    pub requires_limit: Option<bool>,
+    pub program: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RedeemProviderUsageResetParams {
+    pub provider: String,
+    pub credit_id: Option<String>,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RedeemProviderUsageResetResult {
+    pub outcome: String,
+    pub resets_left: Option<u32>,
+    pub cleared: Vec<String>,
+    pub weekly_resets_at: Option<i64>,
+    pub cooldown_until: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -369,6 +412,26 @@ mod tests {
             UsageMetricStatus::Stale
         );
         assert_eq!(usage.month.cost_microusd.value, None);
+    }
+
+    #[test]
+    fn reset_count_preserves_unknown_zero_and_old_snapshot_compatibility() {
+        let mut fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/menu-bar-presentation.json"
+        )).unwrap();
+        let provider = &mut fixture["usage"]["providers"][0];
+        let old: UsageOverviewSnapshot = serde_json::from_value(provider.clone()).unwrap();
+        assert!(old.reset_credits.is_none());
+        assert!(serde_json::to_value(old).unwrap().get("resetCredits").is_none());
+
+        provider["resetCredits"] = serde_json::json!({
+            "availableCount":null,"detailsKnown":false,"credits":[],"nextExpiresAt":null
+        });
+        let unknown: UsageOverviewSnapshot = serde_json::from_value(provider.clone()).unwrap();
+        assert_eq!(unknown.reset_credits.unwrap().available_count, None);
+        provider["resetCredits"]["availableCount"] = serde_json::json!(0);
+        let zero: UsageOverviewSnapshot = serde_json::from_value(provider.clone()).unwrap();
+        assert_eq!(zero.reset_credits.unwrap().available_count, Some(0));
     }
 }
 
