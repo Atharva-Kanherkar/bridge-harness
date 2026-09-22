@@ -1404,9 +1404,11 @@ export interface ManagedAgentStatus {
   executable?: string | null;
   label: string;
   lastFailure?: ManagedAgentFailure | null;
+  pinnedVersion?: string | null;
   processId?: number | null;
   removable: boolean;
   state: string;
+  updateAvailable: boolean;
   vendorMessage?: string | null;
   version?: string | null;
 }

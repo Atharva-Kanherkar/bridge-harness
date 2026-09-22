@@ -4,6 +4,6 @@
   "private": true,
   "description": "Pinned dependency closure for Bridge's managed codex payload.",
   "dependencies": {
-    "@openai/codex": "0.154.0"
+    "@openai/codex": "0.155.1"
   }
 }

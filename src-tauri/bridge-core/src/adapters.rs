@@ -1422,7 +1422,11 @@ fn inferred_tier(id: &str, label: &str) -> CapabilityTier {
         .any(|part| name.contains(part))
     {
         CapabilityTier::Fast
-    } else if ["opus", "fable", "sol", "strong", "pro", "max"]
+    // `astra` is OpenAI's top Codex tier (GPT-6-Astra, "our most capable model
+    // for complex, demanding work"). Without it the strongest model a provider
+    // offers falls through to standard, which is the one mistake this heuristic
+    // must not make.
+    } else if ["opus", "fable", "sol", "astra", "strong", "pro", "max"]
         .iter()
         .any(|part| name.contains(part))
     {
@@ -2113,12 +2117,13 @@ mod tests {
     #[test]
     fn a_discovered_provider_default_becomes_the_tier_default() {
         let fallback = codex_fallback_candidates();
-        // A brand-new model the provider now marks as its own default. It infers
-        // to Standard and must outrank the curated Standard default.
-        let mut astra = discovered("gpt-6-astra", "GPT Astra");
-        astra.is_default = true;
+        // A brand-new model the provider now marks as its own default. Its name
+        // carries no tier keyword, so it infers to Standard and must outrank the
+        // curated Standard default.
+        let mut vega = discovered("gpt-6-vega", "GPT Vega");
+        vega.is_default = true;
         let candidates = runtime_candidates_with_fallbacks(
-            vec![astra, discovered("gpt-5.6-terra", "GPT Terra")],
+            vec![vega, discovered("gpt-5.6-terra", "GPT Terra")],
             &fallback,
         );
         let resolved =
@@ -2127,11 +2132,29 @@ mod tests {
             .iter()
             .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
             .unwrap();
-        assert_eq!(standard_default.id, "gpt-6-astra");
+        assert_eq!(standard_default.id, "gpt-6-vega");
         // The curated model is still selectable, just no longer the default.
         assert!(resolved
             .iter()
             .any(|model| model.id == "gpt-5.6-terra" && !model.default_for_tier));
+    }
+
+    /// Every tier keyword earns its place by naming a model a provider actually
+    /// ships, and the strongest model on offer must never fall through to
+    /// standard — `gpt-6-astra` is OpenAI's top Codex tier and did exactly that.
+    #[test]
+    fn the_strongest_and_fastest_models_each_provider_ships_infer_their_tier() {
+        for (id, label, expected) in [
+            ("claude-opus-5-5", "Opus 5.5", CapabilityTier::Strong),
+            ("claude-fable-5-1", "Fable", CapabilityTier::Strong),
+            ("gpt-6-astra", "GPT-6-Astra", CapabilityTier::Strong),
+            ("gpt-6-sol", "GPT-6-Sol", CapabilityTier::Strong),
+            ("gpt-6-luna", "GPT-6-Luna", CapabilityTier::Fast),
+            ("claude-haiku-4-5", "Haiku 4.5", CapabilityTier::Fast),
+            ("claude-sonnet-5", "Sonnet 5", CapabilityTier::Standard),
+        ] {
+            assert_eq!(inferred_tier(id, label), expected, "{id}");
+        }
     }
 
     struct Fake;

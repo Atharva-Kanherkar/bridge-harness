@@ -139,6 +139,13 @@
             }
           ]
         },
+        "pinnedVersion": {
+          "description": "The version Bridge currently pins for this agent, when it has a recipe for this platform. Reported next to `version` so a client can say what an update would move to instead of only that one exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "processId": {
           "description": "Process id when one is running.",
           "format": "uint32",
@@ -155,6 +162,10 @@
         "state": {
           "description": "The lifecycle state's stable wire string.",
           "type": "string"
+        },
+        "updateAvailable": {
+          "description": "True when Bridge owns this payload and the pinned recipe no longer matches what is installed.\n\nAn installed payload stays launchable and receipt-valid forever, so without this a runtime pinned months ago silently keeps winning over the current pin — which is how a new provider model never appears. Only ever true for a Bridge-managed payload: a runtime the user installed is not Bridge's to version.",
+          "type": "boolean"
         },
         "vendorMessage": {
           "description": "A vendor-owned message, such as a login requirement, carried verbatim. Never a Bridge failure and never credential state.",
@@ -177,7 +188,8 @@
         "consecutiveFailures",
         "label",
         "removable",
-        "state"
+        "state",
+        "updateAvailable"
       ],
       "type": "object"
     }

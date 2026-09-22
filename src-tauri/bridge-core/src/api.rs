@@ -5983,22 +5983,35 @@ pub fn inspect_managed_agent(
     crate::managed_agents::inspect_managed_agent(agent_id)
 }
 
+/// Install or upgrade an agent's managed payload, then re-read its catalog.
+///
+/// The catalog refresh is the point of the install as often as not: a payload
+/// bump is how a newly released provider model reaches Bridge, and the adapter
+/// caches its model list from whichever payload was resolvable when it last
+/// looked. Without this the models the user just downloaded stay invisible
+/// until the app restarts.
 pub fn install_managed_agent(
+    core: &Arc<BridgeCore>,
     agent_id: &str,
 ) -> Result<
     bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
-    crate::managed_agents::install_managed_agent(agent_id)
+    let result = crate::managed_agents::install_managed_agent(agent_id)?;
+    core.adapter_registry.refresh_availability(agent_id);
+    Ok(result)
 }
 
 pub fn repair_managed_agent(
+    core: &Arc<BridgeCore>,
     agent_id: &str,
 ) -> Result<
     bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
-    crate::managed_agents::repair_managed_agent(agent_id)
+    let result = crate::managed_agents::repair_managed_agent(agent_id)?;
+    core.adapter_registry.refresh_availability(agent_id);
+    Ok(result)
 }
 
 /// Takes the core because removal must first prove nothing is running against
