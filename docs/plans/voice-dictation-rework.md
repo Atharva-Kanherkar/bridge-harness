@@ -240,6 +240,29 @@ and live packaged audio remain unverified for this milestone; disk space was
 about 551 MiB at the follow-up check. No source files or unrelated caches were
 removed and no model was downloaded. Commits remain local; no push or PR is implied.
 
+### Progress: local runtime, setup, and worklet capture (2026-09-22)
+
+- Added the supervised native speech helper and pinned sherpa-onnx runtime/model
+  installer. Setup is explicit, checks size and SHA-256, publishes progress,
+  installs atomically, supports retry/removal, and never falls back from an
+  explicitly selected local provider to Codex.
+- Added the Voice settings surface with the English-only, license, download, and
+  installed-size disclosures. The local provider remains `needsSetup` until the
+  user starts installation; capability probing performs no download.
+- Replaced per-buffer microphone conversion with a packaged AudioWorklet and a
+  continuous PCM16 resampler shared by its bounded compatibility fallback. Stop
+  now waits for a worklet flush acknowledgement, preserves partial final chunks,
+  and deterministically releases media resources on acknowledgement, timeout,
+  processor failure, or repeated cleanup.
+- Tests cover 16/44.1/48 kHz phase continuity, short-tail flushing, worklet
+  preference, crash cleanup, and draft-owned daemon requests. The production
+  frontend build emits the worklet as a self-contained asset.
+
+Local builds and automated suites are green for this implementation. The exact
+WKWebView and real microphone path, the approximately 460 MiB model setup, and
+offline live transcription remain intentionally unclaimed until the development
+and packaged app are exercised on an unlocked Mac.
+
 ### Part 1 — Immediate safety and honest diagnostics
 
 Files: `src/App.tsx`, `src/voiceCapture.ts`, `ComposerPill.tsx`, core `voice.rs`,

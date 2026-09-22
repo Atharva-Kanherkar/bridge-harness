@@ -1,3 +1,6 @@
+import workletUrl from "./voiceCaptureWorklet.ts?worker&url";
+import { ContinuousPcm16Resampler } from "./voiceResampler";
+
 export type VoiceChunk = {
   data: string;
   samplesPerChannel: number;
@@ -32,20 +35,11 @@ export function renderVoiceDraft(baseDraft: string, transcript: VoiceDraftTransc
 }
 
 export function resampleToPcm16(input: Float32Array, inputRate: number, targetRate = 16_000): Int16Array {
-  if (inputRate <= 0 || targetRate <= 0) throw new Error("Audio sample rates must be positive");
-  if (input.length === 0) return new Int16Array();
-  const ratio = inputRate / targetRate;
-  const length = Math.max(1, Math.floor(input.length / ratio));
-  const output = new Int16Array(length);
-  for (let index = 0; index < length; index += 1) {
-    const start = Math.floor(index * ratio);
-    const end = Math.max(start + 1, Math.min(input.length, Math.floor((index + 1) * ratio)));
-    let sum = 0;
-    for (let source = start; source < end; source += 1) sum += input[source];
-    const value = Math.max(-1, Math.min(1, sum / (end - start)));
-    output[index] = value < 0 ? Math.round(value * 0x8000) : Math.round(value * 0x7fff);
-  }
-  return output;
+  const output: number[] = [];
+  const resampler = new ContinuousPcm16Resampler(inputRate, targetRate, Math.max(1, input.length), samples => output.push(...samples));
+  resampler.push(input);
+  resampler.flush();
+  return Int16Array.from(output);
 }
 
 export function pcm16ToBase64(samples: Int16Array): string {
@@ -62,15 +56,17 @@ export function pcm16ToBase64(samples: Int16Array): string {
 }
 
 export class VoiceCapture {
-  private stopped = false;
+  private stopping?: Promise<void>;
 
   private constructor(
     private readonly stream: MediaStream,
     private readonly context: AudioContext,
-    private readonly processor: ScriptProcessorNode,
+    private readonly node: AudioNode,
     private readonly source: MediaStreamAudioSourceNode,
     private readonly mute: GainNode,
     private readonly onEnded: () => void,
+    private readonly flush: () => Promise<void>,
+    private readonly detach: () => void,
   ) {}
 
   static async start(onChunk: (chunk: VoiceChunk) => void, onError: (error: Error) => void = () => {}): Promise<VoiceCapture> {
@@ -80,34 +76,86 @@ export class VoiceCapture {
     });
     let context: AudioContext | undefined;
     let source: MediaStreamAudioSourceNode | undefined;
-    let processor: ScriptProcessorNode | undefined;
+    let node: AudioNode | undefined;
     let mute: GainNode | undefined;
+    let detach = () => undefined;
     const onEnded = () => onError(new Error("The microphone disconnected. Reconnect it and retry dictation."));
     try {
       for (const track of stream.getTracks()) track.addEventListener?.("ended", onEnded);
       context = new AudioContext();
       source = context.createMediaStreamSource(stream);
-      // ScriptProcessor remains the most widely supported capture primitive in
-      // WKWebView. It never drives UI; it only converts bounded mono buffers.
-      processor = context.createScriptProcessor(4096, 1, 1);
       mute = context.createGain();
       mute.gain.value = 0;
-      processor.onaudioprocess = event => {
-        try {
-          const pcm = resampleToPcm16(event.inputBuffer.getChannelData(0), context!.sampleRate);
-          if (pcm.length) onChunk({ data: pcm16ToBase64(pcm), samplesPerChannel: pcm.length });
-        } catch (error) {
-          onError(error instanceof Error ? error : new Error("Audio capture failed."));
-        }
+      const deliver = (pcm: Int16Array) => {
+        if (pcm.length) onChunk({ data: pcm16ToBase64(pcm), samplesPerChannel: pcm.length });
       };
-      source.connect(processor);
-      processor.connect(mute);
+      let flush: () => Promise<void>;
+      if (context.audioWorklet && typeof AudioWorkletNode !== "undefined") {
+        await context.audioWorklet.addModule(workletUrl);
+        const worklet = new AudioWorkletNode(context, "bridge-voice-capture", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+          processorOptions: { targetRate: 16_000, chunkSamples: 1_600 },
+        });
+        node = worklet;
+        let pendingFlush: { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | undefined;
+        worklet.port.onmessage = event => {
+          if (event.data?.type === "chunk" && event.data.samples instanceof ArrayBuffer) {
+            try { deliver(new Int16Array(event.data.samples)); }
+            catch (error) { onError(error instanceof Error ? error : new Error("Audio capture failed.")); }
+          } else if (event.data?.type === "flushed" && pendingFlush) {
+            clearTimeout(pendingFlush.timer);
+            pendingFlush.resolve();
+            pendingFlush = undefined;
+          }
+        };
+        worklet.onprocessorerror = () => {
+          const error = new Error("The microphone audio processor stopped unexpectedly.");
+          if (pendingFlush) {
+            clearTimeout(pendingFlush.timer);
+            pendingFlush.reject(error);
+            pendingFlush = undefined;
+          }
+          onError(error);
+        };
+        flush = () => new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pendingFlush = undefined;
+            reject(new Error("The microphone audio processor did not flush in time."));
+          }, 1_000);
+          pendingFlush = { resolve, reject, timer };
+          worklet.port.postMessage({ type: "flush" });
+        });
+        detach = () => {
+          if (pendingFlush) clearTimeout(pendingFlush.timer);
+          pendingFlush = undefined;
+          worklet.port.onmessage = null;
+          worklet.onprocessorerror = null;
+          worklet.port.close();
+        };
+      } else {
+        // macOS 12 WKWebView has AudioWorklet, but this bounded fallback keeps
+        // microphone cleanup deterministic on older or restricted webviews.
+        const processor = context.createScriptProcessor(4096, 1, 1);
+        const resampler = new ContinuousPcm16Resampler(context.sampleRate, 16_000, 1_600, deliver);
+        processor.onaudioprocess = event => {
+          try { resampler.push(event.inputBuffer.getChannelData(0)); }
+          catch (error) { onError(error instanceof Error ? error : new Error("Audio capture failed.")); }
+        };
+        node = processor;
+        flush = async () => resampler.flush();
+        detach = () => { processor.onaudioprocess = null; };
+      }
+      source.connect(node);
+      node.connect(mute);
       mute.connect(context.destination);
-      return new VoiceCapture(stream, context, processor, source, mute, onEnded);
+      return new VoiceCapture(stream, context, node, source, mute, onEnded, flush, detach);
     } catch (error) {
       try { source?.disconnect(); } catch { /* best-effort partial setup cleanup */ }
-      try { processor?.disconnect(); } catch { /* best-effort partial setup cleanup */ }
+      try { node?.disconnect(); } catch { /* best-effort partial setup cleanup */ }
       try { mute?.disconnect(); } catch { /* best-effort partial setup cleanup */ }
+      detach();
       for (const track of stream.getTracks()) {
         track.removeEventListener?.("ended", onEnded);
         track.stop();
@@ -118,17 +166,23 @@ export class VoiceCapture {
   }
 
   async stop(): Promise<void> {
-    if (this.stopped) return;
-    this.stopped = true;
-    this.processor.onaudioprocess = null;
+    if (!this.stopping) this.stopping = this.stopOnce();
+    return this.stopping;
+  }
+
+  private async stopOnce(): Promise<void> {
+    let flushError: unknown;
+    try { await this.flush(); } catch (error) { flushError = error; }
+    this.detach();
     // A detached node must not prevent the remaining resources being released.
     try { this.source.disconnect(); } catch { /* already disconnected */ }
-    try { this.processor.disconnect(); } catch { /* already disconnected */ }
+    try { this.node.disconnect(); } catch { /* already disconnected */ }
     try { this.mute.disconnect(); } catch { /* already disconnected */ }
     for (const track of this.stream.getTracks()) {
       track.removeEventListener?.("ended", this.onEnded);
       track.stop();
     }
     await this.context.close().catch(() => undefined);
+    if (flushError) throw flushError;
   }
 }
