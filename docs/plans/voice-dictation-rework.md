@@ -258,10 +258,20 @@ removed and no model was downloaded. Commits remain local; no push or PR is impl
   preference, crash cleanup, and draft-owned daemon requests. The production
   frontend build emits the worklet as a self-contained asset.
 
-Local builds and automated suites are green for this implementation. The exact
-WKWebView and real microphone path, the approximately 460 MiB model setup, and
-offline live transcription remain intentionally unclaimed until the development
-and packaged app are exercised on an unlocked Mac.
+Local builds and automated suites are green for this implementation. A live
+daemon exercise on Apple silicon then completed the explicit production setup:
+18,252,168 runtime bytes plus 463,945,051 model bytes were downloaded, checksum
+verified, installed atomically, and reported `ready` at the documented
+694,157,312-byte installed size. A fresh draft with no coding session streamed
+the model's public 16 kHz `0.wav` fixture through the production daemon/helper in
+67 chunks. The 6.625-second take emitted `started`, revised partials, `final`, and
+`closed`; its normalized final transcript matched every reference word exactly.
+
+This proves real installed-model inference through the draft-owned service. It
+does not substitute for the exact WKWebView microphone path: permission prompts,
+physical capture, worklet execution, final-tail behavior from a human utterance,
+and an explicit network-disconnected run remain intentionally unclaimed until
+the development and packaged app are exercised on an unlocked Mac.
 
 ### Part 1 — Immediate safety and honest diagnostics
 
