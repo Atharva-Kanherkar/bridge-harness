@@ -14,6 +14,27 @@ describe("fallback tool action labels", () => {
     expect(tool.target).toBeUndefined();
   });
 
+  it.each(["pending", "inProgress", "streaming", "running"])("waits for identity on an empty anonymous %s call", (status) => {
+    const tool = readToolCall({ title: "   ", text: "", status, surface: "activity", data: { kind: "other" } });
+    expect(tool.pendingIdentity).toBe(true);
+  });
+
+  it.each(["completed", "failed"])("keeps an anonymous %s call inspectable", (status) => {
+    const tool = readToolCall({ text: "", status, surface: "activity", data: {} });
+    expect(tool.pendingIdentity).not.toBe(true);
+  });
+
+  it.each([
+    { text: "Output arrived" },
+    { title: "Resolve project context" },
+    { data: { name: "lookup_context" } },
+    { data: { kind: "read" } },
+    { data: { type: "commandExecution" } },
+  ])("shows meaningful activity as soon as it arrives (%j)", (overrides) => {
+    const tool = readToolCall({ text: "", status: "inProgress", surface: "activity", data: {}, ...overrides });
+    expect(tool.pendingIdentity).not.toBe(true);
+  });
+
   it.each([
     ["think", "Thinking", "Thought", "brain"],
     ["switch_mode", "Switching mode", "Switched mode", "navigation"],
@@ -40,6 +61,15 @@ describe("fallback tool action labels", () => {
 });
 
 describe("harness subagent facet (issue #667)", () => {
+  it.each([
+    { type: "collabAgentToolCall", prompt: "Map the login flow", agentsStates: { child: { status: "inProgress" } } },
+    { type: "dynamicToolCall", arguments: { prompt: "Map the login flow", subagent_type: "Explore" } },
+  ])("keeps a title-less active $type visible once its subagent is identified", (data) => {
+    const tool = readToolCall({ text: "", status: "inProgress", surface: "activity", data });
+    expect(tool.subagent).toMatchObject({ prompt: "Map the login flow" });
+    expect(tool.pendingIdentity).not.toBe(true);
+  });
+
   it("reads agent type, description and prompt off a Task call", () => {
     const tool = readToolCall({
       title: "Task", text: "", status: "inProgress", surface: "activity",

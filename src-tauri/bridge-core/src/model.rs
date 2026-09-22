@@ -719,8 +719,8 @@ pub struct UsageLedgerRow {
     /// never an addend.
     #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub reasoning_tokens: Option<i64>,
-    /// The model that actually served the request when the provider said it
-    /// differed from `model` (Codex `model/rerouted`).
+    /// The provider-reported reroute destination (Codex `model/rerouted`).
+    /// Older ledger rows may still hold the requested model in `model`.
     pub serving_model: Option<String>,
     #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub context_window_tokens: Option<i64>,

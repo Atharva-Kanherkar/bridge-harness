@@ -758,6 +758,57 @@ mod prompt_section_tests {
             .contains("All Bridge-stable orchestrator sections are deleted"));
     }
 
+    /// Provider launch has no fakeable persistence seam. Execute its actual
+    /// binding statements, so both root launch paths and direct-chat launch
+    /// retain the same atomic pressure reset without a duplicate test query.
+    #[test]
+    fn provider_launch_retires_pressure_only_when_thread_or_selection_changes() {
+        let statements = include_str!("live_turn.rs")
+            .split('"')
+            .filter(|literal| literal.starts_with("UPDATE sessions SET context_usage_after_id=CASE")
+                && literal.contains("WHERE id=?1"))
+            .collect::<Vec<_>>();
+        assert_eq!(statements.len(), 3, "cover every existing-session provider launch path");
+        for statement in statements {
+            for (thread, model, resets) in [
+                ("old-thread", "old-model", false),
+                ("new-thread", "old-model", true),
+                ("old-thread", "new-model", true),
+            ] {
+                let db = store::open(Path::new(":memory:")).unwrap();
+                db.execute(
+                    "INSERT INTO sessions(id,harness,model,label,status,provider_session_id,context_percent)
+                     VALUES('launch','codex','old-model','Launch','ready','old-thread',90)",
+                    [],
+                ).unwrap();
+                db.execute(
+                    "INSERT INTO usage_ledger(workspace_id,session_id,context_percent,source,created_at)
+                     VALUES('launch','launch',90,'provider.codex','same-instant')",
+                    [],
+                ).unwrap();
+                let last_usage_id = db.last_insert_rowid();
+                let parameters = if statement.contains("harness=?2,status") {
+                    vec!["launch", "codex", "same-instant", thread, model, "standard", "medium", "Launch", STARTED_IDLE_STATUS]
+                } else if statement.contains("harness=?6") {
+                    vec!["launch", "same-instant", thread, model, "/tmp/launch", "codex", "standard", "Launch", STARTED_IDLE_STATUS]
+                } else {
+                    vec!["launch", "same-instant", thread, model, "/tmp/launch", STARTED_IDLE_STATUS]
+                };
+                assert_eq!(db.execute(statement, rusqlite::params_from_iter(parameters)).unwrap(), 1);
+                let (watermark, gauge): (i64, Option<i64>) = db.query_row(
+                    "SELECT context_usage_after_id,context_percent FROM sessions WHERE id='launch'",
+                    [], |row| Ok((row.get(0)?, row.get(1)?)),
+                ).unwrap();
+                assert_eq!(watermark, if resets { last_usage_id } else { 0 });
+                assert_eq!(gauge, if resets { None } else { Some(90) });
+                assert_eq!(db.query_row(
+                    "SELECT context_percent FROM usage_ledger WHERE id=?1", params![last_usage_id],
+                    |row| row.get::<_, i64>(0),
+                ).unwrap(), 90, "provider launches preserve historical usage");
+            }
+        }
+    }
+
     #[test]
     fn invalidating_a_launch_prevents_its_reader_from_settling_a_replacement() {
         let scratch = tempfile::tempdir().unwrap();
@@ -1310,7 +1361,7 @@ pub fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET harness=?2,status=?9,started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
+            "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?4 OR model IS NOT ?5 OR harness IS NOT ?2 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?4 OR model IS NOT ?5 OR harness IS NOT ?2 THEN NULL ELSE context_percent END,harness=?2,status=?9,started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
             params![
                 session_id,
                 adapter_id,
@@ -1972,12 +2023,12 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         // session has no turn.
         if is_orchestrator {
             db.execute(
-                "UPDATE sessions SET status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
+                "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN NULL ELSE context_percent END,status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL, STARTED_IDLE_STATUS],
             )?;
         } else {
             db.execute(
-                "UPDATE sessions SET status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
+                "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN NULL ELSE context_percent END,status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, STARTED_IDLE_STATUS],
             )?;
         }
@@ -3920,7 +3971,10 @@ pub fn begin_pressure_compaction(
 ) -> Result<Option<String>, BridgeError> {
     let context_percent = db
         .query_row(
-            "SELECT CAST(context_percent AS REAL) FROM usage_ledger WHERE session_id=?1 AND context_percent IS NOT NULL ORDER BY id DESC LIMIT 1",
+            "SELECT CAST(l.context_percent AS REAL) FROM usage_ledger l
+             JOIN sessions s ON s.id=l.session_id
+             WHERE l.session_id=?1 AND l.context_percent IS NOT NULL
+               AND l.id>s.context_usage_after_id ORDER BY l.id DESC LIMIT 1",
             params![session_id],
             |row| row.get::<_, f64>(0),
         )
@@ -5294,7 +5348,9 @@ pub fn launch_worker_outcome(
                         "Hot worker runtime disappeared before prompt delivery".into(),
                     )
                 })
-                .and_then(|runtime| runtime.send_turn(&instructions));
+                // The compatible live thread already owns the stable prefix.
+                // A new task adds only its objective, evidence and constraints.
+                .and_then(|runtime| runtime.send_turn(&compiled_prompt.variable_suffix));
             if let Err(error) = delivery {
                 if let Some(mut runtime) = state
                     .adapters
@@ -16917,6 +16973,120 @@ mod permission_policy_tests {
             1,
             "one policy read, at the approval seam; a second reader is a second policy"
         );
+    }
+}
+
+#[cfg(test)]
+mod hot_worker_prompt_tests {
+    use super::*;
+
+    /// Discovery and launches are local fakes: this regression observes the
+    /// exact bytes sent through the production hot-worker delivery path.
+    struct HotHarness;
+
+    impl adapters::HarnessAdapter for HotHarness {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn descriptor(&self) -> crate::model::AdapterDescriptor {
+            crate::model::AdapterDescriptor {
+                id: "codex".into(), label: "Codex".into(), available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("test".into()), capabilities: vec!["messages".into()],
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                unavailable_reason: None, default_model: Some("test-model".into()),
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+                models: vec![crate::model::ModelOption {
+                    id: "test-model".into(), label: "Test model".into(),
+                    tier: crate::model::CapabilityTier::Standard,
+                    available: true, compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::CuratedFallback,
+                    supported_effort_levels: vec!["medium".into()], default_for_tier: true,
+                }],
+            }
+        }
+        fn start(&self, _: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("test must reuse the live worker".into()))
+        }
+        fn resume(&self, _: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("test must reuse the live worker".into()))
+        }
+        fn supports_native_resume(&self) -> bool { true }
+        fn normalize(&self, _: &serde_json::Value) -> Vec<agent::NormalizedEvent> { vec![] }
+    }
+
+    #[test]
+    fn compatible_hot_worker_receives_only_the_new_variable_suffix() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(fixture.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry.register(Box::new(HotHarness)).unwrap();
+        core.adapter_registry = Arc::new(registry);
+        let core = Arc::new(core);
+        let request = delegation::DelegationRequest {
+            schema_version: delegation::SCHEMA_VERSION,
+            role: delegation::WorkerRole::Research,
+            objective: "Inspect the next task".into(),
+            acceptance_criteria: vec!["Return evidence for the new objective".into()],
+            known_facts: vec!["The previous task is complete".into()],
+            decisions: vec![], evidence_ids: vec![], relevant_files: vec!["src/new.rs".into()],
+            owned_paths: vec![], write_mode: delegation::WriteMode::ReadOnly,
+            capability_tier: crate::model::CapabilityTier::Standard,
+            effort: delegation::Effort::Medium, network_access: false,
+            writable_output_paths: vec![], verification: vec![],
+            output_contract: delegation::OutputContract::ResearchResult,
+            harness: Some("codex".into()), model: Some("test-model".into()),
+        };
+        let compiled = {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute_batch(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind)
+                    VALUES('parent','w','codex','Parent','working','reported',0,'orchestrator');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,model,provider_session_id)
+                    VALUES('worker','w','codex','Research','warm','reported','parent',1,'test-model','fake');
+                 INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at)
+                    VALUES('worker','w','research','standard','research','[]','readOnly','warm','now','now');
+                 INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at)
+                    VALUES('worker','parent','warm','research','key','reported','now');"
+            ).unwrap();
+            let stack = prompt_sections::resolve(&db, prompts::PromptTarget::Worker(request.role), 1).unwrap();
+            let configured = agent_config::prompt_suffix(&db, "codex", request.role.as_str());
+            let compiled = compile_worker_prompt(&stack, &request, "bridge/task", &[], &configured, None).unwrap();
+            persist_prompt_compilation(
+                &db, "worker", "codex", Some("test-model"), "worker:research", "research",
+                RestorationMode::Fresh, "not_applicable", &compiled,
+            ).unwrap();
+            compiled
+        };
+        assert!(compiled.instructions().contains("<bridge-stable-prompt"));
+        let (runtime, handles) = super::submit_input_tests::FakeRuntime::new(false);
+        core.adapters.lock().unwrap().insert("worker".into(), runtime);
+
+        let outcome = launch_worker_outcome(&core, "parent", "direct-agent-next", &request, false);
+
+        let launched = match outcome {
+            WorkerLaunchOutcome::Launched(id) => id,
+            _ => {
+                let reason: String = core.db.lock().unwrap().query_row(
+                    "SELECT COALESCE(group_concat(body, '; '),'no diagnostic') FROM events",
+                    [], |row| row.get(0),
+                ).unwrap();
+                panic!("compatible worker must launch through its existing runtime: {reason}");
+            }
+        };
+        assert_eq!(launched, "worker");
+        let sent = handles.sent.lock().unwrap();
+        assert_eq!(sent.as_slice(), [compiled.variable_suffix.as_str()]);
+        assert!(!sent[0].contains("<bridge-stable-prompt"));
+        assert!(sent[0].contains("Inspect the next task"));
+        assert!(sent[0].contains("Return evidence for the new objective"));
+        assert!(sent[0].contains("The previous task is complete"));
+        let db = core.db.lock().unwrap();
+        let record = store::latest_prompt_compilation(&db, "worker").unwrap().unwrap();
+        assert_eq!(record.restoration_mode, "hot");
+        assert_eq!(record.prefix_hash, compiled.metadata.prefix_hash);
+        assert_eq!(store::worker_runtime(&db, "worker").unwrap().unwrap().lifecycle_state, "working");
     }
 }
 

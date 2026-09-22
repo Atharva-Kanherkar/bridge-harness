@@ -1962,6 +1962,10 @@ pub(crate) fn persist_chat_model_selection(
     (previous_harness, previous_model): (&str, Option<&str>),
     resumes_natively: bool,
 ) -> Result<usize, BridgeError> {
+    // A new selection invalidates the old context gauge even when the provider
+    // thread resumes natively: the new model may have a different window. The
+    // ledger watermark preserves history and does not depend on wall-clock
+    // ordering or on a rerouted request having the same model as its session.
     // A harness change is a different agent, so the backend binding goes the
     // way of the provider session id: `read_binding` composes the binding's
     // agent from the harness column, and a stale backend id left under the new
@@ -1971,7 +1975,7 @@ pub(crate) fn persist_chat_model_selection(
     // installation stay true.
     if previous_harness != adapter_id {
         return Ok(db.execute(
-            "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,backend_id=NULL,backend_version=NULL,backend_installation_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+            "UPDATE sessions SET context_usage_after_id=COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0),context_percent=NULL,harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,backend_id=NULL,backend_version=NULL,backend_installation_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
             params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
         )?);
     }
@@ -1984,7 +1988,7 @@ pub(crate) fn persist_chat_model_selection(
         // switch to restart from an 8 KB projection as if it had crossed
         // harnesses.
         return Ok(db.execute(
-            "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+            "UPDATE sessions SET context_usage_after_id=COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0),context_percent=NULL,harness=?2,model=?3,requested_tier=?4,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
             params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
         )?);
     }
@@ -1994,7 +1998,7 @@ pub(crate) fn persist_chat_model_selection(
     // it for a resumable session; the backend binding stays, since the same
     // agent still serves the session.
     Ok(db.execute(
-        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+        "UPDATE sessions SET context_usage_after_id=COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0),context_percent=NULL,harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
         params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
     )?)
 }
@@ -3626,6 +3630,73 @@ mod tests {
     }
 
     #[test]
+    fn model_switches_ignore_old_pressure_until_the_new_selection_reports_a_gauge() {
+        for (next_harness, resumes_natively) in [("codex", true), ("codex", false), ("claude", false)] {
+            let (_scratch, core) = fixture();
+            seed_workspace(&core, false);
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,model,label,status,kind,context_percent,provider_session_id)
+                 VALUES('pressure','w','codex','requested-old','Pressure','ready','orchestrator',90,'thread-old')",
+                [],
+            ).unwrap();
+            session_forest::SessionForest::new(&db).append(
+                "pressure", session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Keep working on the outstanding task"}),
+            ).unwrap();
+            // The serving model can differ from the session's requested model.
+            // Identical timestamps deliberately rule out a wall-clock boundary.
+            db.execute(
+                "INSERT INTO usage_ledger(workspace_id,session_id,context_percent,model,source,created_at)
+                 VALUES('w','pressure',90,'rerouted-old','provider.codex','2026-01-01T12:00:00Z')",
+                [],
+            ).unwrap();
+            let old_usage_id = db.last_insert_rowid();
+            assert!(crate::live_turn::begin_pressure_compaction(&db, "pressure").unwrap().is_some());
+            compaction_controller::CompactionController::record_failure(&db, "pressure", "test reset", 0).unwrap();
+
+            let switch = |db: &Connection, previous: &str| persist_chat_model_selection(
+                db, "pressure", next_harness, Some("requested-new"), CapabilityTier::Standard,
+                ("codex", Some(previous)), resumes_natively,
+            ).unwrap();
+            assert_eq!(switch(&db, "stale-plan"), 0);
+            let gauge = |db: &Connection| db.query_row(
+                "SELECT context_usage_after_id,context_percent FROM sessions WHERE id='pressure'",
+                [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            ).unwrap();
+            assert_eq!(gauge(&db), (0, Some(90)), "a rejected plan must not reset pressure");
+            {
+                let transaction = db.unchecked_transaction().unwrap();
+                assert_eq!(switch(&transaction, "requested-old"), 1);
+                assert_eq!(gauge(&transaction), (old_usage_id, None));
+                transaction.rollback().unwrap();
+            }
+            assert_eq!(gauge(&db), (0, Some(90)), "the reset rolls back with the switch");
+
+            assert_eq!(switch(&db, "requested-old"), 1);
+            assert_eq!(gauge(&db), (old_usage_id, None));
+            assert!(crate::live_turn::begin_pressure_compaction(&db, "pressure").unwrap().is_none());
+            assert_eq!(db.query_row(
+                "SELECT context_percent FROM usage_ledger WHERE id=?1", params![old_usage_id],
+                |row| row.get::<_, i64>(0),
+            ).unwrap(), 90, "historical usage remains intact");
+
+            for (percent, should_compact) in [(None, false), (Some(10), false), (Some(90), true)] {
+                db.execute(
+                    "INSERT INTO usage_ledger(workspace_id,session_id,context_percent,model,source,created_at)
+                     VALUES('w','pressure',?1,'rerouted-new','provider.codex','2026-01-01T12:00:00Z')",
+                    params![percent],
+                ).unwrap();
+                assert_eq!(
+                    crate::live_turn::begin_pressure_compaction(&db, "pressure").unwrap().is_some(),
+                    should_compact,
+                    "new gauge {percent:?}, harness={next_harness}, native={resumes_natively}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn chat_model_changes_are_validated_planned_and_committed() {
         let (_scratch, core) = fixture();
         core.create_chat(&Harness::Claude, None, None).unwrap();
@@ -4741,7 +4812,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_rejects_corrupt_or_future_schema_history() {
+    fn replay_degrades_corrupt_or_future_schema_history() {
         let (_scratch, core) = fixture();
         core.create_chat(&Harness::Codex, None, None).unwrap();
         let db = core.db.lock().unwrap();
@@ -4761,7 +4832,10 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        assert!(core.replay_session_events(&session_id, 0, None, None).is_err());
+        let corrupt = core.replay_session_events(&session_id, 0, None, None).unwrap();
+        assert_eq!(corrupt.len(), 1);
+        assert_eq!(corrupt[0].kind, "entry.invalid");
+        assert!(corrupt[0].data["reason"].as_str().unwrap().contains("JSON object"));
 
         let db = core.db.lock().unwrap();
         db.execute(
@@ -4773,7 +4847,11 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        assert!(core.replay_session_events(&session_id, 0, None, None).is_err());
+        let future = core.replay_session_events(&session_id, 0, None, None).unwrap();
+        assert_eq!(future.len(), 1);
+        assert_eq!(future[0].kind, "entry.invalid");
+        assert_eq!(future[0].sequence, corrupt[0].sequence);
+        assert!(future[0].data["reason"].as_str().unwrap().contains("unsupported semantic event schema version"));
     }
 
     #[test]

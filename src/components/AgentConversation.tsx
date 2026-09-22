@@ -661,7 +661,11 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     const items = mergeConversationProjections(durableItems, nextLiveItems);
     // Folded after the merge, not inside either projection: mid-run the spawn is
     // already durable while the result is still only live.
-    const folded = foldWorkerDelegations(items.filter(item => item.type !== "raw"));
+    // An unnamed tool start is still retained by both projections. Wait for
+    // its action or output before giving it a row, so an early empty frame
+    // cannot flash a generic tool group. Terminal results always remain.
+    const folded = foldWorkerDelegations(items.filter(item => item.type !== "raw"
+      && !(item.type === "activity" && item.tool?.pendingIdentity)));
     // Re-stamped last, on one list: the two projections each counted turns from
     // their own start, so mid-turn a run carries two indices and the grouping
     // walk cuts it at the seam. See `alignTurns`.
@@ -1262,7 +1266,8 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
   const provider = providerLabel(harness) ?? errorContext?.provider;
   const sameRuntime = !item.harness || !errorContext?.harness || item.harness === errorContext.harness;
   const described = describeError(item.text, { provider, snapshot: sameRuntime ? errorContext?.snapshot : null });
-  const isUsage = isThrottleKind(described.kind);
+  const degraded = item.status === "degraded";
+  const isUsage = !degraded && isThrottleKind(described.kind);
   const transition = useMotionTransition(MOTION_DURATION.tick, MOTION_DURATION.reveal);
   // A rate limit is a wait, not a failure — it gets the tick. A real error
   // is the one place a full wash is warranted.
@@ -1275,7 +1280,7 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
     >
       {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
     </motion.span>
-    <div className="min-w-0"><b className="text-[12px]">{described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{described.message}</p></div>
+    <div className="min-w-0"><b className="text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p></div>
   </div>;
 }
 

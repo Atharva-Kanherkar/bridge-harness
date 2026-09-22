@@ -5,6 +5,7 @@ import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
+import { durableEntriesFrom } from "../transcript/golden";
 import type { AgentEvent, Session, SessionEntry } from "../types";
 
 // The three-layer tool card: what a row shows at a glance, what it opens into,
@@ -71,6 +72,67 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   MotionGlobalConfig.skipAnimations = false;
+});
+
+describe("anonymous tool starts", () => {
+  // Adapter-shaped regression data, not a capture of the original report.
+  const start = () => event(1, "tool.started", {
+    itemId: "context", title: "", status: "inProgress",
+    data: { kind: "other", update: { sessionUpdate: "tool_call", toolCallId: "context", title: "", kind: "other", status: "in_progress" } },
+  });
+
+  function mountProjection(events: AgentEvent[], durable: boolean) {
+    const entries = durable ? durableEntriesFrom("s", events) : undefined;
+    act(() => root.render(<AgentConversation session={session} events={durable ? [] : events} forestEntries={entries} activeLeafId={entries?.at(-1)?.id} onResolve={() => {}} />));
+  }
+
+  it.each([false, true])("omits an empty pending call without leaving a tool group (replay=%s)", (durable) => {
+    mountProjection([start()], durable);
+    expect(host.textContent).not.toContain("Using a tool");
+    expect(host.querySelector("[data-activity-group]")).toBeNull();
+  });
+
+  it("reveals the same call when a progress update supplies its action", () => {
+    const started = start();
+    mount([started]);
+    expect(host.querySelector("[data-activity-group]")).toBeNull();
+    mount([started, event(0, "tool.progress", {
+      sequence: 0, itemId: "context", title: "Resolve project context", status: "inProgress",
+      data: { sessionUpdate: "tool_call_update", toolCallId: "context", title: "Resolve project context", status: "in_progress" },
+    })]);
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
+    expect(host.textContent).toContain("Running: Resolve project context");
+    expect(host.textContent).not.toContain("Using a tool");
+  });
+
+  it("does not count an anonymous placeholder alongside a named tool", () => {
+    mount([start(), event(2, "tool.started", {
+      itemId: "read", title: "project", status: "inProgress", data: { kind: "read" },
+    })]);
+    expect(host.textContent).toContain("Reading project");
+    expect(buttonWith("step")?.textContent).toContain("1 step");
+    expect(host.textContent).not.toContain("Using a tool");
+  });
+
+  it("reveals anonymous work as soon as actual output arrives", () => {
+    mount([start(), event(0, "tool.progress", {
+      sequence: 0, itemId: "context", status: "inProgress", text: "Context loaded",
+    })]);
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
+    act(() => buttonWith("step")!.click());
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand tool output"]')!.click());
+    expect(host.textContent).toContain("Context loaded");
+  });
+
+  it.each([
+    ["completed", false], ["completed", true], ["failed", false], ["failed", true],
+  ] as const)("retains an anonymous %s result (replay=%s)", (status, durable) => {
+    const events = [start(), event(2, "tool.completed", { itemId: "context", status })];
+    mountProjection(events, durable);
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
+    act(() => buttonWith("step")!.click());
+    expect(host.textContent).toContain("Used a tool");
+  });
 });
 
 describe("inline diffs", () => {
@@ -344,6 +406,41 @@ describe("run trailer", () => {
 });
 
 describe("harness subagents (issue #667)", () => {
+  it.each([
+    ["collabAgentToolCall", false], ["collabAgentToolCall", true],
+    ["dynamicToolCall", false], ["dynamicToolCall", true],
+  ] as const)("keeps a title-less %s prompt and child lifecycle inspectable (replay=%s)", async (type, durable) => {
+    const started = event(1, "tool.started", {
+      itemId: "child-call", status: "inProgress", title: null,
+      data: {
+        type,
+        ...(type === "collabAgentToolCall"
+          ? { prompt: "Map the login flow" }
+          : { arguments: { prompt: "Map the login flow", subagent_type: "Explore" } }),
+        threadId: "child", agentsStates: { child: { status: "inProgress" } },
+      },
+    });
+    const mountProjection = async (events: AgentEvent[]) => {
+      const entries = durable ? durableEntriesFrom("s", events) : undefined;
+      await act(async () => root.render(<AgentConversation session={session} events={durable ? [] : events} forestEntries={entries} activeLeafId={entries?.at(-1)?.id} onResolve={() => {}} />));
+    };
+    await mountProjection([started]);
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
+    await act(async () => buttonWith("Using 1 tool")!.click());
+    await act(async () => buttonWith("Using a tool")!.click());
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Running subagent");
+
+    await mountProjection([started, event(2, "tool.completed", {
+      itemId: "child-call", status: "completed", title: null,
+      data: { agentsStates: { child: { status: "completed", message: "Found three call sites." } } },
+    })]);
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Subagent finished");
+    expect(host.textContent).toContain("Found three call sites.");
+    expect(host.textContent).not.toContain("Running subagent");
+  });
+
   const subagentDone = () => event(1, "tool.completed", {
     itemId: "task-1",
     title: "Task",

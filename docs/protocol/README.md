@@ -338,6 +338,16 @@ durable events at or below the highest sequence returned by replay, then process
 newer live events normally. The daemon brings the remote transport for it;
 in-process hosts call it like any other method.
 
+An unreadable stored entry occupies its original sequence and page slot as an
+`entry.invalid` event (`status: "degraded"`). Its data contains `entryId`,
+`originalKind`, `sequence`, and a validation `reason`; the malformed payload is
+not returned. Clients render this as an unavailable history row and advance the
+delivered cursor through it normally. Following pages and lag recovery therefore
+continue past the damaged row without gaps or duplicates. Replay and tail reads
+leave the stored entry unchanged, log each invalid row without its payload, and
+log the invalid-entry count for that page. Context traversal and other strict
+forest consumers still reject invalid entries.
+
 ## Generated client types
 
 `src/protocol/generated/protocol.ts` is generated **from the JSON Schemas**
