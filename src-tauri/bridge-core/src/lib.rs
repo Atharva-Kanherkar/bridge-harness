@@ -44,6 +44,7 @@ pub mod credential_broker;
 pub mod cursor_adapter;
 pub mod grok_adapter;
 pub mod delegation;
+pub mod diagnostics;
 pub mod events;
 pub mod external_import;
 pub mod frame_queue;

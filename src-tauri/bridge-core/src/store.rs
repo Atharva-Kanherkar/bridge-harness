@@ -1,4 +1,4 @@
-use crate::{model::*, BridgeError};
+use crate::{diagnostics, model::*, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -243,7 +243,7 @@ const PENDING_PREFIX: &str = ".bridge-history-";
 fn prune_history_snapshots_and_report(snapshot_dir: &Path) {
     match prune_history_snapshots(snapshot_dir, HistorySnapshotRetention::default()) {
         Ok(outcome) if outcome.is_quiet() => {}
-        Ok(outcome) => eprintln!(
+        Ok(outcome) => diagnostics::record(&format!(
             "bridge: history snapshot retention removed_pairs={} removed_bytes={} \
              removed_incomplete_files={} removed_incomplete_bytes={} skipped_files={} \
              retained_pairs={} retained_bytes={} over_budget_bytes={}",
@@ -255,8 +255,8 @@ fn prune_history_snapshots_and_report(snapshot_dir: &Path) {
             outcome.retained_pairs,
             outcome.retained_bytes,
             outcome.over_budget_bytes,
-        ),
-        Err(error) => eprintln!("bridge: history snapshot retention failed: {error}"),
+        )),
+        Err(error) => diagnostics::record(&format!("bridge: history snapshot retention failed: {error}")),
     }
 }
 
@@ -1658,11 +1658,11 @@ fn prune_migration_backups(
 fn prune_migration_backups_and_report(path: &Path, protected_backup: Option<&Path>) {
     match prune_migration_backups(path, protected_backup) {
         Ok(outcome) if outcome == MigrationBackupPruneOutcome::default() => {}
-        Ok(outcome) => eprintln!(
+        Ok(outcome) => diagnostics::record(&format!(
             "bridge: migration backup retention removed_files={} removed_bytes={} skipped_files={}",
             outcome.removed_files, outcome.removed_bytes, outcome.skipped_files,
-        ),
-        Err(error) => eprintln!("bridge: migration backup retention failed: {error}"),
+        )),
+        Err(error) => diagnostics::record(&format!("bridge: migration backup retention failed: {error}")),
     }
 }
 

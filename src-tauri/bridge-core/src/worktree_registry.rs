@@ -20,7 +20,7 @@
 //!    the mutex, do their filesystem and subprocess work without it, then write
 //!    outcomes back — the shape [`crate::worktree_coordinator`] already uses.
 
-use crate::{git, store, BridgeError};
+use crate::{diagnostics, git, store, BridgeError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1794,7 +1794,7 @@ pub fn run_maintenance_pass(
 ) {
     match reconcile(db, namespace_root) {
         Ok(outcome) if outcome.is_quiet() => {}
-        Ok(outcome) => eprintln!(
+        Ok(outcome) => diagnostics::record(&format!(
             "bridge: worktree reconcile pruned_registrations={} marked_removed={} \
              adopted_orphans={} unverifiable={} external={}",
             outcome.pruned_registrations,
@@ -1802,12 +1802,12 @@ pub fn run_maintenance_pass(
             outcome.adopted_orphans,
             outcome.unverifiable,
             outcome.external,
-        ),
-        Err(error) => eprintln!("bridge: worktree reconcile failed: {error}"),
+        )),
+        Err(error) => diagnostics::record(&format!("bridge: worktree reconcile failed: {error}")),
     }
     match sweep(db, namespace_root, retention) {
         Ok(outcome) if outcome.is_quiet() => {}
-        Ok(outcome) => eprintln!(
+        Ok(outcome) => diagnostics::record(&format!(
             "bridge: worktree sweep removed={} removed_bytes={} retained={} \
              retained_bytes={} over_budget_bytes={} skipped={} measurements_truncated={}",
             outcome.removed,
@@ -1817,8 +1817,8 @@ pub fn run_maintenance_pass(
             outcome.over_budget_bytes,
             outcome.skipped,
             outcome.measurements_truncated,
-        ),
-        Err(error) => eprintln!("bridge: worktree sweep failed: {error}"),
+        )),
+        Err(error) => diagnostics::record(&format!("bridge: worktree sweep failed: {error}")),
     }
 }
 
