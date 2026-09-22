@@ -1,6 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { colorizeCode, colorizePatch, highlightPatch, languageFromPath, normalizeLang, looksLikeDiff, SYNTAX_CLASSES } from "./highlight";
 import { EDITOR_LANGUAGES } from "./editor/language";
+
+// TextMate checks Date.now() against Shiki's per-line budget. Keep real
+// grammars and tokenization, but make correctness independent of cold-start
+// cost and host scheduling. The budget tests below advance this clock.
+beforeEach(() => { vi.spyOn(Date, "now").mockReturnValue(0); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe("languageFromPath", () => {
   it("maps common extensions", () => {
@@ -261,6 +267,46 @@ describe("colorizePatch (async, coloured)", () => {
 
   it("returns nothing for an empty patch", async () => {
     expect(await colorizePatch("", "a.ts")).toEqual([]);
+  });
+});
+
+describe("colorization time-budget fallbacks", () => {
+  // Shiki's default is 500 ms per line. Advance on every read so both its
+  // scope and binary-token passes exhaust that budget without sleeping.
+  function exhaustBudget() {
+    let now = 0;
+    vi.mocked(Date.now).mockImplementation(() => (now += 501));
+  }
+
+  it("settles as escaped code when real tokenization runs out of time", async () => {
+    const code = 'const el = <Button title="a&b">Hi</Button>;';
+    // The same real grammar must colour this input when time is available.
+    expect(await colorizeCode(code, "tsx")).toContain("stx-tag");
+
+    exhaustBudget();
+    expect(await colorizeCode(code, "tsx")).toBe(
+      "const el = &lt;Button title=&quot;a&amp;b&quot;&gt;Hi&lt;/Button&gt;;",
+    );
+  });
+
+  it("preserves escaped patch bodies, kinds and line numbers when time runs out", async () => {
+    const patch = [
+      "@@ -1,2 +1,2 @@",
+      ' const label = "a&b";',
+      "-const el = <Old />;",
+      "+const el = <New />;",
+    ].join("\n");
+    const coloured = await colorizePatch(patch, "a.tsx");
+    expect(coloured[2].html).toContain("stx-tag");
+    expect(coloured[3].html).toContain("stx-tag");
+
+    exhaustBudget();
+    expect(await colorizePatch(patch, "a.tsx")).toEqual([
+      { kind: "hunk", html: "@@ -1,2 +1,2 @@", oldLine: null, newLine: null },
+      { kind: "context", html: "const label = &quot;a&amp;b&quot;;", oldLine: 1, newLine: 1 },
+      { kind: "del", html: "const el = &lt;Old /&gt;;", oldLine: 2, newLine: null },
+      { kind: "add", html: "const el = &lt;New /&gt;;", oldLine: null, newLine: 2 },
+    ]);
   });
 });
 

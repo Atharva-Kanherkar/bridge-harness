@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileLinkContext, Markdown, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
+import * as highlight from "./highlight";
 
 describe("splitBlocks rich content detection", () => {
   it("detects a diagram fenced block", () => {
@@ -231,8 +232,12 @@ describe("copy affordances (interactive)", () => {
 describe("CodeBlock async colorization", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let pending: Array<(html: string) => void>;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    pending = [];
+    vi.spyOn(highlight, "colorizeCode").mockImplementation(() => new Promise(resolve => { pending.push(resolve); }));
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -241,42 +246,65 @@ describe("CodeBlock async colorization", () => {
   afterEach(() => {
     act(() => { root.unmount(); });
     container.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
-  // Real dynamic-import + real Shiki tokenization, timed against the actual
-  // wall clock — under a full, concurrent test-suite run, a single
-  // `setTimeout(0)` tick isn't a reliable wait. Poll instead of guessing a
-  // fixed delay.
-  const waitFor = async (check: () => boolean, timeoutMs = 3000) => {
-    const start = Date.now();
-    while (!check()) {
-      if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for colorization");
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-    }
-  };
+  const startColorization = () => act(() => { vi.advanceTimersByTime(highlight.COLORIZE_DEBOUNCE_MS); });
+  const colored = (name: string) => `<span class="stx-keyword">const</span> ${name} = 1;`;
 
   it("renders plain escaped text immediately, then upgrades to .stx-* spans", async () => {
-    // A plain (non-async) act() flushes the effect's synchronous first half
-    // (the immediate `setHtml(escapeHtml(body))`) without waiting for the
-    // `colorizeCode` promise it also kicks off — the only way to observe the
-    // pre-colour frame deterministically, independent of how warm the
-    // shared Shiki module cache happens to be from earlier tests.
-    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    const body = 'const x = "<script>&";';
+    act(() => { root.render(<Markdown text={`\`\`\`ts\n${body}\n\`\`\``} />); });
     const code = container.querySelector("code.stx") as HTMLElement;
     expect(code).toBeTruthy();
-    expect(code.innerHTML).toBe("const x = 1;");
+    expect(code.innerHTML).toBe('const x = "&lt;script&gt;&amp;";');
+    expect(code.textContent).toBe(body);
+    expect(code.querySelector("script")).toBeNull();
+    expect(highlight.colorizeCode).not.toHaveBeenCalled();
 
-    await waitFor(() => code.innerHTML.includes("stx-keyword"));
+    startColorization();
+    expect(highlight.colorizeCode).toHaveBeenCalledTimes(1);
+    expect(highlight.colorizeCode).toHaveBeenCalledWith(body, "ts");
+    expect(code.querySelector(".stx-keyword")).toBeNull();
+    await act(async () => { pending[0]('<span class="stx-keyword">const</span> x = "&lt;script&gt;&amp;";'); });
+    expect(code.querySelector(".stx-keyword")?.textContent).toBe("const");
+    expect(code.textContent).toBe(body);
   });
 
   it("resets to plain text immediately when the code changes, instead of keeping stale colour", async () => {
-    await act(async () => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
     const code = container.querySelector("code.stx") as HTMLElement;
-    await waitFor(() => code.innerHTML.includes("stx-keyword"));
+    startColorization();
+    await act(async () => { pending[0](colored("x")); });
     expect(code.innerHTML).toContain("stx-keyword");
 
     act(() => { root.render(<Markdown text={"```ts\nconst y = 2;\n```"} />); });
     expect(code.innerHTML).toBe("const y = 2;");
+  });
+
+  it("ignores an old completion after the replacement code has been coloured", async () => {
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    startColorization();
+    act(() => { root.render(<Markdown text={"```ts\nconst y = 1;\n```"} />); });
+    startColorization();
+    await act(async () => { pending[1](colored("y")); });
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code.innerHTML).toBe(colored("y"));
+
+    await act(async () => { pending[0](colored("x")); });
+    expect(code.innerHTML).toBe(colored("y"));
+  });
+
+  it("keeps escaped text when colorization settles with a plain fallback", async () => {
+    const body = "<script>&</script>";
+    act(() => { root.render(<Markdown text={`\`\`\`ts\n${body}\n\`\`\``} />); });
+    startColorization();
+    await act(async () => { pending[0](highlight.escapeHtml(body)); });
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code.innerHTML).toBe("&lt;script&gt;&amp;&lt;/script&gt;");
+    expect(code.textContent).toBe(body);
+    expect(code.querySelector("script, .stx-keyword")).toBeNull();
   });
 });
 
