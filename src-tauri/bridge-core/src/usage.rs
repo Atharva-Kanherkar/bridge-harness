@@ -44,8 +44,8 @@ impl UsageProvider {
 /// always the exclusive figure.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UsageRecord {
-    /// The model this record is for when the provider names one; `None`
-    /// means the session's model of record applies.
+    /// The model this record is for when the provider names one. When neither
+    /// this nor `serving_model` is set, the requested model applies.
     pub model: Option<String>,
     /// The model that actually served the request when it differed.
     pub serving_model: Option<String>,
