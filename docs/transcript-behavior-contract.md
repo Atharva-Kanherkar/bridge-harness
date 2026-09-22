@@ -124,6 +124,13 @@ something.
 8. **A frame Bridge has no name for is visible.** It renders as a collapsed raw
    card, never as an anonymous tool row, and never as nothing.
 
+A recognized tool lifecycle may begin before it names an action. Its empty
+pending/running placeholder stays in the reduction without creating a visible
+activity group; a tool name, recognized category, title, or output reveals the
+same item. Completion and failure remain visible even if the call never gains a
+name. This is a presentation delay for known tool events, not a reinterpretation
+of startup intent or an instruction to discard unknown frames.
+
 Invariant 6 holds. The rules live in `src/transcript/grouping.ts`, as pure data
 with no React in them: a turn is the outer bound of a run, a thought or a plan
 update that falls between two tool calls travels with the run rather than

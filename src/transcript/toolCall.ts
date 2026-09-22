@@ -48,6 +48,8 @@ export interface ToolCallDisplay {
   patch?: string;
   /** Everything else it produced. */
   output?: string;
+  /** Empty pending/running call whose action has not been named yet. */
+  pendingIdentity?: boolean;
   status: ToolStatus;
   /**
    * A harness-spawned nested subagent (issue #667): the model asked its own
@@ -387,6 +389,12 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     ...named,
     path: named.path ?? path,
     command,
+    // Keep the call in the reduction, but do not narrate an anonymous start.
+    // Actual output and terminal results remain inspectable even if the
+    // provider never supplies a name or a recognized action category.
+    pendingIdentity: named.pendingIdentity
+      && (common.status === "running" || source.status === "pending")
+      && !output,
     // Only edits show a diff inline; a read whose body happens to be a diff is
     // still just output.
     patch: named.verb === "edit" ? readPatch(source, data, output) : undefined,
@@ -642,7 +650,7 @@ const ACP_TOOL_KINDS: Record<string, { verb: ToolVerb; glyph: ToolGlyph; doing: 
 };
 
 function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): {
-  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string;
+  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string; pendingIdentity?: boolean;
 } {
   // Claude puts the arguments on `input`; OpenCode nests them under the part's
   // `state`. Merged so the branches below can read one bag.
@@ -717,5 +725,5 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
   // state cue that does not depend on the tense chosen by the provider.
   const action = text(title)?.trim();
   if (action) return { verb: "tool", glyph: "wrench", doing: `Running: ${action}`, done: `Finished: ${action}` };
-  return { verb: "tool", glyph: "wrench", doing: "Using a tool", done: "Used a tool" };
+  return { verb: "tool", glyph: "wrench", doing: "Using a tool", done: "Used a tool", pendingIdentity: true };
 }

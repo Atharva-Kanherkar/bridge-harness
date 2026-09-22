@@ -661,7 +661,11 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     const items = mergeConversationProjections(durableItems, nextLiveItems);
     // Folded after the merge, not inside either projection: mid-run the spawn is
     // already durable while the result is still only live.
-    const folded = foldWorkerDelegations(items.filter(item => item.type !== "raw"));
+    // An unnamed tool start is still retained by both projections. Wait for
+    // its action or output before giving it a row, so an early empty frame
+    // cannot flash a generic tool group. Terminal results always remain.
+    const folded = foldWorkerDelegations(items.filter(item => item.type !== "raw"
+      && !(item.type === "activity" && item.tool?.pendingIdentity)));
     // Re-stamped last, on one list: the two projections each counted turns from
     // their own start, so mid-turn a run carries two indices and the grouping
     // walk cuts it at the seam. See `alignTurns`.

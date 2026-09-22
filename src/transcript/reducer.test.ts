@@ -19,6 +19,21 @@ const entry = (id: string, parentEntryId: string | null, kind: string, payload: 
 });
 
 describe("reduceTranscript", () => {
+  it("keeps an anonymous call's identity when a progress update names it", () => {
+    const started = live(1, "tool.started", { itemId: "context", status: "inProgress", data: { kind: "other" } });
+    const progress = live(0, "tool.progress", { sequence: 0, itemId: "context", title: "Resolve project context", status: "inProgress" });
+    const completed = live(2, "tool.completed", { itemId: "context", status: "completed" });
+    const [initial] = reduce([started]);
+    const [named] = reduce([started, progress]);
+    const finished = reduce([started, progress, completed]);
+    expect(initial.tool?.pendingIdentity).toBe(true);
+    expect(named).toMatchObject({ key: initial.key, identity: initial.identity, title: "Resolve project context" });
+    expect(named.tool?.doing).toBe("Running: Resolve project context");
+    expect(named.tool?.pendingIdentity).not.toBe(true);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].tool?.done).toBe("Finished: Resolve project context");
+  });
+
   it("folds a tool lifecycle into one row", () => {
     const items = reduce([
       live(1, "command.started", { itemId: "c", title: "bun test", status: "inProgress", data: { type: "commandExecution", command: "bun test" } }),
