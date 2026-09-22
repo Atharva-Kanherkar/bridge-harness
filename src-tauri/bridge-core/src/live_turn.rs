@@ -10575,6 +10575,16 @@ fn prepare_input(
     let file_context =
         workspace_files::mention_context(workspace_root.as_deref(), &outbound);
     let provider_text = workspace_files::append_to_user_text(&outbound, file_context.as_deref());
+    // A pasted `brio_…` alias or `@session:` mention names another chat. Its
+    // stored history rides along the same way file contents do — trusted
+    // application context the provider sees and the transcript does not —
+    // so the agent can continue that chat instead of reading eight hex chars.
+    let reference_context = crate::session_reference::context_for(
+        &state.db.lock().unwrap(),
+        session_id,
+        &outbound,
+    )?;
+    let provider_text = crate::session_reference::append_to_user_text(&provider_text, reference_context.as_deref());
     // Prefer the original slash text for the transcript when we expanded a
     // skill/prompt.
     let display_text = if outbound != sanitized_input.text {
@@ -10850,6 +10860,15 @@ fn prepare_direct_agent_objective(
     let workspace_root = core.session_workspace_root(session_id);
     let file_context = workspace_files::mention_context(workspace_root.as_deref(), &sanitized.text);
     let worker_text = workspace_files::append_to_user_text(&sanitized.text, file_context.as_deref());
+    // A `#agent brio_…` objective hands the worker the referenced chat too.
+    let reference_context = crate::session_reference::context_for(
+        &core.db.lock().unwrap(),
+        session_id,
+        &sanitized.text,
+    )
+    .ok()
+    .flatten();
+    let worker_text = crate::session_reference::append_to_user_text(&worker_text, reference_context.as_deref());
     (sanitized.text, worker_text, sanitized.interceptions)
 }
 
