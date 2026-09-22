@@ -72,9 +72,10 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.18 adds typed composer dictation and its transient transcript event.**
 /// **1.19 separates voice draft ownership and changes provider capability states.**
 /// Older clients cannot interpret fresh-draft events or revised hypotheses.
+/// **1.20 adds explicit local voice setup, progress, retry, and removal.**
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 19,
+    minor: 20,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

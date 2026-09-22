@@ -15,7 +15,7 @@ import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
-import type { VoiceCapabilitiesResult, VoiceStartResult, VoiceProviderId, VoiceTranscriptEvent } from "./protocol/generated/protocol";
+import type { VoiceCapabilitiesResult, VoiceLocalStatusResult, VoiceStartResult, VoiceProviderId, VoiceTranscriptEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -2429,6 +2429,22 @@ export const bridgeApi = {
     unit(call("voice/voice_stop", { voiceSessionId })),
   voiceCancel: (voiceSessionId: string): Promise<void> =>
     unit(call("voice/voice_cancel", { voiceSessionId })),
+  voiceLocalStatus: (): Promise<VoiceLocalStatusResult> => isTauri()
+    ? call("voice/voice_local_status")
+    : Promise.resolve({
+        state: "unsupported",
+        engineVersion: "1.13.8",
+        modelId: "nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25",
+        locale: "en-US",
+        downloadBytes: 482_197_219,
+        installedBytes: 694_157_312,
+        downloadedBytes: 0,
+        reason: "Local dictation setup requires the desktop runtime",
+      }),
+  voiceLocalSetup: (): Promise<VoiceLocalStatusResult> =>
+    call("voice/voice_local_setup", { confirmDownload: true }),
+  voiceLocalRemove: (): Promise<VoiceLocalStatusResult> =>
+    call("voice/voice_local_remove", { confirmRemoval: true }),
   dispatchAgentShortcut: async (sessionId: string, token: string, objective: string): Promise<DispatchAgentShortcutResult> => {
     if (isTauri()) return call("sessions/dispatch_agent_shortcut", { sessionId, token, objective });
     if (!objective.trim()) throw new Error("Agent shortcut objective cannot be empty; add what the specialist should do");

@@ -71,7 +71,7 @@ struct Active {
 }
 
 pub struct LocalVoiceService {
-    provider: Option<Arc<dyn VoiceProvider>>,
+    provider: Arc<Mutex<Option<Arc<dyn VoiceProvider>>>>,
     active: Arc<Mutex<Option<Active>>>,
     limits: Limits,
 }
@@ -89,14 +89,15 @@ fn invalid(message: &str) -> BridgeError {
 impl LocalVoiceService {
     pub fn new(provider: Option<Arc<dyn VoiceProvider>>) -> Self {
         Self {
-            provider,
+            provider: Arc::new(Mutex::new(provider)),
             active: Arc::new(Mutex::new(None)),
             limits: Limits::default(),
         }
     }
 
     pub fn capability(&self) -> wire::VoiceProviderCapability {
-        let (state, reason) = if self.provider.is_some() {
+        let provider = self.provider.lock().unwrap().clone();
+        let (state, reason) = if provider.is_some() {
             (wire::VoiceAvailability::Ready, None)
         } else {
             (
@@ -110,10 +111,20 @@ impl LocalVoiceService {
         let mut result = capability(wire::VoiceProviderId::Local, state, reason);
         result.supported_locales = self
             .provider
+            .lock()
+            .unwrap()
             .as_ref()
             .map(|p| p.supported_locales())
             .unwrap_or_default();
         result
+    }
+
+    pub fn set_provider(&self, provider: Option<Arc<dyn VoiceProvider>>) {
+        *self.provider.lock().unwrap() = provider;
+    }
+
+    pub(crate) fn provider_slot(&self) -> Arc<Mutex<Option<Arc<dyn VoiceProvider>>>> {
+        self.provider.clone()
     }
 
     pub fn is_busy(&self) -> bool {
@@ -135,6 +146,8 @@ impl LocalVoiceService {
     ) -> Result<wire::VoiceStartResult, BridgeError> {
         let provider = self
             .provider
+            .lock()
+            .unwrap()
             .clone()
             .ok_or_else(|| invalid("Local dictation needs engine and model setup"))?;
         let id = Uuid::new_v4().to_string();

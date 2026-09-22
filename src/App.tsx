@@ -987,8 +987,7 @@ function AppContent() {
   const voice = useVoiceDictation({
     ownerKey: composerOwnerRef.current,
     sessionId: session?.id,
-    // Keep the existing experimental path explicit until Voice settings land.
-    provider: "codex",
+    provider: "local",
     harness: session?.harness,
     kind: session?.kind,
     runtimeStatus: session?.status,
@@ -2655,7 +2654,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
@@ -2971,11 +2970,12 @@ function AppContent() {
                     voicePreview={voice.preview}
                     voiceError={voice.error}
                     voiceUnavailableReason={voice.unavailableReason}
-                    voiceProviderLabel="Codex realtime (experimental; audio sent to Codex)"
+                    voiceProviderLabel="Local dictation · audio stays on this Mac"
                     onVoiceStart={() => void beginVoiceDictation()}
                     onVoiceStop={() => void voice.stop()}
                     onVoiceCancel={voice.cancel}
                     onVoiceRetry={voice.retry}
+                    onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
                     inputRef={composerRef}
                     leading={usageDot}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"

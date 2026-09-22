@@ -3,17 +3,19 @@
 //! Detection is metadata-only. It never loads a model or touches the network;
 //! the native helper and model are opened lazily after an explicit voice start.
 
-use super::local::{EngineFailure, VoiceProvider, VoiceStream};
-use crate::{adapters, process_ledger};
-use serde::Deserialize;
+use super::local::{EngineFailure, LocalVoiceService, VoiceProvider, VoiceStream};
+use crate::{adapters, process_ledger, BridgeError};
+use bridge_protocol::messages as wire;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    mpsc, Arc, Mutex,
 };
 use std::thread;
 use std::time::Duration;
@@ -24,6 +26,15 @@ pub const RUNTIME_ARCHIVE_SHA256: &str =
     "91b96512c4fa1960f8a9ed5360a6c8dda53a4b5015d0590244f14086a234557a";
 pub const MODEL_ARCHIVE_SHA256: &str =
     "78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358";
+pub const RUNTIME_ARCHIVE_BYTES: u64 = 18_252_168;
+pub const MODEL_ARCHIVE_BYTES: u64 = 463_945_051;
+pub const DOWNLOAD_BYTES: u64 = RUNTIME_ARCHIVE_BYTES + MODEL_ARCHIVE_BYTES;
+pub const INSTALLED_BYTES: u64 = 662 * 1024 * 1024;
+
+const RUNTIME_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts.tar.bz2";
+const MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2";
+const RUNTIME_DIRECTORY: &str = "sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts";
+const MODEL_DIRECTORY: &str = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25";
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 const INFERENCE_TIMEOUT: Duration = Duration::from_secs(8);
@@ -37,10 +48,11 @@ const RESPONSE_PARTIAL: u8 = 0x81;
 const RESPONSE_FINAL: u8 = 0x82;
 const RESPONSE_CLOSED: u8 = 0x83;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InstallManifest {
     schema_version: u32,
+    install_id: String,
     engine_version: String,
     model_id: String,
     runtime_archive_sha256: String,
@@ -50,6 +62,7 @@ struct InstallManifest {
 impl InstallManifest {
     fn is_expected(&self) -> bool {
         self.schema_version == 1
+            && uuid::Uuid::parse_str(&self.install_id).is_ok()
             && self.engine_version == ENGINE_VERSION
             && self.model_id == MODEL_ID
             && self.runtime_archive_sha256 == RUNTIME_ARCHIVE_SHA256
@@ -91,16 +104,23 @@ impl SherpaProvider {
             return Some(provider);
         }
 
-        let root = data_dir.join(format!("voice/sherpa-onnx-{ENGINE_VERSION}"));
+        let root = data_dir.join("voice/local");
         let manifest: InstallManifest =
-            serde_json::from_slice(&fs::read(root.join("install.json")).ok()?).ok()?;
+            serde_json::from_slice(&fs::read(root.join("active.json")).ok()?).ok()?;
         if !manifest.is_expected() {
+            return None;
+        }
+        let install = root.join("installs").join(&manifest.install_id);
+        let installed_manifest: InstallManifest =
+            serde_json::from_slice(&fs::read(install.join("install.json")).ok()?).ok()?;
+        if installed_manifest.install_id != manifest.install_id || !installed_manifest.is_expected()
+        {
             return None;
         }
         let provider = Self {
             helper: resolve_helper()?,
-            runtime: root.join("runtime"),
-            model: root.join("model"),
+            runtime: install.join("runtime"),
+            model: install.join("model"),
             supervised: true,
         };
         provider.paths_exist().then_some(provider)
@@ -172,6 +192,462 @@ fn resolve_helper() -> Option<PathBuf> {
 /// boot only; no model is loaded and no recovery/download is attempted here.
 pub fn installed_provider(data_dir: &Path) -> Option<Arc<dyn VoiceProvider>> {
     SherpaProvider::discover(data_dir).map(|provider| Arc::new(provider) as Arc<dyn VoiceProvider>)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupPhase {
+    NotInstalled,
+    DownloadingRuntime,
+    DownloadingModel,
+    Installing,
+    Ready,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone)]
+struct SetupSnapshot {
+    phase: SetupPhase,
+    downloaded_bytes: u64,
+    reason: Option<String>,
+}
+
+impl SetupSnapshot {
+    fn status(&self) -> wire::VoiceLocalStatusResult {
+        wire::VoiceLocalStatusResult {
+            state: match self.phase {
+                SetupPhase::NotInstalled => wire::VoiceLocalSetupState::NotInstalled,
+                SetupPhase::DownloadingRuntime => wire::VoiceLocalSetupState::DownloadingRuntime,
+                SetupPhase::DownloadingModel => wire::VoiceLocalSetupState::DownloadingModel,
+                SetupPhase::Installing => wire::VoiceLocalSetupState::Installing,
+                SetupPhase::Ready => wire::VoiceLocalSetupState::Ready,
+                SetupPhase::Failed => wire::VoiceLocalSetupState::Failed,
+                SetupPhase::Unsupported => wire::VoiceLocalSetupState::Unsupported,
+            },
+            engine_version: ENGINE_VERSION.into(),
+            model_id: MODEL_ID.into(),
+            locale: "en-US".into(),
+            download_bytes: DOWNLOAD_BYTES,
+            installed_bytes: INSTALLED_BYTES,
+            downloaded_bytes: self.downloaded_bytes.min(DOWNLOAD_BYTES),
+            reason: self.reason.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct InstallManager {
+    root: Option<PathBuf>,
+    state: Arc<Mutex<SetupSnapshot>>,
+}
+
+impl Default for InstallManager {
+    fn default() -> Self {
+        Self {
+            root: None,
+            state: Arc::new(Mutex::new(SetupSnapshot {
+                phase: SetupPhase::Unsupported,
+                downloaded_bytes: 0,
+                reason: Some("Local dictation setup is unavailable in this runtime".into()),
+            })),
+        }
+    }
+}
+
+impl InstallManager {
+    pub fn new(data_dir: PathBuf) -> Self {
+        let supported = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+        let installed = supported && installed_provider(&data_dir).is_some();
+        let (phase, reason) = if !supported {
+            (
+                SetupPhase::Unsupported,
+                Some(
+                    "The evaluated local speech runtime currently supports Apple silicon Macs"
+                        .into(),
+                ),
+            )
+        } else if installed {
+            (SetupPhase::Ready, None)
+        } else {
+            (SetupPhase::NotInstalled, None)
+        };
+        Self {
+            root: Some(data_dir.join("voice/local")),
+            state: Arc::new(Mutex::new(SetupSnapshot {
+                phase,
+                downloaded_bytes: if installed { DOWNLOAD_BYTES } else { 0 },
+                reason,
+            })),
+        }
+    }
+
+    pub fn status(&self) -> wire::VoiceLocalStatusResult {
+        self.state.lock().unwrap().status()
+    }
+
+    pub fn start(
+        &self,
+        local: &LocalVoiceService,
+    ) -> Result<wire::VoiceLocalStatusResult, BridgeError> {
+        let Some(root) = self.root.clone() else {
+            return Err(BridgeError::Invalid(
+                "Local dictation setup is unavailable in this runtime".into(),
+            ));
+        };
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return Err(BridgeError::Invalid(
+                "The evaluated local speech runtime currently supports Apple silicon Macs".into(),
+            ));
+        }
+        if resolve_helper().is_none() {
+            return Err(BridgeError::Invalid(
+                "The packaged local dictation helper is unavailable".into(),
+            ));
+        }
+        {
+            let mut state = self.state.lock().unwrap();
+            if matches!(
+                state.phase,
+                SetupPhase::DownloadingRuntime
+                    | SetupPhase::DownloadingModel
+                    | SetupPhase::Installing
+                    | SetupPhase::Ready
+            ) {
+                return Ok(state.status());
+            }
+            state.phase = SetupPhase::DownloadingRuntime;
+            state.downloaded_bytes = 0;
+            state.reason = None;
+        }
+        let manager = self.clone();
+        let provider_slot = local.provider_slot();
+        if thread::Builder::new()
+            .name("bridge-voice-install".into())
+            .spawn(move || match manager.install(&root) {
+                Ok(provider) => {
+                    *provider_slot.lock().unwrap() = Some(Arc::new(provider));
+                    *manager.state.lock().unwrap() = SetupSnapshot {
+                        phase: SetupPhase::Ready,
+                        downloaded_bytes: DOWNLOAD_BYTES,
+                        reason: None,
+                    };
+                }
+                Err(reason) => {
+                    *manager.state.lock().unwrap() = SetupSnapshot {
+                        phase: SetupPhase::Failed,
+                        downloaded_bytes: 0,
+                        reason: Some(reason),
+                    };
+                }
+            })
+            .is_err()
+        {
+            *self.state.lock().unwrap() = SetupSnapshot {
+                phase: SetupPhase::Failed,
+                downloaded_bytes: 0,
+                reason: Some("Could not start the local dictation installer".into()),
+            };
+            return Err(BridgeError::Invalid(
+                "Could not start the local dictation installer".into(),
+            ));
+        }
+        Ok(self.status())
+    }
+
+    pub fn remove(
+        &self,
+        local: &LocalVoiceService,
+    ) -> Result<wire::VoiceLocalStatusResult, BridgeError> {
+        if local.is_busy() {
+            return Err(BridgeError::Invalid(
+                "Finish or cancel dictation before removing the local model".into(),
+            ));
+        }
+        {
+            let state = self.state.lock().unwrap();
+            if matches!(
+                state.phase,
+                SetupPhase::DownloadingRuntime
+                    | SetupPhase::DownloadingModel
+                    | SetupPhase::Installing
+            ) {
+                return Err(BridgeError::Invalid(
+                    "Local dictation setup is still in progress".into(),
+                ));
+            }
+        }
+        let Some(root) = self.root.as_ref() else {
+            return Err(BridgeError::Invalid(
+                "Local dictation setup is unavailable in this runtime".into(),
+            ));
+        };
+        let active_path = root.join("active.json");
+        let active = fs::read(&active_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<InstallManifest>(&bytes).ok());
+        let removal = (|| -> Result<(), BridgeError> {
+            if active_path.exists() {
+                fs::remove_file(&active_path)?;
+            }
+            if let Some(active) = active.filter(InstallManifest::is_expected) {
+                let install = root.join("installs").join(active.install_id);
+                if install.is_dir() {
+                    fs::remove_dir_all(install)?;
+                }
+            }
+            Ok(())
+        })();
+        local.set_provider(None);
+        if let Err(error) = removal {
+            *self.state.lock().unwrap() = SetupSnapshot {
+                phase: SetupPhase::Failed,
+                downloaded_bytes: 0,
+                reason: Some("Could not completely remove the local dictation installation".into()),
+            };
+            return Err(error);
+        }
+        *self.state.lock().unwrap() = SetupSnapshot {
+            phase: SetupPhase::NotInstalled,
+            downloaded_bytes: 0,
+            reason: None,
+        };
+        Ok(self.status())
+    }
+
+    fn install(&self, root: &Path) -> Result<SherpaProvider, String> {
+        let previous = fs::read(root.join("active.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<InstallManifest>(&bytes).ok())
+            .filter(InstallManifest::is_expected);
+        fs::create_dir_all(root.join("installs"))
+            .map_err(|_| "Could not prepare local dictation storage".to_owned())?;
+        let install_id = uuid::Uuid::new_v4().to_string();
+        let staging = root.join("installs").join(format!(".{install_id}.staging"));
+        let final_path = root.join("installs").join(&install_id);
+        fs::create_dir(&staging)
+            .map_err(|_| "Could not prepare local dictation staging".to_owned())?;
+        let mut cleanup = StagingCleanup(Some(staging.clone()));
+        let runtime_archive = staging.join("runtime.tar.bz2");
+        let model_archive = staging.join("model.tar.bz2");
+        self.download(
+            RUNTIME_URL,
+            &runtime_archive,
+            RUNTIME_ARCHIVE_BYTES,
+            RUNTIME_ARCHIVE_SHA256,
+            SetupPhase::DownloadingRuntime,
+            0,
+        )?;
+        self.download(
+            MODEL_URL,
+            &model_archive,
+            MODEL_ARCHIVE_BYTES,
+            MODEL_ARCHIVE_SHA256,
+            SetupPhase::DownloadingModel,
+            RUNTIME_ARCHIVE_BYTES,
+        )?;
+        {
+            let mut state = self.state.lock().unwrap();
+            state.phase = SetupPhase::Installing;
+            state.downloaded_bytes = DOWNLOAD_BYTES;
+        }
+        extract_archive(
+            &runtime_archive,
+            &staging.join("runtime-extract"),
+            RUNTIME_DIRECTORY,
+            &staging.join("runtime"),
+        )?;
+        extract_archive(
+            &model_archive,
+            &staging.join("model-extract"),
+            MODEL_DIRECTORY,
+            &staging.join("model"),
+        )?;
+        let _ = fs::remove_file(&runtime_archive);
+        let _ = fs::remove_file(&model_archive);
+        let manifest = InstallManifest {
+            schema_version: 1,
+            install_id: install_id.clone(),
+            engine_version: ENGINE_VERSION.into(),
+            model_id: MODEL_ID.into(),
+            runtime_archive_sha256: RUNTIME_ARCHIVE_SHA256.into(),
+            model_archive_sha256: MODEL_ARCHIVE_SHA256.into(),
+        };
+        fs::write(
+            staging.join("install.json"),
+            serde_json::to_vec_pretty(&manifest)
+                .map_err(|_| "Could not record local dictation installation")?,
+        )
+        .map_err(|_| "Could not record local dictation installation".to_owned())?;
+        let provider = SherpaProvider {
+            helper: resolve_helper().ok_or("The packaged local dictation helper is unavailable")?,
+            runtime: staging.join("runtime"),
+            model: staging.join("model"),
+            supervised: true,
+        };
+        if !provider.paths_exist() {
+            return Err("The downloaded local dictation files are incomplete".into());
+        }
+        fs::rename(&staging, &final_path)
+            .map_err(|_| "Could not activate the local dictation installation".to_owned())?;
+        cleanup.0 = None;
+        write_active_manifest(root, &manifest)?;
+        if let Some(previous) = previous.filter(|item| item.install_id != install_id) {
+            let previous_path = root.join("installs").join(previous.install_id);
+            if previous_path.is_dir() {
+                let _ = fs::remove_dir_all(previous_path);
+            }
+        }
+        let provider = SherpaProvider {
+            helper: resolve_helper().ok_or("The packaged local dictation helper is unavailable")?,
+            runtime: final_path.join("runtime"),
+            model: final_path.join("model"),
+            supervised: true,
+        };
+        if !provider.paths_exist() {
+            return Err("The activated local dictation installation is incomplete".into());
+        }
+        Ok(provider)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn download(
+        &self,
+        url: &str,
+        destination: &Path,
+        expected_bytes: u64,
+        expected_sha256: &str,
+        phase: SetupPhase,
+        completed_bytes: u64,
+    ) -> Result<(), String> {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(15 * 60))
+            .user_agent(concat!("Bridge/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|_| "Could not initialize the local dictation download".to_owned())?;
+        let mut response = client
+            .get(url)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|_| "Could not download the local dictation files".to_owned())?;
+        if response
+            .content_length()
+            .is_some_and(|length| length != expected_bytes)
+        {
+            return Err("The local dictation download size did not match its pin".into());
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .map_err(|_| "Could not create the local dictation download".to_owned())?;
+        copy_verified(&mut response, &mut file, expected_bytes, expected_sha256, |downloaded| {
+            let mut state = self.state.lock().unwrap();
+            state.phase = phase;
+            state.downloaded_bytes = completed_bytes + downloaded;
+        })?;
+        file.sync_all()
+            .map_err(|_| "Could not finish storing the local dictation download".to_owned())?;
+        Ok(())
+    }
+}
+
+fn copy_verified(
+    mut source: impl Read,
+    mut destination: impl Write,
+    expected_bytes: u64,
+    expected_sha256: &str,
+    mut progress: impl FnMut(u64),
+) -> Result<(), String> {
+    let mut digest = Sha256::new();
+    let mut downloaded = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = source
+            .read(&mut buffer)
+            .map_err(|_| "The local dictation download was interrupted".to_owned())?;
+        if count == 0 {
+            break;
+        }
+        downloaded = downloaded.saturating_add(count as u64);
+        if downloaded > expected_bytes {
+            return Err("The local dictation download exceeded its pinned size".into());
+        }
+        digest.update(&buffer[..count]);
+        destination
+            .write_all(&buffer[..count])
+            .map_err(|_| "Could not store the local dictation download".to_owned())?;
+        progress(downloaded);
+    }
+    if downloaded != expected_bytes || format!("{:x}", digest.finalize()) != expected_sha256 {
+        return Err("The local dictation download failed checksum verification".into());
+    }
+    Ok(())
+}
+
+struct StagingCleanup(Option<PathBuf>);
+
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn extract_archive(
+    archive_path: &Path,
+    extraction_root: &Path,
+    expected_directory: &str,
+    destination: &Path,
+) -> Result<(), String> {
+    fs::create_dir(extraction_root)
+        .map_err(|_| "Could not prepare local dictation extraction".to_owned())?;
+    let archive = File::open(archive_path)
+        .map_err(|_| "Could not open the verified local dictation archive".to_owned())?;
+    let decoder = bzip2::read::BzDecoder::new(archive);
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .unpack(extraction_root)
+        .map_err(|_| "Could not extract the verified local dictation archive".to_owned())?;
+    let source = extraction_root.join(expected_directory);
+    if !source.is_dir() {
+        return Err("The verified local dictation archive has an unexpected layout".into());
+    }
+    fs::rename(source, destination)
+        .map_err(|_| "Could not stage the local dictation files".to_owned())?;
+    fs::remove_dir_all(extraction_root)
+        .map_err(|_| "Could not finish local dictation extraction".to_owned())?;
+    Ok(())
+}
+
+fn write_active_manifest(root: &Path, manifest: &InstallManifest) -> Result<(), String> {
+    let pending = root.join(format!(".active-{}.tmp", manifest.install_id));
+    let mut cleanup = PendingFileCleanup(Some(pending.clone()));
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|_| "Could not record the active local dictation model".to_owned())?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .map_err(|_| "Could not record the active local dictation model".to_owned())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "Could not record the active local dictation model".to_owned())?;
+    fs::rename(&pending, root.join("active.json"))
+        .map_err(|_| "Could not activate the local dictation model".to_owned())?;
+    cleanup.0 = None;
+    Ok(())
+}
+
+struct PendingFileCleanup(Option<PathBuf>);
+
+impl Drop for PendingFileCleanup {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 struct SherpaStream {
@@ -423,9 +899,11 @@ mod tests {
     #[test]
     fn installation_requires_the_exact_pinned_manifest_and_files() {
         let fixture = tempfile::tempdir().unwrap();
+        let install_id = uuid::Uuid::new_v4().to_string();
         let root = fixture
             .path()
-            .join(format!("voice/sherpa-onnx-{ENGINE_VERSION}"));
+            .join("voice/local/installs")
+            .join(&install_id);
         let helper = fixture.path().join("helper");
         write_file(&helper);
         write_file(&root.join("runtime/lib/libsherpa-onnx-c-api.dylib"));
@@ -441,6 +919,7 @@ mod tests {
             root.join("install.json"),
             serde_json::json!({
                 "schemaVersion": 1,
+                "installId": install_id,
                 "engineVersion": ENGINE_VERSION,
                 "modelId": MODEL_ID,
                 "runtimeArchiveSha256": RUNTIME_ARCHIVE_SHA256,
@@ -476,6 +955,22 @@ mod tests {
             receiver.recv().unwrap(),
             Err(EngineFailure::Inference)
         ));
+    }
+
+    #[test]
+    fn verified_copy_enforces_size_and_digest_before_accepting_download() {
+        let payload = b"pinned voice archive";
+        let digest = format!("{:x}", Sha256::digest(payload));
+        let mut stored = Vec::new();
+        let mut progress = Vec::new();
+        copy_verified(payload.as_slice(), &mut stored, payload.len() as u64, &digest, |bytes| progress.push(bytes)).unwrap();
+        assert_eq!(stored, payload);
+        assert_eq!(progress.last().copied(), Some(payload.len() as u64));
+
+        let oversized = copy_verified(payload.as_slice(), Vec::new(), 4, &digest, |_| {}).unwrap_err();
+        assert!(oversized.contains("exceeded"));
+        let wrong_digest = copy_verified(payload.as_slice(), Vec::new(), payload.len() as u64, &"0".repeat(64), |_| {}).unwrap_err();
+        assert!(wrong_digest.contains("checksum"));
     }
 
     #[cfg(unix)]

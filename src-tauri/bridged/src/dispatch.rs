@@ -278,6 +278,9 @@ pub fn dispatch(
         MethodName::VoiceAppend => { let p: wire::VoiceAppendParams = decode(method, params)?; reply(api::voice_append(core, p)) }
         MethodName::VoiceStop => { let p: wire::VoiceStopParams = decode(method, params)?; reply(api::voice_stop(core, p)) }
         MethodName::VoiceCancel => { let p: wire::VoiceCancelParams = decode(method, params)?; reply(api::voice_cancel(core, p)) }
+        MethodName::VoiceLocalStatus => reply(api::voice_local_status(core)),
+        MethodName::VoiceLocalSetup => { let p: wire::VoiceLocalSetupParams = decode(method, params)?; reply(api::voice_local_setup(core, p)) }
+        MethodName::VoiceLocalRemove => { let p: wire::VoiceLocalRemoveParams = decode(method, params)?; reply(api::voice_local_remove(core, p)) }
         MethodName::DispatchAgentShortcut => {
             let p: wire::DispatchAgentShortcutParams = decode(method, params)?;
             reply(api::dispatch_agent_shortcut(
@@ -1072,6 +1075,27 @@ mod tests {
         assert!(core.adapters.lock().unwrap().is_empty());
         assert_eq!(core.db.lock().unwrap().query_row("SELECT count(*) FROM sessions", [],
             |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn local_voice_setup_and_removal_require_explicit_confirmation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let status = dispatch(&core, MethodName::VoiceLocalStatus, None).unwrap();
+        assert!(matches!(status["state"].as_str(), Some("notInstalled" | "unsupported")));
+
+        for (method, params) in [
+            (MethodName::VoiceLocalSetup, Some(json!({"confirmDownload": false}))),
+            (MethodName::VoiceLocalRemove, Some(json!({"confirmRemoval": false}))),
+        ] {
+            let error = dispatch(&core, method, params).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid.code());
+            assert!(error.message.contains("explicit"));
+        }
+        for method in [MethodName::VoiceLocalSetup, MethodName::VoiceLocalRemove] {
+            let error = dispatch(&core, method, Some(json!({}))).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        }
     }
 
     #[test]

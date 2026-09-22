@@ -39,6 +39,7 @@ export type ComposerPillProps = {
   onVoiceStop?: () => void;
   onVoiceCancel?: () => void;
   onVoiceRetry?: () => void;
+  onVoiceSetup?: () => void;
   /// Immediate feedback after Stop until the turn actually clears.
   stopping?: boolean;
   /// Lets the owner put the caret back in the composer after an action of its
@@ -103,6 +104,7 @@ export function ComposerPill({
   onVoiceStop,
   onVoiceCancel,
   onVoiceRetry,
+  onVoiceSetup,
   stopping = false,
   inputRef,
   leading,
@@ -393,7 +395,7 @@ export function ComposerPill({
                 </button>
               )}
               {voiceBusy && onVoiceCancel && <button type="button" onClick={onVoiceCancel} aria-label="Cancel dictation" title="Cancel dictation" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"><X className="h-4 w-4" aria-hidden="true" /></button>}
-              {!voiceBusy && onVoiceRetry && (voiceError || !voiceAvailable) && <button type="button" onClick={onVoiceRetry} title={voiceUnavailableReason} className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">Retry voice</button>}
+              {!voiceBusy && (voiceError || !voiceAvailable) && (onVoiceSetup || onVoiceRetry) && <button type="button" onClick={onVoiceSetup ?? onVoiceRetry} title={voiceUnavailableReason} className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{onVoiceSetup ? "Set up voice" : "Retry voice"}</button>}
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling
                   the work. */}

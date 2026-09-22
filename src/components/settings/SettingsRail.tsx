@@ -9,7 +9,7 @@
 import { useState } from "react";
 import {
   RotateCcw as ArrowCounterClockwise, Code, Download as DownloadSimple, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
-  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive,
+  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Mic,
 } from "lucide-react";
 import { SECTION_LABELS, SECTION_ORDER, type Section } from "./sections";
 import { filterSettingsRows, type SearchableRow } from "./settingsSearch";
@@ -21,6 +21,7 @@ const SECTION_ICONS: Record<Section, Icon> = {
   menuBar: SlidersHorizontal,
   permissions: ShieldCheck,
   composer: Keyboard,
+  voice: Mic,
   agents: Robot,
   models: SlidersHorizontal,
   prompts: Scroll,

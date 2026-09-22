@@ -249,6 +249,9 @@ typed_methods![
     (VoiceAppend, VoiceAppendParams, UnitResult),
     (VoiceStop, VoiceStopParams, UnitResult),
     (VoiceCancel, VoiceCancelParams, UnitResult),
+    (VoiceLocalStatus, _, VoiceLocalStatusResult),
+    (VoiceLocalSetup, VoiceLocalSetupParams, VoiceLocalStatusResult),
+    (VoiceLocalRemove, VoiceLocalRemoveParams, VoiceLocalStatusResult),
     // memory
     (SaveMemoryRecord, SaveMemoryRecordParams, MemoryRecord),
     (ListMemoryRecords, ListMemoryRecordsParams, ListMemoryRecordsResult),

@@ -34,12 +34,14 @@ pub struct VoiceService {
     sessions: Mutex<HashMap<String, ActiveVoiceSession>>,
     admission: Mutex<()>,
     pub local: local::LocalVoiceService,
+    pub local_install: sherpa::InstallManager,
 }
 
 impl VoiceService {
-    pub fn with_local_provider(provider: Option<std::sync::Arc<dyn local::VoiceProvider>>) -> Self {
+    pub fn for_data_dir(data_dir: &std::path::Path) -> Self {
         Self {
-            local: local::LocalVoiceService::new(provider),
+            local: local::LocalVoiceService::new(sherpa::installed_provider(data_dir)),
+            local_install: sherpa::InstallManager::new(data_dir.to_path_buf()),
             ..Self::default()
         }
     }

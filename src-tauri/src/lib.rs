@@ -1726,6 +1726,21 @@ async fn voice_cancel(voice_session_id: String, state: State<'_, Arc<BridgeCore>
     let core = state.inner().clone();
     blocking("Voice cancellation", move || api::voice_cancel(&core, bridge_protocol::messages::VoiceCancelParams { voice_session_id })).await
 }
+#[tauri::command]
+async fn voice_local_status(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceLocalStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Local voice status", move || api::voice_local_status(&core)).await
+}
+#[tauri::command]
+async fn voice_local_setup(confirm_download: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceLocalStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Local voice setup", move || api::voice_local_setup(&core, bridge_protocol::messages::VoiceLocalSetupParams { confirm_download })).await
+}
+#[tauri::command]
+async fn voice_local_remove(confirm_removal: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceLocalStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Local voice removal", move || api::voice_local_remove(&core, bridge_protocol::messages::VoiceLocalRemoveParams { confirm_removal })).await
+}
 
 /// Directly reserve a configured specialist worker. The browser supplies only
 /// the token and objective; every execution characteristic is host-resolved.
@@ -2753,6 +2768,9 @@ pub fn run() -> i32 {
             voice_append,
             voice_stop,
             voice_cancel,
+            voice_local_status,
+            voice_local_setup,
+            voice_local_remove,
             dispatch_agent_shortcut,
             list_workspace_files,
             list_workspace_tree,

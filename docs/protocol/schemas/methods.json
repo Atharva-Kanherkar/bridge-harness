@@ -499,6 +499,27 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "voice_local_status",
+      "domain": "voice",
+      "method": "voice/voice_local_status",
+      "paramsSchema": null,
+      "resultSchema": "voice-local-status-result.json"
+    },
+    {
+      "command": "voice_local_setup",
+      "domain": "voice",
+      "method": "voice/voice_local_setup",
+      "paramsSchema": "voice-local-setup-params.json",
+      "resultSchema": "voice-local-status-result.json"
+    },
+    {
+      "command": "voice_local_remove",
+      "domain": "voice",
+      "method": "voice/voice_local_remove",
+      "paramsSchema": "voice-local-remove-params.json",
+      "resultSchema": "voice-local-status-result.json"
+    },
+    {
       "command": "archive_chat",
       "domain": "sessions",
       "method": "sessions/archive_chat",
@@ -1509,7 +1530,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 19
+    "minor": 20
   },
   "reserved": {
     "cancel": "$/cancel",

@@ -123,6 +123,46 @@ pub struct VoiceCancelParams {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub enum VoiceLocalSetupState {
+    NotInstalled,
+    DownloadingRuntime,
+    DownloadingModel,
+    Installing,
+    Ready,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceLocalStatusResult {
+    pub state: VoiceLocalSetupState,
+    pub engine_version: String,
+    pub model_id: String,
+    pub locale: String,
+    pub download_bytes: u64,
+    pub installed_bytes: u64,
+    pub downloaded_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VoiceLocalSetupParams {
+    /// Setup is a large explicit download; callers must affirm the user action.
+    pub confirm_download: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VoiceLocalRemoveParams {
+    /// Removal deletes the installed runtime and model from Bridge's data dir.
+    pub confirm_removal: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum VoiceTranscriptKind {
     Started,
     /// A complete, revisable hypothesis, not an append-only delta.
@@ -174,5 +214,16 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<VoiceStartParams>(value).is_err());
         }
+    }
+
+    #[test]
+    fn local_setup_and_removal_require_explicit_confirmation() {
+        assert!(
+            !serde_json::from_str::<VoiceLocalSetupParams>(r#"{"confirmDownload":false}"#)
+                .unwrap()
+                .confirm_download
+        );
+        assert!(serde_json::from_str::<VoiceLocalSetupParams>("{}").is_err());
+        assert!(serde_json::from_str::<VoiceLocalRemoveParams>("{}").is_err());
     }
 }
