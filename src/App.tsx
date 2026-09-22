@@ -7,7 +7,7 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, u
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
-import { findReferences, referenceAlias, referencePullText, type ReferenceChipModel } from "./referenceChip";
+import { findReferences, insertMention, referenceAlias, type ReferenceChipModel } from "./referenceChip";
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
@@ -302,14 +302,36 @@ function AppContent() {
       })
       .catch(() => { /* a failed resolve leaves the token as literal text */ });
   };
-  const useResolvedReference = (chip: ReferenceChipModel) => {
-    const pull = referencePullText(chip.resolved);
-    if (!pull) {
-      resolvedReferences.current.delete(chip.token);
-      setReferenceChips(current => current.filter(candidate => candidate.token !== chip.token));
-      return;
+  // Chips are a preview, not an action: the backend attaches the referenced
+  // chat's history to the turn on send. The only thing to do here is remove
+  // the token again.
+  const removeReference = (chip: ReferenceChipModel) => {
+    resolvedReferences.current.delete(chip.token);
+    setReferenceChips(current => current.filter(candidate => candidate.token !== chip.token));
+    setComposer(current => current.split(chip.token).join("").replace(/  +/g, " ").trim());
+  };
+  // Sidebar "Mention in current chat": drop the alias into the draft and
+  // resolve it right away so the chip appears before the person types more.
+  const mentionChat = (chat: Session) => {
+    setComposer(current => {
+      const next = insertMention(current, chat.id);
+      refreshReferences(next);
+      return next;
+    });
+  };
+  // Sidebar "Fork chat…": the dialog needs an entry to fork at, so resolve the
+  // chat's head first. A chat with no messages has nothing to fork.
+  const forkChatFromSidebar = async (chat: Session) => {
+    try {
+      const resolved = await bridgeApi.resolveReference(chat.id);
+      if (resolved.kind !== "session" || !resolved.activeEntryId) {
+        setError(`${chat.title?.trim() || chat.label} has no messages to fork yet.`);
+        return;
+      }
+      setForkDraft({ sessionId: chat.id, entryId: resolved.activeEntryId });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
-    setComposer(current => current.replace(chip.token, pull));
   };
 
   const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
@@ -2514,6 +2536,8 @@ function AppContent() {
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       onArchiveChat={archiveChat}
+      onMentionChat={mentionChat}
+      onForkChat={chat => void forkChatFromSidebar(chat)}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
       showWindowNav
@@ -2882,7 +2906,7 @@ function AppContent() {
                     suggestion={draftSuggestion?.suggestion}
                     onAcceptSuggestion={acceptSuggestion}
                     references={referenceChips}
-                    onUseReference={useResolvedReference}
+                    onRemoveReference={removeReference}
                     placeholder={turnActive ? "Send a follow-up…" : "Message Bridge…"}
                     disabled={!session}
                     working={turnActive}

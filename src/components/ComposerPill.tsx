@@ -62,8 +62,8 @@ export type ComposerPillProps = {
   onAcceptSuggestion?: () => void;
   /** Reference chips for `brio_…`/`@session:` tokens currently in the draft. */
   references?: ReferenceChipModel[];
-  /** Pull a chip's checkpoint/entry summary into the draft. */
-  onUseReference?: (chip: ReferenceChipModel) => void;
+  /** Remove a chip: strip its token from the draft. */
+  onRemoveReference?: (chip: ReferenceChipModel) => void;
 };
 
 const ACTIVE_ACTION_LABEL = { steer: "Steer", queue: "Queue" } as const;
@@ -95,7 +95,7 @@ export function ComposerPill({
   suggestion,
   onAcceptSuggestion,
   references = [],
-  onUseReference,
+  onRemoveReference,
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -170,13 +170,13 @@ export function ComposerPill({
                   >
                     <span className="truncate font-medium">{chipSummary(chip.resolved)}</span>
                     <span className="truncate text-muted-foreground">{chipDetail(chip.resolved)}</span>
-                    {!unknown && onUseReference && (
+                    {onRemoveReference && (
                       <button
                         type="button"
-                        aria-label={`Pull ${chipSummary(chip.resolved)} into this chat`}
+                        aria-label={`Remove ${chipSummary(chip.resolved)} from this message`}
                         className="rounded-full px-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        onClick={() => onUseReference(chip)}
-                      >+</button>
+                        onClick={() => onRemoveReference(chip)}
+                      >×</button>
                     )}
                   </span>
                 );

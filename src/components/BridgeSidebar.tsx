@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, Copy, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, GitFork, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ BarChart3, Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, GitFork, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -9,7 +9,8 @@ import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
-import { toPublicAlias } from "../referenceChip";
+import { mentionToken, toPublicAlias } from "../referenceChip";
+import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 import {
@@ -56,6 +57,8 @@ function ChatRow({
   time,
   onClick,
   onArchive,
+  onMention,
+  onFork,
   forkLabel,
   onJumpToParent,
 }: {
@@ -65,6 +68,8 @@ function ChatRow({
   time: string | null;
   onClick: () => void;
   onArchive?: () => void;
+  onMention?: () => void;
+  onFork?: () => void;
   forkLabel?: string;
   onJumpToParent?: () => void;
 }) {
@@ -108,45 +113,102 @@ function ChatRow({
         </span>
       </span>
     </button>
-    {/* Revealed on hover or keyboard focus: the copy-id button, then the
-        archive button. The id copies as the public `brio_…` alias the
-        composer recognizes. Achromatic like the rest of the chrome. */}
-    <button
-      type="button"
-      onClick={event => { event.stopPropagation(); void navigator.clipboard?.writeText(toPublicAlias(chat.id)); }}
-      title="Copy chat ID"
-      aria-label={`Copy chat ID ${chat.id}`}
-      className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
-    >
-      <Copy size={12} strokeWidth={1.7} aria-hidden="true" />
-    </button>
-    {/* Sibling of the row button, never a descendant of it: a <button> inside
-        a <button> is invalid HTML and browsers treat the inner control
-        unpredictably. */}
-    {onJumpToParent && forkLabel && (
-      <button
-        type="button"
-        onClick={event => { event.stopPropagation(); onJumpToParent(); }}
-        title={`Jump to ${forkLabel}`}
-        aria-label={`Jump to parent ${forkLabel}`}
-        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
-      >
-        <GitFork size={12} strokeWidth={1.7} aria-hidden="true" />
-      </button>
-    )}
-    {onArchive && (
-      <button
-        type="button"
-        onClick={event => { event.stopPropagation(); onArchive(); }}
-        title={`Archive ${name}`}
-        aria-label={`Archive ${name}`}
-        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
-      >
-        <Archive size={12} strokeWidth={1.7} aria-hidden="true" />
-      </button>
-    )}
+    {/* Revealed on hover or keyboard focus: one three-dot menu holding every
+        row action, so the row itself stays a single click target. The copy
+        action puts the public `brio_…` alias on the clipboard — the token the
+        composer recognizes — and the mention action drops the same alias
+        straight into the open chat's draft. Sibling of the row button, never
+        a descendant of it: a <button> inside a <button> is invalid HTML. */}
+    <ChatRowMenu
+      chat={chat}
+      name={name}
+      onMention={onMention}
+      onFork={onFork}
+      onArchive={onArchive}
+      forkLabel={forkLabel}
+      onJumpToParent={onJumpToParent}
+    />
     <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
+  );
+}
+
+const ROW_MENU_WIDTH = 224;
+const ROW_MENU_HEIGHT_ESTIMATE = 200;
+
+function ChatRowMenu({
+  chat,
+  name,
+  onMention,
+  onFork,
+  onArchive,
+  forkLabel,
+  onJumpToParent,
+}: {
+  chat: Session;
+  name: string;
+  onMention?: () => void;
+  onFork?: () => void;
+  onArchive?: () => void;
+  forkLabel?: string;
+  onJumpToParent?: () => void;
+}) {
+  const menu = useMenuPanel<HTMLButtonElement>({ width: ROW_MENU_WIDTH, height: ROW_MENU_HEIGHT_ESTIMATE });
+  const alias = toPublicAlias(chat.id);
+  const item = "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors hover:bg-accent";
+  const run = (action: () => void) => () => { action(); menu.close(); };
+  return (
+    <>
+      <button
+        ref={menu.triggerRef}
+        type="button"
+        onClick={event => { event.stopPropagation(); menu.toggle(); }}
+        title={`Chat actions for ${name}`}
+        aria-label={`Chat actions for ${name}`}
+        aria-haspopup="menu"
+        aria-expanded={menu.open}
+        className={cn(
+          "mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100",
+          menu.open ? "opacity-100" : "opacity-0",
+        )}
+      >
+        <MoreHorizontal size={13} strokeWidth={1.7} aria-hidden="true" />
+      </button>
+      <MenuPanel controller={menu} label={`Chat actions for ${name}`}>
+        <button type="button" role="menuitem" className={item} onClick={run(() => { void navigator.clipboard?.writeText(alias); })}>
+          <Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">Copy chat ID</span>
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{alias}</span>
+        </button>
+        {onMention && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMention)}>
+            <AtSign size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mention in current chat</span>
+          </button>
+        )}
+        {onFork && (
+          <button type="button" role="menuitem" className={item} onClick={run(onFork)}>
+            <GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Fork chat…</span>
+          </button>
+        )}
+        {onJumpToParent && forkLabel && (
+          <button type="button" role="menuitem" className={item} onClick={run(onJumpToParent)}>
+            <GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Open parent: {forkLabel}</span>
+          </button>
+        )}
+        {onArchive && (
+          <>
+            <MenuSeparator />
+            <button type="button" role="menuitem" className={item} onClick={run(onArchive)}>
+              <Archive size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">Archive</span>
+            </button>
+          </>
+        )}
+      </MenuPanel>
+    </>
   );
 }
 
@@ -327,6 +389,10 @@ export type BridgeSidebarProps = {
   onOpenSession: (id: string) => void;
   /** Absent when the host cannot archive — the row then shows no action. */
   onArchiveChat?: (chat: Session) => void;
+  /** Drop `@session:<alias>` for this chat into the open chat's draft. */
+  onMentionChat?: (chat: Session) => void;
+  /** Open the fork dialog at this chat's head. */
+  onForkChat?: (chat: Session) => void;
   /** Hidden, not shrunk: from `sm` up a collapsed rail gives back every pixel
    * and leaves nothing on screen. When set, the rail uses this state instead of
    * its own. */
@@ -366,6 +432,8 @@ export function BridgeSidebar({
   onOpenSettings,
   onOpenSession,
   onArchiveChat,
+  onMentionChat,
+  onForkChat,
   collapsed: collapsedProp,
   onCollapsedChange,
   showWindowNav = true,
@@ -701,6 +769,8 @@ export function BridgeSidebar({
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
+                    onMention={onMentionChat && (() => onMentionChat(chat))}
+                    onFork={onForkChat && chat.kind !== "worker" ? () => onForkChat(chat) : undefined}
                     forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
                   />

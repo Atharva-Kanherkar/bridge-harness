@@ -529,7 +529,8 @@ describe("fork breadcrumbs in the session rail", () => {
     const chats = [session("parent-1", { label: "Kyoto" }), forkOf("fork-1", "parent-1", "Alternate path")];
     const html = render({ chats });
     expect(html).toContain("forked from Kyoto");
-    expect(html).toContain("Jump to parent Kyoto");
+    // The jump lives in the row's actions menu now; the row still advertises it.
+    expect(html).toContain("Chat actions for Alternate path");
   });
 
   it("falls back to a generic label when the source row is unknown", () => {
@@ -573,8 +574,10 @@ describe("fork breadcrumbs in the session rail", () => {
 });
 
 describe("portable chat ids", () => {
-  it("offers a copy-id button on every row", () => {
+  it("offers a chat-actions menu on every row instead of a bare copy icon", () => {
     const html = render({ chats: [session("chat-1", { label: "Kyoto" })] });
-    expect(html).toContain('Copy chat ID chat-1');
+    expect(html).toContain('Chat actions for Kyoto');
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).not.toContain('Copy chat ID chat-1');
   });
 });

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  chipDetail,
   findReferences,
+  insertMention,
+  mentionToken,
   referenceAlias,
-  referencePullText,
   toPublicAlias,
 } from "./referenceChip";
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
@@ -42,14 +44,9 @@ describe("reference chips", () => {
     expect(referenceAlias("brio_11111111")).toBe("brio_11111111");
   });
 
-  it("pulls a checkpoint summary into the draft for sessions", () => {
-    expect(referencePullText(sessionRef({ latestCheckpointEntryId: "chk-1" })))
-      .toContain("checkpoint present");
-    expect(referencePullText(sessionRef({ latestCheckpointEntryId: null })))
-      .toContain("checkpoint none");
-  });
-
-  it("pulls entry summaries as quotes and unknown references pull nothing", async () => {
+  it("tells the reader that history attaches on send instead of naming a restoration mode", () => {
+    expect(chipDetail(sessionRef())).toBe("codex · fork · history attaches on send");
+    expect(chipDetail(sessionRef({ parentSessionId: null }))).toBe("codex · history attaches on send");
     const entry: ResolveReferenceResult = {
       kind: "entry",
       sessionId: "s",
@@ -60,10 +57,16 @@ describe("reference chips", () => {
       createdAt: "now",
       authorized: true,
     };
-    expect(referencePullText(entry)).toBe("> A question about the rail");
-    expect(referencePullText({ kind: "unknown", authorized: false })).toBe("");
-    const resolved = sessionRef();
-    
-    expect(resolved.parentSessionId).toBeTruthy();
+    expect(chipDetail(entry)).toBe("user.message #1 · attaches on send");
+    expect(chipDetail({ kind: "unknown", authorized: false })).toBe("no such chat — sent as plain text");
+  });
+
+  it("inserts a mention once, spaced from the surrounding draft", () => {
+    const id = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    expect(mentionToken(id)).toBe("@session:brio_11111111");
+    expect(insertMention("", id)).toBe("@session:brio_11111111 ");
+    expect(insertMention("continue", id)).toBe("continue @session:brio_11111111 ");
+    expect(insertMention("continue ", id)).toBe("continue @session:brio_11111111 ");
+    expect(insertMention("see @session:brio_11111111 now", id)).toBe("see @session:brio_11111111 now");
   });
 });
