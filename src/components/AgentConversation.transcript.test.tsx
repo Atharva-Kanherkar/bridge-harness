@@ -362,7 +362,8 @@ describe("harness subagents (issue #667)", () => {
 
   it("opens into the prompt that was sent and the result that came back", async () => {
     await openSubagentRow([subagentDone()]);
-    expect(host.textContent).toContain("Subagent · Explore");
+    expect(host.textContent).toContain("Subagent finished");
+    expect(host.textContent).toContain("Explore");
     expect(host.textContent).toContain("Map the login flow");
     expect(host.textContent).toContain("Auth lives in src/auth.ts");
   });

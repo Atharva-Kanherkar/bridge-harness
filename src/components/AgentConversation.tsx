@@ -10,7 +10,7 @@ import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
-import { FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
+import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
 import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
@@ -256,27 +256,44 @@ function TerminalBlock({ command, output }: { command?: string; output?: string 
 /// facet, never off which harness produced the call.
 function SubagentBlock({ agentType, prompt, output, live }: { agentType?: string; prompt?: string; output?: string; live: boolean }) {
   return (
-    <div className="space-y-2.5 bg-code px-3.5 py-2.5">
-      {agentType && (
-        <p className="flex items-center gap-1.5">
-          <span className="shrink-0 rounded-full border border-border px-1.5 py-px font-mono text-[11px] text-muted-foreground">Subagent · {agentType}</span>
-        </p>
-      )}
-      {prompt && (
-        <div>
-          <p className="pb-1 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">Asked</p>
-          <CappedOutput text={prompt} className="max-h-[200px] overflow-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground"/>
-        </div>
-      )}
+    <div className="space-y-3 bg-card px-3.5 py-3 sm:px-4">
+      <header className="flex items-center gap-2">
+        {live ? <PulseDot size={7}/> : <Check size={12} className="text-success" aria-hidden="true"/>}
+        <span className="text-[12px] font-medium text-foreground">{live ? "Running subagent" : "Subagent finished"}</span>
+        {agentType && (
+          <span className="ml-auto inline-flex items-center rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+            {agentType}
+          </span>
+        )}
+      </header>
+      {prompt && <SubagentSection label="Asked" text={prompt} markdown />}
       {output ? (
-        <div>
-          <p className="pb-1 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">Result</p>
-          <CappedOutput text={output} className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-muted-foreground"/>
-        </div>
+        <SubagentSection label="Result" text={output} />
       ) : live ? (
         <p className="text-[12px] text-muted-foreground">Working — the result will appear here.</p>
       ) : null}
     </div>
+  );
+}
+
+/// One band of the subagent card: a labelled, copyable block. Prompts are
+/// rendered as Markdown because they are instructions; results are kept
+/// preformatted so tool output, JSON and logs stay exact.
+function SubagentSection({ label, text, markdown }: { label: string; text: string; markdown?: boolean }) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-code">
+      <div className="flex items-center justify-between border-b border-border bg-code-highlight px-3 py-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-faint">{label}</span>
+        <CopyButton text={text} className="code-block-copy" />
+      </div>
+      <div className={cn("px-3.5 py-2.5", markdown && "max-h-[320px] overflow-auto")}>
+        {markdown ? (
+          <div className="text-[13px] leading-relaxed text-foreground"><Markdown text={text}/></div>
+        ) : (
+          <CappedOutput text={text} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-muted-foreground"/>
+        )}
+      </div>
+    </section>
   );
 }
 

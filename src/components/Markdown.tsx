@@ -230,7 +230,7 @@ function useDarkTheme(): boolean {
 }
 
 /** Shared copy-to-clipboard state for the code/math/mermaid copy affordances. */
-function useCopy(text: string) {
+export function useCopy(text: string) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
@@ -238,7 +238,7 @@ function useCopy(text: string) {
   return { copied, copy };
 }
 
-function CopyButton({ text, className }: { text: string; className: string }) {
+export function CopyButton({ text, className }: { text: string; className: string }) {
   const { copied, copy } = useCopy(text);
   return (
     <button type="button" className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
