@@ -25,6 +25,26 @@ export function insertMention(draft: string, sessionId: string): string {
   return `${draft}${lead}${token} `;
 }
 
+/**
+ * Remove every occurrence of `token` from a draft along with one adjacent
+ * space, leaving everything else byte-for-byte as typed. Collapsing runs of
+ * whitespace across the whole draft would flatten indented code pasted
+ * beside the reference.
+ */
+export function removeReferenceToken(draft: string, token: string): string {
+  let out = draft;
+  let at = out.indexOf(token);
+  while (at >= 0) {
+    let start = at;
+    let end = at + token.length;
+    if (out[end] === " ") end += 1;
+    else if (start > 0 && out[start - 1] === " ") start -= 1;
+    out = out.slice(0, start) + out.slice(end);
+    at = out.indexOf(token);
+  }
+  return out;
+}
+
 /** Every reference-shaped token in a draft, in order, deduplicated. */
 export function findReferences(text: string): string[] {
   const unique = new Set<string>();

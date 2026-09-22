@@ -986,6 +986,18 @@ describe("the dock in the session view", () => {
     expect(container.textContent).not.toContain("history attaches on send");
   });
 
+  it("does not offer a mention on the Welcome screen, whose draft the sidebar cannot reach", async () => {
+    await mountApp();
+    await settle(4);
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for"));
+    expect(trigger).toBeTruthy();
+    await click(trigger!);
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].map(item => item.textContent ?? "");
+    expect(items.some(text => text.startsWith("Copy chat ID"))).toBe(true);
+    expect(items.some(text => text.startsWith("Mention in current chat"))).toBe(false);
+    await click(trigger!);
+  });
+
   it("copies the alias and mentions a chat from the row's three-dot menu", async () => {
     await mountApp();
     await openWorkspaceSession("4");

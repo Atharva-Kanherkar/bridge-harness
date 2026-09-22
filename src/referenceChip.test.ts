@@ -5,6 +5,7 @@ import {
   insertMention,
   mentionToken,
   referenceAlias,
+  removeReferenceToken,
   toPublicAlias,
 } from "./referenceChip";
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
@@ -68,5 +69,14 @@ describe("reference chips", () => {
     expect(insertMention("continue", id)).toBe("continue @session:brio_11111111 ");
     expect(insertMention("continue ", id)).toBe("continue @session:brio_11111111 ");
     expect(insertMention("see @session:brio_11111111 now", id)).toBe("see @session:brio_11111111 now");
+  });
+
+  it("removes a reference and one adjacent space without touching other whitespace", () => {
+    const code = "def f():\n    if x:\n        return 1";
+    expect(removeReferenceToken(`brio_11111111 ${code}`, "brio_11111111")).toBe(code);
+    expect(removeReferenceToken(`${code} brio_11111111`, "brio_11111111")).toBe(code);
+    expect(removeReferenceToken("compare with brio_11111111", "brio_11111111")).toBe("compare with");
+    expect(removeReferenceToken("a brio_11111111 b brio_11111111", "brio_11111111")).toBe("a b");
+    expect(removeReferenceToken("untouched  text", "brio_11111111")).toBe("untouched  text");
   });
 });

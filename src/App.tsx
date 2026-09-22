@@ -7,7 +7,7 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, u
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
-import { findReferences, insertMention, referenceAlias, type ReferenceChipModel } from "./referenceChip";
+import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
@@ -308,7 +308,7 @@ function AppContent() {
   const removeReference = (chip: ReferenceChipModel) => {
     resolvedReferences.current.delete(chip.token);
     setReferenceChips(current => current.filter(candidate => candidate.token !== chip.token));
-    setComposer(current => current.split(chip.token).join("").replace(/  +/g, " ").trim());
+    setComposer(current => removeReferenceToken(current, chip.token));
   };
   // Sidebar "Mention in current chat": drop the alias into the draft and
   // resolve it right away so the chip appears before the person types more.
@@ -2536,7 +2536,9 @@ function AppContent() {
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       onArchiveChat={archiveChat}
-      onMentionChat={mentionChat}
+      // Only while a chat is open: the Welcome screen owns its own draft, so
+      // a mention there would land in a composer nobody can see.
+      onMentionChat={session ? mentionChat : undefined}
       onForkChat={chat => void forkChatFromSidebar(chat)}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
