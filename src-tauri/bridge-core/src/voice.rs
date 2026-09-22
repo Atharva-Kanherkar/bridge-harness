@@ -4,6 +4,7 @@
 //! remains explicit and experimental; there is no cross-provider fallback.
 
 pub mod local;
+pub mod sherpa;
 
 use crate::{events::CoreEvent, BridgeCore, BridgeError};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -33,6 +34,15 @@ pub struct VoiceService {
     sessions: Mutex<HashMap<String, ActiveVoiceSession>>,
     admission: Mutex<()>,
     pub local: local::LocalVoiceService,
+}
+
+impl VoiceService {
+    pub fn with_local_provider(provider: Option<std::sync::Arc<dyn local::VoiceProvider>>) -> Self {
+        Self {
+            local: local::LocalVoiceService::new(provider),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug)]

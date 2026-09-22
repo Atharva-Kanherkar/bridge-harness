@@ -32,7 +32,7 @@ function bundleFixture(t) {
   writeFileSync(join(nativeDir, "package.json"), JSON.stringify({ version: sdkVersion }));
   writeFileSync(native, "native fixture");
   chmodSync(native, 0o755);
-  for (const name of ["bridged", "bridge-browser-host"]) {
+  for (const name of ["bridged", "bridge-browser-host", "bridge-voice-helper"]) {
     writeFileSync(join(contents, "MacOS", name), "fixture");
     chmodSync(join(contents, "MacOS", name), 0o755);
   }

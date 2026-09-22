@@ -96,6 +96,29 @@ fn macos_bundle_declares_microphone_access() {
 }
 
 #[test]
+fn local_dictation_helper_is_bundled_and_prepared_without_downloading_a_model() {
+    let parsed = tauri_conf();
+    let external = parsed["bundle"]["externalBin"]
+        .as_array()
+        .expect("bundle.externalBin is an array");
+    assert!(
+        external
+            .iter()
+            .any(|entry| entry == "binaries/bridge-voice-helper"),
+        "the signed app must ship the supervised native speech helper"
+    );
+    assert!(
+        parsed["build"]["beforeBuildCommand"]
+            .as_str()
+            .is_some_and(|command| command.contains("prepare:voice-helper")),
+        "the helper must be compiled before Tauri validates and signs external binaries"
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    assert!(root.join("scripts/prepare-voice-helper.sh").is_file());
+    assert!(root.join("src-tauri/voice-helper/main.c").is_file());
+}
+
+#[test]
 fn claude_sidecar_is_bundled_under_resources() {
     let parsed = tauri_conf();
     let resources = parsed["bundle"]["resources"]

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run generate:icons && npm run build && npm run prepare:browser-host && npm run prepare:daemon && npm run prepare:claude-sidecar && npm run prepare:terminal-state",
+    "beforeBuildCommand": "npm run generate:icons && npm run build && npm run prepare:browser-host && npm run prepare:daemon && npm run prepare:voice-helper && npm run prepare:claude-sidecar && npm run prepare:terminal-state",
     "frontendDist": "../dist"
   },
   "app": {
@@ -52,7 +52,7 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "externalBin": ["binaries/bridge-browser-host", "binaries/bridged"],
+    "externalBin": ["binaries/bridge-browser-host", "binaries/bridged", "binaries/bridge-voice-helper"],
     "resources": {
       "../docs/third-party/CodexBar-LICENSE.txt": "licenses/CodexBar-LICENSE.txt",
       "../browser-extension/": "browser-extension/",

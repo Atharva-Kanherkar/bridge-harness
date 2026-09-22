@@ -444,7 +444,9 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             terminal_state: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
-            voice: crate::voice::VoiceService::default(),
+            voice: crate::voice::VoiceService::with_local_provider(
+                crate::voice::sherpa::installed_provider(&config.data_dir),
+            ),
             input_activity: std::sync::RwLock::new(()),
             reader_launches: Mutex::new(HashMap::new()),
             detached_summaries: Mutex::new(HashMap::new()),
