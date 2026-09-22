@@ -394,7 +394,7 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     // provider never supplies a name or a recognized action category.
     pendingIdentity: named.pendingIdentity
       && (common.status === "running" || source.status === "pending")
-      && !output,
+      && !output && !subagent,
     // Only edits show a diff inline; a read whose body happens to be a diff is
     // still just output.
     patch: named.verb === "edit" ? readPatch(source, data, output) : undefined,

@@ -61,6 +61,15 @@ describe("fallback tool action labels", () => {
 });
 
 describe("harness subagent facet (issue #667)", () => {
+  it.each([
+    { type: "collabAgentToolCall", prompt: "Map the login flow", agentsStates: { child: { status: "inProgress" } } },
+    { type: "dynamicToolCall", arguments: { prompt: "Map the login flow", subagent_type: "Explore" } },
+  ])("keeps a title-less active $type visible once its subagent is identified", (data) => {
+    const tool = readToolCall({ text: "", status: "inProgress", surface: "activity", data });
+    expect(tool.subagent).toMatchObject({ prompt: "Map the login flow" });
+    expect(tool.pendingIdentity).not.toBe(true);
+  });
+
   it("reads agent type, description and prompt off a Task call", () => {
     const tool = readToolCall({
       title: "Task", text: "", status: "inProgress", surface: "activity",

@@ -406,6 +406,41 @@ describe("run trailer", () => {
 });
 
 describe("harness subagents (issue #667)", () => {
+  it.each([
+    ["collabAgentToolCall", false], ["collabAgentToolCall", true],
+    ["dynamicToolCall", false], ["dynamicToolCall", true],
+  ] as const)("keeps a title-less %s prompt and child lifecycle inspectable (replay=%s)", async (type, durable) => {
+    const started = event(1, "tool.started", {
+      itemId: "child-call", status: "inProgress", title: null,
+      data: {
+        type,
+        ...(type === "collabAgentToolCall"
+          ? { prompt: "Map the login flow" }
+          : { arguments: { prompt: "Map the login flow", subagent_type: "Explore" } }),
+        threadId: "child", agentsStates: { child: { status: "inProgress" } },
+      },
+    });
+    const mountProjection = async (events: AgentEvent[]) => {
+      const entries = durable ? durableEntriesFrom("s", events) : undefined;
+      await act(async () => root.render(<AgentConversation session={session} events={durable ? [] : events} forestEntries={entries} activeLeafId={entries?.at(-1)?.id} onResolve={() => {}} />));
+    };
+    await mountProjection([started]);
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
+    await act(async () => buttonWith("Using 1 tool")!.click());
+    await act(async () => buttonWith("Using a tool")!.click());
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Running subagent");
+
+    await mountProjection([started, event(2, "tool.completed", {
+      itemId: "child-call", status: "completed", title: null,
+      data: { agentsStates: { child: { status: "completed", message: "Found three call sites." } } },
+    })]);
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Subagent finished");
+    expect(host.textContent).toContain("Found three call sites.");
+    expect(host.textContent).not.toContain("Running subagent");
+  });
+
   const subagentDone = () => event(1, "tool.completed", {
     itemId: "task-1",
     title: "Task",
