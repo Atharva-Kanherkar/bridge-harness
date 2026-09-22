@@ -2500,52 +2500,23 @@ fn valid_repository_parts(host: &str, owner: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+    use std::{fs, os::unix::fs::symlink, process::Command};
     use tempfile::TempDir;
 
     fn fake_gh(authenticated: bool, default_repository: Option<&str>) -> TempDir {
         let directory = tempfile::tempdir().unwrap();
-        let binary = directory.path().join("gh");
-        let auth_exit = if authenticated { 0 } else { 1 };
-        let default = default_repository.unwrap_or("");
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../testing/fixtures/github")
             .canonicalize()
             .unwrap();
-        let script = format!(
-            concat!(
-                "#!/bin/sh\n",
-                "root=$(dirname \"$0\")\n",
-                "printf '%s\\n' \"$*\" >> \"$root/invocations.log\"\n",
-                "if [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\n",
-                "if [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi; exit 1; fi\n",
-                "if [ \"$1 $2\" = \"pr list\" ]; then case \"$*\" in *statusCheckRollup*) if [ -f \"$root/pr-list-rich-slow\" ]; then sleep 6; fi; if [ -f \"$root/pr-list-rich-fail\" ]; then echo 'HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)' >&2; exit 1; fi; fixture=prs.json;; *) fixture=prs-base.json;; esac; if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"issue list\" ]; then cat '{fixtures}/issues.json'; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"issue view\" ]; then cat '{fixtures}/issue-detail.json'; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"repo view\" ]; then cat '{fixtures}/repository.json'; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"label list\" ]; then cat '{fixtures}/labels.json'; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"pr checks\" ]; then if [ -f \"$root/pr-checks-empty\" ]; then echo \"no checks reported on the 'fixture' branch\" >&2; exit 1; fi; cat '{fixtures}/checks.json'; exit 1; fi\n",
-                "if [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"pr merge\" ]; then if [ -f \"$root/pr-merge-blocked\" ]; then echo 'GraphQL: Branch protections: at least 1 approving review is required (mergePullRequest)' >&2; exit 1; fi; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"pr review\" ] || [ \"$1 $2\" = \"pr comment\" ] || [ \"$1 $2\" = \"pr edit\" ] || [ \"$1 $2\" = \"issue edit\" ]; then exit 0; fi\n",
-                "if [ \"$1 $2\" = \"issue comment\" ] || [ \"$1 $2\" = \"pr ready\" ]; then exit 0; fi\n",
-                "if [ \"$2\" = \"close\" ] || [ \"$2\" = \"reopen\" ]; then exit 0; fi\n",
-                "if [ \"$1 $2\" = \"run list\" ]; then fixture=runs.json; if [ -f \"$root/run-list-clean\" ]; then fixture=runs-clean.json; fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"run rerun\" ]; then exit 0; fi\n",
-                "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"--method\" ]; then exit 0; fi\n",
-                "if [ \"$1\" = \"api\" ]; then case \"$4\" in repos/*/pulls/*/files*) cat '{fixtures}/pr-files.json'; exit 0;; esac; fi\n",
-                "if [ \"$1\" = \"api\" ]; then case \"$2\" in repos/*) cat '{fixtures}/repos-settings.json'; exit 0;; esac; fi\n",
-                "exit 2\n"
-            ),
-            auth_exit = auth_exit,
-            default = default,
-            fixtures = fixtures.display()
-        );
-        fs::write(&binary, script).unwrap();
-        let mut permissions = fs::metadata(&binary).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&binary, permissions).unwrap();
+        fs::write(directory.path().join("fixture-root"), fixtures.to_str().unwrap()).unwrap();
+        fs::write(directory.path().join("auth-exit"), if authenticated { "0" } else { "1" }).unwrap();
+        fs::write(directory.path().join("default-repository"), default_repository.unwrap_or("")).unwrap();
+        // A newly written executable can race another test's fork on Linux:
+        // an inherited writer briefly prevents exec even after fs::write
+        // returned. Keep executable bytes immutable; only this test's data
+        // and invocation log live in its temporary directory.
+        symlink(fixtures.join("fake-gh.sh"), directory.path().join("gh")).unwrap();
         directory
     }
 
@@ -2917,11 +2888,7 @@ mod tests {
     fn a_hung_gh_is_killed_and_reported_instead_of_blocking() {
         let repository = repository_with_origin();
         let fake = fake_gh(true, None);
-        fs::write(
-            fake.path().join("gh"),
-            "#!/bin/sh\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nsleep 30\n",
-        )
-        .unwrap();
+        fs::write(fake.path().join("hang"), "").unwrap();
         let mut surface = GithubSurface::discover_on_path(fake.path());
         surface.command_timeout = Duration::from_millis(200);
         let started = Instant::now();
@@ -3254,11 +3221,7 @@ mod tests {
     fn merge_config_refuses_a_repository_without_any_merge_strategy() {
         let repository = repository_with_origin();
         let fake = fake_gh(true, None);
-        fs::write(
-            fake.path().join("gh"),
-            "#!/bin/sh\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nprintf '%s\\n' '{\"allow_merge_commit\":false,\"allow_squash_merge\":false,\"allow_rebase_merge\":false}'\n",
-        )
-        .unwrap();
+        fs::write(fake.path().join("no-merge-strategies"), "").unwrap();
         let surface = GithubSurface::discover_on_path(fake.path());
         assert!(matches!(
             surface.merge_config(repository.path()),
@@ -3479,11 +3442,7 @@ mod tests {
             ],
         );
         let fake = fake_gh(true, None);
-        fs::write(
-            fake.path().join("gh"),
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/invocations.log\"\nexit 0\n",
-        )
-        .unwrap();
+        fs::write(fake.path().join("allow-all"), "").unwrap();
         let surface = GithubSurface::discover_on_path(fake.path());
         surface
             .act(
@@ -3557,18 +3516,7 @@ mod tests {
     fn partial_rerun_failure_still_invalidates_cached_pull_request_resources() {
         let repository = repository_with_origin();
         let fake = fake_gh(true, None);
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../testing/fixtures/github")
-            .canonicalize()
-            .unwrap();
-        fs::write(
-            fake.path().join("gh"),
-            format!(
-                "#!/bin/sh\nroot=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> \"$root/invocations.log\"\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nif [ \"$1 $2\" = \"pr list\" ]; then cat '{fixtures}/prs.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr checks\" ]; then cat '{fixtures}/checks.json'; exit 1; fi\nif [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\nif [ \"$1 $2\" = \"run list\" ]; then printf '%s\\n' '[{{\"databaseId\":42,\"conclusion\":\"failure\"}},{{\"databaseId\":43,\"conclusion\":\"failure\"}}]'; exit 0; fi\nif [ \"$1 $2\" = \"run rerun\" ] && [ \"$3\" = \"43\" ]; then echo 'second rerun refused' >&2; exit 1; fi\nexit 0\n",
-                fixtures = fixtures.display()
-            ),
-        )
-        .unwrap();
+        fs::write(fake.path().join("partial-rerun-failure"), "").unwrap();
         let surface = GithubSurface::discover_on_path(fake.path());
         surface.list_prs(repository.path()).unwrap();
         surface.pr_detail(repository.path(), 103).unwrap();
