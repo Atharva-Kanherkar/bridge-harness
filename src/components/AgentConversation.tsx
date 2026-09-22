@@ -10,7 +10,7 @@ import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
-import { FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
+import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
 import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
@@ -248,6 +248,58 @@ function TerminalBlock({ command, output }: { command?: string; output?: string 
   </div>;
 }
 
+/// A harness-spawned nested subagent's detail: which agent was named, what it
+/// was asked, and what it returned. The row label already says
+/// Delegating/Delegated <description>; this is the inspectable half — the
+/// prompt the parent sent in, then the result — so a minutes-long subagent is
+/// not one pulse with nothing under it. Keyed off the normalized subagent
+/// facet, never off which harness produced the call.
+function SubagentBlock({ agentType, prompt, output, status, live }: { agentType?: string; prompt?: string; output?: string; status?: "running" | "completed" | "failed"; live?: boolean }) {
+  const childStatus = status ?? (live ? "running" : "completed");
+  const isRunning = childStatus === "running";
+  const isFailed = childStatus === "failed";
+  return (
+    <div className="space-y-3 bg-card px-3.5 py-3 sm:px-4">
+      <header className="flex items-center gap-2">
+        {isRunning ? <PulseDot size={7}/> : isFailed ? <X size={12} className="text-destructive" aria-hidden="true"/> : <Check size={12} className="text-success" aria-hidden="true"/>}
+        <span className="text-[12px] font-medium text-foreground">{isRunning ? "Running subagent" : isFailed ? "Subagent failed" : "Subagent finished"}</span>
+        {agentType && (
+          <span className="ml-auto inline-flex items-center rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+            {agentType}
+          </span>
+        )}
+      </header>
+      {prompt && <SubagentSection label="Asked" text={prompt} markdown />}
+      {output ? (
+        <SubagentSection label="Result" text={output} />
+      ) : isRunning ? (
+        <p className="text-[12px] text-muted-foreground">Working — the result will appear here.</p>
+      ) : null}
+    </div>
+  );
+}
+
+/// One band of the subagent card: a labelled, copyable block. Prompts are
+/// rendered as Markdown because they are instructions; results are kept
+/// preformatted so tool output, JSON and logs stay exact.
+function SubagentSection({ label, text, markdown }: { label: string; text: string; markdown?: boolean }) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-code">
+      <div className="flex items-center justify-between border-b border-border bg-code-highlight px-3 py-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-faint">{label}</span>
+        <CopyButton text={text} className="code-block-copy" />
+      </div>
+      <div className={cn("px-3.5 py-2.5", markdown && "max-h-[320px] overflow-auto")}>
+        {markdown ? (
+          <div className="text-[13px] leading-relaxed text-foreground"><Markdown text={text}/></div>
+        ) : (
+          <CappedOutput text={text} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-muted-foreground"/>
+        )}
+      </div>
+    </section>
+  );
+}
+
 /// One tool call in three layers: a glanceable summary row, the body it opens
 /// into, and — for a patch — the remaining hunks one more click away.
 ///
@@ -275,7 +327,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
   const live = call.status === "running";
   const failed = call.status === "failed";
   const succeeded = call.status === "completed";
-  const body = call.patch ? "patch" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
+  const body = call.patch ? "patch" : call.subagent ? "subagent" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
   // `null` is "nobody has decided yet", which is not the same as closed: a patch
   // arriving mid-stream should still open the row, while a reader who collapsed
   // one keeps it collapsed.
@@ -341,6 +393,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
         </div>
         <Disclosure open={open} className="border-t border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
+          {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} status={call.subagent?.status} live={live}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>

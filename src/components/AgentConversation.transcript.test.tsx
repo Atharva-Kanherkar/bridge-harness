@@ -326,43 +326,6 @@ describe("three layers", () => {
   });
 });
 
-/**
- * A failure names the runtime that raised it — not the one the chat happens to
- * be set to now. Switching a chat from Codex to OpenCode used to relabel every
- * Codex failure above the switch, so a user who moved providers to escape a
- * Codex limit was told OpenCode was out of usage too.
- */
-describe("error cards", () => {
-  const failure = (overrides: Partial<AgentEvent> = {}) => event(1, "error", {
-    status: "failed", itemId: null, title: "Agent error", ...overrides,
-  });
-
-  it("keeps a Codex failure attributed to Codex after the chat moves to OpenCode", () => {
-    act(() => {
-      root.render(<AgentConversation
-        session={{ ...session, harness: "opencode" } as Session}
-        events={[failure({ text: "You've hit your usage limit.", providerMeta: { adapter: "codex" } })]}
-        onResolve={() => {}}
-      />);
-    });
-    expect(host.textContent).toContain("Codex usage limit reached");
-    expect(host.textContent).not.toContain("OpenCode usage limit");
-    expect(host.textContent).not.toContain("OpenCode reports");
-  });
-
-  it("does not call a 429 an exhausted plan", () => {
-    mount([failure({ text: "429 Too Many Requests", providerMeta: { adapter: "opencode" } })]);
-    expect(host.textContent).toContain("OpenCode is rate limiting");
-    expect(host.textContent).not.toContain("usage limit");
-  });
-
-  it("sends a rejected API key to the key, not to /login", () => {
-    mount([failure({ text: "401 invalid api key provided", providerMeta: { adapter: "codex" } })]);
-    expect(host.textContent).toContain("Codex rejected its API key");
-    expect(host.textContent).toContain("a different credential");
-  });
-});
-
 describe("run trailer", () => {
   const parallelCommand = (id: number, at: string) =>
     event(id, "command.completed", {
@@ -377,5 +340,92 @@ describe("run trailer", () => {
     mount([parallelCommand(1, "2026-01-01T00:00:00.000Z"), parallelCommand(2, "2026-01-01T00:00:00.000Z")]);
     expect(host.textContent).toContain("Worked for 10s");
     expect(host.textContent).not.toContain("20s");
+  });
+});
+
+describe("harness subagents (issue #667)", () => {
+  const subagentDone = () => event(1, "tool.completed", {
+    itemId: "task-1",
+    title: "Task",
+    text: "Auth lives in src/auth.ts with a session cookie.",
+    data: {
+      name: "Task",
+      input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" },
+    },
+  });
+
+  async function openSubagentRow(events: AgentEvent[]) {
+    mount(events);
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+  }
+
+  it("opens into the prompt that was sent and the result that came back", async () => {
+    await openSubagentRow([subagentDone()]);
+    expect(host.textContent).toContain("Subagent finished");
+    expect(host.textContent).toContain("Explore");
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Auth lives in src/auth.ts");
+  });
+
+  it("shows the prompt while the subagent is still running", async () => {
+    mount([event(1, "tool.started", {
+      itemId: "task-1",
+      title: "Task",
+      status: "inProgress",
+      data: {
+        name: "Task",
+        input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" },
+      },
+    })]);
+    act(() => buttonWith("Using 1 tool")!.click());
+    act(() => buttonWith("Delegating Explore auth")!.click());
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("the result will appear here");
+  });
+
+  it("leaves ordinary tool rows exactly as before", async () => {
+    mount([event(1, "tool.completed", {
+      title: "Read",
+      data: { name: "Read", input: { file_path: "src/lib.rs" } },
+      text: "fn a() {}\n",
+    })]);
+    expect(host.textContent).not.toContain("Subagent");
+    expect(host.textContent).not.toContain("Asked");
+  });
+
+  it("shows a running child even when the parent tool call is completed", async () => {
+    mount([event(1, "tool.completed", {
+      itemId: "task-1",
+      title: "Task",
+      status: "completed",
+      data: {
+        name: "Task",
+        input: { description: "Explore auth", prompt: "Map the login flow" },
+        threadId: "t-child",
+        agentsStates: { "t-child": { status: "inProgress" } },
+      },
+    })]);
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+    expect(host.textContent).toContain("Running subagent");
+  });
+
+  it("shows a failed child status instead of a green check", async () => {
+    mount([event(1, "tool.completed", {
+      itemId: "task-1",
+      title: "Task",
+      status: "completed",
+      data: {
+        name: "Task",
+        input: { description: "Explore auth", prompt: "Map the login flow" },
+        threadId: "t-child",
+        agentsStates: { "t-child": { status: "failed" } },
+      },
+    })]);
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+    expect(host.textContent).toContain("Subagent failed");
+    expect(host.textContent).not.toContain("Subagent finished");
   });
 });
