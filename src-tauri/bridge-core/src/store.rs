@@ -3264,6 +3264,9 @@ fn stable_dirty_hash(bytes: &[u8]) -> String {
 /// contract. Replayed events carry their durable forest kind (e.g.
 /// `assistant.message`) and payload exactly as persisted; transient frames
 /// (sequence 0 on the live channel) were never stored and are never replayed.
+/// An unreadable row is represented by an `entry.invalid` event at its original
+/// sequence. It consumes one page slot and advances a delivered cursor exactly
+/// like a readable row, without changing the stored entry.
 pub fn session_events_after(
     db: &Connection,
     session_id: &str,
@@ -3331,15 +3334,39 @@ fn session_entries_to_events(
     entries: Vec<SessionEntry>,
 ) -> Result<Vec<AgentEvent>, BridgeError> {
     let forest = crate::session_forest::SessionForest::new(db);
-    entries
+    let mut invalid_entries = 0;
+    let events = entries
         .into_iter()
         .map(|entry| {
-            forest.validate_stored_entry(&entry).map_err(|error| {
-                BridgeError::Invalid(format!(
-                    "cannot replay session entry {} at sequence {}: {error}",
-                    entry.id, entry.sequence
-                ))
-            })?;
+            if let Err(error) = forest.validate_stored_entry(&entry) {
+                invalid_entries += 1;
+                let reason = error.to_string();
+                // A replay carrier exposes the validation failure and row
+                // identity, never the malformed payload. Keep strict forest
+                // reads strict; only this display/recovery path degrades.
+                diagnostics::record(&format!("bridge: replay invalid entry {}", serde_json::json!({
+                    "sessionId": entry.session_id, "entryId": entry.id,
+                    "sequence": entry.sequence, "reason": reason,
+                })));
+                return AgentEvent {
+                    id: entry.sequence,
+                    session_id: entry.session_id,
+                    sequence: entry.sequence,
+                    protocol_version: 1,
+                    kind: "entry.invalid".into(),
+                    item_id: None,
+                    role: None,
+                    status: Some("degraded".into()),
+                    title: Some("Unavailable history entry".into()),
+                    text: Some(format!("This history entry could not be read: {reason}")),
+                    data: serde_json::json!({
+                        "entryId": entry.id, "originalKind": entry.kind,
+                        "sequence": entry.sequence, "reason": reason,
+                    }),
+                    provider_meta: serde_json::json!({"bridgeEntryId": entry.id}),
+                    created_at: entry.created_at,
+                };
+            }
             let payload = &entry.payload;
             let field = |name: &str| {
                 payload
@@ -3359,7 +3386,7 @@ fn session_entries_to_events(
             let provider_meta = error_forest_identity(
                 &entry.id, &entry.kind, payload.get("providerMeta").unwrap_or(&serde_json::json!({})),
             );
-            Ok(AgentEvent {
+            AgentEvent {
                 id: entry.sequence,
                 session_id: entry.session_id,
                 sequence: entry.sequence,
@@ -3387,9 +3414,13 @@ fn session_entries_to_events(
                 },
                 provider_meta,
                 created_at: entry.created_at,
-            })
+            }
         })
-        .collect()
+        .collect();
+    if invalid_entries > 0 {
+        diagnostics::record(&format!("bridge: replay page invalid_entries={invalid_entries}"));
+    }
+    Ok(events)
 }
 
 pub fn session_entries(
@@ -4342,6 +4373,67 @@ mod tests {
         assert_eq!(usage.data["input_tokens"], 1200);
         let plan = replayed.iter().find(|event| event.kind == "plan.updated").unwrap();
         assert_eq!(plan.data["steps"][0]["title"], "read the code");
+    }
+
+    #[test]
+    fn replay_degrades_only_the_invalid_row_and_preserves_page_boundaries() {
+        for (payload, version, reason) in [
+            ("not-json-sensitive-payload", SEMANTIC_EVENT_SCHEMA_VERSION, "JSON object"),
+            ("[\"sensitive-payload\"]", SEMANTIC_EVENT_SCHEMA_VERSION, "JSON object"),
+            ("{\"_bridgeTypedSchemaVersion\":1}", SEMANTIC_EVENT_SCHEMA_VERSION, "required non-empty string"),
+            ("{\"text\":\"sensitive-payload\"}", SEMANTIC_EVENT_SCHEMA_VERSION + 1, "unsupported semantic event schema version"),
+        ] {
+            let db = observability_db();
+            let forest = crate::session_forest::SessionForest::new(&db);
+            let entries = ["before", "unreadable", "after"].map(|text| {
+                forest.append("s", crate::session_forest::EntryKind::AssistantMessage, json!({"text": text})).unwrap()
+            });
+            // Simulate damaged stored bytes, which bypass the ordinary FTS
+            // trigger's JSON checks. Restore the trigger immediately afterward
+            // so the remaining reads/writes use the production schema.
+            let update_trigger: String = db.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='session_entries_au_fts'",
+                [], |row| row.get(0),
+            ).unwrap();
+            db.execute_batch("DROP TRIGGER session_entries_au_fts").unwrap();
+            db.execute(
+                "UPDATE session_entries SET payload=?1,semantic_schema_version=?2 WHERE id=?3",
+                params![payload, version, entries[1].id],
+            )
+            .unwrap();
+            db.execute_batch(&update_trigger).unwrap();
+
+            let first_page = session_events_after(&db, "s", 0, 2).unwrap();
+            assert_eq!(first_page.len(), 2);
+            assert_eq!(first_page[0].sequence, entries[0].sequence);
+            assert_eq!(first_page[0].text.as_deref(), Some("before"));
+            let invalid = &first_page[1];
+            assert_eq!(invalid.kind, "entry.invalid");
+            assert_eq!(invalid.id, entries[1].sequence);
+            assert_eq!(invalid.sequence, entries[1].sequence);
+            assert_eq!(invalid.created_at, entries[1].created_at);
+            assert_eq!(invalid.status.as_deref(), Some("degraded"));
+            assert_eq!(invalid.title.as_deref(), Some("Unavailable history entry"));
+            assert_eq!(invalid.data["entryId"], entries[1].id);
+            assert_eq!(invalid.data["originalKind"], "assistant.message");
+            assert_eq!(invalid.data["sequence"], entries[1].sequence);
+            assert!(invalid.data["reason"].as_str().unwrap().contains(reason));
+            assert!(!serde_json::to_string(invalid).unwrap().contains("sensitive-payload"));
+
+            let next_page = session_events_after(&db, "s", invalid.sequence, 2).unwrap();
+            assert_eq!(next_page.len(), 1);
+            assert_eq!(next_page[0].sequence, entries[2].sequence);
+            assert_eq!(next_page[0].text.as_deref(), Some("after"));
+            assert!(session_events_after(&db, "s", next_page[0].sequence, 2).unwrap().is_empty());
+            let tail = session_events_tail(&db, "s", 2).unwrap();
+            assert_eq!(serde_json::to_value(&tail[0]).unwrap(), serde_json::to_value(invalid).unwrap());
+            assert_eq!(serde_json::to_value(&tail[1]).unwrap(), serde_json::to_value(&next_page[0]).unwrap());
+            let stored: String = db.query_row(
+                "SELECT payload FROM session_entries WHERE id=?1", params![entries[1].id], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(stored, payload, "replay does not rewrite damaged history");
+            assert!(forest.active_branch("s").is_err(), "context traversal remains strict");
+        }
     }
 
     #[test]

@@ -4812,7 +4812,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_rejects_corrupt_or_future_schema_history() {
+    fn replay_degrades_corrupt_or_future_schema_history() {
         let (_scratch, core) = fixture();
         core.create_chat(&Harness::Codex, None, None).unwrap();
         let db = core.db.lock().unwrap();
@@ -4832,7 +4832,10 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        assert!(core.replay_session_events(&session_id, 0, None, None).is_err());
+        let corrupt = core.replay_session_events(&session_id, 0, None, None).unwrap();
+        assert_eq!(corrupt.len(), 1);
+        assert_eq!(corrupt[0].kind, "entry.invalid");
+        assert!(corrupt[0].data["reason"].as_str().unwrap().contains("JSON object"));
 
         let db = core.db.lock().unwrap();
         db.execute(
@@ -4844,7 +4847,11 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        assert!(core.replay_session_events(&session_id, 0, None, None).is_err());
+        let future = core.replay_session_events(&session_id, 0, None, None).unwrap();
+        assert_eq!(future.len(), 1);
+        assert_eq!(future[0].kind, "entry.invalid");
+        assert_eq!(future[0].sequence, corrupt[0].sequence);
+        assert!(future[0].data["reason"].as_str().unwrap().contains("unsupported semantic event schema version"));
     }
 
     #[test]

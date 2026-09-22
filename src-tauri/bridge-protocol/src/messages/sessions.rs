@@ -374,6 +374,9 @@ pub struct ReplaySessionEventsParams {
     pub session_id: String,
     /// The last durable sequence the client has seen; events strictly after
     /// this cursor are returned in order, with no gaps and no duplicates.
+    /// An unreadable stored row returns an `entry.invalid` event at that row's
+    /// original sequence. Delivering it advances the cursor normally; its data
+    /// contains `entryId`, `originalKind`, `sequence`, and a safe `reason`.
     #[schemars(range(min = 0))]
     pub after_sequence: i64,
     /// Maximum number of events to return. Omitted requests use 500; the
