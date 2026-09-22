@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 60;
+const LATEST_SCHEMA_VERSION: i64 = 61;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -712,6 +712,16 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 add_column_if_missing(&transaction, "sessions", "fork_parent_session_id", "TEXT")?;
                 add_column_if_missing(&transaction, "sessions", "fork_parent_entry_id", "TEXT")?;
                 add_column_if_missing(&transaction, "sessions", "fork_worktree_policy", "TEXT")?;
+            }
+            61 => {
+                // A model/thread switch invalidates live context pressure,
+                // while its historical usage remains available for analytics.
+                add_column_if_missing(
+                    &transaction,
+                    "sessions",
+                    "context_usage_after_id",
+                    "INTEGER NOT NULL DEFAULT 0",
+                )?;
             }
             _ => {
                 return Err(BridgeError::Invalid(format!(
@@ -7888,6 +7898,52 @@ mod tests {
         assert_eq!(rows, 2);
         assert_eq!(kept, 10, "the first observation wins");
     }
+    #[test]
+    fn context_usage_boundary_migration_preserves_history_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/pressure-migration','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Kyoto','Task','main',NULL,'idle','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,model,provider_session_id,context_percent)
+                 VALUES('s','w','codex','Chat','idle','requested-model','native-thread',90);
+             INSERT INTO usage_ledger(workspace_id,session_id,context_percent,input_tokens,source,created_at)
+                 VALUES('w','s',90,700,'provider.codex','now');
+             ALTER TABLE sessions DROP COLUMN context_usage_after_id;
+             DELETE FROM schema_version WHERE version>=61;",
+        )
+        .unwrap();
+        drop(db);
+
+        let db = open(&path).unwrap();
+        let state: (i64, String, String, i64) = db.query_row(
+            "SELECT context_usage_after_id,model,provider_session_id,context_percent FROM sessions WHERE id='s'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(state, (0, "requested-model".into(), "native-thread".into(), 90));
+        let history: (i64, i64, i64) = db.query_row(
+            "SELECT id,context_percent,input_tokens FROM usage_ledger WHERE session_id='s'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!((history.1, history.2), (90, 700));
+        db.execute("UPDATE sessions SET context_usage_after_id=?1 WHERE id='s'", [history.0]).unwrap();
+        drop(db);
+
+        let db = open(&path).unwrap();
+        let boundary: i64 = db.query_row(
+            "SELECT context_usage_after_id FROM sessions WHERE id='s'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(boundary, history.0, "reopening preserves the recorded switch boundary");
+        let pressure: i64 = db.query_row(
+            "SELECT context_percent FROM usage_ledger WHERE id=?1", [history.0], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(pressure, 90, "resetting live pressure never rewrites the usage history");
+    }
+
     #[test]
     fn integration_activity_migration_preserves_legacy_rows_without_faking_dates() {
         let dir = tempfile::tempdir().unwrap();
