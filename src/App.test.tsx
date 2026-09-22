@@ -965,7 +965,7 @@ describe("the dock in the session view", () => {
     confirm.mockRestore();
   });
 
-  it("renders a pasted session reference as a chip and pulls it into the draft", async () => {
+  it("renders a pasted session reference as a chip that says history attaches on send, and removes it on ×", async () => {
     await mountApp();
     await openWorkspaceSession("4");
     await settle(6);
@@ -977,10 +977,54 @@ describe("the dock in the session view", () => {
     });
     await settle(8);
     expect(container.textContent).toContain("Orchestrator");
-    const pull = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Pull Orchestrator"));
-    expect(pull).toBeTruthy();
-    await click(pull!);
-    expect(composer()!.value).toContain("[session Orchestrator — checkpoint present]");
+    expect(container.textContent).toContain("history attaches on send");
+    expect([...container.querySelectorAll("button")].some(button => button.getAttribute("aria-label")?.startsWith("Pull "))).toBe(false);
+    const remove = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Remove Orchestrator"));
+    expect(remove).toBeTruthy();
+    await click(remove!);
+    expect(composer()!.value).toBe("compare with");
+    expect(container.textContent).not.toContain("history attaches on send");
+  });
+
+  it("does not offer a mention on the Welcome screen, whose draft the sidebar cannot reach", async () => {
+    await mountApp();
+    await settle(4);
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for"));
+    expect(trigger).toBeTruthy();
+    await click(trigger!);
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].map(item => item.textContent ?? "");
+    expect(items.some(text => text.startsWith("Copy chat ID"))).toBe(true);
+    expect(items.some(text => text.startsWith("Mention in current chat"))).toBe(false);
+    await click(trigger!);
+  });
+
+  it("copies the alias and mentions a chat from the row's three-dot menu", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(6);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for Orchestrator"));
+    expect(trigger).toBeTruthy();
+    await click(trigger!);
+    const menu = document.querySelector('[role="menu"]');
+    expect(menu).toBeTruthy();
+    const items = [...menu!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].map(item => item.textContent ?? "");
+    expect(items.some(text => text.startsWith("Copy chat ID"))).toBe(true);
+    expect(items.some(text => text.startsWith("Mention in current chat"))).toBe(true);
+    expect(items.some(text => text.startsWith("Fork chat"))).toBe(true);
+    expect(items.some(text => text.startsWith("Archive"))).toBe(true);
+    await click([...menu!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.startsWith("Copy chat ID"))!);
+    // Mock ids are not uuids, so assert the alias shape the sidebar derives
+    // rather than a hex pattern.
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(String(writeText.mock.calls[0][0])).toMatch(/^brio_/);
+    await click(trigger!);
+    const mention = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].find(item => item.textContent?.startsWith("Mention in current chat"))!;
+    await click(mention);
+    await settle(8);
+    expect(composer()!.value).toMatch(/^@session:brio_\S+ $/);
+    expect(container.textContent).toContain("history attaches on send");
   });
 
   // The regression that green per-component tests hid: the chat list drops

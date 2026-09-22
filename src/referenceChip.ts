@@ -12,6 +12,39 @@ export function toPublicAlias(sessionId: string): string {
   return `brio_${sessionId.replace(/-/g, "").slice(0, 8)}`;
 }
 
+/** The mention spelling the sidebar drops into a draft. */
+export function mentionToken(sessionId: string): string {
+  return `@session:${toPublicAlias(sessionId)}`;
+}
+
+/** Insert a mention into a draft, keeping one space on each side. */
+export function insertMention(draft: string, sessionId: string): string {
+  const token = mentionToken(sessionId);
+  if (draft.includes(token)) return draft;
+  const lead = draft.length === 0 || /\s$/.test(draft) ? "" : " ";
+  return `${draft}${lead}${token} `;
+}
+
+/**
+ * Remove every occurrence of `token` from a draft along with one adjacent
+ * space, leaving everything else byte-for-byte as typed. Collapsing runs of
+ * whitespace across the whole draft would flatten indented code pasted
+ * beside the reference.
+ */
+export function removeReferenceToken(draft: string, token: string): string {
+  let out = draft;
+  let at = out.indexOf(token);
+  while (at >= 0) {
+    let start = at;
+    let end = at + token.length;
+    if (out[end] === " ") end += 1;
+    else if (start > 0 && out[start - 1] === " ") start -= 1;
+    out = out.slice(0, start) + out.slice(end);
+    at = out.indexOf(token);
+  }
+  return out;
+}
+
 /** Every reference-shaped token in a draft, in order, deduplicated. */
 export function findReferences(text: string): string[] {
   const unique = new Set<string>();
@@ -48,26 +81,19 @@ export function chipSummary(reference: ResolveReferenceResult): string {
   }
 }
 
-/** The activity line shown under a chip's title. */
+/**
+ * The line under a chip's title. It says what will actually happen on send:
+ * Bridge attaches the referenced chat's stored history to the turn, so the
+ * agent can continue it. The old copy named a restoration mode and a
+ * "checkpoint present" flag — true, and useless to the person reading it.
+ */
 export function chipDetail(reference: ResolveReferenceResult): string {
   switch (reference.kind) {
     case "session":
-      return `${reference.harness} · ${reference.restorationMode}${reference.workspaceId ? " · workspace" : ""}${reference.parentSessionId ? " · fork" : ""}`;
+      return `${reference.harness}${reference.parentSessionId ? " · fork" : ""} · history attaches on send`;
     case "entry":
-      return `${reference.entryKind} · #${reference.sequence}`;
+      return `${reference.entryKind} #${reference.sequence} · attaches on send`;
     case "unknown":
-      return "no such session or entry";
-  }
-}
-
-/** The text appended to the draft when a chip is pulled into the chat. */
-export function referencePullText(reference: ResolveReferenceResult): string {
-  switch (reference.kind) {
-    case "session":
-      return `[session ${reference.label} — checkpoint ${reference.latestCheckpointEntryId ? "present" : "none"}]`;
-    case "entry":
-      return reference.summary ? `> ${reference.summary}` : `[entry ${shortId(reference.entryId)}]`;
-    case "unknown":
-      return "";
+      return "no such chat — sent as plain text";
   }
 }

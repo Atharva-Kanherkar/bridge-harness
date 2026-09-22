@@ -1654,7 +1654,9 @@ pub(crate) fn resolve_reference_records(
             // LEFT JOIN: a chat that has not appended an entry yet has no
             // `session_heads` row, and an inner join turned resolving it into
             // a hard error instead of a descriptor.
-            "SELECT label,harness,workspace_id,parent_session_id,depth,
+            // `depth` is nullable on older rows; a NULL must not turn a
+            // resolvable chat into a type error the caller reads as unknown.
+            "SELECT label,harness,workspace_id,parent_session_id,COALESCE(depth,0),
                     COALESCE(session_heads.restoration_mode,'fresh'),continuation_fidelity,
                     session_heads.active_entry_id,session_heads.updated_at
              FROM sessions LEFT JOIN session_heads ON session_heads.session_id = sessions.id WHERE sessions.id=?1",
