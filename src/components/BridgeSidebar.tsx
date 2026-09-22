@@ -201,7 +201,7 @@ function ChatRowMenu({
         {onArchive && (
           <>
             <MenuSeparator />
-            <button type="button" role="menuitem" className={item} onClick={run(onArchive)}>
+            <button type="button" role="menuitem" aria-label={`Archive ${name}`} className={item} onClick={run(onArchive)}>
               <Archive size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">Archive</span>
             </button>

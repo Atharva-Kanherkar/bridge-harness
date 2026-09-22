@@ -18756,3 +18756,64 @@ mod history_snapshot_maintenance_tests {
         assert_eq!(databases, 2);
     }
 }
+
+#[cfg(test)]
+mod chat_reference_turn_tests {
+    use super::*;
+    use crate::session_forest::{EntryKind, SessionForest};
+    use std::sync::Arc;
+
+    const OTHER: &str = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    fn seeded() -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','codex','Chat','idle','reported')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,title) VALUES(?1,'claude','Orchestrator','idle','reported','Refresh tokens')",
+                params![OTHER],
+            )
+            .unwrap();
+            let forest = SessionForest::new(&db);
+            forest
+                .append(OTHER, EntryKind::UserMessage, serde_json::json!({"text":"rotate refresh tokens"}))
+                .unwrap();
+            forest
+                .append(OTHER, EntryKind::AssistantMessage, serde_json::json!({"text":"done; old tokens invalid"}))
+                .unwrap();
+        }
+        (scratch, core)
+    }
+
+    #[test]
+    fn a_pasted_chat_alias_carries_that_chats_history_to_the_provider_but_not_the_transcript() {
+        let (_scratch, core) = seeded();
+        let InputPreparation::Ready(prepared) =
+            prepare_input(&core, "s", "continue brio_22222222 from where it stopped", true).unwrap()
+        else {
+            panic!("a plain message must be ready for delivery");
+        };
+        assert_eq!(prepared.display_text, "continue brio_22222222 from where it stopped");
+        assert!(prepared.provider_text.starts_with("continue brio_22222222 from where it stopped\n\n<bridge-chat-reference"), "{}", prepared.provider_text);
+        assert!(prepared.provider_text.contains("chat \"Refresh tokens\" (claude)"), "{}", prepared.provider_text);
+        assert!(prepared.provider_text.contains("user.message: rotate refresh tokens"), "{}", prepared.provider_text);
+        assert!(prepared.provider_text.contains("assistant.message: done; old tokens invalid"), "{}", prepared.provider_text);
+        // The credential broker keys off `outbound`, which stays the user's text.
+        assert_eq!(prepared.outbound, prepared.display_text);
+    }
+
+    #[test]
+    fn an_unknown_alias_leaves_the_provider_text_untouched() {
+        let (_scratch, core) = seeded();
+        let InputPreparation::Ready(prepared) = prepare_input(&core, "s", "look at brio_deadbeef", true).unwrap() else {
+            panic!("ready");
+        };
+        assert_eq!(prepared.provider_text, "look at brio_deadbeef");
+    }
+}

@@ -93,9 +93,20 @@ function mount(overrides: Partial<BridgeSidebarProps> = {}) {
   });
 }
 
-const archiveButton = () =>
+// Row actions live behind the row's three-dot menu: open it for the first
+// chat, then look for the archive item in the portalled panel.
+const menuTrigger = () =>
   [...container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for "));
+const archiveButton = () => {
+  const trigger = menuTrigger();
+  if (!trigger) return undefined;
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    act(() => { trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  }
+  return [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')]
     .find(button => button.getAttribute("aria-label")?.startsWith("Archive "));
+};
 
 it("offers an archive action per chat and hands back the chat itself", () => {
   const onArchiveChat = vi.fn();
@@ -126,13 +137,13 @@ it("renders no archive action when the host cannot archive", () => {
   expect(archiveButton()).toBeUndefined();
 });
 
-it("places the archive action before the harness mark", () => {
+it("places the row's actions trigger before the harness mark", () => {
   mount({ onArchiveChat: noop });
-  const button = archiveButton();
-  const mark = button?.parentElement?.querySelector("[data-harness]");
-  expect(button).toBeTruthy();
+  const trigger = menuTrigger();
+  const mark = trigger?.parentElement?.querySelector("[data-harness]");
+  expect(trigger).toBeTruthy();
   expect(mark).toBeTruthy();
-  expect(button!.compareDocumentPosition(mark!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  expect(trigger!.compareDocumentPosition(mark!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
 // The reachability guard. A component test proves the row works; only this
