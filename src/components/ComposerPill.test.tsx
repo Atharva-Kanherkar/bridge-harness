@@ -285,3 +285,20 @@ describe("ComposerPill", () => {
     });
   });
 });
+
+describe("browser context attachments", () => {
+  it("shows removable untrusted context while preserving the user's prompt", () => {
+    const onRemoveBrowserSelection = vi.fn();
+    const onChange = vi.fn();
+    render({ value: "Make this blue", onChange, onRemoveBrowserSelection, browserSelections: [{
+      id: "selected-1", sessionId: "task-1", tabId: "tab-1", navigationId: 2,
+      url: "http://localhost:3000/", title: "Preview", selector: "button", snippet: "<button>Save</button>",
+      bounds: { x: 0, y: 0, width: 100, height: 40 }, annotations: [],
+    }] });
+    expect(container.textContent).toContain("Page element");
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Remove browser selection"]')!.click());
+    expect(onRemoveBrowserSelection).toHaveBeenCalledWith("selected-1");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(textarea().value).toBe("Make this blue");
+  });
+});

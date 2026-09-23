@@ -71,18 +71,18 @@ function windowMethodCalls(source: string): string[] {
  *  `src/` can execute in any of them and must be permitted in all of them. */
 const APP_WINDOWS = ["main", "meter"];
 
-/** window label → permissions granted to it. Tauri resolves the ACL per
- *  window, so a union across capabilities would pass a permission that was
- *  granted to some *other* window — which is not a grant to the caller. */
+/** Shell webview label → permissions granted to it. Capabilities are scoped
+ * to the exact shell view so a browser child cannot inherit its window ACL. */
 function grantedByWindow(): Map<string, Set<string>> {
   const granted = new Map<string, Set<string>>(APP_WINDOWS.map(label => [label, new Set<string>()]));
   for (const name of readdirSync(CAPABILITY_ROOT)) {
     if (!name.endsWith(".json")) continue;
     const capability = JSON.parse(readFileSync(join(CAPABILITY_ROOT, name), "utf8")) as {
       windows?: string[];
+      webviews?: string[];
       permissions?: Array<string | { identifier?: string }>;
     };
-    for (const label of capability.windows ?? []) {
+    for (const label of [...(capability.windows ?? []), ...(capability.webviews ?? [])]) {
       const bucket = granted.get(label);
       if (!bucket) continue;
       for (const permission of capability.permissions ?? []) {
@@ -122,8 +122,9 @@ describe("tauri window capabilities", () => {
     const covered = readdirSync(CAPABILITY_ROOT)
       .filter(name => name.endsWith(".json"))
       .flatMap(name => {
-        const capability = JSON.parse(readFileSync(join(CAPABILITY_ROOT, name), "utf8")) as { windows?: string[] };
-        return capability.windows ?? [];
+        const capability = JSON.parse(readFileSync(join(CAPABILITY_ROOT, name), "utf8")) as { webviews?: string[]; windows?: string[] };
+        expect(capability.windows ?? [], "Window-wide permissions would include untrusted browser children").toEqual([]);
+        return capability.webviews ?? [];
       });
     // A window absent from every capability can invoke no plugin command at
     // all, which is a silent, click-time failure rather than a build error.

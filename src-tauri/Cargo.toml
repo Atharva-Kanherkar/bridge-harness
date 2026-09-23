@@ -36,7 +36,7 @@ serde_json = { workspace = true }
 bridge-core = { path = "bridge-core" }
 bridge-protocol = { path = "bridge-protocol" }
 bridge-client = { path = "bridge-client" }
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
@@ -73,3 +73,5 @@ objc2 = { version = "0.6", features = ["exception"] }
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder", "NSColor", "NSVisualEffectView", "NSUserInterfaceItemIdentification", "objc2-quartz-core"] }
 objc2-foundation = "0.3"
 objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKNavigation", "WKBackForwardList", "WKBackForwardListItem"] }
