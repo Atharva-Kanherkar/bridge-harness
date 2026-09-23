@@ -9,6 +9,8 @@ import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { UsageChart, seriesDotClass } from "./UsageChart";
 import { UsageInsights } from "./UsageInsights";
 import { UsageHeatmap } from "./UsageHeatmap";
+import { useProviderUsageOverviews } from "./UsageDot";
+import { UsageResetRow } from "./UsageResetRow";
 import {
   buildChartSeries, buildUsageReport, costSourceLabel, enumeratePeriods, formatCount, formatDayShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, formatWindowLabel,
   makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
@@ -69,6 +71,8 @@ function relativeStamp(iso: string | null | undefined): string {
 }
 
 export function UsageScreen({ onError, onOpenMeter }: { onError: (message: string) => void; onOpenMeter?: () => void }) {
+  const providerUsage = useProviderUsageOverviews();
+  useEffect(() => { providerUsage.refresh(); }, [providerUsage.refresh]);
   const [preferences, setPreferences] = useState<UsagePreferences>(() => readUsagePreferences());
   const [refreshTick, setRefreshTick] = useState(0);
   const [summaryTick, setSummaryTick] = useState(0);
@@ -241,11 +245,13 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         action={<span className="inline-flex shrink-0 items-center gap-2">
           <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }]} onChange={setTab} />
           {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
-          <button type="button" onClick={() => setRefreshTick(tick => tick + 1)} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
+          <button type="button" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
         </span>}
       />
 
       {tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
+      {providerUsage.overviews?.providers.map(snapshot =>
+        <div key={snapshot.provider} className="mb-3 empty:hidden"><UsageResetRow snapshot={snapshot} onUpdated={providerUsage.refresh} /></div>)}
       <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />

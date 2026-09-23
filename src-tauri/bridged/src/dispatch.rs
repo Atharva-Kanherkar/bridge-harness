@@ -595,6 +595,10 @@ pub fn dispatch(
         MethodName::GetProviderUsageOverviews => reply(api::get_provider_usage_overviews(core)),
         MethodName::RefreshProviderUsageOverviews => reply(api::refresh_provider_usage_overviews(core)),
         MethodName::RefreshProviderUsageOverviewsInteractive => reply(api::refresh_provider_usage_overviews_interactive(core)),
+        MethodName::RedeemProviderUsageReset => {
+            let p: wire::RedeemProviderUsageResetParams = decode(method, params)?;
+            reply(api::redeem_provider_usage_reset(core, &p))
+        }
         MethodName::GetUsageOverview => reply(api::get_usage_overview(core)),
         MethodName::RefreshUsageOverview => reply(api::refresh_usage_overview(core)),
         MethodName::GetMenuBarSettings => reply(api::get_menu_bar_settings(core)),

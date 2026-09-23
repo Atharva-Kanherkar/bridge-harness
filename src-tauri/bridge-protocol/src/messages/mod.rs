@@ -318,6 +318,7 @@ typed_methods![
     (GetProviderUsageOverviews, _, ProviderUsageOverviews),
     (RefreshProviderUsageOverviews, _, ProviderUsageOverviews),
     (RefreshProviderUsageOverviewsInteractive, _, ProviderUsageOverviews),
+    (RedeemProviderUsageReset, RedeemProviderUsageResetParams, RedeemProviderUsageResetResult),
     (GetUsageOverview, _, UsageOverviewSnapshot),
     (RefreshUsageOverview, _, UsageOverviewSnapshot),
     (GetMenuBarSettings, _, MenuBarSettings),

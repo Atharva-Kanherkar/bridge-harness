@@ -926,6 +926,13 @@
       "resultSchema": "provider-usage-overviews.json"
     },
     {
+      "command": "redeem_provider_usage_reset",
+      "domain": "usage",
+      "method": "usage/redeem_provider_usage_reset",
+      "paramsSchema": "redeem-provider-usage-reset-params.json",
+      "resultSchema": "redeem-provider-usage-reset-result.json"
+    },
+    {
       "command": "get_usage_overview",
       "domain": "usage",
       "method": "usage/get_usage_overview",
