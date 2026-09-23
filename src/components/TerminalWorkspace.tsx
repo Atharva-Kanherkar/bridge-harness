@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { ArrowDownToLine, Bot, ChevronDown, Columns2, GripVertical, Keyboard, Maximize2, Minimize2, Plus, RotateCcw, Rows2, Search, TerminalSquare, X } from "lucide-react";
+import { Bot, ChevronDown, Columns2, ExternalLink, GripVertical, Keyboard, Maximize2, Minimize2, Plus, RotateCcw, Rows2, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "../lib/utils";
 import { addTab, appendToLastLeaf, autoSplitDirection, closeLeaf, emptyLayout, insertSplit, leafIds, resizeNode, restoreLayout, type PaneNode, type SplitDirection, type TerminalLayout } from "../terminal/layout";
@@ -280,7 +280,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
       </div>
       {busy && <span role="status" className="text-xs text-muted-foreground">Opening terminal…</span>}
       <div className="ml-auto flex items-center gap-1">
-        {layout.activeLeafId && <IconButton title="Move focused pane to a new tab" onClick={() => detachToTab(layout.activeLeafId!)}><ArrowDownToLine size={14} /></IconButton>}
+        {layout.activeLeafId && <IconButton title="Move focused pane to a new tab" onClick={() => detachToTab(layout.activeLeafId!)}><ExternalLink size={14} /></IconButton>}
         <IconButton title={`Search scrollback (${terminalChord("search")})`} onClick={() => command("search")}><Search size={14} /></IconButton>
         <IconButton title="Terminal shortcuts" onClick={() => setShortcuts(v => !v)}><Keyboard size={15} /></IconButton>
       </div>
