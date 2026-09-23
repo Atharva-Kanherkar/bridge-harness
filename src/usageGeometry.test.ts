@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { UsageBucket } from "./types";
 import { buildUsageReport } from "./usageReport";
 import {
-  calendarWeeks, evenTicks, flowBandPath, flowLayout, harnessesByMetric, mondayIndex, orderedRange, scopeReport, squarify, stackColumns, straightPaths, treemap,
+  bucketKeys, calendarAxis, calendarWeeks, evenTicks, flowBandPath, flowLayout, harnessesByMetric, mondayIndex, orderedRange, scopeReport, squarify, stackColumns, straightPaths, treemap,
 } from "./usageGeometry";
 
 function bucket(day: string, harness: string, model: string, kinds: Partial<UsageBucket["totals"]>, costMicrousd: number, extra: Partial<UsageBucket> = {}): UsageBucket {
@@ -174,6 +174,27 @@ describe("calendar", () => {
       [6, 7, 8, 9, null, null, null],
     ]);
     expect(calendarWeeks([])).toEqual([]);
+  });
+
+  it("gives out-of-window buckets their own cells, filling days densely", () => {
+    const days = ["2026-09-01", "2026-09-02"];
+    expect(calendarAxis(days, ["2026-09-01"], "day")).toEqual(days);
+    expect(calendarAxis(days, ["2026-08-31", "2026-09-01"], "day")).toEqual(["2026-08-31", "2026-09-01", "2026-09-02"]);
+    expect(calendarAxis(days, ["2026-08-29"], "day")).toEqual(["2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"]);
+    const hours = ["2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z"];
+    expect(calendarAxis(hours, ["2026-09-01T09:00:00Z", "2026-09-01T11:00:00Z"], "hour")).toEqual(["2026-09-01T09:00:00Z", ...hours]);
+  });
+
+  it("keeps the whole-window total equal to every visible cell when a bucket falls outside the window", () => {
+    // A zone-edge bucket: buildUsageReport keeps it, so the calendar must show it.
+    const edge = { buckets: [bucket("2026-08-31", "claude", "opus", { uncachedInputTokens: 900 }, 0), bucket("2026-09-01", "claude", "opus", { uncachedInputTokens: 100 }, 0)], resolution: "day" as const };
+    const days = ["2026-09-01", "2026-09-02"];
+    const axis = calendarAxis(days, bucketKeys(edge), "day");
+    const whole = scopeReport(edge, axis, [0, axis.length - 1]).report;
+    expect(whole.totals.processedTokens).toBe(1000);
+    expect(whole.totals.processedTokens).toBe(buildUsageReport(edge, days).totals.processedTokens);
+    expect(whole.periods.map(period => period.period)).toEqual(axis);
+    expect(whole.periods.reduce((sum, period) => sum + period.tokens, 0)).toBe(1000);
   });
 
   it("orders a range whichever end was picked first", () => {

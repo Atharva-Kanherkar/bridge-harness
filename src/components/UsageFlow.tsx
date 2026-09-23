@@ -53,7 +53,7 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
           const source = byId.get(link.source)!;
           const target = byId.get(link.target)!;
           return <path key={`${link.source}>${link.target}`} d={flowBandPath(link, columnX[source.column] + NODE, columnX[target.column])} className={harnessChartFill(link.harness)} fillOpacity={target.column === 2 ? 0.24 : 0.34}>
-            <title>{`${source.harness ? harnessLabel(source.harness) : source.label} → ${target.kind ? target.label : target.label}: ${format(link.value)}`}</title>
+            <title>{`${source.column === 0 ? harnessLabel(source.harness!) : source.label} → ${target.label}: ${format(link.value)}`}</title>
           </path>;
         })}
         {layout.nodes.map(node => <rect key={node.id} x={columnX[node.column]} y={node.y} width={NODE} height={node.height} rx={2} className={node.kind ? "fill-foreground" : harnessChartFill(node.harness)} fillOpacity={node.kind ? KIND_SHADE[node.kind].opacity : 1} />)}

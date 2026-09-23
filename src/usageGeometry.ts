@@ -1,4 +1,4 @@
-import type { UsageSummaryResult } from "./types";
+import type { UsageResolution, UsageSummaryResult } from "./types";
 import { buildUsageReport, chartY, periodKey, type ChartGeometry, type HarnessReport, type ModelReport, type PeriodReport, type UsageMetric, type UsageReport } from "./usageReport";
 
 // Pure geometry for the switchable Usage layouts (testing/feat-usage-layouts.md).
@@ -289,6 +289,32 @@ export function calendarWeeks(days: readonly string[]): (number | null)[][] {
   const weeks: (number | null)[][] = [];
   for (let start = 0; start < slots.length; start += 7) weeks.push(slots.slice(start, start + 7));
   return weeks;
+}
+
+/**
+ * The calendar's own axis: the window's periods plus every bucket key that
+ * fell outside them (a zone edge, which `buildUsageReport` keeps rather than
+ * drops), so each counted bucket has a cell to click. Days are filled densely
+ * so the Monday-first grid keeps its shape; hours are merged in order.
+ */
+export function calendarAxis(periods: readonly string[], keys: readonly string[], resolution: UsageResolution): string[] {
+  const known = new Set(periods);
+  const extra = [...new Set(keys.filter(key => !known.has(key)))];
+  if (extra.length === 0) return [...periods];
+  const all = [...periods, ...extra].sort();
+  if (resolution === "hour") return all;
+  const day = (key: string) => Date.parse(`${key.slice(0, 10)}T00:00:00Z`);
+  const first = day(all[0]);
+  const last = day(all[all.length - 1]);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return all;
+  const dense: string[] = [];
+  for (let at = first; at <= last; at += 86_400_000) dense.push(new Date(at).toISOString().slice(0, 10));
+  return dense;
+}
+
+/** The bucket keys a summary carries, in the form `periodKey` gives them. */
+export function bucketKeys(summary: Pick<UsageSummaryResult, "buckets" | "resolution">): string[] {
+  return summary.buckets.map(bucket => periodKey(bucket, summary.resolution));
 }
 
 /** An inclusive index range, whichever end was picked first. */

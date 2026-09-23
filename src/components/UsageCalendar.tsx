@@ -3,8 +3,8 @@ import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
 import { harnessChartDot } from "./harnessMarks";
 import { heatStep } from "./UsageHeatmap";
-import { formatDayShort, formatHourShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd } from "../usageReport";
-import { calendarWeeks, harnessesByMetric, harnessValue, modelValue, orderedRange, periodValue, scopeReport } from "../usageGeometry";
+import { formatDayShort, formatHourShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, type UsageWindow } from "../usageReport";
+import { bucketKeys, calendarAxis, calendarWeeks, harnessesByMetric, harnessValue, modelValue, orderedRange, periodValue, scopeReport } from "../usageGeometry";
 import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, PartialBadge, type UsageLayoutProps } from "./UsageLayoutParts";
 
 // Layout E: time is the navigation. The calendar is the hero; clicking a day
@@ -17,17 +17,10 @@ const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 /** Cell depth by share of the window's peak; step 0 is a day with nothing in it. */
 const DEPTH = ["bg-muted/40", "bg-foreground/[0.05]", "bg-foreground/[0.09]", "bg-foreground/[0.13]", "bg-foreground/[0.18]"];
 
-export function UsageCalendar({ report, summary, periods, window, metric, partial }: UsageLayoutProps) {
+export function UsageCalendar({ summary, periods, window, metric, partial }: UsageLayoutProps) {
   const format = formatMetric(metric);
   const hourly = window.resolution === "hour";
   const drag = useRef<{ anchor: number; moved: boolean } | null>(null);
-  // A selection belongs to the window it was made in: a new window would read
-  // its indices as other days, so it is ignored rather than carried over.
-  const windowKey = `${periods[0] ?? ""}:${periods.length}`;
-  const [selection, setSelection] = useState<{ key: string; anchor: number; range: [number, number] } | null>(null);
-  const active = selection?.key === windowKey ? selection : null;
-  const anchor = active?.anchor ?? null;
-  const range = active?.range ?? null;
   useEffect(() => {
     // Cleared after the click that follows the pointerup, so that click can tell a drag from a tap.
     const release = () => { setTimeout(() => { drag.current = null; }, 0); };
@@ -35,30 +28,46 @@ export function UsageCalendar({ report, summary, periods, window, metric, partia
     return () => document.removeEventListener("pointerup", release);
   }, []);
 
-  const values = report.periods.slice(0, periods.length).map(period => periodValue(period, metric));
+  // The calendar draws its own axis: the window's periods plus any bucket that
+  // landed outside them, so every bucket in a total has a cell, and the
+  // whole-window figure always equals selecting every cell. A summary still in
+  // flight for another window contributes only the days this window shows.
+  const fresh = summary.sinceDay === window.sinceDay && summary.untilDay === window.untilDay && summary.resolution === window.resolution;
+  const axis = useMemo(() => (fresh ? calendarAxis(periods, bucketKeys(summary), window.resolution) : [...periods]), [fresh, periods, summary, window.resolution]);
+  const whole: [number, number] = [0, axis.length - 1];
+  const axisReport = useMemo(() => scopeReport(summary, axis, [0, axis.length - 1]).report, [summary, axis]);
+
+  // A selection belongs to the window it was made in. Leaving that window
+  // resets it; a new window instance, even for the same range, starts clean.
+  const axisKey = `${axis[0] ?? ""}:${axis.length}`;
+  const [selection, setSelection] = useState<{ window: UsageWindow; axisKey: string; anchor: number; range: [number, number] } | null>(null);
+  useEffect(() => { setSelection(null); }, [window]);
+  const active = selection && selection.window === window && selection.axisKey === axisKey ? selection : null;
+  const anchor = active?.anchor ?? null;
+  const range = active?.range ?? null;
+
+  const values = axisReport.periods.map(period => periodValue(period, metric));
   const peak = Math.max(0, ...values);
-  const harnesses = harnessesByMetric(report, metric);
-  const scoped = useMemo(() => scopeReport(summary, periods, range), [summary, periods, range]);
+  const harnesses = harnessesByMetric(axisReport, metric);
+  const scoped = useMemo(() => scopeReport(summary, axis, range ?? [0, axis.length - 1]), [summary, axis, range]);
   const scopedHarnesses = harnessesByMetric(scoped.report, metric);
   const scopedTotal = metric === "cost" ? scoped.report.totals.costMicrousd : scoped.report.totals.processedTokens;
-  const windowTotal = metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens;
+  const windowTotal = metric === "cost" ? axisReport.totals.costMicrousd : axisReport.totals.processedTokens;
   const topModels = [...scoped.report.models].sort((a, b) => modelValue(b, metric) - modelValue(a, metric)).slice(0, 6);
   const topModel = topModels[0] ? modelValue(topModels[0], metric) : 0;
-  const weeks = useMemo(() => (hourly ? [] : calendarWeeks(periods)), [hourly, periods]);
+  const weeks = useMemo(() => (hourly ? [] : calendarWeeks(axis)), [hourly, axis]);
   const compact = weeks.length > 6;
   const inRange = (index: number) => range !== null && index >= range[0] && index <= range[1];
-  const label = (index: number) => formatPeriodLabel(periods[index], window.resolution, window.timeZone);
+  const label = (index: number) => formatPeriodLabel(axis[index], window.resolution, window.timeZone);
+  const pick = (anchorIndex: number, index: number) => setSelection({ window, axisKey, anchor: anchorIndex, range: orderedRange(anchorIndex, index) });
 
-  const select = (index: number, extend: boolean) => {
-    const from = extend && anchor !== null ? anchor : index;
-    setSelection({ key: windowKey, anchor: from, range: orderedRange(from, index) });
-  };
+  const select = (index: number, extend: boolean) => pick(extend && anchor !== null ? anchor : index, index);
 
   const cell = (index: number) => {
-    const period = report.periods[index];
+    const period = axisReport.periods[index];
     const value = values[index] ?? 0;
     const step = heatStep(value, peak);
-    const day = periods[index];
+    const day = axis[index];
     const dayOfMonth = Number(day.slice(8, 10));
     const monthLabel = !hourly && (index === 0 || dayOfMonth === 1) ? formatDayShort(day).split(" ")[0] : null;
     const parts = harnesses.map(entry => ({ harness: entry.harness, value: metric === "cost" ? period.costByHarness[entry.harness] ?? 0 : period.tokensByHarness[entry.harness] ?? 0 })).filter(part => part.value > 0);
@@ -72,7 +81,7 @@ export function UsageCalendar({ report, summary, periods, window, metric, partia
         const current = drag.current;
         if (!current || current.anchor === index) return;
         current.moved = true;
-        setSelection({ key: windowKey, anchor: current.anchor, range: orderedRange(current.anchor, index) });
+        pick(current.anchor, index);
       }}
       onClick={event => {
         if (drag.current?.moved) { drag.current = null; return; }
@@ -87,7 +96,7 @@ export function UsageCalendar({ report, summary, periods, window, metric, partia
       )}
     >
       <span className="text-[11.5px] leading-none tabular-nums text-muted-foreground">{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
-      {!hourly && index === periods.length - 1 && <span className="absolute right-2.5 top-2.5 size-1.5 rounded-full bg-foreground" aria-hidden="true" />}
+      {!hourly && axis[index] === window.untilDay && <span className="absolute right-2.5 top-2.5 size-1.5 rounded-full bg-foreground" aria-hidden="true" />}
       {!compact && <span className={cn("mt-auto text-[15px] tracking-tight tabular-nums", value > 0 ? "text-foreground" : "text-muted-foreground/60")}>{value > 0 ? format(value) : "—"}</span>}
       <span className={cn("flex h-1 gap-[1.5px] overflow-hidden rounded-[2px]", compact ? "mt-auto" : "mt-1.5")} aria-hidden="true">
         {parts.map(part => <span key={part.harness} className={harnessChartDot(part.harness)} style={{ flexGrow: part.value }} />)}
@@ -98,7 +107,7 @@ export function UsageCalendar({ report, summary, periods, window, metric, partia
   return <div className="space-y-4">
     <section aria-label={hourly ? "Hourly calendar" : "Daily calendar"} className={cn(LAYOUT_CARD, "p-4")}>
       {hourly ? <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-12">
-        {periods.map((_, index) => cell(index))}
+        {axis.map((_, index) => cell(index))}
       </div> : <div className={cn("grid gap-1.5", compact ? "grid-cols-7" : "grid-cols-[repeat(7,minmax(0,1fr))_5.5rem]")}>
         {WEEKDAYS.map(day => <div key={day} className="px-1 pb-1 text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">{day}</div>)}
         {!compact && <div className="px-2 pb-1 text-[11px] uppercase tracking-[0.08em] text-muted-foreground/70">Week</div>}
@@ -123,7 +132,7 @@ export function UsageCalendar({ report, summary, periods, window, metric, partia
       <div className="p-5">
         <div className="flex items-center gap-2.5">
           <span className={cn("rounded-full border px-2 py-0.5 text-[11.5px]", range ? "border-ring/40 text-ring" : "border-border text-muted-foreground")}>{range ? "Selected" : "Whole window"}</span>
-          <span className="text-caption tabular-nums text-muted-foreground">{range ? `${label(range[0])}${range[1] !== range[0] ? ` – ${label(range[1])}` : ""}` : `${label(0)} – ${label(periods.length - 1)}`} · {scoped.periods.length} {hourly ? (scoped.periods.length === 1 ? "hour" : "hours") : scoped.periods.length === 1 ? "day" : "days"}</span>
+          <span className="text-caption tabular-nums text-muted-foreground">{range ? `${label(range[0])}${range[1] !== range[0] ? ` – ${label(range[1])}` : ""}` : `${label(whole[0])} – ${label(whole[1])}`} · {scoped.periods.length} {hourly ? (scoped.periods.length === 1 ? "hour" : "hours") : scoped.periods.length === 1 ? "day" : "days"}</span>
           {range && <button type="button" onClick={() => setSelection(null)} className="ml-auto rounded-md px-2 py-0.5 text-caption text-muted-foreground hover:bg-accent hover:text-foreground">Clear</button>}
         </div>
         <PartialBadge label={partial} className="mt-4" />

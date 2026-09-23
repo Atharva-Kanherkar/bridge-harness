@@ -38,7 +38,9 @@ layout.
    below (headline, harness split, top models) is scoped to the selection, or
    to the whole window when nothing is selected. The 24h window renders an
    hour grid with the same selection rules. Changing the window clears the
-   selection.
+   selection, including a round trip back to the same range. A bucket that
+   falls outside the window's periods (a zone edge) gets its own cell, so the
+   whole-window figure always equals selecting every visible cell.
 7. **Classic.** The existing summary card, chart, activity disclosure, totals
    tiles, and breakdown, unchanged.
 8. **Shared.** Coverage notes stay above every layout. History sources and
@@ -66,12 +68,16 @@ layout.
 - `src/usageGeometry.test.ts`: straight paths are finite and never smoothed;
   stacked columns sum to the period total; squarify areas are proportional
   and tile the rectangle; flow links conserve node totals in both modes;
-  calendar weeks are Monday-first and dense; range scoping equals
-  `buildUsageReport` over the filtered buckets; evenly spaced axis ticks.
+  calendar weeks are Monday-first and dense; the calendar axis gives
+  out-of-window buckets their own cells and the whole-window total equals the
+  sum of visible cells; range scoping equals `buildUsageReport` over the
+  filtered buckets; evenly spaced axis ticks.
 - `src/components/UsageScreen.test.tsx` (jsdom): every layout renders the
   honesty strings from the summary; the layout switch persists and does not
   refetch; a stored unknown layout falls back to Ledger; Strips scrubs with
-  arrow keys; Flow shows the cost-mode note; Calendar scopes its headline to a
-  clicked day and clears on window change. Existing classic cases keep
+  arrow keys; Flow shows the cost-mode note and names the model in
+  model → kind band titles; Calendar scopes its headline to a clicked day, a
+  shift-click range, and a pointer drag, clears on a 30d → 7d → 30d round
+  trip, and counts an out-of-window bucket in a visible cell. Existing classic cases keep
   passing with `layout: "classic"`.
 - `bun run build` and `bun run test` green.

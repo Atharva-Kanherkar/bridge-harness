@@ -425,7 +425,12 @@ describe("UsageScreen layouts", () => {
     click(buttonByText("Tokens"));
     await flush();
     expect(text()).not.toContain("Cost is recorded per model");
-    expect(container.querySelector('svg[aria-label="Processed tokens flowing from harness to model to token kind"]')?.textContent).toContain("Uncached input");
+    const flow = container.querySelector('svg[aria-label="Processed tokens flowing from harness to model to token kind"]')!;
+    expect(flow.textContent).toContain("Uncached input");
+    const titles = [...flow.querySelectorAll("title")].map(title => title.textContent);
+    expect(titles).toContain("Claude → fable: 1M");
+    expect(titles).toContain("fable → Uncached input: 1M");
+    expect(titles).toContain("gpt-5.6 → Uncached input: 500K");
   });
 
   it("scopes the calendar headline to the picked days and clears it with the window", async () => {
@@ -449,5 +454,47 @@ describe("UsageScreen layouts", () => {
     await flush();
     expect(section("Selection").textContent).toContain("Whole window");
     expect(days()).toHaveLength(7);
+    // Coming back to the same range is a new window, not the old selection.
+    click(buttonByText("30d"));
+    await flush();
+    expect(section("Selection").textContent).toContain("Whole window");
+    expect(days().some(day => day.getAttribute("aria-pressed") === "true")).toBe(false);
+  });
+
+  it("selects a range by dragging across days, then treats the next click as a fresh pick", async () => {
+    prefer("calendar");
+    await mount();
+    const days = () => [...section("Daily calendar").querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
+    act(() => { days()[2].dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); });
+    // React synthesises pointerenter from the pointerout on the cell being left.
+    act(() => { days()[2].dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: days()[5] })); });
+    expect(days().map(day => day.getAttribute("aria-pressed") === "true").indexOf(true)).toBe(2);
+    expect(days().filter(day => day.getAttribute("aria-pressed") === "true")).toHaveLength(4);
+    expect(section("Selection").textContent).toContain("4 days");
+    await act(async () => {
+      document.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    click(days()[10]);
+    expect(days().filter(day => day.getAttribute("aria-pressed") === "true")).toHaveLength(1);
+    expect(days()[10].getAttribute("aria-pressed")).toBe("true");
+    expect(section("Selection").textContent).toContain("1 day");
+  });
+
+  it("gives a bucket outside the window its own day, so the whole window equals every visible day", async () => {
+    prefer("calendar");
+    summarySpy.mockImplementation(async params => {
+      const before = new Date(Date.parse(`${params.sinceDay}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+      return { ...summaryFor(params), buckets: [bucket(before, "claude", "fable", 2_000_000, 5_500_000), bucket(params.untilDay, "claude", "fable", 1_000_000, 4_500_000)] };
+    });
+    await mount();
+    const days = () => [...section("Daily calendar").querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
+    expect(days()).toHaveLength(31);
+    expect(days()[0].getAttribute("aria-label")).toContain("$5.50");
+    expect(section("Selection").textContent).toContain("$10.00");
+    click(days()[0]);
+    act(() => { days()[30].dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })); });
+    expect(section("Selection").textContent).toContain("31 days");
+    expect(section("Selection").textContent).toContain("$10.00");
   });
 });
