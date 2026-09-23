@@ -1,0 +1,212 @@
+# Nightly macOS DMG pre-releases.
+#
+# Schedule: 30 19 * * * UTC, which is 01:00 Asia/Kolkata. The tag is
+# nightly-YYYY-MM-DD for the IST calendar day that just ended. The build is
+# main as of that 01:00 IST instant (not a later main tip if Actions is late).
+#
+# Skip the notarized build when that IST day had no pull requests merged into
+# main, or when the tag or GitHub release already exists. Empty days exit
+# successfully.
+#
+# Publishing uses --prerelease and --latest=false and uploads only the DMG
+# plus its checksum. It does not write the stable updater manifest, so GitHub
+# Latest and the in-app updater stay on v*.*.* tags from release-macos.yml.
+# Nightly tags do not have to match src-tauri/tauri.conf.json.
+#
+# workflow_dispatch input `date` (YYYY-MM-DD) backfills that IST day from the
+# main commit the cron would have built. Leave it empty to ship the IST day
+# that just ended.
+#
+# Signing, notarization, and cleanup match release-macos.yml. Keep those steps
+# in lockstep; scripts/test/nightly-release.test.mjs fails if they drift.
+name: Nightly macOS DMG
+
+on:
+  schedule:
+    - cron: "30 19 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "IST day to ship (YYYY-MM-DD). Empty means the IST day that just ended."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: nightly-macos
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      reason: ${{ steps.plan.outputs.reason }}
+      tag: ${{ steps.plan.outputs.tag }}
+      date: ${{ steps.plan.outputs.date }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch main
+        run: git fetch origin main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Decide whether this IST day needs a nightly
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NIGHTLY_DATE: ${{ github.event.inputs.date }}
+          NIGHTLY_NOTES_PATH: ${{ runner.temp }}/nightly-notes.md
+        run: node scripts/nightly-release.mjs
+      - name: Upload nightly notes
+        if: steps.plan.outputs.skip == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-notes
+          path: ${{ runner.temp }}/nightly-notes.md
+          if-no-files-found: error
+
+  dmg:
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.skip == 'false'
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-notes
+          path: ${{ runner.temp }}/nightly-notes
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate signing inputs
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          missing=
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_P8 TAURI_SIGNING_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "Nightly release requires these repository secrets:$missing" >&2
+            exit 1
+          fi
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Import signing identity into a temporary keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          umask 077
+          keychain_password=$(openssl rand -hex 32)
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/bridge-signing.p12"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/bridge-auth.p8"
+          security create-keychain -p "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security unlock-keychain -p "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security import "$RUNNER_TEMP/bridge-signing.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security -t cert -f pkcs12 -k "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/bridge-signing.keychain-db" login.keychain-db
+
+      - name: Build, test, sign, notarize, and verify exact DMG contents
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/bridge-auth.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: sh scripts/release-dmg.sh
+
+      - name: Retain verified DMG and updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-macOS-verified
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg.sha256
+            src-tauri/target/release/bundle/dmg/*.app.tar.gz
+            src-tauri/target/release/bundle/dmg/*.app.tar.gz.sig
+          if-no-files-found: error
+
+      - name: Publish nightly prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NIGHTLY_TAG: ${{ needs.plan.outputs.tag }}
+          NIGHTLY_DATE: ${{ needs.plan.outputs.date }}
+          NIGHTLY_SHA: ${{ needs.plan.outputs.sha }}
+          NIGHTLY_NOTES_FILE: ${{ runner.temp }}/nightly-notes/nightly-notes.md
+        run: |
+          set -euo pipefail
+          tag="$NIGHTLY_TAG"
+          case "$tag" in
+            nightly-20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]) ;;
+            *) echo "refusing unexpected nightly tag: $tag" >&2; exit 1 ;;
+          esac
+          case "$NIGHTLY_SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "refusing unexpected nightly sha" >&2; exit 1 ;;
+          esac
+          if [ "$tag" != "nightly-$NIGHTLY_DATE" ]; then
+            echo "tag does not match the nightly date" >&2
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            echo "Nightly release $tag already exists; skipping publish."
+            exit 0
+          fi
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; skipping publish."
+            exit 0
+          fi
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json")).version')
+          case "$(uname -m)" in
+            arm64) arch=aarch64 ;;
+            x86_64) arch=x64 ;;
+            *) echo "unsupported architecture" >&2; exit 1 ;;
+          esac
+          dmg="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.dmg"
+          if [ ! -f "$dmg" ] || [ ! -f "$dmg.sha256" ]; then
+            echo "missing verified DMG: $dmg" >&2
+            exit 1
+          fi
+          if ! gh release create "$tag" "$dmg" "$dmg.sha256" --repo "$GITHUB_REPOSITORY" --target "$NIGHTLY_SHA" --prerelease --latest=false --draft --title "Bridge nightly $NIGHTLY_DATE" --notes-file "$NIGHTLY_NOTES_FILE"; then
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+              echo "Nightly release $tag was published concurrently; skipping."
+              exit 0
+            fi
+            exit 1
+          fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+
+      - name: Remove temporary signing credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/bridge-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/bridge-signing.p12" "$RUNNER_TEMP/bridge-auth.p8"

@@ -65,6 +65,10 @@ The full rule, gate behavior, and escape hatch are in [`docs/issue-format.md`](d
 
 **Etiquette:** search existing issues first; one problem per issue; include versions and repro steps in **For agents**; keep **For humans** scannable.
 
+## Releases
+
+Stable macOS releases are git tags `v*.*.*` that match `src-tauri/tauri.conf.json`. They publish GitHub Latest and `latest.json` for the in-app updater. Nightly DMGs are separate pre-releases (`nightly-YYYY-MM-DD`, 01:00 Asia/Kolkata) and only ship when `main` gained merged pull requests that IST day. They do not move Latest or the updater channel. Details are in [Releasing Bridge for macOS](docs/macos-release.md).
+
 ## Security
 
 Do not open public issues for exploitable security problems. See [`SECURITY.md`](SECURITY.md) for how to report vulnerabilities.

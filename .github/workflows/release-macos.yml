@@ -1,3 +1,6 @@
+# Stable channel only. Tags must be v*.*.* and must match src-tauri/tauri.conf.json.
+# Nightly prereleases (nightly-YYYY-MM-DD at 01:00 IST) live in nightly-macos.yml.
+# This workflow writes latest.json for GitHub Releases Latest; nightlies must not.
 # Both local release and CI use the same signature, icon, and notarization gates.
 # Required secrets: APPLE_CERTIFICATE (base64 Developer ID Application .p12),
 # APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY, and
