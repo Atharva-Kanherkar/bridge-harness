@@ -11,14 +11,19 @@ export type UsageMetric = "cost" | "tokens";
 export type UsageWindowDays = 1 | 7 | 30 | 90;
 export const USAGE_WINDOW_OPTIONS: readonly UsageWindowDays[] = [1, 7, 30, 90];
 
+/** The presentations of the same summary the screen can switch between. */
+export type UsageLayout = "ledger" | "strips" | "flow" | "mosaic" | "calendar" | "classic";
+export const USAGE_LAYOUT_OPTIONS: readonly UsageLayout[] = ["ledger", "strips", "flow", "mosaic", "calendar", "classic"];
+
 export interface UsagePreferences {
   metric: UsageMetric;
   windowDays: UsageWindowDays;
   includeImported: boolean;
+  layout: UsageLayout;
 }
 
 export const USAGE_PREFERENCES_KEY = "bridge.usage.preferences.v1";
-export const DEFAULT_USAGE_PREFERENCES: UsagePreferences = { metric: "cost", windowDays: 30, includeImported: true };
+export const DEFAULT_USAGE_PREFERENCES: UsagePreferences = { metric: "cost", windowDays: 30, includeImported: true, layout: "ledger" };
 
 export function readUsagePreferences(storage: Pick<Storage, "getItem"> | undefined = globalThis.localStorage): UsagePreferences {
   if (!storage) return { ...DEFAULT_USAGE_PREFERENCES };
@@ -29,9 +34,12 @@ export function readUsagePreferences(storage: Pick<Storage, "getItem"> | undefin
     const metric = parsed?.metric === "tokens" ? "tokens" : parsed?.metric === "cost" ? "cost" : null;
     const windowDays = USAGE_WINDOW_OPTIONS.find(option => option === parsed?.windowDays) ?? null;
     if (!metric || !windowDays) return { ...DEFAULT_USAGE_PREFERENCES };
+    // A blob written before layouts existed, or naming one that no longer
+    // does, keeps its metric and window and gets the default layout.
+    const layout = USAGE_LAYOUT_OPTIONS.find(option => option === parsed?.layout) ?? DEFAULT_USAGE_PREFERENCES.layout;
     // Local history is always part of the picture; an older stored `false`
     // from the retired toggle is ignored rather than honoured.
-    return { metric, windowDays, includeImported: true };
+    return { metric, windowDays, includeImported: true, layout };
   } catch {
     return { ...DEFAULT_USAGE_PREFERENCES };
   }
@@ -230,6 +238,14 @@ export interface ModelReport {
   costMicrousd: number;
   costShare: number;
   costSource: UsageCostSource;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  /** Processed tokens per period, aligned index for index with `UsageReport.periods`. */
+  tokensByPeriod: number[];
+  /** Cost per period, aligned index for index with `UsageReport.periods`. */
+  costByPeriod: number[];
 }
 
 export interface PeriodReport {
@@ -291,6 +307,7 @@ export function buildUsageReport(summary: Pick<UsageSummaryResult, "buckets" | "
   const totals = emptyTotals();
   const byHarness = new Map<string, UsageTotals>();
   const byModel = new Map<string, ModelReport>();
+  const modelPeriods = new Map<string, Map<string, { tokens: number; cost: number }>>();
   const byPeriod = new Map<string, PeriodReport>(periods.map(period => [period, { period, costByHarness: {}, tokensByHarness: {}, costMicrousd: 0, tokens: 0 }]));
 
   for (const bucket of summary.buckets) {
@@ -300,13 +317,23 @@ export function buildUsageReport(summary: Pick<UsageSummaryResult, "buckets" | "
     byHarness.set(bucket.harness, harness);
 
     const modelKey = `${bucket.harness}:${bucket.model}`;
-    const model = byModel.get(modelKey) ?? { harness: bucket.harness, model: bucket.model, tokens: 0, costMicrousd: 0, costShare: 0, costSource: bucket.costSource };
+    const model = byModel.get(modelKey) ?? { harness: bucket.harness, model: bucket.model, tokens: 0, costMicrousd: 0, costShare: 0, costSource: bucket.costSource, uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, tokensByPeriod: [], costByPeriod: [] };
     model.tokens += bucketTokens(bucket);
     model.costMicrousd += bucket.costMicrousd;
+    model.uncachedInputTokens += bucket.totals.uncachedInputTokens;
+    model.cacheReadTokens += bucket.totals.cacheReadTokens;
+    model.cacheWriteTokens += bucket.totals.cacheWriteTokens;
+    model.outputTokens += bucket.totals.outputTokens;
     if (SOURCE_RANK[bucket.costSource] > SOURCE_RANK[model.costSource]) model.costSource = bucket.costSource;
     byModel.set(modelKey, model);
 
     const key = periodKey(bucket, summary.resolution);
+    const perModel = modelPeriods.get(modelKey) ?? new Map<string, { tokens: number; cost: number }>();
+    const slot = perModel.get(key) ?? { tokens: 0, cost: 0 };
+    slot.tokens += bucketTokens(bucket);
+    slot.cost += bucket.costMicrousd;
+    perModel.set(key, slot);
+    modelPeriods.set(modelKey, perModel);
     const period = byPeriod.get(key) ?? { period: key, costByHarness: {}, tokensByHarness: {}, costMicrousd: 0, tokens: 0 };
     period.costByHarness[bucket.harness] = (period.costByHarness[bucket.harness] ?? 0) + bucket.costMicrousd;
     period.tokensByHarness[bucket.harness] = (period.tokensByHarness[bucket.harness] ?? 0) + bucketTokens(bucket);
@@ -322,15 +349,23 @@ export function buildUsageReport(summary: Pick<UsageSummaryResult, "buckets" | "
     .map(([harness, value]) => ({ harness, ...value, costShare: share(value.costMicrousd, totals.costMicrousd), tokenShare: share(value.processedTokens, totals.processedTokens) }))
     .sort((a, b) => b.costMicrousd - a.costMicrousd || b.processedTokens - a.processedTokens || a.harness.localeCompare(b.harness));
 
-  const models = [...byModel.values()]
-    .filter(model => model.tokens > 0 || model.costMicrousd > 0)
-    .map(model => ({ ...model, costShare: share(model.costMicrousd, totals.costMicrousd) }))
-    .sort((a, b) => b.costMicrousd - a.costMicrousd || b.tokens - a.tokens || a.model.localeCompare(b.model));
-
   // Keep the dense order the caller enumerated; a bucket outside the window
   // (a zone edge) lands at the end rather than being dropped.
   const ordered = periods.map(period => byPeriod.get(period)!);
   for (const [key, period] of byPeriod) if (!periods.includes(key)) ordered.push(period);
+
+  const models = [...byModel.entries()]
+    .filter(([, model]) => model.tokens > 0 || model.costMicrousd > 0)
+    .map(([key, model]) => {
+      const perModel = modelPeriods.get(key);
+      return {
+        ...model,
+        costShare: share(model.costMicrousd, totals.costMicrousd),
+        tokensByPeriod: ordered.map(period => perModel?.get(period.period)?.tokens ?? 0),
+        costByPeriod: ordered.map(period => perModel?.get(period.period)?.cost ?? 0),
+      };
+    })
+    .sort((a, b) => b.costMicrousd - a.costMicrousd || b.tokens - a.tokens || a.model.localeCompare(b.model));
 
   return { totals, harnesses, models, periods: ordered, costSource: weakestCostSource(summary.buckets) };
 }
