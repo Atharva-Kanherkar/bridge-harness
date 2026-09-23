@@ -23,6 +23,8 @@ import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
+import { useProviderUsageOverviews } from "./UsageDot";
+import { UsageResetRow } from "./UsageResetRow";
 import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSummary } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
@@ -41,6 +43,7 @@ interface ErrorContext {
   harness?: string;
   provider?: string;
   snapshot: UsageSnapshot | null;
+  allowReset?: boolean;
 }
 
 // A conversation of prose messages, live tool-call cards, clickable thinking,
@@ -709,7 +712,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const optimistic = pendingMessages.filter(text => text.trim().length > 0 && !existingUserTexts.has(text.trim()));
   // The session's *current* runtime, and its meter. Only a fallback: a row
   // that knows which runtime raised it outranks both (see `ErrorCard`).
-  const errorContext: ErrorContext = { harness: session?.harness ?? undefined, provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
+  const errorContext: ErrorContext = { harness: session?.harness ?? undefined, provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events), allowReset: session?.kind === "chat" && !readOnly && !preview };
   // Content-addressed, occurrence-counted keys for the optimistic bubbles: when
   // an earlier pending message lands as a real message, the bubbles after it
   // keep their identity — one ghost fades, and no survivor flips its text.
@@ -1280,8 +1283,16 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
     >
       {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
     </motion.span>
-    <div className="min-w-0"><b className="text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p></div>
+    <div className="min-w-0"><b className="text-[12px]">{degraded ? item.title ?? "Unavailable history entry" : described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{degraded ? item.text : described.message}</p>
+      {described.kind === "usage-limit" && errorContext?.allowReset && (item.harness ?? errorContext.harness) === "codex" && <LimitResetOffer />}
+    </div>
   </div>;
+}
+
+function LimitResetOffer() {
+  const { overviews, refresh } = useProviderUsageOverviews();
+  const snapshot = overviews?.providers.find(provider => provider.provider === "codex");
+  return snapshot ? <UsageResetRow snapshot={snapshot} onUpdated={refresh} compact /> : null;
 }
 
 /// A model switch, as a milestone the transcript reads past: one hairline

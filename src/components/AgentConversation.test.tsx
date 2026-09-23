@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import * as conversation from "../conversation";
+import { bridgeApi } from "../api";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, CompletionSummary, Session, SessionEntry, WorkerRuntimeRecord } from "../types";
@@ -13,6 +14,38 @@ const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): A
 const completion = (verdict: CompletionSummary["verdict"]): CompletionSummary => ({ attemptId:"a",contractId:"c",verdict,repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:0,totalRequired:1,markdownCommitted:false,waiverReason:verdict === "waived" ? "Accepted risk" : null,checks:[{checkId:"gate",kind:"deterministic",required:true,status:verdict === "verified" ? "passed" : verdict === "changes_requested" ? "failed" : verdict === "superseded" ? "stale" : verdict === "waived" ? "skipped" : "pending",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:null,outputDigest:verdict === "verified" ? "digest" : null,artifactRefs:[]}] });
 
 describe("AgentConversation", () => {
+  it("offers a banked reset on the user's Codex limit wall, never on a worker or read-only transcript", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const now = Math.floor(Date.now() / 1000);
+    const empty = { tokens: { status: "unavailable" as const }, costMicrousd: { status: "unavailable" as const }, models: [] };
+    const get = vi.spyOn(bridgeApi, "getProviderUsageOverviews").mockResolvedValue({
+      schemaVersion: 1, generatedAt: now, providers: [{
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "a@example.test", observedAt: now,
+        coverage: "test", windows: [], today: empty, month: empty, error: null,
+        resetCredits: { availableCount: 1, detailsKnown: false, credits: [], nextExpiresAt: null },
+      }],
+    });
+    const listen = vi.spyOn(bridgeApi, "onProviderUsageOverviews").mockResolvedValue(() => undefined);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const limit = event(1, "error", { itemId: "limit", status: "failed", text: "You've hit your usage limit." });
+    try {
+      await act(async () => root.render(<AgentConversation session={{ ...session, kind: "chat" }} events={[limit]} onResolve={() => undefined} />));
+      expect(host.textContent).toContain("1 reset banked");
+      expect(host.textContent).toContain("Use reset");
+      expect(get).toHaveBeenCalledTimes(1);
+      await act(async () => root.render(<AgentConversation session={{ ...session, kind: "worker" }} events={[limit]} onResolve={() => undefined} />));
+      expect(host.textContent).not.toContain("Use reset");
+      await act(async () => root.render(<AgentConversation session={{ ...session, kind: "chat" }} events={[limit]} onResolve={() => undefined} readOnly />));
+      expect(host.textContent).not.toContain("Use reset");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      get.mockRestore();
+      listen.mockRestore();
+    }
+  });
   it("does not reproject an unchanged durable branch on live-only updates", async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const project = vi.spyOn(conversation, "projectSessionConversation");

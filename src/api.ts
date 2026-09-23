@@ -76,7 +76,7 @@ import type {
   SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
-import type { MenuBarSettings, UsageOverviewSnapshot, ProviderUsageOverviews } from "./protocol/generated/protocol";
+import type { MenuBarSettings, UsageOverviewSnapshot, ProviderUsageOverviews, RedeemProviderUsageResetParams, RedeemProviderUsageResetResult, UsageResetCredits } from "./protocol/generated/protocol";
 import type {
   ConnectorCardReadyPayload,
   ConnectorItemArrivedPayload,
@@ -93,6 +93,18 @@ let mockMenuBarSettings: MenuBarSettings = {
 // Mock-mode provider overviews so the chat's usage dot has something to draw
 // under `bun run dev`: a Codex account with a quiet session window and a busy
 // weekly one, and a Claude read that failed. Fresh at call time by design.
+let mockResetsRedeemed = false;
+function mockResetCredits(now: number): UsageResetCredits | undefined {
+  const scenario = new URLSearchParams(window.location.search).get("resetMock") ?? "present";
+  if (scenario === "absent") return undefined;
+  if (scenario === "none" || mockResetsRedeemed) return { availableCount: 0, detailsKnown: true, credits: [], nextExpiresAt: null };
+  if (scenario === "count-only") return { availableCount: 2, detailsKnown: false, credits: [], nextExpiresAt: null };
+  const expiresAt = now + (scenario === "expiring" ? 12 * 3600 : 19 * 86400);
+  return { availableCount: 2, detailsKnown: true, nextExpiresAt: expiresAt, credits: [{
+    id: "mock-credit-1", title: "Banked reset", expiresAt, grantedAt: now - 86400,
+    clears: ["session", "weekly"], usableNow: true, requiresLimit: false, program: null,
+  }] };
+}
 function mockProviderUsageOverviews(): ProviderUsageOverviews {
   const now = Math.floor(Date.now() / 1000);
   const empty = { tokens: { status: "unavailable" as const }, costMicrousd: { status: "unavailable" as const }, models: [] };
@@ -104,8 +116,9 @@ function mockProviderUsageOverviews(): ProviderUsageOverviews {
         schemaVersion: 1, generatedAt: now, provider: "codex", account: "dev@example.com", plan: "plus", observedAt: now - 30, coverage: "Mock data",
         windows: [
           { id: "session", label: "5-hour", usedPercent: { value: 4, source: "reported", status: "current" }, resetsAt: now + 4 * 3600, windowMinutes: 300 },
-          { id: "weekly", label: "Weekly", usedPercent: { value: 63, source: "reported", status: "current" }, resetsAt: now + 3 * 86400, windowMinutes: 10080 },
+          { id: "weekly", label: "Weekly", usedPercent: { value: mockResetsRedeemed ? 0 : 63, source: "reported", status: "current" }, resetsAt: now + 3 * 86400, windowMinutes: 10080 },
         ],
+        resetCredits: mockResetCredits(now),
         today: empty, month: empty, error: null,
       },
       { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Claude Code usage SDK unavailable. Open Claude Code and check its sign-in." },
@@ -1478,12 +1491,28 @@ export const bridgeApi = {
   getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => isTauri()
     ? call("usage/get_provider_usage_overviews") : Promise.resolve(mockProviderUsageOverviews()),
   refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
-    if (!isTauri()) return null;
+    if (!isTauri()) return mockProviderUsageOverviews();
     const snapshot = await call("usage/refresh_provider_usage_overviews_interactive");
     const { emit } = await import("@tauri-apps/api/event");
     await emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined);
     await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
     return snapshot;
+  },
+  redeemProviderUsageReset: async (params: RedeemProviderUsageResetParams): Promise<RedeemProviderUsageResetResult> => {
+    if (!isTauri()) {
+      mockResetsRedeemed = true;
+      return { outcome: "reset", resetsLeft: 1, cleared: ["session", "weekly"], weeklyResetsAt: Math.floor(Date.now() / 1000) + 7 * 86400, cooldownUntil: null };
+    }
+    const result = await call("usage/redeem_provider_usage_reset", params);
+    if (result.outcome === "reset" || result.outcome === "unconfirmed") {
+      const snapshot = await call("usage/get_provider_usage_overviews");
+      const { emit } = await import("@tauri-apps/api/event");
+      await Promise.all([
+        emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined),
+        emit("bridge-menu-bar-settings-changed").catch(() => undefined),
+      ]);
+    }
+    return result;
   },
   onProviderUsageOverviews: (handler: (snapshot: ProviderUsageOverviews) => void): Promise<UnlistenFn> => isTauri()
     ? listen<ProviderUsageOverviews>("bridge-provider-usage-overviews", event => handler(event.payload)) : Promise.resolve(() => undefined),

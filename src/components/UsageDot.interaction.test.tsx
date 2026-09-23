@@ -145,4 +145,26 @@ describe("ChatUsageDot", () => {
     expect(onOpenUsage).toHaveBeenCalledTimes(1);
     expect(trigger().getAttribute("aria-expanded")).toBe("false");
   });
+
+  it("requires confirmation before sending one reset request", async () => {
+    const value = overviews(6);
+    value.providers[0].account = "dev@example.test";
+    value.providers[0].resetCredits = { availableCount: 1, detailsKnown: true, nextExpiresAt: null, credits: [{
+      id: "credit-1", title: "Banked reset", expiresAt: null, grantedAt: null,
+      clears: ["session", "weekly"], usableNow: true, requiresLimit: false, program: null,
+    }] };
+    vi.mocked(bridgeApi.getProviderUsageOverviews).mockResolvedValue(value);
+    const redeem = vi.spyOn(bridgeApi, "redeemProviderUsageReset").mockResolvedValue({ outcome: "reset", resetsLeft: 0, cleared: ["session", "weekly"], weeklyResetsAt: null, cooldownUntil: null });
+    await mount();
+    await act(async () => { trigger().click(); });
+    expect(panel().textContent).toContain("1 reset banked");
+    await act(async () => { [...panel().querySelectorAll("button")].find(button => button.textContent === "Use reset")!.click(); });
+    expect(redeem).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("94% of your weekly limit left");
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]')!;
+    await act(async () => { [...dialog.querySelectorAll("button")].find(button => button.textContent === "Use reset")!.click(); });
+    expect(redeem).toHaveBeenCalledTimes(1);
+    expect(redeem.mock.calls[0][0]).toMatchObject({ provider: "codex", creditId: "credit-1" });
+    expect(redeem.mock.calls[0][0].idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+  });
 });
