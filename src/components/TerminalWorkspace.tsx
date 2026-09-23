@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ArrowDownToLine, Bot, ChevronDown, Columns2, GripVertical, Keyboard, Maximize2, Minimize2, Plus, RotateCcw, Rows2, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { errorMessage } from "../errors";
 import { cn } from "../lib/utils";
 import { addTab, appendToLastLeaf, autoSplitDirection, closeLeaf, emptyLayout, insertSplit, leafIds, resizeNode, restoreLayout, type PaneNode, type SplitDirection, type TerminalLayout } from "../terminal/layout";
 import type { TerminalRecord } from "../terminal/types";
@@ -128,7 +129,7 @@ function releaseTerminalFocus() {
   if (active instanceof HTMLElement && active.closest(".xterm")?.closest("[data-terminal-workspace]")) active.blur();
 }
 
-export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string; branch: string }) {
+export function TerminalWorkspace({ workspaceId, branch, onError }: { workspaceId: string; branch: string; onError: (message: string) => void }) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [error, setError] = useState<string>();
   const [retrySave, setRetrySave] = useState(false);
@@ -141,7 +142,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   const [backgroundDrop, setBackgroundDrop] = useState(false);
   const alive = useRef(true);
   const dirty = useRef(false);
-  const errorHandler = useCallback((value: unknown) => { if (alive.current) { setError(String(value)); setRetrySave(false); } }, []);
+  const errorHandler = useCallback((value: unknown) => { if (alive.current) { setError(errorMessage(value)); setRetrySave(false); } }, []);
   const load = useCallback(async () => {
     try {
       await writes.get(workspaceId)?.catch(() => {});
@@ -171,7 +172,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
    * pane's cwd, agent CLIs start at the checkout root. */
   async function launch(agentId?: string, placement: { target?: string; direction?: SplitDirection; newTab?: boolean } = {}) {
     if (busy) return;
-    setBusy(true); setAgentMenu(false); setError(undefined);
+    setBusy(true); setAgentMenu(false);
     try {
       const focused = current.current?.layout.activeLeafId ?? undefined;
       const target = placement.newTab ? undefined : placement.target ?? focused;
@@ -188,7 +189,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
         const direction = placement.direction ?? measuredDirection(elements.current.get(target)) ?? autoSplitDirection(tab.root, target);
         return { records, layout: insertSplit(previous.layout, target, record.terminalId, direction) };
       });
-    } catch (value) { errorHandler(value); }
+    } catch (value) { if (alive.current) onError(errorMessage(value)); }
     finally { if (alive.current) setBusy(false); }
   }
   async function close(id: string) {
