@@ -102,6 +102,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
     cancelSelection(); dispatch({ type: "create", url });
     queueAddressFocus();
   };
+  const reopenTab = () => { cancelSelection(); dispatch({ type: "reopen" }); };
   const closeTab = (tabId: string) => {
     cancelAddressFocus();
     invalidate(tabId); pendingNavigation.current.delete(tabId); requestedNavigation.current.delete(tabId); dispatch({ type: "close", tabId });
@@ -172,11 +173,11 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
       if (next.shortcut === "address") queueAddressFocus(true);
       else if (next.shortcut === "new_tab") createTab();
       else if (next.shortcut === "close_tab") closeTab(tabId);
-      else dispatch({ type: "reopen" });
+      else reopenTab();
     }
     if (next.popupUrl) {
       const url = normalizeBrowserUrl(next.popupUrl);
-      if (url) dispatch({ type: "create", url });
+      if (url) { cancelSelection(); dispatch({ type: "create", url }); }
     }
   };
   const attach = async () => {
@@ -213,7 +214,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
     if (event.key === "Escape") { cancelSelection(); return; }
     if (!command) return;
     if (event.key.toLowerCase() === "l") { event.preventDefault(); cancelAddressFocus(); address.current?.focus(); address.current?.select(); }
-    else if (event.key.toLowerCase() === "t") { event.preventDefault(); if (event.shiftKey) dispatch({ type: "reopen" }); else createTab(); }
+    else if (event.key.toLowerCase() === "t") { event.preventDefault(); if (event.shiftKey) reopenTab(); else createTab(); }
     else if (event.key.toLowerCase() === "w") { event.preventDefault(); closeTab(active.id); }
   }}>
     <div className="flex min-h-9 shrink-0 items-center gap-1 border-b border-border px-1">
@@ -234,7 +235,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
         </div>)}
       </div>
       <button type="button" className={control} aria-label="New browser tab" title="New tab" disabled={workspace.tabs.length >= 20} onClick={() => createTab()}><Plus size={14} /></button>
-      <button type="button" className={control} aria-label="Reopen closed browser tab" title="Reopen closed tab" disabled={!workspace.recentlyClosed.length || workspace.tabs.length >= 20} onClick={() => dispatch({ type: "reopen" })}><Undo2 size={13} /></button>
+      <button type="button" className={control} aria-label="Reopen closed browser tab" title="Reopen closed tab" disabled={!workspace.recentlyClosed.length || workspace.tabs.length >= 20} onClick={reopenTab}><Undo2 size={13} /></button>
     </div>
     <form className="flex min-h-10 shrink-0 items-center gap-1 border-b border-border px-1.5" onSubmit={event => { event.preventDefault(); navigate(draft); }}>
       <button type="button" className={control} aria-label="Back" disabled={!canBack} onClick={() => act("back")}><ArrowLeft size={13} /></button>

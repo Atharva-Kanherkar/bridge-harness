@@ -11,6 +11,7 @@ type MockPage = { props: BrowserPageProps; handle: BrowserPageHandle; current: B
 const harness = vi.hoisted(() => ({ pages: new Map<string, MockPage>(), mounts: new Map<string, number>(), openExternalUrl: vi.fn(async (_url: string) => {}) }));
 vi.mock("../externalLinks", () => ({ openExternalUrl: harness.openExternalUrl }));
 vi.mock("../browserRuntime", () => ({ hasNativeBrowser: () => true }));
+vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ setFocus: async () => {} }) }));
 vi.mock("./BrowserPage", async () => {
   const React = await import("react");
   return { BrowserPage: React.forwardRef<BrowserPageHandle, BrowserPageProps>(function MockBrowserPage(props, ref) {
@@ -249,6 +250,24 @@ describe("SimpleBrowser loading and restoration", () => {
 });
 
 describe("SimpleBrowser selected component context", () => {
+  it.each(["reopen button", "reopen keyboard", "reopen native shortcut", "popup"] as const)("cancels the previous page picker before switching via %s", async entry => {
+    await act(async () => root.render(<SimpleBrowser sessionId="task" initialUrl="localhost:3000/design" />));
+    const page = activePage();
+    await click("New browser tab");
+    await key(address(), "w", { ctrlKey: true });
+    expect(activePage()).toBe(page);
+    await click("Select page element");
+    expect(button("Select page element").getAttribute("aria-pressed")).toBe("true");
+    vi.mocked(page.handle.action).mockClear();
+    if (entry === "reopen button") await click("Reopen closed browser tab");
+    else if (entry === "reopen keyboard") await key(address(), "t", { ctrlKey: true, shiftKey: true });
+    else if (entry === "reopen native shortcut") await emit(page, { shortcut: "reopen_tab" });
+    else await emit(page, { popupUrl: "https://example.com/popup" });
+    expect(page.handle.action).toHaveBeenCalledWith("cancel_inspect");
+    expect(activePage()).not.toBe(page);
+    await act(async () => document.getElementById(`browser-tab-${page.props.tabId}`)!.click());
+    expect(button("Select page element").getAttribute("aria-pressed")).toBe("false");
+  });
   it("reviews sanitized selection and attaches annotation only on request", async () => {
     const onAttach = vi.fn();
     await act(async () => root.render(<SimpleBrowser sessionId="task" initialUrl="localhost:3000/design" onAttachSelection={onAttach} />));
