@@ -5,6 +5,7 @@ pub use bridge_core::{
 
 pub mod agent_batch;
 pub mod daemon_host;
+mod embedded_browser;
 pub mod menu;
 pub mod meter_tray;
 mod menu_bar;
@@ -2777,6 +2778,7 @@ pub fn run() -> i32 {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(embedded_browser::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2840,6 +2842,13 @@ pub fn run() -> i32 {
             }
         })
         .invoke_handler(move |invoke| {
+            // Child browser pages are untrusted even when their address matches
+            // the development origin. Local-origin app commands bypass ACL by
+            // default, so enforce this boundary independently of capabilities.
+            if !embedded_browser::trusted_shell(invoke.message.webview_ref().label()) {
+                invoke.resolver.reject("Browser pages cannot invoke Bridge commands");
+                return true;
+            }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {
                     daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)

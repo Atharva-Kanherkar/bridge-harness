@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComposerAttachment } from "@/pasteAttachments";
+import type { BrowserSelectionContext } from "../browserSelection";
 import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceChip";
 
 export type ComposerPillProps = {
@@ -17,6 +18,8 @@ export type ComposerPillProps = {
   /// Present when this surface accepts image attachments; renders the preview
   /// chips above the input and lets Enter send with no text at all.
   attachments?: ComposerAttachment[];
+  browserSelections?: readonly BrowserSelectionContext[];
+  onRemoveBrowserSelection?: (id: string) => void;
   onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
   placeholder?: string;
@@ -75,6 +78,8 @@ export function ComposerPill({
   onKeyDown,
   onPaste,
   attachments,
+  browserSelections = [],
+  onRemoveBrowserSelection,
   onAttachFiles,
   onRemoveAttachment,
   placeholder = "Ask Bridge…",
@@ -183,6 +188,12 @@ export function ComposerPill({
               })}
             </div>
           )}
+          {browserSelections.length > 0 && <div className="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached browser selections">
+            {browserSelections.map(selection => <div key={selection.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-muted px-2 py-1.5 text-[11px]" title={`${selection.url}\n${selection.selector}`}>
+              <span className="min-w-0"><span className="block truncate font-medium">{selection.title || "Selected element"}</span><span className="block truncate text-muted-foreground">Page element · {selection.selector}</span></span>
+              {onRemoveBrowserSelection && <button type="button" aria-label="Remove browser selection" onClick={() => onRemoveBrowserSelection(selection.id)} className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><X size={12} aria-hidden="true" /></button>}
+            </div>)}
+          </div>}
           {hasAttachments && (
             <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
               {attachments!.map(attachment => (

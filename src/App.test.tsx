@@ -492,9 +492,8 @@ describe("the dock in the session view", () => {
     await settle(2);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
     await click(dockToggle()!);
-    // The extension-based BrowserSurface is paused; the dock's "browser" pane
-    // now renders the plain iframe-based SimpleBrowser.
-    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "No page open");
+    // Browser page state and its engine host survive dock pane switches.
+    const surface = () => dockAside()!.querySelector("[data-browser-viewport]");
     const before = surface();
     expect(before).toBeTruthy();
 
@@ -512,7 +511,8 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
-    expect(dockAside()!.textContent).toContain("No page open");
+    expect(dockAside()!.textContent).toContain("New browser tab");
+    expect(dockAside()!.querySelector('[aria-label="Browser pages"]')).not.toBeNull();
   });
 
   // Contract: testing/feat-dock-terminal.md §4.

@@ -34,6 +34,8 @@ import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effort
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { SimpleBrowser } from "./components/SimpleBrowser";
+import { sanitizeBrowserSelection, serializeBrowserSelections, type BrowserSelectionContext } from "./browserSelection";
+import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
@@ -277,6 +279,23 @@ function AppContent() {
     if (setup) acceptModelSetup(setup);
   }, [acceptModelSetup]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // Draft context belongs to its task. It is intentionally not persisted: a
+  // reloaded page must be selected again instead of reusing stale DOM evidence.
+  const [browserSelections, setBrowserSelections] = useState<BrowserSelectionContext[]>([]);
+  const browserSelectionsRef = useRef(browserSelections);
+  browserSelectionsRef.current = browserSelections;
+  const selectedSessionIdRef = useRef(selectedSessionId);
+  selectedSessionIdRef.current = selectedSessionId;
+  const attachBrowserSelection = useCallback((context: BrowserSelectionContext) => {
+    if (context.sessionId !== selectedSessionIdRef.current) return;
+    const safe = sanitizeBrowserSelection(context, context);
+    if (!safe) return;
+    setBrowserSelections(current => [...current.filter(item => item.sessionId !== safe.sessionId || item.tabId !== safe.tabId), safe].slice(-4));
+    composerRef.current?.focus();
+  }, []);
+  const invalidateBrowserSelection = useCallback((sessionId: string, tabId: string, navigationId?: number) => {
+    setBrowserSelections(current => current.filter(item => item.sessionId !== sessionId || item.tabId !== tabId || (navigationId !== undefined && item.navigationId === navigationId)));
+  }, []);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
@@ -550,6 +569,7 @@ function AppContent() {
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
+    if (previous !== selectedSessionId) setBrowserSelections([]);
     if (previous && previous !== selectedSessionId) void bridgeApi.browserBridgeState().then(browser => browser.lease ? bridgeApi.detachBrowser() : undefined).catch(() => undefined);
   }, [selectedSessionId]);
 
@@ -2042,6 +2062,12 @@ function AppContent() {
   async function sendPrompt(forcedText?: string, forcedAttachments?: ComposerAttachment[]) {
     const submittedText = (forcedText ?? composer).trim();
     const sentAttachments = forcedAttachments ?? attachments;
+    const selectedBrowserContexts = forcedText === undefined && session
+      ? browserSelections.filter(context => context.sessionId === session.id) : [];
+    if (selectedBrowserContexts.length && /^(?:\/|\$[a-z]|#[a-z])/i.test(submittedText)) {
+      setError("Remove the browser selection before using a command or shortcut. Browser edits are sent to the current task.");
+      return;
+    }
     if (!submittedText && sentAttachments.length === 0) return;
     // `/btw` and `/side` are Bridge's side-chat commands, not turns for the
     // open chat: the question opens beside this conversation with its context,
@@ -2126,10 +2152,18 @@ function AppContent() {
     // reload replays it identically. If preparation rewrites the text, the
     // same row is updated in place rather than re-added.
     setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments[0]?.dataUri }]);
+    const validateSelectedPage = async () => {
+      const valid = await Promise.all(selectedBrowserContexts.map(context => validateBrowserSelectionPage(context.sessionId, context.tabId, context.navigationId)));
+      if (selectedSessionIdRef.current !== target.id || valid.some(result => !result)
+        || selectedBrowserContexts.some(context => !browserSelectionsRef.current.some(current => current.id === context.id))) {
+        throw new Error("The selected browser page changed before sending. Select the element again and retry.");
+      }
+    };
     try {
-      const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      if (selectedBrowserContexts.length) await validateSelectedPage();
+      const prepared = await bridgeApi.prepareTurn(target.id, serializeBrowserSelections(submittedText, selectedBrowserContexts, target.id));
       const text = prepared.text;
-      retryText = text;
+      retryText = selectedBrowserContexts.length ? submittedText : text;
       if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
@@ -2146,7 +2180,15 @@ function AppContent() {
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
-      const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments);
+      if (selectedBrowserContexts.length) await validateSelectedPage();
+      const stillSelected = selectedBrowserContexts.filter(context => browserSelectionsRef.current.some(current => current.id === context.id));
+      if (stillSelected.length !== selectedBrowserContexts.length) throw new Error("The selected browser page changed before sending. Select the element again and retry.");
+      const promptText = text;
+      const outcome = await bridgeApi.submitInput(target.id, promptText, sentAttachments);
+      if (stillSelected.length) {
+        setBrowserSelections(current => current.filter(context => !stillSelected.some(sent => sent.id === context.id)));
+        setPending(current => current.map(item => item.key === key ? { ...item, text: promptText } : item));
+      }
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
         setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
@@ -2157,8 +2199,10 @@ function AppContent() {
       }
     }
     catch (e) {
-      setComposer(retryText);
-      setAttachments(sentAttachments);
+      if (selectedSessionIdRef.current === target.id) {
+        setComposer(retryText);
+        setAttachments(sentAttachments);
+      }
       setPending(current => current.filter(item => item.key !== key));
       const message = errorMessage(e);
       const provider = needsProviderSignIn(target.harness, message);
@@ -2898,6 +2942,8 @@ function AppContent() {
                     onPaste={handleComposerPaste}
                     onAttachFiles={attachComposerFiles}
                     attachments={attachments}
+                    browserSelections={browserSelections.filter(context => context.sessionId === session.id)}
+                    onRemoveBrowserSelection={id => setBrowserSelections(current => current.filter(context => context.id !== id))}
                     onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
                     autocomplete={agentShortcutOpen ? {
                       controls: "agent-shortcut-listbox",
@@ -2968,7 +3014,13 @@ function AppContent() {
                 onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
-              if (pane === "browser") return <SimpleBrowser />;
+              if (pane === "browser") return <SimpleBrowser
+                key={session.id}
+                sessionId={session.id}
+                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !expandedWorkerId && !recallOpen && !memoryDisclosureOpen && !navOpen}
+                onAttachSelection={attachBrowserSelection}
+                onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
+              />;
               if (pane === "transcript") return <TranscriptPane
                 key={session.id}
                 sessionId={session.id}
