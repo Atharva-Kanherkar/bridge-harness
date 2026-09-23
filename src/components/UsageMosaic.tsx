@@ -36,7 +36,7 @@ export function UsageMosaic({ report, window, metric, partial }: UsageLayoutProp
     <section aria-label="Summary" className="flex flex-wrap items-end gap-x-10 gap-y-4 pb-2">
       <div>
         <PartialBadge label={partial} className="mb-3" />
-        <div className="text-[3.25rem] font-light leading-none tracking-[-0.045em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
+        <div className="text-[2.75rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metric === "cost" ? report.totals.costMicrousd : report.totals.processedTokens)}{metric === "cost" && <EstimateMark report={report} large />}</div>
         <p className="mt-2 text-ui text-muted-foreground">{metric === "cost"
           ? <>at API rates · <span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens</>
           : <>tokens · <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} /> at API rates</>}</p>

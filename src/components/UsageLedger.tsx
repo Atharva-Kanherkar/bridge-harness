@@ -18,21 +18,21 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
   const periodTotals = report.periods.map(period => (metric === "cost" ? period.costMicrousd : period.tokens));
   const count = report.harnesses.length;
 
-  return <div className="space-y-12">
+  return <div className="space-y-10">
     <section aria-label="Summary">
       <PartialBadge label={partial} className="mb-4" />
       <div className={EYEBROW}>{windowTitle(windowDays)}</div>
-      <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <span className="text-[5.5rem] font-extralight leading-none tracking-[-0.05em] tabular-nums text-foreground">{format(metricTotal)}{metric === "cost" && <EstimateMark report={report} large />}</span>
-        <span className="text-lg text-muted-foreground">{metric === "cost" ? "at API rates" : "tokens processed"}</span>
+      <div className="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-[3.25rem] font-light leading-none tracking-[-0.04em] tabular-nums text-foreground">{format(metricTotal)}{metric === "cost" && <EstimateMark report={report} large />}</span>
+        <span className="text-[15px] text-muted-foreground">{metric === "cost" ? "at API rates" : "tokens processed"}</span>
       </div>
-      <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-muted-foreground">
+      <p className="mt-3 max-w-2xl text-[14.5px] leading-relaxed text-muted-foreground">
         across <span className="font-medium text-foreground">{count} {count === 1 ? "harness" : "harnesses"}</span> and <span className="font-medium tabular-nums text-foreground">{formatCount(report.totals.records)}</span> requests.{" "}
         {metric === "tokens"
           ? <>At API rates that is <span className="font-medium tabular-nums text-foreground">{formatUsd(report.totals.costMicrousd)}</span><EstimateMark report={report} />. Your subscriptions bill separately.</>
           : <><span className="font-medium tabular-nums text-foreground">{formatTokens(report.totals.processedTokens)}</span> tokens processed. Not money spent: subscriptions bill separately.</>}
       </p>
-      <HeroCaption report={report} metric={metric} className="mt-2" />
+      <HeroCaption report={report} metric={metric} requests={false} className="mt-1.5" />
     </section>
 
     {harnesses.length > 0 && <section aria-label="By harness">
@@ -42,7 +42,7 @@ export function UsageLedger({ report, windowDays, metric, partial }: UsageLayout
       <ul className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
         {harnesses.map(entry => <li key={entry.harness}>
           <span className="flex items-center gap-2 text-ui text-muted-foreground"><span className={cn("size-2 shrink-0 rounded-full", harnessChartDot(entry.harness))} aria-hidden="true" /><HarnessName harness={entry.harness} size={12} /></span>
-          <span className="mt-1.5 block text-2xl tracking-tight tabular-nums text-foreground">{format(harnessValue(entry, metric))}</span>
+          <span className="mt-1 block text-xl tracking-tight tabular-nums text-foreground">{format(harnessValue(entry, metric))}</span>
           <span className="block text-caption tabular-nums text-muted-foreground">{formatPercent(metric === "cost" ? entry.costShare : entry.tokenShare)} · {metric === "cost" ? `${formatTokens(entry.processedTokens)} tokens` : formatUsd(entry.costMicrousd)}</span>
         </li>)}
       </ul>

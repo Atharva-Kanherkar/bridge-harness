@@ -207,6 +207,11 @@ describe("UsageScreen", () => {
   it("saves a price override in micro-USD per million tokens", async () => {
     const set = vi.spyOn(bridgeApi, "setUsagePriceOverride").mockResolvedValue([{ model: "fable", inputMicrousdPerMtok: 3_000_000, outputMicrousdPerMtok: 15_000_000, cacheReadMicrousdPerMtok: null, cacheWriteMicrousdPerMtok: null, updatedAt: "2026-09-09T00:00:00Z" }]);
     await mount();
+    const pricesToggle = container.querySelector<HTMLButtonElement>('[aria-controls="usage-model-prices"]')!;
+    expect(pricesToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector("#usage-model-prices")).toBeNull();
+    expect(pricesToggle.textContent).toContain("2 models in this window");
+    click(pricesToggle);
     const editButtons = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "Edit");
     click(editButtons[0]);
     const setValue = (label: string, value: string) => {

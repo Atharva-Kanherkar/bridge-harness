@@ -459,6 +459,7 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
   onRefreshRates: () => void;
   onChange: (next: Promise<UsagePriceOverride[]>) => Promise<void>;
 }) {
+  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<PriceDraft>({ input: "", output: "", cacheRead: "", cacheWrite: "" });
   const [invalid, setInvalid] = useState(false);
@@ -490,19 +491,20 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
 
   const field = (key: keyof PriceDraft, label: string) => <input aria-label={label} inputMode="decimal" value={draft[key]} onChange={event => setDraft(current => ({ ...current, [key]: event.target.value }))} className="h-7 w-full rounded-md border border-border bg-background px-2 text-right font-mono text-caption tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />;
 
-  return <section className={cn(CARD, "mt-4")} aria-label="Model prices">
-    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-      <div>
+  // Collapsed by default: prices are a setting you visit, not a figure you read.
+  return <section className={cn(CARD, open ? "mt-4" : "mt-4 py-3")} aria-label="Model prices">
+    <div className="flex items-center gap-2">
+      <button type="button" aria-expanded={open} aria-controls="usage-model-prices" onClick={() => setOpen(current => !current)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <h2 className="text-ui font-medium text-foreground">Model prices</h2>
-        <p className="text-caption text-muted-foreground">USD per million tokens. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
-      </div>
-      <div className="flex items-center gap-1 text-caption tabular-nums text-muted-foreground">
-        <span>Snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
-        <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
-          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
-        </button>
-      </div>
+        <span className="truncate text-caption tabular-nums text-muted-foreground">{formatCount(rows.length)} {rows.length === 1 ? "model" : "models"} in this window · snapshot {summary.pricing.snapshotDate}{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
+        <ChevronDown size={14} className={cn("ml-auto shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden="true" />
+      </button>
+      <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+        <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+      </button>
     </div>
+    {open && <div id="usage-model-prices" className="mt-3">
+    <p className="mb-3 text-caption text-muted-foreground">USD per million tokens, from a {formatCount(summary.pricing.knownModels)}-model rate snapshot. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
     <table className="w-full text-ui">
       <thead><tr className={TABLE_HEAD}><th className="w-2/6 pb-2 font-medium">Model</th><th className={cn("pb-2 font-medium", NUM)}>Input</th><th className={cn("pb-2 font-medium", NUM)}>Output</th><th className={cn("pb-2 font-medium", NUM)}>Cache read</th><th className={cn("pb-2 font-medium", NUM)}>Cache write</th><th className="w-28 pb-2" /></tr></thead>
       <tbody>
@@ -521,10 +523,10 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
                 <button type="button" onClick={() => setEditing(null)} className="rounded-md px-2 py-1 text-caption text-muted-foreground hover:bg-accent">Cancel</button>
               </td>
             </> : <>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override ? "text-foreground" : "text-muted-foreground")}>{row.override ? microToUsdPerMtok(row.override.inputMicrousdPerMtok) : "Automatic"}</td>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override ? "text-foreground" : "text-muted-foreground")}>{row.override ? microToUsdPerMtok(row.override.outputMicrousdPerMtok) : "Automatic"}</td>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override?.cacheReadMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}>{row.override?.cacheReadMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheReadMicrousdPerMtok) : "Automatic"}</td>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override?.cacheWriteMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}>{row.override?.cacheWriteMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheWriteMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override ? "text-foreground" : "text-muted-foreground")}`}>{row.override ? microToUsdPerMtok(row.override.inputMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override ? "text-foreground" : "text-muted-foreground")}`}>{row.override ? microToUsdPerMtok(row.override.outputMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override?.cacheReadMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}`}>{row.override?.cacheReadMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheReadMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override?.cacheWriteMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}`}>{row.override?.cacheWriteMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheWriteMicrousdPerMtok) : "Automatic"}</td>
               <td className="py-2 text-right">
                 <button type="button" onClick={() => startEdit(row.model, row.override)} className="rounded-md px-2 py-1 text-caption text-foreground hover:bg-accent">Edit</button>
                 {row.override && <button type="button" aria-label={`Reset ${row.model} to automatic`} onClick={() => void onChange(bridgeApi.clearUsagePriceOverride(row.model))} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><RotateCcw size={13} aria-hidden="true" /></button>}
@@ -535,5 +537,6 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
       </tbody>
     </table>
     {invalid && <p role="alert" className="mt-2 text-caption text-destructive">Enter non-negative numbers. Enter 0 for free tokens.</p>}
+    </div>}
   </section>;
 }

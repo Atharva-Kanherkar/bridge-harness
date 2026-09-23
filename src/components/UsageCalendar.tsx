@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
 import { harnessChartDot } from "./harnessMarks";
-import { heatStep } from "./UsageHeatmap";
 import { formatDayShort, formatHourShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, type UsageWindow } from "../usageReport";
 import { bucketKeys, calendarAxis, calendarWeeks, harnessesByMetric, harnessValue, modelValue, orderedRange, periodValue, scopeReport } from "../usageGeometry";
 import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, PartialBadge, type UsageLayoutProps } from "./UsageLayoutParts";
@@ -10,12 +9,13 @@ import { EstimateMark, formatMetric, HarnessName, HeroCaption, LAYOUT_CARD, Part
 // Layout E: time is the navigation. The calendar is the hero; clicking a day
 // selects it, and shift-click or a drag extends the range. Everything under
 // the calendar is rebuilt from the buckets in that range, so a selection is
-// a real sub-total, never an interpolation. Depth is achromatic; the thin bar
-// in each cell is the only colour, and it says which harnesses did the work.
+// a real sub-total, never an interpolation. Each day fills from the bottom by
+// its share of the busiest day, and the fill is split by harness: height says
+// how much, colour says who.
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-/** Cell depth by share of the window's peak; step 0 is a day with nothing in it. */
-const DEPTH = ["bg-muted/40", "bg-foreground/[0.05]", "bg-foreground/[0.09]", "bg-foreground/[0.13]", "bg-foreground/[0.18]"];
+/** A non-empty day never fills less than this, so a quiet day still reads as used. */
+const MIN_FILL = 0.08;
 
 export function UsageCalendar({ summary, periods, window, metric, partial }: UsageLayoutProps) {
   const format = formatMetric(metric);
@@ -66,16 +66,18 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
   const cell = (index: number) => {
     const period = axisReport.periods[index];
     const value = values[index] ?? 0;
-    const step = heatStep(value, peak);
+    const fill = value > 0 && peak > 0 ? Math.max(MIN_FILL, value / peak) : 0;
     const day = axis[index];
     const dayOfMonth = Number(day.slice(8, 10));
     const monthLabel = !hourly && (index === 0 || dayOfMonth === 1) ? formatDayShort(day).split(" ")[0] : null;
     const parts = harnesses.map(entry => ({ harness: entry.harness, value: metric === "cost" ? period.costByHarness[entry.harness] ?? 0 : period.tokensByHarness[entry.harness] ?? 0 })).filter(part => part.value > 0);
+    const selected = inRange(index);
     return <button
       key={day}
       type="button"
-      aria-pressed={inRange(index)}
+      aria-pressed={selected}
       aria-label={`${hourly ? label(index) : formatDayShort(day)}: ${format(value)}`}
+      title={`${hourly ? label(index) : formatDayShort(day)} · ${format(value)}`}
       onPointerDown={event => { if (!event.shiftKey) drag.current = { anchor: index, moved: false }; }}
       onPointerEnter={() => {
         const current = drag.current;
@@ -89,18 +91,21 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
         select(index, event.shiftKey);
       }}
       className={cn(
-        "relative flex select-none flex-col rounded-[10px] text-left outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring",
-        compact ? "h-11 p-1.5" : "h-[5.5rem] px-2.5 pb-2.5 pt-2",
-        DEPTH[step],
-        inRange(index) && "shadow-[inset_0_0_0_1.5px_var(--color-ring)]",
+        "group relative flex select-none flex-col overflow-hidden rounded-lg text-left outline-none transition-[background-color,box-shadow] focus-visible:ring-2 focus-visible:ring-ring",
+        compact ? "h-9 px-1.5 pt-1" : "h-[4.75rem] px-2.5 pb-2 pt-2",
+        value > 0 ? "bg-muted/50 hover:bg-muted/80" : "bg-muted/20 hover:bg-muted/40",
+        selected && "shadow-[inset_0_0_0_1.5px_var(--color-ring)]",
       )}
     >
-      <span className="text-[11.5px] leading-none tabular-nums text-muted-foreground">{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
-      {!hourly && axis[index] === window.untilDay && <span className="absolute right-2.5 top-2.5 size-1.5 rounded-full bg-foreground" aria-hidden="true" />}
-      {!compact && <span className={cn("mt-auto text-[15px] tracking-tight tabular-nums", value > 0 ? "text-foreground" : "text-muted-foreground/60")}>{value > 0 ? format(value) : "—"}</span>}
-      <span className={cn("flex h-1 gap-[1.5px] overflow-hidden rounded-[2px]", compact ? "mt-auto" : "mt-1.5")} aria-hidden="true">
-        {parts.map(part => <span key={part.harness} className={harnessChartDot(part.harness)} style={{ flexGrow: part.value }} />)}
-      </span>
+      {fill > 0 && <span className="absolute inset-x-0 bottom-0 flex motion-safe:animate-[chart-rise_500ms_ease-out_both] origin-bottom" style={{ height: `${fill * 100}%` }} aria-hidden="true">
+        {parts.map(part => <span key={part.harness} className="flex flex-col" style={{ flexGrow: part.value }}>
+          <span className={cn("h-[2px] shrink-0", harnessChartDot(part.harness))} />
+          <span className={cn("flex-1 opacity-[0.18] transition-opacity group-hover:opacity-25", harnessChartDot(part.harness))} />
+        </span>)}
+      </span>}
+      <span className={cn("relative leading-none tabular-nums", compact ? "text-[10.5px]" : "text-[11.5px]", value > 0 ? "text-muted-foreground" : "text-muted-foreground/50")}>{monthLabel && <span className="mr-1 font-medium text-foreground">{monthLabel}</span>}{hourly ? formatHourShort(day, window.timeZone) : dayOfMonth}</span>
+      {!hourly && axis[index] === window.untilDay && <span className={cn("absolute size-1.5 rounded-full bg-foreground", compact ? "right-1.5 top-1.5" : "right-2.5 top-2.5")} aria-hidden="true" />}
+      {!compact && value > 0 && <span className="relative mt-auto text-[14px] font-medium tracking-tight tabular-nums text-foreground">{format(value)}</span>}
     </button>;
   };
 
@@ -123,8 +128,8 @@ export function UsageCalendar({ summary, periods, window, metric, partial }: Usa
         })}
       </div>}
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground">
-        <span className="inline-flex items-center gap-1">less{DEPTH.map(depth => <span key={depth} className={cn("size-3 rounded-[4px]", depth)} aria-hidden="true" />)}more</span>
-        <span className="ml-auto">Bar = harness mix · Click {hourly ? "an hour" : "a day"}, shift-click or drag to select a range</span>
+        <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">{harnesses.map(entry => <span key={entry.harness} className="inline-flex items-center gap-1.5"><span className={cn("size-2 rounded-full", harnessChartDot(entry.harness))} aria-hidden="true" />{harnessLabel(entry.harness)}</span>)}</span>
+        <span className="ml-auto">Fill = share of the busiest {hourly ? "hour" : "day"} · click, shift-click, or drag to select</span>
       </div>
     </section>
 

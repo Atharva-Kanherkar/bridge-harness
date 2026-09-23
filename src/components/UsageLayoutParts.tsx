@@ -58,10 +58,14 @@ export function EstimateMark({ report, large }: { report: UsageReport; large?: b
 }
 
 /** Request count and, in cost mode, `API estimate` plus the window's weakest provenance. */
-export function HeroCaption({ report, metric, className }: { report: UsageReport; metric: UsageMetric; className?: string }) {
-  return <p className={cn("text-caption tabular-nums text-muted-foreground", className)}>
-    {formatCount(report.totals.records)} requests{metric === "cost" ? ` · API estimate · ${costSourceLabel(report.costSource)}` : " · processed tokens"}
-  </p>;
+export function HeroCaption({ report, metric, className, requests = true }: { report: UsageReport; metric: UsageMetric; className?: string; requests?: boolean }) {
+  const parts = [
+    requests ? `${formatCount(report.totals.records)} requests` : null,
+    ...(metric === "cost" ? ["API estimate", costSourceLabel(report.costSource)] : [requests ? "processed tokens" : null]),
+  ].filter(Boolean);
+  if (parts.length === 0) return null;
+  // `text-caption` stays outside cn(): tailwind-merge reads the custom size as a colour and drops it next to one.
+  return <p className={`text-caption ${cn("tabular-nums text-muted-foreground", className)}`}>{parts.join(" · ")}</p>;
 }
 
 export function HarnessName({ harness, size = 13, className }: { harness: string; size?: number; className?: string }) {

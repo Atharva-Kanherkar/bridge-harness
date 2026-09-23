@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { harnessLabel } from "../utils";
 import { harnessChartFill } from "./harnessMarks";
 import { formatPercent, formatPeriodLabel, formatTokens, formatUsd } from "../usageReport";
-import { flowBandPath, flowLayout, harnessesByMetric, harnessValue, stackColumns } from "../usageGeometry";
+import { flowBandPath, flowLayout, harnessesByMetric, harnessValue, modelsOf, modelValue, spreadLabels, stackColumns, type FlowNode } from "../usageGeometry";
 import { AxisLabels, EstimateMark, EYEBROW, formatMetric, HeroCaption, KIND_SHADE, LAYOUT_CARD, PartialBadge, periodNoun, type UsageLayoutProps } from "./UsageLayoutParts";
 
 // Layout C: where the tokens go. Bands run harness → model → token kind, so
@@ -14,10 +14,38 @@ import { AxisLabels, EstimateMark, EYEBROW, formatMetric, HeroCaption, KIND_SHAD
 const WIDTH = 900;
 const NODE = 10;
 const TIMELINE = { width: 900, height: 72 };
+/** Models drawn per harness before the rest share one `N more` band. */
+const MAX_MODELS = 4;
+const TOKEN_KIND_ROWS = 4;
+/** Vertical room each label needs: two lines for harnesses and big kinds, one for models. */
+const HARNESS_GAP = 36;
+const MODEL_GAP = 19;
+const KIND_GAP = 34;
+
+/** A short elbow from a node's edge to its label when the label had to move to clear a neighbour. */
+function Leader({ x, from, to, side }: { x: number; from: number; to: number; side: "left" | "right" }) {
+  if (Math.abs(from - to) < 3) return null;
+  const reach = side === "left" ? -7 : 7;
+  return <path d={`M${x},${from} L${x + reach},${to}`} className="fill-none stroke-muted-foreground/40" strokeWidth={1} />;
+}
 
 export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps) {
   const format = formatMetric(metric);
-  const layout = useMemo(() => flowLayout(report, metric, { height: 380, padding: 10, minNode: 3 }), [report, metric]);
+  // The drawing grows with the number of labels it has to carry, so a long
+  // model list or many harnesses never stack their labels on top of each other.
+  const layout = useMemo(() => {
+    let harnessCount = 0;
+    let modelCount = 0;
+    for (const entry of harnessesByMetric(report, metric)) {
+      if (harnessValue(entry, metric) <= 0) continue;
+      harnessCount += 1;
+      modelCount += Math.min(MAX_MODELS, modelsOf(report, entry.harness, metric).filter(model => modelValue(model, metric) > 0).length);
+    }
+    const height = Math.max(320, harnessCount * (HARNESS_GAP + 12), modelCount * (MODEL_GAP + 5), TOKEN_KIND_ROWS * KIND_GAP + 40);
+    return flowLayout(report, metric, { height, padding: 10, minNode: 3, maxModels: MAX_MODELS });
+  }, [report, metric]);
+  const columnNodes = (column: number) => layout.nodes.filter(node => node.column === column);
+  const place = (nodes: FlowNode[], gap: number, edge: number) => spreadLabels(nodes.map(node => node.y + node.height / 2), gap, edge, layout.height - edge);
   const columnX = layout.columns === 3 ? [150, 450, WIDTH - 180] : [190, WIDTH - 300];
   const byId = useMemo(() => new Map(layout.nodes.map(node => [node.id, node])), [layout.nodes]);
   const harnesses = harnessesByMetric(report, metric);
@@ -57,19 +85,34 @@ export function UsageFlow({ report, window, metric, partial }: UsageLayoutProps)
           </path>;
         })}
         {layout.nodes.map(node => <rect key={node.id} x={columnX[node.column]} y={node.y} width={NODE} height={node.height} rx={2} className={node.kind ? "fill-foreground" : harnessChartFill(node.harness)} fillOpacity={node.kind ? KIND_SHADE[node.kind].opacity : 1} />)}
-        {layout.nodes.filter(node => node.column === 0).map(node => <g key={`label-${node.id}`}>
-          <text x={columnX[0] - 12} y={node.y + node.height / 2 - 2} textAnchor="end" className="fill-foreground text-[13.5px] font-medium">{harnessLabel(node.harness!)}</text>
-          <text x={columnX[0] - 12} y={node.y + node.height / 2 + 14} textAnchor="end" className="fill-muted-foreground text-[12px] tabular-nums">{format(node.value)}</text>
-        </g>)}
-        {layout.nodes.filter(node => node.column === 1).map(node => <text key={`label-${node.id}`} x={columnX[1] + NODE + 8} y={node.y + node.height / 2 + 4} className="fill-foreground stroke-card font-mono text-[11.5px] [paint-order:stroke]" strokeWidth={4} strokeLinejoin="round">
-          {node.label}{node.model?.costSource === "unpriced" ? " (unpriced)" : ""} <tspan className="fill-muted-foreground font-sans tabular-nums">{format(node.value)}</tspan>
-        </text>)}
-        {layout.nodes.filter(node => node.column === 2).map(node => node.height > 40
-          ? <g key={`label-${node.id}`}>
-            <text x={columnX[2] + NODE + 12} y={node.y + node.height / 2 - 4} className="fill-foreground text-[13.5px] font-medium">{node.label}</text>
-            <text x={columnX[2] + NODE + 12} y={node.y + node.height / 2 + 13} className="fill-muted-foreground text-[12px] tabular-nums">{formatTokens(node.value)} · {formatPercent(processed > 0 ? node.value / processed : 0)}</text>
-          </g>
-          : <text key={`label-${node.id}`} x={columnX[2] + NODE + 12} y={node.y + node.height / 2 + 4} className="fill-foreground text-[12.5px]">{node.label} <tspan className="fill-muted-foreground tabular-nums">{formatTokens(node.value)} · {formatPercent(processed > 0 ? node.value / processed : 0)}</tspan></text>)}
+        {(() => {
+          const nodes = columnNodes(0);
+          const ys = place(nodes, HARNESS_GAP, 16);
+          return nodes.map((node, index) => <g key={`label-${node.id}`}>
+            <Leader x={columnX[0] - 2} from={node.y + node.height / 2} to={ys[index]} side="left" />
+            <text x={columnX[0] - 12} y={ys[index] - 3} textAnchor="end" className="fill-foreground text-[13.5px] font-medium">{harnessLabel(node.harness!)}</text>
+            <text x={columnX[0] - 12} y={ys[index] + 13} textAnchor="end" className="fill-muted-foreground text-[12px] tabular-nums">{format(node.value)}</text>
+          </g>);
+        })()}
+        {(() => {
+          const nodes = columnNodes(1);
+          const ys = place(nodes, MODEL_GAP, 8);
+          return nodes.map((node, index) => <g key={`label-${node.id}`}>
+            <Leader x={columnX[1] + NODE + 1} from={node.y + node.height / 2} to={ys[index]} side="right" />
+            <text x={columnX[1] + NODE + 8} y={ys[index] + 4} className={cn("stroke-card text-[11.5px] [paint-order:stroke]", node.model ? "fill-foreground font-mono" : "fill-muted-foreground")} strokeWidth={4} strokeLinejoin="round">
+              {node.label}{node.model?.costSource === "unpriced" ? " (unpriced)" : ""} <tspan className="fill-muted-foreground font-sans tabular-nums">{format(node.value)}</tspan>
+            </text>
+          </g>);
+        })()}
+        {(() => {
+          const nodes = columnNodes(2);
+          const ys = place(nodes, KIND_GAP, 16);
+          return nodes.map((node, index) => <g key={`label-${node.id}`}>
+            <Leader x={columnX[2] + NODE + 1} from={node.y + node.height / 2} to={ys[index]} side="right" />
+            <text x={columnX[2] + NODE + 12} y={ys[index] - 3} className="fill-foreground text-[13px] font-medium">{node.label}</text>
+            <text x={columnX[2] + NODE + 12} y={ys[index] + 13} className="fill-muted-foreground text-[12px] tabular-nums">{formatTokens(node.value)} · {formatPercent(processed > 0 ? node.value / processed : 0)}</text>
+          </g>);
+        })()}
       </svg>
       {metric === "cost" && <p className="mt-3 text-caption text-muted-foreground">Cost is recorded per model, not per token kind, so this view stops at the model. Switch to Tokens to follow each token to cache, input, or output.</p>}
 

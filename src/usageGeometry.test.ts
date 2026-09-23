@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { UsageBucket } from "./types";
 import { buildUsageReport } from "./usageReport";
 import {
-  bucketKeys, calendarAxis, calendarWeeks, evenTicks, flowBandPath, flowLayout, harnessesByMetric, mondayIndex, orderedRange, scopeReport, squarify, stackColumns, straightPaths, treemap,
+  bucketKeys, calendarAxis, calendarWeeks, evenTicks, flowBandPath, flowLayout, harnessesByMetric, mondayIndex, orderedRange, scopeReport, spreadLabels, squarify, stackColumns, straightPaths, treemap,
 } from "./usageGeometry";
 
 function bucket(day: string, harness: string, model: string, kinds: Partial<UsageBucket["totals"]>, costMicrousd: number, extra: Partial<UsageBucket> = {}): UsageBucket {
@@ -157,9 +157,35 @@ describe("flowLayout", () => {
     expect(path).not.toContain("NaN");
   });
 
+  it("folds a harness's long tail into one `N more` node without losing a token", () => {
+    const many = buildUsageReport({ buckets: Array.from({ length: 6 }, (_, index) => bucket("2026-09-01", "claude", `m${index}`, { cacheReadTokens: (6 - index) * 100, outputTokens: 10 }, (6 - index) * 1_000)), resolution: "day" }, ["2026-09-01"]);
+    const layout = flowLayout(many, "tokens", { height: 300, padding: 8, minNode: 3, maxModels: 4 });
+    const models = layout.nodes.filter(node => node.column === 1);
+    expect(models.map(node => node.label)).toEqual(["m0", "m1", "m2", "3 more"]);
+    expect(models.at(-1)!.models).toBe(3);
+    expect(models.at(-1)!.model).toBeNull();
+    expect(sum(models.map(node => node.value))).toBe(many.totals.processedTokens);
+    expect(sum(layout.nodes.filter(node => node.column === 2).map(node => node.value))).toBe(many.totals.processedTokens);
+    const exact = flowLayout(many, "tokens", { height: 300, padding: 8, minNode: 3, maxModels: 6 });
+    expect(exact.nodes.filter(node => node.column === 1).map(node => node.label)).toEqual(["m0", "m1", "m2", "m3", "m4", "m5"]);
+  });
+
   it("is empty for an empty window", () => {
     const empty = buildUsageReport({ buckets: [], resolution: "day" }, periods);
     expect(flowLayout(empty, "tokens", { height: 300, padding: 8, minNode: 3 }).nodes).toEqual([]);
+  });
+});
+
+describe("spreadLabels", () => {
+  it("leaves labels at their nodes when there is room", () => {
+    expect(spreadLabels([10, 50, 90], 20, 0, 100)).toEqual([10, 50, 90]);
+  });
+
+  it("pushes crowded labels apart and keeps them inside the drawing", () => {
+    const placed = spreadLabels([40, 42, 44, 46], 20, 10, 100);
+    expect(placed).toEqual([40, 60, 80, 100]);
+    expect(spreadLabels([95, 98], 10, 0, 100)).toEqual([90, 100]);
+    expect(spreadLabels([2, 3], 10, 8, 100)).toEqual([8, 18]);
   });
 });
 

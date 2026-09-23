@@ -178,7 +178,12 @@ export interface FlowNode {
   value: number;
   harness: string | null;
   kind: TokenKind | null;
+  /** The model behind a model node; null for harness and kind nodes and for a merged `N more` node. */
   model: ModelReport | null;
+  /** Token kinds carried by a model node, summed when several small models share one node. */
+  kinds: Record<TokenKind, number> | null;
+  /** How many models a model node stands for: 1, or more for a merged node. */
+  models: number;
   y: number;
   height: number;
 }
@@ -196,36 +201,53 @@ export interface FlowLink {
 
 export interface FlowLayout { nodes: FlowNode[]; links: FlowLink[]; columns: number; height: number }
 
+function kindsOf(model: ModelReport): Record<TokenKind, number> {
+  return { cacheReadTokens: model.cacheReadTokens, cacheWriteTokens: model.cacheWriteTokens, uncachedInputTokens: model.uncachedInputTokens, outputTokens: model.outputTokens };
+}
+
 /**
  * Harness → model → token kind in token mode; harness → model in cost mode,
  * because a bucket's cost is not split by token kind. A link's height at each
  * end is its share of that node, so every node is exactly filled by its links.
+ * A harness shows its largest `maxModels` models; the rest share one
+ * `N more` node, so a long tail cannot shrink every band to a hairline.
  */
-export function flowLayout(report: UsageReport, metric: UsageMetric, options: { height: number; padding: number; minNode: number }): FlowLayout {
+export function flowLayout(report: UsageReport, metric: UsageMetric, options: { height: number; padding: number; minNode: number; maxModels?: number }): FlowLayout {
+  const maxModels = Math.max(1, options.maxModels ?? Number.POSITIVE_INFINITY);
   const harnessNodes: FlowNode[] = [];
   const modelNodes: FlowNode[] = [];
   const raw: { source: string; target: string; value: number; harness: string }[] = [];
   for (const entry of harnessesByMetric(report, metric)) {
     const value = harnessValue(entry, metric);
     if (value <= 0) continue;
-    harnessNodes.push({ id: `h:${entry.harness}`, column: 0, label: entry.harness, value, harness: entry.harness, kind: null, model: null, y: 0, height: 0 });
-    for (const model of modelsOf(report, entry.harness, metric)) {
-      const modelTotal = modelValue(model, metric);
-      if (modelTotal <= 0) continue;
+    harnessNodes.push({ id: `h:${entry.harness}`, column: 0, label: entry.harness, value, harness: entry.harness, kind: null, model: null, kinds: null, models: 0, y: 0, height: 0 });
+    const models = modelsOf(report, entry.harness, metric).filter(model => modelValue(model, metric) > 0);
+    // Merging one model into "1 more" would hide a name to save nothing.
+    const shown = models.length > maxModels ? models.slice(0, maxModels - 1) : models;
+    for (const model of shown) {
       const id = `m:${model.harness}:${model.model}`;
-      modelNodes.push({ id, column: 1, label: model.model, value: modelTotal, harness: model.harness, kind: null, model, y: 0, height: 0 });
-      raw.push({ source: `h:${entry.harness}`, target: id, value: modelTotal, harness: entry.harness });
+      modelNodes.push({ id, column: 1, label: model.model, value: modelValue(model, metric), harness: model.harness, kind: null, model, kinds: kindsOf(model), models: 1, y: 0, height: 0 });
+      raw.push({ source: `h:${entry.harness}`, target: id, value: modelValue(model, metric), harness: entry.harness });
+    }
+    const rest = models.slice(shown.length);
+    if (rest.length > 0) {
+      const id = `m:${entry.harness}:*more`;
+      const kinds = { cacheReadTokens: 0, cacheWriteTokens: 0, uncachedInputTokens: 0, outputTokens: 0 };
+      for (const model of rest) for (const kind of TOKEN_KINDS) kinds[kind.key] += model[kind.key];
+      const restValue = rest.reduce((sum, model) => sum + modelValue(model, metric), 0);
+      modelNodes.push({ id, column: 1, label: `${rest.length} more`, value: restValue, harness: entry.harness, kind: null, model: null, kinds, models: rest.length, y: 0, height: 0 });
+      raw.push({ source: `h:${entry.harness}`, target: id, value: restValue, harness: entry.harness });
     }
   }
   const columns: FlowNode[][] = [harnessNodes, modelNodes];
   if (metric === "tokens") {
     const kindNodes: FlowNode[] = [];
     for (const kind of TOKEN_KINDS) {
-      const value = modelNodes.reduce((sum, node) => sum + (node.model?.[kind.key] ?? 0), 0);
-      if (value > 0) kindNodes.push({ id: `k:${kind.key}`, column: 2, label: kind.label, value, harness: null, kind: kind.key, model: null, y: 0, height: 0 });
+      const value = modelNodes.reduce((sum, node) => sum + (node.kinds?.[kind.key] ?? 0), 0);
+      if (value > 0) kindNodes.push({ id: `k:${kind.key}`, column: 2, label: kind.label, value, harness: null, kind: kind.key, model: null, kinds: null, models: 0, y: 0, height: 0 });
     }
     for (const node of modelNodes) for (const kind of kindNodes) {
-      const value = node.model?.[kind.kind!] ?? 0;
+      const value = node.kinds?.[kind.kind!] ?? 0;
       if (value > 0) raw.push({ source: node.id, target: kind.id, value, harness: node.harness! });
     }
     columns.push(kindNodes);
@@ -263,6 +285,22 @@ export function flowLayout(report: UsageReport, metric: UsageMetric, options: { 
     }
   }
   return { nodes: columns.flat(), links, columns: columns.length, height };
+}
+
+/**
+ * Label positions for a column of nodes: each label stays as close to its
+ * node's centre as it can while keeping `gap` from its neighbours and staying
+ * inside [top, bottom]. Input and output are in node order, top to bottom.
+ */
+export function spreadLabels(centers: readonly number[], gap: number, top: number, bottom: number): number[] {
+  const placed = [...centers];
+  for (let index = 0; index < placed.length; index += 1) {
+    placed[index] = Math.max(placed[index], top, index > 0 ? placed[index - 1] + gap : top);
+  }
+  for (let index = placed.length - 1; index >= 0; index -= 1) {
+    placed[index] = Math.min(placed[index], index < placed.length - 1 ? placed[index + 1] - gap : bottom);
+  }
+  return placed;
 }
 
 /** A band from one node's right edge to another's left edge, each end as tall as its share of that node. */

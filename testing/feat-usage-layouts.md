@@ -28,12 +28,14 @@ layout.
    `By model` bar list follows.
 4. **Flow.** In token mode, bands run harness → model → token kind, and band
    widths conserve each node's total. In cost mode, bands run harness → model
-   and a note says cost cannot be split by token kind. A stacked-column
-   timeline sits underneath.
+   and a note says cost cannot be split by token kind. Each harness draws its
+   four largest models; the rest share one `N more` band. The drawing grows
+   with its label count and labels are spread so none overlap. A
+   stacked-column timeline sits underneath.
 5. **Mosaic.** Discrete stacked columns per period (no smoothing), a nested
    treemap of harness → model sized by the metric, then token composition.
-6. **Calendar.** Daily windows render a Monday-first calendar: each day shows
-   its value and a harness-mix bar, with depth by share of peak. Clicking a
+6. **Calendar.** Daily windows render a Monday-first calendar: each day fills
+   from the bottom by its share of the busiest day, split by harness. Clicking a
    day selects it; shift-click or dragging extends the range. Everything
    below (headline, harness split, top models) is scoped to the selection, or
    to the whole window when nothing is selected. The 24h window renders an
@@ -44,7 +46,8 @@ layout.
 7. **Classic.** The existing summary card, chart, activity disclosure, totals
    tiles, and breakdown, unchanged.
 8. **Shared.** Coverage notes stay above every layout. History sources and
-   Model prices render below every layout. The breakdown table stays
+   Model prices render below every layout; Model prices is collapsed by
+   default behind a chevron. The breakdown table stays
    reachable in every non-classic layout behind a `Breakdown table`
    disclosure.
 
