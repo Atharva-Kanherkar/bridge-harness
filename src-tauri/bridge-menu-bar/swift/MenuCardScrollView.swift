@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 // Adapted from CodexBar's CostHistoryMenuScrollView at 928166f.
 // Copyright (c) 2026 Peter Steinberger. See docs/third-party/CodexBar-LICENSE.txt.
@@ -87,7 +88,15 @@ final class MenuCardScrollView: NSScrollView {
             self.scheduledMaximumHeight = nil
             self.scheduledResetScroll = false
             self.scheduledTransition = false
+            // SwiftUI can leave most of an observed card unpainted while NSMenu
+            // owns the event-tracking loop. Rebind its root before measuring so
+            // the retained provider data is drawn with the new snapshot.
+            if let hosting = self.documentView as? NSHostingView<MenuCard> {
+                hosting.rootView = MenuCard(state: hosting.rootView.state)
+            }
             self.updateSize(maximumHeight: maximumHeight, resetScroll: resetScroll)
+            self.documentView?.layoutSubtreeIfNeeded()
+            self.documentView?.displayIfNeeded()
             if animateTransition { self.animateDocumentTransition() }
         }
     }
