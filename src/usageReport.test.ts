@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { UsageBucket } from "./types";
 import {
   axisLabelIndices, buildChartSeries, buildUsageReport, DEFAULT_USAGE_PREFERENCES, enumeratePeriods, formatDayShort, formatHourShort, formatTokens, formatUsd, formatWindowLabel,
-  hoverIndex, makeUsageWindow, microToUsdPerMtok, niceScale, readUsagePreferences, seriesPaths, summaryParams, USAGE_PREFERENCES_KEY, usdPerMtokToMicro, weakestCostSource, writeUsagePreferences,
+  hoverIndex, makeUsageWindow, microToUsdPerMtok, niceScale, readUsagePreferences, seriesPaths, summaryParams, USAGE_LAYOUT_OPTIONS, USAGE_PREFERENCES_KEY, usdPerMtokToMicro, weakestCostSource, writeUsagePreferences,
 } from "./usageReport";
 
 function bucket(overrides: Partial<UsageBucket> & Partial<UsageBucket["totals"]> = {}): UsageBucket {
@@ -119,6 +119,19 @@ describe("buildUsageReport", () => {
     expect(report.models[1].costSource).toBe("unpriced");
   });
 
+  it("gives each model its token kinds and a dense per-period series aligned with the periods", () => {
+    for (const model of report.models) {
+      expect(model.uncachedInputTokens + model.cacheReadTokens + model.cacheWriteTokens + model.outputTokens).toBe(model.tokens);
+      expect(model.tokensByPeriod).toHaveLength(report.periods.length);
+      expect(model.costByPeriod).toHaveLength(report.periods.length);
+      expect(model.tokensByPeriod.reduce((sum, value) => sum + value, 0)).toBe(model.tokens);
+      expect(model.costByPeriod.reduce((sum, value) => sum + value, 0)).toBe(model.costMicrousd);
+    }
+    const codex = report.models.find(model => model.harness === "codex")!;
+    expect(codex.tokensByPeriod).toEqual([0, 0, 1500]);
+    expect(codex.outputTokens).toBe(500);
+  });
+
   it("keeps the dense period axis so gap days chart as zero", () => {
     expect(report.periods.map(period => period.period)).toEqual(periods);
     expect(report.periods[1].tokens).toBe(0);
@@ -176,12 +189,25 @@ describe("preferences", () => {
     expect(readUsagePreferences(storage)).toEqual(DEFAULT_USAGE_PREFERENCES);
     // Local history is always included now; a stored `false` from the retired
     // toggle reads back as true.
-    writeUsagePreferences({ metric: "tokens", windowDays: 7, includeImported: false }, storage);
-    expect(readUsagePreferences(storage)).toEqual({ metric: "tokens", windowDays: 7, includeImported: true });
+    writeUsagePreferences({ metric: "tokens", windowDays: 7, includeImported: false, layout: "strips" }, storage);
+    expect(readUsagePreferences(storage)).toEqual({ metric: "tokens", windowDays: 7, includeImported: true, layout: "strips" });
     storage.setItem(USAGE_PREFERENCES_KEY, "{\"metric\":\"limits\",\"windowDays\":3}");
     expect(readUsagePreferences(storage)).toEqual(DEFAULT_USAGE_PREFERENCES);
     storage.setItem(USAGE_PREFERENCES_KEY, "not json");
     expect(readUsagePreferences(storage)).toEqual(DEFAULT_USAGE_PREFERENCES);
     expect(readUsagePreferences(undefined)).toEqual(DEFAULT_USAGE_PREFERENCES);
+  });
+
+  it("keeps a valid metric and window when the stored layout is missing or unknown", () => {
+    const storage = new MemoryStorage();
+    expect(DEFAULT_USAGE_PREFERENCES.layout).toBe("ledger");
+    storage.setItem(USAGE_PREFERENCES_KEY, "{\"metric\":\"tokens\",\"windowDays\":90,\"includeImported\":true}");
+    expect(readUsagePreferences(storage)).toEqual({ metric: "tokens", windowDays: 90, includeImported: true, layout: "ledger" });
+    storage.setItem(USAGE_PREFERENCES_KEY, "{\"metric\":\"cost\",\"windowDays\":1,\"layout\":\"radar\"}");
+    expect(readUsagePreferences(storage)).toEqual({ metric: "cost", windowDays: 1, includeImported: true, layout: "ledger" });
+    for (const layout of USAGE_LAYOUT_OPTIONS) {
+      writeUsagePreferences({ ...DEFAULT_USAGE_PREFERENCES, layout }, storage);
+      expect(readUsagePreferences(storage).layout).toBe(layout);
+    }
   });
 });
