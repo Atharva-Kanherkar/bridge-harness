@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
@@ -9,6 +9,7 @@ import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFi
 type Block =
   | { kind: "code"; lang: string; body: string }
   | { kind: "diagram"; spec: string }
+  | { kind: "mermaid"; code: string }
   | { kind: "math"; tex: string }
   | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
@@ -35,6 +36,7 @@ function isTableRow(line: string): boolean {
 function fencedBlock(lang: string, body: string): Block {
   const key = lang.trim().toLowerCase();
   if (key === "diagram") return { kind: "diagram", spec: body };
+  if (key === "mermaid") return { kind: "mermaid", code: body };
   if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
   if (key === "html") return { kind: "html", html: body };
   return { kind: "code", lang, body };
@@ -214,8 +216,8 @@ function InlineMath({ tex }: { tex: string }) {
 
 /**
  * The `dark` class on <html> is the single source of truth for the theme.
- * The sandboxed iframe renders outside our token scope, so it has to follow
- * it explicitly instead of inheriting CSS variables.
+ * Mermaid bakes theme colors into its SVG, while the sandboxed iframe cannot
+ * inherit our tokens. Both follow the document's active theme explicitly.
  */
 function useDarkTheme(): boolean {
   const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
@@ -229,7 +231,7 @@ function useDarkTheme(): boolean {
   return dark;
 }
 
-/** Shared copy-to-clipboard state for the code/math/mermaid copy affordances. */
+/** Shared copy-to-clipboard state for rich blocks. */
 export function useCopy(text: string) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -349,6 +351,46 @@ function DiagramBlock({ spec }: { spec: string }) {
   );
 }
 
+let mermaidSequence = 0;
+
+function MermaidBlock({ code }: { code: string }) {
+  const dark = useDarkTheme();
+  const [rendered, setRendered] = useState<{ code: string; dark: boolean; svg: string } | null>(null);
+  const [failed, setFailed] = useState<{ code: string; dark: boolean } | null>(null);
+  const id = useRef("");
+  if (!id.current) id.current = `bridge-mermaid-${++mermaidSequence}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default;
+        mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+        await mermaid.parse(code);
+        const result = await mermaid.render(id.current, code);
+        if (!cancelled) setRendered({ code, dark, svg: result.svg });
+      } catch {
+        if (!cancelled) setFailed({ code, dark });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code, dark]);
+
+  if (failed?.code === code && failed.dark === dark) {
+    return <div className="my-[0.8em]">
+      <div className="mb-[0.35em] text-xs text-warning">Could not render this Mermaid diagram — showing its source.</div>
+      <CodeBlock lang="mermaid" body={code} />
+    </div>;
+  }
+  if (rendered?.code !== code || rendered.dark !== dark) {
+    return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
+  }
+  return <div className="rich-block my-[0.9em]">
+    <CopyButton text={code} className="rich-block-copy" />
+    <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+  </div>;
+}
+
 // Agent-authored HTML is untrusted. Rendering happens inside a fully sandboxed
 // iframe: sandbox="" grants no capabilities (no scripts, no same-origin), which
 // is the sole isolation boundary because the Tauri webview sets no CSP.
@@ -410,6 +452,7 @@ export const Markdown = memo(function Markdown({ text, dim }: { text: string; di
       {splitBlocks(text).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
+        if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
         if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
         if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
         if (block.kind === "heading") {

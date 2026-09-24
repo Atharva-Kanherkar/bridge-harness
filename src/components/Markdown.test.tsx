@@ -6,6 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileLinkContext, Markdown, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
 
+const mermaidMock = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  parse: vi.fn().mockResolvedValue(true),
+  render: vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg"></svg>' }),
+}));
+vi.mock("mermaid", () => ({ default: mermaidMock }));
+
 describe("splitBlocks rich content detection", () => {
   it("detects a diagram fenced block", () => {
     const spec = '{"nodes":[],"edges":[],"caption":"c","ariaLabel":"a"}';
@@ -13,9 +20,9 @@ describe("splitBlocks rich content detection", () => {
     expect(blocks).toEqual([{ kind: "diagram", spec }]);
   });
 
-  it("classifies a legacy mermaid fence as plain code, not a diagram", () => {
+  it("detects a Mermaid fenced block", () => {
     expect(splitBlocks("```mermaid\ngraph TD; A-->B;\n```")).toEqual([
-      { kind: "code", lang: "mermaid", body: "graph TD; A-->B;" },
+      { kind: "mermaid", code: "graph TD; A-->B;" },
     ]);
   });
 
@@ -98,11 +105,56 @@ describe("DiagramBlock rendering", () => {
     expect(html).toContain("Could not render this diagram");
   });
 
-  it("no longer treats a legacy mermaid block as a failed diagram — just a plain code block", () => {
-    const html = renderToStaticMarkup(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />);
-    expect(html).toContain("code-block");
-    expect(html).toContain("mermaid");
-    expect(html).not.toContain("Could not render");
+});
+
+describe("Mermaid rendering", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mermaidMock.parse.mockResolvedValue(true);
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-testid="mermaid-svg"></svg>' });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    document.documentElement.classList.remove("dark");
+  });
+
+  it("renders a Mermaid fence as SVG and copies its source", async () => {
+    const code = "graph TD; A-->B;";
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    });
+    await act(async () => { root.render(<Markdown text={`\`\`\`mermaid\n${code}\n\`\`\``} />); });
+    expect(mermaidMock.parse).toHaveBeenCalledWith(code);
+    expect(mermaidMock.render).toHaveBeenCalledWith(expect.stringMatching(/^bridge-mermaid-/), code);
+    expect(container.querySelector('[data-testid="mermaid-svg"]')).toBeTruthy();
+    expect(container.querySelector(".code-block")).toBeNull();
+    expect(mermaidMock.initialize).toHaveBeenCalledWith(expect.objectContaining({ securityLevel: "strict" }));
+    await act(async () => { (container.querySelector(".rich-block-copy") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(code);
+  });
+
+  it("shows source when Mermaid rejects invalid syntax", async () => {
+    mermaidMock.parse.mockRejectedValueOnce(new Error("bad syntax"));
+    await act(async () => { root.render(<Markdown text={"```mermaid\ninvalid\n```"} />); });
+    expect(container.textContent).toContain("Could not render this Mermaid diagram");
+    expect(container.querySelector(".code-block")?.textContent).toContain("invalid");
+  });
+
+  it("re-renders when the active theme changes", async () => {
+    await act(async () => { root.render(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />); });
+    document.documentElement.classList.add("dark");
+    await act(async () => { await Promise.resolve(); });
+    expect(mermaidMock.initialize).toHaveBeenLastCalledWith(expect.objectContaining({ theme: "dark" }));
+    expect(mermaidMock.render).toHaveBeenCalledTimes(2);
   });
 });
 
