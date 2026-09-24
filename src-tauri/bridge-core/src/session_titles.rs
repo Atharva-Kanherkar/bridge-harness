@@ -100,6 +100,39 @@ pub fn needs_title(title: Option<&str>) -> bool {
     }
 }
 
+/// What a pasted link is about. A raw URL fills a whole heading and names nothing
+/// a reader recognises, so `github.com/o/kairo/pull/43` becomes `kairo PR #43`
+/// (complete on its own), a repository its name, and any other link its host.
+fn link_heading(word: &str) -> Option<(String, bool)> {
+    // a link in prose often carries its brackets or the sentence's punctuation.
+    let word = word
+        .trim_start_matches(['(', '<', '[', '"', '\''])
+        .trim_end_matches([')', '>', ']', '"', '\'', ',', '.', ';', ':', '!', '?']);
+    let rest = word.strip_prefix("https://").or_else(|| word.strip_prefix("http://"))?;
+    let rest = rest.strip_prefix("www.").unwrap_or(rest);
+    // the query and fragment say nothing about what the page is.
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
+    let host = parts.next()?;
+    if !host.eq_ignore_ascii_case("github.com") {
+        // the last path segment usually says what the page is; an opaque id does not.
+        let opaque = |tail: &str| tail.len() >= 8 && tail.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        let tail = parts.last().filter(|tail| tail.len() <= 32 && tail.chars().any(char::is_alphabetic) && !tail.contains('=') && !opaque(tail));
+        return Some((tail.map_or_else(|| host.to_owned(), |tail| format!("{host} {tail}")), false));
+    }
+    let (Some(_owner), Some(repo)) = (parts.next(), parts.next()) else {
+        return Some((host.to_owned(), false));
+    };
+    let repo = repo.trim_end_matches(".git");
+    let kind = parts.next().map(str::to_ascii_lowercase);
+    let number = parts.next().filter(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+    Some(match (kind.as_deref(), number) {
+        (Some("pull" | "pulls"), Some(number)) => (format!("{repo} PR #{number}"), true),
+        (Some("issues"), Some(number)) => (format!("{repo} issue #{number}"), true),
+        _ => (repo.to_owned(), false),
+    })
+}
+
 /// Extracts up to three topic words, excluding conversational request scaffolding.
 pub fn heading_from_message(text: &str) -> Option<String> {
     let line = text
@@ -107,17 +140,31 @@ pub fn heading_from_message(text: &str) -> Option<String> {
         .map(strip_furniture)
         .find(|line| !line.is_empty())?;
 
-    let topic = line.split_whitespace()
-        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '_' && c != '-'))
-        .filter(|word| !word.is_empty() && !TITLE_FILLER.contains(&word.to_lowercase().as_str()))
-        .take(MAX_TITLE_WORDS)
-        .collect::<Vec<_>>()
-        .join(" ");
+    // A link names itself by what it points at; identifiers keep their case.
+    let (first, rest) = line.split_once(char::is_whitespace).unwrap_or((line.as_str(), ""));
+    if let Some((link, complete)) = link_heading(first) {
+        if complete {
+            return Some(link);
+        }
+        let topic = std::iter::once(link).chain(topic_words(rest)).take(MAX_TITLE_WORDS).collect::<Vec<_>>().join(" ");
+        return Some(shorten(&topic));
+    }
+
+    let topic = topic_words(&line).into_iter().take(MAX_TITLE_WORDS).collect::<Vec<_>>().join(" ");
     let trimmed = shorten(&topic);
     if trimmed.is_empty() {
         return None;
     }
     Some(capitalize(&trimmed))
+}
+
+/// Topic words of a line with request scaffolding removed.
+fn topic_words(line: &str) -> Vec<String> {
+    line.split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '_' && c != '-'))
+        .filter(|word| !word.is_empty() && !TITLE_FILLER.contains(&word.to_lowercase().as_str()))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Claude Code's own title for a session, read from its transcript.
@@ -530,19 +577,18 @@ mod tests {
     }
 
     #[test]
-    fn a_url_keeps_its_scheme_lowercase() {
-        // Capitalising the first letter turned a pasted link into "Https://…".
+    fn a_link_heading_is_never_capitalised() {
+        // Capitalising the first letter once turned a pasted link into "Https://…";
+        // repository names are identifiers, so they keep their case too.
         assert_eq!(
             heading_from_message("https://github.com/Atharva-Kanherkar/bridge-harness/issues/1"),
-            Some("https://github.com/Atharva-Kanherkar/bridge-harness/issues/1".into())
+            Some("bridge-harness issue #1".into())
         );
-        // Still shortened when it is genuinely too long, scheme intact.
-        let long = heading_from_message(
-            "https://github.com/Atharva-Kanherkar/bridge-harness/pull/202/files#diff-abcdef",
-        )
-        .expect("heading");
-        assert!(long.starts_with("https://"), "{long}");
-        assert!(long.ends_with('…'), "{long}");
+        assert_eq!(
+            heading_from_message("https://github.com/Atharva-Kanherkar/bridge-harness/pull/202/files#diff-abcdef"),
+            Some("bridge-harness PR #202".into())
+        );
+        assert_eq!(heading_from_message("http://localhost:1420/ blank page"), Some("localhost:1420 blank page".into()));
     }
 
     #[test]
@@ -625,6 +671,28 @@ mod tests {
         }
         assert_eq!(heading_from_message("Can you please fix the Mission Control dragging behavior?"), Some("Mission Control dragging".into()));
         assert_eq!(heading_from_message("I would like you to add persistent chat pinning"), Some("Persistent chat pinning".into()));
+    }
+
+    #[test]
+    fn pasted_links_are_named_by_what_they_point_at() {
+        assert_eq!(heading_from_message("https://github.com/Atharva-Kanherkar/kairo/pull/43 reviewe this please"), Some("kairo PR #43".into()));
+        assert_eq!(heading_from_message("https://github.com/Atharva-Kanherkar/kairo/pull/27#issuecomment-1 fix"), Some("kairo PR #27".into()));
+        assert_eq!(heading_from_message("https://github.com/org/bridge-harness/issues/12"), Some("bridge-harness issue #12".into()));
+        assert_eq!(heading_from_message("https://GitHub.com/org/kairo/PULL/9"), Some("kairo PR #9".into()));
+        assert_eq!(heading_from_message("https://github.com/org fix the thing"), Some("github.com thing".into()));
+        assert_eq!(heading_from_message("https://github.com/Atharva-Kanherkar/kairo Read the repo"), Some("kairo Read repo".into()));
+        assert_eq!(heading_from_message("https://github.com/Atharva-Kanherkar/kairo.git"), Some("kairo".into()));
+        assert_eq!(heading_from_message("https://www.vercel.com/team/deployments are failing"), Some("vercel.com deployments failing".into()));
+        assert_eq!(heading_from_message("https://example.com/runs/8f3a9c2e7d1b4a6f9e0c3b5d7a1f2e4c broke"), Some("example.com broke".into()));
+        // punctuation and brackets around the link, and a query or fragment on it.
+        assert_eq!(heading_from_message("https://github.com/o/kairo/pull/43, is it safe?"), Some("kairo PR #43".into()));
+        assert_eq!(heading_from_message("https://github.com/o/kairo/pull/43."), Some("kairo PR #43".into()));
+        assert_eq!(heading_from_message("(https://github.com/o/kairo/issues/7) keeps failing"), Some("kairo issue #7".into()));
+        assert_eq!(heading_from_message("<https://github.com/o/kairo>"), Some("kairo".into()));
+        assert_eq!(heading_from_message("https://docs.rs/serde/latest/serde/#derive"), Some("docs.rs serde".into()));
+        assert_eq!(heading_from_message("https://vercel.com/team/deployments?tab=logs"), Some("vercel.com deployments".into()));
+        // a link later in the message is just a word; the topic still leads.
+        assert_eq!(heading_from_message("Mission Control drag https://example.com"), Some("Mission Control drag".into()));
     }
 
     #[test]

@@ -53,7 +53,9 @@ export type ComposerPillProps = {
   /// recessed `bg-background` surface, so the frame visually contains it.
   footer?: ReactNode;
   className?: string;
-  layout?: "hero" | "dock";
+  /// `inline` puts Stop and Send on the textarea's row, for surfaces that hold
+  /// several composers at once (Mission Control tiles).
+  layout?: "hero" | "dock" | "inline";
   autocomplete?: { controls: string; activeDescendant?: string };
   /// The inline typeahead's continuation of `value`, rendered as ghost text
   /// right after it. Only ever shown while the caret sits at the end of the
@@ -123,6 +125,8 @@ export function ComposerPill({
   };
   const attachmentInput = useRef<HTMLInputElement>(null);
   const isHero = layout === "hero";
+  const isInline = layout === "inline";
+  const textSize = isInline ? "text-sm" : "text-[15px]";
   // A working agent is exactly when supervision is worth the most, so a turn in
   // flight no longer locks the composer. Where an active turn cannot take input
   // at all (`activeAction` omitted) the old behaviour stands.
@@ -141,7 +145,7 @@ export function ComposerPill({
   }, [value, isHero]);
 
   return (
-    <div className={cn("w-full", isHero ? "mx-auto max-w-3xl" : "mx-auto max-w-conversation-frame px-4 pb-3 pt-2 sm:px-8 sm:pb-4", className)}>
+    <div className={cn("w-full", isHero ? "mx-auto max-w-3xl" : isInline ? "px-2 pb-2 pt-1.5" : "mx-auto max-w-conversation-frame px-4 pb-3 pt-2 sm:px-8 sm:pb-4", className)}>
       {/* The pill's box also anchors any floating composer controls. */}
       <div data-composer-frame className="relative">
         <form
@@ -159,7 +163,7 @@ export function ComposerPill({
           }}
         >
           {/* Keep workspace metadata outside the writing surface. */}
-          <div className={cn("flex flex-col gap-1", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3 py-2")}>
+          <div className={cn("flex flex-col gap-1", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : isInline ? "py-1 pl-2.5 pr-1" : "px-3 py-2")}>
           {references.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 px-1 pt-0.5">
               {references.map(chip => {
@@ -220,7 +224,8 @@ export function ComposerPill({
               ))}
             </div>
           )}
-          <div className="relative">
+          <div className={isInline ? "flex items-end gap-1.5" : "contents"}>
+          <div className={cn("relative", isInline && "min-w-0 flex-1 self-center")}>
             {/* The mirror overlay: `value` rendered invisibly so it occupies the
                 same box the textarea's own text does, followed by the visible
                 ghost text — which then only ever shows past where the real text
@@ -230,7 +235,8 @@ export function ComposerPill({
                 ref={overlayRef}
                 aria-hidden="true"
                 className={cn(
-                  "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words text-[15px] leading-relaxed tracking-[-0.006em]",
+                  "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words leading-relaxed tracking-[-0.006em]",
+                  textSize,
                   isHero ? "min-h-16 px-1 py-1" : "px-1 py-0.5",
                 )}
               >
@@ -279,20 +285,23 @@ export function ComposerPill({
                 }
               }}
               className={cn(
-                "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground",
+                "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground",
+                textSize,
                 isHero ? "min-h-16 px-1 py-1" : "px-1 py-0.5",
+                // an inline-block textarea sits on the text baseline and grows its row.
+                isInline && "block",
               )}
             />
           </div>
 
-          <div className="flex min-h-8 items-center justify-between gap-2">
+          <div className={cn("flex min-h-8 items-center gap-2", isInline ? "shrink-0" : "justify-between")}>
             {/* Leading edge of the controls row: the model chip, then the access
                 control behind a hairline divider. */}
-            <div className="flex min-w-0 items-center gap-1.5">
+            {(!isInline || modelControl || accessControl) && <div className="flex min-w-0 items-center gap-1.5">
               {modelControl}
               {modelControl && accessControl ? <span aria-hidden="true" className="h-4 w-px shrink-0 bg-border" /> : null}
               {accessControl}
-            </div>
+            </div>}
 
             <div className="flex items-center gap-1">
               {trailing}
@@ -338,6 +347,7 @@ export function ComposerPill({
                 </button>
               )}
             </div>
+          </div>
           </div>
           </div>
         </form>
