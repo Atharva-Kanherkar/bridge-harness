@@ -142,6 +142,26 @@ fn worker_prompt_proposal_capability(db: &Connection, session_id: &str) -> bool 
             if matches!(authority.target, prompts::PromptTarget::Worker(_)))
 }
 
+/// Only an orchestrator routes, so only an orchestrator is shown what it can
+/// route to. Read from the live registry at launch and delivered in the
+/// conversation tail with the rest of the capability contract, so a catalog
+/// change never rewrites the cached prompt prefix.
+fn with_routing_inventory(state: &Arc<BridgeCore>, summary: Option<String>) -> Option<String> {
+    // Disabled harnesses are left out entirely: advertising one invites a pin
+    // that can only fall back.
+    let descriptors = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| agent_config::is_harness_enabled(&state.db.lock().unwrap(), &descriptor.id))
+        .collect::<Vec<_>>();
+    let inventory = learning_router::routing_inventory(&descriptors);
+    Some(match summary.filter(|summary| !summary.trim().is_empty()) {
+        Some(summary) => format!("{summary}\n\n{inventory}"),
+        None => inventory,
+    })
+}
+
 fn configured_capability_summary(harness: &str, cwd: &str) -> Option<String> {
     let harness = crate::capability_projection::CapabilityHarness::from_id(harness)?;
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
@@ -1204,7 +1224,8 @@ pub fn start_session(
     // Past the hot return: this call is really going to start a process, so the
     // volatile pair is built now rather than for a hot process that is never
     // sent one.
-    let capability_summary = configured_capability_summary(adapter_id, &path);
+    let capability_summary =
+        with_routing_inventory(state, configured_capability_summary(adapter_id, &path));
     let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let orchestrator_prompt = hot_check_prompt;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
@@ -1775,7 +1796,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // Past the hot return, like start_session: a hot process is never sent a
     // frame, so it must not have a packet built — and an audit written — for
     // one.
-    let capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    let mut capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    if is_orchestrator {
+        capability_summary = with_routing_inventory(state, capability_summary);
+    }
     let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
@@ -8358,7 +8382,7 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
         .prepare(
             "SELECT r.session_id,s.label,r.lifecycle_state,r.task_family,r.retry_count,
                     r.result_status,r.progress_summary,r.waiting_reason,r.waiting_since,r.last_activity_at,
-                    COALESCE(l.role,'unknown'),s.started_at
+                    COALESCE(l.role,'unknown'),s.started_at,s.harness,s.model
              FROM worker_runtime r
              JOIN sessions s ON s.id=r.session_id
              LEFT JOIN worker_leases l ON l.session_id=r.session_id
@@ -8391,6 +8415,11 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
                         "lastActivityAt": row.get::<_, Option<String>>(9)?,
                         "role": row.get::<_, String>(10)?,
                         "elapsedSeconds": elapsed_seconds,
+                        // So a pinned delegation's orchestrator can see whether
+                        // its pin was actually honored, without waiting for the
+                        // worker's typed result.
+                        "harness": row.get::<_, String>(12)?,
+                        "model": row.get::<_, Option<String>>(13)?,
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()
@@ -12801,6 +12830,8 @@ mod peek_digest_tests {
         assert_eq!(rows[0]["currentActivity"], "Running: cargo test");
         assert_eq!(rows[0]["lifecycle"], "working");
         assert_eq!(rows[0]["role"], "implementation");
+        assert_eq!(rows[0]["harness"], "claude");
+        assert!(rows[0]["model"].is_null());
         assert!(rows[0]["elapsedSeconds"].as_i64().is_some());
         // A reported worker is settled business, not fleet status.
         db.execute("UPDATE worker_runtime SET result_status='reported' WHERE session_id='child'", []).unwrap();
