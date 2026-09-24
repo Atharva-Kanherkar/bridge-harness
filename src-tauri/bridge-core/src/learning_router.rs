@@ -918,18 +918,44 @@ fn match_model<'a>(entries: &[(&'a str, &'a ModelOption)], hint: &str) -> Option
 
 fn resolve_pin(descriptors: &[AdapterDescriptor], request: &DelegationRequest) -> RoutePin {
     let mut pin = RoutePin::default();
+    let model_hint = request.model.as_deref().map(str::trim).filter(|hint| !hint.is_empty());
+    // A harness and a model named together are one constraint. If either side
+    // fails, both are dropped: keeping the surviving half would run a route
+    // nobody asked for (the harness's tier default, or the model on another
+    // harness) instead of the tier route the fallback promises.
+    let dual = request.harness.is_some() && model_hint.is_some();
     if let Some(hint) = request.harness.as_deref() {
         match crate::delegation::normalize_harness(hint) {
             Some(harness) if descriptors.iter().any(|descriptor| descriptor.id == harness) => {
                 pin.harness = Some(harness);
             }
-            _ => pin
-                .notes
-                .push(format!("harness pin {hint:?} is not installed; routed by tier")),
+            _ => {
+                pin.notes.push(format!(
+                    "harness pin {hint:?} is not installed; {}routed by tier",
+                    if dual { "model pin dropped with it; " } else { "" }
+                ));
+                if dual {
+                    return pin;
+                }
+            }
         }
     }
-    let Some(hint) = request.model.as_deref().map(str::trim).filter(|hint| !hint.is_empty())
-    else {
+    let Some(hint) = model_hint else {
+        // A harness-only pin must have a model at or above the requested tier.
+        // Without one there is no baseline, and the unresolved pin would reach
+        // the adapter, which may run a weaker model under the stronger tier.
+        if let Some(harness) = pin.harness.clone() {
+            let mut probe = request.clone();
+            probe.harness = Some(harness.clone());
+            probe.model = None;
+            if baseline_key(descriptors, &probe).is_none() {
+                pin.harness = None;
+                pin.notes.push(format!(
+                    "harness pin {harness:?} has no {} or stronger model; routed by tier",
+                    request.capability_tier.as_str()
+                ));
+            }
+        }
         return pin;
     };
     let mut scope = descriptors
@@ -954,6 +980,7 @@ fn resolve_pin(descriptors: &[AdapterDescriptor], request: &DelegationRequest) -
         .as_ref()
         .map(|harness| format!(" on {harness}"))
         .unwrap_or_default();
+    let dropped = if dual { "harness and model pins dropped together; " } else { "" };
     if let Some((harness, model)) = match_model(&entries(true), hint) {
         if model.id != hint || pin.harness.is_none() {
             pin.notes
@@ -961,9 +988,11 @@ fn resolve_pin(descriptors: &[AdapterDescriptor], request: &DelegationRequest) -
         }
         pin.harness = Some(harness.to_owned());
         pin.model = Some(model.id.clone());
-    } else if let Some((harness, model)) = match_model(&entries(false), hint) {
+        return pin;
+    }
+    if let Some((harness, model)) = match_model(&entries(false), hint) {
         pin.notes.push(format!(
-            "model pin {hint:?} names {harness}:{}, which is not selectable right now; routed by tier",
+            "model pin {hint:?} names {harness}:{}, which is not selectable right now; {dropped}routed by tier",
             model.id
         ));
     } else {
@@ -973,11 +1002,29 @@ fn resolve_pin(descriptors: &[AdapterDescriptor], request: &DelegationRequest) -
             .take(12)
             .collect::<Vec<_>>();
         pin.notes.push(format!(
-            "model pin {hint:?} matches no selectable model{where_}; routed by tier (selectable: {})",
+            "model pin {hint:?} matches no selectable model{where_}; {dropped}routed by tier (selectable: {})",
             if known.is_empty() { "none".to_owned() } else { known.join(", ") }
         ));
     }
+    pin.harness = None;
     pin
+}
+
+/// Descriptors as routing may use them: a harness disabled in Settings is
+/// reported unavailable, so a pin or default at it takes the same tier-first
+/// substitution as a missing binary instead of failing after routing.
+pub fn enabled_descriptors(db: &Connection, descriptors: &[AdapterDescriptor]) -> Vec<AdapterDescriptor> {
+    descriptors
+        .iter()
+        .cloned()
+        .map(|mut descriptor| {
+            if descriptor.available && !crate::agent_config::is_harness_enabled(db, &descriptor.id) {
+                descriptor.available = false;
+                descriptor.unavailable_reason = Some("disabled in Settings".into());
+            }
+            descriptor
+        })
+        .collect()
 }
 
 /// Selectable models listed per tier before the rest are summarized as a
@@ -1050,6 +1097,7 @@ pub fn route(
     request: &DelegationRequest,
     descriptors: &[AdapterDescriptor],
 ) -> Result<RoutedDelegation, BridgeError> {
+    let descriptors = &enabled_descriptors(db, descriptors)[..];
     let (workspace_id, trace_id): (Option<String>, Option<String>) = db.query_row(
         "SELECT workspace_id,trace_id FROM sessions WHERE id=?1",
         params![parent_session_id],
@@ -3658,5 +3706,80 @@ mod tests {
         assert!(text.contains("opus*"), "{text}");
         assert!(text.contains("codex:"), "{text}");
         assert!(text.contains("codex-standard*"), "{text}");
+    }
+
+    fn unpinned_harness(db: &Connection, descriptors: &[AdapterDescriptor]) -> Option<String> {
+        route(db, "parent", "turn-unpinned", &request(), descriptors)
+            .unwrap()
+            .request
+            .harness
+    }
+
+    #[test]
+    fn conflicting_dual_pins_drop_together_to_the_tier_route() {
+        let db = routing_db();
+        let expected = unpinned_harness(&db, &tiered_descriptors());
+        // An installed harness with another harness's model.
+        let mut mismatched = request();
+        mismatched.harness = Some("codex".into());
+        mismatched.model = Some("opus".into());
+        let routed = route(&db, "parent", "turn-1", &mismatched, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness, expected);
+        assert!(!routed.decision.manual_override, "{}", routed.decision.explanation);
+        assert!(routed.decision.explanation.contains("dropped together"), "{}", routed.decision.explanation);
+        // An uninstalled harness with a model that exists elsewhere.
+        let mut uninstalled = request();
+        uninstalled.harness = Some("cursor".into());
+        uninstalled.model = Some("opus".into());
+        let routed = route(&db, "parent", "turn-2", &uninstalled, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness, expected);
+        assert_ne!(routed.request.model.as_deref(), Some("opus"));
+        assert!(!routed.decision.manual_override);
+    }
+
+    #[test]
+    fn a_harness_pin_without_a_model_at_the_tier_falls_back_instead_of_running_weaker() {
+        let db = routing_db();
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        pinned.capability_tier = CapabilityTier::Strong;
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+        assert_eq!(routed.request.model.as_deref(), Some("opus"));
+        assert_eq!(routed.request.capability_tier, CapabilityTier::Strong);
+        assert!(!routed.decision.manual_override);
+
+        // With no strong route anywhere, the dropped pin leaves the request
+        // exactly where an unpinned one lands; it is never pinned to the
+        // standard-only harness under a strong label.
+        let codex_only = tiered_descriptors().split_off(1);
+        let pinned_route = route(&db, "parent", "turn-2", &pinned, &codex_only).unwrap();
+        let mut unpinned = request();
+        unpinned.capability_tier = CapabilityTier::Strong;
+        let unpinned_route = route(&db, "parent", "turn-3", &unpinned, &codex_only).unwrap();
+        assert_eq!(pinned_route.request.harness, unpinned_route.request.harness);
+        assert_eq!(pinned_route.request.model, unpinned_route.request.model);
+        assert_ne!(pinned_route.request.model.as_deref(), Some("codex-standard"));
+        assert!(!pinned_route.decision.manual_override);
+    }
+
+    #[test]
+    fn a_disabled_harness_is_not_advertised_and_its_pin_falls_back() {
+        let db = routing_db();
+        let mut claude = crate::agent_config::state(&db)
+            .unwrap()
+            .harnesses
+            .into_iter()
+            .find(|item| item.id == "claude")
+            .unwrap();
+        claude.enabled = false;
+        crate::agent_config::save_harness(&db, claude).unwrap();
+        let effective = enabled_descriptors(&db, &tiered_descriptors());
+        assert!(!effective[0].available);
+        assert_eq!(effective[0].unavailable_reason.as_deref(), Some("disabled in Settings"));
+        let mut pinned = request();
+        pinned.harness = Some("claude".into());
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("codex"));
     }
 }

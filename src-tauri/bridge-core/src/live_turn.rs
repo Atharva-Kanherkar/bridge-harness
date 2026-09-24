@@ -147,7 +147,15 @@ fn worker_prompt_proposal_capability(db: &Connection, session_id: &str) -> bool 
 /// conversation tail with the rest of the capability contract, so a catalog
 /// change never rewrites the cached prompt prefix.
 fn with_routing_inventory(state: &Arc<BridgeCore>, summary: Option<String>) -> Option<String> {
-    let inventory = learning_router::routing_inventory(&state.adapter_registry.descriptors());
+    // Disabled harnesses are left out entirely: advertising one invites a pin
+    // that can only fall back.
+    let descriptors = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| agent_config::is_harness_enabled(&state.db.lock().unwrap(), &descriptor.id))
+        .collect::<Vec<_>>();
+    let inventory = learning_router::routing_inventory(&descriptors);
     Some(match summary.filter(|summary| !summary.trim().is_empty()) {
         Some(summary) => format!("{summary}\n\n{inventory}"),
         None => inventory,

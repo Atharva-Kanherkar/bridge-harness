@@ -6,6 +6,7 @@
 - A model pin resolves against the installed catalog: exact id, then case-insensitive id or label, then a unique family match (`opus` or `claude opus` finds the Claude Opus entry). A model-only pin selects the harness that owns the model instead of defaulting to Codex.
 - A resolved model pin is honored even when its tier differs from `capabilityTier`. The routed request carries the pinned model's real tier, so capability-unit accounting stays honest.
 - A harness-only pin picks that harness's default model for the requested tier, then the cheapest higher tier it has.
+- A harness and model named together are one constraint: if either side fails to resolve within the other, both are dropped. A harness-only pin with no model at or above the requested tier is dropped. A harness disabled in Settings is treated as unavailable for routing and left out of the inventory.
 - The tier route is the fallback. A pin that names nothing installed, or a model that is not selectable, is dropped with a note and the request routes by tier. A pinned candidate that is unavailable, quota or context exhausted, or user-excluded is replaced by what the router would have chosen without the pin, then by the best eligible candidate.
 - A below-floor candidate admitted only because it was pinned is never picked by the recommendation, the published policy preference, or retry escalation.
 - A pin never overrides a hard gate: the permission ceiling still fails with an actionable error, and a verification pin on the implementer's harness family is replaced by a different-family verifier.
@@ -25,6 +26,9 @@
 - `learning_router::tests::a_below_floor_pin_is_never_recommended_without_the_pin`
 - `learning_router::tests::a_verification_pin_on_the_implementer_family_is_replaced`
 - `learning_router::tests::routing_inventory_lists_selectable_models_by_tier`
+- `learning_router::tests::conflicting_dual_pins_drop_together_to_the_tier_route`
+- `learning_router::tests::a_harness_pin_without_a_model_at_the_tier_falls_back_instead_of_running_weaker`
+- `learning_router::tests::a_disabled_harness_is_not_advertised_and_its_pin_falls_back`
 - Existing router tests stay green unchanged: user exclusions, permission ceiling, quota substitution, and outcome attribution.
 
 ## Prompt Tests
