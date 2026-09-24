@@ -59,15 +59,18 @@ function chain(nodes: PaneNode[], direction: SplitDirection): PaneNode {
   return { type: "split", direction, ratio: 1 / nodes.length, first: nodes[0], second: chain(nodes.slice(1), direction) };
 }
 
-// the order Arrange lays tiles out in: one run per group, largest group first
-// so it fills a row of its own, ties by first appearance. ungrouped tiles trail.
+// the order Arrange lays tiles out in: one contiguous run per group in reading
+// order, largest group first so it starts top-left, ties by first appearance,
+// ungrouped tiles last. a group shares a row only when it fits the columns left;
+// otherwise it wraps onto the next row.
 export function groupedOrder(ids: readonly string[], groupOf: (id: string) => string | null): string[] {
   const groups = new Map<string, string[]>();
   const loose: string[] = [];
   for (const id of ids) {
     const group = groupOf(id);
-    if (group == null) loose.push(id);
-    else groups.set(group, [...(groups.get(group) ?? []), id]);
+    if (group == null) { loose.push(id); continue; }
+    const members = groups.get(group);
+    if (members) members.push(id); else groups.set(group, [id]);
   }
   return [...[...groups.values()].sort((a, b) => b.length - a.length).flat(), ...loose];
 }

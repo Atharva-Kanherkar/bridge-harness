@@ -13,7 +13,7 @@ import { HarnessMark } from "./harnessMarks";
 import { workerStatus, type WorkerStatus, type WorkerTone } from "./workerStatus";
 import { arrangeLeaves, dropEdge, groupedOrder, insertLeaf, minimumSize, moveLeaf, readLayout, reconcileLeaves, writeLayout, type DropEdge } from "./missionControl/layout";
 import { isChatDrag, readChatDrag, SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
-import { displayTitle, latestAsk, projectLabel } from "./missionControl/identity";
+import { askText, displayTitle, latestAsk, projectLabel } from "./missionControl/identity";
 
 export type MissionControlProps = {
   sessions: Session[];
@@ -54,7 +54,10 @@ function tileStatus(session: Session, runtime?: WorkerRuntimeRecord): WorkerStat
   return workerStatus(runtime || !session.parentSessionId ? session : { ...session, parentSessionId: null }, runtime);
 }
 
-const needsYou = (status: WorkerStatus) => status.tone === "waiting" || status.tone === "attention";
+// a waiting lifecycle is an approval or a question addressed to you. a worker's
+// blocked or unreadable result goes back to its orchestrator, so counting it here
+// would dilute the one signal the board has (and why `isWaiting` is too broad).
+const needsYou = (status: WorkerStatus) => status.tone === "waiting";
 const sentenceCase = (label: string) => label.charAt(0) + label.slice(1).toLowerCase();
 
 type TileActions = {
@@ -117,7 +120,10 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
   }, []);
   const events = useMemo(() => actions.events.filter(event => event.sessionId === id), [actions.events, id]);
   const forest = useSessionForest(id, events, actions.onForest);
-  const ask = useMemo(() => latestAsk(forest?.entries), [forest?.entries]);
+  const recordedAsk = useMemo(() => latestAsk(forest?.entries, events), [forest?.entries, events]);
+  // what you just sent shows at once, and gives way the moment the stream records any ask.
+  const [sent, setSent] = useState<{ text: string; over: string | null } | null>(null);
+  const ask = sent && sent.over === recordedAsk ? sent.text : recordedAsk;
   if (!session) return null;
   const status = actions.statusOf(id) ?? tileStatus(session);
   const ink = TONE_INK[status.tone];
@@ -142,7 +148,9 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
     const text = draft.trim();
     if (!text || sending) return;
     setSending(true); setError(null);
-    try { await bridgeApi.submitInput(session!.id, text); setDraft(""); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setSending(false); }
+    const shown = askText(text);
+    setSent(shown ? { text: shown, over: recordedAsk } : null);
+    try { await bridgeApi.submitInput(session!.id, text); setDraft(""); } catch (cause) { setSent(null); setError(cause instanceof Error ? cause.message : String(cause)); } finally { setSending(false); }
   }
   async function interrupt() {
     setStopping(true);
@@ -179,11 +187,13 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
           {attention
             ? <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 font-medium text-primary-foreground"><Hand size={11} aria-hidden="true" />{sentenceCase(status.label)}</span>
             : <><span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", ink.dot)} /><span className="font-medium">{sentenceCase(status.label)}</span></>}
-          <span className="font-mono text-muted-foreground" title="Elapsed">{formatElapsed(session.startedAt, actions.now)}</span>
+          <span className="font-mono text-muted-foreground group-hover/header:hidden group-focus-within/header:hidden" title="Elapsed">{formatElapsed(session.startedAt, actions.now)}</span>
         </span>
-        {/* revealed over the status on header hover or keyboard focus: the
-            actions stay one tab stop away without crowding the title at rest. */}
-        <div className="pointer-events-none absolute right-6 top-0 flex h-6 items-center gap-0.5 bg-card pl-2 opacity-0 transition-opacity group-hover/header:pointer-events-auto group-hover/header:opacity-100 group-focus-within/header:pointer-events-auto group-focus-within/header:opacity-100">
+        {/* on header hover or keyboard focus the actions take the elapsed time's
+            place and the title gives up width; the status pill never hides, since
+            a waiting tile is exactly the one you are about to act on. collapsed,
+            the buttons are clipped rather than removed, so Tab still reaches them. */}
+        <div className="flex w-0 shrink-0 items-center gap-0.5 overflow-hidden opacity-0 transition-opacity group-hover/header:w-auto group-hover/header:opacity-100 group-focus-within/header:w-auto group-focus-within/header:opacity-100">
           <IconButton title="Focus chat" onClick={() => actions.onFocusSession(id)}><ArrowUpRight size={13} /></IconButton>
           <IconButton title={expanded ? "Restore grid" : "Maximize tile"} onClick={() => actions.toggleExpanded(id)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
           {pinned
@@ -263,7 +273,8 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   const [heldProject, setHeldProject] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const board = useRef<HTMLElement>(null);
-  const attentionCursor = useRef(0);
+  const lastFocusedTile = useRef<string | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     const clear = () => setDropOnCanvas(false);
@@ -289,7 +300,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   );
   const pinnedSessionIds = useMemo(() => stored.pinnedSessionIds.filter(id => sessionMap.has(id) && !dismissedSessionIds.includes(id)), [stored.pinnedSessionIds, sessionMap, dismissedSessionIds]);
   const ids = useMemo(() => [...new Set([...live.map(session => session.id), ...pinnedSessionIds])], [live, pinnedSessionIds]);
-  const idsKey = ids.join(" ");
+  const idsKey = ids.join("\u0000");
   // new tiles open beside their own project's tiles; nothing already on the board moves.
   const root = useMemo(() => reconcileLeaves(stored.root, ids, projectOf), [stored.root, idsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const expandedLeafId = stored.expandedLeafId && root && leafIds(root).includes(stored.expandedLeafId) ? stored.expandedLeafId : null;
@@ -330,18 +341,24 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     setStored(prev => ({ ...prev, root: arrangeLeaves(groupedOrder(order, projectOf)), expandedLeafId: null }));
   }
 
-  // cycles through tiles that need you, so repeated presses visit each once.
+  // the next waiting tile after the one you were last in, in board order,
+  // wrapping. anchored to a tile rather than a counter, so tiles resolving
+  // between presses never make it skip or repeat.
   function jumpToAttention() {
     if (!waitingIds.length) return;
-    const target = waitingIds[attentionCursor.current % waitingIds.length];
-    attentionCursor.current += 1;
+    const from = lastFocusedTile.current ? order.indexOf(lastFocusedTile.current) : -1;
+    const target = waitingIds.find(id => order.indexOf(id) > from) ?? waitingIds[0];
     if (expandedLeafId && expandedLeafId !== target) setStored(prev => ({ ...prev, root, expandedLeafId: null }));
-    requestAnimationFrame(() => {
-      const tile = [...board.current?.querySelectorAll<HTMLElement>("[data-session-id]") ?? []].find(element => element.dataset.sessionId === target);
-      tile?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-      tile?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
-    });
+    setJumpTarget(target);
   }
+  // runs after the commit that restored the grid, so the target tile is mounted.
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const tile = [...board.current?.querySelectorAll<HTMLElement>("[data-session-id]") ?? []].find(element => element.dataset.sessionId === jumpTarget);
+    tile?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    tile?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    setJumpTarget(null);
+  }, [jumpTarget]);
 
   const actions: TileActions = {
     sessions: sessionMap, workspaces: workspaceMap, events, statusOf, projectOf, highlightedProject, activeSessionId, expandedLeafId, now, onFocusSession, onStopWorker, onForest,
@@ -355,6 +372,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   };
 
   return <main ref={board} aria-label="Mission Control"
+    onFocusCapture={event => { const tile = (event.target as HTMLElement).closest<HTMLElement>("[data-session-id]")?.dataset.sessionId; if (tile) lastFocusedTile.current = tile; }}
     onDragOver={event => { if (isChatDrag(event.dataTransfer)) { event.preventDefault(); event.dataTransfer.dropEffect = event.dataTransfer.types.includes(SIDEBAR_CHAT_DRAG) ? "copy" : "move"; setDropOnCanvas(true); } }}
     onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropOnCanvas(false); }}
     onDrop={event => {
@@ -368,7 +386,9 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     {/* the window title already reads "Mission Control"; this bar is the board's state. */}
     <h1 className="sr-only">Mission Control</h1>
     {root && <div role="toolbar" aria-label="Board" className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-background px-3 text-xs">
-      <div className="flex shrink-0 items-center gap-3" aria-live="polite">
+      <div className="relative flex shrink-0 items-center gap-3">
+        {/* announces only what needs you; the working count changes too often to speak. */}
+        <span aria-live="polite" className="sr-only">{waitingIds.length > 0 ? `${waitingIds.length} needs you` : ""}</span>
         {waitingIds.length > 0 && <button type="button" onClick={jumpToAttention} title="Go to the next chat waiting for you"
           className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 font-medium text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
           <Hand size={12} aria-hidden="true" />{waitingIds.length} needs you

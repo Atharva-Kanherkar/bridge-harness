@@ -413,17 +413,17 @@ it("live-syncs worker visibility from an external write, without remounting or r
 const entry = (sessionId: string, sequence: number, kind: string, payload: Record<string, unknown>) =>
   ({ id: `${sessionId}-${sequence}`, sessionId, sequence, kind, payload, contextVisibility: "eligible", createdAt: "2026-01-01T00:00:00Z", semanticSchemaVersion: 1 });
 
-it("names each tile by project and a readable title instead of a raw URL", async () => {
+it("names each tile by project and drops the repo from its own link heading", async () => {
   const projects = [{ id: "p", name: "kairo", path: "/src/kairo", createdAt: "2026-01-01T00:00:00Z" }];
   const spaces = [...workspaces, { id: "k", title: "Review worktree", projectId: "p" }] as Workspace[];
   await render({
-    sessions: [session("a", "working", { workspaceId: "k", title: "https://github.com/Atharva-Kanherkar/kairo/pull/43 reviewe…" }), session("b", "working", { workspaceId: "ws", title: "Session supervisor" })],
+    sessions: [session("a", "working", { workspaceId: "k", title: "kairo PR #43" }), session("b", "working", { workspaceId: "ws", title: "Session supervisor" })],
     workspaces: spaces, projects,
   });
   const header = (id: string) => host.querySelector(`[data-session-id='${id}'] header`)!;
   expect(header("a").textContent).toContain("kairo");
   expect(header("a").querySelector("h2")?.textContent).toBe("PR #43");
-  expect(header("a").querySelector("h2")?.getAttribute("title")).toContain("github.com");
+  expect(header("a").querySelector("h2")?.getAttribute("title")).toBe("kairo PR #43");
   expect(header("b").textContent).toContain("Bridge");
   expect(header("b").querySelector("h2")?.textContent).toBe("Session supervisor");
 });
@@ -454,20 +454,61 @@ it("does not repeat the chat title in the composer", async () => {
   expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='b'] textarea")?.placeholder).toBe("Reply…");
 });
 
-it("flags only tiles that need you and jumps to their composer", async () => {
-  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => { callback(0); return 0; });
+it("flags only tiles that need you and jumps to the next one after where you are", async () => {
   await render({ sessions: [session("a", "working"), session("b", "waiting"), session("c", "waiting")] });
   const flagged = () => [...host.querySelectorAll<HTMLElement>("[data-attention='true']")].map(el => el.dataset.sessionId).sort();
   expect(flagged()).toEqual(["b", "c"]);
   expect(host.querySelector("[data-session-id='a']")?.className).not.toContain("border-foreground/45");
   expect(host.querySelector("[data-session-id='b']")?.className).toContain("border-foreground/45");
+  const order = tiles().filter(id => id !== "a");
   const jump = [...host.querySelectorAll("button")].find(button => button.textContent === "2 needs you")!;
+  const focusedTile = () => document.activeElement?.closest("[data-session-id]")?.getAttribute("data-session-id");
+  const visits: (string | null | undefined)[] = [];
+  for (let press = 0; press < 3; press += 1) { await act(async () => jump.click()); visits.push(focusedTile()); }
+  expect(visits).toEqual([order[0], order[1], order[0]]);
+  // anchored to where you are: from the last waiting tile it wraps to the first.
+  await act(async () => host.querySelector<HTMLTextAreaElement>(`[data-session-id='${order[1]}'] textarea`)!.focus());
   await act(async () => jump.click());
-  const first = document.activeElement?.closest("[data-session-id]")?.getAttribute("data-session-id");
-  await act(async () => jump.click());
-  const second = document.activeElement?.closest("[data-session-id]")?.getAttribute("data-session-id");
-  expect([first, second].sort()).toEqual(["b", "c"]);
-  raf.mockRestore();
+  expect(focusedTile()).toBe(order[0]);
+});
+
+it("does not count a worker's blocked result as needing you", async () => {
+  localStorage.setItem(SHOW_WORKER_CHATS_STORAGE_KEY, "true");
+  vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), workerRuntimes: [{ sessionId: "w", lifecycleState: "working", resultStatus: "reported", lastResult: { status: "blocked", summary: "needs a decision" } }] } as unknown as SessionForestSnapshot));
+  await render({ sessions: [session("w", "working", { parentSessionId: "o" })] });
+  expect(host.querySelector("[data-session-id='w'] h2")).not.toBeNull();
+  expect(host.querySelector("[data-session-id='w']")?.textContent).toContain("Blocked");
+  expect(host.querySelector("[data-attention='true']")).toBeNull();
+  expect(host.textContent).not.toContain("needs you");
+});
+
+it("announces only the needs-you count to screen readers", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  const live = () => [...host.querySelectorAll("[aria-live]")];
+  expect(live()).toHaveLength(1);
+  expect(live()[0].textContent).toBe("");
+  await render({ sessions: [session("a", "working"), session("b", "waiting")] });
+  expect(live()).toHaveLength(1);
+  expect(live()[0].textContent).toBe("1 needs you");
+  expect(live()[0].textContent).not.toContain("working");
+});
+
+it("shows what you just sent on the ask line before the stream records it", async () => {
+  vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), entries: [entry(id, 1, "user.message", { text: "first ask" })] } as unknown as SessionForestSnapshot));
+  let finish: () => void = () => {};
+  vi.mocked(bridgeApi.submitInput).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ disposition: "startedNewTurn", interceptions: [] }); }));
+  await render({ sessions: [session("a", "working", { title: "Supervisor" })] });
+  const subtitle = () => host.querySelector("[data-session-id='a'] [data-tile-subtitle]")?.textContent;
+  expect(subtitle()).toBe("first ask");
+  const textarea = host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "now add retries");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  expect(subtitle()).toBe("now add retries");
+  await act(async () => finish());
+  expect(subtitle()).toBe("now add retries");
 });
 
 it("highlights one project's tiles from the legend and dims the rest", async () => {

@@ -104,9 +104,15 @@ pub fn needs_title(title: Option<&str>) -> bool {
 /// a reader recognises, so `github.com/o/kairo/pull/43` becomes `kairo PR #43`
 /// (complete on its own), a repository its name, and any other link its host.
 fn link_heading(word: &str) -> Option<(String, bool)> {
+    // a link in prose often carries its brackets or the sentence's punctuation.
+    let word = word
+        .trim_start_matches(['(', '<', '[', '"', '\''])
+        .trim_end_matches([')', '>', ']', '"', '\'', ',', '.', ';', ':', '!', '?']);
     let rest = word.strip_prefix("https://").or_else(|| word.strip_prefix("http://"))?;
     let rest = rest.strip_prefix("www.").unwrap_or(rest);
-    let mut parts = rest.split(['/', '?', '#']).filter(|part| !part.is_empty());
+    // the query and fragment say nothing about what the page is.
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
     let host = parts.next()?;
     if !host.eq_ignore_ascii_case("github.com") {
         // the last path segment usually says what the page is; an opaque id does not.
@@ -678,6 +684,13 @@ mod tests {
         assert_eq!(heading_from_message("https://github.com/Atharva-Kanherkar/kairo.git"), Some("kairo".into()));
         assert_eq!(heading_from_message("https://www.vercel.com/team/deployments are failing"), Some("vercel.com deployments failing".into()));
         assert_eq!(heading_from_message("https://example.com/runs/8f3a9c2e7d1b4a6f9e0c3b5d7a1f2e4c broke"), Some("example.com broke".into()));
+        // punctuation and brackets around the link, and a query or fragment on it.
+        assert_eq!(heading_from_message("https://github.com/o/kairo/pull/43, is it safe?"), Some("kairo PR #43".into()));
+        assert_eq!(heading_from_message("https://github.com/o/kairo/pull/43."), Some("kairo PR #43".into()));
+        assert_eq!(heading_from_message("(https://github.com/o/kairo/issues/7) keeps failing"), Some("kairo issue #7".into()));
+        assert_eq!(heading_from_message("<https://github.com/o/kairo>"), Some("kairo".into()));
+        assert_eq!(heading_from_message("https://docs.rs/serde/latest/serde/#derive"), Some("docs.rs serde".into()));
+        assert_eq!(heading_from_message("https://vercel.com/team/deployments?tab=logs"), Some("vercel.com deployments".into()));
         // a link later in the message is just a word; the topic still leads.
         assert_eq!(heading_from_message("Mission Control drag https://example.com"), Some("Mission Control drag".into()));
     }

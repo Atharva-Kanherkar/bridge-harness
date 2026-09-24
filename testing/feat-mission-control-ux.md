@@ -30,20 +30,23 @@ transcript scrolls sideways inside narrow tiles, and the view title appears twic
 ## Functional Behavior
 
 ### Titles (`src/components/missionControl/identity.ts`)
-- `displayTitle(raw)` turns a GitHub PR, issue, or repository URL into
-  `PR #43`, `Issue #12`, or the repository name, prefixed with the repository
-  when it differs from the tile's project. A leftover word cut mid-way (`reviewe…`)
-  is dropped. Any other URL becomes its host plus last path segment. A non-URL
-  title is returned unchanged, including user-chosen titles.
+- `displayTitle(raw, project)` drops the repository from a derived link heading
+  (`kairo PR #43` → `PR #43`) inside that repository's own tile. Every other
+  title, including a user-chosen one, passes through. The backend is the only
+  link parser; its open-time backfill repairs stored derived titles.
 - `projectLabel(session, workspace, projects)` prefers the owning project's name,
   then the workspace title, then the last segment of `session.cwd`, then `null`.
-- `latestAsk(entries)` returns the newest `user.message` text (payload `text` or
-  `message`), whitespace-collapsed, or `null`.
+- `latestAsk(entries, events)` returns the newest user message, one line, links
+  compacted: live events first (decoded by the transcript codec), then forest
+  `user.message` entries. A just-submitted message shows immediately and gives
+  way once the stream records any newer ask.
 
 ### Backend titles (`src-tauri/bridge-core/src/session_titles.rs`)
 - `heading_from_message` names a message that opens with a GitHub PR or issue URL
   `<repo> PR #<n>` / `<repo> issue #<n>`, and a bare repository URL `<repo>`.
-  Non-GitHub URLs contribute their host instead of the full URL. Existing
+  Non-GitHub URLs contribute their host and last readable path segment. Brackets
+  and trailing punctuation around the link, and its query or fragment, are
+  ignored. Existing
   derived titles are repaired by the existing backfill on the next open.
 
 ### Tile header (`src/components/MissionControl.tsx`)
@@ -53,17 +56,22 @@ transcript scrolls sideways inside narrow tiles, and the view title appears twic
   The raw stored title is the title attribute of the display title.
 - Actions keep their accessible names (`Focus chat`, `Maximize tile` /
   `Restore grid`, `Stop worker`, `Pin chat in Mission Control` / `Unpin chat`,
-  `Close chat`). All but Close are visually revealed on hover or focus-within;
-  a pinned tile shows its pin state at rest.
-- A tile whose status tone is `waiting` or `attention` carries
-  `data-attention="true"`, a warning-tinted header, and a warning top edge.
-  No other tile uses hue in its chrome.
+  `Close chat`). All but Close are revealed on header hover or focus-within, in
+  place of the elapsed time; the status pill never hides. Collapsed buttons stay
+  focusable. A pinned tile shows its pin state at rest.
+- Only a tile whose status tone is `waiting` (an approval or question for you)
+  carries `data-attention="true"`: an inverted "Needs you" pill with an icon and
+  a stronger border. A worker's blocked, needs-delegation, or unreadable result
+  is not counted. `warning` is a warm grey by design, so salience comes from
+  luminance, the icon, and the words.
 
 ### Board toolbar
 - The duplicate visible "Mission Control" heading is removed (the window title
   already says it); the landmark keeps `aria-label="Mission Control"`.
 - A summary reads `N needs you` (only when N > 0, a button that scrolls to and
-  focuses the next such tile's composer), `N working`, and `N pinned` when any.
+  focuses the composer of the next waiting tile after the one you were last in,
+  in board order, wrapping), `N working`, and `N pinned` when any. Only the
+  needs-you count sits in a polite live region.
 - A project legend lists each project on the board with its tile count when there
   are at least two projects. Hovering or focusing a project marks its tiles with
   `data-project-highlight="true"` and dims the rest; clicking toggles it sticky.
