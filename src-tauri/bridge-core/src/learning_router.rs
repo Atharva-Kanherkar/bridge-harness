@@ -9,7 +9,7 @@ use crate::{
     delegation::{
         DelegationRequest, Effort, TestStatus, WorkerResult, WorkerResultStatus, WorkerRole,
     },
-    model::{AdapterDescriptor, CapabilityTier},
+    model::{AdapterDescriptor, CapabilityTier, ModelOption},
     policy::{self, PolicyConfig, RestorationKind},
     BridgeError,
 };
@@ -755,6 +755,7 @@ fn build_candidates(
     descriptors: &[AdapterDescriptor],
     request: &DelegationRequest,
     unavailable_by_harness: &BTreeMap<String, (bool, bool)>,
+    pinned: Option<&str>,
 ) -> Vec<RouteCandidate> {
     let minimum_rank = tier_rank(request.capability_tier);
     let sandbox_mode = sandbox_mode_for(request);
@@ -766,7 +767,12 @@ fn build_candidates(
             // the adapter is guaranteed to reject at startup.
             let sandbox_supported = descriptor.supports_sandbox(sandbox_mode);
             descriptor.models.iter().filter_map(move |model| {
-                if tier_rank(model.tier) < minimum_rank {
+                // The tier is a floor for routing, not for a model someone
+                // named: a pinned model below it is admitted, and only the
+                // pin can select it.
+                let is_pinned = pinned
+                    .is_some_and(|key| key == format!("{}:{}", descriptor.id, model.id));
+                if tier_rank(model.tier) < minimum_rank && !is_pinned {
                     return None;
                 }
                 let (quota_available, context_available) = unavailable_by_harness
@@ -802,18 +808,232 @@ fn build_candidates(
 fn baseline_key(descriptors: &[AdapterDescriptor], request: &DelegationRequest) -> Option<String> {
     let harness = request.runtime_harness();
     let descriptor = descriptors.iter().find(|item| item.id == harness)?;
+    // A model hint reaching here has already been resolved to a catalog id, so
+    // it is honored at whatever tier it sits; the tier only picks a model when
+    // none was named.
+    let floor = tier_rank(request.capability_tier);
     let model = request
         .model
         .as_ref()
         .and_then(|hint| descriptor.models.iter().find(|model| model.id == *hint))
-        .filter(|model| model.tier == request.capability_tier)
         .or_else(|| {
             descriptor
                 .models
                 .iter()
                 .find(|model| model.tier == request.capability_tier && model.default_for_tier)
+        })
+        .or_else(|| {
+            // A harness pinned without a model and missing this tier gets its
+            // cheapest stronger default rather than no baseline at all.
+            descriptor
+                .models
+                .iter()
+                .filter(|model| tier_rank(model.tier) > floor && model.default_for_tier)
+                .min_by_key(|model| tier_rank(model.tier))
         })?;
     Some(format!("{}:{}", descriptor.id, model.id))
+}
+
+/// A harness or model the delegation named, resolved against what is installed.
+///
+/// A pin is a routing request, never a permission: it chooses among installed,
+/// eligible candidates and cannot revive an excluded one or cross a sandbox,
+/// budget, or independence gate. Anything it fails to name is dropped with a
+/// note and the request routes by tier, which stays the fallback.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RoutePin {
+    harness: Option<String>,
+    model: Option<String>,
+    notes: Vec<String>,
+}
+
+impl RoutePin {
+    fn is_set(&self) -> bool {
+        self.harness.is_some() || self.model.is_some()
+    }
+
+    fn key(&self) -> Option<String> {
+        Some(format!("{}:{}", self.harness.as_ref()?, self.model.as_ref()?))
+    }
+}
+
+fn selectable(model: &ModelOption) -> bool {
+    model.available && model.compatible
+}
+
+/// Letters and digits only, so `Claude Opus`, `claude-opus` and `claude_opus`
+/// compare equal.
+fn fold_model_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
+}
+
+/// The catalog entry a free-form model name refers to.
+///
+/// Strictest match wins: the exact id, then a folded id or label, then a family
+/// name inside an id (`opus` in `claude-opus-4-6`), then an id inside the name
+/// (`claude opus 5.5` naming the `opus` alias). Within a stage the tier default
+/// wins, then catalog order; entries arrive with available harnesses first.
+fn match_model<'a>(entries: &[(&'a str, &'a ModelOption)], hint: &str) -> Option<(&'a str, &'a ModelOption)> {
+    let folded = fold_model_name(hint);
+    if folded.is_empty() {
+        return None;
+    }
+    let names = |model: &ModelOption| [fold_model_name(&model.id), fold_model_name(&model.label)];
+    let stages: [&dyn Fn(&ModelOption) -> bool; 4] = [
+        &|model| model.id == hint,
+        &|model| names(model).iter().any(|name| *name == folded),
+        &|model| folded.len() >= 3 && names(model).iter().any(|name| name.contains(&folded)),
+        &|model| {
+            names(model)
+                .iter()
+                .any(|name| name.len() >= 3 && folded.contains(name.as_str()))
+        },
+    ];
+    for (stage, matches) in stages.iter().enumerate() {
+        let mut found = entries.iter().filter(|(_, model)| matches(model)).collect::<Vec<_>>();
+        if stage == 3 {
+            // The longest contained name is the most specific one.
+            found.sort_by_key(|(_, model)| {
+                std::cmp::Reverse(names(model).iter().map(String::len).max().unwrap_or(0))
+            });
+        }
+        let best = if stage == 3 {
+            found.first()
+        } else {
+            found
+                .iter()
+                .find(|(_, model)| model.default_for_tier)
+                .or_else(|| found.first())
+        };
+        if let Some(best) = best {
+            return Some(**best);
+        }
+    }
+    None
+}
+
+fn resolve_pin(descriptors: &[AdapterDescriptor], request: &DelegationRequest) -> RoutePin {
+    let mut pin = RoutePin::default();
+    if let Some(hint) = request.harness.as_deref() {
+        match crate::delegation::normalize_harness(hint) {
+            Some(harness) if descriptors.iter().any(|descriptor| descriptor.id == harness) => {
+                pin.harness = Some(harness);
+            }
+            _ => pin
+                .notes
+                .push(format!("harness pin {hint:?} is not installed; routed by tier")),
+        }
+    }
+    let Some(hint) = request.model.as_deref().map(str::trim).filter(|hint| !hint.is_empty())
+    else {
+        return pin;
+    };
+    let mut scope = descriptors
+        .iter()
+        .filter(|descriptor| pin.harness.as_ref().is_none_or(|harness| descriptor.id == *harness))
+        .collect::<Vec<_>>();
+    scope.sort_by_key(|descriptor| !descriptor.available);
+    let entries = |usable: bool| {
+        scope
+            .iter()
+            .flat_map(|descriptor| {
+                descriptor
+                    .models
+                    .iter()
+                    .filter(move |model| selectable(model) == usable)
+                    .map(|model| (descriptor.id.as_str(), model))
+            })
+            .collect::<Vec<_>>()
+    };
+    let where_ = pin
+        .harness
+        .as_ref()
+        .map(|harness| format!(" on {harness}"))
+        .unwrap_or_default();
+    if let Some((harness, model)) = match_model(&entries(true), hint) {
+        if model.id != hint || pin.harness.is_none() {
+            pin.notes
+                .push(format!("model pin {hint:?} resolved to {harness}:{}", model.id));
+        }
+        pin.harness = Some(harness.to_owned());
+        pin.model = Some(model.id.clone());
+    } else if let Some((harness, model)) = match_model(&entries(false), hint) {
+        pin.notes.push(format!(
+            "model pin {hint:?} names {harness}:{}, which is not selectable right now; routed by tier",
+            model.id
+        ));
+    } else {
+        let known = entries(true)
+            .iter()
+            .map(|(harness, model)| format!("{harness}:{}", model.id))
+            .take(12)
+            .collect::<Vec<_>>();
+        pin.notes.push(format!(
+            "model pin {hint:?} matches no selectable model{where_}; routed by tier (selectable: {})",
+            if known.is_empty() { "none".to_owned() } else { known.join(", ") }
+        ));
+    }
+    pin
+}
+
+/// Selectable models listed per tier before the rest are summarized as a
+/// count; OpenCode alone can advertise hundreds.
+const INVENTORY_MODELS_PER_TIER: usize = 5;
+
+/// What an orchestrator can pin, as a short plain-text list.
+///
+/// Built from the same descriptors the router reads, so an id copied from here
+/// resolves exactly. Only harnesses a delegation may name are listed.
+pub fn routing_inventory(descriptors: &[AdapterDescriptor]) -> String {
+    let mut lines = vec![
+        "Worker routing inventory. `capabilityTier` alone routes by tier; to pin, add `harness` and/or `model` with an id below (* marks the tier default). A pin Bridge cannot serve falls back to the tier route.".to_owned(),
+    ];
+    for descriptor in descriptors {
+        if crate::delegation::normalize_harness(&descriptor.id).as_deref() != Some(descriptor.id.as_str()) {
+            continue;
+        }
+        if !descriptor.available {
+            lines.push(format!(
+                "- {}: unavailable ({})",
+                descriptor.id,
+                descriptor.unavailable_reason.as_deref().unwrap_or("not installed")
+            ));
+            continue;
+        }
+        let tiers = [CapabilityTier::Fast, CapabilityTier::Standard, CapabilityTier::Strong]
+            .into_iter()
+            .filter_map(|tier| {
+                let mut models = descriptor
+                    .models
+                    .iter()
+                    .filter(|model| model.tier == tier && selectable(model))
+                    .collect::<Vec<_>>();
+                if models.is_empty() {
+                    return None;
+                }
+                models.sort_by_key(|model| !model.default_for_tier);
+                let mut names = models
+                    .iter()
+                    .take(INVENTORY_MODELS_PER_TIER)
+                    .map(|model| {
+                        format!("{}{}", model.id, if model.default_for_tier { "*" } else { "" })
+                    })
+                    .collect::<Vec<_>>();
+                if models.len() > INVENTORY_MODELS_PER_TIER {
+                    names.push(format!("+{} more", models.len() - INVENTORY_MODELS_PER_TIER));
+                }
+                Some(format!("{} {}", tier.as_str(), names.join(", ")))
+            })
+            .collect::<Vec<_>>();
+        if !tiers.is_empty() {
+            lines.push(format!("- {}: {}", descriptor.id, tiers.join("; ")));
+        }
+    }
+    lines.join("\n")
 }
 
 fn candidate_for_key<'a>(
@@ -849,17 +1069,30 @@ pub fn route(
     let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
     let remaining =
         PolicyConfig::default().max_capability_units_per_turn - budget.capability_units_used;
-    let resolved_profile = if request.harness.is_none() && request.model.is_none() {
-        crate::model_profiles::resolve_for_role(db, descriptors, request.role)?
-    } else {
+    // Resolved once, up front: from here on "pinned" means the pin named
+    // something installed. A pin that named nothing was dropped with a note and
+    // this request routes exactly as if it had never carried one.
+    let pin = resolve_pin(descriptors, request);
+    let pin_key = pin.key();
+    let mut pinned_request = request.clone();
+    pinned_request.harness = pin.harness.clone();
+    pinned_request.model = pin.model.clone();
+    let resolved_profile = if pin.is_set() {
         None
+    } else {
+        crate::model_profiles::resolve_for_role(db, descriptors, request.role)?
     };
-    let mut profiled_request = request.clone();
+    let mut profiled_request = pinned_request.clone();
     if let Some(profile) = &resolved_profile {
         profiled_request.effort = profile.effort;
     }
     let availability = harness_capacity(db, &workspace_id)?;
-    let candidates = build_candidates(descriptors, &profiled_request, &availability);
+    let candidates = build_candidates(
+        descriptors,
+        &profiled_request,
+        &availability,
+        pin_key.as_deref(),
+    );
     let histories = load_histories(db, &workspace_id, policy::role_name(request.role))?;
     let workspace_tunables = tunables(db, &workspace_id);
     let required_capabilities = vec!["tools".into(), "commands".into()];
@@ -909,22 +1142,38 @@ pub fn route(
         .map(|profile| format!("{}:{}", profile.provider, profile.model))
         .filter(|key| candidate_for_key(&evaluations, key).is_some());
     let settings = crate::worker_settings::load(db, &workspace_id)?;
-    let mut default_request = request.clone();
-    if request.harness.is_none() && request.model.is_none() {
-        default_request.harness = settings.default_harness.or_else(|| descriptors.iter()
-            .find(|descriptor| descriptor.available && descriptor.models.iter().any(|model| model.tier == request.capability_tier && model.default_for_tier))
-            .map(|descriptor| descriptor.id.clone()));
+    let default_harness = settings.default_harness.or_else(|| descriptors.iter()
+        .find(|descriptor| descriptor.available && descriptor.models.iter().any(|model| model.tier == request.capability_tier && model.default_for_tier))
+        .map(|descriptor| descriptor.id.clone()));
+    let mut default_request = pinned_request.clone();
+    if !pin.is_set() {
+        default_request.harness = default_harness.clone();
     }
     let baseline = profile_baseline.or_else(|| baseline_key(descriptors, &default_request));
+    // What this request would run with no pin at all. A pin that cannot be
+    // served falls back here first, so an unusable pin degrades to the tier
+    // route rather than to whatever happens to rank first.
+    let tier_route = if pin.is_set() {
+        let mut unpinned = request.clone();
+        unpinned.harness = default_harness;
+        unpinned.model = None;
+        baseline_key(descriptors, &unpinned)
+    } else {
+        baseline.clone()
+    };
+    // Only a pin can select a model below the requested tier. The router's own
+    // choices, including every fallback, stay at or above it.
+    let floor = tier_rank(request.capability_tier);
+    let routable = |evaluation: &CandidateEvaluation| {
+        evaluation.eligible() && tier_rank(evaluation.candidate.tier) >= floor
+    };
     // Only role families are published as preferences, so only role families
     // are consulted here. The fingerprint recurs in exactly one situation — a
     // retry of the same task — and that is where escalation belongs: after a
     // recorded failure, prefer sideways before spending a tier.
     let policy_preference = preferred_candidates
         .get(policy::role_name(request.role))
-        .filter(|key| {
-            candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
-        })
+        .filter(|key| candidate_for_key(&evaluations, key).is_some_and(routable))
         .cloned();
     // The *latest* outcome for this task, not the latest failure: a later
     // success means the task is no longer failing, and steering away from a
@@ -944,7 +1193,8 @@ pub fn route(
         .as_deref()
         .and_then(|key| candidate_for_key(&evaluations, key))
         .and_then(|failed| next_escalation(&failed.candidate, &evaluations))
-        .map(|candidate| candidate.key());
+        .map(|candidate| candidate.key())
+        .filter(|key| candidate_for_key(&evaluations, key).is_some_and(routable));
     let recommendation = if profile_locked {
         baseline
             .as_ref()
@@ -956,11 +1206,11 @@ pub fn route(
         retry_escalation.or(policy_preference).or_else(|| {
             evaluations
                 .iter()
-                .find(|candidate| candidate.eligible())
+                .find(|candidate| routable(candidate))
                 .map(|candidate| candidate.candidate.key())
         })
     };
-    let manual_override = request.harness.is_some() || request.model.is_some();
+    let manual_override = pin.is_set();
     let independent_verification = implementer_family.is_some();
     let eligible_manual_baseline = baseline.as_deref().filter(|key| {
         candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
@@ -975,7 +1225,7 @@ pub fn route(
         } else {
             recommendation.clone()
         };
-    let explanation = if independent_verification
+    let mut explanation = if independent_verification
         && manual_override
         && eligible_manual_baseline.is_some()
     {
@@ -987,7 +1237,11 @@ pub fn route(
         recommendation.as_ref().map(|candidate| format!("Independent verification requires a different harness family; selected {candidate}"))
             .unwrap_or_else(|| "No different-family verifier satisfies the deterministic route constraints".into())
     } else if manual_override {
-        "Manual harness/model override retained and recorded".to_owned()
+        format!(
+            "Pinned route {} retained; the {} tier route is the fallback",
+            baseline.as_deref().unwrap_or("unknown"),
+            request.capability_tier.as_str()
+        )
     } else if profile_locked {
         "Pinned or learning-disabled role profile retained as a deterministic route constraint"
             .to_owned()
@@ -1007,6 +1261,16 @@ pub fn route(
                 .unwrap_or_else(|| "No candidate met the quality and safety constraints".into()),
         }
     };
+    if independent_verification && manual_override && eligible_manual_baseline.is_none() {
+        explanation.push_str(&format!(
+            "; pin {} is not an eligible different-family verifier",
+            baseline.as_deref().unwrap_or("unknown")
+        ));
+    }
+    for note in &pin.notes {
+        explanation.push_str("; ");
+        explanation.push_str(note);
+    }
     let mut decision = RouterDecision {
         schema_version: ROUTER_SCHEMA_VERSION,
         id: Uuid::new_v4().to_string(),
@@ -1044,7 +1308,7 @@ pub fn route(
     // the table to attribute the worker's outcome — persisting it here, still
     // showing the original (unusable) pick, let a substituted harness's
     // result train the wrong candidate's history.
-    let mut routed = request.clone();
+    let mut routed = pinned_request.clone();
     if let Some(key) = executed {
         let mut selected = candidate_for_key(&decision.candidates, &key)
             .cloned()
@@ -1100,12 +1364,17 @@ pub fn route(
             )
         });
         if requires_substitution {
-            if let Some(alternative) = decision
-                .candidates
-                .iter()
-                .find(|candidate| candidate.eligible())
-                .cloned()
-            {
+            // The tier route first, then the best routable candidate, and only
+            // then anything eligible at all.
+            let alternative = tier_route
+                .as_deref()
+                .filter(|_| manual_override)
+                .and_then(|key| candidate_for_key(&decision.candidates, key))
+                .filter(|candidate| routable(candidate))
+                .or_else(|| decision.candidates.iter().find(|candidate| routable(candidate)))
+                .or_else(|| decision.candidates.iter().find(|candidate| candidate.eligible()))
+                .cloned();
+            if let Some(alternative) = alternative {
                 let _ = crate::store::event(
                     db,
                     "router",
@@ -2724,7 +2993,7 @@ mod tests {
             vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
         let read_only = request();
         assert_eq!(read_only.write_mode, WriteMode::ReadOnly);
-        let candidates = build_candidates(&descriptors, &read_only, &BTreeMap::new());
+        let candidates = build_candidates(&descriptors, &read_only, &BTreeMap::new(), None);
         let claude = candidates
             .iter()
             .find(|candidate| candidate.harness == "claude")
@@ -2739,7 +3008,7 @@ mod tests {
         let mut writing = read_only.clone();
         writing.write_mode = WriteMode::Isolated;
         writing.owned_paths = vec!["src/**".into()];
-        assert!(build_candidates(&descriptors, &writing, &BTreeMap::new())
+        assert!(build_candidates(&descriptors, &writing, &BTreeMap::new(), None)
             .iter()
             .all(|candidate| candidate.permission_eligible));
 
@@ -3172,5 +3441,222 @@ mod tests {
         let exclusions = claude_exclusions(&db, "turn-live-quota");
         assert!(exclusions.contains(&CandidateExclusion::QuotaExhausted));
         assert!(exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    // -- Route pins: the orchestrator can name a harness and/or model as a
+    // fallback-preserving alternative to routing by tier alone. --
+
+    fn model_opt(id: &str, label: &str, tier: CapabilityTier, default_for_tier: bool) -> ModelOption {
+        ModelOption {
+            id: id.into(),
+            label: label.into(),
+            tier,
+            available: true,
+            compatible: true,
+            lifecycle: crate::model::ModelLifecycle::Stable,
+            source: crate::model::ModelCatalogSource::CuratedFallback,
+            supported_effort_levels: Vec::new(),
+            default_for_tier,
+        }
+    }
+
+    /// Realistic multi-tier catalogs: Claude has haiku/sonnet/opus across all
+    /// three tiers, Codex only has a standard-tier model, so a pin that names
+    /// something only Claude has must select Claude even with no harness pin.
+    fn tiered_descriptors() -> Vec<AdapterDescriptor> {
+        vec![
+            AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                id: "claude".into(),
+                label: "Claude Code".into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("test".into()),
+                capabilities: vec!["tools".into(), "commands".into()],
+                unavailable_reason: None,
+                models: vec![
+                    model_opt("haiku", "Claude Haiku", CapabilityTier::Fast, true),
+                    model_opt("sonnet", "Claude Sonnet", CapabilityTier::Standard, true),
+                    model_opt("opus", "Claude Opus", CapabilityTier::Strong, true),
+                ],
+                default_model: Some("sonnet".into()),
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+            },
+            AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                id: "codex".into(),
+                label: "Codex".into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("test".into()),
+                capabilities: vec!["tools".into(), "commands".into()],
+                unavailable_reason: None,
+                models: vec![model_opt(
+                    "codex-standard",
+                    "Codex Standard",
+                    CapabilityTier::Standard,
+                    true,
+                )],
+                default_model: Some("codex-standard".into()),
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+            },
+        ]
+    }
+
+    #[test]
+    fn a_model_only_pin_selects_the_harness_that_owns_it() {
+        let db = routing_db();
+        let mut pinned = request();
+        pinned.model = Some("opus".into());
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+        assert_eq!(routed.request.model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn a_model_pin_is_honored_across_tiers() {
+        let db = routing_db();
+        let mut pinned = request();
+        pinned.capability_tier = CapabilityTier::Standard;
+        pinned.model = Some("opus".into());
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+        assert_eq!(routed.request.model.as_deref(), Some("opus"));
+        assert_eq!(
+            routed.request.capability_tier,
+            CapabilityTier::Strong,
+            "the routed request must carry the pinned model's real tier"
+        );
+    }
+
+    #[test]
+    fn model_pins_resolve_aliases_and_labels() {
+        let db = routing_db();
+        for hint in ["Claude Opus", "claude-opus", "OPUS"] {
+            let mut pinned = request();
+            pinned.model = Some(hint.into());
+            let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+            assert_eq!(
+                routed.request.model.as_deref(),
+                Some("opus"),
+                "hint {hint:?} must resolve to opus"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_model_pin_falls_back_to_the_tier_route_with_a_note() {
+        let db = routing_db();
+        let mut pinned = request();
+        pinned.model = Some("gpt-nonexistent".into());
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        let unpinned = route(&db, "parent", "turn-unpinned", &request(), &tiered_descriptors()).unwrap();
+        assert_eq!(
+            routed.request.harness.as_deref(),
+            unpinned.request.harness.as_deref(),
+            "with no usable pin, this routes exactly like the unpinned request"
+        );
+        assert!(
+            routed.decision.explanation.contains("gpt-nonexistent"),
+            "{}",
+            routed.decision.explanation
+        );
+    }
+
+    #[test]
+    fn an_uninstalled_harness_pin_falls_back_to_the_tier_route() {
+        let db = routing_db();
+        let mut pinned = request();
+        pinned.harness = Some("cursor".into());
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        let unpinned = route(&db, "parent", "turn-unpinned", &request(), &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), unpinned.request.harness.as_deref());
+        assert!(
+            routed.decision.explanation.contains("cursor"),
+            "{}",
+            routed.decision.explanation
+        );
+    }
+
+    #[test]
+    fn a_harness_only_pin_uses_that_harness_default_for_the_tier() {
+        let db = routing_db();
+        let mut pinned = request();
+        pinned.harness = Some("claude".into());
+        pinned.capability_tier = CapabilityTier::Strong;
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+        assert_eq!(routed.request.model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn an_unusable_pin_falls_back_to_the_unpinned_route_first() {
+        let db = routing_db();
+        crate::worker_settings::save(
+            &db,
+            "w",
+            &bridge_protocol::messages::WorkerSettings {
+                default_harness: Some("claude".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut descriptors = tiered_descriptors();
+        descriptors[1].available = false;
+        descriptors[1].unavailable_reason = Some("codex is not installed".into());
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        let routed = route(&db, "parent", "turn", &pinned, &descriptors).unwrap();
+        assert_eq!(
+            routed.request.harness.as_deref(),
+            Some("claude"),
+            "the unpinned default is the first fallback, not merely any eligible candidate"
+        );
+    }
+
+    #[test]
+    fn a_below_floor_pin_is_never_recommended_without_the_pin() {
+        let db = routing_db();
+        force_autonomous(&db, "w");
+        let mut pinned = request();
+        pinned.capability_tier = CapabilityTier::Standard;
+        pinned.model = Some("haiku".into());
+        let routed = route(&db, "parent", "turn-1", &pinned, &tiered_descriptors()).unwrap();
+        assert_eq!(routed.request.model.as_deref(), Some("haiku"));
+
+        // The very next unpinned request at the same tier must never recommend
+        // the below-floor candidate the pin admitted.
+        let unpinned = route(&db, "parent", "turn-2", &request(), &tiered_descriptors()).unwrap();
+        assert_ne!(
+            unpinned.decision.recommended_candidate.as_deref(),
+            Some("claude:haiku"),
+            "a pin-only admission must not leak into the ordinary recommendation"
+        );
+    }
+
+    #[test]
+    fn a_verification_pin_on_the_implementer_family_is_replaced() {
+        let db = routing_db();
+        db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES('c','w','parent',1,'[]',0,'active','now','now')", []).unwrap();
+        db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES('p','c',1,'high','{}','now')", []).unwrap();
+        db.execute("INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at) VALUES('a','p','parent','head','dirty','/tmp','verifying','codex','now')", []).unwrap();
+        let mut pinned = request();
+        pinned.role = WorkerRole::Verification;
+        pinned.harness = Some("codex".into());
+        let routed = route(&db, "parent", "turn", &pinned, &tiered_descriptors()).unwrap();
+        assert_ne!(
+            routed.request.harness.as_deref(),
+            Some("codex"),
+            "independent verification cannot be satisfied by pinning the implementer's own family"
+        );
+    }
+
+    #[test]
+    fn routing_inventory_lists_selectable_models_by_tier() {
+        let text = routing_inventory(&tiered_descriptors());
+        assert!(text.contains("claude:"), "{text}");
+        assert!(text.contains("opus*"), "{text}");
+        assert!(text.contains("codex:"), "{text}");
+        assert!(text.contains("codex-standard*"), "{text}");
     }
 }
