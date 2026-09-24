@@ -36,12 +36,15 @@ export function toSource(message, config, now = Date.now()) {
     config.senders.has(normalizeJid(context.participant));
   return {
     id: sourceId(message.key), key: message.key, timestamp,
+    // Match before redaction: removing a phone suffix must not turn an ordinary
+    // token like /ticket9876543210 into an explicit command.
+    triggered: PREFIX.test(text),
     name: displayName(message.pushName), text: redact(text).slice(0, 8000),
     quoted: quoteAllowed && quotedText ? { name: 'Quoted group member', text: redact(quotedText).slice(0, 8000) } : null,
   };
 }
 
-export function isTextTrigger(source) { return Boolean(source && PREFIX.test(source.text)); }
+export function isTextTrigger(source) { return source?.triggered === true; }
 
 // Baileys' outer key identifies the reacted-to message. reaction.key identifies
 // the reaction's author: authorizing the outer key would authorize the wrong human.

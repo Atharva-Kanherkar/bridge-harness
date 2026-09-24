@@ -13,7 +13,8 @@ test('explicit prefixes only, authorized group and author, device and LID keys',
   for (const text of ['/ticket sidebar flickers', '@bridge please add this', '/ticket\nBug']) {
     assert.equal(isTextTrigger(toSource(message(text), config, now)), true);
   }
-  for (const text of ['normal chat', 'please /ticket this', '/ticketing something', '@bridges hello', ' /ticket bug']) {
+  for (const text of ['normal chat', 'please /ticket this', '/ticketing something', '@bridges hello', ' /ticket bug',
+    '/ticket9876543210', '@bridge919876543210']) {
     assert.equal(isTextTrigger(toSource(message(text), config, now)), false);
   }
   for (const change of [{ remoteJid: '999@g.us' }, { participant: '111@s.whatsapp.net' }, { fromMe: true }, { id: null }]) {
