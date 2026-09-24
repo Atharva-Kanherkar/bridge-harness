@@ -2656,6 +2656,7 @@ function AppContent() {
       /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Mission Control…"/>}><MissionControl
         sessions={visibleSessions}
         workspaces={state.workspaces}
+        projects={state.projects}
         events={agentEvents}
         activeSessionId={session?.id}
         onFocusSession={openSession}

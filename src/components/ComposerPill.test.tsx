@@ -301,4 +301,18 @@ describe("browser context attachments", () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(textarea().value).toBe("Make this blue");
   });
+  it("keeps Stop and Steer on the textarea's row in the inline layout", () => {
+    render({ layout: "inline", working: true, activeAction: "steer", onStop: () => {}, value: "go" });
+    const row = textarea().closest("div.flex.items-end");
+    expect(row).not.toBeNull();
+    expect(row!.contains(stop())).toBe(true);
+    expect(row!.contains(container.querySelector('button[type="submit"]'))).toBe(true);
+    expect(textarea().className).toContain("text-sm");
+  });
+
+  it("keeps the dock layout's controls below the textarea", () => {
+    render({ working: true, activeAction: "steer", onStop: () => {} });
+    expect(textarea().closest("div.flex.items-end")).toBeNull();
+    expect(textarea().className).toContain("text-[15px]");
+  });
 });

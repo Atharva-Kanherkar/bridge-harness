@@ -76,7 +76,8 @@ it("shows only active sessions even with hundreds of idle chats", async () => {
   const sessions = [session("a", "working"), session("c", "waiting"), ...Array.from({ length: 501 }, (_, i) => session(`idle-${i}`, "completed"))];
   await render({ sessions });
   expect(tiles().sort()).toEqual(["a", "c"]);
-  expect(host.textContent).toContain("2 live");
+  expect(host.textContent).toContain("1 needs you");
+  expect(host.textContent).toContain("1 working");
   expect(host.textContent).not.toContain("Show all");
   expect(vi.mocked(bridgeApi.sessionForest).mock.calls.map(([id]) => id).sort()).toEqual(["a", "c"]);
 });
@@ -221,7 +222,7 @@ it("accepts an idle sidebar chat into an empty grid and persists it until remove
   await dragEvent(canvas, "drop", data);
   expect(tiles()).toEqual(["idle"]);
   expect(savedLayout().pinnedSessionIds).toEqual(["idle"]);
-  expect(host.textContent).toContain("0 live");
+  expect(host.textContent).toContain("0 working");
   expect(host.textContent).toContain("1 pinned");
   expect(bridgeApi.submitInput).not.toHaveBeenCalled();
   act(() => root.unmount()); root = createRoot(host);
@@ -379,7 +380,7 @@ it("still shows a pinned worker chat even with the default worker-visibility set
   expect(tiles().sort()).toEqual(["a", "w"]);
   // The pinned worker is hidden from the visibility filter but still active,
   // so the badge must count it too, not just the auto-surfaced chats.
-  expect(host.textContent).toContain("2 live");
+  expect(host.textContent).toContain("2 working");
 });
 
 it("shows worker chats once the setting is turned on", async () => {
@@ -407,4 +408,113 @@ it("live-syncs worker visibility from an external write, without remounting or r
     window.dispatchEvent(new Event("storage"));
   });
   expect(tiles()).toEqual(["a"]);
+});
+
+const entry = (sessionId: string, sequence: number, kind: string, payload: Record<string, unknown>) =>
+  ({ id: `${sessionId}-${sequence}`, sessionId, sequence, kind, payload, contextVisibility: "eligible", createdAt: "2026-01-01T00:00:00Z", semanticSchemaVersion: 1 });
+
+it("names each tile by project and a readable title instead of a raw URL", async () => {
+  const projects = [{ id: "p", name: "kairo", path: "/src/kairo", createdAt: "2026-01-01T00:00:00Z" }];
+  const spaces = [...workspaces, { id: "k", title: "Review worktree", projectId: "p" }] as Workspace[];
+  await render({
+    sessions: [session("a", "working", { workspaceId: "k", title: "https://github.com/Atharva-Kanherkar/kairo/pull/43 reviewe…" }), session("b", "working", { workspaceId: "ws", title: "Session supervisor" })],
+    workspaces: spaces, projects,
+  });
+  const header = (id: string) => host.querySelector(`[data-session-id='${id}'] header`)!;
+  expect(header("a").textContent).toContain("kairo");
+  expect(header("a").querySelector("h2")?.textContent).toBe("PR #43");
+  expect(header("a").querySelector("h2")?.getAttribute("title")).toContain("github.com");
+  expect(header("b").textContent).toContain("Bridge");
+  expect(header("b").querySelector("h2")?.textContent).toBe("Session supervisor");
+});
+
+it("shows the latest thing you asked each chat under its title", async () => {
+  vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), entries: [
+    entry(id, 1, "user.message", { text: "Build the supervisor" }),
+    entry(id, 2, "assistant.message", { text: "Working on it" }),
+    entry(id, 3, "user.message", { text: "  now add   retries  " }),
+  ] } as unknown as SessionForestSnapshot));
+  await render({ sessions: [session("a", "working", { title: "Supervisor" })] });
+  expect(host.querySelector("[data-session-id='a'] [data-tile-subtitle]")?.textContent).toBe("now add retries");
+});
+
+it("titles an unnamed chat by what was asked", async () => {
+  vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), entries: [entry(id, 1, "user.message", { text: "Port the grid to Swift" })] } as unknown as SessionForestSnapshot));
+  await render({ sessions: [session("a", "working", { label: "Orchestrator", title: null, model: "opus" })] });
+  expect(host.querySelector("[data-session-id='a'] h2")?.textContent).toBe("Port the grid to Swift");
+  expect(host.querySelector("[data-session-id='a'] [data-tile-subtitle]")?.textContent).toBe("Claude · opus");
+});
+
+it("does not repeat the chat title in the composer", async () => {
+  await render({ sessions: [session("a", "working", { title: "Session supervisor" }), session("b", "completed", { title: "Idle one" })] });
+  expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")?.placeholder).toBe("Steer this chat…");
+  localStorage.setItem(MISSION_LAYOUT_KEY, JSON.stringify({ version: 1, root: { type: "leaf", leafId: "b" }, pinnedSessionIds: ["b"] }));
+  act(() => root.unmount()); root = createRoot(host);
+  await render({ sessions: [session("b", "completed", { title: "Idle one" })] });
+  expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='b'] textarea")?.placeholder).toBe("Reply…");
+});
+
+it("flags only tiles that need you and jumps to their composer", async () => {
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => { callback(0); return 0; });
+  await render({ sessions: [session("a", "working"), session("b", "waiting"), session("c", "waiting")] });
+  const flagged = () => [...host.querySelectorAll<HTMLElement>("[data-attention='true']")].map(el => el.dataset.sessionId).sort();
+  expect(flagged()).toEqual(["b", "c"]);
+  expect(host.querySelector("[data-session-id='a']")?.className).not.toContain("border-foreground/45");
+  expect(host.querySelector("[data-session-id='b']")?.className).toContain("border-foreground/45");
+  const jump = [...host.querySelectorAll("button")].find(button => button.textContent === "2 needs you")!;
+  await act(async () => jump.click());
+  const first = document.activeElement?.closest("[data-session-id]")?.getAttribute("data-session-id");
+  await act(async () => jump.click());
+  const second = document.activeElement?.closest("[data-session-id]")?.getAttribute("data-session-id");
+  expect([first, second].sort()).toEqual(["b", "c"]);
+  raf.mockRestore();
+});
+
+it("highlights one project's tiles from the legend and dims the rest", async () => {
+  const spaces = [...workspaces, { id: "k", title: "kairo" }] as Workspace[];
+  await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working", { workspaceId: "k" }), session("c", "working", { workspaceId: "ws" })], workspaces: spaces });
+  const legend = host.querySelector("[aria-label='Projects on the board']")!;
+  expect(legend.textContent).toBe("Bridge2kairo1");
+  const bridge = [...legend.querySelectorAll("button")].find(button => button.textContent?.startsWith("Bridge"))!;
+  await act(async () => bridge.click());
+  expect(bridge.getAttribute("aria-pressed")).toBe("true");
+  const lit = [...host.querySelectorAll<HTMLElement>("[data-project-highlight='true']")].map(el => el.dataset.sessionId).sort();
+  expect(lit).toEqual(["a", "c"]);
+  expect(host.querySelector("[data-session-id='b']")?.className).toContain("opacity-40");
+  await act(async () => bridge.click());
+  expect(host.querySelector("[data-session-id='b']")?.className).not.toContain("opacity-40");
+});
+
+it("hides the legend when every tile belongs to one project", async () => {
+  await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working", { workspaceId: "ws" })] });
+  expect(host.querySelector("[aria-label='Projects on the board']")).toBeNull();
+});
+
+it("opens a new chat beside its own project's tile", async () => {
+  const spaces = [...workspaces, { id: "k", title: "kairo" }] as Workspace[];
+  const a = session("a", "working", { workspaceId: "ws" }), b = session("b", "working", { workspaceId: "k" });
+  await render({ sessions: [a, b], workspaces: spaces });
+  await render({ sessions: [a, b, session("c", "working", { workspaceId: "ws" })], workspaces: spaces });
+  const saved = savedLayout().root!;
+  expect(saved.type).toBe("split");
+  // c is cut from a, the other Bridge tile, rather than from kairo's b.
+  if (saved.type === "split") expect(leafIds(saved.first).sort()).toEqual(["a", "c"]);
+});
+
+it("arranges the board into a grid grouped by project and persists it", async () => {
+  const spaces = [...workspaces, { id: "k", title: "kairo" }] as Workspace[];
+  const layout: PaneNode = { type: "split", direction: "horizontal", ratio: 0.5, first: { type: "split", direction: "vertical", ratio: 0.5, first: { type: "leaf", leafId: "a" }, second: { type: "leaf", leafId: "b" } }, second: { type: "split", direction: "vertical", ratio: 0.5, first: { type: "leaf", leafId: "c" }, second: { type: "leaf", leafId: "d" } } };
+  localStorage.setItem(MISSION_LAYOUT_KEY, JSON.stringify({ version: 1, root: layout, expandedLeafId: "a" }));
+  await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working", { workspaceId: "k" }), session("c", "working", { workspaceId: "ws" }), session("d", "working", { workspaceId: "k" })], workspaces: spaces });
+  await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Arrange")!.click());
+  const saved = savedLayout();
+  expect(saved.expandedLeafId).toBeNull();
+  expect(leafIds(saved.root!)).toEqual(["a", "c", "b", "d"]);
+  expect(saved.root?.type === "split" && saved.root.direction).toBe("vertical");
+});
+
+it("keeps the view title out of the board toolbar", async () => {
+  await render({ sessions: [session("a", "working")] });
+  expect(host.querySelector("h1")?.className).toContain("sr-only");
+  expect(host.querySelector("[role='toolbar']")?.textContent).not.toContain("Mission Control");
 });
