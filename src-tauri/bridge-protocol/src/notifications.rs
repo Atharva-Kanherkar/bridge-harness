@@ -82,6 +82,7 @@ notifications![
     // bytes: a client that missed it re-lists the workspace's terminals.
     (TerminalExited, "terminal-exited", Transient),
     (AccountUsage, "account-usage", Transient),
+    (VoiceTranscript, "voice-transcript", Transient),
     // Cold-start narration: a phase observed at a real adapter launch
     // boundary (spawning/handshake/session_open). Live-only on purpose — a
     // client that missed one simply never shows that phase, unlike the
@@ -165,6 +166,7 @@ mod tests {
             NotificationName::MemoryChanged,
             NotificationName::SessionOutput,
             NotificationName::AccountUsage,
+            NotificationName::VoiceTranscript,
             NotificationName::SessionStartup,
             NotificationName::StreamLagged,
         ] {

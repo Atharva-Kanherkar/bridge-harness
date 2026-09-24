@@ -273,6 +273,14 @@ pub fn dispatch(
             let p: wire::SubmitInputParams = decode(method, params)?;
             reply(api::submit_input_with_attachments(core, p.session_id, p.text, p.attachments.unwrap_or_default()))
         }
+        MethodName::VoiceCapabilities => { let p: wire::VoiceCapabilitiesParams = decode(method, params)?; reply(api::voice_capabilities(core, p)) }
+        MethodName::VoiceStart => { let p: wire::VoiceStartParams = decode(method, params)?; reply(api::voice_start(core, p)) }
+        MethodName::VoiceAppend => { let p: wire::VoiceAppendParams = decode(method, params)?; reply(api::voice_append(core, p)) }
+        MethodName::VoiceStop => { let p: wire::VoiceStopParams = decode(method, params)?; reply(api::voice_stop(core, p)) }
+        MethodName::VoiceCancel => { let p: wire::VoiceCancelParams = decode(method, params)?; reply(api::voice_cancel(core, p)) }
+        MethodName::VoiceLocalStatus => reply(api::voice_local_status(core)),
+        MethodName::VoiceLocalSetup => { let p: wire::VoiceLocalSetupParams = decode(method, params)?; reply(api::voice_local_setup(core, p)) }
+        MethodName::VoiceLocalRemove => { let p: wire::VoiceLocalRemoveParams = decode(method, params)?; reply(api::voice_local_remove(core, p)) }
         MethodName::DispatchAgentShortcut => {
             let p: wire::DispatchAgentShortcutParams = decode(method, params)?;
             reply(api::dispatch_agent_shortcut(
@@ -1050,6 +1058,63 @@ mod tests {
             })
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn voice_probe_before_chat_creation_reports_setup_without_selecting_a_provider() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let result = dispatch(&core, MethodName::VoiceCapabilities, Some(json!({}))).unwrap();
+        assert!(result.get("sessionId").is_none());
+        assert!(result.get("selectedProvider").is_none());
+        let local = result["providers"].as_array().unwrap().iter()
+            .find(|provider| provider["provider"] == "local").unwrap();
+        assert_eq!(local["state"], "needsSetup");
+        assert_eq!(local["processing"], "onDevice");
+        assert_eq!(local["recoveryAction"], "setup");
+
+        let error = dispatch(&core, MethodName::VoiceStart,
+            Some(json!({"ownerKey":"fresh-draft", "provider":"local"}))).unwrap_err();
+        assert!(error.message.contains("setup"));
+        assert!(core.adapters.lock().unwrap().is_empty());
+        assert_eq!(core.db.lock().unwrap().query_row("SELECT count(*) FROM sessions", [],
+            |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn local_voice_setup_and_removal_require_explicit_confirmation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let status = dispatch(&core, MethodName::VoiceLocalStatus, None).unwrap();
+        assert!(matches!(status["state"].as_str(), Some("notInstalled" | "unsupported")));
+
+        for (method, params) in [
+            (MethodName::VoiceLocalSetup, Some(json!({"confirmDownload": false}))),
+            (MethodName::VoiceLocalRemove, Some(json!({"confirmRemoval": false}))),
+        ] {
+            let error = dispatch(&core, method, params).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid.code());
+            assert!(error.message.contains("explicit"));
+        }
+        for method in [MethodName::VoiceLocalSetup, MethodName::VoiceLocalRemove] {
+            let error = dispatch(&core, method, Some(json!({}))).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        }
+    }
+
+    #[test]
+    fn voice_dispatch_rejects_unknown_providers_and_the_old_ownerless_contract() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        for params in [
+            json!({"ownerKey":"draft", "provider":"automatic"}),
+            json!({"sessionId":"chat", "provider":"codex"}),
+            json!({"ownerKey":"draft", "provider":"local", "fallback":"codex"}),
+        ] {
+            let error = dispatch(&core, MethodName::VoiceStart, Some(params)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        }
+        assert!(core.adapters.lock().unwrap().is_empty());
     }
 
     #[test]

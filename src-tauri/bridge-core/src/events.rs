@@ -57,6 +57,7 @@ pub enum CoreEvent {
         provider: String,
         rate_limits: Value,
     },
+    VoiceTranscript(bridge_protocol::messages::VoiceTranscriptEvent),
     /// Refetch hint: a managed agent's installation or readiness changed. The
     /// payload carries the agent id only — authoritative state is refetched
     /// through `agents/list_managed_agents`, never reconstructed from this.
@@ -122,6 +123,7 @@ impl CoreEvent {
             CoreEvent::TerminalFrame(_) => NotificationName::TerminalFrame,
             CoreEvent::TerminalExited { .. } => NotificationName::TerminalExited,
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
+            CoreEvent::VoiceTranscript(_) => NotificationName::VoiceTranscript,
             CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
             CoreEvent::SessionStartup { .. } => NotificationName::SessionStartup,
             CoreEvent::GithubChecksChanged { .. } => NotificationName::GithubChecksChanged,
@@ -170,6 +172,7 @@ impl CoreEvent {
                 "provider": provider,
                 "rateLimits": rate_limits,
             }),
+            CoreEvent::VoiceTranscript(event) => serde_json::to_value(event).expect("voice transcript serializes"),
             CoreEvent::GithubChecksChanged { workspace_id, number } => serde_json::json!({
                 "workspaceId": workspace_id, "number": number,
             }),
@@ -328,6 +331,7 @@ impl EventBus {
                 | CoreEvent::TerminalFrame(_)
                 | CoreEvent::TerminalExited { .. }
                 | CoreEvent::AccountUsage { .. }
+                | CoreEvent::VoiceTranscript(_)
                 | CoreEvent::SessionStartup { .. } => {}
                 | CoreEvent::GithubChecksChanged { .. }
                 | CoreEvent::GithubCiFinished { .. }
@@ -404,6 +408,15 @@ mod tests {
                 provider: "codex".into(),
                 rate_limits: serde_json::json!({}),
             },
+            CoreEvent::VoiceTranscript(bridge_protocol::messages::VoiceTranscriptEvent {
+                voice_session_id: "voice-1".into(),
+                owner_key: "draft-s".into(),
+                session_id: Some("s".into()),
+                provider: bridge_protocol::messages::VoiceProviderId::Codex,
+                kind: bridge_protocol::messages::VoiceTranscriptKind::Delta,
+                text: Some("hello".into()),
+                error: None,
+            }),
             CoreEvent::ManagedAgentChanged {
                 agent_id: "codex".into(),
             },

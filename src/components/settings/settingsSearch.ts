@@ -43,6 +43,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
 
   { section: "composer", label: "Inline suggestions", description: "Ghost-text continuations of your draft, accepted with Tab" },
   { section: "composer", label: "Suggestion model", description: "Which model writes the inline continuation" },
+  { section: "voice", label: "Local dictation", description: "Download or remove the private on-device English speech model" },
 
   { section: "agents", label: "New preset", description: "Create an agent preset" },
 

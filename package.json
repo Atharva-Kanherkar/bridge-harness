@@ -16,6 +16,7 @@
     "prepare:browser-host:dev": "sh scripts/prepare-browser-host.sh debug",
     "prepare:daemon": "sh scripts/prepare-daemon.sh release",
     "prepare:daemon:dev": "sh scripts/prepare-daemon.sh debug",
+    "prepare:voice-helper": "sh scripts/prepare-voice-helper.sh",
     "prepare:claude-sidecar": "sh scripts/prepare-claude-sidecar.sh",
     "prepare:safari-extension": "sh scripts/prepare-safari-extension.sh",
     "build:macos-smoke": "sh scripts/build-macos-smoke.sh",

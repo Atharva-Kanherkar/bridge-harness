@@ -117,6 +117,7 @@ pub mod terminal_workspace;
 pub mod transcript_export;
 pub mod switch_summary;
 pub mod verification_pipeline;
+pub mod voice;
 pub mod usage;
 pub mod usage_pricing;
 pub mod usage_insights;

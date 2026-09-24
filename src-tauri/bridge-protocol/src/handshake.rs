@@ -69,9 +69,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.17 enables the `auto_apply` memory extraction mode.** A new client must
 /// not pair with an older daemon that still rejects that persisted setting,
 /// and an older client must not pair with a daemon that may already hold it.
+/// **1.18 adds typed composer dictation and its transient transcript event.**
+/// **1.19 separates voice draft ownership and changes provider capability states.**
+/// Older clients cannot interpret fresh-draft events or revised hypotheses.
+/// **1.20 adds explicit local voice setup, progress, retry, and removal.**
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 17,
+    minor: 20,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -85,11 +89,15 @@ impl ProtocolVersion {
     /// Whether a server at `self` can serve a client that expects `client`.
     pub fn accepts(self, client: ProtocolVersion) -> bool {
         const AUTOMATIC_MEMORY_MINOR: u32 = 17;
+        const INDEPENDENT_VOICE_MINOR: u32 = 19;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
                 && self.minor >= AUTOMATIC_MEMORY_MINOR
                 && client.minor < AUTOMATIC_MEMORY_MINOR)
+            && !(self.major == 1
+                && self.minor >= INDEPENDENT_VOICE_MINOR
+                && client.minor < INDEPENDENT_VOICE_MINOR)
     }
 }
 
@@ -256,6 +264,15 @@ mod tests {
         assert!(!PROTOCOL_VERSION.accepts(before_automatic_memory));
     }
 
+    #[test]
+    fn independent_voice_rejects_stale_clients_and_daemons() {
+        for minor in [17, 18] {
+            let older = ProtocolVersion { major: 1, minor };
+            assert!(!older.accepts(PROTOCOL_VERSION));
+            assert!(!PROTOCOL_VERSION.accepts(older));
+        }
+    }
+
     fn request(major: u32, minor: u32) -> HandshakeRequest {
         HandshakeRequest {
             protocol_version: ProtocolVersion { major, minor },
@@ -281,7 +298,7 @@ mod tests {
         for incompatible in [
             request(PROTOCOL_VERSION.major + 1, 0),
             request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor + 1),
-            request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor - 1),
+            request(PROTOCOL_VERSION.major, 16),
         ] {
             let error = negotiate(&incompatible).unwrap_err();
             assert_eq!(error.code, ErrorCode::IncompatibleProtocol.code());

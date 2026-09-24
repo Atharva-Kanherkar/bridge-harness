@@ -50,6 +50,7 @@ cap-std = "4.0.2"
 # being written, which a shell-out to `tar` cannot express.
 tar = "0.4"
 flate2 = "1"
+bzip2 = "0.6"
 tempfile = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

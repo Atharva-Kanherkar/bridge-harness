@@ -464,6 +464,62 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "voice_capabilities",
+      "domain": "voice",
+      "method": "voice/voice_capabilities",
+      "paramsSchema": "voice-capabilities-params.json",
+      "resultSchema": "voice-capabilities-result.json"
+    },
+    {
+      "command": "voice_start",
+      "domain": "voice",
+      "method": "voice/voice_start",
+      "paramsSchema": "voice-start-params.json",
+      "resultSchema": "voice-start-result.json"
+    },
+    {
+      "command": "voice_append",
+      "domain": "voice",
+      "method": "voice/voice_append",
+      "paramsSchema": "voice-append-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "voice_stop",
+      "domain": "voice",
+      "method": "voice/voice_stop",
+      "paramsSchema": "voice-stop-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "voice_cancel",
+      "domain": "voice",
+      "method": "voice/voice_cancel",
+      "paramsSchema": "voice-cancel-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "voice_local_status",
+      "domain": "voice",
+      "method": "voice/voice_local_status",
+      "paramsSchema": null,
+      "resultSchema": "voice-local-status-result.json"
+    },
+    {
+      "command": "voice_local_setup",
+      "domain": "voice",
+      "method": "voice/voice_local_setup",
+      "paramsSchema": "voice-local-setup-params.json",
+      "resultSchema": "voice-local-status-result.json"
+    },
+    {
+      "command": "voice_local_remove",
+      "domain": "voice",
+      "method": "voice/voice_local_remove",
+      "paramsSchema": "voice-local-remove-params.json",
+      "resultSchema": "voice-local-status-result.json"
+    },
+    {
       "command": "archive_chat",
       "domain": "sessions",
       "method": "sessions/archive_chat",
@@ -1481,7 +1537,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 17
+    "minor": 20
   },
   "reserved": {
     "cancel": "$/cancel",

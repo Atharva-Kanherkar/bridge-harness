@@ -83,7 +83,7 @@ native_grants = plistlib.loads(native_entitlements.stdout)
 for key in ("com.apple.security.cs.allow-jit", "com.apple.security.cs.allow-unsigned-executable-memory", "com.apple.security.cs.disable-library-validation"):
     if native_grants.get(key) is not True:
         raise SystemExit("verify-macos-app: native Claude SDK is missing entitlement: " + key)
-for name in ("bridged", "bridge-browser-host"):
+for name in ("bridged", "bridge-browser-host", "bridge-voice-helper"):
     binary = app / "Contents/MacOS" / name
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise SystemExit("verify-macos-app: missing executable sidecar: " + name)

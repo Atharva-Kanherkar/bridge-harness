@@ -1,10 +1,11 @@
 import type { ClipboardEvent, KeyboardEvent, MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Mic, Paperclip, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComposerAttachment } from "@/pasteAttachments";
 import type { BrowserSelectionContext } from "../browserSelection";
 import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceChip";
+import type { VoiceState } from "@/voiceDictation";
 
 export type ComposerPillProps = {
   value: string;
@@ -31,6 +32,17 @@ export type ComposerPillProps = {
   /// during a turn, for surfaces that genuinely cannot be steered.
   activeAction?: "steer" | "queue";
   onStop?: () => void;
+  voiceAvailable?: boolean;
+  voiceState?: VoiceState;
+  voicePreview?: string;
+  voiceError?: string;
+  voiceUnavailableReason?: string;
+  voiceProviderLabel?: string;
+  onVoiceStart?: () => void;
+  onVoiceStop?: () => void;
+  onVoiceCancel?: () => void;
+  onVoiceRetry?: () => void;
+  onVoiceSetup?: () => void;
   /// Immediate feedback after Stop until the turn actually clears.
   stopping?: boolean;
   /// Lets the owner put the caret back in the composer after an action of its
@@ -87,6 +99,17 @@ export function ComposerPill({
   working,
   activeAction,
   onStop,
+  voiceAvailable = false,
+  voiceState = "idle",
+  voicePreview,
+  voiceError,
+  voiceUnavailableReason,
+  voiceProviderLabel,
+  onVoiceStart,
+  onVoiceStop,
+  onVoiceCancel,
+  onVoiceRetry,
+  onVoiceSetup,
   stopping = false,
   inputRef,
   leading,
@@ -103,6 +126,7 @@ export function ComposerPill({
   onRemoveReference,
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const voicePress = useRef<{ at: number; alreadyActive: boolean }>();
   const overlayRef = useRef<HTMLDivElement | null>(null);
   // Ghost text only makes sense continuing from where typing left off. Selection
   // changes do not re-render on their own, so a click into the middle of the
@@ -114,7 +138,8 @@ export function ComposerPill({
     return !!node && node.selectionStart === value.length && node.selectionEnd === value.length;
   };
   const [, setCaretEpoch] = useState(0);
-  const showSuggestion = !!suggestion && caretAtEnd();
+  const voiceBusy = voiceState === "starting" || voiceState === "recording" || voiceState === "stopping";
+  const showSuggestion = !voiceBusy && !!suggestion && caretAtEnd();
   const noteCaret = () => setCaretEpoch(n => n + 1);
   const syncOverlayScroll = () => {
     const overlay = overlayRef.current;
@@ -130,7 +155,7 @@ export function ComposerPill({
   const locked = !!disabled || (!!working && !activeAction);
   const hasAttachments = !!attachments && attachments.length > 0;
   // An image is a message on its own: a send with no text must stay possible.
-  const canSend = !locked && (value.trim().length > 0 || hasAttachments);
+  const canSend = !locked && !voiceBusy && (value.trim().length > 0 || hasAttachments);
   const submitLabel = steerable ? ACTIVE_ACTION_LABEL[activeAction] : "Send";
 
   useEffect(() => {
@@ -156,6 +181,15 @@ export function ComposerPill({
           onSubmit={event => {
             event.preventDefault();
             if (canSend) onSubmit();
+          }}
+          onKeyDownCapture={event => {
+            if (!voiceBusy || event.nativeEvent.isComposing) return;
+            if (event.key === "Escape" || event.key === "Enter") {
+              event.preventDefault();
+              event.stopPropagation();
+              if (event.key === "Escape") onVoiceCancel?.();
+              else if (voiceState !== "stopping") onVoiceStop?.();
+            }
           }}
         >
           {/* Keep workspace metadata outside the writing surface. */}
@@ -212,6 +246,7 @@ export function ComposerPill({
                       onClick={() => onRemoveAttachment(attachment.id)}
                       className="absolute right-0.5 top-0.5 grid h-6 w-6 place-items-center rounded-full bg-background/80 text-foreground opacity-90 transition-opacity hover:opacity-100"
                       aria-label="Remove attached image"
+                      disabled={locked || voiceBusy}
                     >
                       <X className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
                     </button>
@@ -248,17 +283,19 @@ export function ComposerPill({
               rows={1}
               placeholder={placeholder}
               disabled={locked}
+              readOnly={voiceBusy}
               role={autocomplete ? "combobox" : undefined}
               aria-autocomplete={autocomplete ? "list" : undefined}
               aria-expanded={autocomplete ? true : undefined}
               aria-controls={autocomplete?.controls}
               aria-activedescendant={autocomplete?.activeDescendant}
-              onChange={event => onChange(event.target.value)}
+              onChange={event => { if (!voiceBusy) onChange(event.target.value); }}
               onSelect={noteCaret}
               onClick={noteCaret}
               onKeyUp={noteCaret}
               onScroll={syncOverlayScroll}
               onPaste={event => {
+                if (voiceBusy) { event.preventDefault(); return; }
                 // The owner owns the policy: intercept-and-become-attachments
                 // (preventDefault) or fall through to normal text insertion.
                 onPaste?.(event);
@@ -285,6 +322,14 @@ export function ComposerPill({
             />
           </div>
 
+          {voiceBusy && <div role="status" className="px-1 py-1 text-xs text-muted-foreground">
+            {voiceProviderLabel && <span className="block">{voiceProviderLabel}</span>}
+            <span>{voiceState === "starting" ? "Preparing dictation…" : voiceState === "stopping" ? "Finishing dictation…" : "Listening…"}</span>
+            {voicePreview && <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-foreground">{voicePreview}</p>}
+            <span className="block pt-1">Enter to finish · Esc to cancel. Nothing is sent automatically.</span>
+          </div>}
+          {voiceError && <p role="alert" className="px-1 py-1 text-xs text-destructive">{voiceError}</p>}
+
           <div className="flex min-h-8 items-center justify-between gap-2">
             {/* Leading edge of the controls row: the model chip, then the access
                 control behind a hairline divider. */}
@@ -300,11 +345,68 @@ export function ComposerPill({
                 <input ref={attachmentInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="hidden" aria-label="Choose images" onChange={event => {
                   const files = Array.from(event.currentTarget.files ?? []);
                   event.currentTarget.value = "";
-                  if (files.length) onAttachFiles(files);
+                  if (files.length && !voiceBusy) onAttachFiles(files);
                 }} />
-                <button type="button" disabled={locked} aria-label="Attach images" title="Attach images" onClick={() => attachmentInput.current?.click()} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><Paperclip className="h-4 w-4" aria-hidden="true" /></button>
+                <button type="button" disabled={locked || voiceBusy} aria-label="Attach images" title="Attach images" onClick={() => attachmentInput.current?.click()} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><Paperclip className="h-4 w-4" aria-hidden="true" /></button>
               </>}
               {leading}
+              {onVoiceStart && onVoiceStop && (
+                <button
+                  type="button"
+                  disabled={locked || (!voiceAvailable && !voiceBusy) || voiceState === "stopping"}
+                  aria-label={voiceBusy ? "Stop dictating" : "Hold to dictate"}
+                  aria-pressed={voiceBusy}
+                  aria-busy={voiceState === "starting" || voiceState === "stopping"}
+                  aria-description={!voiceAvailable && !voiceBusy ? voiceUnavailableReason : voiceProviderLabel}
+                  title={!voiceAvailable && !voiceBusy ? voiceUnavailableReason ?? "Dictation unavailable" : [voiceProviderLabel, "Click to toggle dictation, or hold to talk"].filter(Boolean).join(". ")}
+                  onPointerDown={event => {
+                    if (event.button !== 0) return;
+                    event.preventDefault();
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    voicePress.current = { at: Date.now(), alreadyActive: voiceBusy };
+                    if (!voiceBusy) onVoiceStart();
+                  }}
+                  onPointerUp={event => {
+                    const press = voicePress.current;
+                    voicePress.current = undefined;
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                    }
+                    if (press && (press.alreadyActive || Date.now() - press.at >= 300)) onVoiceStop();
+                  }}
+                  onPointerCancel={() => { voicePress.current = undefined; onVoiceCancel?.(); }}
+                  onLostPointerCapture={() => {
+                    if (voicePress.current) { voicePress.current = undefined; onVoiceCancel?.(); }
+                  }}
+                  onClick={event => {
+                    // Pointer clicks are handled above. detail=0 is an assistive
+                    // technology activation or programmatic keyboard click.
+                    if (event.detail === 0) { if (voiceBusy) onVoiceStop(); else onVoiceStart(); }
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === " " || event.key === "Enter") {
+                      event.preventDefault();
+                      if (!event.repeat && !voiceBusy) onVoiceStart();
+                    }
+                  }}
+                  onKeyUp={event => {
+                    if (event.key === " ") {
+                      event.preventDefault();
+                      onVoiceStop();
+                    }
+                  }}
+                  className={cn(
+                    "inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors active:scale-95 disabled:opacity-40",
+                    voiceState === "recording" || voiceState === "starting"
+                      ? "bg-destructive/15 text-destructive"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  )}
+                >
+                  <Mic className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )}
+              {voiceBusy && onVoiceCancel && <button type="button" onClick={onVoiceCancel} aria-label="Cancel dictation" title="Cancel dictation" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"><X className="h-4 w-4" aria-hidden="true" /></button>}
+              {!voiceBusy && (voiceError || !voiceAvailable) && (onVoiceSetup || onVoiceRetry) && <button type="button" onClick={onVoiceSetup ?? onVoiceRetry} title={voiceUnavailableReason} className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{onVoiceSetup ? "Set up voice" : "Retry voice"}</button>}
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling
                   the work. */}

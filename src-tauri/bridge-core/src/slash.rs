@@ -27,6 +27,8 @@ pub enum SlashDispatch {
     Expand { text: String },
     /// Bridge-handled: refresh account usage for the session harness.
     Usage,
+    /// Composer-owned dictation entry point.
+    Voice,
     /// Bridge-routed: ask the harness to compact its own context, falling
     /// back to a Bridge checkpoint only where the harness has no compaction
     /// command. `focus` is forwarded where the harness accepts one and
@@ -63,6 +65,12 @@ pub fn list_commands_for_project(
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let mut out: Vec<SlashCommand> = vec![
+        SlashCommand {
+            name: "voice".into(),
+            description: "Dictate text into the composer (Codex, when supported)".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
         SlashCommand {
             name: "btw".into(),
             description: "Open a side chat that reads this chat's context without touching it".into(),
@@ -223,6 +231,7 @@ pub fn dispatch_for_project(
         .filter(|value| !value.is_empty());
 
     match name.to_ascii_lowercase().as_str() {
+        "voice" => return SlashDispatch::Voice,
         "btw" | "side" => {
             return SlashDispatch::SideChat {
                 command: name.to_ascii_lowercase(),
@@ -760,6 +769,10 @@ mod tests {
         assert!(matches!(
             dispatch("/clear", "claude", &available),
             SlashDispatch::Clear
+        ));
+        assert!(matches!(
+            dispatch("/voice", "codex", &available),
+            SlashDispatch::Voice
         ));
         // The focus is carried, not merely present: it is forwarded to a
         // harness that accepts one and reported as ignored by one that does

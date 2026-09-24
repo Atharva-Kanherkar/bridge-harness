@@ -22,6 +22,7 @@ import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
 import { WorkersPage } from "./settings/WorkersPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { type Section } from "./settings/sections";
+import { VoiceSettingsPage } from "./settings/VoiceSettingsPage";
 
 export type { Section };
 export { PermissionsSection };
@@ -33,7 +34,7 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onHealthChange = () => undefined, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onError: (message: string) => void }) {
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onHealthChange = () => undefined, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onVoiceChanged?: () => void; onHealthChange?: () => void; onError: (message: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
   useEffect(() => {
     let active = true;
@@ -255,6 +256,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       />}
 
       {section === "composer" && <ComposerPage adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError} />}
+      {section === "voice" && <VoiceSettingsPage onError={onError} onChanged={onVoiceChanged} />}
 
       {section === "prompts" && <PromptStudio />}
       {section === "import" && <ImportHarnessSection onError={onError} />}

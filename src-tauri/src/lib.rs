@@ -1711,6 +1711,47 @@ async fn submit_input(
     .await
 }
 
+#[tauri::command]
+async fn voice_capabilities(session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceCapabilitiesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Voice capabilities", move || api::voice_capabilities(&core, bridge_protocol::messages::VoiceCapabilitiesParams { session_id })).await
+}
+#[tauri::command]
+async fn voice_start(owner_key: String, session_id: Option<String>, provider: bridge_protocol::messages::VoiceProviderId, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceStartResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Voice startup", move || api::voice_start(&core, bridge_protocol::messages::VoiceStartParams { owner_key, session_id, provider })).await
+}
+#[tauri::command]
+async fn voice_append(voice_session_id: String, sequence: u32, data: String, samples_per_channel: u32, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Voice delivery", move || api::voice_append(&core, bridge_protocol::messages::VoiceAppendParams { voice_session_id, sequence, data, samples_per_channel })).await
+}
+#[tauri::command]
+async fn voice_stop(voice_session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Voice finalization", move || api::voice_stop(&core, bridge_protocol::messages::VoiceStopParams { voice_session_id })).await
+}
+#[tauri::command]
+async fn voice_cancel(voice_session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Voice cancellation", move || api::voice_cancel(&core, bridge_protocol::messages::VoiceCancelParams { voice_session_id })).await
+}
+#[tauri::command]
+async fn voice_local_status(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceLocalStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Local voice status", move || api::voice_local_status(&core)).await
+}
+#[tauri::command]
+async fn voice_local_setup(confirm_download: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceLocalStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Local voice setup", move || api::voice_local_setup(&core, bridge_protocol::messages::VoiceLocalSetupParams { confirm_download })).await
+}
+#[tauri::command]
+async fn voice_local_remove(confirm_removal: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::VoiceLocalStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Local voice removal", move || api::voice_local_remove(&core, bridge_protocol::messages::VoiceLocalRemoveParams { confirm_removal })).await
+}
+
 /// Directly reserve a configured specialist worker. The browser supplies only
 /// the token and objective; every execution characteristic is host-resolved.
 #[tauri::command]
@@ -2733,6 +2774,14 @@ pub fn run() -> i32 {
             prepare_turn,
             send_turn,
             submit_input,
+            voice_capabilities,
+            voice_start,
+            voice_append,
+            voice_stop,
+            voice_cancel,
+            voice_local_status,
+            voice_local_setup,
+            voice_local_remove,
             dispatch_agent_shortcut,
             list_workspace_files,
             list_workspace_tree,
