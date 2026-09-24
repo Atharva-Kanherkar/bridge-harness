@@ -155,3 +155,6 @@ jobs:
 
       - name: Sidecar tests (node --test)
         run: npm test --prefix sidecar/claude-agent
+
+      - name: WhatsApp ticketer tests (offline)
+        run: npm run test:whatsapp-ticketer

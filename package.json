@@ -5,7 +5,8 @@
   "type": "module",
   "workspaces": [
     "sidecar/claude-agent",
-    "sidecar/terminal-state"
+    "sidecar/terminal-state",
+    "integrations/whatsapp-ticketer"
   ],
   "scripts": {
     "dev": "vite",
@@ -25,7 +26,8 @@
     "check": "tsc -b --pretty false && cargo check --manifest-path src-tauri/Cargo.toml --workspace",
     "check:builtin-adapters": "sh scripts/check-builtin-adapters.sh",
     "smoke:builtin-adapters": "sh scripts/smoke-builtin-adapters.sh",
-    "test": "npm run test:release && npm test --prefix sidecar/claude-agent && npm test --prefix sidecar/terminal-state && npm run test:menu-bar && vitest run && cargo test --manifest-path src-tauri/Cargo.toml --workspace",
+    "test": "npm run test:release && npm test --prefix sidecar/claude-agent && npm test --prefix sidecar/terminal-state && npm run test:whatsapp-ticketer && npm run test:menu-bar && vitest run && cargo test --manifest-path src-tauri/Cargo.toml --workspace",
+    "test:whatsapp-ticketer": "node --test integrations/whatsapp-ticketer/test/*.mjs",
     "test:menu-bar": "sh scripts/test-menu-bar-native.sh",
     "tauri": "sh scripts/tauri.sh",
     "generate:icons": "node scripts/generate-icons.mjs",
