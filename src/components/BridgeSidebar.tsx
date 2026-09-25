@@ -632,7 +632,7 @@ export function BridgeSidebar({
         hidden && "sm:opacity-0",
       )}>
       {showWindowNav && (
-        <div className="u-native-titlebar-align flex h-11 shrink-0 items-center gap-0.5 u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
+        <div className="flex h-11 shrink-0 items-center gap-0.5 u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
           <WindowNavButtons
             spread
             collapsed={collapsed}
