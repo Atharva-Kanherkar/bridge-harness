@@ -389,6 +389,13 @@ html[data-native-fullscreen] .u-traffic-inset {
     padding-left: 0.5rem;
 }
 
+/* AppKit centers the traffic lights 16px from the window top; our 44px web
+   chrome centers its contents at 22px. Move only the contents, keeping the
+   full-height draggable strip and its layout in place. */
+html[data-tauri][data-macos]:not([data-native-fullscreen]) .u-native-titlebar-align > * {
+    translate: 0 calc(0px - var(--window-control-inset));
+}
+
 @layer base {
   * {
     @apply border-border;

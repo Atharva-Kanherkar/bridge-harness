@@ -115,7 +115,7 @@ export function SessionToolbar({
   return (
     <div
       className={cn(
-        "flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
+        "u-native-titlebar-align flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
         sidebarHidden ? "u-traffic-inset pl-24" : "pl-4 sm:pl-6",
       )}
       // The window has no native titlebar, so this strip is the grab handle:

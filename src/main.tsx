@@ -11,7 +11,10 @@ import { installExternalLinkHandler } from "./externalLinks";
 
 installExternalLinkHandler();
 
-if ("__TAURI_INTERNALS__" in window) document.documentElement.dataset.tauri = "";
+if ("__TAURI_INTERNALS__" in window) {
+  document.documentElement.dataset.tauri = "";
+  if (navigator.platform.startsWith("Mac")) document.documentElement.dataset.macos = "";
+}
 
 const params = new URLSearchParams(window.location.search);
 const preview = params.get("preview");
