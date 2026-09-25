@@ -27,6 +27,35 @@ function profile(purpose: ProfilePurpose, overrides: Partial<ModelProfileDraft> 
   } as ModelProfileDraft;
 }
 
+function secondAdapter(): AdapterDescriptor {
+  return {
+    id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test",
+    capabilities: ["messages"], sandboxModes: ["workspace_write", "read_only"],
+    unavailableReason: null, defaultModel: "opus-5-5",
+    models: [
+      { id: "opus-5-5", label: "Opus 5.5", tier: "strong", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high"] },
+    ],
+  } as AdapterDescriptor;
+}
+
+/** Drive the kit's Base UI select the way settingsKit.test.tsx does: open the
+ *  trigger, then pick an option out of the portaled listbox. */
+async function chooseOption(
+  view: { button: (label: string) => HTMLButtonElement | null; click: (node: Element | null) => Promise<void> },
+  triggerLabel: string,
+  optionText: string,
+) {
+  await view.click(view.button(triggerLabel));
+  const listbox = [...document.querySelectorAll('[role="listbox"]')].at(-1)!;
+  const option = [...listbox.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find(item => item.textContent?.includes(optionText));
+  expect(option, `option "${optionText}" must be offered`).toBeTruthy();
+  await act(async () => {
+    option!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    option!.click();
+  });
+}
+
 const profiles = [
   profile("standard_orchestrator", { pinned: true, selectionMode: "pinned", learningEnabled: false }),
   profile("implementer"),
@@ -145,6 +174,71 @@ describe("ModelsPage", () => {
     await view.click(view.button("Implementer settings"));
     expect(view.container.querySelectorAll("select")).toHaveLength(0);
     expect(view.container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    await view.unmount();
+  });
+
+  // Issue #708: the picker was greyed out for every role that ships tracking,
+  // so the only way to change a worker model was to first find "Selection
+  // behavior" and pin the role by hand.
+  it("lets a tracking worker's model be chosen, and pins the role on the spot", async () => {
+    const view = await mount({ adapters: [adapter(), secondAdapter()] });
+    await view.click(view.button("Implementer settings"));
+    expect(view.button("Implementer model")!.disabled).toBe(false);
+    await chooseOption(view, "Implementer model", "Claude · Opus 5.5");
+    expect(view.onSave).toHaveBeenCalledOnce();
+    const sent = view.onSave.mock.calls[0][0];
+    expect(sent).toHaveLength(3);
+    expect(sent.find(item => item.purpose === "implementer")).toEqual({
+      ...profiles[1], provider: "claude", model: "opus-5-5",
+      selectionMode: "pinned", pinned: true, learningEnabled: false,
+    });
+    expect(sent.find(item => item.purpose === "reviewer")).toEqual(profiles[2]);
+    await view.unmount();
+  });
+
+  it("does not pin a role when the model already shown is chosen again", async () => {
+    const view = await mount();
+    await view.click(view.button("Implementer settings"));
+    await chooseOption(view, "Implementer model", "Codex · GPT-5");
+    expect(view.onSave).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+
+  it("keeps a pinned role's model directly changeable", async () => {
+    const view = await mount();
+    await view.click(view.button("Reviewer settings"));
+    expect(view.button("Reviewer model")!.disabled).toBe(false);
+    await chooseOption(view, "Reviewer model", "Codex · GPT-5 mini");
+    expect(view.onSave.mock.calls[0][0].find(item => item.purpose === "reviewer"))
+      .toEqual({ ...profiles[2], model: "gpt-5-mini" });
+    await view.unmount();
+  });
+
+  it("sends a pinned role back to tracking, and gates Allow learning on the mode", async () => {
+    const view = await mount();
+    await view.click(view.button("Reviewer settings"));
+    expect(view.button("Reviewer allow learning")!.disabled).toBe(true);
+    await chooseOption(view, "Reviewer selection behavior", "Track standard");
+    expect(view.onSave).toHaveBeenCalledOnce();
+    const sent = view.onSave.mock.calls[0][0].find(item => item.purpose === "reviewer")!;
+    expect(sent.selectionMode).toBe("track_standard");
+    expect(sent.pinned).toBe(false);
+    // The implementer has tracked all along, so its learning switch is live:
+    // the gate is the mode, not the role.
+    await view.click(view.button("Reviewer settings"));
+    await view.click(view.button("Implementer settings"));
+    expect(view.button("Implementer allow learning")!.disabled).toBe(false);
+    await view.unmount();
+  });
+
+  it("says what a tracked role does, and that choosing a model pins it", async () => {
+    const view = await mount();
+    await view.click(view.button("Implementer settings"));
+    expect(view.text()).toContain("Follows the standard model for this role's tier");
+    expect(view.text()).toContain("Choose a model here to pin it.");
+    await view.click(view.button("Implementer settings"));
+    await view.click(view.button("Reviewer settings"));
+    expect(view.text()).toContain("This role always uses this model");
     await view.unmount();
   });
 });
