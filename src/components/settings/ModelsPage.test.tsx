@@ -88,6 +88,21 @@ describe("ModelsPage", () => {
     await view.unmount();
   });
 
+  it("toggles a profile by clicking its name or status anywhere in the row", async () => {
+    const view = await mount();
+    const row = view.button("Implementer settings")!;
+    const name = [...row.querySelectorAll("span")].find(node => node.textContent === "Implementer")!;
+    await view.click(name);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(view.text()).toContain("How Bridge chooses a model");
+
+    const status = [...row.querySelectorAll("span")].find(node => node.textContent === "Automatic")!;
+    await view.click(status);
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(view.text()).not.toContain("How Bridge chooses a model");
+    await view.unmount();
+  });
+
   it("reveals the six fields and Allow learning only when a worker row is expanded", async () => {
     const view = await mount();
     expect(view.text()).not.toContain("Allow learning");

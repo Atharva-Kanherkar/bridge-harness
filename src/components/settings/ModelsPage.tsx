@@ -11,7 +11,7 @@
 // is the only one that differs from what was stored.
 
 import { useState } from "react";
-import { RefreshCw as ArrowsClockwise, ChevronDown as CaretDown, ChevronRight as CaretRight } from "lucide-react";
+import { RefreshCw as ArrowsClockwise } from "lucide-react";
 import {
   advertisedEfforts, availableModelOptions, isOrchestratorPurpose, normalizedEffort,
   profileLabels, profilePurposes,
@@ -140,22 +140,12 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
       label={profile.purpose in profileLabels ? profileLabels[profile.purpose] : profile.purpose}
       description={`${selected?.adapter.label ?? profile.provider} · ${selected?.model.label ?? profile.model}${efforts.length > 0 ? ` · ${profile.effort}` : ""}`}
       saved={saved}
-      control={<>
-        {!orchestrator && <StatusPill tone={selectionMode === "pinned" ? "info" : "neutral"}>
+      onOpen={onToggle}
+      openLabel={`${profileLabels[profile.purpose]} settings`}
+      expanded={expanded}
+      adornment={!orchestrator && <StatusPill tone={selectionMode === "pinned" ? "info" : "neutral"}>
           {selectionMode === "pinned" ? "Specific model" : "Automatic"}
         </StatusPill>}
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-label={`${profileLabels[profile.purpose]} settings`}
-          onClick={onToggle}
-          className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          {expanded
-            ? <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" />
-            : <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" />}
-        </button>
-      </>}
     />
     {expanded && <div className="border-t border-border bg-popover/40">
       {orchestrator
