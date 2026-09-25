@@ -160,31 +160,69 @@ export async function applyZoom(level: number): Promise<number> {
   return snapped;
 }
 
-/** Set, remember, and return a new level. The one path the UI and keys share. */
-export async function commitZoom(level: number): Promise<number> {
-  const snapped = await applyZoom(level);
-  writeZoom(snapped);
-  return snapped;
-}
-
-/** Move one rung from the remembered level. The path the keys and menu share. */
-export async function nudgeZoom(direction: ZoomDirection): Promise<number> {
-  const applied = await commitZoom(stepZoom(readZoom(), direction));
-  announceZoom(applied);
-  return applied;
-}
-
-/** Return to 100%, which is the only route back once a level is off 1. */
-export async function resetZoom(): Promise<number> {
-  const applied = await commitZoom(zoomReset());
-  announceZoom(applied);
-  return applied;
-}
-
 const ZOOM_CHANGED_EVENT = "bridge:window-zoom";
 
 function announceZoom(level: number): void {
   window.dispatchEvent(new CustomEvent<number>(ZOOM_CHANGED_EVENT, { detail: level }));
+}
+
+// One owner for the level, so two commands in the same tick compose instead of
+// racing each other to the webview.
+//
+// `desired` is reserved synchronously, before any await. That is the whole fix:
+// a second key repeat, or a second threshold inside one pinch, reads the level
+// the first command already claimed rather than the stale stored one, so it
+// steps again instead of re-requesting the same rung. Persisting the intent
+// here rather than after the apply is what makes that visible to the next read.
+//
+// `applied` is what the webview last confirmed. A failed apply falls back to it,
+// so the next command starts from what is actually on screen rather than from a
+// level that never arrived. Every apply goes through one promise chain, so the
+// last write is the one the webview keeps: two in-flight calls cannot resolve
+// out of order and undo a keystroke that landed in between.
+let desired: number | null = null;
+let applied: number = ACTUAL_SIZE;
+let queue: Promise<number> = Promise.resolve(ACTUAL_SIZE);
+
+function desiredLevel(): number {
+  if (desired === null) desired = readZoom();
+  return desired;
+}
+
+/** The single mutation path. The keys, the menu, the wheel, and Settings all
+ *  come through here, so none of them can overtake another. */
+export function setZoomLevel(next: number): Promise<number> {
+  const snapped = snapZoom(next);
+  desired = snapped;
+  writeZoom(snapped);
+  queue = queue
+    .then(async () => {
+      applied = await applyZoom(snapped);
+      announceZoom(applied);
+      return applied;
+    })
+    .catch(() => {
+      // The webview kept the last level that did apply, so fall back to it and
+      // let the next command start from what is actually on screen. Storage has
+      // to be corrected too: it holds the intent we persisted before the apply,
+      // and leaving it there would have the next launch remember a level the
+      // user never actually saw.
+      desired = applied;
+      writeZoom(applied);
+      announceZoom(applied);
+      return applied;
+    });
+  return queue;
+}
+
+/** Move one rung from the level in hand. The path the keys and menu share. */
+export function nudgeZoom(direction: ZoomDirection): Promise<number> {
+  return setZoomLevel(stepZoom(desiredLevel(), direction));
+}
+
+/** Return to 100%, which is the only route back once a level is off 1. */
+export function resetZoom(): Promise<number> {
+  return setZoomLevel(zoomReset());
 }
 
 /**
@@ -196,10 +234,9 @@ function announceZoom(level: number): void {
  * than stepping per event is the fix for the gesture that used to reach 360%.
  */
 export function installZoom(): () => void {
-  applyZoom(readZoom()).catch(() => {
-    // A zoom that cannot be applied leaves the webview where it is, which is
-    // the natural size, and is not worth interrupting startup over.
-  });
+  // Reserve the remembered level on the same queue, so a command arriving during
+  // startup composes with it instead of being overwritten by it.
+  void setZoomLevel(readZoom());
 
   let pending = 0;
   const onWheel = (event: WheelEvent) => {
@@ -208,11 +245,9 @@ export function installZoom(): () => void {
     const charged = chargeWheel(pending, event.deltaY);
     pending = charged.pending;
     if (charged.rungs === 0) return;
-    commitZoom(stepZoom(readZoom(), charged.rungs))
-      .then(announceZoom)
-      .catch(() => {
-        pending = 0;
-      });
+    void setZoomLevel(stepZoom(desiredLevel(), charged.rungs)).catch(() => {
+      pending = 0;
+    });
   };
 
   window.addEventListener("wheel", onWheel, { passive: false });
@@ -224,25 +259,23 @@ export function useZoomLevel(): [number, (next: number) => void] {
   const [level, setLevel] = useState<number>(() => readZoom());
 
   useEffect(() => {
+    // Only the in-app channel. A `storage` listener would be dead weight twice
+    // over: it fires in *other* documents, and Bridge is single-instance with one
+    // window, so it can never carry our own writes. Worse, a real
+    // `StorageEvent` carries no `detail`, so reading one through this handler
+    // would set the level to undefined.
     const onChange = (event: Event) => {
       setLevel((event as CustomEvent<number>).detail);
     };
     window.addEventListener(ZOOM_CHANGED_EVENT, onChange);
-    window.addEventListener("storage", onChange);
-    return () => {
-      window.removeEventListener(ZOOM_CHANGED_EVENT, onChange);
-      window.removeEventListener("storage", onChange);
-    };
+    return () => window.removeEventListener(ZOOM_CHANGED_EVENT, onChange);
   }, []);
 
   const change = useCallback((next: number) => {
+    // Show the requested level at once, then let the queue correct us if the
+    // apply fails and the level falls back to what the webview kept.
     setLevel(next);
-    commitZoom(next)
-      .then(announceZoom)
-      .catch(() => {
-        // Leave the control showing what the user asked for; the webview keeps
-        // the last level that did apply.
-      });
+    void setZoomLevel(next);
   }, []);
 
   return [level, change];

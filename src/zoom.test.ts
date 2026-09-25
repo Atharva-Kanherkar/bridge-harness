@@ -1,8 +1,10 @@
-// The zoom arithmetic is pure, so it is tested without a webview. The point of
+// @vitest-environment jsdom
+// The zoom arithmetic is pure and needs no webview; the mutation path at the
+// bottom dispatches a DOM event to announce the level, which does. The point of
 // most of these is that a step is *small*: the bug they guard is the one where
 // a single press jumped a fifth of the window and a single pinch jumped to 360%.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ACTUAL_SIZE,
   canZoom,
@@ -171,5 +173,135 @@ describe("remembering the level", () => {
     };
     expect(readZoom(hostile)).toBe(ACTUAL_SIZE);
     expect(() => writeZoom(1.25, hostile)).not.toThrow();
+  });
+});
+
+// The mutation path, with Tauri's command behind a promise we control. The
+// regression these guard: a level reserved only after the apply resolves, so a
+// second command arriving in the meantime re-requested the same rung and the
+// user saw one step where they asked for two.
+//
+// This project's jsdom does not provide localStorage, though the webview does.
+// Installing a double makes the module's default storage resolve to it, which is
+// the same injection missionControlSettings.test.ts does by parameter.
+function installStorage(): Map<string, string> {
+  const map = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: {
+      get length() { return map.size; },
+      clear: () => map.clear(),
+      getItem: (key: string) => map.get(key) ?? null,
+      key: (index: number) => [...map.keys()][index] ?? null,
+      removeItem: (key: string) => { map.delete(key); },
+      setItem: (key: string, value: string) => { map.set(key, String(value)); },
+    },
+  });
+  return map;
+}
+
+// A command that holds at the webview until the test lets it through. The gate
+// stays open once opened, because a queued apply only starts after the one
+// before it settles and would otherwise wait on a gate nobody holds.
+async function withMockedInvoke() {
+  vi.resetModules();
+  const store = installStorage();
+  const calls: number[] = [];
+  let open = false;
+  let waiters: Array<() => void> = [];
+  vi.doMock("@tauri-apps/api/core", () => ({
+    invoke: async (_command: string, args: { value: number }) => {
+      calls.push(args.value);
+      if (!open) await new Promise<void>(resolve => { waiters.push(resolve); });
+      return null;
+    },
+  }));
+  const zoom = await import("./zoom");
+  return {
+    ...zoom,
+    calls,
+    store,
+    openGate: () => { open = true; waiters.splice(0).forEach(resolve => resolve()); },
+  };
+}
+
+describe("serializing the level", () => {
+  it("composes two zoom-ins that overlap, instead of collapsing to one", async () => {
+    // The regression: a level reserved only after the apply resolves, so the
+    // second command re-requested the same rung and one step was lost.
+    const zoom = await withMockedInvoke();
+
+    // Neither awaited: the second lands while the first is still in flight,
+    // which is a key repeat or a second threshold inside one pinch.
+    const first = zoom.nudgeZoom(1);
+    const second = zoom.nudgeZoom(1);
+    zoom.openGate();
+    await Promise.all([first, second]);
+
+    expect(zoom.calls).toEqual([1.1, 1.25]);
+    // The intent is persisted before the apply, so it survives either way.
+    expect(zoom.store.get(ZOOM_STORAGE_KEY)).toBe("1.25");
+  });
+
+  it("keeps the last write, so a slow apply cannot undo a later one", async () => {
+    const zoom = await withMockedInvoke();
+    const settled: number[] = [];
+    const first = zoom.nudgeZoom(1).then(level => settled.push(level));
+    const second = zoom.nudgeZoom(1).then(level => settled.push(level));
+    zoom.openGate();
+    await Promise.all([first, second]);
+
+    // Both applies ran, in order, and the second is where the webview ends up.
+    expect(zoom.calls).toEqual([1.1, 1.25]);
+    expect(settled).toEqual([1.1, 1.25]);
+  });
+
+  it("composes a pinch that crosses two rungs with a key pressed between", async () => {
+    const zoom = await withMockedInvoke();
+    const pinch = zoom.setZoomLevel(zoom.stepZoom(1, 2));
+    const key = zoom.nudgeZoom(1);
+    zoom.openGate();
+    await Promise.all([pinch, key]);
+
+    expect(zoom.calls).toEqual([1.25, 1.5]);
+  });
+
+  it("falls back to the level the webview kept when an apply fails", async () => {
+    vi.resetModules();
+    const store = installStorage();
+    const calls: number[] = [];
+    let failNext = true;
+    vi.doMock("@tauri-apps/api/core", () => ({
+      invoke: async (_command: string, args: { value: number }) => {
+        calls.push(args.value);
+        if (failNext) { failNext = false; throw new Error("no webview"); }
+        return null;
+      },
+    }));
+    const zoom = await import("./zoom");
+
+    // The first apply fails, so the webview is still at 100%.
+    await expect(zoom.nudgeZoom(1)).resolves.toBe(1);
+    expect(store.get(ZOOM_STORAGE_KEY)).toBe("1");
+    // The next command starts from 100%, not from the 110% that never arrived.
+    await expect(zoom.nudgeZoom(1)).resolves.toBe(1.1);
+    expect(calls).toEqual([1.1, 1.1]);
+  });
+
+  it("keeps working after a failure, rather than wedging the queue", async () => {
+    vi.resetModules();
+    installStorage();
+    vi.doMock("@tauri-apps/api/core", () => ({
+      invoke: async (_command: string, args: { value: number }) => {
+        if (args.value === 1.25) throw new Error("transient");
+        return null;
+      },
+    }));
+    const zoom = await import("./zoom");
+
+    await zoom.nudgeZoom(1);          // 1.1, fine
+    await expect(zoom.nudgeZoom(1)).resolves.toBe(1.1); // 1.25, fails
+    await expect(zoom.nudgeZoom(1)).resolves.toBe(1.1); // and the next still runs
   });
 });
