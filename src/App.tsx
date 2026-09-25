@@ -101,7 +101,8 @@ import { describeError, errorMessage, isThrottleKind } from "./errors";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -1108,7 +1109,7 @@ function AppContent() {
     fallbackNoticeShownRef.current = true;
     const reason = draftSuggestion.fallbackReason?.replace(/_/g, " ");
     setFallbackNotice(`Suggestions switched to a fallback model${reason ? ` (${reason})` : ""} while yours is unavailable.`);
-    const timer = window.setTimeout(() => setFallbackNotice(undefined), 6000);
+    const timer = window.setTimeout(() => setFallbackNotice(undefined), TRANSIENT_ALERT_TTL_MS);
     return () => window.clearTimeout(timer);
   }, [draftSuggestion]);
 
@@ -2543,7 +2544,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onSkip={() => finishAgentOnboarding()}
     onError={setError}
-  />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
+  />{error && <TransientAlert title="Setup failed" message={error} variant="error" onDismiss={() => setError(undefined)} className="z-[60]" />}</div>;
   const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
@@ -3126,15 +3127,12 @@ function AppContent() {
         provider: session ? harnessLabel(session.harness) : undefined,
         snapshot: session ? usageByProvider[session.harness as UsageProvider] : undefined,
       });
-      return (
-        <Alert variant={isThrottleKind(described.kind) ? "warning" : "error"} className="u-overlay fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] rounded-xl sm:right-[18px] sm:bottom-[18px]">
-          <AlertTitle>{described.title}</AlertTitle>
-          <AlertDescription>{described.message}</AlertDescription>
-          <AlertAction>
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="Dismiss error" onClick={() => setError(undefined)}><X size={14} aria-hidden="true" /></Button>
-          </AlertAction>
-        </Alert>
-      );
+      return <TransientAlert
+        title={described.title}
+        message={described.message}
+        variant={isThrottleKind(described.kind) ? "warning" : "error"}
+        onDismiss={() => setError(undefined)}
+      />;
     })()}
     {githubLinkChoice && <GithubLinkDestinationDialog
       subject={describeGithubLink(githubLinkChoice.link)}
