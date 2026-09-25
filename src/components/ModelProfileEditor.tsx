@@ -64,7 +64,7 @@ export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
           <select className={fieldClass} value={selectionMode} disabled={disabled} onChange={event => { const mode = event.target.value as "track_standard" | "pinned"; update(profile.purpose, { selectionMode: mode, pinned: mode === "pinned", learningEnabled: mode === "pinned" ? false : profile.learningEnabled }); }}><option value="track_standard">Track standard</option><option value="pinned">Pinned model</option></select>
         </label>
         <label className="space-y-1.5 block text-[12px] font-medium text-muted-foreground">Provider & model
-          <select className={fieldClass} value={`${profile.provider}:${profile.model}`} disabled={disabled || selectionMode === "track_standard"} onChange={event => { const selected = options.find(option => option.value === event.target.value); if (selected) update(profile.purpose, { provider: selected.adapter.id, model: selected.model.id }); }}>
+          <select className={fieldClass} value={`${profile.provider}:${profile.model}`} disabled={disabled} onChange={event => { const selected = options.find(option => option.value === event.target.value); if (selected) update(profile.purpose, { provider: selected.adapter.id, model: selected.model.id, selectionMode: "pinned", pinned: true, learningEnabled: false }); }}>
             {options.map(option => <option key={option.value} value={option.value}>{option.adapter.label} · {option.model.label}</option>)}
           </select>
         </label>
