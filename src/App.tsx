@@ -234,7 +234,6 @@ function AppContent() {
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
-  const [memoryDisclosureOpen, setMemoryDisclosureOpen] = useState(false);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
   const [composer, setComposer] = useState("");
@@ -2290,7 +2289,6 @@ function AppContent() {
   // received, re-read on every memory change.
   useEffect(() => {
     setPacketAudit(null);
-    setMemoryDisclosureOpen(false);
     const id = session?.id;
     if (!id) return;
     let active = true;
@@ -2950,7 +2948,7 @@ function AppContent() {
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
-                <MemoryUsedChip audit={packetAudit} open={memoryDisclosureOpen} onToggle={() => setMemoryDisclosureOpen(current => !current)} />
+                <MemoryUsedChip audit={packetAudit} onOpenMemory={() => setView("memory")} />
                 {queuedFollowUpCount > 0 && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Clock3 size={12} aria-hidden="true" />
@@ -3117,7 +3115,7 @@ function AppContent() {
               if (pane === "browser") return <SimpleBrowser
                 key={session.id}
                 sessionId={session.id}
-                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !expandedWorkerId && !recallOpen && !memoryDisclosureOpen && !navOpen}
+                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !expandedWorkerId && !recallOpen && !navOpen}
                 onAttachSelection={attachBrowserSelection}
                 onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
               />;

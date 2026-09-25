@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-// The chip is audit-backed and absent at zero; its disclosure names each
-// injected item and why it was selected.
+// The chip is audit-backed and absent at zero; clicking it opens Memory.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,9 +20,9 @@ const audit = (count: number): MemoryPacketAudit => ({
 let container: HTMLDivElement;
 let root: Root;
 
-function mount(value: MemoryPacketAudit | null, open = false, onToggle = () => {}) {
+function mount(value: MemoryPacketAudit | null, onOpenMemory = () => {}) {
   act(() => {
-    root.render(<MemoryUsedChip audit={value} open={open} onToggle={onToggle} />);
+    root.render(<MemoryUsedChip audit={value} onOpenMemory={onOpenMemory} />);
   });
 }
 
@@ -47,23 +46,22 @@ describe("MemoryUsedChip", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("counts from the audit and disclosure lists each item with its reason", () => {
-    mount(audit(2), true);
+  it("counts from the audit without rendering a floating memory block", () => {
+    mount(audit(2));
     expect(container.textContent).toContain("Memory used (2)");
-    expect(container.textContent).toContain("Pinned fact 0");
-    expect(container.textContent).toContain("explicit pin");
+    expect(container.textContent).not.toContain("Pinned fact 0");
+    expect(container.textContent).not.toContain("explicit pin");
     const button = container.querySelector("button")!;
-    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(button.getAttribute("aria-label")).toBe("Open Memory, 2 memories used in this session");
   });
 
-  it("closed keeps the count visible and the items private", () => {
-    const onToggle = vi.fn();
-    mount(audit(3), false, onToggle);
+  it("opens Bridge Memory when the chip is clicked", () => {
+    const onOpenMemory = vi.fn();
+    mount(audit(3), onOpenMemory);
     expect(container.textContent).toContain("Memory used (3)");
-    expect(container.textContent).not.toContain("Pinned fact 0");
     act(() => {
       container.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(onToggle).toHaveBeenCalledOnce();
+    expect(onOpenMemory).toHaveBeenCalledOnce();
   });
 });
