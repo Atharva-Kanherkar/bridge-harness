@@ -6,11 +6,12 @@ import { cn } from "@/lib/utils";
 
 export const TRANSIENT_ALERT_TTL_MS = 5_000;
 
-export function TransientAlert({ title, message, variant, onDismiss, className }: {
+export function TransientAlert({ title, message, variant, onDismiss, action, className }: {
   title: string;
   message: string;
-  variant: "warning" | "error";
+  variant: "warning" | "error" | "success";
   onDismiss: () => void;
+  action?: { label: string; onClick: () => void };
   className?: string;
 }) {
   const onDismissRef = useRef(onDismiss);
@@ -28,6 +29,7 @@ export function TransientAlert({ title, message, variant, onDismiss, className }
     <AlertTitle>{title}</AlertTitle>
     <AlertDescription className="max-h-[40vh] overflow-y-auto text-foreground/85">{message}</AlertDescription>
     <AlertAction>
+      {action && <Button type="button" size="sm" variant="outline" onClick={action.onClick}>{action.label}</Button>}
       <Button type="button" size="icon-sm" variant="ghost" aria-label="Dismiss notification" onClick={onDismiss}>
         <X size={14} aria-hidden="true" />
       </Button>

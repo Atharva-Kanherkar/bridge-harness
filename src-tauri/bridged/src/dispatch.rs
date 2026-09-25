@@ -35,6 +35,7 @@ pub fn dispatch(
     match method {
         MethodName::Health => reply(api::health(core)),
         MethodName::RefreshModelCatalogs => reply(api::refresh_model_catalogs(core)),
+        MethodName::InstallCodexUpdate => reply(api::install_codex_update()),
         MethodName::GetState => reply(api::get_state(core)),
 
         MethodName::GithubStatus => {

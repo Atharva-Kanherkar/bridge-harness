@@ -1159,6 +1159,9 @@ function mockConnectorDismiss(itemKey: string): ConnectorDismissResult {
 const MOCK_REVIEWER_PROMPT = "Review pull request #{number} in this repository and post a concise, constructive review as a comment. Do not approve, merge, request changes, or close the PR.";
 
 export const bridgeApi = {
+  installCodexUpdate: (): Promise<void> => isTauri()
+    ? unit(call("health/install_codex_update"))
+    : Promise.reject(new Error("Codex updates require the Bridge desktop app")),
   discoverExternalImport: (params: DiscoverExternalImportParams): Promise<ExternalImportDiscovery> => {
     if (isTauri()) return call("imports/discover_external_import", params);
     const discoveredAt = new Date().toISOString();

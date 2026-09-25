@@ -7,7 +7,7 @@ import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./TransientAlert";
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
 
-async function render(message: string, onDismiss: () => void) {
+async function render(message: string, onDismiss: () => void, action?: { label: string; onClick: () => void }) {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   if (!root) {
     host = document.createElement("div");
@@ -15,7 +15,7 @@ async function render(message: string, onDismiss: () => void) {
     root = createRoot(host);
   }
   await act(async () => {
-    root?.render(<TransientAlert title="Something went wrong" message={message} variant="error" onDismiss={onDismiss} />);
+    root?.render(<TransientAlert title="Something went wrong" message={message} variant="error" onDismiss={onDismiss} action={action} />);
   });
 }
 
@@ -28,6 +28,13 @@ afterEach(async () => {
 });
 
 describe("TransientAlert", () => {
+  it("runs its action only when clicked", async () => {
+    const update = vi.fn();
+    await render("Codex needs an update", vi.fn(), { label: "Update Codex", onClick: update });
+    expect(update).not.toHaveBeenCalled();
+    await act(async () => { host?.querySelector<HTMLButtonElement>("button")?.click(); });
+    expect(update).toHaveBeenCalledTimes(1);
+  });
   it("dismisses after five seconds without restarting on unrelated parent renders", async () => {
     vi.useFakeTimers();
     const firstDismiss = vi.fn();

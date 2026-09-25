@@ -98,6 +98,7 @@ import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage, isThrottleKind } from "./errors";
+import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion } from "./codexUpdate";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
@@ -261,6 +262,59 @@ function AppContent() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
+  const codexVersion = health?.adapters.find(adapter => adapter.id === "codex")?.version ?? undefined;
+  const [latestCodex, setLatestCodex] = useState<string>();
+  const [codexUpdateNotice, setCodexUpdateNotice] = useState(false);
+  const [codexUpdatePrompt, setCodexUpdatePrompt] = useState(false);
+  const [codexUpdateBusy, setCodexUpdateBusy] = useState(false);
+  const [codexUpdateSuccess, setCodexUpdateSuccess] = useState(false);
+
+  useEffect(() => {
+    if (!codexVersion || !/\d+\.\d+\.\d+/.test(codexVersion)) return;
+    const controller = new AbortController();
+    void latestCodexVersion(controller.signal).then(latest => {
+      if (controller.signal.aborted) return;
+      setLatestCodex(latest);
+      setCodexUpdateNotice(Boolean(latest && isOlderCodexVersion(codexVersion, latest)));
+    });
+    return () => controller.abort();
+  }, [codexVersion]);
+
+  const startCodexUpdate = () => {
+    setError(undefined);
+    setCodexUpdateNotice(false);
+    setCodexUpdateSuccess(false);
+    setCodexUpdatePrompt(true);
+  };
+
+  const confirmCodexUpdate = async () => {
+    if (codexUpdateBusy) return;
+    setCodexUpdateBusy(true);
+    try {
+      await bridgeApi.installCodexUpdate();
+    } catch (cause) {
+      const message = errorMessage(cause);
+      setError(message.startsWith("Codex update failed:") ? message : `Codex update failed: ${message}`);
+      setCodexUpdatePrompt(false);
+      setCodexUpdateBusy(false);
+      return;
+    }
+    try {
+      const refreshed = await bridgeApi.refreshModelCatalogs();
+      invalidateHealth();
+      const refreshedVersion = refreshed.adapters.find(adapter => adapter.id === "codex")?.version;
+      if (codexVersion && refreshedVersion === codexVersion) {
+        setError(`The Codex installer finished, but Bridge still uses ${codexVersion}. Restart Bridge or check the Codex runtime in Agent Fleet.`);
+      } else {
+        setCodexUpdateSuccess(true);
+      }
+    } catch (cause) {
+      setError(`The Codex installer finished, but Bridge could not refresh its runtime: ${errorMessage(cause)}. Restart Bridge to check the new version.`);
+    } finally {
+      setCodexUpdatePrompt(false);
+      setCodexUpdateBusy(false);
+    }
+  };
   const [forkDraft, setForkDraft] = useState<{ sessionId: string; entryId: string } | null>(null);
   const [forkBusy, setForkBusy] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
@@ -2536,6 +2590,27 @@ function AppContent() {
 
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
+  const codexUpdateOverlays = <>
+    {!error && codexUpdateSuccess && <TransientAlert title="Codex updated" message="Bridge refreshed the Codex runtime." variant="success" onDismiss={() => setCodexUpdateSuccess(false)} />}
+    {!error && !codexUpdateSuccess && codexUpdateNotice && latestCodex && codexVersion && <TransientAlert
+      title="Codex update available"
+      message={`Bridge uses ${codexVersion}. Latest stable release: ${latestCodex}.`}
+      variant="warning"
+      action={{ label: "Update Codex", onClick: startCodexUpdate }}
+      onDismiss={() => setCodexUpdateNotice(false)}
+    />}
+    <Dialog open={codexUpdatePrompt} onOpenChange={open => { if (!open && !codexUpdateBusy) setCodexUpdatePrompt(false); }}>
+      <DialogContent showCloseButton={false} className="gap-4 p-6">
+        <DialogTitle>Update Codex CLI?</DialogTitle>
+        <DialogDescription>Bridge will run the official Codex installer on this computer:</DialogDescription>
+        <code className="block break-all rounded-lg bg-muted p-3 font-mono text-xs text-foreground">curl -fsSL https://chatgpt.com/codex/install.sh | sh</code>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" disabled={codexUpdateBusy} onClick={() => setCodexUpdatePrompt(false)}>Ignore</Button>
+          <Button loading={codexUpdateBusy} onClick={() => void confirmCodexUpdate()}>Yes</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  </>;
   if (!health || !modelSetup || !stateLoaded) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;
   if (shouldShowAgentOnboarding(modelSetup, agentOnboardingComplete, hasExistingBridgeData)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard
@@ -2544,7 +2619,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onSkip={() => finishAgentOnboarding()}
     onError={setError}
-  />{error && <TransientAlert title="Setup failed" message={error} variant="error" onDismiss={() => setError(undefined)} className="z-[60]" />}</div>;
+  />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
   const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
@@ -3131,9 +3206,11 @@ function AppContent() {
         title={described.title}
         message={described.message}
         variant={isThrottleKind(described.kind) ? "warning" : "error"}
+        action={isCodexVersionError(error) || error.startsWith("Codex update failed:") ? { label: "Update Codex", onClick: startCodexUpdate } : undefined}
         onDismiss={() => setError(undefined)}
       />;
     })()}
+    {codexUpdateOverlays}
     {githubLinkChoice && <GithubLinkDestinationDialog
       subject={describeGithubLink(githubLinkChoice.link)}
       repository={`${githubLinkChoice.link.owner}/${githubLinkChoice.link.name}`}
