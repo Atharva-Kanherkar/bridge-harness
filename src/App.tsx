@@ -92,7 +92,8 @@ import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
-import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { installZoom, nudgeZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
@@ -530,6 +531,12 @@ function AppContent() {
   useEffect(() => {
     if (view !== "memory") setMemoryDraft(null);
   }, [view]);
+
+  // Re-applies the remembered zoom level and answers pinch gestures. The chords
+  // are in the command table below; the wheel listener is ours because turning
+  // off `zoomHotkeysEnabled` also removes the polyfill's own, and losing pinch
+  // to fix a pinch that overshoots would be a poor trade.
+  useEffect(() => installZoom(), []);
 
   useEffect(() => {
     const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
@@ -2451,6 +2458,15 @@ function AppContent() {
         if (pane) dispatchDock({ type: "open-pane", pane });
         return;
       }
+      case "zoom-in":
+        void nudgeZoom(1);
+        return;
+      case "zoom-out":
+        void nudgeZoom(-1);
+        return;
+      case "zoom-reset":
+        void resetZoom();
+        return;
       case "show-shortcuts":
         setShortcutsOpen(open => !open);
         return;
@@ -2459,13 +2475,20 @@ function AppContent() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || (event.target instanceof HTMLElement && event.target.closest("[data-terminal-workspace]"))) return;
+      if (event.defaultPrevented) return;
+      const inTerminal = event.target instanceof HTMLElement
+        && event.target.closest("[data-terminal-workspace]");
       const match = matchShortcut(event, isTypingTarget(event.target));
-      if (match) {
+      // The terminal pane suppresses commands so its own keys are not stolen,
+      // but zoom presents the window rather than acting on its contents, and the
+      // polyfill this replaces answered it from the terminal too. Reading wide
+      // output is a fair reason to want the window larger.
+      if (match && (!inTerminal || isWindowLevel(match.shortcut.id))) {
         event.preventDefault();
         commandRef.current(match.shortcut.id, match.index);
         return;
       }
+      if (inTerminal) return;
       if (event.key === "Escape") {
         // Topmost layer first. The meter is no longer one of these layers: it
         // is a separate menu-bar window with its own dismissal.
