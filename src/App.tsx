@@ -92,7 +92,7 @@ import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
-import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { installZoom, nudgeZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
@@ -2475,13 +2475,20 @@ function AppContent() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || (event.target instanceof HTMLElement && event.target.closest("[data-terminal-workspace]"))) return;
+      if (event.defaultPrevented) return;
+      const inTerminal = event.target instanceof HTMLElement
+        && event.target.closest("[data-terminal-workspace]");
       const match = matchShortcut(event, isTypingTarget(event.target));
-      if (match) {
+      // The terminal pane suppresses commands so its own keys are not stolen,
+      // but zoom presents the window rather than acting on its contents, and the
+      // polyfill this replaces answered it from the terminal too. Reading wide
+      // output is a fair reason to want the window larger.
+      if (match && (!inTerminal || isWindowLevel(match.shortcut.id))) {
         event.preventDefault();
         commandRef.current(match.shortcut.id, match.index);
         return;
       }
+      if (inTerminal) return;
       if (event.key === "Escape") {
         // Topmost layer first. The meter is no longer one of these layers: it
         // is a separate menu-bar window with its own dismissal.

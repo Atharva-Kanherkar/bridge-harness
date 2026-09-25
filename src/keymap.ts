@@ -64,6 +64,11 @@ export type Shortcut = {
   /** Fires with a text field focused. Reserved for the commands whose whole
    *  point is to be reachable mid-sentence. */
   whileTyping?: boolean;
+  /** Presentation of the window rather than a command about its contents, so
+   *  it stays live where the others are suppressed: inside the terminal pane,
+   *  where the polyfill answered it too and where reading wide output is a
+   *  fair reason to want it larger. */
+  windowLevel?: boolean;
   /** How the sheet prints the chord, where a digit family or a symbol reads
    *  better than the literal key. */
   display?: string;
@@ -102,9 +107,13 @@ export const SHORTCUTS: Shortcut[] = [
   // polyfill did by ignoring shift: the plus key is `=` alone and `+` shifted,
   // and both are one zoom in. Matching on the printed key rather than `code`
   // also keeps the numeric keypad working, which the polyfill had.
-  { id: "zoom-in", label: "Zoom in", group: "View", chord: { key: "=", keys: ["=", "+"], meta: true, shiftOptional: true }, display: "⌘+", menu: "View", accelerator: "CmdOrCtrl+=" },
-  { id: "zoom-out", label: "Zoom out", group: "View", chord: { key: "-", keys: ["-", "_"], meta: true, shiftOptional: true }, display: "⌘-", menu: "View", accelerator: "CmdOrCtrl+-" },
-  { id: "zoom-reset", label: "Actual size", group: "View", chord: { key: "0", meta: true }, display: "⌘0", menu: "View", accelerator: "CmdOrCtrl+0" },
+  //
+  // `whileTyping` because the polyfill listened on the window and zoomed from
+  // inside the composer, which is where a keystroke usually lands. Without it
+  // these three would be dead for most of a session.
+  { id: "zoom-in", label: "Zoom in", group: "View", chord: { key: "=", keys: ["=", "+"], meta: true, shiftOptional: true }, display: "⌘+", whileTyping: true, windowLevel: true, menu: "View", accelerator: "CmdOrCtrl+=" },
+  { id: "zoom-out", label: "Zoom out", group: "View", chord: { key: "-", keys: ["-", "_"], meta: true, shiftOptional: true }, display: "⌘-", whileTyping: true, windowLevel: true, menu: "View", accelerator: "CmdOrCtrl+-" },
+  { id: "zoom-reset", label: "Actual size", group: "View", chord: { key: "0", meta: true }, display: "⌘0", whileTyping: true, windowLevel: true, menu: "View", accelerator: "CmdOrCtrl+0" },
   { id: "show-shortcuts", label: "Keyboard shortcuts", group: "View", chord: { key: "/", meta: true }, display: "⌘/", menu: "Help", accelerator: "CmdOrCtrl+/" },
 ];
 
@@ -184,6 +193,12 @@ export function formatChord(shortcut: Shortcut): string {
   const raw = chord.key ?? "";
   const glyph = KEY_GLYPHS[raw.toLowerCase()] ?? (raw.length === 1 ? raw.toUpperCase() : raw);
   return `${parts.join("")}${glyph}`;
+}
+
+/** True where the command presents the window rather than its contents, and so
+ *  is answered even in the terminal pane where the rest are suppressed. */
+export function isWindowLevel(id: CommandId): boolean {
+  return shortcutFor(id).windowLevel === true;
 }
 
 export function shortcutsInGroup(group: ShortcutGroup): Shortcut[] {
