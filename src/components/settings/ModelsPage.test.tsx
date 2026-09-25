@@ -121,6 +121,30 @@ describe("ModelsPage", () => {
     await view.unmount();
   });
 
+  it("lets a tracking worker choose a connected model and pins that choice", async () => {
+    const view = await mount({ adapters: [adapter(), adapter({
+      id: "claude", label: "Claude", defaultModel: "sonnet",
+      models: [{ id: "sonnet", label: "Sonnet", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low"] }],
+    })] });
+    await view.click(view.button("Implementer settings"));
+    const picker = view.button("Implementer model");
+    expect(picker?.disabled).toBe(false);
+    await view.click(picker);
+    const sonnet = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(option => option.textContent?.includes("Claude · Sonnet"));
+    expect(sonnet).toBeDefined();
+    await act(async () => {
+      sonnet!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      sonnet!.click();
+    });
+    const sent = view.onSave.mock.calls[0]?.[0];
+    expect(sent?.find(item => item.purpose === "implementer")).toMatchObject({
+      provider: "claude", model: "sonnet", effort: "low",
+      selectionMode: "pinned", pinned: true, learningEnabled: false,
+    });
+    await view.unmount();
+  });
+
   it("carries no Save button, because there is nothing on this page to hold back", async () => {
     const view = await mount();
     expect([...view.container.querySelectorAll("button")].map(node => node.textContent?.trim()))

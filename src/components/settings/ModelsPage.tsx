@@ -215,14 +215,17 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
             />
             <SettingsRow
               label="Provider and model"
+              description="Choosing a model pins this worker to that provider and model."
               control={<Select
                 label={`${profileLabels[profile.purpose]} model`}
                 value={`${profile.provider}:${profile.model}`}
-                disabled={busy || selectionMode === "track_standard"}
+                disabled={busy}
                 options={modelOptions}
                 onChange={value => {
                   const option = options.find(candidate => candidate.value === value);
-                  if (option) onUpdate({ provider: option.adapter.id, model: option.model.id });
+                  if (option) onUpdate({ provider: option.adapter.id, model: option.model.id,
+                    effort: normalizedEffort(profile.effort, option.model), selectionMode: "pinned",
+                    pinned: true, learningEnabled: false });
                 }}
               />}
             />

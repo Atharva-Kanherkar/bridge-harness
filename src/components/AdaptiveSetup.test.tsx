@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ModelSetupWizard } from "./ModelSetupWizard";
 import { evaluatorExecutionLabel, LearningRunSummary, RouterSettingsDialog, scheduleUserFieldsChanged } from "./RouterSettingsDialog";
 import type { AdapterDescriptor, LearningRun, LearningSchedule, LearningState } from "../types";
@@ -84,6 +84,29 @@ describe("adaptive setup surfaces", () => {
     expect(html).toContain("Thinking");            // orchestrator's tier-free effort control (model advertises levels)
     expect(html).toContain("Reasoning effort");     // worker rows keep the tier editor
     expect(html).toContain("Track standard");       // ...including tier-tracking behavior
+  });
+
+  it("pins a tracking worker when its model is changed during setup", async () => {
+    const other: AdapterDescriptor = { ...adapters[0], id: "other", label: "Other", defaultModel: "deep", models: [
+      { id: "deep", label: "Deep", tier: "strong", defaultForTier: true, supportedEffortLevels: ["high"] },
+    ] };
+    const onChange = vi.fn();
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<ModelProfileEditor profiles={recommendedProfileDrafts(adapters)} adapters={[...adapters, other]} onChange={onChange} />));
+    const implementer = [...host.querySelectorAll("section")].find(section => section.querySelector("h3")?.textContent === "Implementer");
+    const model = implementer?.querySelectorAll("select")[1];
+    expect(model?.disabled).toBe(false);
+    await act(async () => {
+      model!.value = "other:deep";
+      model!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange.mock.calls[0][0].find((profile: { purpose: string }) => profile.purpose === "implementer")).toMatchObject({
+      provider: "other", model: "deep", effort: "high",
+      selectionMode: "pinned", pinned: true, learningEnabled: false,
+    });
+    await act(async () => root.unmount()); host.remove();
   });
 
   it("hides the orchestrator Thinking control for a model with no effort knob", () => {
