@@ -52,8 +52,27 @@ describe("the keymap", () => {
     const match = matchShortcut(stroke({ key: "º", code: "Digit0", metaKey: true, altKey: true }));
     expect(match?.shortcut.id).toBe("toggle-dock");
     expect(match?.index).toBeUndefined();
-    // A bare ⌘0 names no chat, so it must not resolve to the first one.
-    expect(matchShortcut(stroke({ key: "0", code: "Digit0", metaKey: true }))).toBeUndefined();
+    // A bare ⌘0 is a command of its own (actual size), but it must never
+    // resolve to a chat.
+    const actual = matchShortcut(stroke({ key: "0", code: "Digit0", metaKey: true }));
+    expect(actual?.shortcut.id).toBe("zoom-reset");
+    expect(actual?.index).toBeUndefined();
+  });
+
+  it("answers both spellings macOS sends for plus and minus", () => {
+    // On a US layout the plus key is `=` alone and `+` shifted, and both are one
+    // zoom in. The polyfill ignored shift to get this; a chord that pinned shift
+    // would lose the shifted half of the gesture.
+    expect(matchShortcut(stroke({ key: "=", metaKey: true }))?.shortcut.id).toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "+", metaKey: true, shiftKey: true }))?.shortcut.id).toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "-", metaKey: true }))?.shortcut.id).toBe("zoom-out");
+    expect(matchShortcut(stroke({ key: "_", metaKey: true, shiftKey: true }))?.shortcut.id).toBe("zoom-out");
+    // The numeric keypad spells the same characters and is still one command.
+    expect(matchShortcut(stroke({ key: "+", code: "NumpadAdd", metaKey: true }))?.shortcut.id).toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "0", code: "Numpad0", metaKey: true }))?.shortcut.id).toBe("zoom-reset");
+    // Shift being optional must not make these chords match anything unheld.
+    expect(matchShortcut(stroke({ key: "=" }))?.shortcut.id).not.toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "=", altKey: true, metaKey: true }))?.shortcut.id).not.toBe("zoom-in");
   });
 
   it("lets Control stand in for Command", () => {

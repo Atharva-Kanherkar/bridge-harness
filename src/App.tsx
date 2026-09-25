@@ -93,6 +93,7 @@ import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } 
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { installZoom, nudgeZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
@@ -530,6 +531,12 @@ function AppContent() {
   useEffect(() => {
     if (view !== "memory") setMemoryDraft(null);
   }, [view]);
+
+  // Re-applies the remembered zoom level and answers pinch gestures. The chords
+  // are in the command table below; the wheel listener is ours because turning
+  // off `zoomHotkeysEnabled` also removes the polyfill's own, and losing pinch
+  // to fix a pinch that overshoots would be a poor trade.
+  useEffect(() => installZoom(), []);
 
   useEffect(() => {
     const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
@@ -2451,6 +2458,15 @@ function AppContent() {
         if (pane) dispatchDock({ type: "open-pane", pane });
         return;
       }
+      case "zoom-in":
+        void nudgeZoom(1);
+        return;
+      case "zoom-out":
+        void nudgeZoom(-1);
+        return;
+      case "zoom-reset":
+        void resetZoom();
+        return;
       case "show-shortcuts":
         setShortcutsOpen(open => !open);
         return;

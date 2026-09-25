@@ -21,6 +21,9 @@ export type CommandId =
   | "toggle-dock"
   | "open-dock-pane"
   | "expand-dock"
+  | "zoom-in"
+  | "zoom-out"
+  | "zoom-reset"
   | "show-shortcuts";
 
 /** Where a command sits in the native menu. Commands with no home there are
@@ -32,6 +35,11 @@ export type ShortcutGroup = "Chat" | "Navigation" | "View";
 export type Chord = {
   /** Compared case-insensitively with `event.key`. */
   key?: string;
+  /** Every printed key this chord answers to, for a chord macOS spells two
+   *  ways. Cmd+ is `=` unshifted and `+` shifted, and `modifiersMatch` holds
+   *  shift to the chord, so one `key` cannot cover both. Takes precedence over
+   *  `key`, which then only names the spelling the menu accelerator uses. */
+  keys?: string[];
   /** Compared with `event.code`. Option rewrites the printed key on macOS, so
    *  anything behind ⌥ has to be addressed physically. Either match counts. */
   code?: string;
@@ -39,6 +47,11 @@ export type Chord = {
   meta?: boolean;
   alt?: boolean;
   shift?: boolean;
+  /** Match whether or not shift is held. For a chord macOS spells both ways on
+   *  the same physical keys: the plus key is `=` alone and `+` with shift, and
+   *  both are the same zoom in. A chord with `keys` and this set covers the
+   *  whole gesture without a second command for the shifted spelling. */
+  shiftOptional?: boolean;
 };
 
 export type Shortcut = {
@@ -84,6 +97,14 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "toggle-dock", label: "Toggle the dock", group: "View", chord: { key: "0", code: "Digit0", meta: true, alt: true }, menu: "View", accelerator: "Alt+CmdOrCtrl+0" },
   { id: "open-dock-pane", label: "Open dock pane 1-9", group: "View", chord: { meta: true, alt: true }, digits: true, display: "⌥⌘1-9" },
   { id: "expand-dock", label: "Expand the dock", group: "View", chord: { key: "Enter", code: "Enter", meta: true, alt: true }, display: "⌥⌘↩", menu: "View", accelerator: "Alt+CmdOrCtrl+Enter" },
+  // Zoom lives in this table rather than in Tauri because the step Tauri takes
+  // is a constant in its own crate. `keys` plus `shiftOptional` is what the
+  // polyfill did by ignoring shift: the plus key is `=` alone and `+` shifted,
+  // and both are one zoom in. Matching on the printed key rather than `code`
+  // also keeps the numeric keypad working, which the polyfill had.
+  { id: "zoom-in", label: "Zoom in", group: "View", chord: { key: "=", keys: ["=", "+"], meta: true, shiftOptional: true }, display: "⌘+", menu: "View", accelerator: "CmdOrCtrl+=" },
+  { id: "zoom-out", label: "Zoom out", group: "View", chord: { key: "-", keys: ["-", "_"], meta: true, shiftOptional: true }, display: "⌘-", menu: "View", accelerator: "CmdOrCtrl+-" },
+  { id: "zoom-reset", label: "Actual size", group: "View", chord: { key: "0", meta: true }, display: "⌘0", menu: "View", accelerator: "CmdOrCtrl+0" },
   { id: "show-shortcuts", label: "Keyboard shortcuts", group: "View", chord: { key: "/", meta: true }, display: "⌘/", menu: "Help", accelerator: "CmdOrCtrl+/" },
 ];
 
@@ -100,6 +121,7 @@ function metaHeld(stroke: KeyStroke): boolean {
 }
 
 function modifiersMatch(stroke: KeyStroke, chord: Chord): boolean {
+  if (chord.shiftOptional) return metaHeld(stroke) === !!chord.meta && stroke.altKey === !!chord.alt;
   return metaHeld(stroke) === !!chord.meta
     && stroke.altKey === !!chord.alt
     && stroke.shiftKey === !!chord.shift;
@@ -107,6 +129,7 @@ function modifiersMatch(stroke: KeyStroke, chord: Chord): boolean {
 
 function keyMatches(stroke: KeyStroke, chord: Chord): boolean {
   if (chord.code && stroke.code === chord.code) return true;
+  if (chord.keys) return chord.keys.some(key => stroke.key.toLowerCase() === key.toLowerCase());
   return !!chord.key && stroke.key.toLowerCase() === chord.key.toLowerCase();
 }
 
