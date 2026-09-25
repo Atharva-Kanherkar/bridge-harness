@@ -142,7 +142,7 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
       saved={saved}
       control={<>
         {!orchestrator && <StatusPill tone={selectionMode === "pinned" ? "info" : "neutral"}>
-          {selectionMode === "pinned" ? "Pinned" : "Tracks standard"}
+          {selectionMode === "pinned" ? "Specific model" : "Automatic"}
         </StatusPill>}
         <button
           type="button"
@@ -196,13 +196,16 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
           </>
         : <>
             <SettingsRow
-              label="Selection behavior"
+              label="How Bridge chooses a model"
+              description={selectionMode === "pinned"
+                ? "Uses the provider and model selected below. If unavailable, Bridge uses the fallback profile."
+                : "Bridge chooses an available model suited to this worker and may change it over time."}
               control={<Select
-                label={`${profileLabels[profile.purpose]} selection behavior`}
+                label={`${profileLabels[profile.purpose]} model choice`}
                 value={selectionMode}
                 disabled={busy}
-                width="w-44"
-                options={[{ value: "track_standard", label: "Track standard" }, { value: "pinned", label: "Pinned model" }]}
+                width="w-52"
+                options={[{ value: "track_standard", label: "Choose automatically" }, { value: "pinned", label: "Use a specific model" }]}
                 onChange={value => {
                   const mode = value as "track_standard" | "pinned";
                   onUpdate({
@@ -215,7 +218,7 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
             />
             <SettingsRow
               label="Provider and model"
-              description="Choosing a model pins this worker to that provider and model."
+              description="Choosing a model switches this worker to Use a specific model."
               control={<Select
                 label={`${profileLabels[profile.purpose]} model`}
                 value={`${profile.provider}:${profile.model}`}

@@ -50,7 +50,7 @@ export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
     <section className="space-y-3">
       <div>
         <h3 className="text-sm font-medium text-foreground">Worker roles</h3>
-        <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">Agents the orchestrator delegates to. Each tracks the standard model for its capability tier. Choosing a provider and model pins that worker.</p>
+        <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">Choose automatically to let Bridge pick a model suited to each worker. Choosing a provider and model below switches that worker to Use a specific model.</p>
       </div>
       {workers.map(profile => {
       const selectionMode = profile.selectionMode ?? (profile.pinned ? "pinned" : "track_standard");
@@ -60,8 +60,8 @@ export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
         <label className="flex items-center gap-2 text-[13px] text-muted-foreground"><input type="checkbox" checked={profile.learningEnabled} disabled={disabled || selectionMode === "pinned"} onChange={event => update(profile.purpose, { learningEnabled: event.target.checked })} />Allow learning</label>
       </div>
       <div className="grid gap-3 @min-[420px]/profiles:grid-cols-2 @min-[720px]/profiles:grid-cols-3">
-        <label className="space-y-1.5 block text-[12px] font-medium text-muted-foreground">Selection behavior
-          <select className={fieldClass} value={selectionMode} disabled={disabled} onChange={event => { const mode = event.target.value as "track_standard" | "pinned"; update(profile.purpose, { selectionMode: mode, pinned: mode === "pinned", learningEnabled: mode === "pinned" ? false : profile.learningEnabled }); }}><option value="track_standard">Track standard</option><option value="pinned">Pinned model</option></select>
+        <label className="space-y-1.5 block text-[12px] font-medium text-muted-foreground">How Bridge chooses a model
+          <select className={fieldClass} value={selectionMode} disabled={disabled} onChange={event => { const mode = event.target.value as "track_standard" | "pinned"; update(profile.purpose, { selectionMode: mode, pinned: mode === "pinned", learningEnabled: mode === "pinned" ? false : profile.learningEnabled }); }}><option value="track_standard">Choose automatically</option><option value="pinned">Use a specific model</option></select>
         </label>
         <label className="space-y-1.5 block text-[12px] font-medium text-muted-foreground">Provider & model
           <select className={fieldClass} value={`${profile.provider}:${profile.model}`} disabled={disabled} onChange={event => {

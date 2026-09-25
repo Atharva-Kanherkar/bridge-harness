@@ -83,8 +83,8 @@ describe("ModelsPage", () => {
 
   it("marks a worker as pinned or tracking, and says nothing of the sort for the orchestrator", async () => {
     const view = await mount();
-    expect(view.text()).toContain("Tracks standard");
-    expect(view.text()).toContain("Pinned");
+    expect(view.text()).toContain("Automatic");
+    expect(view.text()).toContain("Specific model");
     await view.unmount();
   });
 
@@ -92,7 +92,7 @@ describe("ModelsPage", () => {
     const view = await mount();
     expect(view.text()).not.toContain("Allow learning");
     await view.click(view.button("Implementer settings"));
-    for (const field of ["Selection behavior", "Provider and model", "Reasoning effort",
+    for (const field of ["How Bridge chooses a model", "Provider and model", "Reasoning effort",
                          "Fallback profile", "Budget preference", "Latency preference", "Allow learning"]) {
       expect(view.text(), field).toContain(field);
     }
@@ -105,7 +105,7 @@ describe("ModelsPage", () => {
     const view = await mount();
     await view.click(view.button("Standard orchestrator settings"));
     expect(view.text()).toContain("Thinking");
-    expect(view.text()).not.toContain("Selection behavior");
+    expect(view.text()).not.toContain("How Bridge chooses a model");
     await view.unmount();
   });
 
@@ -127,7 +127,7 @@ describe("ModelsPage", () => {
       models: [{ id: "sonnet", label: "Sonnet", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low"] }],
     })] });
     await view.click(view.button("Implementer settings"));
-    const picker = view.button("Implementer model");
+    const picker = view.container.querySelector<HTMLButtonElement>('button[aria-label="Implementer model"]');
     expect(picker?.disabled).toBe(false);
     await view.click(picker);
     const sonnet = [...document.querySelectorAll<HTMLElement>('[role="option"]')]

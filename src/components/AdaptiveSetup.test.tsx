@@ -83,7 +83,7 @@ describe("adaptive setup surfaces", () => {
     expect(html).toContain("Worker roles");
     expect(html).toContain("Thinking");            // orchestrator's tier-free effort control (model advertises levels)
     expect(html).toContain("Reasoning effort");     // worker rows keep the tier editor
-    expect(html).toContain("Track standard");       // ...including tier-tracking behavior
+    expect(html).toContain("Choose automatically");  // ...including tier-tracking behavior
   });
 
   it("pins a tracking worker when its model is changed during setup", async () => {
