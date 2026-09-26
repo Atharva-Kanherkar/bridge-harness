@@ -566,7 +566,7 @@ export function agentsModel(input: AgentsModelInput): AgentRun[] {
         failureCode: status.tone === "failed" || status.tone === "stalled" ? (runtime.failureClass ?? status.tone) : undefined,
         ask: askFromItems(transcriptOf(input, root.id), worker.id, root.id),
         counters: {
-          files: panel?.result?.filesChanged.length ?? new Set(allSteps.map(step => step.target)).size,
+          files: panel?.result?.filesChanged.length ?? new Set(allSteps.filter(step => step.verb === "Edit").map(step => step.target)).size,
           additions: allSteps.reduce((sum, step) => sum + (step.additions ?? 0), 0),
           deletions: allSteps.reduce((sum, step) => sum + (step.deletions ?? 0), 0),
           toolCalls: allSteps.length,

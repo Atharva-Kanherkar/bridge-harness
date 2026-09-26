@@ -108,6 +108,12 @@ describe("AgentsPane rows", () => {
     for (const action of ["Transcript", "Steer", "Stop", "Pin"]) expect(text()).toContain(action);
   });
 
+  it("labels Pin for this row only, not for whether anything is pinned", async () => {
+    await mount({ runs: [run([node(), node({ id: "w2", sessionId: "w2", name: "Docs · fast" })])], expanded: new Set(["w1", "w2"]), pinned: new Set(["w2"]) });
+    const pins = Array.from(container.querySelectorAll("button[aria-pressed]")).filter(button => /Pin/.test(button.textContent ?? ""));
+    expect(pins.map(button => [button.textContent, button.getAttribute("aria-pressed")])).toEqual([["Pin", "false"], ["Pinned", "true"]]);
+  });
+
   it("nests a child with an indent and a hairline, never a box", async () => {
     const child = node({ id: "w1:sub:toolu_1", source: "subagent", name: "Explore", parentId: "w1", depth: 1, status: { tone: "done", label: "DONE" } });
     await mount({ runs: [run([node({ children: [child] })])], expanded: new Set(["w1"]) });

@@ -312,7 +312,9 @@ function RowSteer({ node, onSteer }: { node: AgentNode; onSteer: (id: string, te
   </form>;
 }
 
-function RowActions({ node, pinned, onTogglePinned, onDrillIn, onSteer, onStopWorker, steerOpen, onToggleSteer }: RowProps & { steerOpen: boolean; onToggleSteer: () => void }) {
+function RowActions({ node, pinned: pinnedIds, onTogglePinned, onDrillIn, onSteer, onStopWorker, steerOpen, onToggleSteer }: RowProps & { steerOpen: boolean; onToggleSteer: () => void }) {
+  // `pinned` is the whole set; the button speaks for this row only.
+  const pinned = pinnedIds.has(node.id);
   return <div className="mt-2 flex flex-wrap items-center gap-1">
     {onDrillIn && <button type="button" onClick={() => onDrillIn(node.id)} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-foreground transition-colors hover:bg-accent"><ListTree size={12} aria-hidden="true" />Transcript</button>}
     {onSteer && <button type="button" onClick={onToggleSteer} aria-expanded={steerOpen} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-foreground transition-colors hover:bg-accent"><Send size={11} aria-hidden="true" />Steer</button>}

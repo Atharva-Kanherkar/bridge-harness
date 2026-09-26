@@ -55,7 +55,7 @@ import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationD
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
 import { AgentsPane, PinnedAgentsTray } from "./components/AgentsPane";
-import { agentsModel, type AgentAsk } from "./components/agentsModel";
+import { agentsModel, type AgentAsk, type AgentNode } from "./components/agentsModel";
 import { addAgentIds, toggleAgentId, useAgentsPaneSettings } from "./agentsPaneSettings";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
@@ -181,6 +181,9 @@ type AsideLifecycle = {
   error?: string;
   recoveryDraft?: string;
 };
+
+/** How much of a worker's durable log the Agents pane backfills on first sight. */
+const WORKER_BACKFILL_EVENTS = 50;
 
 export function App() {
   const [queryClient] = useState(createBridgeQueryClient);
@@ -731,6 +734,28 @@ function AppContent() {
     rootSessionId: session?.id,
     scope: agentsSettings.scope,
   }), [visibleSessions, agentsForests, session?.id, sessionTranscript, agentEvents, acknowledgedTasks, agentsSettings.scope]);
+  // Worker steps come off the live stream, so a worker that ran before this
+  // window was open has none there and its row reads as empty. Backfill each
+  // worker once from its durable tail; the batch merge dedupes by event id, so
+  // a later live frame is never doubled.
+  const backfilledWorkers = useRef(new Set<string>());
+  useEffect(() => {
+    const ids: string[] = [];
+    const visit = (nodes: readonly AgentNode[]) => {
+      for (const node of nodes) {
+        if (node.source === "worker") ids.push(node.id);
+        visit(node.children);
+      }
+    };
+    for (const run of agentsRuns) visit(run.agents);
+    for (const id of ids) {
+      if (backfilledWorkers.current.has(id)) continue;
+      backfilledWorkers.current.add(id);
+      void bridgeApi.replaySessionEvents(id, 0, WORKER_BACKFILL_EVENTS, true)
+        .then(events => setAgentEvents(current => appendAgentEventBatch(current, events)))
+        .catch(() => backfilledWorkers.current.delete(id));
+    }
+  }, [agentsRuns]);
   const agentsCensus = useMemo(() => agentsRuns.reduce((total, run) => ({
     running: total.running + run.census.running,
     needsYou: total.needsYou + run.census.needsYou,

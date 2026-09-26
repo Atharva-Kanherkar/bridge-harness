@@ -371,7 +371,7 @@ async function mockPromptPreview(target: PromptTargetChoice, depth?: number): Pr
     providerLayers,
   };
 }
-let nextEventId = 20;
+let nextEventId = 40;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
   transportConnected: false, extensionId: "jocamgijenfmpopdfecjfnjdnohhoool", extensionPath: "/path/to/browser-extension",
   nativeHostInstalled: false, nativeHostManifestPath: null, tabs: [], lease: null, status: "not_attached",
@@ -420,7 +420,12 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     agentEvent(15, "session-1", "tool.completed", { itemId: "tool-2", title: "bun test src/auth", status: "failed", data: { type: "commandExecution", exitCode: 1, durationMs: 8421, aggregatedOutput: "(fail) rotation invalidates the old token\n  expected: null\n  received: Token { scope: 'session' }\n\n 41 pass\n 1 fail" } }),
     agentEvent(16, "session-1", "usage.updated", { status: "completed", data: { input_tokens: 18432, output_tokens: 611, cache_read_tokens: 16384, reasoning_tokens: 240, context_percent: 9 } }),
     agentEvent(17, "session-1", "message.completed", { itemId: "assistant-2", role: "assistant", status: "completed", text: "One test fails: the old token still verifies after a rotate. Looking at the store now." }),
-    agentEvent(18, "session-1", "turn.completed", { status: "completed" })
+    agentEvent(18, "session-1", "turn.completed", { status: "completed" }),
+    // A worker mid-edit, so the Agents pane has live steps in the browser mock.
+    agentEvent(19, "session-1w", "tool.completed", { itemId: "tool-1w-read", status: "completed", title: "Read store.rs", data: { type: "readFile", path: "src/auth/store.rs" } }),
+    agentEvent(20, "session-1w", "command.completed", { itemId: "tool-1w-rg", status: "completed", title: "rg family_id src/auth", data: { type: "commandExecution", command: "rg family_id src/auth", exitCode: 0, durationMs: 180 } }),
+    agentEvent(21, "session-1w", "file_change.completed", { itemId: "tool-1w-client", status: "completed", title: "client.ts", data: { path: "src/auth/client.ts", additions: 4, deletions: 1, durationMs: 300 } }),
+    agentEvent(22, "session-1w", "file_change.started", { itemId: "tool-1w-store", status: "inProgress", title: "store.rs", data: { path: "src/auth/store.rs", additions: 18, deletions: 6 } })
   ]
 };
 
