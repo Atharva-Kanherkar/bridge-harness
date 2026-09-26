@@ -120,6 +120,14 @@ inline `WorkerPanel` card. `src-tauri/bridge-core/src/agent.rs` stamps
 | 6.3 | A top-level message is unchanged | a message without `parent_tool_use_id` produces no `subagent` key |
 | 6.4 | OpenCode is untouched | the existing OpenCode subagent tests still pass |
 
+## 6b. A chat stays busy while its agents run — `sidebarChats.test.ts`, `BridgeSidebar.test.tsx`, `ComposerPill.test.tsx`
+
+- [ ] `liveAgentSessions` counts working and waiting descendants toward the chat at the top of the tree; ready, stopped and completed ones do not count.
+- [ ] An idle chat with live agents sorts, filters and groups as Active; a waiting or failed chat keeps its own bucket.
+- [ ] Its sidebar row reads `N agents working` (`1 agent working` for one) on a `bg-info` dot; a chat whose own turn is live keeps the green `working`.
+- [ ] While agents run under an idle turn the composer shows Stop beside a plain Send, never Queue, and sending never stops anything.
+- [ ] Stop ends the orchestrator's turn if one is live and every live agent under the chat.
+
 ## 7. Design system
 
 | # | Behaviour | Assertion |

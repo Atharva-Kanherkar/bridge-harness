@@ -27,7 +27,7 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { isHiddenSession } from "./components/sidebarChats";
+import { isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -1079,6 +1079,10 @@ function AppContent() {
   // way. The middle one is what covers a provider that takes its time between
   // receiving a message and starting on it.
   const turnActive = !!session?.activeTurnId || session?.status === "working" || pendingForSession.length > 0;
+  // Agents still running under each chat. The sidebar reads the whole map; the
+  // composer reads this chat's slice to stay stoppable after the turn ends.
+  const liveAgents = useMemo(() => liveAgentSessions(state.sessions), [state.sessions]);
+  const chatAgents = useMemo(() => (session ? liveAgents.get(session.id) ?? [] : []), [liveAgents, session]);
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -2454,6 +2458,13 @@ function AppContent() {
   const stopWorker = useCallback(async (childSessionId: string) => {
     setState(await bridgeApi.stopSession(childSessionId));
   }, []);
+  // Stop ends everything this chat has running: the orchestrator's turn if it
+  // has one, and every live agent under it. Sending is untouched, so a message
+  // typed while agents run still goes only to the orchestrator.
+  const stopChat = useCallback(() => {
+    if (turnActive) requestStop();
+    for (const id of chatAgents) void stopWorker(id).catch(value => setError(errorMessage(value)));
+  }, [turnActive, requestStop, chatAgents, stopWorker]);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -2756,6 +2767,7 @@ function AppContent() {
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
+      liveAgents={liveAgents}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
@@ -3147,7 +3159,8 @@ function AppContent() {
                     working={turnActive}
                     activeAction={activeAction}
                     stopping={stopping}
-                    onStop={session ? requestStop : undefined}
+                    agentsWorking={chatAgents.length > 0}
+                    onStop={session ? stopChat : undefined}
                     inputRef={composerRef}
                     leading={usageDot}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
