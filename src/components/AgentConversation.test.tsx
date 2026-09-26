@@ -694,7 +694,9 @@ describe("AgentConversation", () => {
     expect(container.textContent).not.toContain("Running subagent");
     expect(container.textContent).not.toContain("Subagent finished");
     await act(async () => { line.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    expect(focus).toHaveBeenCalled();
+    // The id the pane minted for this child, not the transcript row's key:
+    // anything else opens the pane and highlights nothing.
+    expect(focus).toHaveBeenCalledWith(`${session.id}:sub:task`);
     await act(async () => root.unmount());
     container.remove();
   });

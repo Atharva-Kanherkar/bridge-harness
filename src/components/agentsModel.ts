@@ -386,13 +386,40 @@ interface SubagentGroup {
   agent?: string;
   title?: string;
   facet?: SubagentFacet;
+  /** The call that started the child, when the transcript holds it. */
+  spawn?: ConversationItem;
+  /** The child's own rows. */
   rows: ConversationItem[];
+}
+
+/**
+ * The child a transcript row belongs to, or nothing if it is not a child's.
+ *
+ * A stamped row names its child directly. A task call is keyed by its own
+ * provider item id, which is exactly the id its child's rows are stamped with
+ * (Claude stamps `parent_tool_use_id`), so the spawn and the work it started
+ * are one group rather than two rows. A call that carries no id falls back to
+ * the agent it named.
+ */
+export function subagentKey(item: Pick<ConversationItem, "data" | "tool" | "itemId">): string | undefined {
+  const source = subagentSource(item);
+  if (source) return source.sessionId;
+  const facet = item.tool?.subagent;
+  if (!facet) return undefined;
+  if (item.itemId) return item.itemId;
+  return facet.agentType ? `collab:${facet.agentType}` : undefined;
+}
+
+/** The pane's id for the subagent a transcript row belongs to, as `agentsModel` mints it. */
+export function subagentNodeId(ownerSessionId: string, item: Pick<ConversationItem, "data" | "tool" | "itemId">): string | undefined {
+  const key = subagentKey(item);
+  return key ? `${ownerSessionId}:sub:${key}` : undefined;
 }
 
 /**
  * Group one transcript's rows into the children it spawned.
  *
- * Two independent sources, deliberately: rows stamped `data.subagent` (what
+ * Two independent sources, deliberately, joined on one key (see `subagentKey`): rows stamped `data.subagent` (what
  * OpenCode's `task` and, after the Claude normalizer change, a Claude `Task`
  * produce) and `SubagentFacet` tool calls (what a Codex collab agent produces).
  * A collab child the app-server never streams tool events for ends up with a
@@ -402,38 +429,53 @@ interface SubagentGroup {
 function subagentGroups(items: readonly ConversationItem[]): SubagentGroup[] {
   const groups = new Map<string, SubagentGroup>();
   for (const item of items) {
-    const source = subagentSource(item);
-    const facet = item.tool?.subagent;
-    const agent = source?.agent ?? facet?.agentType;
-    // A bare stamped row with no agent and no task call is still a child: its
-    // `sessionId` alone is enough to nest it under the right parent.
-    const key = source?.sessionId ?? (agent ? `collab:${agent}` : undefined);
+    const key = subagentKey(item);
     if (!key) continue;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.agent ??= agent;
-      existing.title ??= source?.title ?? facet?.description;
-      existing.facet ??= facet;
-      existing.rows.push(item);
-      continue;
+    const source = subagentSource(item);
+    // The call that started this child, as opposed to a task call the child
+    // itself made, which is only one of its steps. The newest record wins, so
+    // a Codex lifecycle update replaces the one it follows.
+    const spawn = !source && item.tool?.subagent ? item : undefined;
+    const group = groups.get(key) ?? { childId: key, ownerSessionId: "", rows: [] };
+    group.agent ??= source?.agent ?? spawn?.tool?.subagent?.agentType;
+    group.title ??= source?.title ?? spawn?.tool?.subagent?.description;
+    if (spawn) {
+      group.spawn = spawn;
+      group.facet = spawn.tool?.subagent;
+    } else {
+      group.rows.push(item);
     }
-    groups.set(key, { childId: source?.sessionId ?? key, ownerSessionId: "", agent, title: source?.title ?? facet?.description, facet, rows: [item] });
+    groups.set(key, group);
   }
   return [...groups.values()];
 }
 
+/**
+ * How a child is doing. Codex reports a child's own lifecycle, and that wins.
+ * Claude reports nothing of the kind, but the call that started the child
+ * settles when the child does, so its status is the child's. With neither, a
+ * child that has done something is working and one that has not is starting.
+ */
+function subagentStatus(group: SubagentGroup, stepCount: number): WorkerStatus {
+  if (group.facet?.status) return SUBAGENT_STATUS[group.facet.status];
+  const settled = group.spawn?.tool?.status;
+  if (settled === "completed") return SUBAGENT_STATUS.completed;
+  if (settled === "failed") return SUBAGENT_STATUS.failed;
+  return stepCount > 0 ? { tone: "working", label: "WORKING" } : { tone: "working", label: "STARTING" };
+}
+
 function subagentNode(owner: { id: string; harness: string }, group: SubagentGroup): AgentNode {
   const steps: AgentStep[] = [];
-  for (const row of group.rows) {
+  // A child that never streamed its own steps (a Codex collab agent) still has
+  // the call that started it to show.
+  for (const row of group.rows.length > 0 ? group.rows : group.spawn ? [group.spawn] : []) {
     const step = stepFromItem(row);
     if (step) steps.push(step);
     if (steps.length > AGENT_EXPANDED_STEPS) steps.shift();
   }
-  const status = group.facet?.status
-    ? SUBAGENT_STATUS[group.facet.status]
-    : steps.length > 0 ? { tone: "working" as const, label: "WORKING" } : { tone: "working" as const, label: "STARTING" };
-  const first = group.rows[0];
-  const last = group.rows[group.rows.length - 1];
+  const status = subagentStatus(group, steps.length);
+  const first = group.spawn ?? group.rows[0];
+  const last = group.rows[group.rows.length - 1] ?? group.spawn;
   const additions = group.rows.reduce((sum, row) => sum + (row.tool?.additions ?? 0), 0);
   const deletions = group.rows.reduce((sum, row) => sum + (row.tool?.deletions ?? 0), 0);
   return {

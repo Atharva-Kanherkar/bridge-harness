@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, Session, SessionForestSnapshot, WorkerRuntimeRecord } from "../types";
 import type { ConversationItem } from "../transcript/item";
-import { agentsModel, agentTrail, censusLine, findAgent } from "./agentsModel";
+import { agentsModel, agentTrail, censusLine, findAgent, subagentNodeId } from "./agentsModel";
 
 // Contract: testing/feat-agents-pane.md §1.
 
@@ -179,6 +179,32 @@ describe("agentsModel", () => {
     const node = runs[0].agents[0];
     expect(node.steps).toHaveLength(1);
     expect(node.liveLine?.target).toBe("client.ts");
+  });
+
+  it("folds a Claude Task call and the rows it stamped into one child, settled by the call", () => {
+    const task = (status: string) => item({
+      key: "toolu_1", itemId: "toolu_1", sequence: 1,
+      tool: { verb: "tool", doing: "Delegating", done: "Delegated", glyph: "fork", status, subagent: { agentType: "general-purpose", description: "Summarize the RFC", child: true } } as never,
+    });
+    const stamped = item({ key: "read", sequence: 2, data: { subagent: { sessionId: "toolu_1", agent: "general-purpose" } }, tool: { verb: "read", doing: "Reading", done: "Read", glyph: "file", status: "completed", target: "rfc.md" } as never });
+    const model = (status: string) => agentsModel({
+      now: NOW,
+      sessions: [session("root")],
+      forests: new Map([["root", forest()]]),
+      transcripts: new Map([["root", [task(status), stamped]]]),
+      rootSessionId: "root",
+    })[0].agents;
+
+    const running = model("running");
+    // One row, not the spawn beside its own child.
+    expect(running.filter(node => node.source === "subagent")).toHaveLength(1);
+    expect(running[0].id).toBe(subagentNodeId("root", task("running")));
+    expect(running[0].id).toBe("root:sub:toolu_1");
+    expect(running[0].liveLine?.target).toBe("rfc.md");
+    expect(running[0].status.tone).toBe("working");
+    // Claude sends no child lifecycle, so the call settling is the child settling.
+    expect(model("completed")[0].status).toEqual({ tone: "done", label: "DONE" });
+    expect(model("failed")[0].status.tone).toBe("failed");
   });
 
   it("gives a Codex collab row a status, with only the Task call as a step", () => {

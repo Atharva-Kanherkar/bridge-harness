@@ -21,6 +21,7 @@ import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
+import { subagentNodeId } from "./agentsModel";
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
@@ -272,7 +273,7 @@ function SubagentChip({ item }: { item: ConversationItem }) {
   ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span>;
 }
 
-const ActionRow = memo(function ActionRow({ item, onFocusAgent }: { item: ConversationItem; onFocusAgent?: (id: string) => void }) {
+const ActionRow = memo(function ActionRow({ item, sessionId, onFocusAgent }: { item: ConversationItem; sessionId?: string; onFocusAgent?: (id: string) => void }) {
   const call = toolCallDisplay(item);
   const live = call.status === "running";
   const failed = call.status === "failed";
@@ -308,7 +309,8 @@ const ActionRow = memo(function ActionRow({ item, onFocusAgent }: { item: Conver
       description={call.subagent.description}
       live={call.subagent.status === "running" || live}
       failed={call.subagent.status === "failed" || failed}
-      onOpen={() => onFocusAgent?.(item.key)}
+      // The pane's own id for this child, so the row it opens is the one it focuses.
+      onOpen={() => onFocusAgent?.((sessionId && subagentNodeId(sessionId, item)) || item.key)}
     />;
   }
   return (
@@ -389,7 +391,7 @@ const SELF_OPENING_STEPS = 3;
 /// group names the step running right now, which is the one thing worth
 /// watching; finished, it is a single line. A click is what opens it, and that
 /// click sticks — through the rest of the run and past the moment it ends.
-const ActivityGroup = memo(function ActivityGroup({ items, onFocusAgent }: { items: ConversationItem[]; onFocusAgent?: (id: string) => void }) {
+const ActivityGroup = memo(function ActivityGroup({ items, sessionId, onFocusAgent }: { items: ConversationItem[]; sessionId?: string; onFocusAgent?: (id: string) => void }) {
   const tools = useMemo(() => items.filter(isToolItem), [items]);
   // Live is a claim about the *work*, not about the transcript: a thought left
   // streaming by a provider that never settles it must not keep a finished run
@@ -465,7 +467,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, onFocusAgent }: { ite
           transition={stagger}
         >
           {items.map(item => isToolItem(item)
-            ? <ActionRow key={item.key} item={item} onFocusAgent={onFocusAgent}/>
+            ? <ActionRow key={item.key} item={item} sessionId={sessionId} onFocusAgent={onFocusAgent}/>
             : <div key={item.key} className="min-w-0 px-3 py-2">
                 {item.type === "plan" ? <PlanCard item={item}/> : <Reasoning item={item}/>}
               </div>)}
@@ -737,7 +739,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           get their exit. */}
       <AnimatePresence initial={false} key={session?.id ?? "preview"}>
         {renderedItems.map(entry => entry.kind === "group"
-          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} onFocusAgent={onFocusAgent}/></TranscriptRow>
+          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} sessionId={session?.id} onFocusAgent={onFocusAgent}/></TranscriptRow>
           : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
           : <TranscriptRow
               key={entry.item.key}
@@ -1215,7 +1217,7 @@ function ItemView({ item, sessionId, workers, now, readOnly, onResolve, onAnswer
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
-  return <ActivityGroup items={[item]} onFocusAgent={onFocusAgent}/>;
+  return <ActivityGroup items={[item]} sessionId={sessionId} onFocusAgent={onFocusAgent}/>;
 }
 
 /// A failure, stated plainly.
