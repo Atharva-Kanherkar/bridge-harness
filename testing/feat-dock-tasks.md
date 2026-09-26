@@ -1,5 +1,12 @@
 # feat/dock-tasks — test contract
 
+> **Superseded by `testing/feat-agents-pane.md`.** The `tasks` pane id survives
+> (so persisted dock state still resolves) but the label is now *Agents* and
+> `src/components/TasksPane.tsx` is gone: harness-native subagents joined the
+> list, rows became expandable and pinnable, and the inline worker cards left the
+> chat. This contract is kept as the record of what the pane was for; read the
+> successor for what it is.
+
 Locked before implementation. One workstream: the background-tasks pane —
 one list answering "what is Bridge doing right now, and what did it just
 finish?" for the active session's workspace. Workers, queued delegations,

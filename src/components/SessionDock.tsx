@@ -47,6 +47,15 @@ export type SessionDockProps = {
   onAction: (action: DockAction) => void;
   onConnectFolder?: () => void;
   children: (pane: DockPaneId) => React.ReactNode;
+  /**
+   * A strip below the active pane, inside the dock and above its bottom edge.
+   *
+   * It lives here rather than in each pane because it has to survive a pane
+   * switch: a pinned agent the human cannot see from the GitHub tab is not
+   * pinned. Rendered on every pane, so whatever it holds decides for itself
+   * whether it applies (the pinned-agents tray returns nothing on Agents).
+   */
+  tray?: React.ReactNode;
 };
 
 const RESIZE_STEP = 16;
@@ -66,7 +75,7 @@ const RESIZE_STEP = 16;
  */
 export const DOCK_TAB_LABEL_MIN_WIDTH = 400;
 
-export function SessionDock({ state, panes, availableWidth, sheet, concealed = false, onAction, onConnectFolder, children }: SessionDockProps) {
+export function SessionDock({ state, panes, availableWidth, sheet, concealed = false, onAction, onConnectFolder, children, tray }: SessionDockProps) {
   const dockId = useId();
   const dragging = useRef(false);
   // Expanded means the dock is `flex-1` — the whole split, always wider than
@@ -238,6 +247,8 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
             ) : null,
           )}
         </div>
+
+        {tray && <div className={cn((!state.open || concealed) && "hidden")}>{tray}</div>}
       </aside>
     </>
   );
