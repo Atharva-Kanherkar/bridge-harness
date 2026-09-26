@@ -808,4 +808,69 @@ describe("ChatModelControl effort styles", () => {
       expect(panel().textContent).not.toContain("Thinking effort");
     });
   });
+
+  describe("Codex", () => {
+    const codexLadder = ["low", "medium", "high", "xhigh", "max", "ultra"];
+    const codexThinking: AdapterDescriptor[] = [
+      {
+        id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: ["messages", "reasoning"], unavailableReason: null,
+        models: [
+          { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true, supportedEffortLevels: codexLadder },
+          { id: "gpt-spark", label: "GPT Spark", tier: "fast", defaultForTier: true, supportedEffortLevels: [] },
+        ],
+        defaultModel: "gpt-5.6-sol",
+      },
+    ];
+
+    it("shows an interactive effort control for a Codex model that advertises a ladder", async () => {
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={codexThinking} harness="codex" model="gpt-5.6-sol" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      const badge = [...panel().querySelectorAll("span")].find(node => node.textContent === "thinking");
+      expect(badge).toBeTruthy();
+      const effort = panel().querySelector<HTMLElement>('[data-testid="effort-control"]')!;
+      expect(effort).not.toBeNull();
+      expect([...effort.querySelectorAll("[data-effort]")].map(node => node.getAttribute("data-effort"))).toEqual(codexLadder);
+      await act(async () => effort.querySelector<HTMLButtonElement>('[data-effort="xhigh"]')!.click());
+      expect(onEffortChange).toHaveBeenCalledWith("xhigh");
+      expect(panel().textContent).toContain("Switching restarts the provider session.");
+    });
+
+    it("omits the effort footer when a Codex model advertises no levels", async () => {
+      await act(async () => root.render(<ChatModelControl adapters={codexThinking} harness="codex" model="gpt-spark" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
+      expect([...panel().querySelectorAll("span")].some(node => node.textContent === "thinking")).toBe(true);
+      expect(panel().textContent).toContain("Switching restarts the provider session.");
+    });
+
+    it("keeps Claude's own ladder when Codex is also in the catalog", async () => {
+      const mixed = [...codexThinking, ...effortAwareAdapters];
+      await act(async () => root.render(<ChatModelControl adapters={mixed} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      expect([...panel().querySelectorAll('[data-testid="effort-control"] [data-effort]')].map(node => node.getAttribute("data-effort"))).toEqual(["low", "high", "xhigh"]);
+    });
+
+    describe("list", () => {
+      beforeEach(() => localStorage.setItem("bridge.effortSelector", "list"));
+
+      it("names the missing control instead of leaving the effort pane blank", async () => {
+        await act(async () => root.render(<ChatModelControl adapters={codexThinking} harness="codex" model="gpt-spark" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
+        await act(async () => trigger().click());
+        expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
+        expect(panel().textContent).toContain("No thinking control for this model.");
+        expect(panel().textContent).toContain("Thinking effort");
+      });
+
+      it("changes effort from the list for GPT Sol", async () => {
+        const onEffortChange = vi.fn();
+        await act(async () => root.render(<ChatModelControl adapters={codexThinking} harness="codex" model="gpt-5.6-sol" onChange={vi.fn()} effort="medium" onEffortChange={onEffortChange} />));
+        await act(async () => trigger().click());
+        const effort = panel().querySelector<HTMLElement>('[data-testid="effort-control"]')!;
+        expect(effort).not.toBeNull();
+        await act(async () => effort.querySelector<HTMLButtonElement>('[data-effort="ultra"]')!.click());
+        expect(onEffortChange).toHaveBeenCalledWith("ultra");
+      });
+    });
+  });
 });
