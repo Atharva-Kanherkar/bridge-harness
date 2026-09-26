@@ -160,6 +160,22 @@ describe("ModelsPage", () => {
     await view.unmount();
   });
 
+  it("keeps a tracking worker automatic when its displayed model is selected again", async () => {
+    const view = await mount();
+    await view.click(view.button("Implementer settings"));
+    const picker = view.container.querySelector<HTMLButtonElement>('button[aria-label="Implementer model"]');
+    await view.click(picker);
+    const current = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(option => option.textContent?.includes("Codex · GPT-5") && !option.textContent?.includes("mini"));
+    expect(current).toBeDefined();
+    await act(async () => {
+      current!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      current!.click();
+    });
+    expect(view.onSave).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+
   it("carries no Save button, because there is nothing on this page to hold back", async () => {
     const view = await mount();
     expect([...view.container.querySelectorAll("button")].map(node => node.textContent?.trim()))

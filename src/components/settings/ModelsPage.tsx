@@ -215,6 +215,7 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
                 disabled={busy}
                 options={modelOptions}
                 onChange={value => {
+                  if (value === `${profile.provider}:${profile.model}`) return;
                   const option = options.find(candidate => candidate.value === value);
                   if (option) onUpdate({ provider: option.adapter.id, model: option.model.id,
                     effort: normalizedEffort(profile.effort, option.model), selectionMode: "pinned",
