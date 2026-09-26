@@ -254,6 +254,7 @@ test("nightly workflow reuses the stable signing steps and does not publish the 
     assert.equal(namedStep(nightly, name), namedStep(stable, name), name);
   }
   assert.match(nightly, /cron: "30 19 \* \* \*"/);
+  assert.match(nightly, /cron: "40 22 \* \* \*"/);
   assert.match(nightly, /ref: \$\{\{ needs\.plan\.outputs\.sha \}\}/);
   assert.match(nightly, /needs\.plan\.result == 'success' && needs\.plan\.outputs\.skip == 'false'/);
   assert.match(stable, /tags:\n\s+- "v\*\.\*\.\*"/);

@@ -1,8 +1,13 @@
 # Nightly macOS DMG pre-releases.
 #
-# Schedule: 30 19 * * * UTC, which is 01:00 Asia/Kolkata. The tag is
+# Schedule (primary): 30 19 * * * UTC (~01:00 Asia/Kolkata intent). The tag is
 # nightly-YYYY-MM-DD for the IST calendar day that just ended. The build is
 # main as of that 01:00 IST instant (not a later main tip if Actions is late).
+#
+# Schedule (backup): 40 22 * * * UTC (~04:10 Asia/Kolkata). GitHub Actions often
+# queues or drops the primary cron by a few hours; this later run catches up the
+# same IST day. The plan job is idempotent: it skips when the tag or release
+# already exists or when that IST day had no merges, so dual cron is safe.
 #
 # Skip the notarized build when that IST day had no pull requests merged into
 # main, or when the tag or GitHub release already exists. Empty days exit
@@ -24,6 +29,7 @@ name: Nightly macOS DMG
 on:
   schedule:
     - cron: "30 19 * * *"
+    - cron: "40 22 * * *"
   workflow_dispatch:
     inputs:
       date:
