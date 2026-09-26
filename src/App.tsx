@@ -98,7 +98,8 @@ import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage, isThrottleKind } from "./errors";
-import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion } from "./codexUpdate";
+import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion, withCodexRefreshDeadline } from "./codexUpdate";
+import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpdateDialog";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
@@ -265,7 +266,7 @@ function AppContent() {
   const [latestCodex, setLatestCodex] = useState<string>();
   const [codexUpdateNotice, setCodexUpdateNotice] = useState(false);
   const [codexUpdatePrompt, setCodexUpdatePrompt] = useState(false);
-  const [codexUpdateBusy, setCodexUpdateBusy] = useState(false);
+  const [codexUpdatePhase, setCodexUpdatePhase] = useState<CodexUpdatePhase>(null);
   const [codexUpdateSuccess, setCodexUpdateSuccess] = useState(false);
 
   useEffect(() => {
@@ -287,19 +288,20 @@ function AppContent() {
   };
 
   const confirmCodexUpdate = async () => {
-    if (codexUpdateBusy) return;
-    setCodexUpdateBusy(true);
+    if (codexUpdatePhase) return;
+    setCodexUpdatePhase("installing");
     try {
       await bridgeApi.installCodexUpdate();
     } catch (cause) {
       const message = errorMessage(cause);
-      setError(message.startsWith("Codex update failed:") ? message : `Codex update failed: ${message}`);
+      setError(message.startsWith("Codex update") ? message : `Codex update failed: ${message}`);
       setCodexUpdatePrompt(false);
-      setCodexUpdateBusy(false);
+      setCodexUpdatePhase(null);
       return;
     }
     try {
-      const refreshed = await bridgeApi.refreshModelCatalogs();
+      setCodexUpdatePhase("refreshing");
+      const refreshed = await withCodexRefreshDeadline(bridgeApi.refreshModelCatalogs());
       invalidateHealth();
       const refreshedVersion = refreshed.adapters.find(adapter => adapter.id === "codex")?.version;
       if (codexVersion && refreshedVersion === codexVersion) {
@@ -311,7 +313,7 @@ function AppContent() {
       setError(`The Codex installer finished, but Bridge could not refresh its runtime: ${errorMessage(cause)}. Restart Bridge to check the new version.`);
     } finally {
       setCodexUpdatePrompt(false);
-      setCodexUpdateBusy(false);
+      setCodexUpdatePhase(null);
     }
   };
   const [forkDraft, setForkDraft] = useState<{ sessionId: string; entryId: string } | null>(null);
@@ -2597,17 +2599,8 @@ function AppContent() {
       action={{ label: "Update Codex", onClick: startCodexUpdate }}
       onDismiss={() => setCodexUpdateNotice(false)}
     />}
-    <Dialog open={codexUpdatePrompt} onOpenChange={open => { if (!open && !codexUpdateBusy) setCodexUpdatePrompt(false); }}>
-      <DialogContent showCloseButton={false} className="gap-4 p-6">
-        <DialogTitle>Update Codex CLI?</DialogTitle>
-        <DialogDescription>Bridge will run the official Codex installer on this computer:</DialogDescription>
-        <code className="block break-all rounded-lg bg-muted p-3 font-mono text-xs text-foreground">curl -fsSL https://chatgpt.com/codex/install.sh | sh</code>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" disabled={codexUpdateBusy} onClick={() => setCodexUpdatePrompt(false)}>Ignore</Button>
-          <Button loading={codexUpdateBusy} onClick={() => void confirmCodexUpdate()}>Yes</Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <CodexUpdateDialog open={codexUpdatePrompt} phase={codexUpdatePhase}
+      onOpenChange={setCodexUpdatePrompt} onConfirm={() => void confirmCodexUpdate()} />
   </>;
   if (!health || !modelSetup || !stateLoaded) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;

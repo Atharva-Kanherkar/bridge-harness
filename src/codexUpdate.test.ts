@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion } from "./codexUpdate";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion, withCodexRefreshDeadline } from "./codexUpdate";
 
 describe("Codex update detection", () => {
   it("compares the installed CLI with the latest stable release", () => {
@@ -22,5 +22,25 @@ describe("Codex update detection", () => {
     fetchMock.mockRejectedValueOnce(new Error("offline"));
     expect(await latestCodexVersion()).toBeUndefined();
     fetchMock.mockRestore();
+  });
+});
+
+describe("Codex update refresh", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("releases the update when a runtime refresh never answers", async () => {
+    vi.useFakeTimers();
+    const refresh = withCodexRefreshDeadline(new Promise<never>(() => {}));
+    const rejected = expect(refresh).rejects.toThrow("Checking the Codex runtime timed out");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears the deadline after a successful or failed refresh", async () => {
+    vi.useFakeTimers();
+    await expect(withCodexRefreshDeadline(Promise.resolve("updated"))).resolves.toBe("updated");
+    await expect(withCodexRefreshDeadline(Promise.reject(new Error("offline")))).rejects.toThrow("offline");
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

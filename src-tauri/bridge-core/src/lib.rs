@@ -29,6 +29,7 @@ pub mod check_runner;
 pub mod claude_adapter;
 pub mod claude_import;
 pub mod codex_adapter;
+mod codex_update;
 pub mod compaction_controller;
 pub mod connector_eval;
 pub mod connector_inbox;
