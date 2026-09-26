@@ -1490,6 +1490,11 @@ async fn refresh_model_catalogs(state: State<'_, Arc<BridgeCore>>) -> Result<api
     blocking("Model catalogue refresh", move || api::refresh_model_catalogs(&core)).await
 }
 
+#[tauri::command]
+async fn install_codex_update() -> Result<(), BridgeError> {
+    blocking("Codex update", api::install_codex_update).await
+}
+
 /// Carry a source chat's projected context into another chat as a durable
 /// handoff brief (`$harness` shortcut). Best-effort; reports what happened.
 #[tauri::command]
@@ -2715,6 +2720,7 @@ pub fn run() -> i32 {
             locate_workspace_folders,
             update_chat_model,
             refresh_model_catalogs,
+            install_codex_update,
             carry_session_handoff,
             list_slash_commands,
             resolve_slash_command,

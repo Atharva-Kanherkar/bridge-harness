@@ -16,6 +16,13 @@
       "resultSchema": "health-result.json"
     },
     {
+      "command": "install_codex_update",
+      "domain": "health",
+      "method": "health/install_codex_update",
+      "paramsSchema": null,
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "get_state",
       "domain": "state",
       "method": "state/get_state",
