@@ -76,19 +76,6 @@ export interface SubagentFacet {
   description?: string;
   prompt?: string;
   status?: "running" | "completed" | "failed";
-  /**
-   * Whether this call *is* a child rather than the parent's call that started
-   * one.
-   *
-   * Both arrive on a task-shaped tool, and the difference decides what a row
-   * is: a collab-agent lifecycle record and a `Task` that named an agent are the
-   * child, because the child is where its work is reported. A bare `Task` name
-   * with no agent named is the orchestrator's own call — the child it made is a
-   * real session whose rows arrive stamped `data.subagent`, and those are the
-   * child's rows. Reading the spawn as the child would put every harness
-   * subagent's work one row too high, attributed to whoever asked for it.
-   */
-  child?: boolean;
 }
 
 /**
@@ -369,7 +356,7 @@ function readSubagent(source: ToolCallSource, data: Record<string, unknown>): Su
   // neither type, description, nor prompt, but it still owns a child result
   // that the transcript should surface.
   if (!agentType && !description && !prompt && !isCollabAgent) return undefined;
-  return { agentType, description, prompt, status: lifecycleStatus, child: isCollabAgent || isTaskLikeDynamic || (isTaskName && !!agentType) };
+  return { agentType, description, prompt, status: lifecycleStatus };
 }
 
 /** Read one tool call's display shape out of whatever the provider sent. */

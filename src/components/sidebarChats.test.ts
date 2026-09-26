@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { chatBucket, liveAgentSessions, BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
+import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -303,36 +303,5 @@ describe("hidden sessions", () => {
     expect(SUGGESTION_SESSION_KIND).toBe("suggestion");
     expect(EVALUATION_SESSION_KIND).toBe("outcome_evaluation");
     expect(CONSOLIDATION_SESSION_KIND).toBe("consolidation");
-  });
-});
-
-describe("live agents under an idle chat", () => {
-  const root = chat("root", { status: "ready" as SessionStatus });
-  const worker = (id: string, parentSessionId: string, status: SessionStatus) => chat(id, { kind: "worker", parentSessionId, status });
-
-  it("counts live descendants toward the chat at the top of the tree", () => {
-    const live = liveAgentSessions([
-      root,
-      worker("w1", "root", "working" as SessionStatus),
-      worker("w2", "root", "waiting" as SessionStatus),
-      worker("w3", "w1", "working" as SessionStatus),
-      worker("w4", "root", "ready" as SessionStatus),
-      worker("w5", "root", "stopped" as SessionStatus),
-    ]);
-    expect(live.get("root")).toEqual(["w1", "w2", "w3"]);
-    expect(live.has("w1")).toBe(false);
-  });
-
-  it("moves an idle chat into Active while its agents run, and nowhere else", () => {
-    const live = liveAgentSessions([root, worker("w1", "root", "working" as SessionStatus)]);
-    expect(chatBucket(root, live)).toBe("active");
-    expect(chatBucket(root, new Map())).toBe("idle");
-    expect(chatBucket(chat("asking", { status: "waiting" as SessionStatus }), new Map([["asking", ["w9"]]]))).toBe("waiting");
-    expect(filterChats([root, chat("quiet")], { status: "active", liveAgents: live }).map(item => item.id)).toEqual(["root"]);
-    expect(groupChats([root], { groupBy: "status", sortBy: "recency", now: NOW, liveAgents: live }).map(group => group.key)).toEqual(["active"]);
-  });
-
-  it("clears as soon as the last agent settles", () => {
-    expect(liveAgentSessions([root, worker("w1", "root", "completed" as SessionStatus)]).size).toBe(0);
   });
 });
