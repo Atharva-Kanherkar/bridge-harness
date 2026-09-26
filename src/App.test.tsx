@@ -531,25 +531,26 @@ describe("the dock in the session view", () => {
   });
 
   // Contract: testing/feat-dock-tasks.md §4.
-  it("opens the tasks pane on the sixth chord with the live roster", async () => {
+  it("opens the agents pane on the sixth chord with only what is running", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
     const dock = dockAside()!;
+    expect(dock.textContent).toContain("Implementation · strong");
     expect(dock.textContent).toContain("WORKING");
-    expect(dock.textContent).toContain("implementation");
-    expect(dock.textContent).toContain("DONE");
+    // The finished verification worker is the chat's history, not a running agent.
+    expect(dock.textContent).not.toContain("Verification · strong");
     expect(dock.textContent).toContain("Update the auth serializer");
     expect(dock.textContent).toContain("owned_path_conflict");
   });
 
-  it("carries the running count on the tasks descriptor before the pane ever mounts", async () => {
+  it("carries the running count on the agents descriptor before the pane ever mounts", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
-    const tasksTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Tasks")!;
-    expect(tasksTab.textContent).toContain("1");
+    const agentsTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Agents")!;
+    expect(agentsTab.textContent).toContain("1");
   });
 
   it("mounts the usage dot beside a worker's steer composer", async () => {
@@ -558,7 +559,10 @@ describe("the dock in the session view", () => {
     await click(dockToggle()!);
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
-    const openWorker = dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open worker Implementation · strong"]')!;
+    // A row opens in place to the worker's transcript; its own session is one
+    // more click from there.
+    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Expand Implementation · strong"]')!);
+    const openWorker = [...dockAside()!.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Open session")!;
     await click(openWorker);
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");

@@ -4,27 +4,29 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, WorkerRuntimeRecord } from "../types";
 import type { QueuedWorkerRequest } from "../protocol/generated/protocol";
-import { TasksPane } from "./TasksPane";
+import { TasksPane, activeAgentRows, descendantIds } from "./TasksPane";
 
-// Contract: testing/feat-dock-tasks.md §1–§3.
+// The Agents pane lists the agents this chat has running now, and pinned ones.
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
   id, workspaceId: "w", harness: "codex", label: `Worker ${id}`, status: "working", startedAt: "2026-08-25T10:00:00Z",
   endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "m", restorationMode: "hot",
-  continuationFidelity: "native", kind: "worker", parentSessionId: "parent", ...overrides,
+  continuationFidelity: "native", kind: "worker", parentSessionId: "chat", ...overrides,
 });
 
 const runtime = (sessionId: string, overrides: Partial<WorkerRuntimeRecord> = {}): WorkerRuntimeRecord => ({
-  sessionId, parentSessionId: "parent", lifecycleState: "working", taskFamily: "implementation", compatibilityKey: "k",
+  sessionId, parentSessionId: "chat", lifecycleState: "working", taskFamily: "implementation", compatibilityKey: "k",
   resultStatus: "pending", retryCount: 0, lastResult: null, lastActivityAt: "2026-08-25T10:00:00Z", ...overrides,
 } as WorkerRuntimeRecord);
 
-const queued: QueuedWorkerRequest = {
-  id: "q1", parentSessionId: "parent", workspaceId: "w", turnId: "t", sequence: 1, attemptCount: 0,
-  request: { role: "implementation", objective: "Update the auth serializer", reason: "owned_path_conflict" },
+const queued = (id: string, overrides: Partial<QueuedWorkerRequest> = {}): QueuedWorkerRequest => ({
+  id, parentSessionId: "chat", workspaceId: "w", turnId: "t", sequence: 1, attemptCount: 0,
+  request: { role: "implementation", objective: `Objective ${id}`, reason: "owned_path_conflict" },
   actualModel: "gpt-terra", queueStatus: "queued", dispatchedSessionId: null, lastError: null,
-  blockedAt: null, claimedAt: null, expiresAt: "later", createdAt: "now", updatedAt: "now",
-} as QueuedWorkerRequest;
+  blockedAt: null, claimedAt: null, expiresAt: "later", createdAt: "now", updatedAt: "now", ...overrides,
+} as QueuedWorkerRequest);
+
+const chat = session("chat", { kind: "orchestrator", parentSessionId: null, label: "Orchestrator" });
 
 let container: HTMLDivElement;
 let root: Root;
@@ -32,19 +34,23 @@ let root: Root;
 async function mount(props: Partial<Parameters<typeof TasksPane>[0]> = {}) {
   await act(async () => {
     root.render(<TasksPane
-      sessions={props.sessions ?? []}
-      acknowledged={props.acknowledged ?? new Set()}
-      onAcknowledge={props.onAcknowledge ?? (() => undefined)}
+      chatSessionId="chat"
+      sessions={[chat]}
+      pinned={new Set()}
+      onTogglePin={() => undefined}
+      liveEvents={[]}
+      onOpenSession={() => undefined}
       {...props}
     />);
   });
 }
 
-const click = async (element: Element) => {
-  await act(async () => {
-    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
+const click = async (element: Element | null | undefined) => {
+  expect(element, "expected the element to be in the tree").toBeTruthy();
+  await act(async () => { element!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
 };
+const byLabel = (label: string) => container.querySelector(`button[aria-label="${label}"]`);
+const rowIds = () => [...container.querySelectorAll("[data-agent-row]")].map(row => row.getAttribute("data-agent-row"));
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -59,97 +65,104 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("TasksPane roster", () => {
-  it("speaks the worker status vocabulary with detail", async () => {
+describe("which agents are listed", () => {
+  it("lists only this chat's agents that are running or waiting on you", async () => {
+    const sessions = [
+      chat,
+      session("running"),
+      session("asking", { status: "waiting" }),
+      session("done", { status: "completed" }),
+      session("failed", { status: "failed" }),
+      session("elsewhere", { parentSessionId: "another-chat" }),
+    ];
+    const runtimes = [
+      runtime("running"),
+      runtime("asking", { lifecycleState: "waiting", waitingReason: "approval_required" }),
+      runtime("done", { lifecycleState: "completed", resultStatus: "reported", lastResult: { status: "completed", summary: "ok" } }),
+      runtime("failed", { lifecycleState: "failed" }),
+      // The snapshot carries the whole workspace; this one belongs to another chat.
+      runtime("elsewhere", { parentSessionId: "another-chat" }),
+    ];
+    await mount({ sessions, runtimes });
+    expect(rowIds()).toEqual(["running", "asking"]);
+    expect(container.textContent).toContain("NEEDS YOU");
+    expect(container.textContent).toContain("waiting: approval required");
+  });
+
+  it("counts a worker's own workers as the chat's", () => {
+    const sessions = [chat, session("w1"), session("w1a", { parentSessionId: "w1" }), session("other", { parentSessionId: "x" })];
+    expect([...descendantIds("chat", sessions)].sort()).toEqual(["w1", "w1a"]);
+    expect(activeAgentRows("chat", sessions, [runtime("w1"), runtime("w1a", { parentSessionId: "w1" })], new Set()).map(row => row.session.id)).toEqual(["w1", "w1a"]);
+  });
+
+  it("shows only requests genuinely queued for this chat", async () => {
     await mount({
-      sessions: [session("a"), session("b", { status: "ready" })],
-      runtimes: [
-        runtime("a"),
-        runtime("b", { lifecycleState: "completed", resultStatus: "reported", lastResult: { status: "completed", summary: "All 42 auth tests pass" } }),
+      queue: [
+        queued("q-mine"),
+        queued("q-dispatched", { queueStatus: "dispatched" }),
+        queued("q-rejected", { queueStatus: "rejected" }),
+        queued("q-other", { parentSessionId: "another-chat" }),
       ],
     });
-    expect(container.textContent).toContain("WORKING");
-    expect(container.textContent).toContain("implementation");
-    expect(container.textContent).toContain("DONE");
-    expect(container.textContent).toContain("All 42 auth tests pass");
+    expect(container.textContent).toContain("Objective q-mine");
+    expect(container.textContent).not.toContain("Objective q-dispatched");
+    expect(container.textContent).not.toContain("Objective q-rejected");
+    expect(container.textContent).not.toContain("Objective q-other");
+    expect(container.textContent).toContain("1 queued");
   });
 
-  it("keeps retries attributed", async () => {
-    await mount({ sessions: [session("a")], runtimes: [runtime("a", { retryCount: 3 })] });
-    expect(container.textContent).toContain("3 retries");
-  });
-
-  it("states why a delegation waits", async () => {
-    await mount({ queue: [queued] });
-    expect(container.textContent).toContain("Update the auth serializer");
-    expect(container.textContent).toContain("QUEUED");
-    expect(container.textContent).toContain("owned_path_conflict");
-  });
-
-  it("renders shells as one row", async () => {
-    await mount({ terminalActivity: { running: 2, attention: false } });
-    expect(container.textContent).toContain("2 shells running");
-  });
-
-  it("says when nothing is in flight", async () => {
-    await mount({});
-    expect(container.textContent).toContain("Nothing is running in the background for this session.");
+  it("says so when nothing is running", async () => {
+    await mount({ runtimes: [runtime("done", { lifecycleState: "completed" })], sessions: [chat, session("done", { status: "completed" })] });
+    expect(container.textContent).toContain("No agents running");
+    expect(rowIds()).toEqual([]);
   });
 });
 
-describe("TasksPane failures", () => {
-  const failed = () => ({
-    sessions: [session("f", { status: "failed" })],
-    runtimes: [runtime("f", { lifecycleState: "failed" })],
+describe("a row", () => {
+  it("opens in place to the worker's own transcript and closes again", async () => {
+    await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1", { progressSummary: "editing src/auth/store.rs" })] });
+    expect(container.textContent).toContain("editing src/auth/store.rs");
+    expect(container.querySelector('[role="region"][aria-label="Worker Worker w1"]')).toBeNull();
+
+    await click(byLabel("Expand Worker w1"));
+    const transcript = container.querySelector('[role="region"][aria-label="Worker Worker w1"]');
+    expect(transcript).not.toBeNull();
+    // Embedded, not an overlay over the chat.
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+
+    await click(byLabel("Collapse Worker w1"));
+    expect(container.querySelector('[role="region"][aria-label="Worker Worker w1"]')).toBeNull();
   });
 
-  it("reads differently and stays until dismissed", async () => {
-    await mount(failed());
-    expect(container.textContent).toContain("FAILED");
-    expect(container.querySelector('button[aria-label="Dismiss failure of Worker f"]')).not.toBeNull();
-    await mount({ sessions: [session("a")], runtimes: [runtime("a")] });
-    expect(container.querySelector('button[aria-label^="Dismiss failure"]')).toBeNull();
-  });
-
-  it("hands dismissal to the host and honours the acknowledged set", async () => {
-    const onAcknowledge = vi.fn();
-    await mount({ ...failed(), onAcknowledge });
-    await click(container.querySelector('button[aria-label="Dismiss failure of Worker f"]')!);
-    expect(onAcknowledge).toHaveBeenCalledWith("f");
-
-    await mount({ ...failed(), acknowledged: new Set(["f"]) });
-    expect(container.textContent).not.toContain("FAILED");
-    expect(container.textContent).toContain("Nothing is running in the background for this session.");
-  });
-});
-
-describe("TasksPane actions", () => {
-  it("opens and expands through the existing wiring", async () => {
-    const onOpenSession = vi.fn();
-    const onExpandWorker = vi.fn();
-    await mount({ sessions: [session("a")], runtimes: [runtime("a")], onOpenSession, onExpandWorker });
-    await click(container.querySelector('button[aria-label="Open worker Worker a"]')!);
-    expect(onOpenSession).toHaveBeenCalledWith("a");
-    await click(container.querySelector('button[aria-label="Expand worker Worker a"]')!);
-    expect(onExpandWorker).toHaveBeenCalledWith("a");
-  });
-
-  it("offers retry on failed rows only", async () => {
-    const onRetryWorker = vi.fn();
+  it("keeps a pinned worker listed and open after it finishes, first in the list", async () => {
+    const onTogglePin = vi.fn();
     await mount({
-      sessions: [session("a"), session("f", { status: "failed" })],
-      runtimes: [runtime("a"), runtime("f", { lifecycleState: "failed" })],
-      onRetryWorker,
+      sessions: [chat, session("live"), session("finished", { status: "completed" })],
+      runtimes: [runtime("live"), runtime("finished", { lifecycleState: "completed" })],
+      pinned: new Set(["finished"]),
+      onTogglePin,
     });
-    expect(container.querySelector('button[aria-label="Retry worker Worker a"]')).toBeNull();
-    await click(container.querySelector('button[aria-label="Retry worker Worker f"]')!);
-    expect(onRetryWorker).toHaveBeenCalledWith("f");
+    expect(rowIds()).toEqual(["finished", "live"]);
+    expect(container.querySelector('[role="region"][aria-label="Worker Worker finished"]')).not.toBeNull();
+    expect(byLabel("Unpin Worker finished")?.getAttribute("aria-pressed")).toBe("true");
+    // Nothing left to stop on a finished worker.
+    expect(byLabel("Stop worker Worker finished")).toBeNull();
+
+    await click(byLabel("Pin Worker live"));
+    expect(onTogglePin).toHaveBeenCalledWith("live");
+  });
+
+  it("stops a live worker through the host", async () => {
+    const onStopWorker = vi.fn(async () => undefined);
+    await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1")], onStopWorker });
+    await click(byLabel("Stop worker Worker w1"));
+    expect(onStopWorker).toHaveBeenCalledWith("w1");
   });
 
   it("routes the shells row to the terminal pane", async () => {
     const onOpenTerminal = vi.fn();
     await mount({ terminalActivity: { running: 1, attention: false }, onOpenTerminal });
-    await click(container.querySelector('button[aria-label="Reveal shells in the terminal pane"]')!);
+    await click(byLabel("Reveal shells in the terminal pane"));
     expect(onOpenTerminal).toHaveBeenCalledTimes(1);
   });
 });

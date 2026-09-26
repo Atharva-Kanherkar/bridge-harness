@@ -371,7 +371,7 @@ async function mockPromptPreview(target: PromptTargetChoice, depth?: number): Pr
     providerLayers,
   };
 }
-let nextEventId = 20;
+let nextEventId = 40;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
   transportConnected: false, extensionId: "jocamgijenfmpopdfecjfnjdnohhoool", extensionPath: "/path/to/browser-extension",
   nativeHostInstalled: false, nativeHostManifestPath: null, tabs: [], lease: null, status: "not_attached",
@@ -392,7 +392,8 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     { id: "session-1", workspaceId: "demo-1", harness: "codex", label: "Orchestrator", status: "working", startedAt: now, endedAt: null, contextPercent: 38, usagePercent: 24, metricSource: "reported", providerSessionId: "mock-thread-1", activeTurnId: "mock-turn-1", model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "hot", continuationFidelity: "native", kind: "orchestrator" },
     { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
     { id: "session-1w2", workspaceId: "demo-1", harness: "codex", label: "Verification · strong", status: "ready", startedAt: now, endedAt: null, contextPercent: 9, usagePercent: 6, metricSource: "reported", providerSessionId: "mock-codex-2", activeTurnId: null, model: "gpt-5.6-sol", requestedTier: "strong", effort: "xhigh", parentSessionId: "session-1", depth: 1, restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", kind: "worker" },
-    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" }
+    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" },
+    { id: "session-2w", workspaceId: "demo-2", harness: "opencode", label: "Docs · fast", status: "working", startedAt: now, endedAt: null, contextPercent: 7, usagePercent: 3, metricSource: "reported", providerSessionId: "mock-opencode-2w", activeTurnId: "mock-turn-2w", model: "opencode/space-bunny-free", requestedTier: "fast", effort: null, parentSessionId: "session-2", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" }
   ],
   events: [
     { id: 2, source: "git", kind: "workspace.changed", entityId: "demo-1", body: "4 files changed · +284 −31", createdAt: now },
@@ -420,7 +421,14 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     agentEvent(15, "session-1", "tool.completed", { itemId: "tool-2", title: "bun test src/auth", status: "failed", data: { type: "commandExecution", exitCode: 1, durationMs: 8421, aggregatedOutput: "(fail) rotation invalidates the old token\n  expected: null\n  received: Token { scope: 'session' }\n\n 41 pass\n 1 fail" } }),
     agentEvent(16, "session-1", "usage.updated", { status: "completed", data: { input_tokens: 18432, output_tokens: 611, cache_read_tokens: 16384, reasoning_tokens: 240, context_percent: 9 } }),
     agentEvent(17, "session-1", "message.completed", { itemId: "assistant-2", role: "assistant", status: "completed", text: "One test fails: the old token still verifies after a rotate. Looking at the store now." }),
-    agentEvent(18, "session-1", "turn.completed", { status: "completed" })
+    agentEvent(18, "session-1", "turn.completed", { status: "completed" }),
+    // A worker mid-edit, so the Agents pane has live steps in the browser mock.
+    agentEvent(19, "session-1w", "tool.completed", { itemId: "tool-1w-read", status: "completed", title: "Read store.rs", data: { type: "readFile", path: "src/auth/store.rs" } }),
+    agentEvent(20, "session-1w", "command.completed", { itemId: "tool-1w-rg", status: "completed", title: "rg family_id src/auth", data: { type: "commandExecution", command: "rg family_id src/auth", exitCode: 0, durationMs: 180 } }),
+    agentEvent(21, "session-1w", "file_change.completed", { itemId: "tool-1w-client", status: "completed", title: "client.ts", data: { path: "src/auth/client.ts", additions: 4, deletions: 1, durationMs: 300 } }),
+    agentEvent(22, "session-1w", "file_change.started", { itemId: "tool-1w-store", status: "inProgress", title: "store.rs", data: { path: "src/auth/store.rs", additions: 18, deletions: 6 } }),
+    agentEvent(23, "session-2w", "tool.completed", { itemId: "tool-2w-read", status: "completed", title: "Read shell.md", data: { type: "readFile", path: "docs/deck/shell.md" } }),
+    agentEvent(24, "session-2w", "file_change.started", { itemId: "tool-2w-edit", status: "inProgress", title: "shell.md", data: { path: "docs/deck/shell.md", additions: 12, deletions: 3 } })
   ]
 };
 
@@ -737,12 +745,18 @@ const mockWorktreeUsage: WorktreeUsage = {
   ],
 };
 
+/** A demo chat's live workers need runtime rows, or its Agents pane is empty. */
+function mockChildRuntimes(sessionId: string): SessionForestSnapshot["workerRuntimes"] {
+  return mockState.sessions
+    .filter(item => item.parentSessionId === sessionId && item.kind === "worker")
+    .map(item => ({ sessionId: item.id, parentSessionId: sessionId, lifecycleState: item.status === "working" ? "working" : "completed", taskFamily: "documentation", compatibilityKey: "demo", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: `/tmp/bridge/${item.id}`, worktreeBranch: `bridge/${item.id}`, lastResult: null, lastActivityAt: now, progressSummary: "editing docs/deck/shell.md", updatedAt: now }));
+}
 function mockForest(sessionId: string): SessionForestSnapshot {
   const existing = mockForests[sessionId];
   if (existing) return structuredClone(existing);
   const session = mockState.sessions.find(item => item.id === sessionId);
   const entry = forestEntry(`${sessionId}-root`, sessionId, 1, "branch.summary", { summary: "Session started" }, null);
-  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null, entryWindow: { returned: 1, total: 1, trimmedPayloads: 0 } };
+  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: mockChildRuntimes(sessionId), workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null, entryWindow: { returned: 1, total: 1, trimmedPayloads: 0 } };
   mockForests[sessionId] = created;
   return structuredClone(created);
 }

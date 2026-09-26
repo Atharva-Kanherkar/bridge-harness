@@ -100,6 +100,26 @@ describe("ComposerPill", () => {
     expect(onStop).not.toHaveBeenCalled();
   });
 
+  it("keeps Stop beside a plain Send while agents run under an idle turn", () => {
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    render({ value: "what did the docs worker change?", working: false, agentsWorking: true, activeAction: "queue", onSubmit, onStop });
+
+    expect(stop()).not.toBeNull();
+    // The words go to the orchestrator now, so this is a send, never a queue.
+    expect(container.querySelector('button[aria-label="Queue"]')).toBeNull();
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    expect(send.disabled).toBe(false);
+    act(() => send.click());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("hides Stop once nothing is running", () => {
+    render({ value: "", working: false, agentsWorking: false, onStop: () => {} });
+    expect(stop()).toBeNull();
+  });
+
   it("says Queue when the provider cannot take input mid-turn", () => {
     render({ value: "also update the docs", working: true, activeAction: "queue", onStop: () => {} });
 
