@@ -10,14 +10,13 @@ import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
-import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
 import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
-import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
-import { WorkerDiagnostics } from "./WorkerControls";
+import { workerPanelModel } from "./workerPanel";
 import type { BridgeEvent } from "../types";
-import type { WorkerTone } from "./workerStatus";
+import { workerStatus } from "./workerStatus";
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
@@ -251,58 +250,6 @@ function TerminalBlock({ command, output }: { command?: string; output?: string 
   </div>;
 }
 
-/// A harness-spawned nested subagent's detail: which agent was named, what it
-/// was asked, and what it returned. The row label already says
-/// Delegating/Delegated <description>; this is the inspectable half — the
-/// prompt the parent sent in, then the result — so a minutes-long subagent is
-/// not one pulse with nothing under it. Keyed off the normalized subagent
-/// facet, never off which harness produced the call.
-function SubagentBlock({ agentType, prompt, output, status, live }: { agentType?: string; prompt?: string; output?: string; status?: "running" | "completed" | "failed"; live?: boolean }) {
-  const childStatus = status ?? (live ? "running" : "completed");
-  const isRunning = childStatus === "running";
-  const isFailed = childStatus === "failed";
-  return (
-    <div className="space-y-3 bg-card px-3.5 py-3 sm:px-4">
-      <header className="flex items-center gap-2">
-        {isRunning ? <PulseDot size={7}/> : isFailed ? <X size={12} className="text-destructive" aria-hidden="true"/> : <Check size={12} className="text-success" aria-hidden="true"/>}
-        <span className="text-[12px] font-medium text-foreground">{isRunning ? "Running subagent" : isFailed ? "Subagent failed" : "Subagent finished"}</span>
-        {agentType && (
-          <span className="ml-auto inline-flex items-center rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-            {agentType}
-          </span>
-        )}
-      </header>
-      {prompt && <SubagentSection label="Asked" text={prompt} markdown />}
-      {output ? (
-        <SubagentSection label="Result" text={output} />
-      ) : isRunning ? (
-        <p className="text-[12px] text-muted-foreground">Working — the result will appear here.</p>
-      ) : null}
-    </div>
-  );
-}
-
-/// One band of the subagent card: a labelled, copyable block. Prompts are
-/// rendered as Markdown because they are instructions; results are kept
-/// preformatted so tool output, JSON and logs stay exact.
-function SubagentSection({ label, text, markdown }: { label: string; text: string; markdown?: boolean }) {
-  return (
-    <section className="overflow-hidden rounded-lg border border-border bg-code">
-      <div className="flex items-center justify-between border-b border-border bg-code-highlight px-3 py-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-faint">{label}</span>
-        <CopyButton text={text} className="code-block-copy" />
-      </div>
-      <div className={cn("px-3.5 py-2.5", markdown && "max-h-[320px] overflow-auto")}>
-        {markdown ? (
-          <div className="text-[13px] leading-relaxed text-foreground"><Markdown text={text}/></div>
-        ) : (
-          <CappedOutput text={text} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-muted-foreground"/>
-        )}
-      </div>
-    </section>
-  );
-}
-
 /// One tool call in three layers: a glanceable summary row, the body it opens
 /// into, and — for a patch — the remaining hunks one more click away.
 ///
@@ -325,12 +272,18 @@ function SubagentChip({ item }: { item: ConversationItem }) {
   ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span>;
 }
 
-const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) {
+const ActionRow = memo(function ActionRow({ item, onFocusAgent }: { item: ConversationItem; onFocusAgent?: (id: string) => void }) {
   const call = toolCallDisplay(item);
   const live = call.status === "running";
   const failed = call.status === "failed";
   const succeeded = call.status === "completed";
-  const body = call.patch ? "patch" : call.subagent ? "subagent" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
+  // Whether this row *is* a child, as opposed to the parent's call that started
+  // one. Either the backend stamped the row with the child session it came from
+  // (OpenCode's `task`, and Claude's `Task` after the normalizer change), or the
+  // call is itself a child's own record — a Codex collab agent, whose rows are
+  // never streamed and whose lifecycle arrives on the call.
+  const isChild = !!call.subagent && (call.subagent.child === true || !!subagentSource(item));
+  const body = call.patch ? "patch" : isChild ? null : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
   // `null` is "nobody has decided yet", which is not the same as closed: a patch
   // arriving mid-stream should still open the row, while a reader who collapsed
   // one keeps it collapsed.
@@ -345,6 +298,19 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
   // a sibling of the expand control, not a child — buttons do not nest.
   const links = useContext(FileLinkContext);
   const fileRef = path && (call.verb === "edit" || call.verb === "read") ? parseFileRef(path, links) : undefined;
+  // A harness's own subagent call is a pointer, not a tool row with a body. The
+  // prompt it was handed and the result it returned used to unfold here as two
+  // more bands inside a row in the middle of the conversation; both now live on
+  // the subagent's own row in the Agents pane, where the work it did is too.
+  if (isChild && call.subagent) {
+    return <SubagentPointer
+      agentType={call.subagent.agentType ?? "subagent"}
+      description={call.subagent.description}
+      live={call.subagent.status === "running" || live}
+      failed={call.subagent.status === "failed" || failed}
+      onOpen={() => onFocusAgent?.(item.key)}
+    />;
+  }
   return (
     // No `initial`/`animate` of its own: the row inherits both from the group
     // that reveals it, which is what produces the stagger.
@@ -396,7 +362,6 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
         </div>
         <Disclosure open={open} className="border-t border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
-          {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} status={call.subagent?.status} live={live}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>
@@ -424,7 +389,7 @@ const SELF_OPENING_STEPS = 3;
 /// group names the step running right now, which is the one thing worth
 /// watching; finished, it is a single line. A click is what opens it, and that
 /// click sticks — through the rest of the run and past the moment it ends.
-const ActivityGroup = memo(function ActivityGroup({ items }: { items: ConversationItem[] }) {
+const ActivityGroup = memo(function ActivityGroup({ items, onFocusAgent }: { items: ConversationItem[]; onFocusAgent?: (id: string) => void }) {
   const tools = useMemo(() => items.filter(isToolItem), [items]);
   // Live is a claim about the *work*, not about the transcript: a thought left
   // streaming by a provider that never settles it must not keep a finished run
@@ -500,7 +465,7 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
           transition={stagger}
         >
           {items.map(item => isToolItem(item)
-            ? <ActionRow key={item.key} item={item}/>
+            ? <ActionRow key={item.key} item={item} onFocusAgent={onFocusAgent}/>
             : <div key={item.key} className="min-w-0 px-3 py-2">
                 {item.type === "plan" ? <PlanCard item={item}/> : <Reasoning item={item}/>}
               </div>)}
@@ -631,7 +596,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable" }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact" }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onFocusAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable" }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onFocusAgent?: (id: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact" }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -772,7 +737,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           get their exit. */}
       <AnimatePresence initial={false} key={session?.id ?? "preview"}>
         {renderedItems.map(entry => entry.kind === "group"
-          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items}/></TranscriptRow>
+          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} onFocusAgent={onFocusAgent}/></TranscriptRow>
           : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
           : <TranscriptRow
               key={entry.item.key}
@@ -781,7 +746,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} sessionId={session?.id} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
+              <ItemView item={entry.item} sessionId={session?.id} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onFocusAgent={readOnly ? undefined : onFocusAgent} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -1231,7 +1196,7 @@ const MessageRow = memo(function MessageRow({ item, sessionId, onRemember, onFor
   </div>;
 }, (previous, next) => previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
 
-function ItemView({ item, sessionId, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
+function ItemView({ item, sessionId, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onFocusAgent, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onFocusAgent?: (id: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
@@ -1245,12 +1210,12 @@ function ItemView({ item, sessionId, workers, now, readOnly, onResolve, onAnswer
   if (interaction) return readOnly
     ? <fieldset disabled className="m-0 min-w-0 border-0 p-0" aria-label="Historical interaction, read-only">{interaction}</fieldset>
     : interaction;
-  if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker}/>;
+  if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onFocusAgent={onFocusAgent} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
-  return <ActivityGroup items={[item]}/>;
+  return <ActivityGroup items={[item]} onFocusAgent={onFocusAgent}/>;
 }
 
 /// A failure, stated plainly.
@@ -1692,7 +1657,7 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   </div>;
 }
 
-function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onStopWorker }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onOpenSession?: (sessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void> }) {
+function DelegationRow({ item, workers, now, onOpenSession, onFocusAgent, onRetryWorker, onStopWorker }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onOpenSession?: (sessionId: string) => void; onFocusAgent?: (id: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void> }) {
   // Every hook before the first early return: an item's facet changes under it
   // (a spawn becomes a result when the envelope lands), so the hook count must
   // not depend on which branch renders.
@@ -1711,7 +1676,6 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
   // block visible where the user is actually working.
   if (facet === "blocked") {
     const blocked = item.data.childBlocked === true;
-    const paths = Array.isArray(item.data.ownedPaths) ? item.data.ownedPaths.map(String) : [];
     // The child session id travels on the event, so the mirror can hand the user
     // straight to the worker's conversation where the real approval lives —
     // otherwise the block is a dead end and the card is effectively lost.
@@ -1721,20 +1685,15 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
         <span className="min-w-0 truncate">{item.title || "Worker approval resolved"}</span>
       </div>;
     }
-    return <div className="my-3 min-w-0 rounded-xl border border-border border-x-2 border-x-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
-      <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{item.title || "A worker needs your approval"}</span></div>
-      {item.data.objective ? <p className="mt-1">{String(item.data.objective)}</p> : null}
-      {item.text && <p className="mt-1">{item.text}</p>}
-      {item.data.command ? <code className={`mt-1.5 ${WELL}`}>{String(item.data.command)}</code> : null}
-      {item.data.cwd ? <small className="mt-1 block font-mono text-[11px] break-all text-muted-foreground">{String(item.data.cwd)}</small> : null}
-      {paths.length > 0 && <small className="mt-1 block font-mono text-[11px] break-all text-muted-foreground">write scope: {paths.join(", ")}</small>}
-      {childSessionId && onOpenSession
-        ? <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90"><CornerDownRight size={12} aria-hidden="true" /> Open worker to approve</button>
-            <span className="text-muted-foreground">The worker is idle until you do.</span>
-          </div>
-        : <p className="mt-1 text-muted-foreground">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>}
-    </div>;
+    // One line, not a card. The ask is answered in the worker's own row in the
+    // Agents pane, which is where the worker lives with its other facts; a
+    // mirrored card here said the same thing twice and put the buttons in a
+    // conversation the worker is not in.
+    return <NeedsYouPointer
+      title={item.title || "A worker needs your approval"}
+      command={typeof item.data.command === "string" ? item.data.command : undefined}
+      onOpen={() => { if (childSessionId) onFocusAgent?.(childSessionId); else onOpenSession?.(childSessionId ?? ""); }}
+    />;
   }
   if (facet === "rejected") {
     const reason = String(item.data.reason ?? item.text ?? "");
@@ -1769,15 +1728,12 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
     />;
   }
   if (panel && childSessionId) {
-    return <WorkerPanel
-      model={panel}
-      reasons={workers?.reasons ?? []}
+    return <DelegationPointer
+      count={isResult ? "Worker finished" : "Delegated a worker"}
+      harnesses={[panel.session.harness]}
+      census={delegationCensus(workers)}
       objective={item.text}
-      modelLabel={model}
-      effort={effort}
-      now={now}
-      onOpenSession={onOpenSession}
-      onStopWorker={onStopWorker}
+      onOpen={() => onFocusAgent?.(childSessionId)}
     />;
   }
   return <div className="my-3 min-w-0">
@@ -1789,6 +1745,84 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
     </button>
     {open && item.text && <div className="my-1 ml-[5px] min-w-0 pl-[15px] border-l border-border text-muted-foreground text-[13px] leading-relaxed"><Markdown text={item.text}/></div>}
   </div>;
+}
+
+// ── the pointer lines ───────────────────────────────────────────────────────
+//
+// The chat keeps a *pointer*, not a card. Everything a worker or a harness
+// subagent does now lives in the Agents pane, which holds it while you read,
+// scroll or leave; what stays here is the fact worth keeping in the prose —
+// how many, who is running, who needs you — and one click back to the row.
+//
+// Three lines, one per thing worth pointing at: a delegation, a subagent call,
+// and an ask. Each says where the answer lives, because a pointer that does not
+// name its destination is just a label.
+
+/** `3 running · 1 done`, from the same runtime records the pane reads. */
+function delegationCensus(workers: WorkerPanelSource | undefined): string {
+  if (!workers) return "";
+  let running = 0;
+  let needsYou = 0;
+  let done = 0;
+  for (const runtime of workers.runtimes) {
+    const worker = workers.sessions.find(candidate => candidate.id === runtime.sessionId);
+    if (!worker) continue;
+    const status = workerStatus(worker, runtime);
+    if (status.tone === "working") running += 1;
+    else if (status.tone === "waiting" || status.tone === "attention") needsYou += 1;
+    else if (status.tone === "done" || status.tone === "idle") done += 1;
+  }
+  return [
+    running > 0 ? `${running} running` : "",
+    needsYou > 0 ? `${needsYou} needs you` : "",
+    done > 0 ? `${done} done` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function DelegationPointer({ count, harnesses, census, objective, onOpen }: { count: string; harnesses: string[]; census: string; objective?: string; onOpen: () => void }) {
+  return <button
+    type="button"
+    onClick={onOpen}
+    title={objective}
+    className="-ml-2 flex min-h-[32px] w-[calc(100%+1rem)] items-center gap-2.5 rounded-md px-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent"
+  >
+    <GitFork size={13} className="shrink-0" aria-hidden="true" />
+    <span className="min-w-0 truncate text-foreground/90">{count}</span>
+    <span className="flex shrink-0 items-center gap-0.5">{harnesses.map(harness => <HarnessMark key={harness} harness={harness} size={13} />)}</span>
+    {census && <span className="shrink-0 font-mono text-[11.5px]">{census}</span>}
+    <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[12px]">Agents<ChevronRight size={12} aria-hidden="true" /></span>
+  </button>;
+}
+
+function SubagentPointer({ agentType, description, live, failed, onOpen }: { agentType: string; description?: string; live?: boolean; failed?: boolean; onOpen: () => void }) {
+  return <button
+    type="button"
+    onClick={onOpen}
+    title={description}
+    className="-ml-2 flex min-h-[32px] w-[calc(100%+1rem)] items-center gap-2.5 rounded-md px-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent"
+  >
+    <CornerDownRight size={13} className="shrink-0" aria-hidden="true" />
+    <span className="shrink-0 text-foreground/90">Subagent</span>
+    <span className="shrink-0 font-mono text-[11.5px]">{agentType}</span>
+    {description && <span className="min-w-0 truncate">· {description}</span>}
+    {failed
+      ? <X size={12} className="shrink-0 text-destructive" aria-hidden="true" />
+      : live ? <PulseDot size={7}/> : <Check size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+    <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[12px]">Agents<ChevronRight size={12} aria-hidden="true" /></span>
+  </button>;
+}
+
+function NeedsYouPointer({ title, command, onOpen }: { title: string; command?: string; onOpen: () => void }) {
+  return <button
+    type="button"
+    onClick={onOpen}
+    className="-ml-2 flex min-h-[32px] w-[calc(100%+1rem)] items-center gap-2.5 rounded-md border-l-2 border-l-warning px-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent"
+  >
+    <AlertTriangle size={13} className="shrink-0 text-warning" aria-hidden="true" />
+    <span className="min-w-0 truncate text-foreground">{title}</span>
+    {command && <span className="shrink-0 font-mono text-[11.5px] text-foreground">{command}</span>}
+    <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[12px] text-warning">Answer in Agents<ChevronRight size={12} aria-hidden="true" /></span>
+  </button>;
 }
 
 /// The sessions, runtime rows, and live event stream a worker panel reads.
@@ -1803,153 +1837,6 @@ export interface WorkerPanelSource {
   /** The *global* live stream, not this session's slice: the worker's frames
    *  arrive under the worker's own session id. */
   events: AgentEvent[];
-}
-
-/// How long a result summary may run before the card clamps it.
-///
-/// Three lines at the card's width, roughly. The number is here rather than
-/// inline because the clamp and the "read the full result" affordance have to
-/// agree: a toggle offered on a summary that was never clamped is a button that
-/// does nothing.
-const SUMMARY_CLAMP_CHARS = 220;
-
-/// A worker's tone, as the two marks the card wears it in.
-///
-/// Chrome stays achromatic and the tone is carried by a 7px dot and a small-caps
-/// label, never a tinted panel — a worker that failed is a plain card with a red
-/// tick, the same way every other alert in the transcript is drawn.
-const PANEL_TONE: Record<WorkerTone, { text: string; dot: string }> = {
-  working: { text: "text-success", dot: "bg-success" },
-  waiting: { text: "text-warning", dot: "bg-warning" },
-  attention: { text: "text-warning", dot: "bg-warning" },
-  warm: { text: "text-info", dot: "bg-info" },
-  done: { text: "text-muted-foreground", dot: "bg-muted-foreground/50" },
-  failed: { text: "text-destructive", dot: "bg-destructive" },
-  stalled: { text: "text-destructive", dot: "bg-destructive" },
-  idle: { text: "text-muted-foreground", dot: "bg-muted-foreground/50" },
-};
-
-/// A clock that only ticks while there is something to count.
-///
-/// A finished panel showing a frozen elapsed time is correct; re-rendering it
-/// every second forever is not, and a transcript can hold many of these.
-function useLiveClock(active: boolean, override?: number): number {
-  const [tick, setTick] = useState(Date.now);
-  useEffect(() => {
-    if (override !== undefined || !active) return;
-    const timer = window.setInterval(() => setTick(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [active, override]);
-  return override ?? tick;
-}
-
-/// One worker, live, inside the conversation that delegated it.
-///
-/// The gap this closes: the user sat in the orchestrator chat watching a static
-/// "Delegating to a worker…" line while the actual work happened somewhere they
-/// were not looking. Same card carries the run and the outcome, so a worker is
-/// one place in the transcript rather than two.
-///
-/// It reads top to bottom as one sentence — who ran, on what, how it went — and
-/// every band below the header is optional, so a worker that only started is a
-/// two-line card rather than a scaffold of empty rows. What it deliberately no
-/// longer does is print the worker's whole result twice: the objective band is
-/// the ask, clamped, and the summary band is the outcome, clamped and expandable
-/// on request. A finished card used to open with a dozen lines of unbroken prose
-/// and then repeat its first sentence, truncated, three bands lower.
-function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now, onOpenSession, onStopWorker, reasons }: {
-  reasons: BridgeEvent[];
-  model: WorkerPanelModel;
-  objective?: string;
-  modelLabel?: string;
-  effort?: string;
-  now?: number;
-  onOpenSession?: (sessionId: string) => void;
-  onStopWorker?: (childSessionId: string) => Promise<void>;
-}) {
-  const [showFullSummary, setShowFullSummary] = useState(false);
-  // A worker whose session has ended is not live, whatever its result status
-  // says. Reading only `reported` left ended-but-unreported workers pulsing
-  // forever under a terminal label, each one re-rendering every second with a
-  // clock that never stopped climbing.
-  const live = !model.reported && !model.endedAt && ["working", "waiting", "warm"].includes(model.status.tone);
-  const clock = useLiveClock(live, now);
-  // A finished worker reports how long it took, not how long ago it started.
-  const elapsedAt = !live && model.endedAt ? Date.parse(model.endedAt) : clock;
-  const name = model.session.title || model.session.label;
-  const tests = model.result?.tests ?? [];
-  const failedTests = tests.filter(test => test.status === "failed").length;
-  const files = model.result?.filesChanged.length ?? 0;
-  const summary = model.result?.summary?.trim();
-  // The objective and the summary are two facts, and a card that shows the same
-  // words twice reads as a rendering bug. When history has left only one of
-  // them, the band that survives is the one with something to say.
-  const ask = objective?.trim() && objective.trim() !== summary ? objective.trim() : undefined;
-  const longSummary = !!summary && summary.length > SUMMARY_CLAMP_CHARS;
-  const tone = PANEL_TONE[model.status.tone];
-  return <section className="my-3 min-w-0 overflow-hidden rounded-xl border border-border bg-card" aria-label={`Worker ${name}`}>
-    <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3.5 pb-2 pt-2.5">
-      {live ? <PulseDot size={7}/> : <span className={cn("mr-px inline-block size-[7px] flex-none rounded-full", tone.dot)} aria-hidden="true"/>}
-      <b className="min-w-0 truncate text-[13px] font-medium text-foreground">{name}</b>
-      <span className={cn("shrink-0 text-[10px] font-semibold uppercase tracking-[0.09em]", tone.text)}>{model.status.label}</span>
-      <span className="flex-1"/>
-      {/* One cluster with its own rhythm. Loose in the header's own gap, the
-          retry count, the clock and the stop button ran into each other and
-          read as one unpunctuated string. */}
-      <span className="flex shrink-0 items-center gap-2">
-        {/* Which harness actually ran this worker, next to which model it was
-            asked for. The card carried the model alone, so a failover that
-            moved the work to another provider changed nothing a reader could
-            see. */}
-        <span className="hidden items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground sm:inline-flex">
-          <HarnessMark harness={model.session.harness} size={11} live={live}/>
-          <span className="max-w-[13rem] truncate">{requestedModel || harnessLabel(model.session.harness)}{effort ? ` · ${effort}` : ""}</span>
-        </span>
-        {model.retryCount > 0 && <span className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground"><RotateCcw size={9} aria-hidden="true"/>retry {model.retryCount}</span>}
-        <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{formatElapsed(model.startedAt, elapsedAt)}</span>
-        {live && onStopWorker && <StopWorkerButton sessionId={model.session.id} name={name} onStopWorker={onStopWorker}/>}
-      </span>
-    </header>
-
-    {ask && <p className="line-clamp-2 px-3.5 pb-2.5 text-[12px] leading-relaxed text-muted-foreground">{ask}</p>}
-
-    {(model.progressSummary || model.waitingReason) && <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t border-border px-3.5 py-2 text-[11px]">
-      {model.progressSummary && <span className="min-w-0 flex-1 truncate font-mono text-foreground/80">{model.progressSummary}</span>}
-      {model.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">waiting: {model.waitingReason.replaceAll("_", " ")}{model.waitingSince ? ` · ${formatElapsed(model.waitingSince, clock)}` : ""}</span>}
-    </div>}
-
-    {/* The newest line is the one the reader is watching, so it is the one with
-        the ink. The older two fade back rather than competing with it. */}
-    {live && model.feed.length > 0 && <ol className="m-0 list-none space-y-px border-t border-border px-3.5 py-2">
-      {model.feed.map((line, index) => <li key={line.id} className={cn("truncate font-mono text-[11px] leading-[1.7]", index === model.feed.length - 1 ? "text-foreground/75" : "text-muted-foreground/70")}>{line.text}</li>)}
-    </ol>}
-
-    {(files > 0 || tests.length > 0) && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground">
-      {files > 0 && <span className="inline-flex items-center gap-1"><FileText size={11} aria-hidden="true"/>{files} file{files === 1 ? "" : "s"}</span>}
-      {tests.length > 0 && <span className={cn("inline-flex items-center gap-1", failedTests ? "text-destructive" : "text-success")}>{failedTests ? <X size={11} aria-hidden="true"/> : <Check size={11} aria-hidden="true"/>}{failedTests ? `${failedTests} of ${tests.length} failing` : `${tests.length} test${tests.length === 1 ? "" : "s"} passing`}</span>}
-    </div>}
-
-    {summary && <div className="border-t border-border px-3.5 py-2.5">
-      <p className={cn("text-[12px] leading-relaxed text-foreground/85", !showFullSummary && longSummary && "line-clamp-3")}>{summary}</p>
-      {longSummary && <button
-        type="button"
-        onClick={() => setShowFullSummary(value => !value)}
-        className="mt-1.5 inline-flex min-h-6 items-center gap-1 rounded text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ChevronRight size={11} className={cn("transition-transform", showFullSummary && "rotate-90")} aria-hidden="true"/>
-        {showFullSummary ? "Less" : "Read the full result"}
-      </button>}
-    </div>}
-
-    {/* One way in. There were two buttons here doing near-enough the same
-        thing — "Expand" put the worker in an overlay, "Open session" made it
-        the selected conversation — and the pair read as a choice the reader had
-        to understand before they could look at their worker. */}
-    <div className="px-3.5 pb-2"><WorkerDiagnostics reasons={reasons} sessionId={model.session.id} /></div>
-    {onOpenSession && <footer className="flex items-center justify-end border-t border-border px-3.5 py-2">
-      <button type="button" onClick={() => onOpenSession(model.session.id)} className="inline-flex min-h-7 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><CornerDownRight size={11} aria-hidden="true"/> Open session</button>
-    </footer>}
-  </section>;
 }
 
 /// Someone redirected a running worker. A quiet line, because the intervention
@@ -1980,44 +1867,6 @@ function SteerChip({ item, onOpenSession }: { item: ConversationItem; onOpenSess
 /// The old card collapsed every outcome into "Subagent finished" and let the
 /// orchestrator silently retry. Naming the classified cause is what lets the
 /// person reading decide whether another attempt is worth anything.
-/// Stop a running worker from the card the user is already watching it on.
-///
-/// Previously the only stop was "End session" inside the worker's own session
-/// view, gated on a status list that excluded `starting`, `warm`, `resuming`
-/// and `checkpointing` — so the states where a worker is most obviously stuck
-/// were the states with no way to end it. Here it is offered for as long as
-/// the worker has not reported.
-function StopWorkerButton({ sessionId, name, onStopWorker }: {
-  sessionId: string;
-  name: string;
-  onStopWorker: (childSessionId: string) => Promise<void>;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  return <button
-    type="button"
-    disabled={busy}
-    title={error ?? `Stop ${name}`}
-    aria-label={`Stop ${name}`}
-    className={cn(
-      "inline-flex min-h-6 shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors",
-      error
-        ? "border-destructive/40 text-destructive"
-        : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-      busy && "opacity-60",
-    )}
-    onClick={() => {
-      setBusy(true);
-      setError(undefined);
-      void onStopWorker(sessionId)
-        .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
-        .finally(() => setBusy(false));
-    }}
-  >
-    <Square size={8} className="fill-current" aria-hidden="true"/>{busy ? "Stopping…" : "Stop"}
-  </button>;
-}
-
 function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId, onOpenSession, onRetryWorker }: {
   title: string;
   summary: string;

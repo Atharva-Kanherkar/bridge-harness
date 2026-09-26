@@ -494,16 +494,22 @@ describe("AgentConversation", () => {
     expect(html).toContain("were not explicitly authorized");
     expect(html).toContain("Render Mermaid inline");
   });
-  it("mirrors a background worker's approval onto the parent instead of calling it a failure", () => {
-    const blocked = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+  // Contract: testing/feat-agents-pane.md §5.4.
+  it("points at the worker's own row for a blocked approval, and never calls it a failure", () => {
+    const blocked = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} onFocusAgent={() => undefined} events={[
       event(1, "delegation.blocked", { role: "system", status: "waiting", title: "Implementation · strong needs your approval", text: "Run bun install?", data: { childBlocked: true, childSessionId: "child", label: "Implementation · strong", objective: "Render Mermaid inline", command: "bun install", cwd: "/repo", ownedPaths: ["src/**"], orchestratorNotified: true } })
     ]}/>);
+    // One line, with a warning edge, naming the command and where it is answered.
     expect(blocked).toContain("needs your approval");
     expect(blocked).toContain("bun install");
-    expect(blocked).toContain("/repo");
-    expect(blocked).toContain("write scope: src/**");
-    expect(blocked).toContain("idle until you do");
-    expect(blocked).toContain('role="alert"');
+    expect(blocked).toContain("Answer in Agents");
+    expect(blocked).toContain("border-l-2");
+    expect(blocked).toContain("border-l-warning");
+    // The mirrored card is gone: the ask is answered in the worker's row, not
+    // twice in a conversation the worker is not in.
+    expect(blocked).not.toContain("write scope: src/**");
+    expect(blocked).not.toContain("idle until you do");
+    expect(blocked).not.toContain('role="alert"');
     // A blocked child must never be presented as a failed launch.
     expect(blocked).not.toContain("Worker failed to start");
     expect(blocked).not.toContain("no worker started");
@@ -514,18 +520,21 @@ describe("AgentConversation", () => {
     expect(resolved).toContain("approval accept");
     expect(resolved).not.toContain('role="alert"');
   });
-  it("gives the mirrored block a way to reach the worker's own approval", () => {
-    const data = { childBlocked: true, childSessionId: "child-77", label: "Implementation · strong", command: "bun install", ownedPaths: ["src/**"] };
-    const actionable = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} onOpenSession={() => undefined} events={[
-      event(1, "delegation.blocked", { role: "system", status: "waiting", title: "worker needs your approval", data })
-    ]}/>);
-    expect(actionable).toContain("Open worker to approve");
-    // Without a navigation handler the block stays a plain instruction, never a dead button.
-    const inert = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
-      event(1, "delegation.blocked", { role: "system", status: "waiting", title: "worker needs your approval", data })
-    ]}/>);
-    expect(inert).not.toContain("Open worker to approve");
-    expect(inert).toContain("Open the worker");
+  it("focuses the worker's row from the pointer rather than navigating to its chat", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const focus = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} onOpenSession={() => undefined} onFocusAgent={focus} events={[
+      event(1, "delegation.blocked", { role: "system", status: "waiting", title: "worker needs your approval", data: { childBlocked: true, childSessionId: "child-77", command: "bun install" } })
+    ]}/>));
+    const line = [...container.querySelectorAll("button")].find(node => node.textContent?.includes("Answer in Agents"))!;
+    expect(line).toBeTruthy();
+    await act(async () => { line.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(focus).toHaveBeenCalledWith("child-77");
+    await act(async () => root.unmount());
+    container.remove();
   });
   it("surfaces conversation and file-state divergence", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} repositoryDivergence="diverged"/>);
@@ -599,111 +608,95 @@ describe("AgentConversation", () => {
   });
   const workerActivity = (id: number, title: string): AgentEvent => event(id, "tool.started", { sessionId: "w1", title });
 
-  it("shows a live worker panel while the worker runs", () => {
+  // Contract: testing/feat-agents-pane.md §5.1, §5.2, §5.3, §5.5.
+  it("leaves one pointer line for a delegation, with the live census and a way back", async () => {
     const html = renderToStaticMarkup(<AgentConversation
       session={session}
       onResolve={() => undefined}
       events={[spawned]}
-      now={Date.parse("2026-08-21T10:02:30Z")}
       workers={{
         sessions: [session, workerSession()],
         runtimes: [workerRuntime({ retryCount: 1, progressSummary: "editing src/auth/store.rs" })],
         events: [workerActivity(31, "read store.rs"), workerActivity(32, "edit store.rs")],
       }}
-      onOpenSession={() => undefined}
     />);
-    expect(html).toContain("Implementation · strong");
-    expect(html).toContain("WORKING");
-    expect(html).toContain("editing src/auth/store.rs");
-    expect(html).toContain("retry 1");
-    // The mini-feed is the whole point: something visibly moving in the chat.
-    expect(html).toContain("edit store.rs");
-    // One way in. "Expand" opened the same worker in an overlay and read as a
-    // second, different thing the reader had to choose between.
-    expect(html).not.toContain("Expand");
-    expect(html).toContain("Open session");
-    // And the old static line is gone.
-    expect(html).not.toContain("Delegated · Delegated to");
+    expect(html).toContain("Delegated a worker");
+    expect(html).toContain("1 running");
+    expect(html).toContain("Agents");
+    // The card is gone. Everything it carried — the objective, the model, the
+    // mini-feed, the retry count, the result — now lives on the row in the pane,
+    // so none of it is repeated in the chat.
+    expect(html).not.toContain("Implementation · strong");
+    expect(html).not.toContain("editing src/auth/store.rs");
+    expect(html).not.toContain("retry 1");
+    expect(html).not.toContain("edit store.rs");
+    expect(html).not.toContain("Read the full result");
   });
 
-  it("names the waiting reason instead of showing a stalled panel", () => {
-    const html = renderToStaticMarkup(<AgentConversation
+  it("counts the whole run on the pointer line, working or not", () => {
+    const waiting = renderToStaticMarkup(<AgentConversation
       session={session}
       onResolve={() => undefined}
       events={[spawned]}
-      now={Date.parse("2026-08-21T10:02:30Z")}
       workers={{
-        sessions: [session, workerSession({ status: "waiting" })],
-        runtimes: [workerRuntime({ lifecycleState: "waiting", waitingReason: "approval_requested" })],
+        sessions: [session, workerSession({ status: "waiting" }), workerSession({ id: "w2", label: "Docs · fast", status: "stopped" })],
+        runtimes: [
+          workerRuntime({ lifecycleState: "waiting", waitingReason: "approval_requested" }),
+          workerRuntime({ sessionId: "w2", resultStatus: "reported", lifecycleState: "completed", lastResult: { status: "completed", summary: "done" } }),
+        ],
         events: [],
       }}
     />);
-    expect(html).toContain("NEEDS YOU");
-    expect(html).toContain("waiting: approval requested");
+    expect(waiting).toContain("1 needs you");
+    expect(waiting).toContain("1 done");
   });
 
-  it("turns the same panel into the result card when the result lands", () => {
-    const result = event(33, "delegation.result", {
-      itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
-      text: "Rotation added.", data: { childSessionId: "w1", delivered: true, status: "completed" },
-    });
-    const html = renderToStaticMarkup(<AgentConversation
+  it("focuses the worker's row from the delegation pointer", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const focus = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<AgentConversation
       session={session}
       onResolve={() => undefined}
-      events={[spawned, result]}
-      now={Date.parse("2026-08-21T10:05:00Z")}
-      workers={{
-        sessions: [session, workerSession({ status: "stopped" })],
-        runtimes: [workerRuntime({
-          resultStatus: "reported", lifecycleState: "completed",
-          lastResult: { status: "completed", summary: "Rotation added.", filesChanged: ["src/auth/store.rs"], tests: [{ command: "cargo test auth", status: "passed" }] },
-        })],
-        events: [workerActivity(31, "edit store.rs")],
-      }}
-    />);
-    expect(html).toContain("DONE");
-    expect(html).toContain("1 file");
-    expect(html).toContain("1 test passing");
-    // One card, not a live panel plus a disconnected outcome row.
-    expect(html).not.toContain("Subagent finished");
-    // And the live ticker stops: no half-finished feed under a finished result.
-    expect(html).not.toContain("edit store.rs");
-    // The ask survives the outcome. A result's prose used to overwrite the
-    // objective, so a finished card no longer said what it had been asked for.
-    expect(html).toContain("Add refresh-token rotation");
-    // The summary is shown once. It used to open the card in full and then
-    // repeat its first sentence, truncated, three bands lower.
-    expect(html.split("Rotation added.").length - 1).toBe(1);
+      onFocusAgent={focus}
+      events={[spawned]}
+      workers={{ sessions: [session, workerSession()], runtimes: [workerRuntime()], events: [] }}
+    />));
+    const line = [...container.querySelectorAll("button")].find(node => node.textContent?.includes("Delegated a worker"))!;
+    expect(line).toBeTruthy();
+    await act(async () => { line.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(focus).toHaveBeenCalledWith("w1");
+    await act(async () => root.unmount());
+    container.remove();
   });
 
-  it("clamps a long result summary behind one affordance", () => {
-    const long = `Reviewed the auth module and posted a comment-only review. ${"Findings cite concrete files and lines. ".repeat(8)}`;
-    const result = event(33, "delegation.result", {
-      itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
-      text: long, data: { childSessionId: "w1", delivered: true, status: "completed" },
-    });
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned, result]}
-      workers={{
-        sessions: [session, workerSession({ status: "stopped" })],
-        runtimes: [workerRuntime({
-          resultStatus: "reported", lifecycleState: "completed",
-          // The fence the typed envelope arrives in is wire chatter, not the
-          // worker's newest activity, and the card used to print it as status.
-          progressSummary: "```bridge-worker-result",
-          lastResult: { status: "completed", summary: long, filesChanged: [], tests: [] },
-        })],
-        events: [],
-      }}
-      onOpenSession={() => undefined}
-    />);
-    expect(html).toContain("line-clamp-3");
-    expect(html).toContain("Read the full result");
-    expect(html).not.toContain("bridge-worker-result");
-    // The objective band is clamped too, so no card opens with a wall.
-    expect(html).toContain("line-clamp-2");
+  it("leaves one pointer line for a harness subagent, with no prompt or result bands", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const focus = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} onFocusAgent={focus} events={[
+      event(40, "tool.started", { itemId: "task", title: "Summarize the refresh RFC", status: "inProgress", data: { tool: "task", name: "Task", input: { subagent_type: "general-purpose", description: "Summarize the refresh RFC", prompt: "Read the RFC and summarize." } } })
+    ]}/>));
+    // The group that holds the call opens so the pointer is on screen, the way
+    // a reader would see it.
+    const group = [...container.querySelectorAll("button")].find(node => node.getAttribute("aria-expanded") !== null)!;
+    if (group.getAttribute("aria-expanded") === "false") await act(async () => { group.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const line = [...container.querySelectorAll("button")].find(node => node.textContent?.includes("general-purpose"))!;
+    expect(line).toBeTruthy();
+    expect(container.textContent).toContain("Subagent");
+    expect(container.textContent).toContain("Summarize the refresh RFC");
+    // The inspectable half moved to the subagent's own row in the pane.
+    expect(container.textContent).not.toContain("Read the RFC and summarize.");
+    expect(container.textContent).not.toContain("Running subagent");
+    expect(container.textContent).not.toContain("Subagent finished");
+    await act(async () => { line.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(focus).toHaveBeenCalled();
+    await act(async () => root.unmount());
+    container.remove();
   });
 
   it("still shows a classified failure with its retry action after folding", () => {

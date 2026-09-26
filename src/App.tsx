@@ -11,7 +11,7 @@ import { findReferences, insertMention, referenceAlias, removeReferenceToken, ty
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Network, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
@@ -54,8 +54,9 @@ import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type 
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
-import { TasksPane } from "./components/TasksPane";
-import { workerStatus } from "./components/workerStatus";
+import { AgentsPane, PinnedAgentsTray } from "./components/AgentsPane";
+import { agentsModel, type AgentAsk } from "./components/agentsModel";
+import { addAgentIds, toggleAgentId, useAgentsPaneSettings } from "./agentsPaneSettings";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
@@ -66,7 +67,7 @@ const MissionControl = lazy(() => import("./components/MissionControl").then(mod
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { overviewUsage } from "./usageOverview";
-import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
+import { SteerComposer } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
@@ -81,7 +82,7 @@ import { ChatUsageDot } from "./components/UsageDot";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
-import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
+import { foldWorkerDelegations, mergeConversationProjections, projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
@@ -221,10 +222,12 @@ function AppContent() {
   // arrive as `data-flush-window` from the shell.
   const [fullscreen, setFullscreen] = useState(false);
   const [flushWindow, setFlushWindow] = useState(isFlushWindowDocument);
-  /// The worker whose full activity feed is open over the chat. Owned here, not
-  /// in the conversation, because the overlay covers the whole session pane and
-  /// has to survive the transcript re-rendering underneath it.
-  const [expandedWorkerId, setExpandedWorkerId] = useState<string>();
+  /// Which agent the chat asked to highlight, and which one has its full
+  /// transcript open inside the Agents pane. Both used to be one `absolute
+  /// inset-0` overlay over the whole chat section, so reading a worker's feed
+  /// hid the conversation that raised the question.
+  const [focusedAgentId, setFocusedAgentId] = useState<string>();
+  const [drillAgentId, setDrillAgentId] = useState<string>();
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
@@ -255,7 +258,14 @@ function AppContent() {
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
-  const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
+  // Pin, expansion, acknowledgement and scope for the Agents pane. Persisted,
+  // and deliberately *not* keyed by chat: a pin has to follow you into another
+  // chat, and a failure you dismissed stays dismissed.
+  const [agentsSettings, setAgentsSettings] = useAgentsPaneSettings();
+  const acknowledgedTasks = useMemo(() => new Set(agentsSettings.acknowledged), [agentsSettings.acknowledged]);
+  const setAcknowledgedTasks = useCallback((id: string) => {
+    setAgentsSettings(current => ({ acknowledged: addAgentIds(current.acknowledged, [id]) }));
+  }, [setAgentsSettings]);
   const [recallOpen, setRecallOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
@@ -552,9 +562,7 @@ function AppContent() {
     setView(place.view);
     setSelectedSessionId(place.sessionId ?? undefined);
     setParadigm(place.paradigm);
-    if (place.view === "workspace") {
-      setExpandedWorkerId(undefined);
-    }
+    if (place.view === "workspace") setDrillAgentId(undefined);
   }, []);
 
   const goBack = useCallback(() => {
@@ -602,6 +610,7 @@ function AppContent() {
   // condition that decides whether the pane is available at all.
   const githubWorkspaceId = hasRepo ? workspace?.id : undefined;
   const isDirectChat = session?.kind === "direct";
+  const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   const importedSourceFingerprint = useMemo(() => {
     if (session?.kind !== "imported") return undefined;
     const value = forest?.entries.find(entry => entry.sessionId === session.id)?.payload.sourcePathFingerprint;
@@ -632,15 +641,132 @@ function AppContent() {
     observer.observe(element);
     dockSectionObserver.current = observer;
   }, []);
+  // One projection, three readers: the Agents pane, the pinned tray, and the
+  // chat's pointer lines. The tab badge and the attention dot read it too, so
+  // the number on the tab can never disagree with the rows underneath it.
+  //
+  // The transcript is folded with the same steps `AgentConversation` uses, and
+  // deliberately *not* re-implemented: a delegation that collapses onto one row
+  // in the chat has to collapse onto one row here as well, or the pane would
+  // grow a second, disagreeing copy of every worker's history.
+  const sessionTranscript = useMemo(() => {
+    if (!session?.id) return [];
+    const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    return foldWorkerDelegations(mergeConversationProjections(durable, reduceConversation(sessionEvents)));
+  }, [session?.id, forest?.entries, forest?.head?.activeEntryId, sessionEvents]);
+  // One second hand for every row. A pane that re-derives "now" per row reads
+  // as three workers started at three different times. It ticks only while the
+  // dock is open, because a clock nobody is looking at costs a re-render of the
+  // whole session for nothing.
+  const [agentsNow, setAgentsNow] = useState(Date.now);
+  useEffect(() => {
+    if (!dock.open) return;
+    setAgentsNow(Date.now());
+    const timer = window.setInterval(() => setAgentsNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [dock.open]);
+  // The `all-chats` scope, fed the same way the selected chat is: a cheap digest
+  // poll first, a full forest only when the digest moved. Ten seconds is the
+  // same clock the usage digest already runs on, and it is deliberately slower
+  // than the selected chat's 3s poll — a chat you are not reading does not need
+  // to be current to the frame.
+  const [otherForests, setOtherForests] = useState<Map<string, SessionForestSnapshot>>(() => new Map());
+  const allChatsScope = agentsSettings.scope === "all-chats";
+  // Only root chats can own a run: a worker's forest is read through its root,
+  // and fetching one per worker would be a request per row. Joined into one key
+  // so the poll is not torn down and rebuilt on every state refresh — which
+  // would throw away the digests and make it fetch everything every tick.
+  const agentRootIds = useMemo(
+    () => visibleSessions.filter(candidate => !candidate.parentSessionId).map(candidate => candidate.id).sort().join(","),
+    [visibleSessions],
+  );
+  const agentsForestRef = useRef(forest);
+  agentsForestRef.current = forest;
+  const agentsSessionRef = useRef(session?.id);
+  agentsSessionRef.current = session?.id;
+  useEffect(() => {
+    if (!allChatsScope || !agentRootIds) return;
+    const roots = agentRootIds.split(",");
+    let active = true;
+    const digests = new Map<string, string>();
+    const stop = startSerialPoll(async () => {
+      const next = new Map<string, SessionForestSnapshot>(otherForestsRef.current);
+      let changed = false;
+      for (const id of roots) {
+        // The chat in front is already on a 3s poll of its own; reading it here
+        // too would only duplicate work.
+        if (id === agentsSessionRef.current) {
+          const current = agentsForestRef.current;
+          if (current) next.set(id, current);
+          continue;
+        }
+        const digest = await bridgeApi.sessionForestDigest(id).catch(() => undefined);
+        if (!active) return;
+        if (digest !== undefined && digest === digests.get(id) && next.has(id)) continue;
+        const value = await bridgeApi.sessionForest(id).catch(() => undefined);
+        if (!active) return;
+        if (!value) continue;
+        digests.set(id, digest ?? "");
+        if (JSON.stringify(value) !== JSON.stringify(next.get(id))) changed = true;
+        next.set(id, value);
+      }
+      if (!active || !changed) return;
+      otherForestsRef.current = next;
+      setOtherForests(next);
+    }, 10_000);
+    return () => { active = false; stop(); };
+  }, [allChatsScope, agentRootIds]);
+  const otherForestsRef = useRef(otherForests);
+  const agentsForests = useMemo(() => {
+    const map = new Map(forest ? [[forest.sessionId, forest]] : []);
+    for (const [id, value] of otherForests) if (!map.has(id)) map.set(id, value);
+    return map;
+  }, [forest, otherForests]);
+  const agentsRuns = useMemo(() => agentsModel({
+    sessions: visibleSessions,
+    forests: agentsForests,
+    transcripts: new Map(session?.id ? [[session.id, sessionTranscript]] : []),
+    events: agentEvents,
+    acknowledged: acknowledgedTasks,
+    rootSessionId: session?.id,
+    scope: agentsSettings.scope,
+  }), [visibleSessions, agentsForests, session?.id, sessionTranscript, agentEvents, acknowledgedTasks, agentsSettings.scope]);
+  const agentsCensus = useMemo(() => agentsRuns.reduce((total, run) => ({
+    running: total.running + run.census.running,
+    needsYou: total.needsYou + run.census.needsYou,
+    done: total.done + run.census.done,
+    failed: total.failed + run.census.failed,
+    queued: total.queued + run.census.queued,
+    workers: total.workers + run.census.workers,
+    subagents: total.subagents + run.census.subagents,
+    costUsd: total.costUsd + run.census.costUsd,
+  }), { running: 0, needsYou: 0, done: 0, failed: 0, queued: 0, workers: 0, subagents: 0, costUsd: 0 }), [agentsRuns]);
+  const chatTitleByRun = useCallback((rootSessionId: string) => {
+    const owner = state.sessions.find(item => item.id === rootSessionId);
+    return owner?.title || owner?.label || "Chat";
+  }, [state.sessions]);
+  // The dock opens itself once, on the first agent in a chat, and never again
+  // for that dock key until a new agent shows up in a chat it has not opened
+  // for. "Never again" is the load-bearing half: a dock that reopened every
+  // time a worker appeared would be unusable, and one that never opened would
+  // hide the whole feature behind a tab.
+  const dockAutoOpened = useRef(new Set<string>());
+  useEffect(() => {
+    const key = dockKey;
+    if (!key) return;
+    if (agentsCensus.workers + agentsCensus.subagents === 0) return;
+    if (dockAutoOpened.current.has(key)) return;
+    dockAutoOpened.current.add(key);
+    dispatchDock({ type: "open-pane", pane: "tasks" });
+  }, [agentsCensus.workers, agentsCensus.subagents, dockKey, dispatchDock]);
   const dockTaskBadge = useMemo(() => {
-    const statuses = (forest?.workerRuntimes ?? []).flatMap(runtime => {
-      const workerSession = visibleSessions.find(item => item.id === runtime.sessionId);
-      return workerSession ? [{ id: runtime.sessionId, status: workerStatus(workerSession, runtime) }] : [];
-    });
-    const running = statuses.filter(item => item.status.tone === "working").length + (terminalActivity?.running ?? 0);
-    const attention = statuses.some(item => (item.status.tone === "failed" || item.status.tone === "stalled") && !acknowledgedTasks.has(item.id));
+    const running = agentsCensus.running + (terminalActivity?.running ?? 0);
+    // An unanswered ask always needs the human. A failure needs them until it is
+    // acknowledged — and acknowledging only dims the row, it never hides it.
+    const attention = agentsCensus.needsYou > 0
+      || agentsRuns.some(run => run.agents.some(node => node.failureCode && !node.acknowledged));
     return { running, attention };
-  }, [forest?.workerRuntimes, visibleSessions, terminalActivity?.running, acknowledgedTasks]);
+  }, [agentsCensus, agentsRuns, terminalActivity?.running]);
   // Connector inbox state, declared here because the dock descriptor below
   // reads its unread count. The rest of the glue is further down.
   const [connectorToasts, setConnectorToasts] = useState<ConnectorToast[]>([]);
@@ -654,7 +780,7 @@ function AppContent() {
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
     { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
-    { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
+    { id: "tasks", label: "Agents", icon: Network, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
     // Always available: an inbox is about an account, not a repository, so
     // gating it on a worktree would hide it exactly where a direct chat is.
@@ -896,17 +1022,12 @@ function AppContent() {
     && workerRuntime?.lifecycleState !== "checkpointing"
     && liveStatuses.includes(session?.status ?? "stopped");
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
-  const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
   // A worker panel reads the worker's own session row, its runtime record, and
   // its slice of the *global* live stream — the parent's slice would show none
   // of the child's frames.
   const workerPanelSource = useMemo(
     () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents, reasons: forest?.reasons ?? [] }),
     [agentEvents, forest?.workerRuntimes, forest?.reasons, state.sessions],
-  );
-  const expandedWorker = useMemo(
-    () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
-    [expandedWorkerId, state.sessions],
   );
   const asideSession = useMemo(() => {
     if (!asideLifecycle || asideLifecycle.sourceSessionId !== session?.id) return undefined;
@@ -1312,7 +1433,7 @@ function AppContent() {
     setParadigm("single");
     setNewChatDraft(null);
     setSelectedSessionId(id);
-    setExpandedWorkerId(undefined);
+    setDrillAgentId(undefined);
     setAsideLifecycle(current => current?.sourceSessionId === id ? current : undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
@@ -2225,6 +2346,21 @@ function AppContent() {
     await reload();
     return result;
   }, [reload, session?.id]);
+  /// One approval call, for every surface. The Agents pane's rows and the
+  /// pinned tray answer against the *chat that raised* the ask, which is not
+  /// necessarily the chat on screen — a pinned agent from another workspace is
+  /// answered without navigating, so the session id has to travel with the ask
+  /// rather than be read off the selection.
+  const resolveApprovalIn = useCallback(async (sessionId: string | undefined, eventId: number, decision: ApprovalDecision, optionId?: string) => {
+    const target = sessionId ?? session?.id;
+    if (!target) return;
+    const result = await bridgeApi.resolveApproval(target, eventId, decision, optionId);
+    await reload();
+    return result;
+  }, [reload, session?.id]);
+  const resolveAgentAsk = useCallback(async (ask: AgentAsk, decision: ApprovalDecision) => {
+    return resolveApprovalIn(ask.sessionId, ask.eventId, decision);
+  }, [resolveApprovalIn]);
   const resolveQuestion = useCallback(async (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => {
     if (!session?.id) return;
     const result = await bridgeApi.resolveQuestion(session.id, eventId, action, answers);
@@ -2269,6 +2405,22 @@ function AppContent() {
   const steerWorker = useCallback(async (childSessionId: string, text: string) => {
     await bridgeApi.submitInput(childSessionId, text);
   }, []);
+  // A chat pointer line is a shortcut, not a second surface: it opens the dock
+  // on Agents and focuses the row, so the answer to "where is that worker" is
+  // one click from the place that mentioned it.
+  const focusAgent = useCallback((id: string) => {
+    setFocusedAgentId(id);
+    setDrillAgentId(undefined);
+    dispatchDock({ type: "open-pane", pane: "tasks" });
+  }, [dispatchDock]);
+  // Steering from a row is the same `submitInput` the worker's own view uses. A
+  // harness subagent has no session of its own to steer — its id is namespaced
+  // under the transcript it arrived in — so a subagent row is refused here
+  // rather than issuing a call the backend would reject.
+  const steerAgent = useCallback(async (id: string, text: string) => {
+    if (!text.trim() || id.includes(":sub:")) return;
+    await steerWorker(id, text);
+  }, [steerWorker]);
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
@@ -2730,22 +2882,6 @@ function AppContent() {
           busy={busy}
         />
         <section ref={dockSectionRef} className="flex-1 min-h-0 overflow-hidden flex relative">
-          {/* The chat's own panel, expanded. Rendered over the session pane
-              rather than navigating away, because the reason to look at a
-              worker's full feed is usually to decide something in the
-              conversation you are still in. */}
-          {expandedWorker && <div className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
-            <WorkerDetail
-              session={expandedWorker}
-              runtime={forest?.workerRuntimes.find(runtime => runtime.sessionId === expandedWorker.id)}
-              liveEvents={agentEvents}
-              onClose={() => setExpandedWorkerId(undefined)}
-              onFocusSession={openSession}
-              onSteer={steerWorker}
-              onStopWorker={stopWorker}
-              reasons={forest?.reasons ?? []}
-            />
-          </div>}
           {/* A user-made delegation floats over the chat it was asked from;
               the chat underneath never moves. See `openAside`. */}
           {asideSession && asideSession.id !== session.id && <AsideChat
@@ -2832,6 +2968,7 @@ function AppContent() {
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
                   onStopWorker={stopWorker}
+                  onFocusAgent={focusAgent}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -3022,26 +3159,48 @@ function AppContent() {
             concealed={fullscreen}
             onAction={dispatchDock}
             onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
+            tray={<PinnedAgentsTray
+              runs={agentsRuns}
+              pinned={new Set(agentsSettings.pinned)}
+              now={agentsNow}
+              pane={dock.pane}
+              onOpenAgents={focusAgent}
+              onResolveAsk={resolveAgentAsk}
+              chatTitle={chatTitleByRun}
+            />}
           >
             {pane => {
-              if (pane === "tasks") return <TasksPane
-                key={session.id}
-                sessions={visibleSessions}
-                runtimes={forest?.workerRuntimes}
+              // No `key` here, on purpose. A keyed mount tore the pane down and
+              // rebuilt it on every chat switch, throwing away the open rows,
+              // the scroll position and the drill-in; which chat is in front is
+              // a prop, not a lifetime.
+              if (pane === "tasks") return <AgentsPane
+                runs={agentsRuns}
+                expanded={new Set(agentsSettings.expanded)}
+                pinned={new Set(agentsSettings.pinned)}
+                scope={agentsSettings.scope}
+                onScope={scope => setAgentsSettings({ scope })}
+                onToggleExpanded={id => setAgentsSettings(current => ({ expanded: toggleAgentId(current.expanded, id) }))}
+                onTogglePinned={id => setAgentsSettings(current => ({ pinned: toggleAgentId(current.pinned, id) }))}
+                focusedId={focusedAgentId}
+                drillId={drillAgentId}
+                onDrillIn={setDrillAgentId}
+                onSteer={steerAgent}
+                onStopWorker={id => void stopWorker(id)}
+                onRetryWorker={id => void retryWorkerTask(id)}
+                onOpenSession={openSession}
+                onResolveAsk={resolveAgentAsk}
+                onAcknowledge={setAcknowledgedTasks}
                 queue={forest?.workerQueue}
                 terminalActivity={terminalActivity}
-                acknowledged={acknowledgedTasks}
-                onAcknowledge={id => setAcknowledgedTasks(previous => new Set(previous).add(id))}
-                onOpenSession={openSession}
-                onExpandWorker={setExpandedWorkerId}
-                onRetryWorker={id => void retryWorkerTask(id)}
-                onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
+                now={agentsNow}
+                chatTitle={chatTitleByRun}
               />;
               if (pane === "browser") return <SimpleBrowser
                 key={session.id}
                 sessionId={session.id}
-                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !expandedWorkerId && !recallOpen && !memoryDisclosureOpen && !navOpen}
+                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !recallOpen && !memoryDisclosureOpen && !navOpen}
                 onAttachSelection={attachBrowserSelection}
                 onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
               />;

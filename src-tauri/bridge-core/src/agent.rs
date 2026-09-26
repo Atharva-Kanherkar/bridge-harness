@@ -1154,9 +1154,25 @@ pub struct ClaudeStreamState {
     /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
     /// under the same normalized kind and carries a host-measured duration.
     tool_calls: HashMap<String, ClaudeToolCall>,
+    /// What a `Task` call named, by its `tool_use` id. Claude runs a subagent as
+    /// a real child conversation and tags every one of its messages with
+    /// `parent_tool_use_id`; the *parent's* message is the only place that
+    /// knows which agent was asked for and what it was asked to do, so it is
+    /// kept here until the child starts reporting. See `tag_claude_subagent`.
+    subagent_tasks: HashMap<String, ClaudeSubagentTask>,
     /// Survives the per-result reset below: it is the one thing a turn needs
     /// from the turns before it.
     usage_cumulative: ClaudeUsageCumulative,
+}
+
+/// How many `Task` calls the Claude normalizer remembers at once.
+const CLAUDE_SUBAGENT_TASK_LIMIT: usize = 64;
+
+/// One `Task` call, as the child's rows will be labelled.
+#[derive(Debug, Clone, Default)]
+struct ClaudeSubagentTask {
+    agent: Option<String>,
+    title: Option<String>,
 }
 
 /// The running totals the previous `result` frame carried. The SDK documents
@@ -1370,6 +1386,38 @@ fn claude_tool_started(
             family,
             started_at: now,
         });
+    // A `Task` call is the only Claude frame that names a subagent. Remember it
+    // against its own `tool_use` id: the child's messages arrive afterwards
+    // carrying that id and nothing else.
+    if name.eq_ignore_ascii_case("task") {
+        let input = block.get("input").cloned().unwrap_or(Value::Null);
+        state.subagent_tasks.insert(
+            tool_id.clone(),
+            ClaudeSubagentTask {
+                agent: input
+                    .get("subagent_type")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                title: input
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            },
+        );
+        // The map deliberately outlives a `result` frame, because a subagent's
+        // last messages can arrive after the parent's turn closed. It is still
+        // bounded: an entry only names a child, and a child older than the cap
+        // has long reported.
+        while state.subagent_tasks.len() > CLAUDE_SUBAGENT_TASK_LIMIT {
+            let oldest = state.subagent_tasks.keys().next().cloned();
+            match oldest {
+                Some(oldest) => {
+                    state.subagent_tasks.remove(&oldest);
+                }
+                None => break,
+            }
+        }
+    }
     let mut event = with_data(&family.kind("started"), message, block.clone());
     event.item_id = Some(tool_id);
     event.title = Some(name.to_owned());
@@ -1521,7 +1569,14 @@ pub fn normalize_claude_message_with_state(
     let Some(kind) = message.get("type").and_then(Value::as_str) else {
         return vec![];
     };
-    match kind {
+    // Claude's own subagent boundary. A message carrying `parent_tool_use_id`
+    // was produced inside the `Task` call of that id, so every event it yields
+    // belongs to that child and not to the conversation that asked for it —
+    // exactly the attribution the OpenCode path has always made from
+    // `parentID`. Read before the match because the stamp applies to all of
+    // them, and after it because a `result` frame resets the state.
+    let parent_tool_use_id = claude_parent_tool_use_id(message).map(str::to_owned);
+    let mut events = match kind {
         "system" => {
             // A new process starts its running totals from zero.
             if message.get("subtype").and_then(Value::as_str) == Some("init") {
@@ -1539,8 +1594,10 @@ pub fn normalize_claude_message_with_state(
                 .filter_map(|(id, block)| complete_claude_thinking(id, block))
                 .collect();
             let usage_cumulative = std::mem::take(&mut state.usage_cumulative);
+            let subagent_tasks = std::mem::take(&mut state.subagent_tasks);
             *state = ClaudeStreamState::default();
             state.usage_cumulative = usage_cumulative;
+            state.subagent_tasks = subagent_tasks;
             events.extend(normalize_claude_result(message, state));
             events
         }
@@ -1548,7 +1605,49 @@ pub fn normalize_claude_message_with_state(
             .into_iter()
             .collect(),
         _ => vec![],
+    };
+    if let Some(parent) = parent_tool_use_id.as_deref() {
+        let task = state.subagent_tasks.get(parent).cloned();
+        for event in &mut events {
+            tag_claude_subagent(event, parent, task.as_ref());
+        }
     }
+    events
+}
+
+/// The `Task` call a Claude message was produced inside, if any.
+///
+/// Read from both the top level and the envelope's `message`, because the
+/// streamed and the snapshot forms of the same frame disagree about where it
+/// sits, and a subagent's own output must not land on its parent just because
+/// it arrived in the other shape.
+fn claude_parent_tool_use_id(message: &Value) -> Option<&str> {
+    let direct = message.get("parent_tool_use_id").and_then(Value::as_str);
+    if let Some(id) = direct.filter(|id| !id.is_empty()) {
+        return Some(id);
+    }
+    message
+        .pointer("/message/parent_tool_use_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+}
+
+/// Stamp the OpenCode-shaped `subagent` bag onto one Claude event.
+///
+/// The `agent` and `title` are the `Task` call's own `subagent_type` and
+/// `description`, which is the only naming Claude gives the child. A child whose
+/// parent call was never seen (a resumed session, a truncated log) is still
+/// attributed by id: the row then falls back to the generic word, which is a
+/// better outcome than reporting the work as the parent's.
+fn tag_claude_subagent(event: &mut NormalizedEvent, parent_tool_use_id: &str, task: Option<&ClaudeSubagentTask>) {
+    if !event.data.is_object() {
+        event.data = json!({});
+    }
+    event.data["subagent"] = json!({
+        "sessionId": parent_tool_use_id,
+        "agent": task.and_then(|task| task.agent.clone()),
+        "title": task.and_then(|task| task.title.clone()),
+    });
 }
 
 fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
@@ -2688,6 +2787,124 @@ mod tests {
         assert_eq!(events.iter().map(|e| (e.kind.as_str(), e.status.as_deref())).collect::<Vec<_>>(), vec![("error", Some("failed")), ("turn.completed", Some("failed"))]);
         assert_eq!(events[0].text.as_deref(), Some("skill failed to load"));
         assert!(events[0].data.get("subagent").is_none());
+    }
+
+    /// A `Task` call is the parent's own frame, and the only place the child's
+    /// name and brief are ever written down.
+    fn claude_task_call(id: &str) -> Value {
+        json!({
+            "type": "assistant",
+            "uuid": "u-parent",
+            "message": {
+                "id": "msg-parent",
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": "Task",
+                    "input": {
+                        "subagent_type": "Explore",
+                        "description": "Map the token store",
+                        "prompt": "Read the auth store and report call sites."
+                    }
+                }]
+            }
+        })
+    }
+
+    #[test]
+    fn claude_task_subagent_frames_are_tagged_with_the_task_call() {
+        let mut state = ClaudeStreamState::default();
+        let parent = normalize_claude_message_with_state(&claude_task_call("toolu_01"), &mut state);
+        assert_eq!(parent.len(), 1);
+        assert_eq!(parent[0].kind, "tool.started");
+        assert!(
+            parent[0].data.get("subagent").is_none(),
+            "the Task call itself is the parent's work, not the child's"
+        );
+
+        // Every frame the child produces carries the same bag OpenCode's path
+        // writes, so the transcript can group it without knowing the provider.
+        let child = normalize_claude_message_with_state(
+            &json!({
+                "type": "assistant",
+                "parent_tool_use_id": "toolu_01",
+                "uuid": "u-child",
+                "message": {
+                    "id": "msg-child",
+                    "content": [
+                        {"type": "text", "text": "client.ts is the only retrying caller."},
+                        {"type": "tool_use", "id": "toolu_02", "name": "Read", "input": {"file_path": "src/auth/client.ts"}}
+                    ]
+                }
+            }),
+            &mut state,
+        );
+        assert_eq!(child.len(), 2);
+        for event in &child {
+            assert_eq!(event.data["subagent"]["sessionId"], "toolu_01");
+            assert_eq!(event.data["subagent"]["agent"], "Explore");
+            assert_eq!(event.data["subagent"]["title"], "Map the token store");
+        }
+    }
+
+    #[test]
+    fn claude_top_level_frames_carry_no_subagent_bag() {
+        let mut state = ClaudeStreamState::default();
+        let events = normalize_claude_message_with_state(
+            &json!({
+                "type": "assistant",
+                "parent_tool_use_id": Value::Null,
+                "message": {"id": "msg-root", "content": [{"type": "text", "text": "It is 42."}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].data.get("subagent").is_none(),
+            "an explicit null parent is the parent's own frame"
+        );
+    }
+
+    #[test]
+    fn claude_subagent_survives_a_result_boundary() {
+        // A `result` frame resets the per-turn state. A subagent that finishes
+        // after the parent's turn closed must still be attributed, or its tail
+        // would land on the parent in exactly the way this change exists to
+        // stop.
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(&claude_task_call("toolu_03"), &mut state);
+        normalize_claude_message_with_state(&json!({"type": "result", "subtype": "success", "total_cost_usd": 0.1}), &mut state);
+        let late = normalize_claude_message_with_state(
+            &json!({
+                "type": "user",
+                "parent_tool_use_id": "toolu_03",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": "Three call sites."}]}
+            }),
+            &mut state,
+        );
+        assert!(!late.is_empty());
+        for event in &late {
+            assert_eq!(event.data["subagent"]["sessionId"], "toolu_03");
+            assert_eq!(event.data["subagent"]["agent"], "Explore");
+        }
+    }
+
+    #[test]
+    fn claude_subagent_without_a_seen_task_call_is_still_attributed_by_id() {
+        // A resumed session replays the child's rows without the parent's call.
+        // The id is enough to nest the row; the name falls back to the generic
+        // word, which beats reporting the work as the parent's.
+        let mut state = ClaudeStreamState::default();
+        let events = normalize_claude_message_with_state(
+            &json!({
+                "type": "assistant",
+                "message": {"id": "msg-orphan", "parent_tool_use_id": "toolu_missing", "content": [{"type": "text", "text": "Found three call sites."}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["subagent"]["sessionId"], "toolu_missing");
+        assert!(events[0].data["subagent"]["agent"].is_null());
     }
 
     #[test]

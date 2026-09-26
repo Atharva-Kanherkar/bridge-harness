@@ -76,7 +76,7 @@ describe("harness subagent facet (issue #667)", () => {
       data: { name: "Task", input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" } },
     });
     expect(tool).toMatchObject({ verb: "tool", glyph: "fork", doing: "Delegating", target: "Explore auth" });
-    expect(tool.subagent).toEqual({ agentType: "Explore", description: "Explore auth", prompt: "Map the login flow" });
+    expect(tool.subagent).toEqual({ agentType: "Explore", description: "Explore auth", prompt: "Map the login flow", child: true });
   });
 
   it("matches task case-insensitively via tool alias and nested state input", () => {
@@ -93,7 +93,7 @@ describe("harness subagent facet (issue #667)", () => {
       data: { name: "Agent", input: { description: "Investigate", prompt: "Check the logs", agent: "Investigate" } },
     });
     expect(tool).toMatchObject({ verb: "tool", glyph: "fork", doing: "Delegating", target: "Investigate" });
-    expect(tool.subagent).toEqual({ agentType: "Investigate", description: "Investigate", prompt: "Check the logs" });
+    expect(tool.subagent).toEqual({ agentType: "Investigate", description: "Investigate", prompt: "Check the logs", child: true });
   });
 
   it("recognizes a collab-agent item type", () => {
@@ -149,7 +149,19 @@ describe("harness subagent facet (issue #667)", () => {
       title: "d", text: "", surface: "activity",
       data: { type: "dynamicToolCall", arguments: { description: "Refactor", prompt: "Consolidate handlers", subagent_type: "Refactor" } },
     });
-    expect(tool.subagent).toEqual({ agentType: "Refactor", description: "Refactor", prompt: "Consolidate handlers" });
+    expect(tool.subagent).toEqual({ agentType: "Refactor", description: "Refactor", prompt: "Consolidate handlers", child: true });
+  });
+
+  it("marks a bare Task call as the parent's spawn, not as a child", () => {
+    // OpenCode's `task` names no agent, so the call is the orchestrator's own
+    // tool call; the child it made is a real session whose rows arrive stamped
+    // `data.subagent`. Reading the spawn as the child would put the work one
+    // row too high, attributed to whoever asked for it.
+    const spawn = readToolCall({
+      title: "Look up the facts", text: "", status: "completed", surface: "activity",
+      data: { name: "Task", input: { description: "Look up the facts", prompt: "Find the answer" } },
+    });
+    expect(spawn.subagent?.child).toBe(false);
   });
 
   it("does not claim dynamic tool calls without both type and prompt fields", () => {
