@@ -159,6 +159,7 @@ typed_methods![
     // health
     (Health, _, HealthResult),
     (RefreshModelCatalogs, _, HealthResult),
+    (InstallCodexUpdate, _, UnitResult),
     // state — the aggregate application snapshot
     (GetState, _, BridgeState),
     // projects
