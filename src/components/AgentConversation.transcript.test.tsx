@@ -406,14 +406,10 @@ describe("run trailer", () => {
 });
 
 describe("harness subagents (issue #667)", () => {
-  // These rows are pointers now, not cards (testing/feat-agents-pane.md §5.3,
-  // §5.5). What the chat keeps is the fact worth keeping in the prose — which
-  // agent, what it was asked, whether it is still going — and one click to the
-  // row in the Agents pane that holds the prompt, the result and the steps.
   it.each([
     ["collabAgentToolCall", false], ["collabAgentToolCall", true],
     ["dynamicToolCall", false], ["dynamicToolCall", true],
-  ] as const)("keeps a title-less %s child as one inspectable pointer (replay=%s)", async (type, durable) => {
+  ] as const)("keeps a title-less %s prompt and child lifecycle inspectable (replay=%s)", async (type, durable) => {
     const started = event(1, "tool.started", {
       itemId: "child-call", status: "inProgress", title: null,
       data: {
@@ -431,20 +427,18 @@ describe("harness subagents (issue #667)", () => {
     await mountProjection([started]);
     expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
     await act(async () => buttonWith("Using 1 tool")!.click());
-    // The line is there, and it is the whole of the child's presence here.
-    expect(host.textContent).toContain("Subagent");
-    expect(host.textContent).toContain("Agents");
-    // The prompt and result bands moved to the child's row in the pane.
-    expect(host.textContent).not.toContain("the result will appear here");
+    await act(async () => buttonWith("Using a tool")!.click());
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Running subagent");
 
     await mountProjection([started, event(2, "tool.completed", {
       itemId: "child-call", status: "completed", title: null,
       data: { agentsStates: { child: { status: "completed", message: "Found three call sites." } } },
     })]);
-    expect(host.textContent).toContain("Subagent");
-    expect(host.textContent).not.toContain("Subagent finished");
-    // The child's own result is not restated in the chat either.
-    expect(host.textContent).not.toContain("Found three call sites.");
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Subagent finished");
+    expect(host.textContent).toContain("Found three call sites.");
+    expect(host.textContent).not.toContain("Running subagent");
   });
 
   const subagentDone = () => event(1, "tool.completed", {
@@ -457,25 +451,21 @@ describe("harness subagents (issue #667)", () => {
     },
   });
 
-  async function openSubagentRow() {
-    // The group that holds the call opens, the way a reader would open it.
-    const group = host.querySelector<HTMLButtonElement>("[data-activity-group] button[aria-expanded]");
-    if (group?.getAttribute("aria-expanded") === "false") await act(async () => group.click());
+  async function openSubagentRow(events: AgentEvent[]) {
+    mount(events);
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
   }
 
-  it("names the agent and the brief, and points at the pane", async () => {
-    mount([subagentDone()]);
-    await openSubagentRow();
-    expect(host.textContent).toContain("Subagent");
+  it("opens into the prompt that was sent and the result that came back", async () => {
+    await openSubagentRow([subagentDone()]);
+    expect(host.textContent).toContain("Subagent finished");
     expect(host.textContent).toContain("Explore");
-    expect(host.textContent).toContain("Explore auth");
-    expect(host.textContent).toContain("Agents");
-    // The prompt and the result are the pane's row now.
-    expect(host.textContent).not.toContain("Map the login flow");
-    expect(host.textContent).not.toContain("Auth lives in src/auth.ts");
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("Auth lives in src/auth.ts");
   });
 
-  it("shows the child as still running while it is", async () => {
+  it("shows the prompt while the subagent is still running", async () => {
     mount([event(1, "tool.started", {
       itemId: "task-1",
       title: "Task",
@@ -485,9 +475,10 @@ describe("harness subagents (issue #667)", () => {
         input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" },
       },
     })]);
-    await openSubagentRow();
-    expect(host.textContent).toContain("Explore");
-    expect(host.textContent).toContain("Explore auth");
+    act(() => buttonWith("Using 1 tool")!.click());
+    act(() => buttonWith("Delegating Explore auth")!.click());
+    expect(host.textContent).toContain("Map the login flow");
+    expect(host.textContent).toContain("the result will appear here");
   });
 
   it("leaves ordinary tool rows exactly as before", async () => {
@@ -500,42 +491,38 @@ describe("harness subagents (issue #667)", () => {
     expect(host.textContent).not.toContain("Asked");
   });
 
-  it("keeps a running child marked as running after the parent call completed", async () => {
+  it("shows a running child even when the parent tool call is completed", async () => {
     mount([event(1, "tool.completed", {
       itemId: "task-1",
       title: "Task",
       status: "completed",
       data: {
         name: "Task",
-        input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" },
+        input: { description: "Explore auth", prompt: "Map the login flow" },
         threadId: "t-child",
         agentsStates: { "t-child": { status: "inProgress" } },
       },
     })]);
-    await openSubagentRow();
-    expect(host.textContent).toContain("Explore auth");
-    // The live pulse, not a green tick: the parent call finishing is not the
-    // child finishing, and conflating the two was the bug this line replaces.
-    // The pointer itself, isolated: no green tick on the child's own line.
-    const line = [...host.querySelectorAll("button")].find(node => node.textContent?.includes("Explore auth"))!;
-    expect(line.querySelector(".lucide-check")).toBeNull();
-    expect(line.querySelector(".animate-\\[thinking-pulse_1\\.6s_ease-in-out_infinite\\]")).not.toBeNull();
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+    expect(host.textContent).toContain("Running subagent");
   });
 
-  it("shows a failed child with a destructive mark, never a green check", async () => {
+  it("shows a failed child status instead of a green check", async () => {
     mount([event(1, "tool.completed", {
       itemId: "task-1",
       title: "Task",
       status: "completed",
       data: {
         name: "Task",
-        input: { description: "Explore auth", prompt: "Map the login flow", subagent_type: "Explore" },
+        input: { description: "Explore auth", prompt: "Map the login flow" },
         threadId: "t-child",
         agentsStates: { "t-child": { status: "failed" } },
       },
     })]);
-    await openSubagentRow();
-    expect(host.textContent).toContain("Explore auth");
-    expect(host.querySelector(".lucide-x.text-destructive")).not.toBeNull();
+    act(() => buttonWith("Used 1 tool")!.click());
+    act(() => buttonWith("Delegated Explore auth")!.click());
+    expect(host.textContent).toContain("Subagent failed");
+    expect(host.textContent).not.toContain("Subagent finished");
   });
 });

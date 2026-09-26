@@ -156,14 +156,6 @@ const chatRows = () => [...container.querySelectorAll<HTMLButtonElement>('button
 const dockToggle = () => container.querySelector<HTMLButtonElement>('button[aria-label="Toggle dock"]');
 const dockAside = () => container.querySelector<HTMLElement>('aside[aria-label="Dock"]');
 const composer = () => container.querySelector<HTMLTextAreaElement>("textarea");
-/// The dock opens itself on Agents the first time a chat has an agent in it
-/// (testing/feat-agents-pane.md §4.3), so a test that is about the *closed*
-/// dock has to put it back the way the user would.
-async function closeAutoOpenedDock() {
-  await settle(2);
-  const toggle = dockToggle();
-  if (toggle?.getAttribute("aria-pressed") === "true") await click(toggle);
-}
 const click = async (element: Element) => {
   await act(async () => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -279,43 +271,30 @@ describe("the dock in the session view", () => {
     await mountApp();
     await openWorkspaceSession("4 files");
 
-    const toggle = dockToggle()!;
-    // The first agent in a chat opened the dock on Agents by itself.
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    await closeAutoOpenedDock();
     const toolbar = container.querySelector("h1")!.parentElement!;
     expect(toolbar.querySelector('[role="tablist"]')).toBeNull();
+    const toggle = dockToggle()!;
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
 
     await click(toggle);
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelector('[role="tablist"][aria-label="Dock panes"]')).not.toBeNull();
-    // Re-opening returns to the pane the dock had, which is Agents here.
-    const agentsTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Agents")!;
-    expect(agentsTab.getAttribute("aria-selected")).toBe("true");
-    // Both sides are on screen at once: the composer is usable and the pane has
-    // its rows, which the old overlay could never do.
+    expect(container.textContent).toContain("CHANGES");
     expect(composer()).not.toBeNull();
     expect(composer()!.disabled).toBe(false);
-    expect(dockAside()!.textContent).toContain("Implementation · strong");
   });
 
   it("keys dock state to the workspace", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit1", key: "1" });
+    await click(dockToggle()!);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("true");
 
     await openWorkspaceSession("7 files");
-    await closeAutoOpenedDock();
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
 
     await openWorkspaceSession("4 files");
-    // The remembered pane comes back with the dock, not the auto-opened one.
-    await closeAutoOpenedDock();
-    await click(dockToggle()!);
-    const changes = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Changes")!;
-    expect(changes.getAttribute("aria-selected")).toBe("true");
+    expect(dockToggle()!.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("dims repo panes in a direct chat and explains why", async () => {
@@ -335,7 +314,7 @@ describe("the dock in the session view", () => {
   it("conceals the dock in fullscreen without destroying it", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit1", key: "1" });
+    await click(dockToggle()!);
     const bodyBefore = container.querySelector('aside[aria-label="Dock"] .h-full > *');
     expect(bodyBefore).not.toBeNull();
 
@@ -350,7 +329,7 @@ describe("the dock in the session view", () => {
   it("renders the open dock as a sheet below the split threshold", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit1", key: "1" });
+    await click(dockToggle()!);
     expect(container.querySelector('[aria-label="Resize dock"]')).not.toBeNull();
 
     fireSectionWidth(600);
@@ -365,7 +344,6 @@ describe("the dock in the session view", () => {
     await mountApp();
     await openWorkspaceSession("4 files");
 
-    await closeAutoOpenedDock();
     await key({ ...chord, code: "Enter", key: "Enter" });
     expect(container.querySelector('button[aria-label="Restore dock"]')).toBeNull();
 
@@ -552,125 +530,36 @@ describe("the dock in the session view", () => {
     expect(dockAside()!.textContent).toContain("MB scrollback");
   });
 
-  // Contract: testing/feat-agents-pane.md §4.1, §4.3, §4.4.
-  it("opens the Agents pane on the sixth chord with the live roster", async () => {
+  // Contract: testing/feat-dock-tasks.md §4.
+  it("opens the tasks pane on the sixth chord with the live roster", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
     const dock = dockAside()!;
-    // A worker and a harness-shaped ask, one line each, with the ask answered
-    // in the row rather than in a mirrored card.
-    expect(dock.textContent).toContain("Implementation · strong");
-    expect(dock.textContent).toContain("worker");
-    expect(dock.textContent).toContain("needs your approval");
-    expect(dock.textContent).toContain("bun install");
-    expect(dock.textContent).toContain("Approve");
+    expect(dock.textContent).toContain("WORKING");
+    expect(dock.textContent).toContain("implementation");
     expect(dock.textContent).toContain("DONE");
-    // Queued delegations stay at the bottom of the pane, with the reason.
-    expect(dock.textContent).toContain("Queued");
     expect(dock.textContent).toContain("Update the auth serializer");
     expect(dock.textContent).toContain("owned_path_conflict");
   });
 
-  it("labels the pane Agents and carries the running count on its descriptor", async () => {
+  it("carries the running count on the tasks descriptor before the pane ever mounts", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    const agentsTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Agents")!;
-    expect(agentsTab.textContent).toContain("1");
-    expect(container.textContent).not.toContain('aria-label="Tasks"');
-  });
-
-  it("marks the pane as needing the human while a worker is blocked", async () => {
-    await mountApp();
-    await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit6", key: "6" });
-    await settle(3);
-    expect(container.querySelector('[data-testid="dock-alert-tasks"]')).not.toBeNull();
-  });
-
-  it("opens the dock on Agents once and respects a close", async () => {
-    await mountApp();
-    await openWorkspaceSession("4 files");
-    await settle(3);
-    // Already open, on Agents: the first agent in a chat opened it.
-    expect(dockToggle()!.getAttribute("aria-pressed")).toBe("true");
-    const agentsTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Agents")!;
-    expect(agentsTab.getAttribute("aria-selected")).toBe("true");
-
-    await key({ ...chord, code: "Digit0", key: "0" });
-    expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
-
-    // Switching chats and back must not reopen it: the dock key has already
-    // opened itself once, and a dock that reopened on every poll would be
-    // impossible to close.
-    await openWorkspaceSession("7 files");
-    await closeAutoOpenedDock();
-    await openWorkspaceSession("4 files");
-    await settle(3);
-    expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
-  });
-
-  it("keeps an agent pinned in one chat in the tray of another", async () => {
-    localStorage.setItem("bridge.agents-pane", JSON.stringify({ pinned: ["session-1w"], expanded: [], acknowledged: [], scope: "this-chat" }));
-    await mountApp();
-    await openWorkspaceSession("7 files");
-    await settle(3);
-    // The tray rides under every pane but Agents itself.
-    await key({ ...chord, code: "Digit1", key: "1" });
-    await settle(4);
-    const dock = dockAside()!;
-    expect(dock.textContent).toContain("Pinned agents");
-    expect(dock.textContent).toContain("Implementation · strong");
-  });
-
-  it("widens to other chats through the digest, fetching a forest only when it moved", async () => {
-    const digest = vi.spyOn(bridgeApi, "sessionForestDigest");
-    const forestCall = vi.spyOn(bridgeApi, "sessionForest");
-    await mountApp();
-    await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit6", key: "6" });
-    await settle(3);
-    const before = forestCall.mock.calls.length;
-    const other = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "All chats")!;
-    expect(other).toBeTruthy();
-    await click(other);
-    await settle(3);
-    // The scope switch costs digests, and at most one forest per other chat: the
-    // cheap change token is what makes the wide scope affordable.
-    expect(digest.mock.calls.length).toBeGreaterThan(1);
-    expect(forestCall.mock.calls.length - before).toBeLessThanOrEqual(digest.mock.calls.length);
-    // The chat in front is still on screen, and still in the wide list.
-    expect(other.getAttribute("aria-pressed")).toBe("true");
-    expect(dockAside()!.textContent).toContain("Implementation · strong");
-    digest.mockRestore();
-    forestCall.mockRestore();
-  });
-
-  it("never mounts the worker overlay over the chat section", async () => {
-    await mountApp();
-    await openWorkspaceSession("4 files");
-    await key({ ...chord, code: "Digit6", key: "6" });
-    await settle(3);
-    // `expandedWorkerId` is gone: no full-section overlay, and no worker dialog
-    // over the conversation. The pane drills in on its own.
-    expect(container.querySelector('section > div[class*="inset-0"]')).toBeNull();
-    expect(container.querySelector('[role="dialog"][aria-label^="Worker "]')).toBeNull();
+    await click(dockToggle()!);
+    const tasksTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Tasks")!;
+    expect(tasksTab.textContent).toContain("1");
   });
 
   it("mounts the usage dot beside a worker's steer composer", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
+    await click(dockToggle()!);
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
-    // A worker is opened as a chat from its own expanded row, not from an
-    // overlay that covered the conversation asking for it.
-    const row = dockAside()!.querySelector<HTMLElement>('[data-agent-row] button[aria-label^="Expand"]')!;
-    await click(row);
-    await settle(2);
-    const asChat = [...dockAside()!.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Open as a chat"))!;
-    await click(asChat);
-    await settle(3);
+    const openWorker = dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open worker Implementation · strong"]')!;
+    await click(openWorker);
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");
@@ -694,6 +583,7 @@ describe("the dock in the session view", () => {
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
+    await key({ ...chord, code: "Digit0", key: "0" });
     await key({ ...chord, code: "Enter", key: "Enter" });
     expect(container.querySelector('button[aria-label="Restore dock"]')).not.toBeNull();
 

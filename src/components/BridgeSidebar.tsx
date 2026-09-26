@@ -24,7 +24,6 @@ import {
   groupChats,
   readChatView,
   statusBucket,
-  type LiveAgents,
   writeChatView,
   type ChatView,
 } from "./sidebarChats";
@@ -43,14 +42,11 @@ function readWidth(): number {
 }
 
 // Working, waiting, and failure states pair a status dot with readable text.
-function rowStatus(status: SessionStatus, liveAgents = 0): { label: string; dot: string } | null {
+function rowStatus(status: SessionStatus): { label: string; dot: string } | null {
   const bucket = statusBucket(status);
   if (bucket === "active") return { label: "working", dot: "bg-success" };
   if (bucket === "waiting") return { label: "needs you", dot: "bg-warning" };
   if (bucket === "failed") return { label: "failed", dot: "bg-destructive" };
-  // The orchestrator's turn is over but the agents it started are not. A
-  // different dot, because the chat is busy without being the one working.
-  if (liveAgents > 0) return { label: `${liveAgents} ${liveAgents === 1 ? "agent" : "agents"} working`, dot: "bg-info" };
   return null;
 }
 
@@ -65,7 +61,6 @@ function ChatRow({
   onFork,
   forkLabel,
   onJumpToParent,
-  liveAgents,
 }: {
   chat: Session;
   active: boolean;
@@ -77,12 +72,10 @@ function ChatRow({
   onFork?: () => void;
   forkLabel?: string;
   onJumpToParent?: () => void;
-  /** Live agents under this chat, counted by the host from every session. */
-  liveAgents?: number;
 }) {
   const name = chatName(chat);
   const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
-  const status = rowStatus(chat.status, liveAgents);
+  const status = rowStatus(chat.status);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -362,9 +355,6 @@ export type BridgeSidebarProps = {
    * history from this one list, so a chat cannot be visible in one and missing
    * from the other. */
   chats: Session[];
-  /** Each chat's live descendant agents. Workers never reach `chats`, so the
-   * host counts them from every session and hands the answer in. */
-  liveAgents?: LiveAgents;
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
@@ -418,7 +408,6 @@ export type BridgeSidebarProps = {
 
 export function BridgeSidebar({
   chats,
-  liveAgents,
   workspaces,
   activeSessionId,
   projectsActive,
@@ -574,12 +563,12 @@ export function BridgeSidebar({
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
   }, [workspaces]);
   const visible = useMemo(
-    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle, liveAgents }),
-    [chats, query, view.status, view.agent, workspaceTitle, liveAgents],
+    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle }),
+    [chats, query, view.status, view.agent, workspaceTitle],
   );
   const groups = useMemo(
-    () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now, liveAgents }),
-    [visible, view.groupBy, view.sortBy, workspaces, now, liveAgents],
+    () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),
+    [visible, view.groupBy, view.sortBy, workspaces, now],
   );
 
   // Collapsing takes the rail off the screen entirely; the panel controls move
@@ -784,7 +773,6 @@ export function BridgeSidebar({
                     onFork={onForkChat && chat.kind !== "worker" ? () => onForkChat(chat) : undefined}
                     forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
                     onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
-                    liveAgents={liveAgents?.get(chat.id)?.length}
                   />
                 );
               })}

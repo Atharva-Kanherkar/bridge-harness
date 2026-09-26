@@ -31,10 +31,6 @@ export type ComposerPillProps = {
   /// during a turn, for surfaces that genuinely cannot be steered.
   activeAction?: "steer" | "queue";
   onStop?: () => void;
-  /// Agents this chat started are still running while its own turn is idle.
-  /// Stop stays offered, but Send is a plain send: words go to the
-  /// orchestrator, never into an agent.
-  agentsWorking?: boolean;
   /// Immediate feedback after Stop until the turn actually clears.
   stopping?: boolean;
   /// Lets the owner put the caret back in the composer after an action of its
@@ -93,7 +89,6 @@ export function ComposerPill({
   working,
   activeAction,
   onStop,
-  agentsWorking = false,
   stopping = false,
   inputRef,
   leading,
@@ -322,12 +317,11 @@ export function ComposerPill({
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling
                   the work. */}
-              {(working || stopping || agentsWorking) && onStop && (
+              {(working || stopping) && onStop && (
                 <button
                   type="button"
                   onClick={onStop}
                   disabled={stopping}
-                  title={!working && agentsWorking ? "Stop the agents this chat started" : undefined}
                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-card bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70"
                   aria-label={stopping ? "Stopping…" : "Stop"}
                 >
