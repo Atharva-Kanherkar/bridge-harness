@@ -92,6 +92,40 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
     )
 }
 
+/// One `model/list` row. Hidden rows are skipped. An omitted effort ladder is
+/// `None` so curated levels survive; an explicit list, including `[]`, is kept.
+pub(crate) fn discovered_model_from_row(row: &Value) -> Option<crate::adapters::DiscoveredModel> {
+    if row.get("hidden").and_then(Value::as_bool).unwrap_or(false) {
+        return None;
+    }
+    let id = row.get("id").or_else(|| row.get("model")).and_then(Value::as_str)?.trim();
+    let label = row.get("displayName").or_else(|| row.get("name")).and_then(Value::as_str).unwrap_or(id).trim();
+    if id.is_empty() || label.is_empty() {
+        return None;
+    }
+    Some(crate::adapters::DiscoveredModel {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        is_default: row.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
+        supported_effort_levels: reasoning_efforts_from_row(row),
+    })
+}
+
+/// `supportedReasoningEfforts` (and the snake_case alias) as the provider sent
+/// them. Each entry is `{ "reasoningEffort": "high" }` or a bare string.
+fn reasoning_efforts_from_row(row: &Value) -> Option<Vec<String>> {
+    let raw = row.get("supportedReasoningEfforts").or_else(|| row.get("supported_reasoning_efforts"))?;
+    let efforts = raw.as_array()?;
+    Some(efforts.iter().filter_map(|effort| {
+        effort.get("reasoningEffort").and_then(Value::as_str)
+            .or_else(|| effort.get("reasoning_effort").and_then(Value::as_str))
+            .or_else(|| effort.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    }).collect())
+}
+
 pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
     let binary = resolve_runtime().ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
     ensure_supported_version(&binary)?;
@@ -112,33 +146,7 @@ pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, Bridge
         let (response, _) = wait_for_response(&mut reader, 2)?;
         let rows = response.pointer("/result/data").or_else(|| response.pointer("/result/models")).and_then(Value::as_array)
             .ok_or_else(|| BridgeError::Adapter("Codex returned no model catalogue".into()))?;
-        let models = rows.iter().filter_map(|row| {
-            // Defensive: skip any hidden row even if the server sent one.
-            if row.get("hidden").and_then(Value::as_bool).unwrap_or(false) {
-                return None;
-            }
-            let id = row.get("id").or_else(|| row.get("model")).and_then(Value::as_str)?.trim();
-            let label = row.get("displayName").or_else(|| row.get("name")).and_then(Value::as_str).unwrap_or(id).trim();
-            let is_default = row.get("isDefault").and_then(Value::as_bool).unwrap_or(false);
-            // Each supported effort is an object carrying its `reasoningEffort`
-            // string (low/medium/high/xhigh/max/ultra); keep only those names.
-            let supported_effort_levels = row.get("supportedReasoningEfforts")
-                .and_then(Value::as_array)
-                .map(|efforts| efforts.iter().filter_map(|effort| {
-                    effort.get("reasoningEffort").and_then(Value::as_str)
-                        .or_else(|| effort.as_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned)
-                }).collect::<Vec<_>>())
-                .unwrap_or_default();
-            (!id.is_empty() && !label.is_empty()).then(|| crate::adapters::DiscoveredModel {
-                id: id.to_owned(),
-                label: label.to_owned(),
-                is_default,
-                supported_effort_levels,
-            })
-        }).collect::<Vec<_>>();
+        let models = rows.iter().filter_map(discovered_model_from_row).collect::<Vec<_>>();
         if models.is_empty() { Err(BridgeError::Adapter("Codex returned an empty model catalogue".into())) } else { Ok(models) }
     })();
     let _ = crate::adapters::terminate_process_group(child.id());
@@ -1367,5 +1375,54 @@ mod tests {
             auth_state_from_environment(Some(home.path().to_path_buf()), &environment),
             AuthState::SignedIn
         );
+    }
+
+    #[test]
+    fn model_list_rows_keep_reasoning_efforts_in_provider_order() {
+        let row = json!({
+            "id": "gpt-5.6-sol",
+            "model": "gpt-5.6-sol",
+            "displayName": "GPT-5.6-Sol",
+            "hidden": false,
+            "isDefault": true,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+                { "reasoningEffort": "low", "description": "Faster" },
+                { "reasoningEffort": "medium", "description": "Balanced" },
+                { "reasoningEffort": "high", "description": "Deeper" },
+                { "reasoningEffort": "xhigh", "description": "Longest" },
+                { "reasoningEffort": "max", "description": "Ceiling" },
+                { "reasoningEffort": "ultra", "description": "Slowest" }
+            ]
+        });
+        let model = discovered_model_from_row(&row).unwrap();
+        assert_eq!(model.id, "gpt-5.6-sol");
+        assert_eq!(model.label, "GPT-5.6-Sol");
+        assert!(model.is_default);
+        assert_eq!(model.supported_effort_levels.unwrap(), ["low", "medium", "high", "xhigh", "max", "ultra"]);
+    }
+
+    #[test]
+    fn model_list_rows_accept_snake_case_and_bare_effort_strings() {
+        let row = json!({
+            "model": "gpt-5.3-codex",
+            "name": "GPT-5.3 Codex",
+            "supported_reasoning_efforts": ["low", { "reasoning_effort": "high" }, ""]
+        });
+        let model = discovered_model_from_row(&row).unwrap();
+        assert_eq!(model.supported_effort_levels.unwrap(), ["low", "high"]);
+    }
+
+    #[test]
+    fn model_list_rows_distinguish_an_omitted_ladder_from_an_empty_one() {
+        let omitted = discovered_model_from_row(&json!({"id": "gpt-5.6-sol", "displayName": "GPT Sol"})).unwrap();
+        assert!(omitted.supported_effort_levels.is_none());
+        let empty = discovered_model_from_row(&json!({
+            "id": "gpt-5.6-sol",
+            "displayName": "GPT Sol",
+            "supportedReasoningEfforts": []
+        })).unwrap();
+        assert!(empty.supported_effort_levels.unwrap().is_empty());
+        assert!(discovered_model_from_row(&json!({"id": "hidden", "displayName": "Hidden", "hidden": true})).is_none());
     }
 }

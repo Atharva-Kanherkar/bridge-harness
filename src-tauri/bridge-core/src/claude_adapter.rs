@@ -95,7 +95,8 @@ fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::Discover
                 label: label.to_owned(),
                 // Canonicalizing the default alias preserves provider preference.
                 is_default: alias == "default",
-                supported_effort_levels,
+                // Claude treats a missing ladder as "no knob", not "unknown".
+                supported_effort_levels: Some(supported_effort_levels),
             })
         }).collect::<Vec<_>>();
         if !found.is_empty() { return Ok(found); }
@@ -1566,8 +1567,8 @@ mod catalogue_tests {
         assert_eq!(models[0].label, "Opus 5");
         assert!(models[0].is_default);
         assert_ne!(models[0].id, models[2].id);
-        assert_eq!(models[0].supported_effort_levels, ["high", "max"]);
-        assert!(models[3].supported_effort_levels.is_empty());
+        assert_eq!(models[0].supported_effort_levels.clone().unwrap(), ["high", "max"]);
+        assert!(models[3].supported_effort_levels.as_ref().unwrap().is_empty());
     }
     #[test]
     fn ignores_malformed_rows_and_unresolved_default() {
