@@ -611,6 +611,19 @@ describe("the dock in the session view", () => {
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("keeps an agent pinned in one chat in the tray of another", async () => {
+    localStorage.setItem("bridge.agents-pane", JSON.stringify({ pinned: ["session-1w"], expanded: [], acknowledged: [], scope: "this-chat" }));
+    await mountApp();
+    await openWorkspaceSession("7 files");
+    await settle(3);
+    // The tray rides under every pane but Agents itself.
+    await key({ ...chord, code: "Digit1", key: "1" });
+    await settle(4);
+    const dock = dockAside()!;
+    expect(dock.textContent).toContain("Pinned agents");
+    expect(dock.textContent).toContain("Implementation · strong");
+  });
+
   it("widens to other chats through the digest, fetching a forest only when it moved", async () => {
     const digest = vi.spyOn(bridgeApi, "sessionForestDigest");
     const forestCall = vi.spyOn(bridgeApi, "sessionForest");

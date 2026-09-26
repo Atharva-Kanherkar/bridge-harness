@@ -675,6 +675,10 @@ function AppContent() {
   // to be current to the frame.
   const [otherForests, setOtherForests] = useState<Map<string, SessionForestSnapshot>>(() => new Map());
   const allChatsScope = agentsSettings.scope === "all-chats";
+  // A pinned agent can live in any chat, so the other chats' forests are read
+  // whenever something is pinned, not only in the All chats scope; otherwise
+  // the tray loses a pin the moment you switch away from its chat.
+  const readOtherChats = allChatsScope || agentsSettings.pinned.length > 0;
   // Only root chats can own a run: a worker's forest is read through its root,
   // and fetching one per worker would be a request per row. Joined into one key
   // so the poll is not torn down and rebuilt on every state refresh — which
@@ -688,7 +692,7 @@ function AppContent() {
   const agentsSessionRef = useRef(session?.id);
   agentsSessionRef.current = session?.id;
   useEffect(() => {
-    if (!allChatsScope || !agentRootIds) return;
+    if (!readOtherChats || !agentRootIds) return;
     const roots = agentRootIds.split(",");
     let active = true;
     const digests = new Map<string, string>();
@@ -718,7 +722,7 @@ function AppContent() {
       setOtherForests(next);
     }, 10_000);
     return () => { active = false; stop(); };
-  }, [allChatsScope, agentRootIds]);
+  }, [readOtherChats, agentRootIds]);
   const otherForestsRef = useRef(otherForests);
   const agentsForests = useMemo(() => {
     const map = new Map(forest ? [[forest.sessionId, forest]] : []);
@@ -734,6 +738,17 @@ function AppContent() {
     rootSessionId: session?.id,
     scope: agentsSettings.scope,
   }), [visibleSessions, agentsForests, session?.id, sessionTranscript, agentEvents, acknowledgedTasks, agentsSettings.scope]);
+  // The tray answers "where are my pinned agents", which is never scoped to
+  // the chat on screen.
+  const trayRuns = useMemo(() => allChatsScope || agentsSettings.pinned.length === 0 ? agentsRuns : agentsModel({
+    sessions: visibleSessions,
+    forests: agentsForests,
+    transcripts: new Map(session?.id ? [[session.id, sessionTranscript]] : []),
+    events: agentEvents,
+    acknowledged: acknowledgedTasks,
+    rootSessionId: session?.id,
+    scope: "all-chats",
+  }), [allChatsScope, agentsSettings.pinned.length, agentsRuns, visibleSessions, agentsForests, session?.id, sessionTranscript, agentEvents, acknowledgedTasks]);
   // Worker steps come off the live stream, so a worker that ran before this
   // window was open has none there and its row reads as empty. Backfill each
   // worker once from its durable tail; the batch merge dedupes by event id, so
@@ -747,7 +762,7 @@ function AppContent() {
         visit(node.children);
       }
     };
-    for (const run of agentsRuns) visit(run.agents);
+    for (const run of trayRuns) visit(run.agents);
     for (const id of ids) {
       if (backfilledWorkers.current.has(id)) continue;
       backfilledWorkers.current.add(id);
@@ -755,7 +770,7 @@ function AppContent() {
         .then(events => setAgentEvents(current => appendAgentEventBatch(current, events)))
         .catch(() => backfilledWorkers.current.delete(id));
     }
-  }, [agentsRuns]);
+  }, [trayRuns]);
   const agentsCensus = useMemo(() => agentsRuns.reduce((total, run) => ({
     running: total.running + run.census.running,
     needsYou: total.needsYou + run.census.needsYou,
@@ -3198,7 +3213,7 @@ function AppContent() {
             onAction={dispatchDock}
             onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
             tray={<PinnedAgentsTray
-              runs={agentsRuns}
+              runs={trayRuns}
               pinned={new Set(agentsSettings.pinned)}
               now={agentsNow}
               pane={dock.pane}
