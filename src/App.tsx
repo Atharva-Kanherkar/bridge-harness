@@ -27,7 +27,7 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { isHiddenSession } from "./components/sidebarChats";
+import { isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -54,7 +54,8 @@ import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type 
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
-import { TasksPane } from "./components/TasksPane";
+import { TasksPane, activeAgentRows } from "./components/TasksPane";
+import { usePinnedAgents } from "./pinnedAgents";
 import { workerStatus } from "./components/workerStatus";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
@@ -66,7 +67,7 @@ const MissionControl = lazy(() => import("./components/MissionControl").then(mod
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { overviewUsage } from "./usageOverview";
-import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
+import { SteerComposer } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
@@ -226,7 +227,6 @@ function AppContent() {
   /// The worker whose full activity feed is open over the chat. Owned here, not
   /// in the conversation, because the overlay covers the whole session pane and
   /// has to survive the transcript re-rendering underneath it.
-  const [expandedWorkerId, setExpandedWorkerId] = useState<string>();
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
@@ -256,7 +256,7 @@ function AppContent() {
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
-  const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
+  const [pinnedAgents, togglePinnedAgent] = usePinnedAgents();
   const [recallOpen, setRecallOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
@@ -606,9 +606,6 @@ function AppContent() {
     setView(place.view);
     setSelectedSessionId(place.sessionId ?? undefined);
     setParadigm(place.paradigm);
-    if (place.view === "workspace") {
-      setExpandedWorkerId(undefined);
-    }
   }, []);
 
   const goBack = useCallback(() => {
@@ -686,15 +683,15 @@ function AppContent() {
     observer.observe(element);
     dockSectionObserver.current = observer;
   }, []);
+  // Counted from the same rows the pane lists, so the tab's number is the
+  // number of agents you will find behind it.
   const dockTaskBadge = useMemo(() => {
-    const statuses = (forest?.workerRuntimes ?? []).flatMap(runtime => {
-      const workerSession = visibleSessions.find(item => item.id === runtime.sessionId);
-      return workerSession ? [{ id: runtime.sessionId, status: workerStatus(workerSession, runtime) }] : [];
-    });
-    const running = statuses.filter(item => item.status.tone === "working").length + (terminalActivity?.running ?? 0);
-    const attention = statuses.some(item => (item.status.tone === "failed" || item.status.tone === "stalled") && !acknowledgedTasks.has(item.id));
+    const rows = session ? activeAgentRows(session.id, visibleSessions, forest?.workerRuntimes ?? [], new Set()) : [];
+    const tones = rows.map(row => workerStatus(row.session, row.runtime).tone);
+    const running = tones.filter(tone => tone === "working").length + (terminalActivity?.running ?? 0);
+    const attention = tones.includes("waiting");
     return { running, attention };
-  }, [forest?.workerRuntimes, visibleSessions, terminalActivity?.running, acknowledgedTasks]);
+  }, [session, forest?.workerRuntimes, visibleSessions, terminalActivity?.running]);
   // Connector inbox state, declared here because the dock descriptor below
   // reads its unread count. The rest of the glue is further down.
   const [connectorToasts, setConnectorToasts] = useState<ConnectorToast[]>([]);
@@ -708,7 +705,7 @@ function AppContent() {
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
     { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
-    { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
+    { id: "tasks", label: "Agents", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
     // Always available: an inbox is about an account, not a repository, so
     // gating it on a worktree would hide it exactly where a direct chat is.
@@ -958,10 +955,6 @@ function AppContent() {
     () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents, reasons: forest?.reasons ?? [] }),
     [agentEvents, forest?.workerRuntimes, forest?.reasons, state.sessions],
   );
-  const expandedWorker = useMemo(
-    () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
-    [expandedWorkerId, state.sessions],
-  );
   const asideSession = useMemo(() => {
     if (!asideLifecycle || asideLifecycle.sourceSessionId !== session?.id) return undefined;
     return state.sessions.find(candidate => candidate.id === asideLifecycle.sessionId);
@@ -987,6 +980,10 @@ function AppContent() {
   // way. The middle one is what covers a provider that takes its time between
   // receiving a message and starting on it.
   const turnActive = !!session?.activeTurnId || session?.status === "working" || pendingForSession.length > 0;
+  // Agents still running under each chat. The sidebar reads the whole map; the
+  // composer reads this chat's slice to stay stoppable after the turn ends.
+  const liveAgents = useMemo(() => liveAgentSessions(state.sessions), [state.sessions]);
+  const chatAgents = useMemo(() => (session ? liveAgents.get(session.id) ?? [] : []), [liveAgents, session]);
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -1366,7 +1363,6 @@ function AppContent() {
     setParadigm("single");
     setNewChatDraft(null);
     setSelectedSessionId(id);
-    setExpandedWorkerId(undefined);
     setAsideLifecycle(current => current?.sourceSessionId === id ? current : undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
@@ -2330,6 +2326,13 @@ function AppContent() {
   const stopWorker = useCallback(async (childSessionId: string) => {
     setState(await bridgeApi.stopSession(childSessionId));
   }, []);
+  // Stop ends everything this chat has running: the orchestrator's turn if it
+  // has one, and every live agent under it. Sending is untouched, so a message
+  // typed while agents run still goes only to the orchestrator.
+  const stopChat = useCallback(() => {
+    if (turnActive) requestStop();
+    for (const id of chatAgents) void stopWorker(id).catch(value => setError(errorMessage(value)));
+  }, [turnActive, requestStop, chatAgents, stopWorker]);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -2653,6 +2656,7 @@ function AppContent() {
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
+      liveAgents={liveAgents}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
@@ -2804,22 +2808,6 @@ function AppContent() {
           busy={busy}
         />
         <section ref={dockSectionRef} className="flex-1 min-h-0 overflow-hidden flex relative">
-          {/* The chat's own panel, expanded. Rendered over the session pane
-              rather than navigating away, because the reason to look at a
-              worker's full feed is usually to decide something in the
-              conversation you are still in. */}
-          {expandedWorker && <div className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
-            <WorkerDetail
-              session={expandedWorker}
-              runtime={forest?.workerRuntimes.find(runtime => runtime.sessionId === expandedWorker.id)}
-              liveEvents={agentEvents}
-              onClose={() => setExpandedWorkerId(undefined)}
-              onFocusSession={openSession}
-              onSteer={steerWorker}
-              onStopWorker={stopWorker}
-              reasons={forest?.reasons ?? []}
-            />
-          </div>}
           {/* A user-made delegation floats over the chat it was asked from;
               the chat underneath never moves. See `openAside`. */}
           {asideSession && asideSession.id !== session.id && <AsideChat
@@ -3059,7 +3047,8 @@ function AppContent() {
                     working={turnActive}
                     activeAction={activeAction}
                     stopping={stopping}
-                    onStop={session ? requestStop : undefined}
+                    agentsWorking={chatAgents.length > 0}
+                    onStop={session ? stopChat : undefined}
                     inputRef={composerRef}
                     leading={usageDot}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
@@ -3100,22 +3089,24 @@ function AppContent() {
             {pane => {
               if (pane === "tasks") return <TasksPane
                 key={session.id}
+                chatSessionId={session.id}
                 sessions={visibleSessions}
                 runtimes={forest?.workerRuntimes}
                 queue={forest?.workerQueue}
                 terminalActivity={terminalActivity}
-                acknowledged={acknowledgedTasks}
-                onAcknowledge={id => setAcknowledgedTasks(previous => new Set(previous).add(id))}
+                pinned={pinnedAgents}
+                onTogglePin={togglePinnedAgent}
+                liveEvents={agentEvents}
+                reasons={forest?.reasons ?? []}
                 onOpenSession={openSession}
-                onExpandWorker={setExpandedWorkerId}
-                onRetryWorker={id => void retryWorkerTask(id)}
-                onStopWorker={id => void stopWorker(id)}
+                onSteer={steerWorker}
+                onStopWorker={stopWorker}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
               if (pane === "browser") return <SimpleBrowser
                 key={session.id}
                 sessionId={session.id}
-                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !expandedWorkerId && !recallOpen && !navOpen}
+                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !recallOpen && !navOpen}
                 onAttachSelection={attachBrowserSelection}
                 onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
               />;

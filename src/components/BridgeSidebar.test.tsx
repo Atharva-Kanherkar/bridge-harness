@@ -88,6 +88,23 @@ beforeEach(() => {
 });
 
 describe("BridgeSidebar responsive rail", () => {
+  it("marks a chat whose agents are still working after its own turn ended", () => {
+    const html = render({
+      chats: [session("idle-orchestrator", { status: "ready" }), session("busy-orchestrator", { status: "working" })],
+      liveAgents: new Map([["idle-orchestrator", ["w1", "w2"]], ["busy-orchestrator", ["w3"]]]),
+    });
+    expect(html).toContain("2 agents working");
+    expect(html).toContain("bg-info");
+    // The orchestrator's own turn keeps the green working signal.
+    expect(html).not.toContain("1 agent working");
+    expect(html).toContain("bg-success");
+  });
+
+  it("says agent, not agents, for one", () => {
+    const html = render({ chats: [session("solo", { status: "ready" })], liveAgents: new Map([["solo", ["w1"]]]) });
+    expect(html).toContain("1 agent working");
+  });
+
   it("stays off-canvas on narrow windows until it is opened", () => {
     const html = render({ mobileOpen: false });
     expect(html).toContain("left-0");

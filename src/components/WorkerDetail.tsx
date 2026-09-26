@@ -101,6 +101,7 @@ export function WorkerDetail({
   initialEvents,
   reasons = [],
   onStopWorker,
+  embedded = false,
 }: {
   session: Session;
   runtime?: WorkerRuntimeRecord;
@@ -118,6 +119,11 @@ export function WorkerDetail({
   initialEvents?: AgentEvent[];
   reasons?: BridgeEvent[];
   onStopWorker?: (id: string) => Promise<void>;
+  /** Rendered inside a row of the Agents pane rather than over the chat: no
+   *  dialog semantics, no Escape handler, no focus grab, and a feed that
+   *  scrolls within a capped height. The row it sits in owns the name,
+   *  status, clock and Stop, so the header is not repeated. */
+  embedded?: boolean;
 }) {
   const [liveNow, setLiveNow] = useState(Date.now);
   useEffect(() => {
@@ -184,13 +190,14 @@ export function WorkerDetail({
   }, [feed.length]);
 
   useEffect(() => {
+    if (embedded) return;
     closeRef.current?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [onClose, embedded]);
 
   const status = workerStatus(session, runtime);
   const result = runtime?.lastResult;
@@ -200,8 +207,13 @@ export function WorkerDetail({
     && runtime?.lifecycleState !== "checkpointing"
     && (session.status === "working" || session.status === "waiting");
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background animate-page-mount" role="dialog" aria-modal="true" aria-label={`Worker ${session.title || session.label}`}>
-      <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
+    <div
+      className={embedded ? "flex min-h-0 flex-col" : "flex min-h-0 flex-1 flex-col bg-background animate-page-mount"}
+      role={embedded ? "region" : "dialog"}
+      aria-modal={embedded ? undefined : true}
+      aria-label={`Worker ${session.title || session.label}`}
+    >
+      {!embedded && <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
         <button ref={closeRef} type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Agent Fleet"><X size={14}/></button>
         <h1 className="m-0 min-w-0 truncate font-display text-sm font-semibold tracking-tight text-foreground">{session.title || session.label}</h1>
         <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.07em]", toneText[status.tone])}>{status.label}</span>
@@ -212,12 +224,18 @@ export function WorkerDetail({
         <WorkerStopControl session={session} runtime={runtime} onStop={onStopWorker} />
         {onToggleFullscreen && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={onToggleFullscreen} aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}>{fullscreen ? <Minimize2 size={13}/> : <Maximize2 size={13}/>}</Button>}
         <Button type="button" variant="secondary" size="sm" onClick={() => onFocusSession(session.id)}>Open session <ArrowRight size={12}/></Button>
+      </div>}
+
+      <div className={cn("space-y-2 border-b border-border py-2", embedded ? "px-3" : "px-4 sm:px-6")}>
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="min-w-0 truncate">{session.harness} · {session.model ?? "Model not reported"}{embedded && runtime?.taskFamily ? ` · ${runtime.taskFamily}` : ""}</span>
+          {embedded && <button type="button" onClick={() => onFocusSession(session.id)} className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Open session <ArrowRight size={11} aria-hidden="true"/></button>}
+        </p>
+        <WorkerDiagnostics reasons={reasons} sessionId={session.id} />
       </div>
 
-      <div className="space-y-2 border-b border-border px-4 py-2 sm:px-6"><p className="text-xs text-muted-foreground">{session.harness} · {session.model ?? "Model not reported"}</p><WorkerDiagnostics reasons={reasons} sessionId={session.id} /></div>
-
       {(runtime?.progressSummary || runtime?.waitingReason) && (
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-card px-4 py-2 text-[11px] sm:px-6">
+        <div className={cn("flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-card py-2 text-[11px]", embedded ? "px-3" : "px-4 sm:px-6")}>
           {runtime.progressSummary && <span className="min-w-0 truncate font-mono text-foreground/80">{runtime.progressSummary}</span>}
           {runtime.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">waiting: {runtime.waitingReason.replaceAll("_", " ")}{runtime.waitingSince ? ` · ${formatElapsed(runtime.waitingSince, clock)}` : ""}</span>}
         </div>
@@ -229,7 +247,7 @@ export function WorkerDetail({
           const element = event.currentTarget;
           stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
         }}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-6"
+        className={embedded ? "max-h-[26rem] min-h-0 overflow-y-auto overscroll-contain px-3 py-2.5" : "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-6"}
       >
         {failure && <p className="mb-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">{failure}</p>}
         {loading && <p className="flex items-center gap-2 py-4 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={13}/>Loading the worker's activity…</p>}
@@ -251,7 +269,7 @@ export function WorkerDetail({
         )}
       </div>
 
-      {onSteer && <SteerComposer sessionId={session.id} steerable={steerable} onSteer={onSteer}/>}
+      {onSteer && <SteerComposer sessionId={session.id} steerable={steerable} onSteer={onSteer} className={embedded ? "shrink-0 border-t border-border px-3 py-2.5" : undefined}/>}
     </div>
   );
 }
