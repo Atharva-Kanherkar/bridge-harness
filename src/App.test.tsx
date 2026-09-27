@@ -559,11 +559,11 @@ describe("the dock in the session view", () => {
     await click(dockToggle()!);
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
-    // A row opens in place to the worker's transcript; its own session is one
-    // more click from there.
-    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Expand Implementation · strong"]')!);
-    const openWorker = [...dockAside()!.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Open session")!;
-    await click(openWorker);
+    // A row opens the worker's chat in the pane; its own session is one more
+    // click from there.
+    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="View Implementation · strong"]')!);
+    expect(dockAside()!.querySelector('[role="region"][aria-label="Agent Implementation · strong"]')).not.toBeNull();
+    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");

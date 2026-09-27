@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react";
 
 // Which agents the person pinned in the Agents pane. Pinned is what makes an
-// agent sticky: it stays open and stays listed after it finishes, across chat
-// switches and restarts, until it is unpinned. Session ids are global, so one
-// list serves every chat; each chat only ever shows the ids that are its own.
+// agent sticky: it stays listed after it finishes, across chat switches and
+// restarts, until it is unpinned. Session ids are global, so one list serves
+// every chat; each chat only ever shows the ids that are its own.
 
 export const PINNED_AGENTS_KEY = "bridge.agents.pinned";
 

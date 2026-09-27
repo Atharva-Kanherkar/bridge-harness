@@ -54,8 +54,9 @@ import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type 
 import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
-import { TasksPane, activeAgentRows } from "./components/TasksPane";
+import { TasksPane, activeAgentRows, type AgentFocus } from "./components/TasksPane";
 import { usePinnedAgents } from "./pinnedAgents";
+import { useAgentSpawns } from "./agentSpawns";
 import { workerStatus } from "./components/workerStatus";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
@@ -67,7 +68,7 @@ const MissionControl = lazy(() => import("./components/MissionControl").then(mod
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { overviewUsage } from "./usageOverview";
-import { SteerComposer } from "./components/WorkerDetail";
+import { SteerComposer } from "./components/SteerComposer";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
@@ -751,6 +752,19 @@ function AppContent() {
     setCodeReveal({ path, line, nonce: revealNonce.current });
     dispatchDock({ type: "open-pane", pane: "code" });
   }
+  // An agent is watched in the Agents pane, with its chat open. The dock goes
+  // there on its own when the orchestrator starts one, and from the
+  // transcript's pointer row; closing the dock is how the person says no.
+  const [agentFocus, setAgentFocus] = useState<AgentFocus>();
+  const agentFocusNonce = useRef(0);
+  useEffect(() => {
+    setAgentFocus(undefined);
+  }, [session?.id]);
+  function showAgentInDock(sessionId: string) {
+    agentFocusNonce.current += 1;
+    setAgentFocus({ sessionId, nonce: agentFocusNonce.current });
+    dispatchDock({ type: "open-pane", pane: "tasks" });
+  }
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
   // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
@@ -948,13 +962,6 @@ function AppContent() {
     && liveStatuses.includes(session?.status ?? "stopped");
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
-  // A worker panel reads the worker's own session row, its runtime record, and
-  // its slice of the *global* live stream — the parent's slice would show none
-  // of the child's frames.
-  const workerPanelSource = useMemo(
-    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents, reasons: forest?.reasons ?? [] }),
-    [agentEvents, forest?.workerRuntimes, forest?.reasons, state.sessions],
-  );
   const asideSession = useMemo(() => {
     if (!asideLifecycle || asideLifecycle.sourceSessionId !== session?.id) return undefined;
     return state.sessions.find(candidate => candidate.id === asideLifecycle.sessionId);
@@ -984,6 +991,7 @@ function AppContent() {
   // composer reads this chat's slice to stay stoppable after the turn ends.
   const liveAgents = useMemo(() => liveAgentSessions(state.sessions), [state.sessions]);
   const chatAgents = useMemo(() => (session ? liveAgents.get(session.id) ?? [] : []), [liveAgents, session]);
+  useAgentSpawns(session?.id, chatAgents, showAgentInDock);
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -2883,7 +2891,6 @@ function AppContent() {
                   session={session}
                   projectName={projectName}
                   onOpenSession={openSession}
-                  workers={workerPanelSource}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   entryWindow={forest?.entryWindow}
@@ -2893,7 +2900,7 @@ function AppContent() {
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
-                  onStopWorker={stopWorker}
+                  onOpenAgent={showAgentInDock}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -3096,6 +3103,7 @@ function AppContent() {
                 terminalActivity={terminalActivity}
                 pinned={pinnedAgents}
                 onTogglePin={togglePinnedAgent}
+                focus={agentFocus}
                 liveEvents={agentEvents}
                 reasons={forest?.reasons ?? []}
                 onOpenSession={openSession}

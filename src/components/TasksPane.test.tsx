@@ -4,9 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, WorkerRuntimeRecord } from "../types";
 import type { QueuedWorkerRequest } from "../protocol/generated/protocol";
+import { bridgeApi } from "../api";
 import { TasksPane, activeAgentRows, descendantIds } from "./TasksPane";
 
-// The Agents pane lists the agents this chat has running now, and pinned ones.
+// The Agents pane lists the agents this chat has running now, and pinned ones,
+// and opens any of them to its chat.
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
   id, workspaceId: "w", harness: "codex", label: `Worker ${id}`, status: "working", startedAt: "2026-08-25T10:00:00Z",
@@ -119,22 +121,66 @@ describe("which agents are listed", () => {
 });
 
 describe("a row", () => {
-  it("opens in place to the worker's own transcript and closes again", async () => {
+  // The chat renders through AgentConversation, which polls the worker's forest.
+  beforeEach(() => {
+    vi.spyOn(bridgeApi, "sessionForestDigest").mockResolvedValue("d");
+    vi.spyOn(bridgeApi, "sessionForest").mockRejectedValue(new Error("not in this test"));
+  });
+  const chatRegion = (name: string) => container.querySelector(`[role="region"][aria-label="Agent ${name}"]`);
+
+  it("opens the agent's chat in the pane and goes back to the list", async () => {
     await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1", { progressSummary: "editing src/auth/store.rs" })] });
     expect(container.textContent).toContain("editing src/auth/store.rs");
-    expect(container.querySelector('[role="region"][aria-label="Worker Worker w1"]')).toBeNull();
+    expect(chatRegion("Worker w1")).toBeNull();
 
-    await click(byLabel("Expand Worker w1"));
-    const transcript = container.querySelector('[role="region"][aria-label="Worker Worker w1"]');
-    expect(transcript).not.toBeNull();
-    // Embedded, not an overlay over the chat.
+    await click(byLabel("View Worker w1"));
+    expect(chatRegion("Worker w1")).not.toBeNull();
+    // The list gives way to the chat, and it is part of the pane, not an overlay.
+    expect(rowIds()).toEqual([]);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
 
-    await click(byLabel("Collapse Worker w1"));
-    expect(container.querySelector('[role="region"][aria-label="Worker Worker w1"]')).toBeNull();
+    await click(byLabel("All agents"));
+    expect(chatRegion("Worker w1")).toBeNull();
+    expect(rowIds()).toEqual(["w1"]);
   });
 
-  it("keeps a pinned worker listed and open after it finishes, first in the list", async () => {
+  it("opens the agent a focus request names, again after Back when the nonce moves", async () => {
+    const sessions = [chat, session("w1"), session("w2")];
+    const runtimes = [runtime("w1"), runtime("w2")];
+    await mount({ sessions, runtimes, focus: { sessionId: "w2", nonce: 1 } });
+    expect(chatRegion("Worker w2")).not.toBeNull();
+
+    await click(byLabel("All agents"));
+    expect(chatRegion("Worker w2")).toBeNull();
+    await mount({ sessions, runtimes, focus: { sessionId: "w2", nonce: 2 } });
+    expect(chatRegion("Worker w2")).not.toBeNull();
+  });
+
+  it("ignores a focus request for another chat's agent", async () => {
+    await mount({ sessions: [chat, session("w1"), session("other", { parentSessionId: "x" })], runtimes: [runtime("w1")], focus: { sessionId: "other", nonce: 1 } });
+    expect(chatRegion("Worker other")).toBeNull();
+    expect(rowIds()).toEqual(["w1"]);
+  });
+
+  it("keeps an open agent open after it finishes, even unpinned", async () => {
+    await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1")], focus: { sessionId: "w1", nonce: 1 } });
+    expect(chatRegion("Worker w1")).not.toBeNull();
+    await mount({ sessions: [chat, session("w1", { status: "completed" })], runtimes: [runtime("w1", { lifecycleState: "completed", resultStatus: "reported" })], focus: { sessionId: "w1", nonce: 1 } });
+    expect(chatRegion("Worker w1")).not.toBeNull();
+    // Nothing left to stop.
+    expect(byLabel("Stop worker Worker w1")).toBeNull();
+    await click(byLabel("All agents"));
+    expect(container.textContent).toContain("No agents running");
+  });
+
+  it("hands Open session to the host", async () => {
+    const onOpenSession = vi.fn();
+    await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1")], focus: { sessionId: "w1", nonce: 1 }, onOpenSession });
+    await click(byLabel("Open session"));
+    expect(onOpenSession).toHaveBeenCalledWith("w1");
+  });
+
+  it("keeps a pinned worker listed after it finishes, first in the list", async () => {
     const onTogglePin = vi.fn();
     await mount({
       sessions: [chat, session("live"), session("finished", { status: "completed" })],
@@ -143,7 +189,6 @@ describe("a row", () => {
       onTogglePin,
     });
     expect(rowIds()).toEqual(["finished", "live"]);
-    expect(container.querySelector('[role="region"][aria-label="Worker Worker finished"]')).not.toBeNull();
     expect(byLabel("Unpin Worker finished")?.getAttribute("aria-pressed")).toBe("true");
     // Nothing left to stop on a finished worker.
     expect(byLabel("Stop worker Worker finished")).toBeNull();
