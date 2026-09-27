@@ -46,6 +46,13 @@ on.
 **Expanding is a user action.** Nothing expands a settled thought on the
 reader's behalf, and nothing re-collapses one they opened.
 
+**Turning it off is a preference, not a third state.** `Appearance ›
+Transcript › Show thinking` hides the reasoning text: a streaming thought keeps
+the pulsing row and drops the thought beneath it, and a settled thought draws
+nothing at all. The item, its status and its durability are unchanged — the
+preference hides a transcript, it does not change what a thought is — so
+turning it back on draws the thoughts already stored.
+
 ### What settles a thought
 
 A thought leaves `streaming` when, and only when, one of these arrives:
@@ -114,7 +121,10 @@ something.
    A user's choice outranks liveness: a group the reader collapsed stays
    collapsed while it is still running, and one they opened stays open after it
    finishes. One exception, deliberate: a group holding a patch opens itself,
-   because a diff the reader has to go digging for is not an inline diff.
+   because a diff the reader has to go digging for is not an inline diff. A
+   settled group that failed opens on its failed rows, with the rest of the
+   timeline one "Show all" click away: the reader clicking the failure marker
+   wants the broken step, not the hundred that were fine.
 5. **A live group is legible while it is live.** It says what is happening now,
    and it settles into its summary without the row changing identity or the
    scroll position jumping.
@@ -168,6 +178,13 @@ Three rules over that table:
   a streaming thought's. A tool call left `inProgress` when a turn ends stays
   `inProgress`: that is a true statement about a call that never reported back,
   and overwriting it with `completed` would be a lie the reader cannot detect.
+- **Liveness, unlike status, is scoped to the turn.** The item keeps what the
+  wire said; the row stops claiming live work once the turn is over. A call
+  whose completion never arrived settles to the past tense with no spinner, and
+  a check it never finished reads `pending` rather than `running` — the state
+  that claims nothing. Without this a provider that drops one completion frame
+  left "Working · editing files" pulsing under a reply that finished an hour
+  ago. The turn is the outer bound of "still happening" for every row.
 - **`streaming` and `inProgress` are not synonyms.** `streaming` means text is
   accumulating into this item. `inProgress` means an operation is running.
   A reader sees the shimmer for the first and a pulse for the second.

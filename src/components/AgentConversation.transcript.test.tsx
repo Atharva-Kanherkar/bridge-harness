@@ -2,8 +2,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MotionGlobalConfig } from "framer-motion";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentConversation } from "./AgentConversation";
+import { SHOW_THINKING_STORAGE_KEY } from "../transcriptSettings";
 import { asWireKind } from "../transcript/wire";
 import { durableEntriesFrom } from "../transcript/golden";
 import type { AgentEvent, Session, SessionEntry } from "../types";
@@ -53,14 +54,12 @@ function mount(events: AgentEvent[]) {
   });
 }
 
-/** The chip itself, not the meta cell that happens to contain only the chip. */
-const exitChip = (label: string) =>
-  [...host.querySelectorAll<HTMLElement>("span.rounded-full")].find(node => node.textContent === label);
-
 const buttonWith = (text: string) =>
   [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes(text));
 
 beforeEach(() => {
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => store.set(key, value), removeItem: (key: string) => store.delete(key) });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   MotionGlobalConfig.skipAnimations = true;
   host = document.createElement("div");
@@ -72,6 +71,7 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   MotionGlobalConfig.skipAnimations = false;
+  vi.unstubAllGlobals();
 });
 
 describe("anonymous tool starts", () => {
@@ -181,22 +181,20 @@ describe("command rows", () => {
     act(() => buttonWith("Ran 1 command")!.click());
   }
 
-  it("renders a zero exit code as a success chip", async () => {
-    await openGroup([command({ exitCode: 0 })]);
-    const chip = exitChip("exit 0");
-    expect(chip).toBeDefined();
-    expect(chip?.className).toContain("text-success");
-  });
-
-  it("renders a nonzero exit code in the destructive tone", async () => {
+  it("never prints a command's exit code, and flags failed work for the agent", async () => {
     await openGroup([command({ exitCode: 2 })]);
-    const chip = exitChip("exit 2");
-    expect(chip).toBeDefined();
-    expect(chip?.className).toContain("text-destructive");
-    expect(buttonWith("needs attention")).toBeDefined();
+    expect(host.textContent).not.toMatch(/exit \S/);
+    expect(buttonWith("needs the agent")).toBeDefined();
+    expect(buttonWith("needs attention")).toBeUndefined();
   });
 
-  it("renders no chip at all when the provider reports no exit code", async () => {
+  it("says nothing about a zero exit", async () => {
+    await openGroup([command({ exitCode: 0 })]);
+    expect(host.textContent).not.toMatch(/exit \S/);
+    expect(buttonWith("needs the agent")).toBeUndefined();
+  });
+
+  it("renders no exit code when the provider reports none", async () => {
     await openGroup([command({})]);
     expect(host.textContent).not.toMatch(/exit \S/);
   });
@@ -453,6 +451,36 @@ describe("three layers", () => {
   });
 });
 
+describe("thinking visibility", () => {
+  const hideThinking = () => localStorage.setItem(SHOW_THINKING_STORAGE_KEY, "false");
+
+  it("keeps the pulsing row and drops the text for a streaming thought", () => {
+    hideThinking();
+    mount([event(1, "reasoning.started", { itemId: null, status: "streaming", text: "Checking the reducer" })]);
+    const row = host.querySelector("[data-thinking]")!;
+    expect(row.getAttribute("data-thinking")).toBe("streaming");
+    expect(row.querySelector("[data-thinking-row]")).not.toBeNull();
+    expect(row.textContent).toContain("Thinking");
+    expect(host.textContent).not.toContain("Checking the reducer");
+  });
+
+  it("leaves no row, text or gap behind a settled thought", () => {
+    hideThinking();
+    mount([event(1, "reasoning.completed", { itemId: null, status: "completed", text: "All done thinking" })]);
+    expect(host.querySelector("[data-thinking]")).toBeNull();
+    expect(host.querySelector("[data-thinking-row]")).toBeNull();
+    expect(host.querySelector("[data-conversation-content]")?.children).toHaveLength(0);
+    expect(host.textContent).not.toContain("All done thinking");
+    expect(host.textContent).not.toContain("Thought for");
+  });
+
+  it("still shows thinking by default", () => {
+    mount([event(1, "reasoning.completed", { itemId: null, status: "completed", text: "All done thinking" })]);
+    expect(host.querySelector('[data-thinking="completed"]')).not.toBeNull();
+    expect(host.textContent).toContain("All done thinking");
+  });
+});
+
 describe("run trailer", () => {
   const parallelCommand = (id: number, at: string) =>
     event(id, "command.completed", {
@@ -563,14 +591,15 @@ describe("check rows", () => {
     expect(rows[1].querySelector(".animate-spin.text-warning")).not.toBeNull();
   });
 
-  it("fails a zero-exit run whose test file failed to collect, and flags the group", () => {
+  it("fails a zero-exit run whose test file failed to collect, and flags the group for the agent", () => {
     // `vitest run | cat` without pipefail exits 0 while a suite failed.
     mount([run(1, "bunx vitest run | cat", { exitCode: 0, aggregatedOutput: " Test Files  1 failed | 1 passed (2)\n      Tests  1 passed (1)" })]);
     const row = host.querySelector("[data-check-list] [data-tool-row]")!;
     expect(row.textContent).toContain("Failed");
     expect(row.textContent).toContain("1 file failed · 1 passed");
     expect(row.textContent).not.toContain("Passed");
-    expect(buttonWith("needs attention")).toBeDefined();
+    expect(buttonWith("needs the agent")).toBeDefined();
+    expect(buttonWith("needs attention")).toBeUndefined();
   });
 
   it("keeps only the latest run of a repeated check", () => {
@@ -581,6 +610,62 @@ describe("check rows", () => {
     const rows = [...host.querySelectorAll("[data-check-list] [data-tool-row]")];
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("11 tests passed");
+  });
+});
+
+describe("failed run expansion", () => {
+  const run = (id: number, command: string, data: Record<string, unknown>) =>
+    event(id, "command.completed", { itemId: `c${id}`, title: command, data: { type: "commandExecution", command, ...data } });
+
+  it("opens a failed run on its failures, and keeps the rest one click away", () => {
+    mount([
+      run(1, "bun run test", { exitCode: 1, aggregatedOutput: "1 failed" }),
+      run(2, "git status", { exitCode: 0 }),
+      run(3, "cargo build", { exitCode: 0 }),
+    ]);
+    expect(buttonWith("needs the agent")).toBeDefined();
+    act(() => buttonWith("needs the agent")!.click());
+    const rows = [...host.querySelectorAll("[data-tool-row]")];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("bun run test");
+    expect(rows[0].textContent).not.toContain("git status");
+    act(() => host.querySelector<HTMLButtonElement>("[data-show-all-steps]")!.click());
+    expect([...host.querySelectorAll("[data-tool-row]")]).toHaveLength(3);
+    expect(host.querySelector("[data-show-all-steps]")).toBeNull();
+  });
+
+  it("still opens a healthy run whole", () => {
+    act(() => {
+      root.render(<AgentConversation session={{ ...session, status: "idle" }} events={[run(1, "bun run migrate", { exitCode: 0 }), run(2, "bun run seed", { exitCode: 0 })]} onResolve={() => {}} />);
+    });
+    act(() => buttonWith("Ran 2 commands")!.click());
+    expect([...host.querySelectorAll("[data-tool-row]")]).toHaveLength(2);
+    expect(host.querySelector("[data-show-all-steps]")).toBeNull();
+  });
+});
+
+describe("turn liveness", () => {
+  const started = () => event(1, "command.started", {
+    itemId: "c1", title: "bun run test", status: "inProgress",
+    data: { type: "commandExecution", command: "bun run test" },
+  });
+
+  it("keeps a live check running while the turn is active", () => {
+    mount([started()]);
+    expect(buttonWith("Working")).toBeDefined();
+    expect(host.textContent).toContain("Running");
+  });
+
+  it("stops claiming live work once the turn is over", () => {
+    act(() => {
+      root.render(<AgentConversation session={{ ...session, status: "idle" }} events={[started()]} onResolve={() => {}} />);
+    });
+    expect(buttonWith("Working")).toBeUndefined();
+    expect(host.textContent).not.toContain("Running");
+    // The item keeps the status the provider gave it; the presentation just
+    // stops claiming a turn that is no longer running.
+    expect(host.textContent).toContain("Pending");
+    expect(buttonWith("Ran 1 command")).toBeDefined();
   });
 });
 

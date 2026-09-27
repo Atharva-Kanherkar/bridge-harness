@@ -17,6 +17,7 @@ import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motio
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
+import { useShowThinking } from "../transcriptSettings";
 import { HarnessMark } from "./harnessMarks";
 import { useSmoothText } from "./smoothText";
 import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
@@ -166,10 +167,10 @@ function StatusGlyph({ live, failed, succeeded }: { live: boolean; failed: boole
 /* ── Tool-call presentation ─────────────────────────────────────────────── */
 
 // The row is achromatic on purpose: the tool glyph identifies the action, and
-// colour is left to the things that carry meaning — diffstats, exit codes and
-// failures. Reading the call apart lives in `conversation.ts`; all that is left
-// here is choosing an icon for the verb it reports. Brand marks (git, GitHub,
-// a connector) are identity, not decoration, and render in `currentColor`.
+// colour is left to the things that carry meaning — diffstats and failures.
+// Reading the call apart lives in `conversation.ts`; all that is left here is
+// choosing an icon for the verb it reports. Brand marks (git, GitHub, a
+// connector) are identity, not decoration, and render in `currentColor`.
 const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
   pencil: <Pencil size={12}/>,
   "file-plus": <FilePlus2 size={12}/>,
@@ -255,13 +256,6 @@ function formatThoughtDuration(ms: number): string {
   if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
   if (minutes === 0) return `${seconds}s`;
   return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-}
-
-/// `exit 0` / `exit 2`, wherever the provider actually reports one — so a
-/// command's outcome stops hiding inside a checkmark. Absent everywhere else:
-/// an unreported exit code is not the same fact as a zero one.
-function ExitChip({ code }: { code: number }) {
-  return <span className={cn("shrink-0 rounded-full border border-border px-1.5 py-px text-[11px]", code === 0 ? "text-success" : "text-destructive")}>exit {code}</span>;
 }
 
 /// A command the way a terminal shows one: a `❯` prompt line carrying what ran,
@@ -354,8 +348,13 @@ type CheckState = "running" | "passed" | "failed" | "pending";
 
 /// Where a check run stands. Failed is any of the three ways a run can say so:
 /// its status, a nonzero exit, or output that reports failures under a zero exit.
-function checkState(call: ReturnType<typeof toolCallDisplay>): CheckState {
-  if (call.status === "running") return "running";
+///
+/// A check cannot still be `running` after its turn ended. The item keeps the
+/// status the provider left it with, and that is a true fact about the wire,
+/// but the row must not keep claiming live work the model is no longer doing:
+/// it reads as `pending`, the state that claims nothing.
+function checkState(call: ReturnType<typeof toolCallDisplay>, turnActive: boolean): CheckState {
+  if (call.status === "running") return turnActive ? "running" : "pending";
   if (call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0) || call.check?.failures) return "failed";
   return call.status === "completed" ? "passed" : "pending";
 }
@@ -381,9 +380,12 @@ function CheckGlyph({ state }: { state: CheckState }) {
   </AnimatePresence>;
 }
 
-const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) {
+const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: ConversationItem; turnActive?: boolean }) {
   const call = toolCallDisplay(item);
-  const live = call.status === "running";
+  // A call can report itself running forever: the provider may never send its
+  // completion, or the turn may be stopped mid-call. Once the turn is over the
+  // row stops claiming to run, without rewriting what the wire said.
+  const live = turnActive && call.status === "running";
   const failed = call.status === "failed";
   const succeeded = call.status === "completed";
   const body = call.patch ? "patch" : call.subagent ? "subagent" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
@@ -392,7 +394,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
   // one keeps it collapsed.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const open = (toggled ?? !!call.patch) && !!body;
-  const check = call.check && call.command ? { ...call.check, state: checkState(call) } : undefined;
+  const check = call.check && call.command ? { ...call.check, state: checkState(call, turnActive) } : undefined;
   const label = check ? call.command! : `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
   const path = call.path && call.path !== call.target ? call.path : undefined;
   // The filename is already in the action label. Only its parent earns a
@@ -454,7 +456,6 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
             {call.verb === "edit" && call.additions !== undefined && (
               <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
             )}
-            {call.exitCode !== undefined && !check && <ExitChip code={call.exitCode}/>}
             {call.durationMs !== undefined && !live && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
             {check && <span className={cn("text-[11px] tracking-wide", CHECK_STATE[check.state].tone)}>{CHECK_STATE[check.state].word}</span>}
             {/* Only what needs a look earns a glyph: running, or failed. A tick
@@ -474,7 +475,16 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
       </div>
     </motion.div>
   );
-}, (previous, next) => sameItem(previous.item, next.item));
+}, (previous, next) => previous.turnActive === next.turnActive && sameItem(previous.item, next.item));
+
+/// Whether a call is one the reader is being asked to look at: the status the
+/// provider gave it, a nonzero exit, or a check whose output reports failures.
+/// The same predicate the collapsed run's marker uses, so the group and the
+/// failure-only view can never disagree about what failed.
+function failedCall(item: ConversationItem): boolean {
+  const call = toolCallDisplay(item);
+  return call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0) || !!call.check?.failures;
+}
 
 /// A run short enough to take in at a glance opens itself when it carries a
 /// patch. What the model wrote is the most important thing on the screen, and a
@@ -493,16 +503,21 @@ const SELF_OPENING_STEPS = 3;
 /// group names the step running right now, which is the one thing worth
 /// watching; finished, it is a single line. A click is what opens it, and that
 /// click sticks — through the rest of the run and past the moment it ends.
-const ActivityGroup = memo(function ActivityGroup({ items }: { items: ConversationItem[] }) {
+///
+/// A settled run that failed opens on its failures: the reader clicking
+/// "needs the agent" wants the broken step, not the ninety-nine that were
+/// fine. "Show all" reveals the whole timeline from there.
+const ActivityGroup = memo(function ActivityGroup({ items, turnActive }: { items: ConversationItem[]; turnActive: boolean }) {
   const tools = useMemo(() => items.filter(isToolItem), [items]);
-  // Live is a claim about the *work*, not about the transcript: a thought left
+  // Live is a claim about the *work*, not about the transcript. A thought left
   // streaming by a provider that never settles it must not keep a finished run
-  // spinning forever.
-  const live = tools.some(item => item.status === "inProgress" || item.status === "streaming");
-  const needsAttention = tools.some(item => {
-    const call = toolCallDisplay(item);
-    return call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0) || !!call.check?.failures;
-  });
+  // spinning forever, and neither must a tool call whose completion never
+  // arrived: the turn is the outer bound of both.
+  const live = turnActive && tools.some(item => item.status === "inProgress" || item.status === "streaming");
+  // A failed call is the agent's work, not the reader's. The marker names who
+  // has to act instead of raising a human-attention alarm over a failure the
+  // orchestrator exists to absorb.
+  const needsAgent = tools.some(failedCall);
   // The checks this run made, shown even while the group is folded: the latest
   // run of each distinct command, newest last, at most four. A model that runs
   // the suite ten times has one result worth reading, the last one.
@@ -519,7 +534,22 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
   const glance = tools.length <= SELF_OPENING_STEPS && tools.some(item => !!toolCallDisplay(item).patch);
   // `null` is "nobody has decided yet", which is not the same as closed.
   const [toggled, setToggled] = useState<boolean | null>(null);
+  // What the reader asked to see when they opened a failed run: the failures
+  // alone, until "Show all" says otherwise.
+  const [failuresOnly, setFailuresOnly] = useState(false);
   const expanded = toggled ?? glance;
+  const failedItems = useMemo(() => items.filter(item => isToolItem(item) && failedCall(item)), [items]);
+  // A live run is never failure-only: the reader opened it to watch the work.
+  const focusFailures = failuresOnly && expanded && !live && needsAgent;
+  const onToggle = () => {
+    if (expanded) {
+      setToggled(false);
+      setFailuresOnly(false);
+      return;
+    }
+    setToggled(true);
+    setFailuresOnly(!live && needsAgent);
+  };
   // Rows revealed together arrive one after another at the same 40ms cadence the
   // CSS entrance used, so an expanding group unfolds instead of appearing whole.
   const stagger = useMotionStagger();
@@ -554,12 +584,12 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
         className="group flex min-h-8 w-full min-w-0 items-center gap-2 text-left text-[13px] text-muted-foreground transition-colors hover:text-foreground"
         aria-expanded={expanded}
         title={summary}
-        onClick={() => setToggled(!expanded)}
+        onClick={onToggle}
       >
         {live && <PulseDot size={7}/>}
-        {!live && needsAttention && <AlertTriangle size={12} className="shrink-0 text-destructive" aria-hidden="true"/>}
+        {!live && needsAgent && <AlertTriangle size={12} className="shrink-0 text-destructive" aria-hidden="true"/>}
         <span className="shrink-0">{headline}</span>
-        {!live && needsAttention && <span className="shrink-0 text-destructive">· needs attention</span>}
+        {!live && needsAgent && <span className="shrink-0 text-destructive">· needs the agent</span>}
         {headline !== summary && <span className="min-w-0 truncate text-[12px] text-faint">{summary}</span>}
         <span className="sr-only">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
         <ChevronDown size={13} className={cn("shrink-0 text-faint transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
@@ -567,7 +597,7 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
       {/* Collapsed and still working: the step running right now, and nothing
           else. A reader watching a run wants the head of it, not its history. */}
       {checks.length > 0 && !expanded && <div data-check-list className="grid min-w-0 gap-px">
-        {checks.map(item => <ActionRow key={item.key} item={item}/>)}
+        {checks.map(item => <ActionRow key={item.key} item={item} turnActive={turnActive}/>)}
       </div>}
       {current && !current.check && !expanded && (
         <div className="flex min-h-7 min-w-0 items-center gap-2 px-1.5 text-[12px] text-muted-foreground">
@@ -584,11 +614,19 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
           variants={{ hidden: {}, shown: {} }}
           transition={stagger}
         >
-          {items.map(item => isToolItem(item)
-            ? <ActionRow key={item.key} item={item}/>
+          {(focusFailures ? failedItems : items).map(item => isToolItem(item)
+            ? <ActionRow key={item.key} item={item} turnActive={turnActive}/>
             : <div key={item.key} className="min-w-0 px-1.5">
                 {item.type === "plan" ? <PlanCard item={item}/> : <Reasoning item={item}/>}
               </div>)}
+          {focusFailures && failedItems.length < items.length && (
+            <button
+              type="button"
+              data-show-all-steps
+              className="min-h-8 rounded-md px-1.5 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+              onClick={() => setFailuresOnly(false)}
+            >Show all {stepCount} step{stepCount === 1 ? "" : "s"}</button>
+          )}
         </motion.div>
       </Disclosure>
     </div>
@@ -596,7 +634,7 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
   // The reducer rebuilds every item on every fold, so reference equality would
   // never hold and a live turn would re-render all hundred rows on every 50ms
   // flush. The signature says which rows a frame actually touched.
-}, (previous, next) => sameItems(previous.items, next.items));
+}, (previous, next) => previous.turnActive === next.turnActive && sameItems(previous.items, next.items));
 
 /// Variants an `ActionRow` inherits from the group that reveals it. Declared
 /// once so the stagger and the row agree on what "hidden" means.
@@ -681,6 +719,11 @@ function useStartupNarration({ sessionId, switchingToLabel, hasPendingWork, stre
 /// handed only an item. An item stamped with its own harness still wins.
 const TranscriptHarness = createContext<string | null | undefined>(undefined);
 
+/// Whether the reader wants the model's reasoning text drawn. Provided once at
+/// the conversation root, beside the harness, so every thinking row reads the
+/// same preference from the same subscription.
+const ShowThinking = createContext(true);
+
 /// The one "the agent is thinking" row: the harness mark and a pulsing word.
 /// The cold-start wait, a reply whose first token has not landed, and a
 /// streaming thought all draw this, so one statement has one look. No model
@@ -730,6 +773,12 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
   );
 }
 
+/// The statuses in which a session still has a turn in flight. A transcript
+/// asks "is the turn over?" to settle rows a provider never settled, and the
+/// session's own status is the fallback for surfaces that do not pass
+/// `working`; both answer the same question.
+const ACTIVE_SESSION_STATUSES = new Set(["starting", "working", "waiting", "checkpointing", "resuming", "warm"]);
+
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
 export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", trailing }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode }) {
@@ -776,7 +825,17 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     // walk cuts it at the seam. See `alignTurns`.
     return alignTurns(folded);
   }, [durableItems, events]);
+  // The reader's thinking preference, read ahead of every derived list so one
+  // subscription feeds every thought row through `ShowThinking`.
+  const [showThinking] = useShowThinking();
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
+  // A thought the reader has hidden leaves no row at all once it settles:
+  // drawing the empty wrapper would leave its 20px gap behind in the turn.
+  // Streaming thoughts stay, because their pulsing row is the "still going"
+  // statement the preference keeps.
+  const shownItems = showThinking
+    ? renderedItems
+    : renderedItems.filter(entry => entry.kind !== "item" || entry.item.type !== "reasoning" || isStreamingText(entry.item.status));
 
   // Every file name in the transcript resolves against this one set; without
   // an opener the transcript renders exactly as before.
@@ -787,6 +846,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   }, [workspaceFiles, onOpenFile]);
 
   const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
+  // The turn is the gate for every liveness claim below. `working` is the
+  // surface's answer when it has one; otherwise the session's own status is.
+  const turnActive = working ?? ACTIVE_SESSION_STATUSES.has(session?.status ?? "");
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.
@@ -853,7 +915,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     if (item.type === "message" && item.role === "assistant") latestReplyKey = item.key;
   }
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
-  return <TranscriptHarness.Provider value={session?.harness}><FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -877,8 +939,8 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           removals (a resolved optimistic bubble, the working shimmer) still
           get their exit. */}
       <AnimatePresence initial={false} key={session?.id ?? "preview"}>
-        {renderedItems.map(entry => entry.kind === "group"
-          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items}/></TranscriptRow>
+        {shownItems.map(entry => entry.kind === "group"
+          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} turnActive={turnActive}/></TranscriptRow>
           : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
           : <TranscriptRow
               key={entry.key}
@@ -887,7 +949,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} sessionId={session?.id} latest={entry.item.key === latestReplyKey} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
+              <ItemView item={entry.item} sessionId={session?.id} latest={entry.item.key === latestReplyKey} readOnly={readOnly} turnActive={turnActive} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -908,7 +970,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           would stop re-pinning the reader at the bottom. The chip itself is
           position:fixed, so its DOM position is invisible. */}
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></FileLinkContext.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></FileLinkContext.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1334,7 +1396,7 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-function ItemView({ item, sessionId, latest, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; latest?: boolean; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
+function ItemView({ item, sessionId, latest, readOnly, turnActive, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; latest?: boolean; readOnly?: boolean; turnActive: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
@@ -1357,7 +1419,7 @@ function ItemView({ item, sessionId, latest, readOnly, onResolve, onAnswerQuesti
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
-  return <ActivityGroup items={[item]}/>;
+  return <ActivityGroup items={[item]} turnActive={turnActive}/>;
 }
 
 /// A failure, stated plainly.
@@ -1511,13 +1573,22 @@ function RawEventGroup({ items }: { items: ConversationItem[] }) {
 /// Driven by `item.status` and nothing else: never by which agent produced the
 /// turn, never by a wire kind. Streaming is the `ThinkingRow` with the thought
 /// beneath it in faint ink; completed collapses to one borderless line and
-/// stays collapsed until the reader opens it.
+/// stays collapsed until the reader opens it. When the reader has turned
+/// thinking off (Appearance), streaming keeps the pulsing row and drops the
+/// text, and completed draws nothing at all: the preference hides a transcript,
+/// it does not change what a thought is.
 ///
 /// `docs/transcript-behavior-contract.md` is the statement of this; every other
 /// row that means "still going" either draws `ThinkingRow` or is `PulseDot`,
 /// which means something else.
 const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) {
+  const showThinking = useContext(ShowThinking);
   const streaming = isStreamingText(item.status);
+  if (!showThinking) {
+    return streaming
+      ? <div data-thinking="streaming" className="my-1 min-w-0"><ThinkingRow harness={item.harness}/></div>
+      : null;
+  }
   const text = item.text || stringList(item.data.summary);
   const durationMs = typeof item.data.durationMs === "number" ? item.data.durationMs : undefined;
   const lastLine = text.split("\n").map(line => line.trim()).filter(Boolean).at(-1);
