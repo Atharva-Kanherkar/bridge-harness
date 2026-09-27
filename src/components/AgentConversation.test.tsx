@@ -7,6 +7,7 @@ import * as conversation from "../conversation";
 import { bridgeApi } from "../api";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
+import { durableEntriesFrom, harnessStream } from "../transcript/golden";
 import type { AgentEvent, CompletionSummary, Session, SessionEntry } from "../types";
 
 const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" };
@@ -820,5 +821,77 @@ describe("AgentConversation", () => {
       onForkSession={onForkSession} onRewindEntry={onRewindEntry} leafEntryIds={["e-a"]} />));
     expect([...container.querySelectorAll("button")].every(button => button.getAttribute("aria-label") !== "Fork from here")).toBe(true);
     await act(async () => root.unmount());
+  });
+
+  it("keeps one reply node through the live-to-durable swap", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const stream = harnessStream("claude");
+    const entries = durableEntriesFrom(stream[0].sessionId, stream);
+    const reply = "Fixed the assertion in src/lib.rs.";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const replyNodes = () => [...host.querySelectorAll(".md")].filter(node => node.textContent?.includes(reply));
+    const chat = { ...session, id: stream[0].sessionId, harness: "claude", kind: "chat" as const };
+    try {
+      await act(async () => root.render(<AgentConversation session={chat} events={stream} forestEntries={[]} onResolve={() => undefined} />));
+      const [live] = replyNodes();
+      expect(live).toBeDefined();
+      await act(async () => root.render(<AgentConversation session={chat} events={stream} forestEntries={entries} activeLeafId={entries[entries.length - 1].id} onResolve={() => undefined} />));
+      const after = replyNodes();
+      expect(after).toHaveLength(1);
+      expect(after[0]).toBe(live);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("keeps one reply node when the swap runs on the unnamed text match", async () => {
+    // The swap above reduces a complete stream, so its terminal frame names the
+    // reply and the two projections meet on identity. A provider that only names
+    // a message when it finishes leaves the live window holding unnamed deltas
+    // and no terminal event, and the merge has to pair those with the stored
+    // reply by text instead. That pairing is a real match, so the row it hands
+    // the reader has to be the row they were already looking at: keying the
+    // survivor off the stored entry remounted it, and the exit/enter pair put
+    // the reply on screen twice all over again.
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const reply = "Here is what I found in the store.";
+    const live = [event(0, "message.delta", { itemId: null, role: "assistant", status: "streaming", text: reply })];
+    const forest: SessionEntry[] = [
+      { id: "e1", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2, kind: "user.message", payload: { text: "where does it live?", role: "user", status: "completed" }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+      { id: "e2", sessionId: "s", parentEntryId: "e1", sequence: 7, semanticSchemaVersion: 2, kind: "assistant.message", payload: { itemId: "acp-message-1", text: reply, role: "assistant", status: "completed" }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+    ];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const replyNodes = () => [...host.querySelectorAll(".md")].filter(node => node.textContent?.includes(reply));
+    try {
+      await act(async () => root.render(<AgentConversation session={session} events={live} forestEntries={[]} onResolve={() => undefined} />));
+      const [before] = replyNodes();
+      expect(before).toBeDefined();
+      await act(async () => root.render(<AgentConversation session={session} events={live} forestEntries={forest} activeLeafId="e2" onResolve={() => undefined} />));
+      const after = replyNodes();
+      expect(after).toHaveLength(1);
+      expect(after[0]).toBe(before);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+
+  it("streams prose at full ink", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<AgentConversation session={session} events={[event(0, "message.delta", { itemId: "m", role: "assistant", text: "Streaming now" })]} forestEntries={[]} onResolve={() => undefined} />));
+      expect(host.querySelector(".md")).not.toBeNull();
+      expect(host.querySelector(".md.dim")).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });

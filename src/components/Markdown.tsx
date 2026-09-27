@@ -446,9 +446,9 @@ function HtmlBlock({ html }: { html: string }) {
   );
 }
 
-export const Markdown = memo(function Markdown({ text, dim }: { text: string; dim?: boolean }) {
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
-    <div className={dim ? "md dim" : "md"}>
+    <div className="md">
       {splitBlocks(text).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;

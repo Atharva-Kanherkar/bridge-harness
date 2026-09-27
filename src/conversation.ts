@@ -103,35 +103,157 @@ export function undeliveredPending<T extends { sessionId: string; text: string }
   return next.length === pending.length ? (pending as T[]) : next;
 }
 
-function assistantShadowText(item: ConversationItem): string | undefined {
+/**
+ * The text two projections of one row would share, when they have no shared id.
+ *
+ * A row's `identity` is what tells the merge that a live frame and its persisted
+ * twin are one thing, and it is only as good as the ids the two sides carry. A
+ * tool call always names itself, and named prose does too, so their identities
+ * agree and the dedupe below never has to guess.
+ *
+ * A thought usually does not. `liveKey` returns no key for an unnamed reasoning
+ * frame (the reducer borrows the turn's), and the durable writer files the same
+ * frame under the forest entry's own id, so the live row reads
+ * `reasoning:<event id>` while its twin reads `entry:<entry id>`, which are two
+ * numbering spaces that can never agree. Both rows then survive the merge, and
+ * `coalesceThoughts` joins them into a single card whose body is the same
+ * paragraph twice: one thought, printed twice, in the one component the
+ * transcript has for thinking.
+ *
+ * So a row with no id to match on is matched on its text, the one thing the two
+ * projections cannot word differently. Unnamed assistant prose already needed
+ * this and already had it. A thought is the same problem with the same answer,
+ * and the commoner case, since nearly every harness sends reasoning with no item
+ * id. The match is on the whole trimmed body, so a row it drops is replaced by
+ * one that says exactly the same thing, and the durable row is the one that
+ * survives a reload anyway.
+ */
+function shadowRowText(item: ConversationItem): string | undefined {
+  if (item.type === "reasoning") return item.text.trim() || undefined;
   if (item.type !== "message" || item.role === "user") return undefined;
   return item.text.trim() || undefined;
+}
+
+/**
+ * How much of a streaming row has to be there before it counts as the opening of
+ * the thought the forest already holds.
+ *
+ * A delta is never persisted, so a thought the forest has caught up with leaves
+ * a live row holding only the opening of a body that is already stored whole. The
+ * two cannot be compared for equality until the stream finishes, and a forest
+ * poll is three seconds wide, which is long enough for the whole seam to be on
+ * screen twice. Comparing prefixes fixes it, but "the newest stored thought
+ * begins with what I have just streamed" only means something once there is
+ * enough text to mean anything: the first few words of a thought are the part
+ * two different thoughts are most likely to share.
+ */
+const STREAMED_PREFIX_FLOOR = 24;
+
+/**
+ * A row on one projection, remembered for the row it turned out to be the twin
+ * of on the other.
+ *
+ * `sequence` is where the row belongs in the merged order. `identity` is what
+ * the reader is already looking at, and a row that is replaced by its twin has
+ * to keep answering to it: `rowKey` derives from identity, and `AnimatePresence`
+ * treats a changed key as one row leaving and another arriving.
+ */
+interface Shadow {
+  sequence: number;
+  identity: string;
+}
+
+function shadowOf(item: ConversationItem): Shadow {
+  return { sequence: item.sequence, identity: item.identity ?? itemIdentity(item) };
+}
+
+/**
+ * The stored row, standing in for the live row the reader was already watching.
+ *
+ * Only the identity moves. The stored row stays the survivor on purpose, since
+ * it is the one the reader can branch from and the one that survives a reload,
+ * and it keeps its own sequence unless the caller's pairing already moved it.
+ */
+function adopt(item: ConversationItem, shadow: Shadow): ConversationItem {
+  if (item.identity === shadow.identity) return item;
+  return { ...item, identity: shadow.identity };
 }
 
 export function mergeConversationProjections(durableItems: ConversationItem[], liveItems: ConversationItem[]): ConversationItem[] {
   const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
   const liveAnchors = new Map(liveItems.map(item => [item.identity ?? itemIdentity(item), item.sequence]));
-  const liveShadows = new Map<string, number>();
+  /**
+   * The live row each shadowed text belongs to, and where it sat when it did.
+   *
+   * Held as one value because the pair is a pairing: the sequence says where the
+   * row belongs in the merged order, and the identity says what the reader is
+   * already looking at, which the survivor has to keep answering to. See
+   * `Shadow`.
+   */
+  const liveShadows = new Map<string, Shadow>();
   const durableTexts = new Set<string>();
   for (const live of liveItems) {
     if (live.status !== "streaming" && live.itemId) continue;
-    const text = assistantShadowText(live);
-    // Preserve find() semantics: the first matching item supplies the anchor,
+    const text = shadowRowText(live);
+    // Preserve find() semantics: the first matching item supplies the shadow,
     // which need not be the smallest sequence in an unsorted input.
-    if (text !== undefined && !liveShadows.has(text)) liveShadows.set(text, live.sequence);
+    if (text !== undefined && !liveShadows.has(text)) liveShadows.set(text, shadowOf(live));
   }
+  for (const item of durableItems) {
+    const text = shadowRowText(item);
+    if (text !== undefined) durableTexts.add(text);
+  }
+
+  /**
+   * The stored thought a live row is still streaming into, if one is.
+   *
+   * The thought being streamed is the newest one in the forest, so the newest
+   * stored thought is the only one that can still be arriving. Comparing a
+   * streaming row against all of them would let an old thought swallow a new one
+   * that merely opens the same way. Resolved before the stored rows are mapped,
+   * because the answer decides which identity the newest stored thought adopts.
+   */
+  let newestStoredThought: ConversationItem | undefined;
+  for (const item of durableItems) if (item.type === "reasoning") newestStoredThought = item;
+  const streamingInto = newestStoredThought && newestStoredThought.text.trim();
+  let arriving: Shadow | undefined;
+  for (const live of liveItems) {
+    if (durableIds.has(live.identity ?? itemIdentity(live))) continue;
+    if (live.status !== "streaming") continue;
+    const text = shadowRowText(live);
+    if (text === undefined || text.length < STREAMED_PREFIX_FLOOR) continue;
+    if (streamingInto?.startsWith(text)) arriving = shadowOf(live);
+  }
+
   const items = durableItems.map(item => {
     const identity = item.identity ?? itemIdentity(item);
-    const text = assistantShadowText(item);
-    if (text !== undefined) durableTexts.add(text);
-    const anchor = liveAnchors.get(identity) ?? (text === undefined ? undefined : liveShadows.get(text));
-    return anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
+    const text = shadowRowText(item);
+    const byIdentity = liveAnchors.get(identity);
+    // Paired on text, so the two ids never met. Handing the survivor the live
+    // row's identity is what keeps the reader on the row they were already
+    // reading: a row keyed off the stored entry instead is a different key, and
+    // `AnimatePresence` answers a changed key by playing the old row's exit while
+    // the new one enters, which is the doubled reply all over again.
+    // The newest stored thought is the one a live row can be streaming *into*,
+    // which is the pairing no text equality can make.
+    const shadow = byIdentity !== undefined ? undefined
+      : item === newestStoredThought
+        ? (arriving ?? (text === undefined ? undefined : liveShadows.get(text)))
+        : (text === undefined ? undefined : liveShadows.get(text));
+    const anchor = byIdentity ?? shadow?.sequence;
+    const anchored = anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
+    return shadow === undefined ? anchored : adopt(anchored, shadow);
   });
   for (const live of liveItems) {
     const identity = live.identity ?? itemIdentity(live);
     if (durableIds.has(identity)) continue;
-    const text = assistantShadowText(live);
+    const text = shadowRowText(live);
     if ((live.status === "streaming" || !live.itemId) && text !== undefined && durableTexts.has(text)) continue;
+    // Dropped in favour of the stored thought it is streaming into, which is the
+    // one holding the whole body. That row adopted this one's identity above, so
+    // the card the reader is watching mid-thought does not remount when the body
+    // it was streaming finally arrives.
+    if (arriving !== undefined && shadowOf(live).identity === arriving.identity) continue;
     items.push(live);
   }
   items.sort((a, b) => a.sequence - b.sequence);

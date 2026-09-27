@@ -389,6 +389,68 @@ describe("three layers", () => {
     expect(host.textContent).toContain("Thinking deeply about architecture");
     expect(host.textContent).not.toContain("Reasoning completed");
   });
+
+  it("draws a thought once when the forest catches up with it", () => {
+    // A thought carries no provider item id on most harnesses, so its live row
+    // and its stored twin are keyed from two id spaces that never agree. The
+    // merge has to recognise them as one row on the text itself, or the Thinking
+    // card prints the same paragraph twice.
+    const thought = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const entries = [
+      forestEntry("e1", null, 1, "user.message", { text: "fix the transcript", role: "user", status: "completed" }),
+      forestEntry("e2", "e1", 41, "reasoning.completed", { text: thought, status: "completed" }),
+    ];
+    const live = [
+      event(1, "message.completed", { itemId: null, role: "user", status: "completed", text: "fix the transcript" }),
+      event(41, "reasoning.completed", { itemId: null, status: "completed", text: thought }),
+    ];
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={entries} activeLeafId="e2" onResolve={() => {}} />);
+    });
+    // One card, settled, holding the thought once. It is the same component in
+    // both states: nothing here hides thinking, it stops repeating it.
+    const thinking = host.querySelector("[data-thinking]");
+    expect(host.querySelectorAll("[data-thinking]")).toHaveLength(1);
+    expect(thinking?.getAttribute("data-thinking")).toBe("completed");
+    expect(thinking?.querySelector("summary")?.textContent).toContain("Thought for a moment");
+    // Once as the collapsed summary's preview, once in the body it opens to.
+    expect(thinking?.querySelector(".md")?.textContent?.split(thought).length ?? 0).toBe(2);
+  });
+
+  it("keeps one thought card on screen when the body it streamed arrives", () => {
+    // A thought's live row and its stored twin are paired on text, so their ids
+    // never met. Dropping the doubled row is only half of it. The survivor also
+    // has to be keyed as the row already on screen, or the card the reader was
+    // watching mid-thought plays its exit while the settled one enters and both
+    // are drawn at once, which is the same double this branch set out to remove.
+    //
+    // The DOM node itself cannot survive the swap, and is not meant to: the
+    // streaming state is a card and the settled state a collapsed `details`, one
+    // component with two shapes. What must not happen is both at once.
+    const opened = "Confirmed: while a turn is live, messages get misc";
+    const whole = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const live = [
+      event(1, "message.completed", { itemId: null, role: "user", status: "completed", text: "fix the transcript" }),
+      event(0, "reasoning.started", { itemId: null, status: "streaming", text: opened }),
+    ];
+    const entries = [
+      forestEntry("e1", null, 1, "user.message", { text: "fix the transcript", role: "user", status: "completed" }),
+      forestEntry("e2", "e1", 41, "reasoning.completed", { text: whole, status: "completed" }),
+    ];
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={[]} onResolve={() => {}} />);
+    });
+    const streaming = host.querySelector("[data-thinking]");
+    expect(streaming?.getAttribute("data-thinking")).toBe("streaming");
+    expect(streaming?.textContent).toContain(opened);
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={entries} activeLeafId="e2" onResolve={() => {}} />);
+    });
+    const cards = [...host.querySelectorAll("[data-thinking]")];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].getAttribute("data-thinking")).toBe("completed");
+    expect(cards[0].textContent).toContain(whole);
+  });
 });
 
 describe("run trailer", () => {
