@@ -933,10 +933,6 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 .md th { background: var(--color-muted); font-weight: 600; }
 
-.md.dim {
-  opacity: 0.7;
-}
-
 /* ── Code ───────────────────────────────────────────────────────────────── */
 
 .code-block {

@@ -18,6 +18,7 @@ import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
+import { useSmoothText } from "./smoothText";
 import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
 import { CHECK_LABEL } from "../transcript/checks";
 
@@ -1264,6 +1265,10 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
   </div>;
 }
 
+function StreamedProse({ text, streaming }: { text: string; streaming: boolean }) {
+  return <Markdown text={useSmoothText(text, streaming)} />;
+}
+
 /// Prose, from either side of the conversation.
 ///
 /// Memoized on the row's own signature rather than on object identity: a live
@@ -1298,7 +1303,7 @@ const MessageRow = memo(function MessageRow({ item, sessionId, latest, onRemembe
     {subagentSource(item) && <div className="mb-1"><SubagentChip item={item}/></div>}
     {/* A reply whose first token has not landed is the same statement a
         streaming thought makes, so it draws the same row. */}
-    {isStreamingText(item.status) && !item.text.trim() ? <ThinkingRow harness={item.harness}/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
+    {isStreamingText(item.status) && !item.text.trim() ? <ThinkingRow harness={item.harness}/> : <StreamedProse text={item.text} streaming={item.status === "streaming"} />}
     {/* The latest reply keeps its bar in flow and visible. Older replies float
         theirs into the gap below on hover, so a hidden bar costs no height. */}
     {actions && <div

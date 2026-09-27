@@ -847,4 +847,17 @@ describe("AgentConversation", () => {
     }
   });
 
+
+  it("streams prose at full ink", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<AgentConversation session={session} events={[event(0, "message.delta", { itemId: "m", role: "assistant", text: "Streaming now" })]} forestEntries={[]} onResolve={() => undefined} />));
+      expect(host.querySelector(".md")).not.toBeNull();
+      expect(host.querySelector(".md.dim")).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });
