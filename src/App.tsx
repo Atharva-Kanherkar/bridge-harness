@@ -27,7 +27,7 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -39,6 +39,8 @@ import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
+import { GitplaceScreen } from "./components/GitplaceScreen";
+import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
@@ -942,6 +944,23 @@ function AppContent() {
   /** Jump-to-diff from a review comment: open the editor at the commented
    * file/line. When the PR head branch is not what this workspace has checked
    * out, the file still opens (read it, don't edit it) with a hint saying so. */
+  /** Gitplace has no chat of its own: open the newest chat in the comment's
+   * workspace and jump there, or start one when the workspace has none. */
+  function jumpFromGitplace(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
+    const chat = topSessions
+      .filter(candidate => candidate.workspaceId === workspaceId)
+      .sort((a, b) => Date.parse(b.startedAt ?? "") - Date.parse(a.startedAt ?? ""))[0];
+    setPendingGitplaceJump({ workspaceId, path, line, headBranch });
+    if (chat) {
+      openSession(chat.id);
+      return;
+    }
+    // No chat yet: open a draft there. The jump waits for the first message
+    // to create the chat, then opens the file in it.
+    void startChatInWorkspace(workspaceId);
+    setGithubJumpHint(`Send a first message and ${path} opens in this chat.`);
+  }
+
   function jumpToReviewComment(path: string, line: number | undefined, headBranch: string) {
     openFileInDock(path, line);
     setGithubJumpHint(jumpFallbackHint(workspace?.branch ?? null, headBranch) ?? undefined);
@@ -998,6 +1017,18 @@ function AppContent() {
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  // A review-comment jump from Gitplace: the file lives in a worktree, so the
+  // jump waits until a chat in that workspace is the one on screen, through a
+  // draft's first message if it has to. Declared after the workspace-change
+  // reset of the code reveal, so it runs after it.
+  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<GitplaceJump>();
+  useEffect(() => {
+    if (!pendingGitplaceJump) return;
+    const step = gitplaceJumpStep(pendingGitplaceJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
+    if (step === "wait") return;
+    if (step === "jump") jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
+    setPendingGitplaceJump(undefined);
+  }, [pendingGitplaceJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
@@ -2629,7 +2660,7 @@ function AppContent() {
     onSkip={() => finishAgentOnboarding()}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
+  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2671,6 +2702,7 @@ function AppContent() {
       memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
+      gitplaceActive={view === "gitplace"}
       agentFleetActive={view === "agent-fleet"}
       missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
@@ -2686,6 +2718,7 @@ function AppContent() {
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
       onOpenUsage={() => setView("usage")}
+      onOpenGitplace={() => setView("gitplace")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       onArchiveChat={archiveChat}
@@ -2757,7 +2790,12 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+        workspaces={state.workspaces}
+        projects={state.projects}
+        onJumpToFile={jumpFromGitplace}
+        onAddProject={() => setNewProjectOpen(true)}
+      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
@@ -2772,7 +2810,7 @@ function AppContent() {
         onStopWorker={stopWorker}
       /></Suspense> : session ? <>
         <SessionToolbar
-          title={session.title || session.label}
+          title={chatName(session)}
           projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
           leading={sidebarNav}
@@ -2937,8 +2975,10 @@ function AppContent() {
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
                 />
+                {/* Inside the transcript box, so prose fades into the composer's
+                    edge instead of being cut hard at it. */}
+                <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-background to-transparent" />
               </div>
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
               <div className="relative z-10 flex-none safe-bottom">
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
@@ -3217,6 +3257,9 @@ function AppContent() {
       onCancel={() => setGithubLinkChoice(undefined)}
     />}
 
+    {/* One stack, top-right and below the chrome row. Bottom-right used to put
+        connector and CI toasts over the composer's send button. */}
+    <div className="pointer-events-none fixed right-3 top-12 z-30 flex max-h-[calc(100dvh-4rem)] flex-col items-end gap-2 overflow-hidden sm:right-[18px]">
     <AttentionToasts
       toasts={attentionToasts}
       onOpen={toast => {
@@ -3240,6 +3283,7 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
+    </div>
     {availableUpdate && (
       <UpdateToast
         update={availableUpdate}

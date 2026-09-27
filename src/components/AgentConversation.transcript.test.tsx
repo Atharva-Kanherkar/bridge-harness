@@ -170,8 +170,9 @@ describe("inline diffs", () => {
 describe("command rows", () => {
   const command = (data: Record<string, unknown>, overrides: Partial<AgentEvent> = {}) =>
     event(1, "command.completed", {
-      title: "bun run test",
-      data: { type: "commandExecution", command: "bun run test", aggregatedOutput: "92 pass\n0 fail", ...data },
+      // A plain shell command: build, test and lint runs draw as check rows.
+      title: "bun run migrate",
+      data: { type: "commandExecution", command: "bun run migrate", aggregatedOutput: "92 rows\n0 skipped", ...data },
       ...overrides,
     });
 
@@ -192,7 +193,7 @@ describe("command rows", () => {
     const chip = exitChip("exit 2");
     expect(chip).toBeDefined();
     expect(chip?.className).toContain("text-destructive");
-    expect(buttonWith("Activity needs attention")).toBeDefined();
+    expect(buttonWith("needs attention")).toBeDefined();
   });
 
   it("renders no chip at all when the provider reports no exit code", async () => {
@@ -202,9 +203,9 @@ describe("command rows", () => {
 
   it("expands into a terminal block with a prompt line and dimmed output", async () => {
     await openGroup([command({ exitCode: 0 })]);
-    act(() => buttonWith("Ran bun run test")!.click());
+    act(() => buttonWith("Ran bun run migrate")!.click());
     expect(host.textContent).toContain("❯");
-    expect(host.textContent).toContain("92 pass");
+    expect(host.textContent).toContain("92 rows");
   });
 });
 
@@ -258,8 +259,10 @@ describe("three layers", () => {
     expect([...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran 2 commands"))).toHaveLength(1);
     act(() => buttonWith("Ran 2 commands")!.click());
     const text = host.textContent ?? "";
-    expect(text.indexOf("Ran bun test")).toBeLessThan(text.indexOf("Next step"));
-    expect(text.indexOf("Next step")).toBeLessThan(text.indexOf("Ran bun run check"));
+    // Checks are labelled by the command as typed; the order is what matters.
+    const expanded = host.querySelector("[data-activity-group] > div:last-child")!.textContent ?? "";
+    expect(expanded.indexOf("bun test")).toBeLessThan(expanded.indexOf("Next step"));
+    expect(expanded.indexOf("Next step")).toBeLessThan(expanded.indexOf("bun run check"));
   });
 
   it("preserves multiple distinct plan items without dropping", () => {
@@ -402,6 +405,138 @@ describe("run trailer", () => {
     mount([parallelCommand(1, "2026-01-01T00:00:00.000Z"), parallelCommand(2, "2026-01-01T00:00:00.000Z")]);
     expect(host.textContent).toContain("Worked for 10s");
     expect(host.textContent).not.toContain("20s");
+  });
+});
+
+describe("activity timeline", () => {
+  it("draws one borderless Worked for header over the run", () => {
+    mount([event(1, "command.completed", {
+      title: "git status",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      data: { type: "commandExecution", command: "git status", durationMs: 4000, exitCode: 0 },
+    })]);
+    const group = host.querySelector("[data-activity-group]")!;
+    expect(group.className).not.toMatch(/\bborder\b/);
+    expect(buttonWith("Worked for 4s")).toBeDefined();
+    expect(host.textContent).not.toContain("Activity");
+  });
+
+  it("wears the git mark on git work and a connector logo on a known MCP server", () => {
+    mount([
+      event(1, "command.completed", { itemId: "g", title: "git diff", data: { type: "commandExecution", command: "git diff", exitCode: 0 } }),
+      event(2, "tool.completed", { itemId: "n", title: "search", data: { name: "mcp__notion__search" } }),
+      event(3, "tool.completed", { itemId: "x", title: "lookup", data: { name: "mcp__acme__lookup" } }),
+    ]);
+    act(() => host.querySelector<HTMLButtonElement>("[data-activity-group] > button")!.click());
+    const rows = [...host.querySelectorAll("[data-tool-row]")];
+    expect(rows).toHaveLength(3);
+    // Stroke-drawn git mark, the Notion path, and the lucide wrench fallback.
+    expect(rows[0].querySelector('svg[stroke="currentColor"]')).not.toBeNull();
+    expect(rows[1].textContent).toContain("Used notion");
+    expect(rows[1].querySelector("svg path[fill='currentColor']")).not.toBeNull();
+    expect(rows[2].querySelector(".lucide-wrench")).not.toBeNull();
+  });
+});
+
+describe("check rows", () => {
+  const run = (id: number, command: string, data: Record<string, unknown>, overrides: Partial<AgentEvent> = {}) =>
+    event(id, "command.completed", { itemId: `c${id}`, title: command, data: { type: "commandExecution", command, ...data }, ...overrides });
+
+  it("lists a run's checks under the folded header, like the Verifying card", () => {
+    mount([
+      run(1, "rg TokenStore src", { exitCode: 0 }),
+      run(2, "bun run test", { exitCode: 0, durationMs: 41000, aggregatedOutput: "Tests  2677 passed (2677)" }),
+      run(3, "bun run build", { exitCode: 0, aggregatedOutput: "✓ built in 6.76s" }),
+    ]);
+    const list = host.querySelector("[data-check-list]")!;
+    expect(list).not.toBeNull();
+    const rows = [...list.querySelectorAll("[data-tool-row]")];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain("bun run test");
+    expect(rows[0].textContent).toContain("Test");
+    expect(rows[0].textContent).toContain("2677 tests passed");
+    expect(rows[0].textContent).toContain("Passed");
+    expect(rows[0].querySelector(".text-success")).not.toBeNull();
+    expect(rows[1].textContent).toContain("built in 6.76s");
+    // The exploratory search is work, not a result: it stays folded away.
+    expect(list.textContent).not.toContain("rg TokenStore");
+  });
+
+  it("marks a check failed on a nonzero exit or reported failures, and running while live", () => {
+    mount([
+      run(1, "cargo test", { exitCode: 0, aggregatedOutput: "test result: FAILED. 214 passed; 2 failed; 0 ignored" }),
+      run(2, "bun run build", {}, { kind: asWireKind("command.started"), status: "inProgress" }),
+    ]);
+    const rows = [...host.querySelectorAll("[data-check-list] [data-tool-row]")];
+    expect(rows[0].textContent).toContain("Failed");
+    expect(rows[0].textContent).toContain("2 failed · 214 passed");
+    expect(rows[1].textContent).toContain("Running");
+    expect(rows[1].querySelector(".animate-spin.text-warning")).not.toBeNull();
+  });
+
+  it("fails a zero-exit run whose test file failed to collect, and flags the group", () => {
+    // `vitest run | cat` without pipefail exits 0 while a suite failed.
+    mount([run(1, "bunx vitest run | cat", { exitCode: 0, aggregatedOutput: " Test Files  1 failed | 1 passed (2)\n      Tests  1 passed (1)" })]);
+    const row = host.querySelector("[data-check-list] [data-tool-row]")!;
+    expect(row.textContent).toContain("Failed");
+    expect(row.textContent).toContain("1 file failed · 1 passed");
+    expect(row.textContent).not.toContain("Passed");
+    expect(buttonWith("needs attention")).toBeDefined();
+  });
+
+  it("keeps only the latest run of a repeated check", () => {
+    mount([
+      run(1, "bun run test", { exitCode: 1, aggregatedOutput: "Tests  1 failed | 10 passed (11)" }),
+      run(2, "bun run test", { exitCode: 0, aggregatedOutput: "Tests  11 passed (11)" }),
+    ]);
+    const rows = [...host.querySelectorAll("[data-check-list] [data-tool-row]")];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("11 tests passed");
+  });
+});
+
+describe("forest bookkeeping", () => {
+  const renderForest = (entries: SessionEntry[]) => act(() => {
+    root.render(<AgentConversation session={session} events={[]} forestEntries={entries} activeLeafId={entries.at(-1)?.id} onResolve={() => {}} />);
+  });
+
+  it("draws checkpoints and branch summaries as faint lines, not cards", () => {
+    renderForest([
+      forestEntry("u", null, 1, "user.message", { text: "Go", itemId: "u" }),
+      forestEntry("c", "u", 2, "checkpoint", { summary: "Workers own isolated paths" }),
+      forestEntry("b", "c", 3, "branch.summary", { summary: "Explored the alternate\nKept the store" }),
+    ]);
+    const lines = [...host.querySelectorAll("[data-forest-line]")];
+    expect(lines).toHaveLength(2);
+    expect(host.textContent).toContain("Workers own isolated paths");
+    for (const line of lines) expect(line.className).not.toContain("rounded-xl");
+    expect(host.textContent).toContain("Explored the alternate");
+  });
+
+  it("opens a long single-paragraph summary, and shows the whole text, first paragraph included", () => {
+    const long = "Workers own isolated paths and every write is scoped to the worktree the policy engine granted, so a stray edit can never land in the parent checkout.";
+    renderForest([
+      forestEntry("u", null, 1, "user.message", { text: "Go", itemId: "u" }),
+      forestEntry("c", "u", 2, "checkpoint", { summary: long }),
+      forestEntry("b", "c", 3, "branch.summary", { summary: `${long}\nKept the store` }),
+    ]);
+    const details = [...host.querySelectorAll<HTMLDetailsElement>("details[data-forest-line]")];
+    expect(details).toHaveLength(2);
+    const bodies = details.map(detail => detail.querySelector("[data-forest-detail]")!.textContent);
+    expect(bodies[0]).toBe(long);
+    expect(bodies[1]).toBe(`${long}\nKept the store`);
+    // The body is not a truncating element.
+    for (const detail of details) expect(detail.querySelector("[data-forest-detail]")!.className).not.toContain("truncate");
+  });
+
+  it("shows no card for a session-start branch summary", () => {
+    renderForest([
+      forestEntry("root", null, 1, "branch.summary", { summary: "Session started" }),
+      forestEntry("u", "root", 2, "user.message", { text: "Hello there", itemId: "u" }),
+    ]);
+    expect(host.textContent).toContain("Hello there");
+    expect(host.textContent).not.toContain("Session started");
+    expect(host.textContent).not.toContain("Branch summary");
   });
 });
 

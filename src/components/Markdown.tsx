@@ -232,10 +232,10 @@ function useDarkTheme(): boolean {
 }
 
 /** Shared copy-to-clipboard state for rich blocks. */
-export function useCopy(text: string) {
+export function useCopy(text: string, resetMs = 1400) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
+    void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), resetMs); });
   };
   return { copied, copy };
 }

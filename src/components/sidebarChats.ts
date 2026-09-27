@@ -152,8 +152,15 @@ export function chatBucket(chat: Session, liveAgents?: LiveAgents): StatusBucket
   return own === "idle" && (liveAgents?.get(chat.id)?.length ?? 0) > 0 ? "active" : own;
 }
 
-export function chatName(chat: Session): string {
-  return chat.title || chat.label;
+/** Labels a session is born with (mirrors `session_titles::PLACEHOLDER_TITLES`).
+ *  Until the backend titles a chat from its first message, these say nothing
+ *  about it, and three rows reading "Orchestrator" tell the user less than one
+ *  reading "New chat". */
+const PLACEHOLDER_LABELS = new Set(["orchestrator", "bridge orchestrator", "new chat"]);
+
+export function chatName(chat: Pick<Session, "title" | "label">): string {
+  if (chat.title) return chat.title;
+  return PLACEHOLDER_LABELS.has(chat.label.trim().toLowerCase()) ? "New chat" : chat.label;
 }
 
 /** Session carries no last-activity field, so the day a chat sorts under is when

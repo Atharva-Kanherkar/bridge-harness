@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { chatBucket, liveAgentSessions, BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
+import { chatBucket, chatName, liveAgentSessions, BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -334,5 +334,16 @@ describe("live agents under an idle chat", () => {
 
   it("clears as soon as the last agent settles", () => {
     expect(liveAgentSessions([root, worker("w1", "root", "completed" as SessionStatus)]).size).toBe(0);
+  });
+});
+
+describe("chatName", () => {
+  it("names an untitled chat still wearing a placeholder label New chat", () => {
+    for (const label of ["Orchestrator", "Bridge orchestrator", "New chat"]) expect(chatName({ title: null, label })).toBe("New chat");
+  });
+
+  it("keeps a real title, and a real label", () => {
+    expect(chatName({ title: "Fix auth", label: "Orchestrator" })).toBe("Fix auth");
+    expect(chatName({ title: null, label: "Release notes" })).toBe("Release notes");
   });
 });

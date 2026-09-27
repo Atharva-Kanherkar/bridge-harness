@@ -609,24 +609,6 @@ html[data-native-fullscreen] .u-traffic-inset {
    row that just arrived" — which is the one thing a transcript needs. The curve
    and the cadence are unchanged; `BRIDGE_EASE` and `MOTION_STAGGER` carry them. */
 
-/* Sweeping highlight while the agent is working but nothing has streamed yet. */
-@keyframes thinking-shimmer {
-  0% { background-position: -200% 0; opacity: 0.35; }
-  50% { opacity: 0.7; }
-  100% { background-position: 200% 0; opacity: 0.35; }
-}
-
-.thinking-shimmer {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--color-foreground) 32%, transparent) 50%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  animation: thinking-shimmer 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-
 /* The startup mark: the harness's own glyph, breathing while Bridge waits on
    it. These are vendor marks, so they never rotate or deform — opacity is the
    only channel that moves. The breathe is the same 2s cadence the shimmer and
@@ -641,10 +623,22 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: harness-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
+/* The word beside the mark while the agent thinks. Opacity only, on the same
+   2s cadence, and it rests at full ink: the reduced-motion freeze at the bottom
+   of this file lands on the last keyframe, which must be the readable one. */
+@keyframes thinking-word {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.thinking-word {
+  animation: thinking-word 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 /* Text that shimmers while something is in flight. Now one caller: the startup
    narration row, which is session-level and says what Bridge is waiting on
    before any item exists. The transcript's own thinking mark is
-   `.thinking-shimmer` above, and it is the only animation an item-level row
+   `.thinking-word` above, and it is the only animation an item-level row
    uses to say "there is more of this coming" (see
    `docs/transcript-behavior-contract.md`). */
 .text-shimmer {
