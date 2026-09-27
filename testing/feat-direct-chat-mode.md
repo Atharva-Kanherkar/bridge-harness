@@ -1,7 +1,6 @@
-# feat-new-chat-session-mode: Test Contract
+# feat-direct-chat-mode: Test Contract
 
-Branch: `fix/worker-model-selection-worker-8cebe158-97aa-4f35-984b-8e20bd1390a4`
-(Bridge worker branch; the contract is named for the feature).
+Branch: `feat/direct-chat-mode`.
 
 ## Functional Behavior
 
@@ -31,7 +30,7 @@ Branch: `fix/worker-model-selection-worker-8cebe158-97aa-4f35-984b-8e20bd1390a4`
   with `kind='direct'`, the workspace id, the workspace (or worktree) `cwd`,
   `depth=0`, label `Chat`.
 - An isolated Direct chat records an owned worktree with the registry's
-  isolated-chat kind, which tracks checkout ownership independently of the
+  `direct` kind, which tracks checkout ownership independently of the
   session's prompt kind.
 - Because every start path (`start_chat`, `resume_for_send`) reads the stored
   `kind`, a direct workspace chat compiles the `DirectSession` prompt target on
