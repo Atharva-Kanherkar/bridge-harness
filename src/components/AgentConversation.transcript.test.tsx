@@ -435,6 +435,34 @@ describe("activity timeline", () => {
   });
 });
 
+describe("forest bookkeeping", () => {
+  const renderForest = (entries: SessionEntry[]) => act(() => {
+    root.render(<AgentConversation session={session} events={[]} forestEntries={entries} activeLeafId={entries.at(-1)?.id} onResolve={() => {}} />);
+  });
+
+  it("draws checkpoints and branch summaries as faint lines, not cards", () => {
+    renderForest([
+      forestEntry("u", null, 1, "user.message", { text: "Go", itemId: "u" }),
+      forestEntry("c", "u", 2, "checkpoint.created", { title: "Checkpoint saved", summary: "Workers own isolated paths" }),
+      forestEntry("b", "c", 3, "branch.summary", { summary: "Explored the alternate\nKept the store" }),
+    ]);
+    const lines = [...host.querySelectorAll("[data-forest-line]")];
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    for (const line of lines) expect(line.className).not.toContain("rounded-xl");
+    expect(host.textContent).toContain("Explored the alternate");
+  });
+
+  it("shows no card for a session-start branch summary", () => {
+    renderForest([
+      forestEntry("root", null, 1, "branch.summary", { summary: "Session started" }),
+      forestEntry("u", "root", 2, "user.message", { text: "Hello there", itemId: "u" }),
+    ]);
+    expect(host.textContent).toContain("Hello there");
+    expect(host.textContent).not.toContain("Session started");
+    expect(host.textContent).not.toContain("Branch summary");
+  });
+});
+
 describe("harness subagents (issue #667)", () => {
   it.each([
     ["collabAgentToolCall", false], ["collabAgentToolCall", true],

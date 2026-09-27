@@ -825,9 +825,20 @@ describe("the dock in the session view", () => {
   it("offers Ask aside on a transcript selection and quotes the excerpt", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    const transcriptRow = container.querySelector<HTMLElement>("[id^='forest-entry-']");
-    const selectable = transcriptRow
-      ?? [...container.querySelectorAll("h1, h2, p")].find(node => (node.textContent ?? "").trim().length > 3);
+    // Earlier cases leave this a new chat, whose transcript is only its
+    // greeting now that the session-start marker draws no card. Send one
+    // message so there is transcript prose to select.
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Explain the session supervisor");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    const transcript = container.querySelector<HTMLElement>("[data-conversation-content]");
+    const selectable = transcript?.querySelector<HTMLElement>("[id^='forest-entry-']")
+      ?? [...(transcript?.querySelectorAll<HTMLElement>("[class*='max-w-[85%]'], p") ?? [])].find(node => (node.textContent ?? "").trim().length > 3);
     expect(selectable).toBeTruthy();
     const range = document.createRange();
     range.selectNodeContents(selectable!);

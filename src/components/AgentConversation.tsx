@@ -703,7 +703,8 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     // its action or output before giving it a row, so an early empty frame
     // cannot flash a generic tool group. Terminal results always remain.
     const folded = foldWorkerDelegations(items.filter(item => item.type !== "raw"
-      && !(item.type === "activity" && item.tool?.pendingIdentity)));
+      && !(item.type === "activity" && item.tool?.pendingIdentity)
+      && !isSessionStartMarker(item)));
     // Re-stamped last, on one list: the two projections each counted turns from
     // their own start, so mid-turn a run carries two indices and the grouping
     // walk cuts it at the seam. See `alignTurns`.
@@ -1276,7 +1277,11 @@ function ItemView({ item, sessionId, latest, workers, now, readOnly, onResolve, 
     ? <fieldset disabled className="m-0 min-w-0 border-0 p-0" aria-label="Historical interaction, read-only">{interaction}</fieldset>
     : interaction;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker}/>;
-  if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
+  if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") {
+    // Bookkeeping reads past as a faint line. Only a failure the reader can act
+    // on keeps the card, because it carries the retry.
+    return item.status === "failed" ? <ForestCard item={item} onRetryCompaction={onRetryCompaction}/> : <ForestLine item={item}/>;
+  }
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
@@ -1343,6 +1348,33 @@ function ModelChangedRow({ item }: { item: ConversationItem }) {
     <span className="shrink-0 normal-case tracking-normal">{from && to ? `${from} → ${to}` : item.title || "Model changed"}</span>
     <span className="h-px flex-1 bg-border" aria-hidden="true"/>
   </div>;
+}
+
+/// A root branch summary that only says the session began. The chat opening is
+/// already that statement; a card saying so is noise before the first message.
+function isSessionStartMarker(item: ConversationItem): boolean {
+  return item.type === "branch-summary" && item.text.trim() === "Session started";
+}
+
+/// A checkpoint, compaction or branch summary as one faint centred line in the
+/// same register as a model change. The detail is a click away, not a card.
+function ForestLine({ item }: { item: ConversationItem }) {
+  const label = item.title || (item.type === "checkpoint" || item.type === "compaction" ? "Checkpoint saved" : item.type === "context-compacted" ? "Context compacted" : "Branch summary");
+  const lines = item.text.split("\n").map(line => line.trim()).filter(Boolean);
+  const preview = lines[0];
+  // What opening the line adds: everything past the preview, never a repeat.
+  const rest = lines.slice(1).join("\n");
+  const line = <>
+    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
+    <span className="min-w-0 max-w-[80%] shrink truncate">{label}{preview ? ` · ${preview}` : ""}</span>
+    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
+  </>;
+  const row = "flex min-w-0 items-center gap-2 text-[11px] text-faint";
+  if (!rest) return <div data-forest-line className={cn("my-1", row)}>{line}</div>;
+  return <details data-forest-line className="group my-1 min-w-0 [&_summary::-webkit-details-marker]:hidden">
+    <summary className={cn(row, "cursor-pointer transition-colors hover:text-muted-foreground")}>{line}</summary>
+    <p className="mx-auto mt-1.5 max-w-[80%] whitespace-pre-wrap text-center text-[12px] leading-relaxed text-muted-foreground">{rest}</p>
+  </details>;
 }
 
 function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRetryCompaction?: () => Promise<void> }) {
