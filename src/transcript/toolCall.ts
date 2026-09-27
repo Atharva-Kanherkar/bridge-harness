@@ -18,6 +18,7 @@
  */
 
 import type { ToolSurface } from "./events";
+import { readCheck, type CheckFacet } from "./checks";
 
 export type ToolVerb = "edit" | "read" | "run" | "search" | "tool";
 
@@ -41,6 +42,8 @@ export interface ToolCallDisplay {
   command?: string;
   /** The MCP server a `mcp` or `github` glyph call went through, as named. */
   server?: string;
+  /** A build, test, typecheck or lint run, drawn as a check row. */
+  check?: CheckFacet;
   additions?: number;
   deletions?: number;
   durationMs?: number;
@@ -390,6 +393,7 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     ...common,
     ...named,
     glyph: (command ? commandGlyph(command) : undefined) ?? named.glyph,
+    check: named.verb === "run" ? readCheck(command, output) : undefined,
     path: named.path ?? path,
     command,
     // Keep the call in the reduction, but do not narrate an anonymous start.

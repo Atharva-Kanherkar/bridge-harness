@@ -463,11 +463,15 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-11b", "session-1", 13, "tool.completed", { status: "completed", title: "Read tokenStore.ts", data: { type: "readFile", path: "src/auth/tokenStore.ts" } }, "entry-10b"),
   forestEntry("entry-12b", "session-1", 14, "file_change.completed", { status: "completed", title: "tokenStore.ts", data: { path: "src/auth/tokenStore.ts", additions: 9, deletions: 4, durationMs: 400, patch: MOCK_PATCH } }, "entry-11b"),
   forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
+  // Checks, so the dev mock shows the Verifying-style rows a build or test run
+  // draws: a passing cargo suite and a vite build.
+  forestEntry("entry-13c", "session-1", 16, "command.completed", { status: "completed", title: "cargo test -p bridge-core", data: { type: "commandExecution", command: "cargo test -p bridge-core", exitCode: 0, durationMs: 48200, aggregatedOutput: "running 216 tests\n...\ntest result: ok. 216 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.10s" } }, "entry-13b"),
+  forestEntry("entry-13d", "session-1", 17, "command.completed", { status: "completed", title: "bun run build", data: { type: "commandExecution", command: "bun run build", exitCode: 0, durationMs: 7100, aggregatedOutput: "vite v5.4.0 building for production...\n✓ 2143 modules transformed.\n✓ built in 6.76s" } }, "entry-13c"),
   // The harness's own boundary, beside Bridge's `compaction` above. Two
   // different facts on purpose: this one is the provider's context actually
   // shrinking, that one is Bridge saving a summary for a later cold start.
-  forestEntry("entry-14b", "session-1", 16, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "codex", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13b"),
-  forestEntry("entry-raw", "session-1", 17, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
+  forestEntry("entry-14b", "session-1", 18, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "codex", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13d"),
+  forestEntry("entry-raw", "session-1", 19, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a

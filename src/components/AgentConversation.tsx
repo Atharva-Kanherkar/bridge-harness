@@ -23,6 +23,7 @@ import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
 import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
+import { CHECK_LABEL } from "../transcript/checks";
 
 const GitHubMark = CONNECTOR_LOGOS.github;
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
@@ -205,13 +206,23 @@ function toolIcon(call: { glyph: ToolGlyph; server?: string }): React.ReactNode 
 /// names them by verb and count rather than by a step total alone.
 function summarize(items: ConversationItem[], live: boolean): string {
   const counts: Record<ToolVerb, number> = { edit: 0, read: 0, run: 0, search: 0, tool: 0 };
-  for (const item of items) if (isToolItem(item)) counts[toolCallDisplay(item).verb] += 1;
+  // A web search and a code search share a verb but not a sentence: `rg` in
+  // the repo is not "searching the web".
+  let web = 0;
+  for (const item of items) {
+    if (!isToolItem(item)) continue;
+    const call = toolCallDisplay(item);
+    counts[call.verb] += 1;
+    if (call.verb === "search" && call.glyph === "globe") web += 1;
+  }
+  const code = counts.search - web;
   const noun = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const parts: string[] = [];
   if (counts.run) parts.push(live ? `running ${noun(counts.run, "command", "commands")}` : `ran ${noun(counts.run, "command", "commands")}`);
   if (counts.read) parts.push(live ? `reading ${noun(counts.read, "file", "files")}` : `read ${noun(counts.read, "file", "files")}`);
   if (counts.edit) parts.push(live ? `editing ${noun(counts.edit, "file", "files")}` : `edited ${noun(counts.edit, "file", "files")}`);
-  if (counts.search) parts.push(live ? `searching the web` : `searched the web`);
+  if (code) parts.push(live ? "searching code" : "searched code");
+  if (web) parts.push(live ? "searching the web" : "searched the web");
   if (counts.tool) parts.push(live ? `using ${noun(counts.tool, "tool", "tools")}` : `used ${noun(counts.tool, "tool", "tools")}`);
   if (!parts.length) return live ? "Working…" : "Done";
   const text = parts.join(", ");
@@ -342,6 +353,37 @@ function SubagentChip({ item }: { item: ConversationItem }) {
   ><CornerDownRight size={10} aria-hidden="true" /><span className="sr-only">Subagent </span>{label}</span>;
 }
 
+type CheckState = "running" | "passed" | "failed" | "pending";
+
+/// Where a check run stands. Failed is any of the three ways a run can say so:
+/// its status, a nonzero exit, or output that reports failures under a zero exit.
+function checkState(call: ReturnType<typeof toolCallDisplay>): CheckState {
+  if (call.status === "running") return "running";
+  if (call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0) || call.check?.failures) return "failed";
+  return call.status === "completed" ? "passed" : "pending";
+}
+
+/// The same vocabulary the Verifying card uses for its checks: a tick, an X,
+/// a spinner in the waiting tone, or an open circle, and a word to match.
+const CHECK_STATE: Record<CheckState, { word: string; tone: string }> = {
+  running: { word: "Running", tone: "text-warning" },
+  passed: { word: "Passed", tone: "text-success" },
+  failed: { word: "Failed", tone: "text-destructive" },
+  pending: { word: "Pending", tone: "text-muted-foreground" },
+};
+
+function CheckGlyph({ state }: { state: CheckState }) {
+  const transition = useMotionTransition(MOTION_DURATION.tick);
+  return <AnimatePresence mode="wait" initial={false}>
+    <motion.span key={state} className="flex size-3 shrink-0 items-center justify-center" initial={{ opacity: 0, scale: 0.7 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.7 }} transition={transition} aria-hidden="true">
+      {state === "running" && <LoaderCircle size={12} className="animate-spin text-warning"/>}
+      {state === "passed" && <Check size={12} className="text-success"/>}
+      {state === "failed" && <X size={12} className="text-destructive"/>}
+      {state === "pending" && <Circle size={10} className="text-muted-foreground"/>}
+    </motion.span>
+  </AnimatePresence>;
+}
+
 const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) {
   const call = toolCallDisplay(item);
   const live = call.status === "running";
@@ -353,7 +395,8 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
   // one keeps it collapsed.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const open = (toggled ?? !!call.patch) && !!body;
-  const label = `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
+  const check = call.check && call.command ? { ...call.check, state: checkState(call) } : undefined;
+  const label = check ? call.command! : `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
   const path = call.path && call.path !== call.target ? call.path : undefined;
   // The filename is already in the action label. Only its parent earns a
   // second label; the link and tooltip retain the complete path.
@@ -381,8 +424,17 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
             title={label}
             onClick={() => body && setToggled(!open)}
           >
-            <span className="shrink-0 text-muted-foreground" aria-hidden="true">{toolIcon(call)}</span>
-            <span className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
+            {check ? <>
+              {/* A check reads like a Verifying row: state, the command as typed,
+                  what kind of check it is, and what the output said. */}
+              <CheckGlyph state={check.state}/>
+              <span data-check={check.kind} className="truncate font-mono text-[12px] text-foreground">{label}</span>
+              <span className="shrink-0 text-muted-foreground">{CHECK_LABEL[check.kind]}</span>
+              {check.summary && <span className="hidden truncate font-mono text-[11px] leading-5 text-faint sm:inline">{check.summary}</span>}
+            </> : <>
+              <span className="shrink-0 text-muted-foreground" aria-hidden="true">{toolIcon(call)}</span>
+              <span className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
+            </>}
             <SubagentChip item={item}/>
           </button>
           {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
@@ -405,11 +457,12 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
             {call.verb === "edit" && call.additions !== undefined && (
               <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
             )}
-            {call.exitCode !== undefined && <ExitChip code={call.exitCode}/>}
+            {call.exitCode !== undefined && !check && <ExitChip code={call.exitCode}/>}
             {call.durationMs !== undefined && !live && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
+            {check && <span className={cn("text-[11px] tracking-wide", CHECK_STATE[check.state].tone)}>{CHECK_STATE[check.state].word}</span>}
             {/* Only what needs a look earns a glyph: running, or failed. A tick
                 on every settled row was noise the eye had to skip. */}
-            {(live || failed) && <StatusGlyph live={live} failed={failed} succeeded={false}/>}
+            {!check && (live || failed) && <StatusGlyph live={live} failed={failed} succeeded={false}/>}
             {body && <ChevronRight size={12} className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true"/>}
           </button>
         </div>
@@ -451,8 +504,21 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
   const live = tools.some(item => item.status === "inProgress" || item.status === "streaming");
   const needsAttention = tools.some(item => {
     const call = toolCallDisplay(item);
-    return call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0);
+    return call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0) || !!call.check?.failures;
   });
+  // The checks this run made, shown even while the group is folded: the latest
+  // run of each distinct command, newest last, at most four. A model that runs
+  // the suite ten times has one result worth reading, the last one.
+  const checks = useMemo(() => {
+    const latest = new Map<string, ConversationItem>();
+    for (const item of tools) {
+      const call = toolCallDisplay(item);
+      if (!call.check || !call.command) continue;
+      latest.delete(call.command);
+      latest.set(call.command, item);
+    }
+    return [...latest.values()].slice(-4);
+  }, [tools]);
   const glance = tools.length <= SELF_OPENING_STEPS && tools.some(item => !!toolCallDisplay(item).patch);
   // `null` is "nobody has decided yet", which is not the same as closed.
   const [toggled, setToggled] = useState<boolean | null>(null);
@@ -503,7 +569,10 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
       </button>
       {/* Collapsed and still working: the step running right now, and nothing
           else. A reader watching a run wants the head of it, not its history. */}
-      {current && !expanded && (
+      {checks.length > 0 && !expanded && <div data-check-list className="grid min-w-0 gap-px">
+        {checks.map(item => <ActionRow key={item.key} item={item}/>)}
+      </div>}
+      {current && !current.check && !expanded && (
         <div className="flex min-h-7 min-w-0 items-center gap-2 px-1.5 text-[12px] text-muted-foreground">
           <span className="shrink-0" aria-hidden="true">{toolIcon(current)}</span>
           <span className="min-w-0 truncate">{current.doing}{current.target ? ` ${current.target}` : ""}</span>
