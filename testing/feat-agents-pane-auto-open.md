@@ -21,6 +21,7 @@ When an orchestrator starts an agent, the dock opens on the Agents pane with tha
 
 - [x] Renders the worker's forest entries and live frames through `AgentConversation` (message bubbles and tool rows, not the old mono feed), with no dialog semantics.
 - [x] Offers the steer box while the worker is live, the finished notice once it has reported, and no steer box while it is checkpointing.
+- [x] Once the worker has reported, its chat ends on the typed result (status, summary, files, checks), including when its last message was only the `bridge-worker-result` fence the transcript strips. An unreported `lastResult` is not shown.
 
 ## Orchestrator transcript — `src/components/AgentConversation.test.tsx`
 

@@ -84,6 +84,34 @@ describe("AgentChat", () => {
     expect(container.querySelector('textarea[aria-label="Steer this worker…"]')).toBeNull();
   });
 
+  it("ends a reported worker's chat on its typed result, even when its last word was only the fence", async () => {
+    // A compliant worker may answer with nothing but the fence, which the
+    // transcript strips. The outcome must still be on screen.
+    const fenceOnly = live(4, "message.completed", { itemId: "a3", role: "assistant", status: "completed", text: "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\"}\n```" });
+    await mount({
+      session: worker({ status: "completed" }),
+      liveEvents: [fenceOnly],
+      runtime: runtime({
+        resultStatus: "reported", lifecycleState: "completed",
+        lastResult: { status: "completed", summary: "Bifrost ranks first.", filesChanged: ["notes/ranking.md"], tests: [{ command: "bun test", status: "passed" }, { command: "cargo test", status: "failed" }] },
+      }),
+    });
+    const card = container.querySelector('section[aria-label="Worker result"]');
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain("completed");
+    expect(card!.textContent).toContain("Bifrost ranks first.");
+    expect(card!.textContent).toContain("1 file changed");
+    expect(card!.textContent).toContain("notes/ranking.md");
+    expect(card!.textContent).toContain("1 of 2 checks failing");
+    expect(container.textContent).not.toContain("bridge-worker-result");
+  });
+
+  it("shows no result before the worker reports", async () => {
+    await mount({ runtime: runtime({ lastResult: { status: "completed", summary: "the previous run" } }) });
+    expect(container.querySelector('section[aria-label="Worker result"]')).toBeNull();
+    expect(container.textContent).not.toContain("the previous run");
+  });
+
   it("shows no composer at all when the host does not offer steering", async () => {
     await mount({ onSteer: undefined });
     expect(container.querySelector("textarea")).toBeNull();

@@ -4,6 +4,40 @@ export function canStopWorker(session: Session, runtime?: WorkerRuntimeRecord): 
   return !session.endedAt && !["completed", "cancelled", "stopped"].includes(runtime?.lifecycleState ?? session.status);
 }
 
+/** The typed result facts worth showing once a worker has reported. */
+export type ReportedResult = {
+  status?: string;
+  summary?: string;
+  filesChanged: string[];
+  tests: { command: string; status: string }[];
+};
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function testList(value: unknown): { command: string; status: string }[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(entry => {
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    return typeof record.command === "string" ? [{ command: record.command, status: typeof record.status === "string" ? record.status : "unknown" }] : [];
+  });
+}
+
+/// A worker's result, once it has reported and not before: a `lastResult`
+/// left from a previous run is not this run's outcome.
+export function reportedResult(resultStatus: string | undefined, lastResult: WorkerRuntimeRecord["lastResult"] | undefined): ReportedResult | undefined {
+  const last = resultStatus === "reported" ? lastResult : null;
+  if (!last) return undefined;
+  return {
+    status: typeof last.status === "string" ? last.status : undefined,
+    summary: typeof last.summary === "string" && last.summary.trim() ? last.summary.trim() : undefined,
+    filesChanged: stringList(last.filesChanged),
+    tests: testList(last.tests),
+  };
+}
+
 export function workerClock(session: Session, runtime: WorkerRuntimeRecord | undefined, now: number): number {
   const end = session.endedAt ?? (runtime?.resultStatus === "reported" ? runtime.updatedAt : undefined);
   return end && Number.isFinite(Date.parse(end)) ? Date.parse(end) : now;
