@@ -2537,6 +2537,8 @@ export interface WorkspaceFileChange {
 
 export type WorkspaceRepositoryState = "normal" | "unborn" | "not_git";
 
+export type WorkspaceSessionKind = "orchestrator" | "direct";
+
 export interface WorktreeInventoryEntry {
   assessedAt?: string | null;
   branch?: string | null;
@@ -3046,6 +3048,9 @@ export type ResolveReferenceResult = { activeEntryId?: string | null; authorized
 
 export interface CreateWorkspaceSessionParams {
   createWorktree?: boolean | null;
+  harness?: HarnessId | null;
+  kind?: WorkspaceSessionKind | null;
+  model?: string | null;
   workspaceId: string;
 }
 
