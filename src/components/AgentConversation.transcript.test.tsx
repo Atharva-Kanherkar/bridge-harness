@@ -500,6 +500,33 @@ describe("activity timeline", () => {
   });
 });
 
+describe("mid-turn narration", () => {
+  // The live channel carries persisted frames under their forest kind. Before
+  // the forest poll catches up, the model's updates must still split the run
+  // and read as prose, not fold into the Working group as "used N tools".
+  it("shows each update between the runs it narrates, before the forest has it", () => {
+    const command = (id: number, cmd: string) => event(id, "command.completed", { itemId: `c${id}`, title: cmd, data: { type: "commandExecution", command: cmd, exitCode: 0 } });
+    mount([
+      event(1, "user.message", { itemId: "u1", role: "user", text: "Do it yourself" }),
+      event(2, "message.started", { itemId: "m1", role: "assistant", status: "started", text: "" }),
+      event(3, "assistant.message", { itemId: "m1", role: "assistant", text: "Now committing the test contract." }),
+      command(4, "git add testing"),
+      command(5, "git commit"),
+      event(6, "message.started", { itemId: "m2", role: "assistant", status: "started", text: "" }),
+      event(7, "assistant.message", { itemId: "m2", role: "assistant", text: "Next I'm running the checks." }),
+      command(8, "bun run test"),
+    ]);
+    const text = host.textContent ?? "";
+    expect(text).toContain("Now committing the test contract.");
+    expect(text).toContain("Next I'm running the checks.");
+    expect(text).not.toMatch(/used \d+ tools?/i);
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(2);
+    expect(text.indexOf("Now committing")).toBeLessThan(text.indexOf("Next I'm running"));
+    // One bubble per message: the replay and its forest twin never double up.
+    expect(text.split("Now committing the test contract.")).toHaveLength(2);
+  });
+});
+
 describe("check rows", () => {
   const run = (id: number, command: string, data: Record<string, unknown>, overrides: Partial<AgentEvent> = {}) =>
     event(id, "command.completed", { itemId: `c${id}`, title: command, data: { type: "commandExecution", command, ...data }, ...overrides });
