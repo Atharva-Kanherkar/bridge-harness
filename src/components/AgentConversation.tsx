@@ -1727,6 +1727,8 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   const pending = item.status === "pending";
   const accepted = item.status === "accept" || item.status === "acceptForSession";
   const scope = Array.isArray(item.data.requestedOwnedPaths) ? item.data.requestedOwnedPaths.map(String) : [];
+  // A worker that named no paths is unscoped, not scoped to nothing.
+  const unscoped = item.data.approvalType === "delegation_path_scope" && scope.length === 0;
   // The machine-readable routing reason and its remediation are persisted on the
   // approval entry. Showing them is what turns "allow this?" into a decision the
   // user can actually make.
@@ -1737,9 +1739,9 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-[13px] font-semibold text-foreground">{human.title}</b>{pending && <small className="text-warning text-[11px] tracking-[0.03em]">waiting for you</small>}</header>
     {human.detail ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[13px] leading-relaxed sm:px-4">{human.detail}</p> : null}
     {item.data.objective ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[13px] leading-relaxed sm:px-4">{String(item.data.objective)}</p> : null}
-    {scope.length > 0 && <div className="mt-2 px-3.5 sm:px-4">
+    {(scope.length > 0 || unscoped) && <div className="mt-2 px-3.5 sm:px-4">
       <small className="block text-muted-foreground text-[11px] tracking-[0.03em] uppercase">Write scope</small>
-      <code className={`mt-1 ${WELL}`}>{scope.join("\n")}</code>
+      <code className={`mt-1 ${WELL}`}>{unscoped ? "No path limit (the worker named none)" : scope.join("\n")}</code>
     </div>}
     {!remediation && item.text && <p className="mt-1.5 px-3.5 text-ui leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
     {item.data.command ? <code className={`mt-2.5 mx-3.5 sm:mx-4 ${WELL}`}>{String(item.data.command)}</code> : null}

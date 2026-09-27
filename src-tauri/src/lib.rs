@@ -4652,6 +4652,7 @@ mod tests {
             owned_path_provenance: policy::OwnedPathProvenance {
                 trusted_paths: request.owned_paths.clone(),
                 source_entry_ids: vec!["test-user-entry".into()],
+                ..Default::default()
             },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),
