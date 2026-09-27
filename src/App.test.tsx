@@ -1019,7 +1019,7 @@ describe("the dock in the session view", () => {
     await settle(6);
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for Orchestrator"));
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for New chat"));
     expect(trigger).toBeTruthy();
     await click(trigger!);
     const menu = document.querySelector('[role="menu"]');

@@ -466,7 +466,7 @@ const demoEntries: SessionEntry[] = [
   // The harness's own boundary, beside Bridge's `compaction` above. Two
   // different facts on purpose: this one is the provider's context actually
   // shrinking, that one is Bridge saving a summary for a later cold start.
-  forestEntry("entry-14b", "session-1", 16, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "claude", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13b"),
+  forestEntry("entry-14b", "session-1", 16, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "codex", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13b"),
   forestEntry("entry-raw", "session-1", 17, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually

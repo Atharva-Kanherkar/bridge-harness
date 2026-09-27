@@ -27,7 +27,7 @@ import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
+import { chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
@@ -2621,7 +2621,7 @@ function AppContent() {
     onSkip={() => finishAgentOnboarding()}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
+  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2764,7 +2764,7 @@ function AppContent() {
         onStopWorker={stopWorker}
       /></Suspense> : session ? <>
         <SessionToolbar
-          title={session.title || session.label}
+          title={chatName(session)}
           projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
           leading={sidebarNav}
@@ -2930,8 +2930,10 @@ function AppContent() {
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
                 />
+                {/* Inside the transcript box, so prose fades into the composer's
+                    edge instead of being cut hard at it. */}
+                <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-background to-transparent" />
               </div>
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
               <div className="relative z-10 flex-none safe-bottom">
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
@@ -3209,6 +3211,9 @@ function AppContent() {
       onCancel={() => setGithubLinkChoice(undefined)}
     />}
 
+    {/* One stack, top-right and below the chrome row. Bottom-right used to put
+        connector and CI toasts over the composer's send button. */}
+    <div className="pointer-events-none fixed right-3 top-12 z-30 flex max-h-[calc(100dvh-4rem)] flex-col items-end gap-2 overflow-hidden sm:right-[18px]">
     <AttentionToasts
       toasts={attentionToasts}
       onOpen={toast => {
@@ -3232,6 +3237,7 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
+    </div>
     {availableUpdate && (
       <UpdateToast
         update={availableUpdate}

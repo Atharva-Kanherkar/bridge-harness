@@ -982,7 +982,8 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
   const unresolved = summary.checks.filter(check => check.required && check.status !== "passed");
   const failedVerdict = summary.verdict === "changes_requested" || summary.verdict === "failed";
   // Neutral card plus a colored tick; only a real failure earns a wash.
-  const tone = summary.verdict === "verified" ? "border-x-success" : summary.verdict === "waived" ? "border-x-warning" : failedVerdict ? "border-x-destructive bg-destructive/5" : "border-x-info";
+  // In flight is not news: it wears the neutral tick its siblings do.
+  const tone = summary.verdict === "verified" ? "border-x-success" : summary.verdict === "waived" ? "border-x-warning" : failedVerdict ? "border-x-destructive bg-destructive/5" : "border-x-border";
   const title = summary.verdict === "verified" ? "Verified" : summary.verdict === "waived" ? "Verified with waiver" : summary.verdict === "changes_requested" ? "Changes requested" : summary.verdict === "superseded" ? "Evidence superseded" : summary.verdict === "failed" ? "Verification failed" : "Verifying";
   const statusIcon = (status: string) => status === "passed" ? <Check size={12} className="mt-0.5 shrink-0 text-success" aria-hidden="true"/> : status === "failed" ? <X size={12} className="mt-0.5 shrink-0 text-destructive" aria-hidden="true"/> : status === "skipped" || status === "blocked" || status === "stale" ? <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warning" aria-hidden="true"/> : <Circle size={10} className="mt-1 shrink-0 text-muted-foreground" aria-hidden="true"/>;
   return <section aria-label="Completion verification" className={`${PANEL} ${tone}`}>
@@ -1732,10 +1733,11 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
     <header className="flex items-baseline gap-[9px] px-3.5 pt-3 sm:px-4">
       <b className="text-[13px] font-semibold text-foreground">{item.title || `Workspace is ${behind} commits behind ${baseRef}`}</b>
     </header>
-    <details className="mt-1 px-4 text-caption text-muted-foreground">
-      <summary className="min-h-8 w-fit cursor-pointer rounded py-1.5">{behind} behind · {ahead} ahead · {baseRef}{divergence.dirty === true ? " · uncommitted changes" : ""}</summary>
+    {/* The title already says how far behind; the counts are not repeated. */}
+    {item.text && <details className="mt-1 px-4 text-caption text-muted-foreground">
+      <summary className="min-h-8 w-fit cursor-pointer rounded py-1.5">Details</summary>
       <p className="pb-2 leading-relaxed">{item.text}</p>
-    </details>
+    </details>}
     {error && <p className="mt-1.5 px-3.5 text-[12px] leading-relaxed text-destructive sm:px-4">{error}</p>}
     {refreshed
       ? <div className="flex items-center gap-1.5 px-3.5 pb-3 pt-2.5 text-[12px] text-muted-foreground sm:px-4"><Check size={12} aria-hidden="true" /> Workspace refreshed onto {baseRef}</div>
