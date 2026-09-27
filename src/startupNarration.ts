@@ -8,15 +8,15 @@ import type { SessionStartupPhase } from "./types";
  */
 
 const COLLAPSE_LINGER_MS = 2000;
-const ELAPSED_VISIBLE_AFTER_MS = 2000;
+// A short wait is just thinking; a counter only earns its place once the wait
+// is long enough that the reader starts to wonder.
+const ELAPSED_VISIBLE_AFTER_MS = 10_000;
 
 export interface NarrationInput {
   /** A message is pending and nothing has visibly started yet. */
   hasPendingWork: boolean;
   /** Some item in the transcript is now streaming or in progress. */
   streaming: boolean;
-  harnessName: string;
-  modelName: string;
   /** A model switch is in flight: the incoming model's display label. Wins
    *  over every other label, and mounts the row even with no pending work —
    *  the switch is Bridge's own activity, not the agent's. */
@@ -53,17 +53,18 @@ const MOUNTED_NONE: NarrationView = {
   reducedMotion: false,
 };
 
-function phaseLabel(phase: SessionStartupPhase | null, harnessName: string, modelName: string): string {
+/// No harness or model name in any label: the row's mark already says who.
+function phaseLabel(phase: SessionStartupPhase | null): string {
   switch (phase) {
-    case "spawning": return `Starting ${harnessName}…`;
-    case "handshake": return `Waiting for ${harnessName} to answer…`;
-    case "session_open": return "Opening the session…";
-    default: return `${modelName} is reading your message…`;
+    case "spawning": return "Starting…";
+    case "handshake": return "Connecting…";
+    case "session_open": return "Opening session…";
+    default: return "Thinking";
   }
 }
 
 export function computeNarration(input: NarrationInput): NarrationView {
-  const { hasPendingWork, streaming, harnessName, modelName, switchingToLabel, latestPhase, startedAt, streamStartedAt, now, reducedMotion } = input;
+  const { hasPendingWork, streaming, switchingToLabel, latestPhase, startedAt, streamStartedAt, now, reducedMotion } = input;
   // A switch in flight owns the row outright: it mounts without pending work,
   // never collapses (there is no stream to hand off to), and outranks the
   // phase labels — whatever the old provider is doing behind the scenes, the
@@ -91,7 +92,7 @@ export function computeNarration(input: NarrationInput): NarrationView {
   return {
     mounted: true,
     collapsed,
-    label: collapsed ? "" : phaseLabel(latestPhase, harnessName, modelName),
+    label: collapsed ? "" : phaseLabel(latestPhase),
     showElapsed: !collapsed && elapsedMs >= ELAPSED_VISIBLE_AFTER_MS,
     elapsedSeconds: Math.floor(elapsedMs / 1000),
     reducedMotion,

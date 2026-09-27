@@ -28,17 +28,17 @@ Transcript-level thinking is drawn by exactly one component (`Reasoning` in
 `src/components/AgentConversation.tsx`), and it reads exactly one input: the
 item's `status`. It has two states, and no third.
 
-**`streaming`.** The thought is still arriving. The card is open, showing the
-text so far, with one animation beside the word `Thinking…`: the
-`thinking-shimmer` sweep from `src/index.css`. The sweep is achromatic and says
-one thing, "there is more of this coming". It is the only animation the
-transcript uses to mean that, and every row that means it draws this same
-component rather than a copy of the markup. An assistant reply whose first token
-has not landed is that same statement, so it draws the same mark.
+**`streaming`.** The thought is still arriving. It draws `ThinkingRow`: the
+harness mark and the word `Thinking`, pulsing on the `thinking-word` keyframe
+from `src/index.css`, with the text so far beneath it in faint ink and no card
+border. The pulse is achromatic, opacity-only, and says one thing, "there is
+more of this coming". It is the only animation the transcript uses to mean that,
+and every row that means it draws this same component rather than a copy of the
+markup. An assistant reply whose first token has not landed is that same
+statement, so it draws the same row. Under reduced motion the word is static.
 
-**`completed`.** The thought is finished. It collapses to a single summary line
-(`Thought for …`, plus the thought's last line as a preview) with the same icon
-it had while streaming, so the row does not change identity as it settles.
+**`completed`.** The thought is finished. It collapses to a single borderless
+summary line (`Thought for …`, plus the thought's last line as a preview).
 Collapsed is the default, always: a settled thought is evidence a reader can go
 and look at, not something the transcript should keep spending vertical space
 on.
@@ -82,6 +82,9 @@ folded into the above:
   waiting on a handshake, opening a session, switching models. It is driven by
   session phase rather than by a `ConversationItem`, and it unmounts as the
   first item starts streaming, handing off to the thinking presentation above.
+  It draws the same `ThinkingRow`, so the handoff is seamless. Its labels never
+  name a model or harness (`Starting…`, `Connecting…`, `Opening session…`,
+  `Thinking`); the mark already says who.
   A surface outside the transcript (the composer, the sidebar, the worker
   roster) may have its own indicator for its own state; those are not the
   transcript's thinking presentation and are not governed by this section.

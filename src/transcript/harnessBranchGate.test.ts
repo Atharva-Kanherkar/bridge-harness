@@ -181,10 +181,10 @@ describe("harness branch gate", () => {
 
   it("keeps one component in charge of the thinking presentation", () => {
     const source = read("../components/AgentConversation.tsx");
-    // One mark, one call site for the class that animates it. Everything that
-    // means "there is more of this coming" goes through `ThinkingMark`.
-    const marks = source.split("\n").filter(line => line.includes("thinking-shimmer"));
-    expect(marks, "the thinking sweep belongs to ThinkingMark and to nothing else").toHaveLength(1);
+    // One row, one call site for the class that animates it. Everything that
+    // means "there is more of this coming" goes through `ThinkingRow`.
+    const marks = source.split("\n").filter(line => line.includes("thinking-word"));
+    expect(marks, "the thinking pulse belongs to ThinkingRow and to nothing else").toHaveLength(1);
     expect(marks[0]).toContain("cn(");
     // And it is not decided by anything but the item's own status.
     expect(source).toContain("function Reasoning({ item }: { item: ConversationItem })");

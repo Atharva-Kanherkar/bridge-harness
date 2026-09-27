@@ -825,9 +825,20 @@ describe("the dock in the session view", () => {
   it("offers Ask aside on a transcript selection and quotes the excerpt", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    const transcriptRow = container.querySelector<HTMLElement>("[id^='forest-entry-']");
-    const selectable = transcriptRow
-      ?? [...container.querySelectorAll("h1, h2, p")].find(node => (node.textContent ?? "").trim().length > 3);
+    // Earlier cases leave this a new chat, whose transcript is only its
+    // greeting now that the session-start marker draws no card. Send one
+    // message so there is transcript prose to select.
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Explain the session supervisor");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    const transcript = container.querySelector<HTMLElement>("[data-conversation-content]");
+    const selectable = transcript?.querySelector<HTMLElement>("[id^='forest-entry-']")
+      ?? [...(transcript?.querySelectorAll<HTMLElement>("[class*='max-w-[85%]'], p") ?? [])].find(node => (node.textContent ?? "").trim().length > 3);
     expect(selectable).toBeTruthy();
     const range = document.createRange();
     range.selectNodeContents(selectable!);
@@ -903,6 +914,34 @@ describe("the dock in the session view", () => {
     expect(outside).toHaveLength(0);
   });
 
+  // A review-comment jump from Gitplace into a workspace with no chat: the
+  // draft's first message creates the chat, and the file still opens in it.
+  it("keeps a Gitplace file jump through a new chat's first message", async () => {
+    const real = await bridgeApi.state();
+    const lonely = real.workspaces.find(workspace => workspace.id === "demo-3")!;
+    vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
+    const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
+    await mountApp();
+    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Gitplace")!);
+    await settle(4);
+    await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
+    await settle(4);
+    const location = [...container.querySelectorAll<HTMLButtonElement>("section[aria-label='Review threads'] button")].find(button => button.textContent?.includes("src/api.ts"))!;
+    expect(location).toBeTruthy();
+    await click(location);
+    await settle(4);
+    expect(read).not.toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Address the review comment");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(10);
+    expect(read).toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
@@ -914,10 +953,10 @@ describe("the dock in the session view", () => {
   // shell — rail, title bar, session chrome, or the keymap/menu table —
   // may offer a way into them. Sidebar-only tests would miss a later
   // title-bar, menu, or chord entry point.
-  it("exposes Agent Fleet while keeping the Work board out of navigation", async () => {
+  it("exposes Terminals while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Terminals"]')).not.toBeNull();
     const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
@@ -1008,7 +1047,7 @@ describe("the dock in the session view", () => {
     await settle(6);
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for Orchestrator"));
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for New chat"));
     expect(trigger).toBeTruthy();
     await click(trigger!);
     const menu = document.querySelector('[role="menu"]');
