@@ -24,6 +24,8 @@ const durable = (kind: string, payload: Record<string, unknown> = {}, overrides:
 const VOCABULARY: [kind: string, type: string][] = [
   ["message.delta", "message.delta"],
   ["message.completed", "message.completed"],
+  ["user.message", "message.completed"],
+  ["assistant.message", "message.completed"],
   ["reasoning.delta", "thinking.delta"],
   ["reasoning.started", "thinking.started"],
   ["reasoning.completed", "thinking.completed"],
@@ -108,6 +110,13 @@ describe("normalizeAgentEvent", () => {
     expect(normalizeAgentEvent(live(kind)).type).toBe(type);
   });
 
+  it("reads a persisted message on the live channel as prose, not a tool row", () => {
+    expect(normalizeAgentEvent(live("assistant.message", { id: 42, itemId: "msg_1", role: "assistant", text: "Now editing lib.rs" })))
+      .toMatchObject({ type: "message.completed", role: "assistant", text: "Now editing lib.rs", envelope: { key: "msg_1" } });
+    expect(normalizeAgentEvent(live("user.message", { id: 43, text: "do it yourself" })))
+      .toMatchObject({ type: "message.completed", role: "user", envelope: { key: "message:43" } });
+  });
+
   it("reports an unfamiliar kind instead of calling it activity", () => {
     const reported = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const event = normalizeAgentEvent(live("telepathy.received", { data: { thought: "hi" } }));
@@ -189,6 +198,10 @@ describe("normalizeSessionEntry", () => {
   it("flattens the stored wrapper so a replayed row reads like a live one", () => {
     const event = normalizeSessionEntry(durable("command.completed", { itemId: "c", status: "completed", data: { command: "bun test", exitCode: 1 } }));
     expect(event?.envelope.providerData).toMatchObject({ command: "bun test", exitCode: 1 });
+  });
+
+  it("drops a message's empty lifecycle halves rather than replaying them as a tool row", () => {
+    expect(normalizeSessionEntry(durable("message.started", { itemId: "msg_1", role: "assistant", status: "started", text: "" }))).toBeNull();
   });
 
   it("drops session lifecycle plumbing rather than replaying it as a tool row", () => {

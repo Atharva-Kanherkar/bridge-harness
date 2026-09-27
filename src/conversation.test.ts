@@ -70,7 +70,7 @@ describe("normalized conversation reducer",()=>{
     buffer = appendAgentEventBatch(buffer, [event(43,"message.completed",{sequence:43,itemId:"m1",role:"assistant",status:"completed",text:"Let me check the store. Found it."})]);
     const items = reduceConversation(buffer);
     expect(items.map(item=>[item.type,item.text||item.title])).toEqual([
-      ["activity","check the store"],
+      ["message","check the store"],
       ["message","Let me check the store. Found it."],
       ["activity","sqlite3 query"],
     ]);
