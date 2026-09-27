@@ -416,6 +416,41 @@ describe("three layers", () => {
     // Once as the collapsed summary's preview, once in the body it opens to.
     expect(thinking?.querySelector(".md")?.textContent?.split(thought).length ?? 0).toBe(2);
   });
+
+  it("keeps one thought card on screen when the body it streamed arrives", () => {
+    // A thought's live row and its stored twin are paired on text, so their ids
+    // never met. Dropping the doubled row is only half of it. The survivor also
+    // has to be keyed as the row already on screen, or the card the reader was
+    // watching mid-thought plays its exit while the settled one enters and both
+    // are drawn at once, which is the same double this branch set out to remove.
+    //
+    // The DOM node itself cannot survive the swap, and is not meant to: the
+    // streaming state is a card and the settled state a collapsed `details`, one
+    // component with two shapes. What must not happen is both at once.
+    const opened = "Confirmed: while a turn is live, messages get misc";
+    const whole = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const live = [
+      event(1, "message.completed", { itemId: null, role: "user", status: "completed", text: "fix the transcript" }),
+      event(0, "reasoning.started", { itemId: null, status: "streaming", text: opened }),
+    ];
+    const entries = [
+      forestEntry("e1", null, 1, "user.message", { text: "fix the transcript", role: "user", status: "completed" }),
+      forestEntry("e2", "e1", 41, "reasoning.completed", { text: whole, status: "completed" }),
+    ];
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={[]} onResolve={() => {}} />);
+    });
+    const streaming = host.querySelector("[data-thinking]");
+    expect(streaming?.getAttribute("data-thinking")).toBe("streaming");
+    expect(streaming?.textContent).toContain(opened);
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={entries} activeLeafId="e2" onResolve={() => {}} />);
+    });
+    const cards = [...host.querySelectorAll("[data-thinking]")];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].getAttribute("data-thinking")).toBe("completed");
+    expect(cards[0].textContent).toContain(whole);
+  });
 });
 
 describe("run trailer", () => {

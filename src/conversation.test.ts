@@ -352,6 +352,65 @@ describe("normalized conversation reducer",()=>{
     ],"e2");
     expect(mergeConversationProjections(durable,live).filter(item=>item.type==="reasoning")).toHaveLength(2);
   });
+
+  /**
+   * Dropping the doubled row is only half of it. The reader was watching the
+   * live row, and a survivor keyed off the stored entry is a different key, so
+   * `AnimatePresence` plays the card they were reading out while a new one
+   * arrives. The row they are looking at has to be the row that takes its place.
+   */
+  it("keeps a thought on the identity the reader was already watching",()=>{
+    const whole = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const opened = "Confirmed: while a turn is live, messages get misc";
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text:whole,status:"completed"},41),
+    ],"e2");
+    // Mid-thought: the live window holds only the opening of what the forest has
+    // already stored whole.
+    const streaming = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(0,"reasoning.started",{itemId:null,text:opened,status:"streaming"}),
+    ]);
+    const watched = streaming.find(item=>item.type==="reasoning")!;
+    const swapped = mergeConversationProjections(durable,streaming).find(item=>item.type==="reasoning")!;
+    expect(swapped.text).toBe(whole);
+    expect(swapped.identity).toBe(watched.identity);
+  });
+
+  it("keeps a settled thought on the identity it streamed under",()=>{
+    const text = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const live = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(41,"reasoning.completed",{itemId:null,text,status:"completed"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text,status:"completed"},41),
+    ],"e2");
+    const watched = live.find(item=>item.type==="reasoning")!;
+    const swapped = mergeConversationProjections(durable,live).find(item=>item.type==="reasoning")!;
+    expect(swapped.identity).toBe(watched.identity);
+    // Still the stored row, which is the one the reader can branch from.
+    expect(swapped.entryId).toBe("e2");
+  });
+
+  it("keeps an unnamed reply on the identity it streamed under",()=>{
+    // The same seam on the path the review opened: a provider that only names a
+    // message when it finishes leaves the live window holding unnamed deltas, and
+    // the merge pairs those with the stored reply on text.
+    const text = "Here is what I found in the store.";
+    const live = reduceConversation([event(0,"message.delta",{itemId:null,role:"assistant",status:"streaming",text})]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"where does it live?",role:"user",status:"completed"},1),
+      entry("e2","e1","assistant.message",{itemId:"acp-message-1",text,role:"assistant",status:"completed"},7),
+    ],"e2");
+    const watched = live.find(item=>item.type==="message")!;
+    const swapped = mergeConversationProjections(durable,live).find(item=>item.type==="message" && item.role!=="user")!;
+    expect(watched.identity).not.toBe("acp-message-1");
+    expect(swapped.identity).toBe(watched.identity);
+    expect(swapped.entryId).toBe("e2");
+  });
 });
 
 describe("session forest conversation projection",()=>{

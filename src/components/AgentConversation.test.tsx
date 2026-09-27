@@ -847,6 +847,40 @@ describe("AgentConversation", () => {
     }
   });
 
+  it("keeps one reply node when the swap runs on the unnamed text match", async () => {
+    // The swap above reduces a complete stream, so its terminal frame names the
+    // reply and the two projections meet on identity. A provider that only names
+    // a message when it finishes leaves the live window holding unnamed deltas
+    // and no terminal event, and the merge has to pair those with the stored
+    // reply by text instead. That pairing is a real match, so the row it hands
+    // the reader has to be the row they were already looking at: keying the
+    // survivor off the stored entry remounted it, and the exit/enter pair put
+    // the reply on screen twice all over again.
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const reply = "Here is what I found in the store.";
+    const live = [event(0, "message.delta", { itemId: null, role: "assistant", status: "streaming", text: reply })];
+    const forest: SessionEntry[] = [
+      { id: "e1", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2, kind: "user.message", payload: { text: "where does it live?", role: "user", status: "completed" }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+      { id: "e2", sessionId: "s", parentEntryId: "e1", sequence: 7, semanticSchemaVersion: 2, kind: "assistant.message", payload: { itemId: "acp-message-1", text: reply, role: "assistant", status: "completed" }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+    ];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const replyNodes = () => [...host.querySelectorAll(".md")].filter(node => node.textContent?.includes(reply));
+    try {
+      await act(async () => root.render(<AgentConversation session={session} events={live} forestEntries={[]} onResolve={() => undefined} />));
+      const [before] = replyNodes();
+      expect(before).toBeDefined();
+      await act(async () => root.render(<AgentConversation session={session} events={live} forestEntries={forest} activeLeafId="e2" onResolve={() => undefined} />));
+      const after = replyNodes();
+      expect(after).toHaveLength(1);
+      expect(after[0]).toBe(before);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
 
   it("streams prose at full ink", async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

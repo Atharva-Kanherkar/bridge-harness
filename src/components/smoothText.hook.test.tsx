@@ -47,4 +47,21 @@ describe("useSmoothText", () => {
     expect(host.textContent).toBe("A longer reply");
     await act(async () => root.unmount());
   });
+
+  it("shows the whole reply at once when only the status settles", async () => {
+    // The terminal frame of a stream carries no new characters: the same text
+    // the last delta delivered, with the row now settled. Only watching `text`
+    // ignored that, so a reply could sit on a truncated prefix for the rest of
+    // the reveal window while its own action bar was already showing. No frames
+    // are advanced here on purpose: the row is settled, so there is nothing to
+    // drain.
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    await act(async () => root.render(<Probe text="A" streaming />));
+    await act(async () => root.render(<Probe text="A longer reply" streaming />));
+    expect(host.textContent).toBe("A");
+    await act(async () => root.render(<Probe text="A longer reply" streaming={false} />));
+    expect(host.textContent).toBe("A longer reply");
+    await act(async () => root.unmount());
+  });
 });

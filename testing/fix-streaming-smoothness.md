@@ -70,6 +70,11 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
   - Never lags more than the drain window: a big backlog reveals faster.
   - A settled (non-streaming) message renders its full text immediately.
   - A message that completes mid-reveal finishes revealing without losing text.
+  - **Settling is watched as well as growth.** A terminal frame routinely carries
+    no new characters, only `streaming: true -> false`, so a hook that recalculates
+    only on a text change leaves a reply on a truncated prefix for the rest of the
+    window while its own action bar is already showing. No frames advanced: a
+    settled row has nothing to drain.
   - Reduced motion renders full text immediately.
   - Text that changes non-monotonically (replacement, not append) snaps to the
     new text.
@@ -78,11 +83,11 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
 - F7. Holds for every harness: Claude, Codex, OpenCode, ACP (Cursor).
 - F8. Thinking is never suppressed. A thought is still drawn by the one thinking
   component, still streams with the shimmer and still settles to a collapsed
-  summary — it is drawn **once**. Reconciling the two projections must not
+  summary, it is drawn **once**. Reconciling the two projections must not
   remove, collapse or hide a thought to achieve that.
 - F9. A row the merge cannot match by identity is matched on its whole trimmed
   body instead. A row it drops that way is replaced by one that says exactly the
-  same thing, and the durable row is the survivor — it is the one the reader can
+  same thing, and the durable row is the survivor, it is the one the reader can
   branch from.
 - F10. The prefix match that covers the mid-stream case is scoped and floored,
   so it cannot cost a real thought: it only ever compares against the **newest**
@@ -90,6 +95,18 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
   and only when at least 24 characters have arrived. Below that floor a
   half-streamed thought is kept, because the opening words of two thoughts are
   the part they are most likely to share.
+- F11. **Deduplicating a row is not the same as replacing it.** A survivor the
+  merge paired on text has to answer to the identity the reader was already
+  looking at, or `rowKey` gives it a different key and `AnimatePresence` plays
+  the old row's exit while the new one enters. That is the doubled row again, one
+  layer up, and it applies to every text-matched pairing: the unnamed reply the
+  review found, and the thought paired by prefix.
+  - The row keeps its own durable identity for everything else. Only what the
+    reader is looking at is borrowed.
+  - The DOM node still does not survive the swap for a thought, and is not meant
+    to: the streaming state is a card and the settled state a collapsed
+    `details`, one component with two shapes. What must not happen is both on
+    screen at once.
 
 ## Unit Tests
 
@@ -98,7 +115,7 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
     projections of the same golden stream give each assistant reply the same
     row key.
   - `falls back to a unique key when two rows share an identity`.
-- `src/conversation.test.ts` (the merge, F8–F10)
+- `src/conversation.test.ts` (the merge, F8–F11)
   - `draws a thought once once the forest has caught up with it` — asserts the
     two identities genuinely differ first, so the test cannot be satisfied by
     keying on identity.
@@ -109,6 +126,12 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
   - `keeps a new thought that no durable row says`
   - `keeps a new thought that only opens like the one before it` — F10 scope.
   - `keeps a streaming thought too short to be the stored one` — F10 floor.
+  - `keeps a thought on the identity the reader was already watching`: F11,
+    mid-thought, the pairing no text equality can make.
+  - `keeps a settled thought on the identity it streamed under`: F11, and the
+    survivor is still the stored row.
+  - `keeps an unnamed reply on the identity it streamed under`: F11 on the path
+    the review opened.
 - `src/components/smoothText.test.ts` (pure reveal step)
   - never reveals past the target
   - drains a backlog within the window, at least one char per frame
@@ -119,16 +142,26 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
     streaming + completed events, then rerender adding the forest entries for
     the same stream: exactly one element contains the reply text, and it is the
     same DOM node as before.
+  - `keeps one reply node when the swap runs on the unnamed text match`: the
+    review's case, only an unnamed live `message.delta`, then its text-matched
+    stored entry with no terminal live event. Finds **2** nodes on the unfixed
+    merge and **1**, the same node, after.
   - `streams prose at full ink` — no `.md.dim` while streaming.
 - `src/transcript/golden.test.ts` (real captured turns, names stripped, F8–F10)
   - `never shows a <harness> thought twice, at any live and durable cut` — every
     `(liveCut, forestCut)` pair across all four fixtures. Fails on the unfixed
     merge at `live 2, forest 2` with the card body
     `"Start with the suite.\nStart with the suite."`.
-- `src/components/AgentConversation.transcript.test.tsx` (jsdom, F8)
+- `src/components/smoothText.hook.test.tsx` (jsdom, F5 settle)
+  - `shows the whole reply at once when only the status settles`: the same text
+    with `streaming` flipped false, asserted before a frame is advanced.
+- `src/components/AgentConversation.transcript.test.tsx` (jsdom, F8, F11)
   - `draws a thought once when the forest catches up with it` — one
     `[data-thinking]` card, `data-thinking="completed"`, summary still reads
     "Thought for a moment", and the body holds the thought once.
+  - `keeps one thought card on screen when the body it streamed arrives`: one
+    card across the mid-thought seam. Two on the unfixed pairing: the streaming
+    one exiting and the settled one entering.
 
 ## Integration / Functional Tests
 
@@ -144,7 +177,7 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
   without an item id borrow the turn's key"). So a live window that has already
   seen two thoughts keeps only the second, while the forest still holds the
   first, and `coalesceThoughts` puts both in one card in reverse order. Real, and
-  visible — but a different defect from a doubled thought, and fixing it would
+  visible, but a different defect from a doubled thought, and fixing it would
   change what unnamed harnesses show rather than stop them showing it twice.
   Left alone here on purpose.
 
