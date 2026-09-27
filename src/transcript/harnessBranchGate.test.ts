@@ -40,8 +40,7 @@ const TRANSCRIPT_COMPONENTS = [
   "../components/DiffView.tsx",
   "../components/TranscriptPane.tsx",
   "../components/transcriptFacets.ts",
-  "../components/workerPanel.ts",
-  "../components/WorkerDetail.tsx",
+  "../components/AgentChat.tsx",
 ];
 
 /**
@@ -56,16 +55,14 @@ const TRANSCRIPT_COMPONENTS = [
 const IDENTITY_SITES = ["../components/harnessMarks.tsx", "../utils.ts"];
 
 /**
- * Surfaces that legitimately watch the raw stream: the raw event inspector,
- * the facet/problem classifier behind it, and the worker activity feed all
- * exist to show frames as frames. They are held to rule 1 but not rule 2, and
- * they must go through `readWireKind` — which is what makes them greppable,
- * and what this list is.
+ * Surfaces that legitimately watch the raw stream: the raw event inspector and
+ * the facet/problem classifier behind it exist to show frames as frames. They
+ * are held to rule 1 but not rule 2, and they must go through `readWireKind` —
+ * which is what makes them greppable, and what this list is.
  */
 const RAW_STREAM_SITES = [
   "../components/TranscriptPane.tsx",
   "../components/transcriptFacets.ts",
-  "../components/WorkerDetail.tsx",
 ];
 
 const HARNESS_BRANCH = /harness\s*[!=]==\s*["']/;

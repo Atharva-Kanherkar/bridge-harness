@@ -186,12 +186,12 @@ export function delegationChildSessionId(item: ConversationItem): string | undef
 }
 
 /**
- * Collapse each worker's result onto the panel that spawned it.
+ * Collapse each worker's result onto the row that spawned it.
  *
- * The spawn row is a live panel while the worker runs, so letting the result
- * arrive as its own row further down left the user with two cards for one
- * worker: a stale live one and a disconnected outcome. One worker is one place
- * in the transcript, from "delegated" through to "done".
+ * Letting the result arrive as its own row further down left the user with two
+ * rows for one worker: a stale "delegated" and a disconnected outcome. One
+ * worker is one line in the transcript, from "delegated" through to "done";
+ * the worker itself is watched in the dock's Agents pane.
  *
  * Applied to the merged durable+live list rather than inside either projection,
  * because a spawn read from the forest and a result still only in the live
@@ -224,8 +224,7 @@ export function foldWorkerDelegations(items: ConversationItem[]): ConversationIt
     // worker was asked to do. A result's text is the worker's own prose, which
     // is a different fact and can run to paragraphs; letting it overwrite the
     // objective turned a finished card into a wall of summary with the ask
-    // gone, and then repeated the same prose in the result strip below. The
-    // summary has its own place on the card, read from the typed envelope.
+    // gone. The worker's own words stay in its chat in the Agents pane.
     // Fill only when the spawn carried no objective at all.
     if (item.text && !panel.text && !workerResultSummary(item.text)) panel.text = item.text;
     // The panel keeps its own key and eventId: the key is what React reconciles

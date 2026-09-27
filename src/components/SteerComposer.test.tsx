@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import { SteerComposer } from "./WorkerDetail";
+import { SteerComposer } from "./SteerComposer";
 
 /// Set a controlled textarea's value the way a keystroke would.
 ///

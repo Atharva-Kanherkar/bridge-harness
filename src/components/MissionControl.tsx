@@ -223,7 +223,6 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
         onResolve={resolve}
         onAnswerQuestion={answer}
         onOpenSession={actions.onFocusSession}
-        onStopWorker={actions.onStopWorker}
         onInterrupt={interrupt}
         stopping={stopping}
         preview={false}

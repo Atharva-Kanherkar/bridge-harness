@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { Session, WorkerRuntimeRecord, BridgeEvent } from "../types";
-import { canStopWorker, workerClock, workerDiagnostics } from "./WorkerControls";
+import { canStopWorker, reportedResult, workerClock, workerDiagnostics } from "./WorkerControls";
 
 it("offers stop during every non-terminal lifecycle and freezes reported clocks", () => {
   const session = { id: "w", status: "working", endedAt: null } as Session;
@@ -17,4 +17,12 @@ it("bounds diagnostics, preserves refusals, and excludes other workers", () => {
   expect(result).toHaveLength(8);
   expect(result[0].id).toBe(19);
   expect(result[0].label).toBe("Retry declined");
+});
+it("reads a result only once the worker has reported, and keeps the shapes it can show", () => {
+  const last = { status: "completed", summary: " Rotation added. ", filesChanged: ["src/auth/store.rs", 7], tests: [{ command: "cargo test auth", status: "passed" }, { status: "failed" }] };
+  expect(reportedResult("pending", last)).toBeUndefined();
+  expect(reportedResult("reported", null)).toBeUndefined();
+  expect(reportedResult("reported", last)).toEqual({
+    status: "completed", summary: "Rotation added.", filesChanged: ["src/auth/store.rs"], tests: [{ command: "cargo test auth", status: "passed" }],
+  });
 });

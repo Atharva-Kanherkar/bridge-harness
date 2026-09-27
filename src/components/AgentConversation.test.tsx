@@ -7,7 +7,7 @@ import * as conversation from "../conversation";
 import { bridgeApi } from "../api";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
-import type { AgentEvent, CompletionSummary, Session, SessionEntry, WorkerRuntimeRecord } from "../types";
+import type { AgentEvent, CompletionSummary, Session, SessionEntry } from "../types";
 
 const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" };
 const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({ id, sessionId: "s", sequence: id, protocolVersion: 1, kind: asWireKind(kind), itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides });
@@ -642,130 +642,57 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("Retry this task");
   });
 
-  /* ── The live worker panel ──────────────────────────────────────────── */
+  /* ── A delegation in the orchestrator's transcript ─────────────────── */
+  // Contract: testing/feat-agents-pane-auto-open.md, orchestrator transcript.
 
-  const workerSession = (overrides: Partial<Session> = {}): Session => ({
-    ...session, id: "w1", label: "Implementation · strong", parentSessionId: "s", depth: 1,
-    kind: "workspace", startedAt: "2026-08-21T10:00:00Z", ...overrides,
-  });
-  const workerRuntime = (overrides: Partial<WorkerRuntimeRecord> = {}): WorkerRuntimeRecord => ({
-    sessionId: "w1", parentSessionId: "s", lifecycleState: "working", taskFamily: "implementation",
-    compatibilityKey: "key", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: null,
-    worktreeBranch: null, lastResult: null, lastActivityAt: null, waitingSince: null, waitingReason: null,
-    progressSummary: null, updatedAt: "now", ...overrides,
-  });
   const spawned = event(30, "delegation.spawned", {
     itemId: "spawn-w1", role: "system", status: "working", title: "Delegated to Implementation · strong",
     text: "Add refresh-token rotation",
     data: { childSessionId: "w1", modelLabel: "Fable", effort: "high" },
   });
-  const workerActivity = (id: number, title: string): AgentEvent => event(id, "tool.started", { sessionId: "w1", title });
 
-  it("shows a live worker panel while the worker runs", () => {
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned]}
-      now={Date.parse("2026-08-21T10:02:30Z")}
-      workers={{
-        sessions: [session, workerSession()],
-        runtimes: [workerRuntime({ retryCount: 1, progressSummary: "editing src/auth/store.rs" })],
-        events: [workerActivity(31, "read store.rs"), workerActivity(32, "edit store.rs")],
-      }}
-      onOpenSession={() => undefined}
-    />);
-    expect(html).toContain("Implementation · strong");
-    expect(html).toContain("WORKING");
-    expect(html).toContain("editing src/auth/store.rs");
-    expect(html).toContain("retry 1");
-    // The mini-feed is the whole point: something visibly moving in the chat.
-    expect(html).toContain("edit store.rs");
-    // One way in. "Expand" opened the same worker in an overlay and read as a
-    // second, different thing the reader had to choose between.
-    expect(html).not.toContain("Expand");
-    expect(html).toContain("Open session");
-    // And the old static line is gone.
-    expect(html).not.toContain("Delegated · Delegated to");
+  it("keeps a running worker to one quiet row, never a live card", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned]} onOpenSession={() => undefined} onOpenAgent={() => undefined}/>);
+    expect(html).toContain("Delegated");
+    expect(html).toContain("Fable · high");
+    // The worker is watched in the Agents pane: no status, feed, clock or Stop here.
+    expect(html).not.toContain('aria-label="Worker ');
+    expect(html).not.toContain("WORKING");
+    expect(html).not.toContain(">Stop<");
+    expect(html).toContain("Show in Agents");
   });
 
-  it("names the waiting reason instead of showing a stalled panel", () => {
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned]}
-      now={Date.parse("2026-08-21T10:02:30Z")}
-      workers={{
-        sessions: [session, workerSession({ status: "waiting" })],
-        runtimes: [workerRuntime({ lifecycleState: "waiting", waitingReason: "approval_requested" })],
-        events: [],
-      }}
-    />);
-    expect(html).toContain("NEEDS YOU");
-    expect(html).toContain("waiting: approval requested");
+  it("hands the worker's id to the host from Show in Agents", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const onOpenAgent = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} forestEntries={[]} events={[spawned]} onOpenAgent={onOpenAgent}/>));
+      const show = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Show in Agents"));
+      expect(show).toBeTruthy();
+      await act(async () => show!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onOpenAgent).toHaveBeenCalledWith("w1");
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
-  it("turns the same panel into the result card when the result lands", () => {
+  it("offers the Agents pane only when the host can open it", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned]}/>);
+    expect(html).toContain("Delegated");
+    expect(html).not.toContain("Show in Agents");
+  });
+
+  it("folds the result onto the same quiet row", () => {
     const result = event(33, "delegation.result", {
       itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
       text: "Rotation added.", data: { childSessionId: "w1", delivered: true, status: "completed" },
     });
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned, result]}
-      now={Date.parse("2026-08-21T10:05:00Z")}
-      workers={{
-        sessions: [session, workerSession({ status: "stopped" })],
-        runtimes: [workerRuntime({
-          resultStatus: "reported", lifecycleState: "completed",
-          lastResult: { status: "completed", summary: "Rotation added.", filesChanged: ["src/auth/store.rs"], tests: [{ command: "cargo test auth", status: "passed" }] },
-        })],
-        events: [workerActivity(31, "edit store.rs")],
-      }}
-    />);
-    expect(html).toContain("DONE");
-    expect(html).toContain("1 file");
-    expect(html).toContain("1 test passing");
-    // One card, not a live panel plus a disconnected outcome row.
-    expect(html).not.toContain("Subagent finished");
-    // And the live ticker stops: no half-finished feed under a finished result.
-    expect(html).not.toContain("edit store.rs");
-    // The ask survives the outcome. A result's prose used to overwrite the
-    // objective, so a finished card no longer said what it had been asked for.
-    expect(html).toContain("Add refresh-token rotation");
-    // The summary is shown once. It used to open the card in full and then
-    // repeat its first sentence, truncated, three bands lower.
-    expect(html.split("Rotation added.").length - 1).toBe(1);
-  });
-
-  it("clamps a long result summary behind one affordance", () => {
-    const long = `Reviewed the auth module and posted a comment-only review. ${"Findings cite concrete files and lines. ".repeat(8)}`;
-    const result = event(33, "delegation.result", {
-      itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
-      text: long, data: { childSessionId: "w1", delivered: true, status: "completed" },
-    });
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned, result]}
-      workers={{
-        sessions: [session, workerSession({ status: "stopped" })],
-        runtimes: [workerRuntime({
-          resultStatus: "reported", lifecycleState: "completed",
-          // The fence the typed envelope arrives in is wire chatter, not the
-          // worker's newest activity, and the card used to print it as status.
-          progressSummary: "```bridge-worker-result",
-          lastResult: { status: "completed", summary: long, filesChanged: [], tests: [] },
-        })],
-        events: [],
-      }}
-      onOpenSession={() => undefined}
-    />);
-    expect(html).toContain("line-clamp-3");
-    expect(html).toContain("Read the full result");
-    expect(html).not.toContain("bridge-worker-result");
-    // The objective band is clamped too, so no card opens with a wall.
-    expect(html).toContain("line-clamp-2");
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned, result]} onOpenAgent={() => undefined}/>);
+    expect(html.split("Subagent finished").length - 1).toBe(1);
+    expect(html).not.toContain("Delegated");
+    expect(html).toContain("Show in Agents");
   });
 
   it("still shows a classified failure with its retry action after folding", () => {
@@ -778,24 +705,11 @@ describe("AgentConversation", () => {
       session={session}
       onResolve={() => undefined}
       events={[spawned, failed]}
-      workers={{ sessions: [session, workerSession()], runtimes: [workerRuntime()], events: [] }}
       onRetryWorker={async () => undefined}
       onOpenSession={() => undefined}
     />);
     expect(html).toContain("the worker stopped responding");
     expect(html).toContain("Retry this task");
-  });
-
-  it("falls back to the quiet row when the worker's session is not loaded yet", () => {
-    // The spawn event can beat the state poll that carries the child session row.
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned]}
-      workers={{ sessions: [session], runtimes: [], events: [] }}
-    />);
-    expect(html).toContain("Delegated");
-    expect(html).not.toContain("Open session");
   });
 
   it("shows a chip when someone steers a worker", () => {
@@ -808,7 +722,6 @@ describe("AgentConversation", () => {
       session={session}
       onResolve={() => undefined}
       events={[spawned, steered]}
-      workers={{ sessions: [session, workerSession()], runtimes: [workerRuntime()], events: [] }}
       onOpenSession={() => undefined}
     />);
     expect(html).toContain("You steered Implementation · strong");
