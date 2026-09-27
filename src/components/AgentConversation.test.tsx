@@ -133,6 +133,49 @@ describe("AgentConversation", () => {
   // A session left on its adapter's default stores no model id. `modelLabel`
   // renders that absence as an em dash, which the narration row would have
   // read out as "— is reading your message…".
+  it("copies a settled assistant reply as its Markdown and ticks", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const reply = event(1, "message.completed", { itemId: "a", role: "assistant", status: "completed", text: "**Done.** See `src/app.ts`." });
+    await act(async () => root.render(<AgentConversation session={session} events={[reply]} onResolve={() => undefined} onRemember={() => undefined} />));
+    const bar = host.querySelector("[data-reply-actions]")!;
+    expect(bar.getAttribute("data-reply-actions")).toBe("latest");
+    const labels = [...bar.querySelectorAll("button")].map(button => button.getAttribute("aria-label"));
+    expect(labels.slice(0, 2)).toEqual(["Copy", "Remember this"]);
+    await act(async () => { (bar.querySelector('button[aria-label="Copy"]') as HTMLButtonElement).click(); });
+    expect(writeText).toHaveBeenCalledWith("**Done.** See `src/app.ts`.");
+    expect(bar.querySelector('button[aria-label="Copied"]')).not.toBeNull();
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it("keeps the bar visible on the latest reply only, and offers none while streaming", () => {
+    const older = event(1, "message.completed", { itemId: "a", role: "assistant", status: "completed", text: "First." });
+    const ask = event(2, "message.completed", { itemId: "u", role: "user", status: "completed", text: "And?" });
+    const latest = event(3, "message.completed", { itemId: "b", role: "assistant", status: "completed", text: "Second." });
+    const html = renderToStaticMarkup(<AgentConversation session={session} events={[older, ask, latest]} onResolve={() => undefined} />);
+    expect(html.match(/data-reply-actions="latest"/g)).toHaveLength(1);
+    expect(html.match(/data-reply-actions="hover"/g)).toHaveLength(1);
+    const streaming = event(3, "message.delta", { itemId: "b", role: "assistant", status: "streaming", text: "Sec" });
+    const live = renderToStaticMarkup(<AgentConversation session={session} events={[older, streaming]} onResolve={() => undefined} />);
+    expect(live).not.toContain('data-reply-actions="latest"');
+  });
+
+  it("gives a user bubble Copy without adding in-flow height", () => {
+    const ask = event(1, "message.completed", { itemId: "u", role: "user", status: "completed", text: "Fix the build" });
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(<AgentConversation session={session} events={[ask]} onResolve={() => undefined} />);
+    const bar = host.querySelector("[data-reply-actions]")!;
+    expect(bar.querySelector('button[aria-label="Copy"]')).not.toBeNull();
+    // Out of flow: a hidden bar must not pad the bubble.
+    expect(bar.className).toContain("absolute");
+    expect(bar.className).toContain("opacity-0");
+  });
+
   it("shows Thinking in the startup row and never names the model", () => {
     for (const model of [null, session.model]) {
       const html = renderToStaticMarkup(<AgentConversation session={{ ...session, model }} onResolve={() => undefined} events={[]} working />);

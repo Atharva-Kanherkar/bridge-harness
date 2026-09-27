@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, Square, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, Square, SquareTerminal, Wrench, X } from "lucide-react";
 import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
@@ -10,7 +10,7 @@ import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
-import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
+import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
 import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
@@ -761,6 +761,12 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const historySessionId = forestEntries?.[0]?.sessionId ?? (readOnly ? events[0]?.sessionId : undefined);
   const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
+  // The reply whose action bar stays visible: the last settled assistant message.
+  let latestReplyKey: string | undefined;
+  for (let index = visibleItems.length - 1; index >= 0 && latestReplyKey === undefined; index -= 1) {
+    const item = visibleItems[index];
+    if (item.type === "message" && item.role === "assistant") latestReplyKey = item.key;
+  }
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
   return <TranscriptHarness.Provider value={session?.harness}><FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
@@ -796,7 +802,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} sessionId={session?.id} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
+              <ItemView item={entry.item} sessionId={session?.id} latest={entry.item.key === latestReplyKey} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -1179,46 +1185,22 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
 /// second, and a settled message that re-renders on each of them is most of
 /// what made a hundred-step turn stop responding. Streaming prose still
 /// re-renders on every chunk, because its text length moves.
-const MessageRow = memo(function MessageRow({ item, sessionId, onRemember, onForkSession, onRewind, rewindable }: { item: ConversationItem; sessionId?: string; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean }) {
-  const rememberButton = item.role === "assistant" && onRemember && item.status !== "streaming" && item.text.trim() !== "" ? (
-    <button
-      type="button"
-      aria-label="Remember this"
-      title="Remember this"
-      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:opacity-100"
-      onClick={() => onRemember(item.text)}
-    ><Pin size={12} aria-hidden="true" />Remember this</button>
-  ) : null;
-  const forkButton = onForkSession && item.entryId && item.status !== "streaming" ? (
-    <button
-      type="button"
-      aria-label="Fork from here"
-      title="Fork this conversation at this message"
-      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-      onClick={() => onForkSession(sessionId ?? "", item.entryId!)}
-    ><GitFork size={12} aria-hidden="true" />Fork from here</button>
-  ) : null;
-  const rewindButton = onRewind && item.entryId && item.status !== "streaming" && rewindable ? (
-    <button
-      type="button"
-      aria-label="Rewind to here"
-      title="Make this message the conversation head (files are not changed)"
-      className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-      onClick={() => onRewind(sessionId ?? "", item.entryId!)}
-    ><RotateCcw size={12} aria-hidden="true" />Rewind to here</button>
-  ) : null;
-  const hoverActions = rememberButton || forkButton || rewindButton ? (
-    <div className="mt-1 flex flex-wrap items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-      {rememberButton}
-      {forkButton}
-      {rewindButton}
-    </div>
-  ) : null;
+const MessageRow = memo(function MessageRow({ item, sessionId, latest, onRemember, onForkSession, onRewind, rewindable }: { item: ConversationItem; sessionId?: string; latest?: boolean; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean }) {
+  const settled = item.status !== "streaming" && item.text.trim() !== "";
+  const entryId = settled ? item.entryId : undefined;
+  const actions = settled ? <>
+    <CopyReplyButton text={item.text}/>
+    {item.role === "assistant" && onRemember && <ReplyAction label="Remember this" onClick={() => onRemember(item.text)}><Pin size={14} aria-hidden="true"/></ReplyAction>}
+    {onForkSession && entryId && <ReplyAction label="Fork from here" title="Fork this conversation at this message" onClick={() => onForkSession(sessionId ?? "", entryId)}><GitFork size={14} aria-hidden="true"/></ReplyAction>}
+    {onRewind && entryId && rewindable && <ReplyAction label="Rewind to here" title="Make this message the conversation head (files are not changed)" onClick={() => onRewind(sessionId ?? "", entryId)}><RotateCcw size={14} aria-hidden="true"/></ReplyAction>}
+  </> : null;
   if (item.role === "user") {
     const attachments = attachmentUris(item.data);
-    return <div className={BUBBLE}>
+    // The actions sit beside the bubble, out of flow: a hidden bar must not
+    // leave an empty line of padding under every message the user sent.
+    return <div className={cn(BUBBLE, "group relative")}>
       <MentionText text={item.text}/>
-      {hoverActions}
+      {actions && <div data-reply-actions className="absolute bottom-0 right-full mr-1 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">{actions}</div>}
       {attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
         {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
       </div>}
@@ -1226,18 +1208,44 @@ const MessageRow = memo(function MessageRow({ item, sessionId, onRemember, onFor
   }
   // No bubble, no card: the agent writes straight onto the canvas, in body
   // ink a step under `foreground` so prose reads as text rather than chrome.
-  return <div className="group w-full min-w-0 text-[14px] text-body">
+  return <div className="group relative w-full min-w-0 text-[14px] text-body">
     {subagentSource(item) && <div className="mb-1"><SubagentChip item={item}/></div>}
     {/* A reply whose first token has not landed is the same statement a
-        streaming thought makes, so it draws the same mark. */}
+        streaming thought makes, so it draws the same row. */}
     {isStreamingText(item.status) && !item.text.trim() ? <ThinkingRow harness={item.harness}/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
-    {hoverActions}
+    {/* The latest reply keeps its bar in flow and visible. Older replies float
+        theirs into the gap below on hover, so a hidden bar costs no height. */}
+    {actions && <div
+      data-reply-actions={latest ? "latest" : "hover"}
+      className={cn("-ml-1.5 flex items-center gap-0.5", latest
+        ? "mt-1.5"
+        : "absolute left-0 top-full z-10 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100")}
+    >{actions}</div>}
   </div>;
-}, (previous, next) => previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
+}, (previous, next) => previous.latest === next.latest && previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
 
-function ItemView({ item, sessionId, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
+/// One icon in a message's action bar: 28px, with the name in a tooltip.
+function ReplyAction({ label, title, onClick, children }: { label: string; title?: string; onClick: () => void; children: ReactNode }) {
+  return <button
+    type="button"
+    aria-label={label}
+    title={title ?? label}
+    onClick={onClick}
+    className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+  >{children}</button>;
+}
+
+/// Copies the message as the Markdown it was written in, then ticks.
+function CopyReplyButton({ text }: { text: string }) {
+  const { copied, copy } = useCopy(text, 1500);
+  return <ReplyAction label={copied ? "Copied" : "Copy"} onClick={copy}>
+    {copied ? <Check size={14} aria-hidden="true"/> : <Copy size={14} aria-hidden="true"/>}
+  </ReplyAction>;
+}
+
+function ItemView({ item, sessionId, latest, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; latest?: boolean; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
-  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
+  if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
