@@ -2924,7 +2924,9 @@ function AppContent() {
                   }}
                 />
               )}
-              <div className="flex-1 min-h-0 relative">
+              {/* A mask, not a painted fade: the canvas can be translucent, and
+                  no opaque color matches it. */}
+              <div className="flex-1 min-h-0 relative mask-b-from-[calc(100%-2rem)]">
                 <AgentConversation
                   session={session}
                   projectName={projectName}
@@ -2975,9 +2977,6 @@ function AppContent() {
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
                 />
-                {/* Inside the transcript box, so prose fades into the composer's
-                    edge instead of being cut hard at it. */}
-                <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-background to-transparent" />
               </div>
               <div className="relative z-10 flex-none safe-bottom">
                 {/* A follow-up the provider cannot take mid-turn is held, not
