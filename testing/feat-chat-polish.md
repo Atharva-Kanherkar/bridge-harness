@@ -63,6 +63,34 @@ Deferred, named so they are not forgotten:
   `claude_ai_Notion`-style prefix), else the wrench. Logos inherit `currentColor`.
 - `sameItems` memo and `SELF_OPENING_STEPS` are unchanged.
 
+### 3b. Check rows (amendment, locked before implementation)
+Build, test, lint and typecheck commands the agent runs render like the Verifying card's
+check rows instead of as plain shell rows.
+- `readToolCall` adds `check: { kind, summary? }` for commands whose first real program
+  (after env assignments, `cd … &&`, and `bunx`/`npx`/`pnpm exec`/`uv run` runners) is:
+  - test: `cargo test|nextest`, `bun test`, `bun run test*`, `npm|pnpm|yarn [run] test*`,
+    `vitest`, `jest`, `pytest`, `python -m pytest`, `go test`, `node --test`, `deno test`,
+    `swift test`, `rspec`.
+  - build: `cargo build`, `bun|npm|pnpm|yarn [run] build*`, `vite build`, `tsc -b|--build`,
+    `go build`, `swift build`, `xcodebuild`, `make`.
+  - typecheck: `cargo check`, `tsc --noEmit`, `bun|npm|pnpm|yarn [run] check|typecheck*`,
+    `mypy`, `pyright`.
+  - lint: `cargo clippy`, `eslint`, `oxlint`, `biome`, `ruff`, `golangci-lint`,
+    `bun|npm|pnpm|yarn [run] lint*`.
+  - Anything else: no `check`.
+- `summary` parsed from output: cargo `test result:` lines summed, vitest `Tests  N failed | M passed`,
+  bun `N pass / M fail`, jest `Tests: …`, pytest `N failed, M passed`, node `# pass/# fail`
+  → `216 tests passed` or `1 failed · 470 passed`; vite `built in 6.76s`; tsc
+  `Found N errors` → `N errors`. Unrecognised output → no summary.
+- Row: status glyph (tick success, X destructive, spinner warning when running), mono
+  command, kind label (`Test`, `Build`, `Typecheck`, `Lint`), faint mono summary, duration,
+  and a status word (`Passed` success, `Failed` destructive, `Running` warning).
+  Failed = status failed, or nonzero exit, or a summary with failures.
+- A collapsed activity group still lists its checks under the header: latest run per
+  distinct command, at most 4, so the result of the work is visible without expanding.
+- Tests: `toolCall.test.ts` classification + summary cases; transcript test that a
+  collapsed group shows a `bun run test` check row with `Passed` and `2677 tests passed`.
+
 ### 4. Gitplace (phase 1)
 - `AppView` gains `"gitplace"`; `chromeTitle` shows `Gitplace`.
 - Sidebar nav row `Gitplace` (GitPullRequest icon) after Usage; bottom-rail source
