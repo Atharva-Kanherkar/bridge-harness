@@ -65,12 +65,12 @@ function rowDigest(row: Element): string {
     if (state === "streaming") {
       // The mark is part of the claim: every harness's streaming thought draws
       // the same one, from the same component.
-      return `thought:streaming:${row.querySelector(".thinking-shimmer") ? "shimmer" : "no-mark"}`;
+      return `thought:streaming:${row.querySelector("[data-thinking-row]") ? "mark" : "no-mark"}`;
     }
     return `thought:completed:${(thought as HTMLDetailsElement).open ? "open" : "closed"}`;
   }
   if (row.querySelector('[class*="max-w-[85%]"]')) return "user-bubble";
-  if (row.querySelector(".thinking-shimmer")) return "assistant-prose:pending";
+  if (row.querySelector("[data-thinking-row]")) return "assistant-prose:pending";
   return "assistant-prose";
 }
 
@@ -151,7 +151,7 @@ describe("golden streams, rendered", () => {
       expect(drawn[harness], `${harness} draws a thought in flight differently`).toEqual(drawn[HARNESSES[0]]);
       // Same component, same state, same mark: the one thing a reader must not
       // be able to use to tell the agents apart.
-      expect(drawn[harness]).toContain("thought:streaming:shimmer");
+      expect(drawn[harness]).toContain("thought:streaming:mark");
     }
   });
 

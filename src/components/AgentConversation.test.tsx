@@ -133,15 +133,34 @@ describe("AgentConversation", () => {
   // A session left on its adapter's default stores no model id. `modelLabel`
   // renders that absence as an em dash, which the narration row would have
   // read out as "— is reading your message…".
-  it("names the harness in the startup row when the session carries no model id", () => {
-    const html = renderToStaticMarkup(<AgentConversation session={{ ...session, model: null }} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("Codex is reading your message");
-    expect(html).not.toContain("— is reading your message");
+  it("shows Thinking in the startup row and never names the model", () => {
+    for (const model of [null, session.model]) {
+      const html = renderToStaticMarkup(<AgentConversation session={{ ...session, model }} onResolve={() => undefined} events={[]} working />);
+      expect(html).toContain(">Thinking<");
+      expect(html).not.toContain("is reading your message");
+      expect(html).not.toContain("GPT Luna");
+    }
   });
 
-  it("names the model in the startup row when the session has one", () => {
+  it("pulses the Thinking word, and holds it static under reduced motion", async () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("GPT Luna is reading your message");
+    expect(html).toMatch(/class="[^"]*thinking-word[^"]*">Thinking</);
+    const matchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes("reduce"), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false })) as typeof window.matchMedia;
+    try {
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />));
+      const word = [...container.querySelectorAll("span")].find(span => span.textContent === "Thinking")!;
+      expect(word).toBeTruthy();
+      expect(word.className).not.toContain("thinking-word");
+      await act(async () => root.unmount());
+      container.remove();
+    } finally {
+      window.matchMedia = matchMedia;
+    }
   });
 
   // The startup row's whole job is to say *which* agent is starting and how
@@ -166,7 +185,7 @@ describe("AgentConversation", () => {
   });
 
   it.each([
-    { elapsed: 2400, label: "2s" },
+    { elapsed: 10_400, label: "10s" },
     { elapsed: 42_163_000, label: "11h 42m" },
   ])("keeps the status first and formats a $elapsed ms wait as $label", async ({ elapsed, label }) => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
@@ -182,7 +201,7 @@ describe("AgentConversation", () => {
       expect(line).not.toBeNull();
       expect(line.textContent).toBe(label);
       const row = line.parentElement!;
-      expect(row.textContent).toBe(`GPT Luna is reading your message…${label}`);
+      expect(row.textContent).toBe(`Thinking${label}`);
       await act(async () => root.unmount());
       container.remove();
     } finally {

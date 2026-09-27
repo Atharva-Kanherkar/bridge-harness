@@ -1,5 +1,5 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
-import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, Square, SquareTerminal, Wrench, X } from "lucide-react";
 import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
@@ -529,10 +529,8 @@ const ROW_VARIANTS = {
 /// Ties the pure narration computation in `startupNarration.ts` to the live
 /// `session-startup` subscription and a tick clock. Resets whenever the
 /// session id changes, so switching chats never carries over a stale phase.
-function useStartupNarration({ sessionId, harness, model, switchingToLabel, hasPendingWork, streaming }: {
+function useStartupNarration({ sessionId, switchingToLabel, hasPendingWork, streaming }: {
   sessionId?: string;
-  harness?: string | null;
-  model?: string | null;
   switchingToLabel: string | null;
   hasPendingWork: boolean;
   streaming: boolean;
@@ -586,11 +584,6 @@ function useStartupNarration({ sessionId, harness, model, switchingToLabel, hasP
   return computeNarration({
     hasPendingWork,
     streaming,
-    harnessName: harnessLabel(harness),
-    // A session on its adapter's default model stores no model id, and
-    // `modelLabel` renders that absence as an em dash — which would read as
-    // "— is reading your message…". Name the harness instead.
-    modelName: model ? modelLabel(model) : harnessLabel(harness),
     switchingToLabel,
     latestPhase: phase,
     startedAt,
@@ -600,19 +593,43 @@ function useStartupNarration({ sessionId, harness, model, switchingToLabel, hasP
   });
 }
 
-/// The status leads, with elapsed time kept as secondary metadata. The mark
-/// stays mounted during the handoff to streaming so its animation does not restart.
-function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: string | null }) {
-  if (!view.mounted) return null;
+/// The harness the transcript belongs to, for rows that draw its mark but are
+/// handed only an item. An item stamped with its own harness still wins.
+const TranscriptHarness = createContext<string | null | undefined>(undefined);
+
+/// The one "the agent is thinking" row: the harness mark and a pulsing word.
+/// The cold-start wait, a reply whose first token has not landed, and a
+/// streaming thought all draw this, so one statement has one look. No model
+/// name: the mark already says who.
+function ThinkingRow({ harness, label = "Thinking", elapsedMs, collapsed, children }: {
+  harness?: string | null;
+  label?: string;
+  elapsedMs?: number;
+  /** Mark only: the handoff to streaming keeps it mounted so it does not restart. */
+  collapsed?: boolean;
+  children?: ReactNode;
+}) {
+  const reducedMotion = useReducedMotion() ?? false;
+  const context = useContext(TranscriptHarness);
+  const mark = harness ?? context;
   return (
-    <div className="flex min-h-8 min-w-0 items-center gap-2.5 text-[12px] text-muted-foreground">
-      <HarnessMark harness={harness} live={!view.reducedMotion}/>
-      {!view.collapsed && <span className="flex min-w-0 items-baseline gap-2.5">
-        <span className="truncate">{view.label}</span>
-        {view.showElapsed && <span className="shrink-0 tabular-nums">{formatThoughtDuration(view.elapsedSeconds * 1000)}</span>}
-      </span>}
+    <div data-thinking-row className="min-w-0">
+      <div className="flex min-h-8 min-w-0 items-center gap-2.5 text-[13px] text-muted-foreground">
+        <HarnessMark harness={mark} live={!reducedMotion}/>
+        {!collapsed && <span className="flex min-w-0 items-baseline gap-2.5">
+          <span data-pulse={reducedMotion ? undefined : ""} className={cn("truncate", !reducedMotion && "thinking-word")}>{label}</span>
+          {elapsedMs !== undefined && <span className="shrink-0 text-[12px] tabular-nums text-faint">{formatThoughtDuration(elapsedMs)}</span>}
+        </span>}
+      </div>
+      {children}
     </div>
   );
+}
+
+/// The status leads, with elapsed time kept as secondary metadata.
+function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: string | null }) {
+  if (!view.mounted) return null;
+  return <ThinkingRow harness={harness} label={view.label} collapsed={view.collapsed} elapsedMs={view.showElapsed ? view.elapsedSeconds * 1000 : undefined}/>;
 }
 
 function StallNotice({ onStop }: { onStop?: () => void }) {
@@ -690,8 +707,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // render this component makes.
   const startupNarration = useStartupNarration({
     sessionId: session?.id,
-    harness: session?.harness,
-    model: session?.model,
     switchingToLabel: modelSwitch?.label ?? null,
     hasPendingWork: !!working || pendingMessages.length > 0,
     streaming,
@@ -747,7 +762,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
-  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
+  return <TranscriptHarness.Provider value={session?.harness}><FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -801,7 +816,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           would stop re-pinning the reader at the bottom. The chip itself is
           position:fixed, so its DOM position is invisible. */}
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></FileLinkContext.Provider>;
+  </ScrollFollow></FileLinkContext.Provider></TranscriptHarness.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1107,22 +1122,11 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
 }
 
 /// *This item is in progress.* A running tool call, a plan step being executed,
-/// a worker still going. Deliberately not the thinking mark: thinking is about
+/// a worker still going. Deliberately not the thinking row: thinking is about
 /// text still arriving, this is about an operation still running, and
 /// `docs/transcript-behavior-contract.md` keeps the two apart.
 function PulseDot({ size = 8 }: { size?: number }) {
   return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" style={{ width: size, height: size }} aria-hidden="true" />;
-}
-
-/// The transcript's one thinking mark: a single achromatic sweep, meaning
-/// "there is more of this coming".
-///
-/// One animation, one call site per meaning. A streaming thought used to pulse
-/// its icon *and* sweep its label, while a reply whose first token had not
-/// landed drew a third, unrelated bar — three animations for one statement, and
-/// nothing tying them together. This is that statement.
-function ThinkingMark({ className }: { className?: string }) {
-  return <span className={cn("thinking-shimmer block h-[2px] w-16 rounded-full", className)} aria-hidden="true"/>;
 }
 
 /// Whether an item's text is still arriving. Both spellings are recognized for
@@ -1226,7 +1230,7 @@ const MessageRow = memo(function MessageRow({ item, sessionId, onRemember, onFor
     {subagentSource(item) && <div className="mb-1"><SubagentChip item={item}/></div>}
     {/* A reply whose first token has not landed is the same statement a
         streaming thought makes, so it draws the same mark. */}
-    {isStreamingText(item.status) && !item.text.trim() ? <ThinkingMark/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
+    {isStreamingText(item.status) && !item.text.trim() ? <ThinkingRow harness={item.harness}/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
     {hoverActions}
   </div>;
 }, (previous, next) => previous.onRemember === next.onRemember && previous.onForkSession === next.onForkSession && previous.onRewind === next.onRewind && previous.rewindable === next.rewindable && sameItem(previous.item, next.item));
@@ -1369,13 +1373,12 @@ function RawEventGroup({ items }: { items: ConversationItem[] }) {
 /// The transcript's one thinking presentation, in its two states.
 ///
 /// Driven by `item.status` and nothing else: never by which agent produced the
-/// turn, never by a wire kind. Streaming is open, with the one thinking mark
-/// beside the label; completed collapses to a single line and stays collapsed
-/// until the reader opens it. The icon is the same in both, so a thought
-/// settling does not change the row's identity under the eye.
+/// turn, never by a wire kind. Streaming is the `ThinkingRow` with the thought
+/// beneath it in faint ink; completed collapses to one borderless line and
+/// stays collapsed until the reader opens it.
 ///
 /// `docs/transcript-behavior-contract.md` is the statement of this; every other
-/// row that means "still going" either draws `ThinkingMark` or is `PulseDot`,
+/// row that means "still going" either draws `ThinkingRow` or is `PulseDot`,
 /// which means something else.
 const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) {
   const streaming = isStreamingText(item.status);
@@ -1386,20 +1389,19 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
   if (streaming) {
     const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
     return (
-      <div data-thinking="streaming" className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
-        <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true"/>
-        <div className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 text-[12px] font-medium text-muted-foreground">Thinking…<ThinkingMark/><SubagentChip item={item}/></span>
-          {lines.length > 0 && <div className="mt-1.5 space-y-0.5">
-            {lines.map((line, index) => <p key={index} className={`whitespace-pre-wrap break-words text-[12px] leading-relaxed ${index === lines.length - 1 ? "text-muted-foreground" : "text-muted-foreground"}`}>{line}</p>)}
+      <div data-thinking="streaming" className="my-1 min-w-0">
+        <ThinkingRow harness={item.harness}>
+          {subagentSource(item) && <div className="mb-1 pl-6"><SubagentChip item={item}/></div>}
+          {lines.length > 0 && <div className="space-y-0.5 pl-6">
+            {lines.map((line, index) => <p key={index} className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-faint">{line}</p>)}
           </div>}
-        </div>
+        </ThinkingRow>
       </div>
     );
   }
   return (
-    <details data-thinking="completed" className="group my-3 min-w-0 rounded-xl border border-border bg-card [&_summary::-webkit-details-marker]:hidden">
-      <summary className="flex cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-muted-foreground transition-colors hover:text-foreground sm:px-4">
+    <details data-thinking="completed" className="group my-1 min-w-0 [&_summary::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-8 cursor-pointer items-center gap-2.5 text-[12px] text-muted-foreground transition-colors hover:text-foreground">
         <Brain size={13} className="shrink-0 text-muted-foreground" aria-hidden="true"/>
         <span className="min-w-0 flex-1 truncate">
           <span className="font-medium">{label}</span>
@@ -1408,7 +1410,7 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
         <SubagentChip item={item}/>
         <ChevronRight size={12} className="ml-auto shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true"/>
       </summary>
-      <div className="border-t border-border px-3.5 py-3 text-muted-foreground sm:px-4">
+      <div className="pb-2 pl-6 text-muted-foreground">
         <Markdown text={text}/>
       </div>
     </details>

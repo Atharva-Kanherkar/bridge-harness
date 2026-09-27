@@ -641,6 +641,18 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: harness-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
+/* The word beside the mark while the agent thinks. Opacity only, on the same
+   2s cadence, and it rests at full ink: the reduced-motion freeze at the bottom
+   of this file lands on the last keyframe, which must be the readable one. */
+@keyframes thinking-word {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.thinking-word {
+  animation: thinking-word 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 /* Text that shimmers while something is in flight. Now one caller: the startup
    narration row, which is session-level and says what Bridge is waiting on
    before any item exists. The transcript's own thinking mark is
