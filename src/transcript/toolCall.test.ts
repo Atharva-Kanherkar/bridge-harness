@@ -156,3 +156,32 @@ describe("harness subagent facet (issue #667)", () => {
     expect(readToolCall({ title: "d", text: "", surface: "activity", data: { type: "dynamicToolCall", prompt: "only prompt" } }).subagent).toBeUndefined();
   });
 });
+
+describe("tool marks", () => {
+  const shell = (command: string) => readToolCall({ text: "", status: "completed", surface: "activity", data: { name: "Bash", input: { command } } });
+
+  it.each([
+    ["git status", "git"],
+    ["git commit -m 'x' && git push", "git"],
+    ["gh pr view 1", "github"],
+    ["bun test", "terminal"],
+  ])("gives `%s` the %s mark", (command, glyph) => {
+    expect(shell(command).glyph).toBe(glyph);
+  });
+
+  it("keeps an exploratory non-git command on its own glyph", () => {
+    expect(shell("ls src").glyph).not.toMatch(/git|github/);
+  });
+
+  it("names the MCP server and routes GitHub's to the GitHub mark", () => {
+    const call = (name: string) => readToolCall({ text: "", status: "completed", surface: "activity", data: { name } });
+    expect(call("mcp__notion__search")).toMatchObject({ glyph: "mcp", server: "notion", done: "Used notion", target: "search" });
+    expect(call("mcp__claude_ai_Slack__slack_send_message")).toMatchObject({ glyph: "mcp", server: "claude_ai_Slack", done: "Used Slack" });
+    expect(call("mcp__github__get_pr")).toMatchObject({ glyph: "github", server: "github" });
+  });
+
+  it("reads a Codex MCP item's server off the item", () => {
+    const tool = readToolCall({ text: "", status: "completed", surface: "activity", data: { type: "mcpToolCall", server: "linear", tool: "list_issues" } });
+    expect(tool).toMatchObject({ glyph: "mcp", server: "linear", target: "list issues" });
+  });
+});

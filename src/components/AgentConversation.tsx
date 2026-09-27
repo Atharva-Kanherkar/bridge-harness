@@ -22,6 +22,9 @@ import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
+import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
+
+const GitHubMark = CONNECTOR_LOGOS.github;
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
@@ -167,7 +170,8 @@ function StatusGlyph({ live, failed, succeeded }: { live: boolean; failed: boole
 // The row is achromatic on purpose: the tool glyph identifies the action, and
 // colour is left to the things that carry meaning — diffstats, exit codes and
 // failures. Reading the call apart lives in `conversation.ts`; all that is left
-// here is choosing an icon for the verb it reports.
+// here is choosing an icon for the verb it reports. Brand marks (git, GitHub,
+// a connector) are identity, not decoration, and render in `currentColor`.
 const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
   pencil: <Pencil size={12}/>,
   "file-plus": <FilePlus2 size={12}/>,
@@ -180,7 +184,20 @@ const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
   wrench: <Wrench size={12}/>,
   brain: <Brain size={12}/>,
   navigation: <Navigation size={12}/>,
+  git: <GitMark size={12}/>,
+  github: <GitHubMark size={12}/>,
+  mcp: <Wrench size={12}/>,
 };
+
+/// A call's icon: its glyph, or for an MCP call the server's connector logo
+/// when Bridge knows one.
+function toolIcon(call: { glyph: ToolGlyph; server?: string }): React.ReactNode {
+  if (call.glyph === "mcp" && call.server) {
+    const Logo = logoForMcpServer(call.server);
+    if (Logo) return <Logo size={12}/>;
+  }
+  return TOOL_ICON[call.glyph];
+}
 
 /// What a collapsed run says it did, in the order the work reads: commands
 /// first, then the files it looked at, then the files it changed. This is the
@@ -352,7 +369,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
       <div data-tool-row className="min-w-0 overflow-hidden">
         <div
           className={cn(
-            "group/row flex min-h-9 w-full min-w-0 items-center gap-2 px-3 text-[12px] text-muted-foreground transition-colors",
+            "group/row flex min-h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-[12px] text-muted-foreground transition-colors",
             body && "hover:bg-accent/50",
           )}
         >
@@ -364,7 +381,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
             title={label}
             onClick={() => body && setToggled(!open)}
           >
-            <span className="shrink-0 text-muted-foreground" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
+            <span className="shrink-0 text-muted-foreground" aria-hidden="true">{toolIcon(call)}</span>
             <span className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
             <SubagentChip item={item}/>
           </button>
@@ -390,11 +407,13 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
             )}
             {call.exitCode !== undefined && <ExitChip code={call.exitCode}/>}
             {call.durationMs !== undefined && !live && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
-            {(live || failed || (succeeded && call.exitCode === undefined && call.verb !== "edit")) && <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>}
+            {/* Only what needs a look earns a glyph: running, or failed. A tick
+                on every settled row was noise the eye had to skip. */}
+            {(live || failed) && <StatusGlyph live={live} failed={failed} succeeded={false}/>}
             {body && <ChevronRight size={12} className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true"/>}
           </button>
         </div>
-        <Disclosure open={open} className="border-t border-border/60">
+        <Disclosure open={open} className="my-1 ml-6 rounded-lg border border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
           {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} status={call.subagent?.status} live={live}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
@@ -461,39 +480,39 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
     })
     .filter(span => Number.isFinite(span.start));
   const workedMs = spans.length ? Math.max(...spans.map(s => s.end)) - Math.min(...spans.map(s => s.start)) : 0;
+  const summary = summarize(items, live);
+  // One faint line, Codex-style: how long the run took, then what it did. With
+  // no timestamps the summary is the headline rather than a wrong duration.
+  const headline = live ? "Working" : workedMs > 0 ? `Worked for ${formatThoughtDuration(workedMs)}` : summary;
   return (
-    <div data-activity-group className="min-w-0 overflow-hidden rounded-xl border border-border/80">
+    <div data-activity-group className="min-w-0">
       <button
         type="button"
-        className="group flex min-h-11 w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+        className="group flex min-h-8 w-full min-w-0 items-center gap-2 text-left text-[13px] text-muted-foreground transition-colors hover:text-foreground"
         aria-expanded={expanded}
+        title={summary}
         onClick={() => setToggled(!expanded)}
       >
-        {live ? <PulseDot size={7}/> : needsAttention
-          ? <AlertTriangle size={12} className="shrink-0 text-destructive" aria-hidden="true"/>
-          : <Check size={12} className="shrink-0 text-faint" aria-hidden="true"/>}
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span className="font-medium text-foreground">{live ? "Working" : needsAttention ? "Activity needs attention" : "Activity"}</span>
-            <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
-            {!live && workedMs > 0 && <span className="text-[11px] tabular-nums text-muted-foreground">· <span className="sr-only">Worked for </span>{formatThoughtDuration(workedMs)}</span>}
-          </span>{" "}
-          <span className="block truncate" title={summarize(items, live)}>{summarize(items, live)}</span>
-        </span>
+        {live && <PulseDot size={7}/>}
+        {!live && needsAttention && <AlertTriangle size={12} className="shrink-0 text-destructive" aria-hidden="true"/>}
+        <span className="shrink-0">{headline}</span>
+        {!live && needsAttention && <span className="shrink-0 text-destructive">· needs attention</span>}
+        {headline !== summary && <span className="min-w-0 truncate text-[12px] text-faint">{summary}</span>}
+        <span className="sr-only">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
         <ChevronDown size={13} className={cn("shrink-0 text-faint transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
       </button>
       {/* Collapsed and still working: the step running right now, and nothing
           else. A reader watching a run wants the head of it, not its history. */}
       {current && !expanded && (
-        <div className="flex min-w-0 items-center gap-2 px-3 pb-2.5 text-[12px] text-muted-foreground">
-          <span className="shrink-0" aria-hidden="true">{TOOL_ICON[current.glyph]}</span>
+        <div className="flex min-h-7 min-w-0 items-center gap-2 px-1.5 text-[12px] text-muted-foreground">
+          <span className="shrink-0" aria-hidden="true">{toolIcon(current)}</span>
           <span className="min-w-0 truncate">{current.doing}{current.target ? ` ${current.target}` : ""}</span>
           <StatusGlyph live failed={false} succeeded={false}/>
         </div>
       )}
       <Disclosure open={expanded}>
         <motion.div
-          className="grid min-w-0 divide-y divide-border/60 border-t border-border/80"
+          className="grid min-w-0 gap-px pb-1"
           initial="hidden"
           animate="shown"
           variants={{ hidden: {}, shown: {} }}
@@ -501,12 +520,11 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
         >
           {items.map(item => isToolItem(item)
             ? <ActionRow key={item.key} item={item}/>
-            : <div key={item.key} className="min-w-0 px-3 py-2">
+            : <div key={item.key} className="min-w-0 px-1.5">
                 {item.type === "plan" ? <PlanCard item={item}/> : <Reasoning item={item}/>}
               </div>)}
         </motion.div>
       </Disclosure>
-
     </div>
   );
   // The reducer rebuilds every item on every fold, so reference equality would

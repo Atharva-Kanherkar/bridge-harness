@@ -129,14 +129,15 @@ describe("tool row disclosure", () => {
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(1);
 
-    // Opened by hand, the finished call wears the tick instead.
+    // Opened by hand, the finished call wears no glyph at all: only running
+    // and failed rows earn one.
     mount([command({ status: "completed" })]);
     await settle();
     const summary = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Ran 1 command"));
     await act(async () => summary!.click());
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(0);
-    expect(host.querySelectorAll(".text-success").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("[data-tool-row] .lucide-check")).toHaveLength(0);
   });
 });
 

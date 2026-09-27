@@ -22,7 +22,7 @@ import type { ToolSurface } from "./events";
 export type ToolVerb = "edit" | "read" | "run" | "search" | "tool";
 
 /** Which icon the row wears. A key, not a component. */
-export type ToolGlyph = "pencil" | "file-plus" | "file" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench" | "brain" | "navigation";
+export type ToolGlyph = "pencil" | "file-plus" | "file" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench" | "brain" | "navigation" | "git" | "github" | "mcp";
 
 export type ToolStatus = "running" | "completed" | "failed" | "idle";
 
@@ -39,6 +39,8 @@ export interface ToolCallDisplay {
   path?: string;
   /** The command as typed, for the terminal block. */
   command?: string;
+  /** The MCP server a `mcp` or `github` glyph call went through, as named. */
+  server?: string;
   additions?: number;
   deletions?: number;
   durationMs?: number;
@@ -387,6 +389,7 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
   return {
     ...common,
     ...named,
+    glyph: (command ? commandGlyph(command) : undefined) ?? named.glyph,
     path: named.path ?? path,
     command,
     // Keep the call in the reduction, but do not narrate an anonymous start.
@@ -399,6 +402,26 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
     // still just output.
     patch: named.verb === "edit" ? readPatch(source, data, output) : undefined,
   };
+}
+
+/// A shell call wears its program's mark when there is one: `git …` the git
+/// mark, `gh …` GitHub's. Read off the first program in the line, so a chain
+/// that opens with `git status` is still git work.
+function commandGlyph(command: string): ToolGlyph | undefined {
+  const first = command.trim().split(/\s*(?:&&|;|\|\||\|)\s*/)[0] ?? "";
+  const clean = first.replace(/^(?:builtin|command|sudo)\s+/, "");
+  const bin = (parseCommandTokens(clean)[0] ?? "").split("/").pop()?.toLowerCase();
+  if (bin === "git") return "git";
+  if (bin === "gh") return "github";
+  return undefined;
+}
+
+/// An MCP call, named by its server. GitHub's own server wears GitHub's mark;
+/// every other server gets `mcp`, and the renderer resolves a connector logo
+/// from `server` or falls back to the wrench.
+function mcpFacet(server: string, tool: string): { verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; server: string } {
+  const label = server.replace(/^claude_ai_/i, "").replaceAll("_", " ");
+  return { verb: "tool", glyph: /github/i.test(server) ? "github" : "mcp", doing: `Using ${label}`, done: `Used ${label}`, target: tool || undefined, server };
 }
 
 export function parseCommandTokens(command: string): string[] {
@@ -650,7 +673,7 @@ const ACP_TOOL_KINDS: Record<string, { verb: ToolVerb; glyph: ToolGlyph; doing: 
 };
 
 function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): {
-  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string; pendingIdentity?: boolean;
+  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string; server?: string; pendingIdentity?: boolean;
 } {
   // Claude puts the arguments on `input`; OpenCode nests them under the part's
   // `state`. Merged so the branches below can read one bag.
@@ -662,6 +685,12 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
   const title = source.title ?? "";
   const path = readPath(data);
   const file = path ? basename(path) : undefined;
+
+  // Codex names an MCP call's server and tool on the item itself. Ahead of the
+  // name branch: its `tool` field would otherwise read as OpenCode's tool name.
+  if (dataType === "mcpToolCall" && text(data.server)) {
+    return mcpFacet(text(data.server)!, (text(data.tool) ?? "").replaceAll("_", " "));
+  }
 
   if (name) {
     const key = name.toLowerCase();
@@ -689,7 +718,7 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
       const parts = name.replace(/^mcp__/, "").split("__");
       const server = parts[0] ?? name;
       const tool = parts.slice(1).join(" ").replaceAll("_", " ") || name;
-      return { verb: "tool", glyph: "wrench", doing: `Using ${server}`, done: `Used ${server}`, target: tool };
+      return mcpFacet(server, tool);
     }
     return { verb: "tool", glyph: "wrench", doing: `Using ${name}`, done: `Used ${name}`, target: title || undefined };
   }

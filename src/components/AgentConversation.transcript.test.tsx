@@ -192,7 +192,7 @@ describe("command rows", () => {
     const chip = exitChip("exit 2");
     expect(chip).toBeDefined();
     expect(chip?.className).toContain("text-destructive");
-    expect(buttonWith("Activity needs attention")).toBeDefined();
+    expect(buttonWith("needs attention")).toBeDefined();
   });
 
   it("renders no chip at all when the provider reports no exit code", async () => {
@@ -402,6 +402,36 @@ describe("run trailer", () => {
     mount([parallelCommand(1, "2026-01-01T00:00:00.000Z"), parallelCommand(2, "2026-01-01T00:00:00.000Z")]);
     expect(host.textContent).toContain("Worked for 10s");
     expect(host.textContent).not.toContain("20s");
+  });
+});
+
+describe("activity timeline", () => {
+  it("draws one borderless Worked for header over the run", () => {
+    mount([event(1, "command.completed", {
+      title: "git status",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      data: { type: "commandExecution", command: "git status", durationMs: 4000, exitCode: 0 },
+    })]);
+    const group = host.querySelector("[data-activity-group]")!;
+    expect(group.className).not.toMatch(/\bborder\b/);
+    expect(buttonWith("Worked for 4s")).toBeDefined();
+    expect(host.textContent).not.toContain("Activity");
+  });
+
+  it("wears the git mark on git work and a connector logo on a known MCP server", () => {
+    mount([
+      event(1, "command.completed", { itemId: "g", title: "git diff", data: { type: "commandExecution", command: "git diff", exitCode: 0 } }),
+      event(2, "tool.completed", { itemId: "n", title: "search", data: { name: "mcp__notion__search" } }),
+      event(3, "tool.completed", { itemId: "x", title: "lookup", data: { name: "mcp__acme__lookup" } }),
+    ]);
+    act(() => host.querySelector<HTMLButtonElement>("[data-activity-group] > button")!.click());
+    const rows = [...host.querySelectorAll("[data-tool-row]")];
+    expect(rows).toHaveLength(3);
+    // Stroke-drawn git mark, the Notion path, and the lucide wrench fallback.
+    expect(rows[0].querySelector('svg[stroke="currentColor"]')).not.toBeNull();
+    expect(rows[1].textContent).toContain("Used notion");
+    expect(rows[1].querySelector("svg path[fill='currentColor']")).not.toBeNull();
+    expect(rows[2].querySelector(".lucide-wrench")).not.toBeNull();
   });
 });
 
