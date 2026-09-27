@@ -880,7 +880,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items}/></TranscriptRow>
           : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
           : <TranscriptRow
-              key={entry.item.key}
+              key={entry.key}
               tone={entry.item.type === "error" || entry.item.status === "failed" ? "alert" : "quiet"}
               id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
               entryId={entry.item.entryId}

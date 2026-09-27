@@ -20,7 +20,7 @@ import type { ConversationItem, ConversationItemType } from "./item";
 
 /** One top-level entry of the transcript. */
 export type Rendered =
-  | { kind: "item"; item: ConversationItem }
+  | { kind: "item"; key: string; item: ConversationItem }
   /** A turn's tool work, with the thoughts that fell inside it, in order. */
   | { kind: "group"; key: string; items: ConversationItem[] }
   | { kind: "raw-group"; key: string; items: ConversationItem[] };
@@ -44,6 +44,15 @@ export function isToolItem(item: ConversationItem): boolean {
  *  moment the run finishes: the identity of the call that opened it. */
 function groupKey(first: ConversationItem): string {
   return `group:${first.identity ?? first.key}`;
+}
+
+/** Keyed by identity, which live and durable twins share, so the forest swap never remounts a row. */
+function rowKey(item: ConversationItem, used: Set<string>): string {
+  let key = `row:${item.identity ?? item.key}`;
+  if (used.has(key)) key = `row:key:${item.key}`;
+  for (let copy = 2; used.has(key); copy += 1) key = `row:key:${item.key}:${copy}`;
+  used.add(key);
+  return key;
 }
 
 /**
@@ -123,9 +132,11 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
   let group: ConversationItem[] | null = null;
   let held: ConversationItem[] = [];
   let turn: number | undefined;
+  const usedKeys = new Set<string>();
+  const pushItem = (item: ConversationItem) => out.push({ kind: "item", key: rowKey(item, usedKeys), item });
 
   const flushHeld = () => {
-    for (const item of coalesceThoughts(held)) out.push({ kind: "item", item });
+    for (const item of coalesceThoughts(held)) pushItem(item);
     held = [];
   };
   const closeGroup = () => {
@@ -151,7 +162,7 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
     // never off a payload field.
     if (item.data.staleBase === true || item.type === "model-change") {
       closeGroup();
-      out.push({ kind: "item", item });
+      pushItem(item);
       continue;
     }
 
@@ -173,7 +184,7 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
     }
 
     closeGroup();
-    out.push({ kind: "item", item });
+    pushItem(item);
   }
 
   closeGroup();

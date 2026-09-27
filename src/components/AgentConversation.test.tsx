@@ -7,6 +7,7 @@ import * as conversation from "../conversation";
 import { bridgeApi } from "../api";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
+import { durableEntriesFrom, harnessStream } from "../transcript/golden";
 import type { AgentEvent, CompletionSummary, Session, SessionEntry } from "../types";
 
 const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" };
@@ -821,4 +822,29 @@ describe("AgentConversation", () => {
     expect([...container.querySelectorAll("button")].every(button => button.getAttribute("aria-label") !== "Fork from here")).toBe(true);
     await act(async () => root.unmount());
   });
+
+  it("keeps one reply node through the live-to-durable swap", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const stream = harnessStream("claude");
+    const entries = durableEntriesFrom(stream[0].sessionId, stream);
+    const reply = "Fixed the assertion in src/lib.rs.";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const replyNodes = () => [...host.querySelectorAll(".md")].filter(node => node.textContent?.includes(reply));
+    const chat = { ...session, id: stream[0].sessionId, harness: "claude", kind: "chat" as const };
+    try {
+      await act(async () => root.render(<AgentConversation session={chat} events={stream} forestEntries={[]} onResolve={() => undefined} />));
+      const [live] = replyNodes();
+      expect(live).toBeDefined();
+      await act(async () => root.render(<AgentConversation session={chat} events={stream} forestEntries={entries} activeLeafId={entries[entries.length - 1].id} onResolve={() => undefined} />));
+      const after = replyNodes();
+      expect(after).toHaveLength(1);
+      expect(after[0]).toBe(live);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
 });
