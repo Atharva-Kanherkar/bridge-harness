@@ -914,6 +914,34 @@ describe("the dock in the session view", () => {
     expect(outside).toHaveLength(0);
   });
 
+  // A review-comment jump from Gitplace into a workspace with no chat: the
+  // draft's first message creates the chat, and the file still opens in it.
+  it("keeps a Gitplace file jump through a new chat's first message", async () => {
+    const real = await bridgeApi.state();
+    const lonely = real.workspaces.find(workspace => workspace.id === "demo-3")!;
+    vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
+    const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
+    await mountApp();
+    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Gitplace")!);
+    await settle(4);
+    await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
+    await settle(4);
+    const location = [...container.querySelectorAll<HTMLButtonElement>("section[aria-label='Review threads'] button")].find(button => button.textContent?.includes("src/api.ts"))!;
+    expect(location).toBeTruthy();
+    await click(location);
+    await settle(4);
+    expect(read).not.toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Address the review comment");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(10);
+    expect(read).toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);

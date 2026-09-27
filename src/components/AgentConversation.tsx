@@ -1428,22 +1428,28 @@ function isSessionStartMarker(item: ConversationItem): boolean {
 
 /// A checkpoint, compaction or branch summary as one faint centred line in the
 /// same register as a model change. The detail is a click away, not a card.
+/// A one-line summary is shown whole only while it fits in the line; past this
+/// it is truncated there, so the line opens to show it in full.
+const FOREST_LINE_FITS = 72;
+
 function ForestLine({ item }: { item: ConversationItem }) {
   const label = item.title || (item.type === "checkpoint" || item.type === "compaction" ? "Checkpoint saved" : item.type === "context-compacted" ? "Context compacted" : "Branch summary");
-  const lines = item.text.split("\n").map(line => line.trim()).filter(Boolean);
-  const preview = lines[0];
-  // What opening the line adds: everything past the preview, never a repeat.
-  const rest = lines.slice(1).join("\n");
-  const line = <>
+  const text = item.text.trim();
+  const preview = text.split("\n").map(line => line.trim()).find(Boolean);
+  // Opens whenever the line cannot hold the whole summary: more than one line,
+  // or a first line long enough to truncate. Opening shows all of it, first
+  // paragraph included, so saved context is never only reachable in part.
+  const expandable = !!preview && (preview !== text || preview.length > FOREST_LINE_FITS);
+  const line = (open: boolean) => <>
     <span className="h-px flex-1 bg-border" aria-hidden="true"/>
-    <span className="min-w-0 max-w-[80%] shrink truncate">{label}{preview ? ` · ${preview}` : ""}</span>
+    <span className="min-w-0 max-w-[80%] shrink truncate">{label}{preview ? <span className={cn(open && "group-open:hidden")}>{` · ${preview}`}</span> : null}</span>
     <span className="h-px flex-1 bg-border" aria-hidden="true"/>
   </>;
   const row = "flex min-w-0 items-center gap-2 text-[11px] text-faint";
-  if (!rest) return <div data-forest-line className={cn("my-1", row)}>{line}</div>;
+  if (!expandable) return <div data-forest-line className={cn("my-1", row)}>{line(false)}</div>;
   return <details data-forest-line className="group my-1 min-w-0 [&_summary::-webkit-details-marker]:hidden">
-    <summary className={cn(row, "cursor-pointer transition-colors hover:text-muted-foreground")}>{line}</summary>
-    <p className="mx-auto mt-1.5 max-w-[80%] whitespace-pre-wrap text-center text-[12px] leading-relaxed text-muted-foreground">{rest}</p>
+    <summary className={cn(row, "cursor-pointer transition-colors hover:text-muted-foreground")}>{line(true)}</summary>
+    <p data-forest-detail className="mx-auto mt-1.5 max-w-[80%] whitespace-pre-wrap break-words text-center text-[12px] leading-relaxed text-muted-foreground">{text}</p>
   </details>;
 }
 

@@ -474,6 +474,16 @@ describe("check rows", () => {
     expect(rows[1].querySelector(".animate-spin.text-warning")).not.toBeNull();
   });
 
+  it("fails a zero-exit run whose test file failed to collect, and flags the group", () => {
+    // `vitest run | cat` without pipefail exits 0 while a suite failed.
+    mount([run(1, "bunx vitest run | cat", { exitCode: 0, aggregatedOutput: " Test Files  1 failed | 1 passed (2)\n      Tests  1 passed (1)" })]);
+    const row = host.querySelector("[data-check-list] [data-tool-row]")!;
+    expect(row.textContent).toContain("Failed");
+    expect(row.textContent).toContain("1 file failed · 1 passed");
+    expect(row.textContent).not.toContain("Passed");
+    expect(buttonWith("needs attention")).toBeDefined();
+  });
+
   it("keeps only the latest run of a repeated check", () => {
     mount([
       run(1, "bun run test", { exitCode: 1, aggregatedOutput: "Tests  1 failed | 10 passed (11)" }),
@@ -493,13 +503,30 @@ describe("forest bookkeeping", () => {
   it("draws checkpoints and branch summaries as faint lines, not cards", () => {
     renderForest([
       forestEntry("u", null, 1, "user.message", { text: "Go", itemId: "u" }),
-      forestEntry("c", "u", 2, "checkpoint.created", { title: "Checkpoint saved", summary: "Workers own isolated paths" }),
+      forestEntry("c", "u", 2, "checkpoint", { summary: "Workers own isolated paths" }),
       forestEntry("b", "c", 3, "branch.summary", { summary: "Explored the alternate\nKept the store" }),
     ]);
     const lines = [...host.querySelectorAll("[data-forest-line]")];
-    expect(lines.length).toBeGreaterThanOrEqual(1);
+    expect(lines).toHaveLength(2);
+    expect(host.textContent).toContain("Workers own isolated paths");
     for (const line of lines) expect(line.className).not.toContain("rounded-xl");
     expect(host.textContent).toContain("Explored the alternate");
+  });
+
+  it("opens a long single-paragraph summary, and shows the whole text, first paragraph included", () => {
+    const long = "Workers own isolated paths and every write is scoped to the worktree the policy engine granted, so a stray edit can never land in the parent checkout.";
+    renderForest([
+      forestEntry("u", null, 1, "user.message", { text: "Go", itemId: "u" }),
+      forestEntry("c", "u", 2, "checkpoint", { summary: long }),
+      forestEntry("b", "c", 3, "branch.summary", { summary: `${long}\nKept the store` }),
+    ]);
+    const details = [...host.querySelectorAll<HTMLDetailsElement>("details[data-forest-line]")];
+    expect(details).toHaveLength(2);
+    const bodies = details.map(detail => detail.querySelector("[data-forest-detail]")!.textContent);
+    expect(bodies[0]).toBe(long);
+    expect(bodies[1]).toBe(`${long}\nKept the store`);
+    // The body is not a truncating element.
+    for (const detail of details) expect(detail.querySelector("[data-forest-detail]")!.className).not.toContain("truncate");
   });
 
   it("shows no card for a session-start branch summary", () => {

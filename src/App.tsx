@@ -40,6 +40,7 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GitplaceScreen } from "./components/GitplaceScreen";
+import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
@@ -761,15 +762,6 @@ function AppContent() {
   const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
-  // A review-comment jump from Gitplace: the file lives in a worktree, so the
-  // jump waits until a chat in that workspace is the one on screen. Declared
-  // after the workspace-change reset above so it runs after it.
-  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<{ workspaceId: string; path: string; line: number | undefined; headBranch: string }>();
-  useEffect(() => {
-    if (!pendingGitplaceJump || view !== "workspace" || workspace?.id !== pendingGitplaceJump.workspaceId) return;
-    jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
-    setPendingGitplaceJump(undefined);
-  }, [pendingGitplaceJump, view, workspace?.id]);
 
   const openGithubPane = useCallback((view: GithubLinkView) => {
     githubIntentNonce.current += 1;
@@ -944,13 +936,15 @@ function AppContent() {
     const chat = topSessions
       .filter(candidate => candidate.workspaceId === workspaceId)
       .sort((a, b) => Date.parse(b.startedAt ?? "") - Date.parse(a.startedAt ?? ""))[0];
+    setPendingGitplaceJump({ workspaceId, path, line, headBranch });
     if (chat) {
-      setPendingGitplaceJump({ workspaceId, path, line, headBranch });
       openSession(chat.id);
       return;
     }
+    // No chat yet: open a draft there. The jump waits for the first message
+    // to create the chat, then opens the file in it.
     void startChatInWorkspace(workspaceId);
-    setGithubJumpHint(`Send a first message to open ${path} from this chat.`);
+    setGithubJumpHint(`Send a first message and ${path} opens in this chat.`);
   }
 
   function jumpToReviewComment(path: string, line: number | undefined, headBranch: string) {
@@ -1015,6 +1009,18 @@ function AppContent() {
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  // A review-comment jump from Gitplace: the file lives in a worktree, so the
+  // jump waits until a chat in that workspace is the one on screen, through a
+  // draft's first message if it has to. Declared after the workspace-change
+  // reset of the code reveal, so it runs after it.
+  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<GitplaceJump>();
+  useEffect(() => {
+    if (!pendingGitplaceJump) return;
+    const step = gitplaceJumpStep(pendingGitplaceJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
+    if (step === "wait") return;
+    if (step === "jump") jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
+    setPendingGitplaceJump(undefined);
+  }, [pendingGitplaceJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);

@@ -47,6 +47,13 @@ describe("summarizeCheckOutput", () => {
     expect(summarizeCheckOutput("test", "      Tests  2 failed (2)")).toEqual({ summary: "2 failed · 0 passed", failures: true });
   });
 
+  it("fails a run whose test files failed to collect, even when every counted test passed", () => {
+    const vitest = " FAIL  src/broken.test.ts [ src/broken.test.ts ]\nError: Cannot find module './missing'\n\n Test Files  1 failed | 1 passed (2)\n      Tests  1 passed (1)";
+    expect(summarizeCheckOutput("test", vitest)).toEqual({ summary: "1 file failed · 1 passed", failures: true });
+    const jest = "Test Suites: 1 failed, 3 passed, 4 total\nTests:       12 passed, 12 total";
+    expect(summarizeCheckOutput("test", jest)).toEqual({ summary: "1 file failed · 12 passed", failures: true });
+  });
+
   it("reads bun, jest, pytest and node --test", () => {
     expect(summarizeCheckOutput("test", " 41 pass\n 1 fail")).toEqual({ summary: "1 failed · 41 passed", failures: true });
     expect(summarizeCheckOutput("test", "Tests:       1 failed, 41 passed, 42 total")).toEqual({ summary: "1 failed · 41 passed", failures: true });

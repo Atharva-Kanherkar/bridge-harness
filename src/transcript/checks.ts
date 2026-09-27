@@ -131,8 +131,11 @@ export function classifyCheck(command: string): CheckKind | undefined {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function counts(passed: number, failed: number, noun = "test"): { summary: string; failures: boolean } {
+function counts(passed: number, failed: number, noun = "test", failedFiles = 0): { summary: string; failures: boolean } {
   if (failed > 0) return { summary: `${failed} failed · ${passed} passed`, failures: true };
+  // A file that fails to collect runs none of its tests, so the test tally
+  // alone can read all-green. The file count is what says the run failed.
+  if (failedFiles > 0) return { summary: `${plural(failedFiles, "file")} failed · ${passed} passed`, failures: true };
   return { summary: `${plural(passed, noun)} passed`, failures: false };
 }
 
@@ -148,10 +151,12 @@ export function summarizeCheckOutput(kind: CheckKind, output: string | undefined
     // vitest: `Tests  1 failed | 470 passed (471)`.
     const vitestFailed = /^\s*Tests\s+(\d+) failed/m.exec(text);
     const vitestPassed = /^\s*Tests\s+(?:\d+ failed \| )?(\d+) passed/m.exec(text);
-    if (vitestFailed || vitestPassed) return counts(Number(vitestPassed?.[1] ?? 0), Number(vitestFailed?.[1] ?? 0));
+    const vitestFiles = /^\s*Test Files\s+(\d+) failed/m.exec(text);
+    if (vitestFailed || vitestPassed || vitestFiles) return counts(Number(vitestPassed?.[1] ?? 0), Number(vitestFailed?.[1] ?? 0), "test", Number(vitestFiles?.[1] ?? 0));
     // jest: `Tests:       1 failed, 41 passed, 42 total`.
     const jest = /Tests:\s+(?:(\d+) failed, )?(?:\d+ skipped, )?(\d+) passed/.exec(text);
-    if (jest) return counts(Number(jest[2]), Number(jest[1] ?? 0));
+    const jestSuites = /Test Suites:\s+(\d+) failed/.exec(text);
+    if (jest || jestSuites) return counts(Number(jest?.[2] ?? 0), Number(jest?.[1] ?? 0), "test", Number(jestSuites?.[1] ?? 0));
     // pytest: `=== 3 failed, 41 passed in 2.1s ===`.
     const pytest = /=+ (?:(\d+) failed, )?(\d+) passed/.exec(text);
     if (pytest) return counts(Number(pytest[2]), Number(pytest[1] ?? 0));
