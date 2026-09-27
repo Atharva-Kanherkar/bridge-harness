@@ -337,13 +337,16 @@ pub struct CreateWorkspaceSessionParams {
     /// Omitted keeps the existing orchestrator behavior.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<WorkspaceSessionKind>,
-    /// The provider and model to start a direct workspace chat with.
+    /// Selected provider for a direct workspace chat. Ignored for orchestrators.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<HarnessId>,
+    /// Selected model for a direct workspace chat. Ignored for orchestrators.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
 
+/// The session kind chosen when a workspace chat is created. Fixed for the
+/// session's lifetime: every later turn reads it from the stored row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceSessionKind {

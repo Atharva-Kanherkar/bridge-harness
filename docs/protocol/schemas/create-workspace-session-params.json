@@ -44,10 +44,10 @@
           "type": "null"
         }
       ],
-      "description": "Whether the chat runs as a Bridge orchestrator or as a direct harness chat in the workspace. Omitted means orchestrator."
+      "description": "Omitted keeps the existing orchestrator behavior."
     },
     "model": {
-      "description": "Selected provider model for a direct workspace chat.",
+      "description": "Selected model for a direct workspace chat. Ignored for orchestrators.",
       "type": [
         "string",
         "null"
