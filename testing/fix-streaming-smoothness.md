@@ -21,7 +21,31 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
    `AnimatePresence` the live row plays its exit fade while the durable row
    fades in: two copies of the reply on screen, then a jump. Groups already key
    off `identity` (`group:<identity>`); single rows do not.
-3. **Streaming looks rough.** Prose streams at `opacity: 0.7` (`.md.dim`) and
+3. **Thought shown twice.** A *logical* duplicate, and the one defect above does
+   not cover. Nearly every harness sends `reasoning.*` with **no provider item
+   id**, so `liveKey` returns no key (the reducer borrows the turn's) and the
+   durable writer files the same frame under the forest entry's own id. The live
+   row's identity is `reasoning:<event id>`; its persisted twin's is
+   `entry:<entry id>`. Two numbering spaces that can never agree, and
+   `mergeConversationProjections` deduplicates on identity — so it kept both and
+   `coalesceThoughts` joined them into a single Thinking card whose body was the
+   same paragraph twice. `assistantShadowText` already matched unnamed assistant
+   prose on text for exactly this reason; a thought never got the same answer,
+   and is the commoner case. Mid-stream it is worse than a duplicate: a delta is
+   never persisted, so the live row holds only the *prefix* of a body the forest
+   already holds whole, and they cannot even be compared for equality until the
+   stream lands.
+   - All four golden fixtures happen to **name** their reasoning
+     (`reasoning-msg-1`, `thought-2`, …), so none of them can see this. The
+     sweep strips the names.
+   - The sweep must move **both** axes. The live window is a *tail* of the
+     stream, not the whole turn. Holding the live window at the full turn and
+     sweeping only the forest hides the defect completely: the live window then
+     keeps only the turn's last thought while the forest holds each one
+     separately, so no two rows ever say the same thing. The doubled card needs
+     the live window to still be holding the thought the forest has just
+     stored, which is what a live tail is.
+4. **Streaming looks rough.** Prose streams at `opacity: 0.7` (`.md.dim`) and
    pops to full ink on completion; provider chunks arrive in bursts (a word
    fragment, then a sentence), so text lurches.
 
@@ -52,6 +76,20 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
 - F6. Scroll-follow keeps a pinned reader at the bottom while the reveal
   drains.
 - F7. Holds for every harness: Claude, Codex, OpenCode, ACP (Cursor).
+- F8. Thinking is never suppressed. A thought is still drawn by the one thinking
+  component, still streams with the shimmer and still settles to a collapsed
+  summary — it is drawn **once**. Reconciling the two projections must not
+  remove, collapse or hide a thought to achieve that.
+- F9. A row the merge cannot match by identity is matched on its whole trimmed
+  body instead. A row it drops that way is replaced by one that says exactly the
+  same thing, and the durable row is the survivor — it is the one the reader can
+  branch from.
+- F10. The prefix match that covers the mid-stream case is scoped and floored,
+  so it cannot cost a real thought: it only ever compares against the **newest**
+  stored thought (the thought being streamed is the newest thing in the forest),
+  and only when at least 24 characters have arrived. Below that floor a
+  half-streamed thought is kept, because the opening words of two thoughts are
+  the part they are most likely to share.
 
 ## Unit Tests
 
@@ -60,6 +98,17 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
     projections of the same golden stream give each assistant reply the same
     row key.
   - `falls back to a unique key when two rows share an identity`.
+- `src/conversation.test.ts` (the merge, F8–F10)
+  - `draws a thought once once the forest has caught up with it` — asserts the
+    two identities genuinely differ first, so the test cannot be satisfied by
+    keying on identity.
+  - `does not double a thought the forest caught up with mid-stream` — the live
+    row is a prefix of the stored one.
+  - `reconciles a named thought on its item id alone` — Codex names its
+    reasoning; identity alone suffices.
+  - `keeps a new thought that no durable row says`
+  - `keeps a new thought that only opens like the one before it` — F10 scope.
+  - `keeps a streaming thought too short to be the stored one` — F10 floor.
 - `src/components/smoothText.test.ts` (pure reveal step)
   - never reveals past the target
   - drains a backlog within the window, at least one char per frame
@@ -71,12 +120,33 @@ asked for, for every harness (Claude, Codex, OpenCode, ACP/Cursor/Grok).
     the same stream: exactly one element contains the reply text, and it is the
     same DOM node as before.
   - `streams prose at full ink` — no `.md.dim` while streaming.
+- `src/transcript/golden.test.ts` (real captured turns, names stripped, F8–F10)
+  - `never shows a <harness> thought twice, at any live and durable cut` — every
+    `(liveCut, forestCut)` pair across all four fixtures. Fails on the unfixed
+    merge at `live 2, forest 2` with the card body
+    `"Start with the suite.\nStart with the suite."`.
+- `src/components/AgentConversation.transcript.test.tsx` (jsdom, F8)
+  - `draws a thought once when the forest catches up with it` — one
+    `[data-thinking]` card, `data-thinking="completed"`, summary still reads
+    "Thought for a moment", and the body holds the thought once.
 
 ## Integration / Functional Tests
 
 - Replay across all four golden fixtures (`claude`, `codex`, `opencode`,
   `cursor`): at every durable-prefix cut, the rendered row key of each
   assistant reply is constant and there is exactly one row per reply.
+- The two-axis sweep above is that replay for reasoning, with the names removed.
+
+## Known and out of scope
+
+- An unnamed provider gets **one thought per turn**: `liveKey` hands an unnamed
+  reasoning frame the turn's key on purpose (`codec.ts`, "Reasoning and prose
+  without an item id borrow the turn's key"). So a live window that has already
+  seen two thoughts keeps only the second, while the forest still holds the
+  first, and `coalesceThoughts` puts both in one card in reverse order. Real, and
+  visible — but a different defect from a doubled thought, and fixing it would
+  change what unnamed harnesses show rather than stop them showing it twice.
+  Left alone here on purpose.
 
 ## Smoke Tests
 

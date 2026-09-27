@@ -103,10 +103,51 @@ export function undeliveredPending<T extends { sessionId: string; text: string }
   return next.length === pending.length ? (pending as T[]) : next;
 }
 
-function assistantShadowText(item: ConversationItem): string | undefined {
+/**
+ * The text two projections of one row would share, when they have no shared id.
+ *
+ * A row's `identity` is what tells the merge that a live frame and its persisted
+ * twin are one thing, and it is only as good as the ids the two sides carry. A
+ * tool call always names itself, and named prose does too, so their identities
+ * agree and the dedupe below never has to guess.
+ *
+ * A thought usually does not. `liveKey` returns no key for an unnamed reasoning
+ * frame (the reducer borrows the turn's), and the durable writer files the same
+ * frame under the forest entry's own id, so the live row reads
+ * `reasoning:<event id>` while its twin reads `entry:<entry id>`, which are two
+ * numbering spaces that can never agree. Both rows then survive the merge, and
+ * `coalesceThoughts` joins them into a single card whose body is the same
+ * paragraph twice: one thought, printed twice, in the one component the
+ * transcript has for thinking.
+ *
+ * So a row with no id to match on is matched on its text, the one thing the two
+ * projections cannot word differently. Unnamed assistant prose already needed
+ * this and already had it. A thought is the same problem with the same answer,
+ * and the commoner case, since nearly every harness sends reasoning with no item
+ * id. The match is on the whole trimmed body, so a row it drops is replaced by
+ * one that says exactly the same thing, and the durable row is the one that
+ * survives a reload anyway.
+ */
+function shadowRowText(item: ConversationItem): string | undefined {
+  if (item.type === "reasoning") return item.text.trim() || undefined;
   if (item.type !== "message" || item.role === "user") return undefined;
   return item.text.trim() || undefined;
 }
+
+/**
+ * How much of a streaming row has to be there before it counts as the opening of
+ * the thought the forest already holds.
+ *
+ * A delta is never persisted, so a thought the forest has caught up with leaves
+ * a live row holding only the opening of a body that is already stored whole. The
+ * two cannot be compared for equality until the stream finishes, and a forest
+ * poll is three seconds wide, which is long enough for the whole seam to be on
+ * screen twice. Comparing prefixes fixes it, but "the newest stored thought
+ * begins with what I have just streamed" only means something once there is
+ * enough text to mean anything: the first few words of a thought are the part
+ * two different thoughts are most likely to share.
+ */
+const STREAMED_PREFIX_FLOOR = 24;
 
 export function mergeConversationProjections(durableItems: ConversationItem[], liveItems: ConversationItem[]): ConversationItem[] {
   const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
@@ -115,23 +156,31 @@ export function mergeConversationProjections(durableItems: ConversationItem[], l
   const durableTexts = new Set<string>();
   for (const live of liveItems) {
     if (live.status !== "streaming" && live.itemId) continue;
-    const text = assistantShadowText(live);
+    const text = shadowRowText(live);
     // Preserve find() semantics: the first matching item supplies the anchor,
     // which need not be the smallest sequence in an unsorted input.
     if (text !== undefined && !liveShadows.has(text)) liveShadows.set(text, live.sequence);
   }
   const items = durableItems.map(item => {
     const identity = item.identity ?? itemIdentity(item);
-    const text = assistantShadowText(item);
+    const text = shadowRowText(item);
     if (text !== undefined) durableTexts.add(text);
     const anchor = liveAnchors.get(identity) ?? (text === undefined ? undefined : liveShadows.get(text));
     return anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
   });
+  // The thought being streamed is the newest one in the forest, so the newest
+  // stored thought is the only one that can still be arriving. Comparing
+  // against all of them would let an old thought swallow a new one that merely
+  // opens the same way.
+  let newestStoredThought: string | undefined;
+  for (const item of durableItems) if (item.type === "reasoning") newestStoredThought = item.text.trim();
   for (const live of liveItems) {
     const identity = live.identity ?? itemIdentity(live);
     if (durableIds.has(identity)) continue;
-    const text = assistantShadowText(live);
+    const text = shadowRowText(live);
     if ((live.status === "streaming" || !live.itemId) && text !== undefined && durableTexts.has(text)) continue;
+    if (live.status === "streaming" && text !== undefined && text.length >= STREAMED_PREFIX_FLOOR
+      && newestStoredThought?.startsWith(text)) continue;
     items.push(live);
   }
   items.sort((a, b) => a.sequence - b.sequence);

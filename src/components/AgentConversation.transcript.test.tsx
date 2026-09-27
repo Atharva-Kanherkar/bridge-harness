@@ -389,6 +389,33 @@ describe("three layers", () => {
     expect(host.textContent).toContain("Thinking deeply about architecture");
     expect(host.textContent).not.toContain("Reasoning completed");
   });
+
+  it("draws a thought once when the forest catches up with it", () => {
+    // A thought carries no provider item id on most harnesses, so its live row
+    // and its stored twin are keyed from two id spaces that never agree. The
+    // merge has to recognise them as one row on the text itself, or the Thinking
+    // card prints the same paragraph twice.
+    const thought = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const entries = [
+      forestEntry("e1", null, 1, "user.message", { text: "fix the transcript", role: "user", status: "completed" }),
+      forestEntry("e2", "e1", 41, "reasoning.completed", { text: thought, status: "completed" }),
+    ];
+    const live = [
+      event(1, "message.completed", { itemId: null, role: "user", status: "completed", text: "fix the transcript" }),
+      event(41, "reasoning.completed", { itemId: null, status: "completed", text: thought }),
+    ];
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={entries} activeLeafId="e2" onResolve={() => {}} />);
+    });
+    // One card, settled, holding the thought once. It is the same component in
+    // both states: nothing here hides thinking, it stops repeating it.
+    const thinking = host.querySelector("[data-thinking]");
+    expect(host.querySelectorAll("[data-thinking]")).toHaveLength(1);
+    expect(thinking?.getAttribute("data-thinking")).toBe("completed");
+    expect(thinking?.querySelector("summary")?.textContent).toContain("Thought for a moment");
+    // Once as the collapsed summary's preview, once in the body it opens to.
+    expect(thinking?.querySelector(".md")?.textContent?.split(thought).length ?? 0).toBe(2);
+  });
 });
 
 describe("run trailer", () => {
