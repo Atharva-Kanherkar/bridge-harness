@@ -157,7 +157,7 @@ describe("BridgeSidebar repositories list", () => {
     mount();
     expect(text()).toContain("Japan relocation");
     expect(text()).toContain("Sidebar redesign");
-    expect(text()).toContain("Repositories");
+    expect(text()).toContain("Projects");
     expect(text()).not.toContain("Needs you");
   });
 
@@ -207,9 +207,9 @@ describe("BridgeSidebar action rows", () => {
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("renders Agent Fleet and keeps the Work board hidden", () => {
+  it("renders Terminals and keeps the Work board hidden", () => {
     mount();
-    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Terminals"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Work board"]')).toBeNull();
   });
 

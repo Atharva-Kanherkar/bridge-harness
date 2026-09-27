@@ -190,7 +190,7 @@ describe("BridgeSidebar hidden", () => {
     const html = render({ mobileOpen: true });
     expect(asideTag(html)).not.toContain("inert");
     expect(html).toContain("Policy engine budget");
-    expect(html).toContain("Repositories");
+    expect(html).toContain("Projects");
   });
 });
 
@@ -298,7 +298,7 @@ describe("BridgeSidebar history", () => {
     const html = render({ chats });
     expect(html).toContain("Japan relocation planning");
     expect(html).toContain("Inside harness");
-    expect(html).toContain("Repositories");
+    expect(html).toContain("Projects");
     expect(html).toContain("No project");
     expect(html).toContain("harness");
   });
@@ -333,8 +333,9 @@ describe("BridgeSidebar history", () => {
     expect(render({ chats: [session("a", { status: "working" })] })).toContain("No chat matches this filter");
   });
 
-  it("labels the list Repositories", () => {
-    expect(render()).toContain("Repositories");
+  it("labels the list Projects, the same noun as the nav", () => {
+    expect(render()).not.toContain("Repositories");
+    expect(render()).toContain("Projects");
     expect(render()).not.toContain(">Chats<");
   });
 
@@ -482,9 +483,9 @@ describe("BridgeSidebar action rows", () => {
     expect(html).not.toContain("Needs you");
   });
 
-  it("offers Agent Fleet while keeping the Work board hidden", () => {
+  it("offers Terminals (the Agent Fleet screen) while keeping the Work board hidden", () => {
     const html = render();
-    expect(html).toContain("Agent Fleet");
+    expect(html).toContain("Terminals");
     expect(html).not.toContain("Work board");
   });
 

@@ -39,6 +39,7 @@ import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
+import { GitplaceScreen } from "./components/GitplaceScreen";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
@@ -760,6 +761,15 @@ function AppContent() {
   const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
+  // A review-comment jump from Gitplace: the file lives in a worktree, so the
+  // jump waits until a chat in that workspace is the one on screen. Declared
+  // after the workspace-change reset above so it runs after it.
+  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<{ workspaceId: string; path: string; line: number | undefined; headBranch: string }>();
+  useEffect(() => {
+    if (!pendingGitplaceJump || view !== "workspace" || workspace?.id !== pendingGitplaceJump.workspaceId) return;
+    jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
+    setPendingGitplaceJump(undefined);
+  }, [pendingGitplaceJump, view, workspace?.id]);
 
   const openGithubPane = useCallback((view: GithubLinkView) => {
     githubIntentNonce.current += 1;
@@ -928,6 +938,21 @@ function AppContent() {
   /** Jump-to-diff from a review comment: open the editor at the commented
    * file/line. When the PR head branch is not what this workspace has checked
    * out, the file still opens (read it, don't edit it) with a hint saying so. */
+  /** Gitplace has no chat of its own: open the newest chat in the comment's
+   * workspace and jump there, or start one when the workspace has none. */
+  function jumpFromGitplace(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
+    const chat = topSessions
+      .filter(candidate => candidate.workspaceId === workspaceId)
+      .sort((a, b) => Date.parse(b.startedAt ?? "") - Date.parse(a.startedAt ?? ""))[0];
+    if (chat) {
+      setPendingGitplaceJump({ workspaceId, path, line, headBranch });
+      openSession(chat.id);
+      return;
+    }
+    void startChatInWorkspace(workspaceId);
+    setGithubJumpHint(`Send a first message to open ${path} from this chat.`);
+  }
+
   function jumpToReviewComment(path: string, line: number | undefined, headBranch: string) {
     openFileInDock(path, line);
     setGithubJumpHint(jumpFallbackHint(workspace?.branch ?? null, headBranch) ?? undefined);
@@ -2621,7 +2646,7 @@ function AppContent() {
     onSkip={() => finishAgentOnboarding()}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2663,6 +2688,7 @@ function AppContent() {
       memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
+      gitplaceActive={view === "gitplace"}
       agentFleetActive={view === "agent-fleet"}
       missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
@@ -2678,6 +2704,7 @@ function AppContent() {
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
       onOpenUsage={() => setView("usage")}
+      onOpenGitplace={() => setView("gitplace")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       onArchiveChat={archiveChat}
@@ -2749,7 +2776,12 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+        workspaces={state.workspaces}
+        projects={state.projects}
+        onJumpToFile={jumpFromGitplace}
+        onAddProject={() => setNewProjectOpen(true)}
+      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}

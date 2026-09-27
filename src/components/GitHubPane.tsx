@@ -86,6 +86,10 @@ export type GitHubPaneProps = {
    * distinguishes "open it again" from a re-render. */
   intent?: { view: GithubLinkView; nonce: number };
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
+  /** `dock` (default) is the 440px chat pane. `page` is Gitplace's full-width
+   *  screen: the repo slug never truncates, and at 1100px and up an open pull
+   *  request or issue sits beside its list instead of replacing it. */
+  layout?: "dock" | "page";
 };
 
 type Detail = { result: GithubPullRequestResult; checks: GithubChecksResult };
@@ -331,7 +335,8 @@ function ListSearch({ value, onChange, placeholder }: { value: string; onChange:
   </label>;
 }
 
-export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, onJumpToFile }: GitHubPaneProps) {
+export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, onJumpToFile, layout = "dock" }: GitHubPaneProps) {
+  const page = layout === "page";
   const [status, setStatus] = useState<GithubStatusResult>();
   const [prs, setPrs] = useState<PullRequestListItem[]>();
   const [issues, setIssues] = useState<GithubIssuesResult["issues"]>();
@@ -531,6 +536,15 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   const inDetail = (surfaceTab === "pulls" && selected !== undefined) || (surfaceTab === "issues" && selectedIssue !== undefined);
   const showsFilters = !inDetail && surfaceTab !== "repository" && status?.availability.status === "available" && !!status.repository;
 
+  const pullList = visiblePrs && <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+    <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+      {visiblePrs.map((pr, index) => <PullRequestRow key={pr.number} pr={pr} index={index} onOpen={() => void openDetail(pr.number)} />)}
+    </div>
+  </div>;
+  const issueList = visibleIssues && <IssueList issues={visibleIssues} onOpen={number => void openIssue(number)} />;
+  // Beside an open item on a wide page: the list it was opened from.
+  const sideList = page && inDetail ? (surfaceTab === "pulls" ? pullList : issueList) : undefined;
+
   let body: React.ReactNode;
   if (surfaceError) {
     body = <PaneNotice icon={CircleX} title="GitHub is unreachable">{surfaceError}</PaneNotice>;
@@ -574,11 +588,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   } else if (surfaceTab === "pulls" && visiblePrs?.length === 0) {
     body = <PaneNotice icon={Search} title="Nothing matches this filter">{prs?.length} open pull request{prs?.length === 1 ? "" : "s"} — none of them match. <button type="button" onClick={() => { setQuery(""); setFacet("all"); }} className="text-foreground underline decoration-dotted underline-offset-2">Clear the filter</button>.</PaneNotice>;
   } else if (surfaceTab === "pulls" && visiblePrs) {
-    body = <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
-      <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-        {visiblePrs.map((pr, index) => <PullRequestRow key={pr.number} pr={pr} index={index} onOpen={() => void openDetail(pr.number)} />)}
-      </div>
-    </div>;
+    body = pullList;
   } else if (surfaceTab === "issues" && selectedIssue !== undefined) {
     body = <IssueDetail
       workspaceId={workspaceId}
@@ -600,7 +610,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   } else if (surfaceTab === "issues" && visibleIssues?.length === 0) {
     body = <PaneNotice icon={Search} title="Nothing matches this filter">No open issue matches “{query}”.</PaneNotice>;
   } else if (surfaceTab === "issues" && visibleIssues) {
-    body = <IssueList issues={visibleIssues} onOpen={number => void openIssue(number)} />;
+    body = issueList;
   } else if (tabErrors.repository && !repositoryOverview) {
     body = <PaneNotice icon={CircleX} title="Repository did not load">{tabErrors.repository}</PaneNotice>;
   } else if (!repositoryOverview) {
@@ -616,8 +626,8 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
           <span className="inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground">
             <FolderGit2 size={13} strokeWidth={1.7} aria-hidden="true" />
           </span>
-          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="h-7 min-w-0 shrink px-1.5">
-            <span className="min-w-0 truncate font-mono text-[11px]">{repoLabel}</span>
+          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className={cn("h-7 px-1.5", page ? "shrink-0" : "min-w-0 shrink")}>
+            <span className={cn("font-mono text-[11px]", page ? "whitespace-nowrap" : "min-w-0 truncate")}>{repoLabel}</span>
           </CopyButton>}
         </div>
         <div className="u-segmented flex shrink-0 items-center p-0.5" role="toolbar" aria-label="GitHub repository actions">
@@ -667,7 +677,12 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       onConnected={() => { setConnectOpen(false); void loadSurface(true); }}
     />}
     {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[11px] text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
-    {body}
+    {sideList
+      ? <div className="flex min-h-0 flex-1">
+          <div data-gitplace-list className="hidden min-h-0 w-[min(420px,38%)] shrink-0 flex-col border-r border-border min-[1100px]:flex">{sideList}</div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">{body}</div>
+        </div>
+      : body}
   </section>;
 }
 
