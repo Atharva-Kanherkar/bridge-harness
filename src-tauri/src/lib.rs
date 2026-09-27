@@ -1426,12 +1426,19 @@ async fn resolve_reference(
 async fn create_workspace_session(
     workspace_id: String,
     create_worktree: Option<bool>,
+    kind: Option<bridge_core::sessions::WorkspaceSessionKind>,
+    harness: Option<Harness>,
+    model: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Worktree creation shells out to Git; keep it on the blocking pool.
     let core = state.inner().clone();
     blocking("Worktree creation", move || {
-        api::create_workspace_session(&core, &workspace_id, create_worktree.unwrap_or(false))
+        api::create_workspace_session_with_model(
+            &core, &workspace_id, create_worktree.unwrap_or(false),
+            kind.unwrap_or(bridge_core::sessions::WorkspaceSessionKind::Orchestrator),
+            harness.as_ref(), model.as_deref(),
+        )
     })
     .await
 }

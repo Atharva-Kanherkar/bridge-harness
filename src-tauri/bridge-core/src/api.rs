@@ -1432,23 +1432,38 @@ pub fn fork_session(
     })
 }
 
-/// Create an orchestrator session inside a workspace (the classic Bridge agent
-/// that plans and delegates to workers). Multiple are allowed per workspace.
+/// Create an orchestrator session inside a workspace. Multiple are allowed.
 pub fn create_workspace_session(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
     create_worktree: bool,
 ) -> Result<BridgeState, BridgeError> {
+    create_workspace_session_with_model(core, workspace_id, create_worktree,
+        sessions::WorkspaceSessionKind::Orchestrator, None, None)
+}
+
+/// Create a workspace root session with its mode and direct provider selection.
+pub fn create_workspace_session_with_model(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    create_worktree: bool,
+    kind: sessions::WorkspaceSessionKind,
+    direct_harness: Option<&Harness>,
+    direct_model: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     core.workspace_path(workspace_id)?;
     let operation = core.workspace_operation(workspace_id);
     let _operation = crate::runtime::lock_operation(&operation);
-    let plan = core.plan_workspace_session(workspace_id, create_worktree)?;
+    let plan = core.plan_workspace_session_with_model(
+        workspace_id, create_worktree, kind, direct_harness, direct_model,
+    )?;
     let worktree = match plan.worktree_source().map(str::to_owned) {
-        Some(source) => Some(sessions::prepare_orchestrator_worktree(
+        Some(source) => Some(sessions::prepare_workspace_worktree(
             &core.worktrees,
             plan.workspace_title(),
             Path::new(&source),
             plan.session_id(),
+            kind,
         )?),
         None => None,
     };
@@ -1465,7 +1480,7 @@ pub fn start_session(
 }
 
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
-/// harness/model with no briefing; an `orchestrator` session runs codex with
+/// harness/model with no routing briefing; an `orchestrator` session runs its configured harness with
 /// the routing briefing + delegation protocol.
 pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
     // The "imported history cannot resume" gate lives in `live_turn::start_chat`

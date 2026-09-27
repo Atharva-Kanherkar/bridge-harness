@@ -52,6 +52,12 @@ describe("SQLite-shaped mock observability", () => {
     await expect(bridgeApi.updateChatModel("session-1", "claude", "opus")).rejects.toThrow("current response");
   });
 
+  it("creates a direct workspace chat with its selected harness and model", async () => {
+    const created = await bridgeApi.createWorkspaceSession("demo-1", false, "direct", "claude", "opus");
+    const direct = created.sessions[created.sessions.length - 1];
+    expect(direct).toMatchObject({ workspaceId: "demo-1", kind: "direct", label: "Chat", harness: "claude", model: "opus" });
+  });
+
   it("persists catalog-derived model setup as immutable versions", async () => {
     const recommended = await bridgeApi.recommendedModelProfiles();
     expect(recommended).toHaveLength(9);

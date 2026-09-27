@@ -3,7 +3,7 @@ import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
-import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
@@ -17,7 +17,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, medi
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -72,6 +72,7 @@ import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { overviewUsage } from "./usageOverview";
 import { SteerComposer } from "./components/SteerComposer";
 import { ComposerPill } from "./components/ComposerPill";
+import { SessionModeToggle, sessionModeDescription } from "./components/SessionModeToggle";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
@@ -173,6 +174,8 @@ type NewChatDraft = {
   model: string | null;
   workspaceId: string | null;
   createWorktree: boolean;
+  /** Workspace drafts only: orchestrate (default) or chat with the harness directly. */
+  sessionKind?: WorkspaceSessionKind;
   carryFromSessionId?: string;
 };
 
@@ -1632,11 +1635,12 @@ function AppContent() {
       if (!text && initialAttachments.length === 0) return undefined;
       setBusy(true); setError(undefined);
       try {
-        // create_chat takes harness/model directly; create_workspace_session doesn't,
-        // so a workspace orchestrator is aligned to the draft's chosen model right
-        // after creation — the model picked on the draft is the model it starts with.
+        // Direct workspace chats start with their selected harness/model. An
+        // orchestrator can still be aligned after creation to the draft picker.
         let next = draft.workspaceId
-          ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
+          ? draft.sessionKind === "direct"
+            ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree, "direct", draft.harness, draft.model)
+            : await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
           : await bridgeApi.createChat(draft.harness, draft.model, null);
         let created = draft.workspaceId
           ? [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === draft.workspaceId)
@@ -3213,6 +3217,11 @@ function AppContent() {
         workspace={welcomeWorkspace}
         projectName={welcomeWorkspace?.projectId ? state.projects.find(project => project.id === welcomeWorkspace.projectId)?.name : undefined}
         worktree={newChatDraft?.createWorktree ?? false}
+        sessionKind={newChatDraft?.sessionKind ?? "orchestrator"}
+        onSelectSessionKind={sessionKind => setNewChatDraft(current => ({
+          ...(current ?? { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
+          sessionKind,
+        }))}
         branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
         currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
         branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
@@ -3354,7 +3363,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -3374,6 +3383,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
    *  which can differ from the workspace's own title. */
   projectName?: string;
   worktree: boolean;
+  /** Only offered with a workspace; a chat without one is always direct. */
+  sessionKind: WorkspaceSessionKind;
+  onSelectSessionKind: (kind: WorkspaceSessionKind) => void;
   branches: string[];
   currentBranch: string | null;
   branchBusy: boolean;
@@ -3389,6 +3401,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   // Falls back to the workspace title only when it has no distinct project.
   const heroProject = projectName ?? workspace?.title;
   const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
+  const sessionModeHintId = useId();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
@@ -3456,6 +3469,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
+      trailing={workspace ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}
@@ -3473,7 +3487,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
     />
     {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
-      <span>{greeting.hint}</span>
+      {workspace
+        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
+        : <span>{greeting.hint}</span>}
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
     </div>
     {workspaces.length === 0 && <div className="mt-6 flex justify-center">

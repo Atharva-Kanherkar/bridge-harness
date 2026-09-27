@@ -152,6 +152,7 @@ export type {
   Workspace,
   WorkspaceChangesResult,
   WorkspaceFileChange,
+  WorkspaceSessionKind,
   RiskTier,
   MarketplaceAction,
   MarketplaceProvider,

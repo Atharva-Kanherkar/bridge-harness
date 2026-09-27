@@ -299,7 +299,7 @@ export function ComposerPill({
             />
           </div>
 
-          <div className={cn("flex min-h-8 items-center gap-2", isInline ? "shrink-0" : "justify-between")}>
+          <div className={cn("flex min-h-8 items-center gap-2", isInline ? "shrink-0" : "flex-wrap justify-between")}>
             {/* Leading edge of the controls row: the model chip, then the access
                 control behind a hairline divider. */}
             {(!isInline || modelControl || accessControl) && <div className="flex min-w-0 items-center gap-1.5">
@@ -308,7 +308,7 @@ export function ComposerPill({
               {accessControl}
             </div>}
 
-            <div className="flex items-center gap-1">
+            <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
               {trailing}
               {onAttachFiles && <>
                 <input ref={attachmentInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="hidden" aria-label="Choose images" onChange={event => {

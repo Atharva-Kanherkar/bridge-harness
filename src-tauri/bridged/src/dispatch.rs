@@ -240,10 +240,14 @@ pub fn dispatch(
         }
         MethodName::CreateWorkspaceSession => {
             let p: wire::CreateWorkspaceSessionParams = decode(method, params)?;
-            reply(api::create_workspace_session(
+            let direct_harness = p.harness.map(Into::into);
+            reply(api::create_workspace_session_with_model(
                 core,
                 &p.workspace_id,
                 p.create_worktree.unwrap_or(false),
+                p.kind.unwrap_or(wire::WorkspaceSessionKind::Orchestrator),
+                direct_harness.as_ref(),
+                p.model.as_deref(),
             ))
         }
         MethodName::StartSession => {
