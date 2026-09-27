@@ -8,7 +8,8 @@ import type { PermissionPolicy } from "../types";
  * chat, chosen where the work happens rather than announced as a warning in
  * the chrome. Two modes, named for what the user gets:
  *
- * - **Full access** — every provider permission is granted automatically.
+ * - **Full access** — every provider permission is granted automatically, and
+ *   workers start without a write-scope card.
  * - **User approval** — Bridge asks before an agent acts.
  *
  * Quiet by design. A mode is a setting, not an alarm, so it wears the same

@@ -557,6 +557,12 @@ describe("AgentConversation", () => {
     expect(html).toContain("were not explicitly authorized");
     expect(html).toContain("Render Mermaid inline");
   });
+  it("says an unscoped delegation approval has no path limit rather than showing an empty scope", () => {
+    const entry: SessionEntry = { id:"approval",sessionId:"s",parentEntryId:null,sequence:5,semanticSchemaVersion:2,kind:"approval.requested",payload:{status:"pending",approvalType:"delegation_path_scope",title:"Approve delegation write scope",objective:"Review PR #7",reason:"owned_path_provenance_required",requestedOwnedPaths:[]},providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[entry]} activeLeafId="approval"/>);
+    expect(html).toContain("Write scope");
+    expect(html).toContain("No path limit (the worker named none)");
+  });
   it("mirrors a background worker's approval onto the parent instead of calling it a failure", () => {
     const blocked = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
       event(1, "delegation.blocked", { role: "system", status: "waiting", title: "Implementation · strong needs your approval", text: "Run bun install?", data: { childBlocked: true, childSessionId: "child", label: "Implementation · strong", objective: "Render Mermaid inline", command: "bun install", cwd: "/repo", ownedPaths: ["src/**"], orchestratorNotified: true } })

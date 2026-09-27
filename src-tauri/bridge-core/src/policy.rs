@@ -68,7 +68,8 @@ impl RouteReason {
             Self::OwnedPathProvenanceRequired => {
                 "these write paths were proposed by the agent and were not explicitly authorized. \
                  Approve once for this turn, narrow the paths, or delegate read-only. A user \
-                 message line of the form `Write scope: src/**` authorizes a scope without a card."
+                 message line of the form `Write scope: src/**` authorizes a scope without a card, \
+                 and so does Full access."
             }
             Self::UserApprovalRequired => {
                 "this delegation requires explicit human approval before a worker can start."
@@ -109,6 +110,13 @@ impl RouteReason {
 pub struct OwnedPathProvenance {
     pub trusted_paths: Vec<String>,
     pub source_entry_ids: Vec<String>,
+    /// The user accepted this turn's card for a writer that named no paths.
+    /// No path list can express that grant, so it is its own fact.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unscoped_write_approved: bool,
+    /// Full access was on, which authorizes whatever scope the agent proposed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_access: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,10 +275,8 @@ impl PolicyEngine {
             return outcome(RouteDecision::RequireUserApproval, RouteReason::UserApprovalRequired, 0);
         }
         if input.request.write_mode != WriteMode::ReadOnly
-            && !owned_paths_are_provenanced(
-                &input.request.owned_paths,
-                &input.owned_path_provenance.trusted_paths,
-            )
+            && !input.owned_path_provenance.full_access
+            && !scope_explicitly_authorized(&input.request.owned_paths, &input.owned_path_provenance)
         {
             return outcome(RouteDecision::RequireUserApproval, RouteReason::OwnedPathProvenanceRequired, 0);
         }
@@ -312,6 +318,13 @@ impl PolicyEngine {
             units,
         )
     }
+}
+
+/// Whether the user authorized this exact claim themselves, by a `Write scope:`
+/// line or an accepted card, without leaning on Full access.
+pub fn scope_explicitly_authorized(claimed: &[String], provenance: &OwnedPathProvenance) -> bool {
+    (claimed.is_empty() && provenance.unscoped_write_approved)
+        || owned_paths_are_provenanced(claimed, &provenance.trusted_paths)
 }
 
 pub fn owned_paths_are_provenanced(claimed: &[String], trusted: &[String]) -> bool {
@@ -943,9 +956,15 @@ pub fn record_decision(
         payload["approvalType"] = Value::String("delegation_path_scope".into());
         payload["status"] = Value::String("pending".into());
         payload["title"] = Value::String("Approve delegation write scope".into());
+        // An empty scope used to read "write only within: " with nothing
+        // after it, which asks the user to approve a limit that is not there.
+        let scope = if request.owned_paths.is_empty() {
+            "Allow this worker to write with no path limit; it named no owned paths".to_owned()
+        } else {
+            format!("Allow this worker to write only within: {}", request.owned_paths.join(", "))
+        };
         payload["text"] = Value::String(format!(
-            "Allow this worker to write only within: {}\n\n{}: {}",
-            request.owned_paths.join(", "),
+            "{scope}\n\n{}: {}",
             outcome.reason.as_str(),
             outcome.reason.remediation(),
         ));
@@ -1207,6 +1226,7 @@ mod tests {
             owned_path_provenance: OwnedPathProvenance {
                 trusted_paths: vec!["src/auth/**".into()],
                 source_entry_ids: vec!["user-entry".into()],
+                ..Default::default()
             },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),
@@ -1230,6 +1250,27 @@ mod tests {
             outcome.decision,
             RouteDecision::RequireUserApproval
         ));
+    }
+
+    #[test]
+    fn full_access_authorizes_any_scope_but_not_past_hard_limits() {
+        let mut case = input();
+        case.owned_path_provenance = OwnedPathProvenance { full_access: true, ..Default::default() };
+        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        case.request.owned_paths.clear();
+        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        case.budget.workers_used = 1000;
+        assert_eq!(PolicyEngine::default().decide(&case).reason, RouteReason::WorkerBudgetExhausted);
+    }
+
+    #[test]
+    fn an_accepted_unscoped_card_authorizes_only_an_unscoped_claim() {
+        let mut case = input();
+        case.request.owned_paths.clear();
+        case.owned_path_provenance = OwnedPathProvenance { unscoped_write_approved: true, ..Default::default() };
+        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        case.request.owned_paths = vec!["src/**".into()];
+        assert_eq!(PolicyEngine::default().decide(&case).reason, RouteReason::OwnedPathProvenanceRequired);
     }
 
     #[test]

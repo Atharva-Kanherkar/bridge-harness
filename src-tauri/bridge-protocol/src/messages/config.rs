@@ -191,8 +191,9 @@ pub struct SetDefaultAgentParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PermissionPolicy {
-    /// Auto-accept every provider approval, for every agent. Worker write scope
-    /// and browser outward effects are unaffected — those are authorization.
+    /// Full access: auto-accept every provider approval, for every agent, and
+    /// authorize the write scope a worker proposes. Browser outward effects and
+    /// prompt changes still ask.
     #[serde(alias = "bypassAll")]
     pub auto_approve_provider_permissions: bool,
     /// Allows these worker roles to propose guidance; each edit still requires
