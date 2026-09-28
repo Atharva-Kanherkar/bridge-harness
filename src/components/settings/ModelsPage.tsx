@@ -11,7 +11,7 @@
 // is the only one that differs from what was stored.
 
 import { useState } from "react";
-import { RefreshCw as ArrowsClockwise, ChevronDown as CaretDown, ChevronRight as CaretRight } from "lucide-react";
+import { RefreshCw as ArrowsClockwise } from "lucide-react";
 import {
   advertisedEfforts, availableModelOptions, isOrchestratorPurpose, normalizedEffort,
   profileLabels, profilePurposes,
@@ -140,22 +140,12 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
       label={profile.purpose in profileLabels ? profileLabels[profile.purpose] : profile.purpose}
       description={`${selected?.adapter.label ?? profile.provider} · ${selected?.model.label ?? profile.model}${efforts.length > 0 ? ` · ${profile.effort}` : ""}`}
       saved={saved}
-      control={<>
-        {!orchestrator && <StatusPill tone={selectionMode === "pinned" ? "info" : "neutral"}>
-          {selectionMode === "pinned" ? "Pinned" : "Tracks standard"}
+      onOpen={onToggle}
+      openLabel={`${profileLabels[profile.purpose]} settings`}
+      expanded={expanded}
+      adornment={!orchestrator && <StatusPill tone={selectionMode === "pinned" ? "info" : "neutral"}>
+          {selectionMode === "pinned" ? "Specific model" : "Automatic"}
         </StatusPill>}
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-label={`${profileLabels[profile.purpose]} settings`}
-          onClick={onToggle}
-          className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          {expanded
-            ? <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" />
-            : <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" />}
-        </button>
-      </>}
     />
     {expanded && <div className="border-t border-border bg-popover/40">
       {orchestrator
@@ -196,13 +186,16 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
           </>
         : <>
             <SettingsRow
-              label="Selection behavior"
+              label="How Bridge chooses a model"
+              description={selectionMode === "pinned"
+                ? "Uses the provider and model selected below. If unavailable, Bridge uses the fallback profile."
+                : "Bridge chooses an available model suited to this worker and may change it over time."}
               control={<Select
-                label={`${profileLabels[profile.purpose]} selection behavior`}
+                label={`${profileLabels[profile.purpose]} model choice`}
                 value={selectionMode}
                 disabled={busy}
-                width="w-44"
-                options={[{ value: "track_standard", label: "Track standard" }, { value: "pinned", label: "Pinned model" }]}
+                width="w-52"
+                options={[{ value: "track_standard", label: "Choose automatically" }, { value: "pinned", label: "Use a specific model" }]}
                 onChange={value => {
                   const mode = value as "track_standard" | "pinned";
                   onUpdate({
@@ -215,14 +208,18 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
             />
             <SettingsRow
               label="Provider and model"
+              description="Choosing a model switches this worker to Use a specific model."
               control={<Select
                 label={`${profileLabels[profile.purpose]} model`}
                 value={`${profile.provider}:${profile.model}`}
-                disabled={busy || selectionMode === "track_standard"}
+                disabled={busy}
                 options={modelOptions}
                 onChange={value => {
+                  if (value === `${profile.provider}:${profile.model}`) return;
                   const option = options.find(candidate => candidate.value === value);
-                  if (option) onUpdate({ provider: option.adapter.id, model: option.model.id });
+                  if (option) onUpdate({ provider: option.adapter.id, model: option.model.id,
+                    effort: normalizedEffort(profile.effort, option.model), selectionMode: "pinned",
+                    pinned: true, learningEnabled: false });
                 }}
               />}
             />

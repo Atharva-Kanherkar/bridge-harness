@@ -308,6 +308,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       const item = upsert(fold, event, type, { status: event.status ?? "inProgress", title: event.title }, true);
       item.text += event.outputDelta;
       item.status = event.status ?? item.status;
+      if (event.title?.trim()) item.title = event.title;
       item.data = { ...item.data, ...envelope.providerData };
       restat(item);
       return;

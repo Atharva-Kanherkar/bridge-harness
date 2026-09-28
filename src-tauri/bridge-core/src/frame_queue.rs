@@ -34,6 +34,10 @@ pub struct QueueMetricsSnapshot {
     pub bytes: usize,
     pub high_water_bytes: usize,
     pub dropped_transient: u64,
+    /// Frames the producer read from the provider socket but refused to
+    /// queue because they belonged to no session this runtime owns. Counted
+    /// here so a filter that used to `continue` silently leaves evidence.
+    pub dropped_foreign: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -50,6 +54,7 @@ struct QueueState {
     bytes: usize,
     high_water_bytes: usize,
     dropped_transient: u64,
+    dropped_foreign: u64,
     sender_alive: bool,
     receiver_alive: bool,
 }
@@ -98,6 +103,7 @@ impl Shared {
             bytes: state.bytes,
             high_water_bytes: state.high_water_bytes,
             dropped_transient: state.dropped_transient,
+            dropped_foreign: state.dropped_foreign,
         }
     }
 }
@@ -130,6 +136,7 @@ pub fn bounded_frame_queue(budget: QueueBudget) -> (FrameSender, FrameReceiver, 
             bytes: 0,
             high_water_bytes: 0,
             dropped_transient: 0,
+            dropped_foreign: 0,
             sender_alive: true,
             receiver_alive: true,
         }),
@@ -193,6 +200,19 @@ impl FrameSender {
         }
         self.shared.push(&mut state, FrameClass::Transient, frame);
         Ok(true)
+    }
+}
+
+impl FrameSender {
+    /// Record a frame the producer declined to queue because it was not this
+    /// runtime's to forward. Nothing is enqueued; only the count moves.
+    pub fn record_foreign_drop(&self) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .expect("frame queue lock is never poisoned");
+        state.dropped_foreign += 1;
     }
 }
 
@@ -282,6 +302,19 @@ mod tests {
         assert!(snapshot.dropped_transient > 0, "drops are counted");
         assert!(snapshot.high_water_bytes <= 256);
         assert!(snapshot.high_water_bytes > 0);
+    }
+
+    #[test]
+    fn foreign_drops_are_counted() {
+        let (sender, receiver, metrics) = bounded_frame_queue(small_budget());
+        sender.record_foreign_drop();
+        sender.record_foreign_drop();
+        sender.send_durable("kept".into()).expect("receiver is alive");
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.dropped_foreign, 2);
+        assert_eq!(snapshot.dropped_transient, 0, "a foreign drop is not a shed delta");
+        assert_eq!(snapshot.depth, 1, "nothing foreign was enqueued");
+        assert_eq!(receiver.recv().unwrap(), "kept");
     }
 
     #[test]

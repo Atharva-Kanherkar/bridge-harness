@@ -456,7 +456,7 @@ check(allProviders.normalizedPinnedProviders == ["cursor", "codex", "claude", "o
 check(allProviders.visibleProviders == ["cursor", "codex", "claude", "opencode"], "All selected favorites appear in order")
 var legacySettings = fixture.settings
 legacySettings.pinnedProviders = nil
-check(legacySettings.visibleProviders.prefix(3) == ["codex", "claude", "cursor"], "Old payloads show the default favorite three including Cursor")
+check(legacySettings.visibleProviders.prefix(2) == ["codex", "claude"], "Old payloads show the default Codex and Claude favorites")
 var emptyFavorites = fixture.settings
 emptyFavorites.pinnedProviders = []
 emptyFavorites.codexEnabled = false

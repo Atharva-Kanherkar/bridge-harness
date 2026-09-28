@@ -5,6 +5,7 @@ pub use bridge_core::{
 
 pub mod agent_batch;
 pub mod daemon_host;
+mod embedded_browser;
 pub mod menu;
 pub mod meter_tray;
 mod menu_bar;
@@ -515,17 +516,19 @@ async fn inspect_managed_agent(
 #[tauri::command]
 async fn install_managed_agent(
     agent_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
-    api::install_managed_agent(&agent_id)
+    api::install_managed_agent(&state, &agent_id)
 }
 
 #[tauri::command]
 async fn repair_managed_agent(
     agent_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
-    api::repair_managed_agent(&agent_id)
+    api::repair_managed_agent(&state, &agent_id)
 }
 
 #[tauri::command]
@@ -716,6 +719,16 @@ async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::m
 }
 
 #[tauri::command]
+async fn get_reviewer_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
+    api::get_reviewer_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
+    api::save_reviewer_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
     force: bool,
@@ -894,6 +907,13 @@ async fn refresh_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> 
 async fn refresh_provider_usage_overviews_interactive(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
     let core = state.inner().clone();
     blocking("Refresh provider usage interactively", move || api::refresh_provider_usage_overviews_interactive(&core)).await
+}
+
+#[tauri::command]
+async fn redeem_provider_usage_reset(state: State<'_, Arc<BridgeCore>>, provider: String, credit_id: Option<String>, idempotency_key: String) -> Result<wire::RedeemProviderUsageResetResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = wire::RedeemProviderUsageResetParams { provider, credit_id, idempotency_key };
+    blocking("Redeem provider usage reset", move || api::redeem_provider_usage_reset(&core, &params)).await
 }
 
 #[tauri::command]
@@ -1391,18 +1411,64 @@ async fn create_aside_chat(
     )
 }
 
+/// Resolve a copied session/entry id or `brio_…` alias into a typed
+/// descriptor the composer renders as a chip.
+#[tauri::command]
+async fn resolve_reference(
+    id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ResolveReferenceResult, BridgeError> {
+    api::resolve_reference(state.inner(), &id)
+}
+
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
 #[tauri::command]
 async fn create_workspace_session(
     workspace_id: String,
     create_worktree: Option<bool>,
+    kind: Option<bridge_core::sessions::WorkspaceSessionKind>,
+    harness: Option<Harness>,
+    model: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Worktree creation shells out to Git; keep it on the blocking pool.
     let core = state.inner().clone();
     blocking("Worktree creation", move || {
-        api::create_workspace_session(&core, &workspace_id, create_worktree.unwrap_or(false))
+        api::create_workspace_session_with_model(
+            &core, &workspace_id, create_worktree.unwrap_or(false),
+            kind.unwrap_or(bridge_core::sessions::WorkspaceSessionKind::Orchestrator),
+            harness.as_ref(), model.as_deref(),
+        )
+    })
+    .await
+}
+
+/// Fork a session's conversation branch at an entry into a new, independent
+/// session whose forest begins with the parent's history up to the fork
+/// point. The parent is never modified. Worktree creation shells out to Git,
+/// so the whole operation runs on the blocking pool.
+#[tauri::command]
+async fn fork_session(
+    session_id: String,
+    entry_id: String,
+    title: Option<String>,
+    harness: Option<Harness>,
+    model: Option<String>,
+    worktree_policy: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ForkSessionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Session fork", move || {
+        api::fork_session(
+            &core,
+            &session_id,
+            &entry_id,
+            title.as_deref(),
+            harness.as_ref(),
+            model.as_deref(),
+            &worktree_policy,
+        )
     })
     .await
 }
@@ -1430,6 +1496,11 @@ async fn update_chat_model(
 async fn refresh_model_catalogs(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, BridgeError> {
     let core = state.inner().clone();
     blocking("Model catalogue refresh", move || api::refresh_model_catalogs(&core)).await
+}
+
+#[tauri::command]
+async fn install_codex_update() -> Result<(), BridgeError> {
+    blocking("Codex update", api::install_codex_update).await
 }
 
 /// Carry a source chat's projected context into another chat as a durable
@@ -2578,6 +2649,8 @@ pub fn run() -> i32 {
             unarchive_chat,
             get_worker_settings,
             save_worker_settings,
+            get_reviewer_settings,
+            save_reviewer_settings,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,
@@ -2595,6 +2668,7 @@ pub fn run() -> i32 {
             get_provider_usage_overviews,
             refresh_provider_usage_overviews,
             refresh_provider_usage_overviews_interactive,
+            redeem_provider_usage_reset,
             get_usage_overview,
             refresh_usage_overview,
             get_menu_bar_settings,
@@ -2645,6 +2719,8 @@ pub fn run() -> i32 {
             create_chat,
             create_chat_id,
             create_aside_chat,
+            fork_session,
+            resolve_reference,
             create_workspace_session,
             connect_workspace_folder,
             clone_workspace_repo,
@@ -2652,6 +2728,7 @@ pub fn run() -> i32 {
             locate_workspace_folders,
             update_chat_model,
             refresh_model_catalogs,
+            install_codex_update,
             carry_session_handoff,
             list_slash_commands,
             resolve_slash_command,
@@ -2715,6 +2792,7 @@ pub fn run() -> i32 {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(embedded_browser::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2778,6 +2856,13 @@ pub fn run() -> i32 {
             }
         })
         .invoke_handler(move |invoke| {
+            // Child browser pages are untrusted even when their address matches
+            // the development origin. Local-origin app commands bypass ACL by
+            // default, so enforce this boundary independently of capabilities.
+            if !embedded_browser::trusted_shell(invoke.message.webview_ref().label()) {
+                invoke.resolver.reject("Browser pages cannot invoke Bridge commands");
+                return true;
+            }
             if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update") {
                 return nightly_updater::commands(invoke);
             }
@@ -4578,6 +4663,7 @@ mod tests {
             owned_path_provenance: policy::OwnedPathProvenance {
                 trusted_paths: request.owned_paths.clone(),
                 source_entry_ids: vec!["test-user-entry".into()],
+                ..Default::default()
             },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),

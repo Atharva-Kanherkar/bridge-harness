@@ -27,21 +27,65 @@ export function leafBoxes(node: PaneNode, width = ASPECT, height = 1): LeafBox[]
 }
 
 // split the largest tile along its longer side so the grid stays balanced.
-export function insertLeaf(root: PaneNode | null, leafId: string): PaneNode {
+// `near` keeps a project together: when any of those tiles are on the board,
+// the new one is cut from the largest of them instead.
+export function insertLeaf(root: PaneNode | null, leafId: string, near: readonly string[] = []): PaneNode {
   if (!root) return { type: "leaf", leafId };
   if (leafIds(root).includes(leafId)) return root;
-  const largest = leafBoxes(root).reduce((best, box) => box.width * box.height > best.width * best.height ? box : best);
+  const boxes = leafBoxes(root);
+  const neighbours = boxes.filter(box => near.includes(box.leafId));
+  const largest = (neighbours.length ? neighbours : boxes).reduce((best, box) => box.width * box.height > best.width * best.height ? box : best);
   const direction: SplitDirection = largest.width >= largest.height ? "horizontal" : "vertical";
   return splitLeaf(root, largest.leafId, leafId, direction);
 }
 
 // drop leaves that are no longer wanted, then insert the new ones in order.
-export function reconcileLeaves(root: PaneNode | null, ids: readonly string[]): PaneNode | null {
+export function reconcileLeaves(root: PaneNode | null, ids: readonly string[], groupOf?: (id: string) => string | null): PaneNode | null {
   const wanted = new Set(ids);
   let next: PaneNode | null = root;
   if (next) for (const id of leafIds(next)) if (!wanted.has(id) && next) next = removeLeaf(next, id);
-  for (const id of ids) if (!next || !leafIds(next).includes(id)) next = insertLeaf(next, id);
+  for (const id of ids) {
+    if (next && leafIds(next).includes(id)) continue;
+    const group = groupOf?.(id);
+    const near = group && next ? leafIds(next).filter(other => groupOf?.(other) === group) : [];
+    next = insertLeaf(next, id, near);
+  }
   return next;
+}
+
+// equal shares: the first of k nodes takes 1/k, the rest split what is left.
+function chain(nodes: PaneNode[], direction: SplitDirection): PaneNode {
+  if (nodes.length === 1) return nodes[0];
+  return { type: "split", direction, ratio: 1 / nodes.length, first: nodes[0], second: chain(nodes.slice(1), direction) };
+}
+
+// the order Arrange lays tiles out in: one contiguous run per group in reading
+// order, largest group first so it starts top-left, ties by first appearance,
+// ungrouped tiles last. a group shares a row only when it fits the columns left;
+// otherwise it wraps onto the next row.
+export function groupedOrder(ids: readonly string[], groupOf: (id: string) => string | null): string[] {
+  const groups = new Map<string, string[]>();
+  const loose: string[] = [];
+  for (const id of ids) {
+    const group = groupOf(id);
+    if (group == null) { loose.push(id); continue; }
+    const members = groups.get(group);
+    if (members) members.push(id); else groups.set(group, [id]);
+  }
+  return [...[...groups.values()].sort((a, b) => b.length - a.length).flat(), ...loose];
+}
+
+// a balanced grid in reading order, so tiles given next to each other stay next
+// to each other: ceil(sqrt(n)) columns per row, the last row taking the rest.
+export function arrangeLeaves(ids: readonly string[]): PaneNode | null {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return null;
+  const columns = Math.ceil(Math.sqrt(unique.length));
+  const rows: PaneNode[] = [];
+  for (let start = 0; start < unique.length; start += columns) {
+    rows.push(chain(unique.slice(start, start + columns).map(leafId => ({ type: "leaf", leafId })), "horizontal"));
+  }
+  return chain(rows, "vertical");
 }
 
 export function moveLeaf(root: PaneNode, id: string, target: string, direction: SplitDirection, before: boolean): PaneNode {

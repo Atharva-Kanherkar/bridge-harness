@@ -1559,6 +1559,8 @@ Delegate only focused, non-trivial work. Emit one fenced `bridge-delegate` JSON 
 
 After emitting a request, stop and wait. Default topology is flat: the worker cannot directly spawn another worker. Do trivial work in the parent.
 
+`harness` and `model`, shown above, are optional pins against your routing inventory; `capabilityTier` alone is always a complete, valid request and the fallback an unusable pin degrades to. See "Pinning a harness or model" for when and how to use them.
+
 Optional capability fields: `networkAccess` (boolean, default `false`; request `true` for online research, subject to host policy) and `writableOutputPaths` (relative artifact paths under `BRIDGE_WORKER_OUTPUT_DIR`, default `[]`). They do not authorize workspace writes. A read-only worker may lack shell tools; use its exposed read tools or gather command-based evidence in the parent, not by widening its write mode.
 
 ## Checking on your workers (bridge-peek)

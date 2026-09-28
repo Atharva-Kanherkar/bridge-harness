@@ -78,14 +78,15 @@ The JSON report separates exact matches, route/reason transitions, route totals,
 
 ## Authorizing a write scope
 
-There are exactly two ways a write-capable delegation becomes authorized, and no third:
+There are exactly three ways a write-capable delegation becomes authorized, and no fourth:
 
 1. **The user declares the scope.** A line of the form `Write scope: src/**, docs/**` in the user's message authorizes those paths for that turn. The syntax is exact: the line must start with `write scope:` (case-insensitive), outside code fences and block quotes, and the paths are comma- or semicolon-separated and repository-relative.
-2. **The user accepts an approval card.** When no declaration covers the requested paths, the policy raises one approval card per turn and scope. Accepting it authorizes exactly the paths shown.
+2. **The user accepts an approval card.** When no declaration covers the requested paths, the policy raises one approval card per turn and scope. Accepting it authorizes exactly the paths shown. A worker that named no paths gets a card that says it has no path limit, and accepting it authorizes that unscoped worker for the turn. A named scope in the same turn is still its own decision.
+3. **Full access is on.** The composer's Full access mode (`autoApproveProviderPermissions`) authorizes the scope the worker proposes, with no card. Each grant is logged as `approval.auto_allowed` beside the provider auto-approvals. It does not make an invalid path valid or lift any hard limit.
 
 Anything else — assistant-proposed `ownedPaths`, `relevantFiles`, repository exploration, ordinary path mentions in prose — is *not* authorization. Read-only workers are exempt because they cannot write.
 
-The practical consequence is that a cold-start "implement X" request from a user who has not used the `Write scope:` syntax will raise an approval card. **That is the designed state, not a failure.** Approval-pending is modelled as its own outcome (`AwaitingApproval`) end to end:
+The practical consequence is that a cold-start "implement X" request from a user who has not used the `Write scope:` syntax, and is not in Full access, will raise an approval card. **That is the designed state, not a failure.** Approval-pending is modelled as its own outcome (`AwaitingApproval`) end to end:
 
 - The parent is told `bridge-worker-launch-awaiting-approval` with the delegation identity, the machine-readable `RouteReason`, and a remediation sentence. It is instructed to stop emitting work for that objective and *not* to treat the child as terminal. No `delegation.rejected` entry is written and the "Worker failed to start" card never renders.
 - On acceptance the launch proceeds and the parent receives `bridge-worker-launch-approved` carrying the launched child session id (or the queued state), so it re-adopts the child.
@@ -95,7 +96,7 @@ The practical consequence is that a cold-start "implement X" request from a user
 ## Write safety
 
 - Read-only workers may run concurrently.
-- Write-capable workers must claim paths covered by an explicit `write scope:` declaration in the latest durable user message on the parent session's active branch, or by a policy approval the user accepted for the same parent turn. Historical mentions and arbitrary prose do not grant ambient authority.
+- Write-capable workers must claim paths covered by an explicit `write scope:` declaration in the latest durable user message on the parent session's active branch, or by a policy approval the user accepted for the same parent turn, unless Full access is on. Historical mentions and arbitrary prose do not grant ambient authority.
 - Bridge normalizes repository-relative declarations and grounds them against the real workspace tree. Existing files and directories are eligible; a new file is eligible only when its immediate parent exists. Canonical-path checks reject scopes that escape through symlinks, and component-aware containment prevents wildcard claims from widening a recursive scope. `ownedPaths`, `relevantFiles`, assistant prose, fenced or quoted diagnostics, negated instructions, and unaccepted approval requests cannot authorize themselves.
 - A missing or broader-than-proven claim creates one durable, resolvable approval request per turn and scope before worker reuse, budget consumption, lease acquisition, or process spawn. Acceptance records the exact approved scope and active request entry, then re-evaluates the same-turn request; stale-branch, duplicate, session-wide, declined, or cancelled approvals never launch it. If the accepted worker cannot launch or queue, Bridge records and surfaces a retryable failure instead of silently consuming the approval.
 - A shared writer requires non-overlapping ownership.

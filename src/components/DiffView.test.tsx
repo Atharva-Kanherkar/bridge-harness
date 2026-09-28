@@ -1,16 +1,21 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PatchView } from "./DiffView";
+import * as highlight from "./highlight";
 
 const PATCH = "@@ -1,2 +1,2 @@\n-const a = 1;\n+const a = 2;";
 
 describe("PatchView", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let pending: Array<(rows: highlight.DiffRow[]) => void>;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    pending = [];
+    vi.spyOn(highlight, "colorizePatch").mockImplementation(() => new Promise(resolve => { pending.push(resolve); }));
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -19,25 +24,19 @@ describe("PatchView", () => {
   afterEach(() => {
     act(() => { root.unmount(); });
     container.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
-  // Real dynamic-import + real Shiki tokenization, timed against the actual
-  // wall clock — under a full, concurrent test-suite run, a single
-  // `setTimeout(0)` tick isn't a reliable wait. Poll instead of guessing a
-  // fixed delay.
-  const waitFor = async (check: () => boolean, timeoutMs = 3000) => {
-    const start = Date.now();
-    while (!check()) {
-      if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for colorization");
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-    }
-  };
+  const startColorization = () => act(() => { vi.advanceTimersByTime(highlight.COLORIZE_DEBOUNCE_MS); });
+  const coloredRows = (patch: string) => highlight.highlightPatch(patch, "a.ts").map(row => ({
+    ...row,
+    html: row.html.replace("const", '<span class="stx-keyword">const</span>'),
+  }));
 
   it("lays out rows, kinds and the gutter on first render, before any colour arrives", () => {
-    // Sync act(): flushes the effect's immediate plain-escaped setRows call
-    // without waiting for colorizePatch's promise, so this reliably observes
-    // the pre-colour frame regardless of system load.
-    act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
+    const patch = `${PATCH}\n+<script>&</script>`;
+    act(() => { root.render(<PatchView patch={patch} path="a.ts" />); });
     // `.stx` is a column now — a scrolling rows area above an optional fold
     // bar — so the rows sit one level deeper than they used to.
     const rows = container.querySelectorAll(".stx > div > div > div");
@@ -45,6 +44,9 @@ describe("PatchView", () => {
     expect(container.textContent).toContain("const a = 1;");
     expect(container.textContent).toContain("const a = 2;");
     expect(container.innerHTML).not.toContain("stx-keyword");
+    expect(container.innerHTML).toContain("&lt;script&gt;&amp;&lt;/script&gt;");
+    expect(container.querySelector("script")).toBeNull();
+    expect(highlight.colorizePatch).not.toHaveBeenCalled();
   });
 
   it("gives an add and a del row a coloured run edge", async () => {
@@ -131,22 +133,53 @@ describe("PatchView", () => {
     expect(container.querySelector(".w-max")).toBeNull();
   });
 
-  it("upgrades bodies to .stx-* coloured spans once the grammar loads", async () => {
+  it("upgrades bodies to .stx-* coloured spans once colorization resolves", async () => {
     act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
-    await waitFor(() => container.innerHTML.includes("stx-keyword"));
+    startColorization();
+    expect(highlight.colorizePatch).toHaveBeenCalledTimes(1);
+    expect(highlight.colorizePatch).toHaveBeenCalledWith(PATCH, "a.ts");
+    expect(container.querySelector(".stx-keyword")).toBeNull();
+    await act(async () => { pending[0](coloredRows(PATCH)); });
+    expect(container.querySelector(".stx-keyword")?.textContent).toBe("const");
+    expect(container.textContent).toContain("const a = 2;");
   });
 
   it("resets to plain text immediately on a new patch, instead of keeping the previous one's colour", async () => {
     act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
-    await waitFor(() => container.innerHTML.includes("stx-keyword"));
+    startColorization();
+    await act(async () => { pending[0](coloredRows(PATCH)); });
+    expect(container.innerHTML).toContain("stx-keyword");
 
-    // A plain (non-async) act() observes the reset before `colorizePatch`'s
-    // promise for the new patch has had a chance to resolve, regardless of
-    // how warm the shared Shiki module cache already is.
     const NEXT_PATCH = "@@ -1 +1 @@\n-const b = 1;\n+const b = 2;";
     act(() => { root.render(<PatchView patch={NEXT_PATCH} path="a.ts" />); });
     expect(container.innerHTML).not.toContain("stx-keyword");
     expect(container.textContent).toContain("const b = 2;");
+  });
+
+  it("ignores an old completion after the replacement patch has been coloured", async () => {
+    act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
+    startColorization();
+    const next = "@@ -1 +1 @@\n-const b = 1;\n+const b = 2;";
+    act(() => { root.render(<PatchView patch={next} path="a.ts" />); });
+    startColorization();
+    await act(async () => { pending[1](coloredRows(next)); });
+    expect(container.innerHTML).toContain("stx-keyword");
+    expect(container.textContent).toContain("const b = 2;");
+
+    await act(async () => { pending[0](coloredRows(PATCH)); });
+    expect(container.innerHTML).toContain("stx-keyword");
+    expect(container.textContent).toContain("const b = 2;");
+    expect(container.textContent).not.toContain("const a = 2;");
+  });
+
+  it("keeps escaped rows when colorization settles with a plain fallback", async () => {
+    const patch = "@@ -1 +1 @@\n+<script>&</script>";
+    act(() => { root.render(<PatchView patch={patch} path="a.ts" />); });
+    startColorization();
+    await act(async () => { pending[0](highlight.highlightPatch(patch, "a.ts")); });
+    expect(container.innerHTML).toContain("&lt;script&gt;&amp;&lt;/script&gt;");
+    expect(container.textContent).toContain("<script>&</script>");
+    expect(container.querySelector("script, .stx-keyword")).toBeNull();
   });
 
   it("renders nothing for an empty patch", async () => {

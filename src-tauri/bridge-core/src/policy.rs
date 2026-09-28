@@ -68,7 +68,8 @@ impl RouteReason {
             Self::OwnedPathProvenanceRequired => {
                 "these write paths were proposed by the agent and were not explicitly authorized. \
                  Approve once for this turn, narrow the paths, or delegate read-only. A user \
-                 message line of the form `Write scope: src/**` authorizes a scope without a card."
+                 message line of the form `Write scope: src/**` authorizes a scope without a card, \
+                 and so does Full access."
             }
             Self::UserApprovalRequired => {
                 "this delegation requires explicit human approval before a worker can start."
@@ -109,6 +110,13 @@ impl RouteReason {
 pub struct OwnedPathProvenance {
     pub trusted_paths: Vec<String>,
     pub source_entry_ids: Vec<String>,
+    /// The user accepted this turn's card for a writer that named no paths.
+    /// No path list can express that grant, so it is its own fact.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unscoped_write_approved: bool,
+    /// Full access was on, which authorizes whatever scope the agent proposed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_access: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,10 +275,8 @@ impl PolicyEngine {
             return outcome(RouteDecision::RequireUserApproval, RouteReason::UserApprovalRequired, 0);
         }
         if input.request.write_mode != WriteMode::ReadOnly
-            && !owned_paths_are_provenanced(
-                &input.request.owned_paths,
-                &input.owned_path_provenance.trusted_paths,
-            )
+            && !input.owned_path_provenance.full_access
+            && !scope_explicitly_authorized(&input.request.owned_paths, &input.owned_path_provenance)
         {
             return outcome(RouteDecision::RequireUserApproval, RouteReason::OwnedPathProvenanceRequired, 0);
         }
@@ -312,6 +318,13 @@ impl PolicyEngine {
             units,
         )
     }
+}
+
+/// Whether the user authorized this exact claim themselves, by a `Write scope:`
+/// line or an accepted card, without leaning on Full access.
+pub fn scope_explicitly_authorized(claimed: &[String], provenance: &OwnedPathProvenance) -> bool {
+    (claimed.is_empty() && provenance.unscoped_write_approved)
+        || owned_paths_are_provenanced(claimed, &provenance.trusted_paths)
 }
 
 pub fn owned_paths_are_provenanced(claimed: &[String], trusted: &[String]) -> bool {
@@ -798,15 +811,13 @@ pub fn record_provider_usage(
             row.harness = Some(harness.clone());
             row.model = model.clone();
         }
-        // A provider that names the model per request (Claude's `modelUsage`,
-        // OpenCode's `modelID`) knows better than the session's model of
-        // record, which is only what Bridge asked for.
-        if record.model.is_some() {
-            row.model = record.model.clone();
+        // Attribute usage to the serving model when Codex reroutes, or to
+        // the provider's per-request model (Claude's `modelUsage`, OpenCode's
+        // `modelID`). Prompt and session models remain what Bridge asked for.
+        if let Some(model) = record.serving_model.as_ref().or(record.model.as_ref()) {
+            row.model = Some(model.clone());
         }
-        // Pricing follows the model that served the request when Codex
-        // rerouted; `model` stays the model of record for attribution.
-        let priced_model = row.serving_model.as_deref().or(row.model.as_deref());
+        let priced_model = row.model.as_deref();
         let priced = pricing.price(priced_model, &record.tokens, record.reported_cost_microusd);
         row.cost_microusd = priced.cost_microusd;
         row.cost_source = Some(priced.cost_source.as_str().into());
@@ -945,9 +956,15 @@ pub fn record_decision(
         payload["approvalType"] = Value::String("delegation_path_scope".into());
         payload["status"] = Value::String("pending".into());
         payload["title"] = Value::String("Approve delegation write scope".into());
+        // An empty scope used to read "write only within: " with nothing
+        // after it, which asks the user to approve a limit that is not there.
+        let scope = if request.owned_paths.is_empty() {
+            "Allow this worker to write with no path limit; it named no owned paths".to_owned()
+        } else {
+            format!("Allow this worker to write only within: {}", request.owned_paths.join(", "))
+        };
         payload["text"] = Value::String(format!(
-            "Allow this worker to write only within: {}\n\n{}: {}",
-            request.owned_paths.join(", "),
+            "{scope}\n\n{}: {}",
             outcome.reason.as_str(),
             outcome.reason.remediation(),
         ));
@@ -1209,6 +1226,7 @@ mod tests {
             owned_path_provenance: OwnedPathProvenance {
                 trusted_paths: vec!["src/auth/**".into()],
                 source_entry_ids: vec!["user-entry".into()],
+                ..Default::default()
             },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),
@@ -1232,6 +1250,27 @@ mod tests {
             outcome.decision,
             RouteDecision::RequireUserApproval
         ));
+    }
+
+    #[test]
+    fn full_access_authorizes_any_scope_but_not_past_hard_limits() {
+        let mut case = input();
+        case.owned_path_provenance = OwnedPathProvenance { full_access: true, ..Default::default() };
+        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        case.request.owned_paths.clear();
+        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        case.budget.workers_used = 1000;
+        assert_eq!(PolicyEngine::default().decide(&case).reason, RouteReason::WorkerBudgetExhausted);
+    }
+
+    #[test]
+    fn an_accepted_unscoped_card_authorizes_only_an_unscoped_claim() {
+        let mut case = input();
+        case.request.owned_paths.clear();
+        case.owned_path_provenance = OwnedPathProvenance { unscoped_write_approved: true, ..Default::default() };
+        assert!(matches!(PolicyEngine::default().decide(&case).decision, RouteDecision::SpawnWorker(_)));
+        case.request.owned_paths = vec!["src/**".into()];
+        assert_eq!(PolicyEngine::default().decide(&case).reason, RouteReason::OwnedPathProvenanceRequired);
     }
 
     #[test]
@@ -1861,6 +1900,148 @@ mod tests {
         let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
         assert_eq!(rows[1].harness.as_deref(), Some("claude"));
         assert_eq!(rows[1].model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn rerouted_codex_usage_attributes_bound_and_unbound_turns_to_the_serving_model() {
+        fn record_frame(
+            db: &Connection,
+            state: &mut crate::agent::CodexStreamState,
+            frame: Value,
+        ) {
+            for event in crate::agent::normalize_codex_message_with_state(&frame, state) {
+                if event.kind == "usage.updated" {
+                    assert!(record_provider_usage(
+                        db,
+                        "w",
+                        "parent",
+                        frame.pointer("/params/turnId").and_then(Value::as_str),
+                        "provider.codex",
+                        &event.data,
+                    )
+                    .unwrap());
+                }
+            }
+        }
+
+        fn usage_frame(turn_id: &str) -> Value {
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": turn_id,
+                    "tokenUsage": {
+                        "last": {
+                            "inputTokens": 1000,
+                            "cachedInputTokens": 400,
+                            "cacheWriteInputTokens": 0,
+                            "outputTokens": 100
+                        }
+                    }
+                }
+            })
+        }
+
+        for bound in [false, true] {
+            let db = database();
+            db.execute("UPDATE sessions SET model='gpt-5' WHERE id='parent'", [])
+                .unwrap();
+            // Distinct deterministic rates prove that attribution and pricing
+            // both follow the serving model, including the cache discount.
+            usage_pricing::set_price_override(
+                &db, "gpt-5", 10_000_000, 20_000_000, Some(1_000_000), None,
+            )
+            .unwrap();
+            usage_pricing::set_price_override(
+                &db, "gpt-5-mini", 1_000_000, 2_000_000, Some(100_000), None,
+            )
+            .unwrap();
+            if bound {
+                db.execute(
+                    "INSERT INTO prompt_compilations(session_id,turn_id,prefix_id,prefix_hash,schema_version,prefix_bytes,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,created_at)
+                     VALUES('parent','turn-1','prefix','hash',1,400,100,'codex','gpt-5','orchestrator','orchestration','fresh','not_applicable','now')",
+                    [],
+                )
+                .unwrap();
+            }
+
+            let mut state = crate::agent::CodexStreamState::default();
+            record_frame(&db, &mut state, json!({
+                "method": "turn/started",
+                "params": {"threadId": "thread-1", "turn": {"id": "turn-1"}}
+            }));
+            record_frame(&db, &mut state, usage_frame("turn-1"));
+            record_frame(&db, &mut state, json!({
+                "method": "model/rerouted",
+                "params": {
+                    "threadId": "thread-1", "turnId": "turn-1",
+                    "fromModel": "gpt-5", "toModel": "gpt-5-mini", "reason": "capacity"
+                }
+            }));
+            record_frame(&db, &mut state, usage_frame("turn-1"));
+            record_frame(&db, &mut state, json!({
+                "method": "turn/completed",
+                "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed"}}
+            }));
+            record_frame(&db, &mut state, json!({
+                "method": "turn/started",
+                "params": {"threadId": "thread-1", "turn": {"id": "turn-2"}}
+            }));
+            record_frame(&db, &mut state, usage_frame("turn-2"));
+
+            let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0].model.as_deref(), Some("gpt-5"));
+            assert_eq!(rows[0].serving_model, None);
+            assert_eq!(rows[0].cost_microusd, Some(8400));
+            assert_eq!(rows[1].turn_id.as_deref(), Some("turn-1"));
+            assert_eq!(rows[1].model.as_deref(), Some("gpt-5-mini"), "bound={bound}");
+            assert_eq!(rows[1].serving_model.as_deref(), Some("gpt-5-mini"));
+            assert_eq!(rows[1].harness.as_deref(), Some("codex"));
+            assert_eq!(rows[1].stable_prefix_id.as_deref(), bound.then_some("prefix"));
+            assert_eq!(rows[1].cost_microusd, Some(840));
+            assert_eq!(rows[1].cost_source.as_deref(), Some("model_priced"));
+            assert_eq!(rows[1].cache_savings_microusd, Some(360));
+            assert_eq!(rows[2].turn_id.as_deref(), Some("turn-2"));
+            assert_eq!(rows[2].model.as_deref(), Some("gpt-5"));
+            assert_eq!(rows[2].serving_model, None);
+            assert_eq!(rows[2].cost_microusd, Some(8400));
+            assert_eq!(
+                store::session_harness_and_model(&db, "parent").unwrap(),
+                Some(("codex".into(), Some("gpt-5".into())))
+            );
+            if bound {
+                let prompt = store::prompt_compilation_for_turn(&db, "parent", "turn-1")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(prompt.model.as_deref(), Some("gpt-5"));
+            }
+
+            // The same persisted rows feed usage/cache totals grouped by model.
+            db.execute("UPDATE usage_ledger SET created_at='2026-01-01T12:00:00Z'", [])
+                .unwrap();
+            let summary = crate::usage_summary::summarize(&db, &crate::usage_summary::UsageSummaryRequest {
+                since_day: "2026-01-01".into(),
+                until_day: "2026-01-01".into(),
+                resolution: crate::usage_summary::UsageResolution::Day,
+                time_zone: None,
+                workspace_id: Some("w".into()),
+                include_imported: false,
+                include_dashboard: false,
+                since_time: None,
+                until_time: None,
+            })
+            .unwrap();
+            assert_eq!(summary.buckets.len(), 2);
+            let rerouted = summary.buckets.iter().find(|bucket| bucket.model == "gpt-5-mini").unwrap();
+            assert_eq!(rerouted.records, 1);
+            assert_eq!(rerouted.totals.cache_read_tokens, 400);
+            assert_eq!(rerouted.cost_microusd, 840);
+            assert_eq!(rerouted.cache_savings_microusd, 360);
+            let requested = summary.buckets.iter().find(|bucket| bucket.model == "gpt-5").unwrap();
+            assert_eq!(requested.records, 2);
+            assert_eq!(requested.cost_microusd, 16_800);
+        }
     }
 
     #[test]

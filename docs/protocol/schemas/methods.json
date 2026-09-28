@@ -16,6 +16,13 @@
       "resultSchema": "health-result.json"
     },
     {
+      "command": "install_codex_update",
+      "domain": "health",
+      "method": "health/install_codex_update",
+      "paramsSchema": null,
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "get_state",
       "domain": "state",
       "method": "state/get_state",
@@ -338,6 +345,20 @@
       "resultSchema": "create-aside-chat-result.json"
     },
     {
+      "command": "fork_session",
+      "domain": "sessions",
+      "method": "sessions/fork_session",
+      "paramsSchema": "fork-session-params.json",
+      "resultSchema": "fork-session-result.json"
+    },
+    {
+      "command": "resolve_reference",
+      "domain": "sessions",
+      "method": "sessions/resolve_reference",
+      "paramsSchema": "resolve-reference-params.json",
+      "resultSchema": "resolve-reference-result.json"
+    },
+    {
       "command": "create_workspace_session",
       "domain": "sessions",
       "method": "sessions/create_workspace_session",
@@ -469,6 +490,20 @@
       "method": "config/save_worker_settings",
       "paramsSchema": "save-worker-settings-params.json",
       "resultSchema": "worker-settings.json"
+    },
+    {
+      "command": "get_reviewer_settings",
+      "domain": "config",
+      "method": "config/get_reviewer_settings",
+      "paramsSchema": null,
+      "resultSchema": "reviewer-settings-result.json"
+    },
+    {
+      "command": "save_reviewer_settings",
+      "domain": "config",
+      "method": "config/save_reviewer_settings",
+      "paramsSchema": "save-reviewer-settings-params.json",
+      "resultSchema": "reviewer-settings-result.json"
     },
     {
       "command": "list_archived_chats",
@@ -896,6 +931,13 @@
       "method": "usage/refresh_provider_usage_overviews_interactive",
       "paramsSchema": null,
       "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "redeem_provider_usage_reset",
+      "domain": "usage",
+      "method": "usage/redeem_provider_usage_reset",
+      "paramsSchema": "redeem-provider-usage-reset-params.json",
+      "resultSchema": "redeem-provider-usage-reset-result.json"
     },
     {
       "command": "get_usage_overview",
@@ -1446,7 +1488,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 16
+    "minor": 17
   },
   "reserved": {
     "cancel": "$/cancel",

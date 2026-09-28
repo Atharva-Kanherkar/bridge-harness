@@ -103,6 +103,16 @@ function errorText(payload: Record<string, unknown>): string {
   return stringValue(error.message) ?? stringValue(data.message) ?? stringValue(data.reason) ?? "";
 }
 
+function invalidEntryEvent(envelope: TranscriptEnvelope, payload: Record<string, unknown>): TranscriptEvent {
+  return {
+    type: "error",
+    envelope: { ...envelope, entryId: stringValue(payload.entryId) ?? envelope.entryId },
+    title: stringValue(payload.title) ?? "Unavailable history entry",
+    text: stringValue(payload.text) || stringValue(payload.reason) || "This history entry could not be read.",
+    status: "degraded",
+  };
+}
+
 /* ── The vocabulary ────────────────────────────────────────────────────── */
 
 /**
@@ -132,7 +142,7 @@ const KNOWN_PREFIXES = [
 
 /** Standalone kinds with no dot to match on. */
 const KNOWN_EXACT: ReadonlySet<string> = new Set([
-  "error", "checkpoint", "compaction", "reasoning",
+  "error", "entry.invalid", "checkpoint", "compaction", "reasoning",
   "user.message", "assistant.message",
 ]);
 
@@ -235,6 +245,17 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   if (kind === "message.completed" || kind.startsWith("message.")) {
     return { type: "message.completed", envelope, role: raw.role ? messageRole(raw.role) : undefined, text, title, status };
   }
+  // A persisted message reaches the live channel under its forest kind. It is
+  // still prose: read as a notice it became a tool row, and every mid-turn
+  // update hid inside the Working group until the forest poll caught up.
+  if (kind === "user.message" || kind === "assistant.message") {
+    return {
+      type: "message.completed",
+      envelope: { ...envelope, key: itemId ?? `message:${raw.id}` },
+      role: kind === "user.message" ? "user" : messageRole(raw.role),
+      text, title, status,
+    };
+  }
   if (kind === "tool.progress" || kind.endsWith(".output_delta") || kind === "diff.delta") {
     const surface = surfaceFor(kind, data);
     return { type: "tool.progress", envelope, surface, title, outputDelta: text, status, tool: tool(surface) };
@@ -295,6 +316,9 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   if (kind === "branch.summary") {
     return { type: "branch.summary", envelope, title: "Branch summary", text: text || stringValue(data.summary) || "", status };
   }
+  if (kind === "entry.invalid") {
+    return invalidEntryEvent(envelope, { ...data, title, text });
+  }
   if (kind === "error" || kind === "runtime.failed") {
     // Bridge stamps the persisted forest ID on live/replayed errors. Numeric
     // event IDs and wording are not cross-projection identities.
@@ -331,9 +355,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   }
   if (isKnownKind(kind)) {
     // A family Bridge owns with no card of its own: a stale-base warning, a
-    // settled ACP approval, a mode switch. `user.message`/`assistant.message`
-    // only reach the live channel as replayed frames; the forest projection is
-    // where a stored turn becomes a bubble.
+    // settled ACP approval, a mode switch.
     return { type: "notice", envelope, title, text, status, role: raw.role ? messageRole(raw.role) : undefined };
   }
   reportUnknown(kind, "live");
@@ -538,6 +560,9 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   if (kind === "branch.summary") {
     return { type: "branch.summary", envelope: carded, title: "Branch summary", text: stringValue(payload.summary) ?? "", status };
   }
+  if (kind === "entry.invalid") {
+    return invalidEntryEvent(carded, flat);
+  }
   if (kind === "error" || kind === "runtime.failed") {
     return {
       type: "error",
@@ -630,6 +655,10 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
     // normalized type, never off a payload field.
     return { type: "model.change", envelope, title, text: body, status };
   }
+  // A message's lifecycle halves carry no prose: the text lands whole on
+  // `assistant.message`. Replayed as a notice, each one drew a "Used 1 tool"
+  // row ahead of the reply it opened.
+  if (kind.startsWith("message.")) return null;
   if (kind.startsWith("session.") && kind !== "session.model_changed") {
     // Deliberately narrower than the live filter: every other `session.*`
     // frame is lifecycle plumbing with no row of its own.

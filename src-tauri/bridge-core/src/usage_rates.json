@@ -1,5 +1,5 @@
 {
- "snapshotDate": "2026-09-09",
+ "snapshotDate": "2026-09-22",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "unit": "microusd_per_million_tokens",
  "rates": {
@@ -145,6 +145,12 @@
    "cacheRead": 500000,
    "cacheWrite": 6250000
   },
+  "claude-opus-5-5": {
+   "input": 4000000,
+   "output": 20000000,
+   "cacheRead": 200000,
+   "cacheWrite": 5000000
+  },
   "claude-sonnet-4-20250514": {
    "input": 3000000,
    "output": 15000000,
@@ -279,15 +285,32 @@
    "output": 7500000,
    "cacheRead": 500000
   },
+  "dashscope/qwen3.8-flash": {
+   "input": 150000,
+   "output": 470000,
+   "cacheRead": 16000,
+   "cacheWrite": 200000
+  },
   "dashscope/qwen3.8-max": {
    "input": 2000000,
    "output": 6000000,
    "cacheRead": 250000
   },
+  "dashscope/qwen3.8-omni-flash": {
+   "input": 150000,
+   "output": 470000,
+   "cacheRead": 16000
+  },
   "deepseek-chat": {
    "input": 280000,
    "output": 420000,
    "cacheRead": 28000
+  },
+  "deepseek-flash": {
+   "input": 300000,
+   "output": 1200000,
+   "cacheRead": 6000,
+   "cacheWrite": 0
   },
   "deepseek-reasoner": {
    "input": 280000,
@@ -295,15 +318,15 @@
    "cacheRead": 28000
   },
   "deepseek-v4-flash": {
-   "input": 440000,
-   "output": 1320000,
-   "cacheRead": 14000,
+   "input": 300000,
+   "output": 1200000,
+   "cacheRead": 6000,
    "cacheWrite": 0
   },
   "deepseek-v4-flash-vision-exp": {
-   "input": 440000,
-   "output": 1320000,
-   "cacheRead": 14000,
+   "input": 300000,
+   "output": 1200000,
+   "cacheRead": 6000,
    "cacheWrite": 0
   },
   "deepseek-v4-pro": {
@@ -320,11 +343,19 @@
   },
   "deepseek/deepseek-coder": {
    "input": 140000,
-   "output": 280000
+   "output": 280000,
+   "cacheRead": 14000
+  },
+  "deepseek/deepseek-flash": {
+   "input": 300000,
+   "output": 1200000,
+   "cacheRead": 6000,
+   "cacheWrite": 0
   },
   "deepseek/deepseek-r1": {
    "input": 550000,
-   "output": 2190000
+   "output": 2190000,
+   "cacheRead": 140000
   },
   "deepseek/deepseek-reasoner": {
    "input": 280000,
@@ -339,18 +370,19 @@
   },
   "deepseek/deepseek-v3.2": {
    "input": 280000,
-   "output": 400000
+   "output": 400000,
+   "cacheRead": 28000
   },
   "deepseek/deepseek-v4-flash": {
-   "input": 440000,
-   "output": 1320000,
-   "cacheRead": 14000,
+   "input": 300000,
+   "output": 1200000,
+   "cacheRead": 6000,
    "cacheWrite": 0
   },
   "deepseek/deepseek-v4-flash-vision-exp": {
-   "input": 440000,
-   "output": 1320000,
-   "cacheRead": 14000,
+   "input": 300000,
+   "output": 1200000,
+   "cacheRead": 6000,
    "cacheWrite": 0
   },
   "deepseek/deepseek-v4-pro": {
@@ -365,19 +397,19 @@
    "cacheRead": 30000
   },
   "gemini-flash-latest": {
+   "input": 750000,
+   "output": 3750000,
+   "cacheRead": 75000
+  },
+  "gemini-flash-lite-latest": {
    "input": 300000,
    "output": 2500000,
    "cacheRead": 30000
   },
-  "gemini-flash-lite-latest": {
-   "input": 100000,
-   "output": 400000,
-   "cacheRead": 10000
-  },
   "gemini-pro-latest": {
-   "input": 1250000,
-   "output": 10000000,
-   "cacheRead": 125000
+   "input": 2000000,
+   "output": 12000000,
+   "cacheRead": 200000
   },
   "gemini/gemini-2.0-flash": {
    "input": 100000,
@@ -465,14 +497,14 @@
    "cacheRead": 75000
   },
   "gemini/gemini-flash-latest": {
+   "input": 750000,
+   "output": 3750000,
+   "cacheRead": 75000
+  },
+  "gemini/gemini-flash-lite-latest": {
    "input": 300000,
    "output": 2500000,
    "cacheRead": 30000
-  },
-  "gemini/gemini-flash-lite-latest": {
-   "input": 100000,
-   "output": 400000,
-   "cacheRead": 10000
   },
   "gemini/gemini-gemma-2-27b-it": {
    "input": 350000,
@@ -491,9 +523,9 @@
    "output": 9000000
   },
   "gemini/gemini-pro-latest": {
-   "input": 1250000,
-   "output": 10000000,
-   "cacheRead": 125000
+   "input": 2000000,
+   "output": 12000000,
+   "cacheRead": 200000
   },
   "gemini/gemini-robotics-er-1.5-preview": {
    "input": 300000,
@@ -505,9 +537,9 @@
    "output": 5000000
   },
   "gemini/gemini-robotics-er-2-preview": {
-   "input": 2000000,
-   "output": 10000000,
-   "cacheRead": 200000
+   "input": 1000000,
+   "output": 5000000,
+   "cacheRead": 100000
   },
   "gemini/gemini-robotics-er-2-streaming-preview": {
    "input": 2000000,
@@ -773,13 +805,11 @@
   },
   "gpt-5.4-pro": {
    "input": 30000000,
-   "output": 180000000,
-   "cacheRead": 3000000
+   "output": 180000000
   },
   "gpt-5.4-pro-2026-03-05": {
    "input": 30000000,
-   "output": 180000000,
-   "cacheRead": 3000000
+   "output": 180000000
   },
   "gpt-5.5": {
    "input": 5000000,
@@ -791,15 +821,18 @@
    "output": 30000000,
    "cacheRead": 500000
   },
+  "gpt-5.5-cyber": {
+   "input": 12500000,
+   "output": 75000000,
+   "cacheRead": 1250000
+  },
   "gpt-5.5-pro": {
    "input": 30000000,
-   "output": 180000000,
-   "cacheRead": 3000000
+   "output": 180000000
   },
   "gpt-5.5-pro-2026-04-23": {
    "input": 30000000,
-   "output": 180000000,
-   "cacheRead": 3000000
+   "output": 180000000
   },
   "gpt-5.6": {
    "input": 4000000,
@@ -1120,6 +1153,11 @@
    "output": 2500000,
    "cacheRead": 200000
   },
+  "xai/grok-4.20-0309": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
   "xai/grok-4.20-0309-non-reasoning": {
    "input": 1250000,
    "output": 2500000,
@@ -1130,12 +1168,77 @@
    "output": 2500000,
    "cacheRead": 200000
   },
+  "xai/grok-4.20-beta": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-beta-0309": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
   "xai/grok-4.20-beta-0309-non-reasoning": {
    "input": 1250000,
    "output": 2500000,
    "cacheRead": 200000
   },
   "xai/grok-4.20-beta-0309-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-beta-latest": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-beta-latest-non-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-beta-latest-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-beta-non-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-beta-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-experimental-beta-0304": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-experimental-beta-0304-non-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-experimental-beta-0304-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-experimental-beta-latest": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-experimental-beta-non-reasoning-latest": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-experimental-beta-reasoning-latest": {
    "input": 1250000,
    "output": 2500000,
    "cacheRead": 200000
@@ -1155,6 +1258,21 @@
    "output": 2500000,
    "cacheRead": 200000
   },
+  "xai/grok-4.20-multi-agent-beta-latest": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-multi-agent-experimental-beta-0304": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-multi-agent-experimental-beta-latest": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
   "xai/grok-4.20-multi-agent-latest": {
    "input": 1250000,
    "output": 2500000,
@@ -1165,12 +1283,22 @@
    "output": 2500000,
    "cacheRead": 200000
   },
+  "xai/grok-4.20-non-reasoning-gv2": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
   "xai/grok-4.20-non-reasoning-latest": {
    "input": 1250000,
    "output": 2500000,
    "cacheRead": 200000
   },
   "xai/grok-4.20-reasoning": {
+   "input": 1250000,
+   "output": 2500000,
+   "cacheRead": 200000
+  },
+  "xai/grok-4.20-reasoning-gv2": {
    "input": 1250000,
    "output": 2500000,
    "cacheRead": 200000
@@ -1201,6 +1329,11 @@
    "cacheRead": 300000
   },
   "xai/grok-4.6": {
+   "input": 2000000,
+   "output": 6000000,
+   "cacheRead": 500000
+  },
+  "xai/grok-4.7": {
    "input": 2000000,
    "output": 6000000,
    "cacheRead": 500000

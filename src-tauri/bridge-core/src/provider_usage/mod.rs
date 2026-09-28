@@ -1,10 +1,12 @@
 //! Read-only account collectors. Authentication and transport stay out of both UIs.
 mod claude;
 mod claude_cli;
+mod claude_sdk;
 pub mod credentials;
 mod cursor;
 mod http;
 mod opencode;
+mod opencode_go;
 
 pub fn shutdown() {
     claude_cli::shutdown();
@@ -52,6 +54,8 @@ pub(crate) struct AccountUsage {
     pub plan: Option<String>,
     pub observed_at: i64,
     pub windows: Vec<UsageQuotaWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<bridge_protocol::messages::UsageResetCredits>,
     pub metrics: Vec<UsageAccountMetric>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -95,16 +99,26 @@ pub(crate) fn read_interactive(
 ) -> Result<AccountUsage, AccountReadError> {
     match provider {
         MenuBarProvider::Claude => claude::read_interactive(core).map_err(Into::into),
-        _ => read(provider, settings),
+        _ => read(core, provider, settings),
     }
 }
 
+pub(crate) fn claim_claude_reset(
+    account: &str,
+    org: &str,
+    credit: &bridge_protocol::messages::UsageResetCredit,
+    key: &str,
+) -> Result<bridge_protocol::messages::RedeemProviderUsageResetResult, String> {
+    claude::claim(account, org, credit, key)
+}
+
 pub(crate) fn read(
+    core: &crate::BridgeCore,
     provider: MenuBarProvider,
     settings: &MenuBarSettings,
 ) -> Result<AccountUsage, AccountReadError> {
     match provider {
-        MenuBarProvider::Claude => claude::read().map_err(Into::into),
+        MenuBarProvider::Claude => claude::read(core).map_err(Into::into),
         MenuBarProvider::Cursor => cursor::read(),
         MenuBarProvider::OpenCode => opencode::read(settings.opencode_workspace.as_deref()).map_err(Into::into),
         MenuBarProvider::Codex => Err("Codex uses its app-server collector".into()),

@@ -79,10 +79,7 @@ export function AttentionToasts({ toasts, onOpen, onDismiss }: {
   return <div
     role="region"
     aria-label="Attention notifications"
-    className={cn(
-      "pointer-events-none fixed top-3 right-3 z-30 flex flex-col items-end gap-2",
-      "sm:top-[18px] sm:right-[18px]",
-    )}
+    className="pointer-events-none flex flex-col items-end gap-2"
   >
     {shown.map(toast => (
       <ToastCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} />

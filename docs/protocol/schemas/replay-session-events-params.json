@@ -3,7 +3,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
     "afterSequence": {
-      "description": "The last durable sequence the client has seen; events strictly after this cursor are returned in order, with no gaps and no duplicates.",
+      "description": "The last durable sequence the client has seen; events strictly after this cursor are returned in order, with no gaps and no duplicates. An unreadable stored row returns an `entry.invalid` event at that row's original sequence. Delivering it advances the cursor normally; its data contains `entryId`, `originalKind`, `sequence`, and a safe `reason`.",
       "format": "int64",
       "minimum": 0.0,
       "type": "integer"

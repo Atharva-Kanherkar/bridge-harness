@@ -83,8 +83,23 @@ describe("ModelsPage", () => {
 
   it("marks a worker as pinned or tracking, and says nothing of the sort for the orchestrator", async () => {
     const view = await mount();
-    expect(view.text()).toContain("Tracks standard");
-    expect(view.text()).toContain("Pinned");
+    expect(view.text()).toContain("Automatic");
+    expect(view.text()).toContain("Specific model");
+    await view.unmount();
+  });
+
+  it("toggles a profile by clicking its name or status anywhere in the row", async () => {
+    const view = await mount();
+    const row = view.button("Implementer settings")!;
+    const name = [...row.querySelectorAll("span")].find(node => node.textContent === "Implementer")!;
+    await view.click(name);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(view.text()).toContain("How Bridge chooses a model");
+
+    const status = [...row.querySelectorAll("span")].find(node => node.textContent === "Automatic")!;
+    await view.click(status);
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(view.text()).not.toContain("How Bridge chooses a model");
     await view.unmount();
   });
 
@@ -92,7 +107,7 @@ describe("ModelsPage", () => {
     const view = await mount();
     expect(view.text()).not.toContain("Allow learning");
     await view.click(view.button("Implementer settings"));
-    for (const field of ["Selection behavior", "Provider and model", "Reasoning effort",
+    for (const field of ["How Bridge chooses a model", "Provider and model", "Reasoning effort",
                          "Fallback profile", "Budget preference", "Latency preference", "Allow learning"]) {
       expect(view.text(), field).toContain(field);
     }
@@ -105,7 +120,7 @@ describe("ModelsPage", () => {
     const view = await mount();
     await view.click(view.button("Standard orchestrator settings"));
     expect(view.text()).toContain("Thinking");
-    expect(view.text()).not.toContain("Selection behavior");
+    expect(view.text()).not.toContain("How Bridge chooses a model");
     await view.unmount();
   });
 
@@ -118,6 +133,46 @@ describe("ModelsPage", () => {
     expect(sent).toHaveLength(3);
     expect(sent.find(item => item.purpose === "implementer")!.learningEnabled).toBe(false);
     expect(sent.find(item => item.purpose === "reviewer")).toEqual(profiles[2]);
+    await view.unmount();
+  });
+
+  it("lets a tracking worker choose a connected model and pins that choice", async () => {
+    const view = await mount({ adapters: [adapter(), adapter({
+      id: "claude", label: "Claude", defaultModel: "sonnet",
+      models: [{ id: "sonnet", label: "Sonnet", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low"] }],
+    })] });
+    await view.click(view.button("Implementer settings"));
+    const picker = view.container.querySelector<HTMLButtonElement>('button[aria-label="Implementer model"]');
+    expect(picker?.disabled).toBe(false);
+    await view.click(picker);
+    const sonnet = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(option => option.textContent?.includes("Claude · Sonnet"));
+    expect(sonnet).toBeDefined();
+    await act(async () => {
+      sonnet!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      sonnet!.click();
+    });
+    const sent = view.onSave.mock.calls[0]?.[0];
+    expect(sent?.find(item => item.purpose === "implementer")).toMatchObject({
+      provider: "claude", model: "sonnet", effort: "low",
+      selectionMode: "pinned", pinned: true, learningEnabled: false,
+    });
+    await view.unmount();
+  });
+
+  it("keeps a tracking worker automatic when its displayed model is selected again", async () => {
+    const view = await mount();
+    await view.click(view.button("Implementer settings"));
+    const picker = view.container.querySelector<HTMLButtonElement>('button[aria-label="Implementer model"]');
+    await view.click(picker);
+    const current = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(option => option.textContent?.includes("Codex · GPT-5") && !option.textContent?.includes("mini"));
+    expect(current).toBeDefined();
+    await act(async () => {
+      current!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      current!.click();
+    });
+    expect(view.onSave).not.toHaveBeenCalled();
     await view.unmount();
   });
 

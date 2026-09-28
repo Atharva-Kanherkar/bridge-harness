@@ -167,7 +167,7 @@ fn bare_model_name(key: &str) -> &str {
 
 /// Drops a bracketed variant suffix such as `claude-opus-4-6[1m]`, which
 /// Claude Code writes for the 1M context tier.
-fn strip_variant_suffix(key: &str) -> String {
+pub(crate) fn strip_variant_suffix(key: &str) -> String {
     match key.find('[') {
         Some(index) => key[..index].to_owned(),
         None => key.to_owned(),
@@ -365,6 +365,9 @@ pub struct PricingStatus {
 #[derive(Debug, Clone)]
 pub struct Pricing {
     table: RateTable,
+    /// The bundled snapshot, consulted when a refreshed table lacks a model
+    /// Bridge already knows how to price (a model newer than the refresh).
+    fallback: Option<RateTable>,
     overrides: BTreeMap<String, ModelRate>,
     status: PricingStatus,
 }
@@ -375,6 +378,7 @@ impl Pricing {
         let snapshot = bundled();
         Self {
             table: snapshot.table.clone(),
+            fallback: None,
             overrides: BTreeMap::new(),
             status: PricingStatus {
                 status: "bundled".into(),
@@ -388,7 +392,8 @@ impl Pricing {
     }
 
     /// The table in force for this data directory: the explicitly refreshed
-    /// cache when one exists and parses, otherwise the bundled snapshot.
+    /// cache when one exists and parses, backed by the bundled snapshot for
+    /// models the cache predates; otherwise the bundled snapshot alone.
     pub fn load(db: &Connection) -> Result<Self, BridgeError> {
         let mut pricing = Self::bundled_only();
         if let Some(cached) = rate_cache(db)? {
@@ -402,7 +407,7 @@ impl Pricing {
                         known_models: snapshot.table.len() as i64,
                         overrides: 0,
                     };
-                    pricing.table = snapshot.table;
+                    pricing.fallback = Some(std::mem::replace(&mut pricing.table, snapshot.table));
                 }
                 _ => {}
             }
@@ -424,6 +429,12 @@ impl Pricing {
         &self.table
     }
 
+    fn table_rate(&self, model: &str) -> Option<ModelRate> {
+        self.table
+            .lookup_rate(model)
+            .or_else(|| self.fallback.as_ref()?.lookup_rate(model))
+    }
+
     fn override_for(&self, model: &str) -> Option<ModelRate> {
         self.overrides.get(model.trim()).copied()
     }
@@ -431,7 +442,7 @@ impl Pricing {
     /// The rate that would price `model`: a user override first, then the
     /// table.
     pub fn lookup_rate(&self, model: &str) -> Option<ModelRate> {
-        self.override_for(model).or_else(|| self.table.lookup_rate(model))
+        self.override_for(model).or_else(|| self.table_rate(model))
     }
 
     /// Prices one request. An override beats a reported cost (the user said
@@ -453,7 +464,7 @@ impl Pricing {
                 };
             }
         }
-        let rate = override_.or_else(|| model.and_then(|model| self.table.lookup_rate(model)));
+        let rate = override_.or_else(|| model.and_then(|model| self.table_rate(model)));
         match rate {
             Some(rate) => PricedUsage {
                 cost_microusd: Some(cost_microusd(&rate, tokens)),
@@ -814,6 +825,10 @@ mod tests {
         assert_eq!(pricing.lookup_rate("claude-opus-4-6").unwrap().cache_write, 6_250_000);
         assert_eq!(pricing.lookup_rate("gpt-5").unwrap().cache_read, 1_250_000);
         assert!(pricing.lookup_rate("gpt-5-audio").is_none());
+        // A model newer than the refresh still prices from the bundled table.
+        assert_eq!(pricing.lookup_rate("claude-opus-5-5[1m]").unwrap().input, 4_000_000);
+        let usage = tokens(1_000_000, 0, 0, 0);
+        assert_eq!(pricing.price(Some("claude-opus-5-5"), &usage, None).cost_microusd, Some(4_000_000));
 
         let empty = refresh_rates_from_document(&db, &json!({}));
         assert!(empty.is_err(), "an empty table never replaces a working one");

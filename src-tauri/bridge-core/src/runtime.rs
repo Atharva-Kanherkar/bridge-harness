@@ -16,7 +16,7 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
 };
 
@@ -24,6 +24,18 @@ use std::{
 /// version for every crate precisely so this cannot drift from the application
 /// version a snapshot names.
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Take a workspace serialization guard, ignoring poison.
+///
+/// These locks guard `()`. They order operations on one workspace and protect
+/// no data, so a panic under one leaves nothing inconsistent behind. Poisoning
+/// them, though, makes every later caller panic for the life of the process: a
+/// single stray panic inside the lock would otherwise brick session starts,
+/// chat sends, refreshes, and terminal creation for that workspace until the
+/// app is restarted.
+pub(crate) fn lock_operation(operation: &Mutex<()>) -> MutexGuard<'_, ()> {
+    operation.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 pub struct RuntimeSession {
     pub writer: Box<dyn Write + Send>,
@@ -96,6 +108,13 @@ pub struct BridgeCore {
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
     pub worker_activity: Mutex<HashMap<String, std::time::Instant>>,
+    /// Last progress frame per chat (depth-0) session, read by the chat-turn
+    /// stall watchdog. Separate from `worker_activity` so the per-second worker
+    /// watchdog never scans chats and never probes `worker_runtime` for them.
+    /// An entry exists only while a reader serves an active turn; it is
+    /// removed on every terminal boundary (`turn.completed`, approval wait,
+    /// reader teardown).
+    pub chat_activity: Mutex<HashMap<String, std::time::Instant>>,
     /// Sessions where the user clicked Stop and an interrupt is in flight.
     /// The provider's reaction to that interrupt (an aborted-turn error,
     /// a broken pipe, a non-zero exit) races the teardown in `stop_session`,
@@ -276,7 +295,7 @@ impl BridgeCore {
         Arc::clone(
             self.workspace_operations
                 .lock()
-                .unwrap()
+                .unwrap_or_else(PoisonError::into_inner)
                 .entry(workspace_id.to_owned())
                 .or_insert_with(|| Arc::new(Mutex::new(()))),
         )
@@ -323,6 +342,7 @@ impl BridgeCore {
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
+            chat_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events: EventBus::new(),
@@ -444,6 +464,7 @@ impl BridgeCore {
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
+            chat_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events,
@@ -487,6 +508,30 @@ mod tests {
             browser_extension_path: data_dir.join("no-extension"),
             events: None,
         }
+    }
+
+    /// A panic under a workspace serialization lock used to poison it for the
+    /// life of the process, so every later session start, chat send, or
+    /// refresh on that workspace panicked with `PoisonError` instead of doing
+    /// its work. The lock guards `()`, so there is nothing to protect.
+    #[test]
+    fn a_poisoned_workspace_lock_still_serializes_later_operations() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(fixture.path());
+        let operation = core.workspace_operation("workspace-1");
+
+        let poisoner = Arc::clone(&operation);
+        std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("a diagnostic write failed under the lock");
+        })
+        .join()
+        .unwrap_err();
+        assert!(operation.is_poisoned());
+
+        drop(lock_operation(&operation));
+        let reacquired = core.workspace_operation("workspace-1");
+        let _still_usable = lock_operation(&reacquired);
     }
 
     #[test]

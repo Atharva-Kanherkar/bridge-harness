@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use super::common::{HarnessId, JsSafeU64};
+use super::forest::SessionForestSnapshot;
 use super::state::BridgeState;
 
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
@@ -231,6 +232,100 @@ pub struct CreateAsideChatResult {
     pub fidelity: String,
 }
 
+/// `sessions/fork_session`'s request: branch a session's conversation at an
+/// entry into a new, independent session that begins with the parent's
+/// history up to that point. The parent is never modified.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForkSessionParams {
+    pub session_id: String,
+    pub entry_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Inherits the parent's harness when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    /// Inherits the parent's model when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `"shared"` — both sessions work the same repo path (default).
+    /// `"new"` — the fork gets its own Git worktree and branch.
+    pub worktree_policy: String,
+}
+
+/// `sessions/fork_session`'s result: app state (the sidebar can pick the fork
+/// up immediately), the exact committed fork id, and the fork's own forest
+/// snapshot so the UI can switch to it in one round trip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkSessionResult {
+    pub state: BridgeState,
+    pub session_id: String,
+    pub snapshot: SessionForestSnapshot,
+    pub fidelity: String,
+}
+
+/// `sessions/resolve_reference`'s request: turn a session id, a forest entry
+/// id, a `brio_…` public alias, or an `@session:…` mention into a typed
+/// descriptor the UI can render as a chip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveReferenceParams {
+    pub id: String,
+}
+
+/// The typed answer. `Unknown` is the single shape for both "this id belongs
+/// to nothing" and "this id exists but you may not see it" — resolution never
+/// leaks existence across the authorization boundary.
+/// `rename_all` on a tagged enum renames the *variants*, never the fields
+/// inside struct variants, and schemars 0.8 does not understand serde's
+/// `rename_all_fields`. So each multi-word field is renamed explicitly —
+/// otherwise this is the one snake_case shape on an all-camelCase wire, and
+/// the generated schema and the serialized payload disagree silently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolveReferenceResult {
+    Session {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        label: String,
+        harness: String,
+        #[serde(rename = "workspaceId")]
+        workspace_id: Option<String>,
+        #[serde(rename = "parentSessionId")]
+        parent_session_id: Option<String>,
+        depth: i64,
+        #[serde(rename = "restorationMode")]
+        restoration_mode: String,
+        #[serde(rename = "continuationFidelity")]
+        continuation_fidelity: String,
+        #[serde(rename = "activeEntryId")]
+        active_entry_id: Option<String>,
+        #[serde(rename = "latestCheckpointEntryId")]
+        latest_checkpoint_entry_id: Option<String>,
+        #[serde(rename = "updatedAt")]
+        updated_at: Option<String>,
+        authorized: bool,
+    },
+    Entry {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "entryId")]
+        entry_id: String,
+        #[serde(rename = "entryKind")]
+        entry_kind: String,
+        sequence: i64,
+        summary: String,
+        #[serde(rename = "createdAt")]
+        created_at: String,
+        authorized: bool,
+    },
+    Unknown {
+        authorized: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateWorkspaceSessionParams {
@@ -239,6 +334,24 @@ pub struct CreateWorkspaceSessionParams {
     /// repository).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub create_worktree: Option<bool>,
+    /// Omitted keeps the existing orchestrator behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<WorkspaceSessionKind>,
+    /// Selected provider for a direct workspace chat. Ignored for orchestrators.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    /// Selected model for a direct workspace chat. Ignored for orchestrators.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// The session kind chosen when a workspace chat is created. Fixed for the
+/// session's lifetime: every later turn reads it from the stored row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSessionKind {
+    Orchestrator,
+    Direct,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -279,6 +392,9 @@ pub struct ReplaySessionEventsParams {
     pub session_id: String,
     /// The last durable sequence the client has seen; events strictly after
     /// this cursor are returned in order, with no gaps and no duplicates.
+    /// An unreadable stored row returns an `entry.invalid` event at that row's
+    /// original sequence. Delivering it advances the cursor normally; its data
+    /// contains `entryId`, `originalKind`, `sequence`, and a safe `reason`.
     #[schemars(range(min = 0))]
     pub after_sequence: i64,
     /// Maximum number of events to return. Omitted requests use 500; the
@@ -753,11 +869,24 @@ mod tests {
         let session = CreateWorkspaceSessionParams {
             workspace_id: "w-1".into(),
             create_worktree: Some(true),
+            kind: None,
+            harness: None,
+            model: None,
         };
         assert_eq!(
             serde_json::to_value(&session).unwrap(),
             json!({"workspaceId": "w-1", "createWorktree": true})
         );
+        let direct = CreateWorkspaceSessionParams {
+            workspace_id: "w-1".into(),
+            create_worktree: None,
+            kind: Some(WorkspaceSessionKind::Direct),
+            harness: Some(HarnessId::parse("codex").unwrap()),
+            model: Some("gpt-5".into()),
+        };
+        assert_eq!(serde_json::to_value(&direct).unwrap(), json!({"workspaceId": "w-1", "kind": "direct", "harness": "codex", "model": "gpt-5"}));
+        assert_eq!(round_trip(&direct), direct);
+        assert!(serde_json::from_value::<CreateWorkspaceSessionParams>(json!({"workspaceId": "w-1", "kind": "worker"})).is_err());
         let activate =
             ActivateSessionEntryParams { session_id: "s-1".into(), entry_id: "e-9".into() };
         assert_eq!(round_trip(&activate), activate);

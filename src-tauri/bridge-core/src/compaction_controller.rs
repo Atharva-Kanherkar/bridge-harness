@@ -5,7 +5,7 @@ use crate::{
     store, BridgeError,
 };
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -586,14 +586,58 @@ impl CompactionController {
         Ok(())
     }
 
+    /// The unsettled `compaction.requested` nearest the active head, if any.
+    ///
+    /// Runs on every provider frame of every live session, so it must not
+    /// load the branch: a long chat has thousands of entries whose JSON
+    /// payloads took longer to read and parse than the frame itself, and the
+    /// database lock held meanwhile stalled every other session's stream.
+    /// Most sessions have never compacted at all — one indexed existence
+    /// probe answers those. The rest walk parent pointers from the head and
+    /// stop at the first settlement marker, which is exactly the scan
+    /// [`pending_from_branch`] performs over a loaded branch.
     pub fn pending(
         db: &Connection,
         session_id: &str,
     ) -> Result<Option<PendingCompaction>, BridgeError> {
-        let branch = SessionForest::new(db)
-            .active_branch(session_id)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        pending_from_branch(&branch)
+        let has_marker: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id=?1 AND kind IN ('compaction','compaction.failed','checkpoint','compaction.requested'))",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if !has_marker {
+            return Ok(None);
+        }
+        let marker: Option<(String, String, String)> = db
+            .query_row(
+                // The walk carries ids and kinds only; the one marker's
+                // payload is read after the walk stops, so a long branch is
+                // not copied row by row on the way up.
+                "WITH RECURSIVE branch(id, parent_entry_id, kind, depth) AS (
+                     SELECT e.id, e.parent_entry_id, e.kind, 0
+                     FROM session_heads h
+                     JOIN session_entries e ON e.id=h.active_entry_id AND e.session_id=h.session_id
+                     WHERE h.session_id=?1
+                   UNION ALL
+                     SELECT p.id, p.parent_entry_id, p.kind, b.depth+1
+                     FROM branch b
+                     JOIN session_entries p ON p.id=b.parent_entry_id AND p.session_id=?1
+                     WHERE b.kind NOT IN ('compaction','compaction.failed','checkpoint','compaction.requested')
+                       AND b.depth < 1000000
+                 )
+                 SELECT e.kind, e.payload, e.created_at
+                 FROM branch b JOIN session_entries e ON e.id=b.id
+                 WHERE b.kind IN ('compaction','compaction.failed','checkpoint','compaction.requested')
+                 ORDER BY b.depth LIMIT 1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((kind, payload, created_at)) = marker else {
+            return Ok(None);
+        };
+        let payload: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
+        pending_from_marker(&kind, &payload, &created_at)
     }
 
     pub fn handle_output(
@@ -1010,55 +1054,48 @@ fn checkpoint_payload(
     })
 }
 
-fn pending_from_branch(branch: &[SessionEntry]) -> Result<Option<PendingCompaction>, BridgeError> {
-    for entry in branch.iter().rev() {
-        match entry.kind.as_str() {
-            // A `checkpoint` is only ever appended as a request's answer —
-            // paired with a `compaction` by `record_checkpoint`, or alone by a
-            // late background landing — so one newer than the request settles it.
-            "compaction" | "compaction.failed" | "checkpoint" => return Ok(None),
-            "compaction.requested" => {
-                let reason = entry
-                    .payload
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .and_then(CompactionReason::parse)
-                    .ok_or_else(|| BridgeError::Invalid("invalid compaction reason".into()))?;
-                return Ok(Some(PendingCompaction {
-                    reason,
-                    attempt: entry
-                        .payload
-                        .get("attempt")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as u8,
-                    tokens_before: entry
-                        .payload
-                        .get("tokensBefore")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0),
-                    requested_at: entry
-                        .payload
-                        .get("requestedAt")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&entry.created_at)
-                        .to_owned(),
-                    first_retained_entry_id: entry
-                        .payload
-                        .get("firstRetainedEntryId")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    background: entry
-                        .payload
-                        .get("background")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                }));
-            }
-            _ => {}
-        }
+/// Read the settlement marker nearest the head. A `checkpoint` is only ever
+/// appended as a request's answer — paired with a `compaction` by
+/// `record_checkpoint`, or alone by a late background landing — so one newer
+/// than the request settles it; only a `compaction.requested` is pending.
+fn pending_from_marker(
+    kind: &str,
+    payload: &Value,
+    created_at: &str,
+) -> Result<Option<PendingCompaction>, BridgeError> {
+    if kind != "compaction.requested" {
+        return Ok(None);
     }
-    Ok(None)
+    let reason = payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .and_then(CompactionReason::parse)
+        .ok_or_else(|| BridgeError::Invalid("invalid compaction reason".into()))?;
+    Ok(Some(PendingCompaction {
+        reason,
+        attempt: payload
+            .get("attempt")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u8,
+        tokens_before: payload
+            .get("tokensBefore")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        requested_at: payload
+            .get("requestedAt")
+            .and_then(Value::as_str)
+            .unwrap_or(created_at)
+            .to_owned(),
+        first_retained_entry_id: payload
+            .get("firstRetainedEntryId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        background: payload
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }))
 }
 
 /// Whether any conversation entry landed after the pending request was first
@@ -1441,6 +1478,35 @@ mod tests {
             .unwrap()
             .contains("could not verify"));
         assert!(CompactionController::pending(&db, "s").unwrap().is_none());
+    }
+
+    #[test]
+    fn pending_follows_the_active_branch_not_the_newest_entry() {
+        let db = database();
+        let root = store::session_entries(&db, "s").unwrap()[0].id.clone();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
+            .unwrap()
+            .prompt()
+            .unwrap();
+        let request = CompactionController::pending(&db, "s").unwrap().expect("request is pending");
+        assert_eq!(request.attempt, 0);
+        // Fork from before the request: the request now sits on an abandoned
+        // branch, so nothing is pending on the active one even though the
+        // request is still the newest marker in the session.
+        let forest = SessionForest::new(&db);
+        forest.move_head("s", Some(&root)).unwrap();
+        forest
+            .append("s", EntryKind::UserMessage, json!({"text":"a different branch"}))
+            .unwrap();
+        assert!(CompactionController::pending(&db, "s").unwrap().is_none());
+        // Back on the request's branch it is pending again.
+        let request_entry = store::session_entries(&db, "s")
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == "compaction.requested")
+            .unwrap();
+        forest.move_head("s", Some(&request_entry.id)).unwrap();
+        assert!(CompactionController::pending(&db, "s").unwrap().is_some());
     }
 
     #[test]

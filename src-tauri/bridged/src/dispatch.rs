@@ -8,6 +8,7 @@
 //! and out-of-set enum values all fail here with `invalid_params` instead of
 //! deep inside the runtime.
 
+use bridge_core::model::Harness;
 use bridge_core::{api, learning_job, BridgeCore, BridgeError};
 use bridge_protocol::messages as wire;
 use bridge_protocol::{ErrorCode, MethodName, RpcError, TypedMethod};
@@ -34,6 +35,7 @@ pub fn dispatch(
     match method {
         MethodName::Health => reply(api::health(core)),
         MethodName::RefreshModelCatalogs => reply(api::refresh_model_catalogs(core)),
+        MethodName::InstallCodexUpdate => reply(api::install_codex_update()),
         MethodName::GetState => reply(api::get_state(core)),
 
         MethodName::GithubStatus => {
@@ -238,10 +240,14 @@ pub fn dispatch(
         }
         MethodName::CreateWorkspaceSession => {
             let p: wire::CreateWorkspaceSessionParams = decode(method, params)?;
-            reply(api::create_workspace_session(
+            let direct_harness = p.harness.map(Into::into);
+            reply(api::create_workspace_session_with_model(
                 core,
                 &p.workspace_id,
                 p.create_worktree.unwrap_or(false),
+                p.kind.unwrap_or(wire::WorkspaceSessionKind::Orchestrator),
+                direct_harness.as_ref(),
+                p.model.as_deref(),
             ))
         }
         MethodName::StartSession => {
@@ -541,6 +547,11 @@ pub fn dispatch(
             let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
             reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
         }
+        MethodName::GetReviewerSettings => reply(api::get_reviewer_settings(core)),
+        MethodName::SaveReviewerSettings => {
+            let p: wire::SaveReviewerSettingsParams = decode(method, params)?;
+            reply(api::save_reviewer_settings(core, &p.settings))
+        }
         MethodName::UnarchiveChat => {
             let p: wire::UnarchiveChatParams = decode(method, params)?;
             reply(api::unarchive_chat(core, &p.session_id))
@@ -589,6 +600,10 @@ pub fn dispatch(
         MethodName::GetProviderUsageOverviews => reply(api::get_provider_usage_overviews(core)),
         MethodName::RefreshProviderUsageOverviews => reply(api::refresh_provider_usage_overviews(core)),
         MethodName::RefreshProviderUsageOverviewsInteractive => reply(api::refresh_provider_usage_overviews_interactive(core)),
+        MethodName::RedeemProviderUsageReset => {
+            let p: wire::RedeemProviderUsageResetParams = decode(method, params)?;
+            reply(api::redeem_provider_usage_reset(core, &p))
+        }
         MethodName::GetUsageOverview => reply(api::get_usage_overview(core)),
         MethodName::RefreshUsageOverview => reply(api::refresh_usage_overview(core)),
         MethodName::GetMenuBarSettings => reply(api::get_menu_bar_settings(core)),
@@ -842,11 +857,11 @@ pub fn dispatch(
         }
         MethodName::InstallManagedAgent => {
             let p: wire::InstallManagedAgentParams = decode(method, params)?;
-            reply_managed(api::install_managed_agent(&p.agent_id))
+            reply_managed(api::install_managed_agent(core, &p.agent_id))
         }
         MethodName::RepairManagedAgent => {
             let p: wire::RepairManagedAgentParams = decode(method, params)?;
-            reply_managed(api::repair_managed_agent(&p.agent_id))
+            reply_managed(api::repair_managed_agent(core, &p.agent_id))
         }
         MethodName::UninstallManagedAgent => {
             let p: wire::UninstallManagedAgentParams = decode(method, params)?;
@@ -922,6 +937,22 @@ pub fn dispatch(
                 &p.schedule_expression,
                 p.recurring,
             ))
+        }
+        MethodName::ForkSession => {
+            let p: wire::ForkSessionParams = decode(method, params)?;
+            reply(api::fork_session(
+                core,
+                &p.session_id,
+                &p.entry_id,
+                p.title.as_deref(),
+                p.harness.clone().map(Harness::from).as_ref(),
+                p.model.as_deref(),
+                &p.worktree_policy,
+            ))
+        }
+        MethodName::ResolveReference => {
+            let p: wire::ResolveReferenceParams = decode(method, params)?;
+            reply(api::resolve_reference(core, &p.id))
         }
         MethodName::ExecuteAutomationAction => {
             let p: wire::ExecuteAutomationActionParams = decode(method, params)?;

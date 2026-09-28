@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.10] - 2026-09-21
+
+- Notify on macOS when a session needs attention. The glass toast does not reset while unrelated UI renders, and a refused connector poll stays queued. The inbox can include mentions that are already read.
+- Bring the usage dot back to the chat and headline the tightest window. Usage refresh stays isolated per account.
+- Mission Control can close a chat and hide worker sessions. The live badge counts active pinned workers.
+- Offer Connect when GitHub has no resolved repository, and ask where a pasted GitHub link should open.
+- Propose memory extraction on the chat's own model, and promote safe memories automatically.
+- Bound snapshot frames so a full payload, including non-entry overhead, stays inside the string cap.
+- Show Codex and OpenCode file changes as named rows and keep patch newlines.
+- Stop reloading the session forest on every Claude frame, and time tools from execution.
+- Keep OpenCode turns attached to the session tree, reconnect the event stream with backoff, and label subagent rows. A stall watchdog treats provider heartbeats as liveness rather than progress.
+- Review a pull request with a configurable reviewer. OpenCode reviews run from an isolated worktree.
+- Put the sidebar archive action before the harness mark.
+
 ## [0.5.9] - 2026-09-16
 
 - Include migration 58 in the release so databases created by the current Bridge build open successfully.

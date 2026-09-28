@@ -580,6 +580,8 @@ impl<'client> SessionEventStream<'client> {
 
     /// The consumer's resume point: the last sequence actually delivered by
     /// [`SessionEventStream::next`], never one that is merely queued.
+    /// A replayed `entry.invalid` carrier advances this cursor at the damaged
+    /// row's original sequence, so reconnect and lag recovery do not retry it.
     pub fn cursor(&self) -> i64 {
         self.cursor
     }

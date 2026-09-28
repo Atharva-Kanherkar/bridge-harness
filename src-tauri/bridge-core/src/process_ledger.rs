@@ -13,7 +13,7 @@
 //! live child's identity (`ps` start time + command) matches the recorded one
 //! exactly. PID reuse therefore clears the entry without a kill.
 
-use crate::{adapters, BridgeError};
+use crate::{adapters, diagnostics, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -122,10 +122,10 @@ pub fn record_launch_in_dir(root: &Path, kind: &str, label: &str, pid: u32) -> L
 /// diagnostic this app prints: the workspace installs no tracing subscriber,
 /// so a `tracing::info!` here would be discarded before it reached anyone.
 pub fn log_spawn_to_ready(harness: &str, boundary: &str, spawned_at: std::time::Instant) {
-    eprintln!(
+    diagnostics::record(&format!(
         "bridge: adapter spawn-to-ready harness={harness} boundary={boundary} elapsed_ms={}",
         spawned_at.elapsed().as_millis()
-    );
+    ));
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

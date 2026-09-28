@@ -1115,6 +1115,7 @@ impl AcpSession {
             bytes: 0,
             high_water_bytes: 0,
             dropped_transient: queue.evicted,
+            dropped_foreign: 0,
         }
     }
 

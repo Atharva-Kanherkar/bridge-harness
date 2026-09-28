@@ -252,29 +252,33 @@ see `THIRD_PARTY_NOTICES.md` for attribution.
 
 ## Claude credential freshness
 
-For the default Claude Code profile, background collection prefers the current
-Keychain credential over the legacy `.credentials.json` file, which can survive
-long after Claude Code rotates its token. The file remains a fallback when
-Keychain is unavailable or its token is rejected. Explicit OAuth tokens and
-configuration directories retain precedence. Rate limits and transport failures
-do not retry another credential or launch the CLI. Manual Refresh may use the
-existing bounded Claude CLI fallback for credential failures.
+For the default Claude Code profile, both scheduled and manual refresh use a
+short-lived Agent SDK control request, following T3 Code's capability probe.
+Claude Code owns credential lookup and renewal; Bridge no longer needs direct
+access to the default profile's Keychain item on supported SDKs. The probe sends
+no model prompt, disables hooks/tools/plugins/MCP and persistence, and skips
+local transcript scans. It publishes only account metadata and structured quota
+windows, including Fable. Initialization and usage each have a 15-second budget;
+the parent terminates and reaps the process group within a 35-second budget.
 
-Keychain access runs in an isolated `bridged` helper. Background reads disable
-legacy Keychain interaction in that process and have a two-second deadline;
-credential output is capped at 64 KiB. The helper and its descendants are killed
-and reaped on timeout. Explicit Refresh may request Keychain access with a
-30-second deadline before the CLI fallback. The menu paints its retained snapshot
-before starting credential or network work.
+Explicit OAuth tokens and configuration directories keep the legacy reader and
+never fall through to a different account. Missing or incompatible SDKs also
+retain the legacy reader. On macOS that reader prefers the current Keychain item
+to the legacy credentials file. A rejected/expired readable Keychain credential
+cannot switch to a leftover file. Background Keychain reads are noninteractive
+and bounded to two seconds. Only manual compatibility recovery can request a
+Keychain grant or run the terminal `/usage` fallback.
+
+Quota failures clear unverified Claude account readings instead of presenting
+another account's old limits. Local token/cost history is independent.
 
 ### Public release setup and upgrade verification
 
-Settings explains that automatic Claude usage requires access to its Claude Code
-sign-in. The user starts **Refresh usage** and can choose **Always Allow** for
-Bridge's `bridged` helper when macOS asks for `Claude Code-credentials`. A denied
-or revoked grant leaves the last observation stale; Refresh retries explicitly,
-and background work remains non-interactive. Claude can rewrite that Keychain
-entry during token rotation, so access cannot be promised to last forever.
+Users sign in through Claude Code, enable Claude in Menu Bar settings, and
+refresh. Supported SDKs delegate access and renewal to Claude Code. Older SDKs
+may still need a user-approved Keychain grant for Bridge's legacy reader;
+background refresh never invokes that approval flow. Test both the current SDK
+path and compatibility path before distribution.
 
 Ship through `scripts/release-dmg.sh` / the macOS release workflow, which require
 Developer ID signing, notarization, stapling, and verification of the exact DMG.
@@ -288,3 +292,39 @@ Before public distribution, verify the signed release on a fresh macOS account:
 Claude setup and explicit consent, silent refresh, denial and retry, credential
 rotation, and updating to a second release without an unexpected identity change.
 These distribution checks are separate from the locally approved preview.
+
+## OpenCode Go connection and limits
+
+OpenCode's menu provider now reads Go's five-hour, weekly, and monthly quota
+windows using `GET https://opencode.ai/zen/go/v1/usage`. Percentages and reset
+instants are reported by OpenCode; no inference request, estimated allowance,
+or synthetic zero is used. Local token history remains independent of quotas.
+
+**Connect OpenCode** opens `https://opencode.ai/auth` in the system default
+browser, reusing its existing sign-in. Go does not provide an OAuth callback:
+copy the account's API key into the password field and choose **Save key**, or
+connect **OpenCode Go** through OpenCode's `/connect` / `opencode auth login`
+and refresh. Bridge uses its existing OpenCode provider-auth API to save a key;
+OpenCode must be installed. Saving confirms storage; Refresh checks subscription
+access. The key is cleared from the form on submission and
+is never saved in Menu Bar preferences. Enable OpenCode usage and add it to
+favorites to make its quota bars visible.
+
+The collector honors `OPENCODE_AUTH_CONTENT`, otherwise reads the bounded
+`$XDG_DATA_HOME/opencode/auth.json` (default `~/.local/share/opencode/auth.json`).
+Only the `opencode-go` API entry is used, taking precedence over
+`OPENCODE_API_KEY`. Invalid configured credentials do not fall back to another
+account. While `OPENCODE_AUTH_CONTENT` is set, key changes are rejected with an
+environment-managed-auth message. Saving or removing a Go key clears persisted
+quota data and excludes concurrent refresh until the auth change finishes.
+Requests are bounded to five seconds and do not follow redirects.
+Missing, rejected or malformed account reads clear previous Go limits. An HTTP
+403 asks the user to check the key's workspace and Go subscription.
+
+Existing Zen web sessions remain readable when no Go credential is configured;
+the optional workspace override applies only to those sessions. New sign-ins no
+longer create a separate webview or collect browser cookies.
+
+Implementation references: [OpenCode Go onboarding](https://opencode.ai/docs/go/),
+[T3 Code's Go quota reader](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/provider/Layers/openCodeUsageLimits.ts),
+and [CodexBar's Go collector](https://github.com/steipete/CodexBar/blob/main/Sources/CodexBarCore/Providers/OpenCodeGo/OpenCodeGoUsageFetcher.swift).

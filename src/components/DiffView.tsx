@@ -58,7 +58,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
       </span>
       {style.edge && !band && <span className={cn("absolute inset-y-0 right-0 w-[2px]", style.edge)} aria-hidden="true" />}
     </span>
-    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-3">
+    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pl-2 pr-3">
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
       {range && <button
         type="button"

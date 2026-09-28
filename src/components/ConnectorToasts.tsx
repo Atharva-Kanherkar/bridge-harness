@@ -99,7 +99,7 @@ export function ConnectorToasts({ toasts, suppressed = false, onOpen, onDismiss 
   return <div
     role="region"
     aria-label="Connector notifications"
-    className="pointer-events-none fixed bottom-3 right-3 z-30 flex flex-col items-end gap-2 sm:bottom-[18px] sm:right-[18px]"
+    className="pointer-events-none flex flex-col items-end gap-2"
   >
     {shown.map((toast, index) => <ToastCard key={toast.key} toast={toast} index={index} onOpen={onOpen} onDismiss={onDismiss} />)}
     {toasts.length > shown.length && <div className="pointer-events-none rounded-md bg-muted/70 px-2 py-0.5 text-[11px] text-muted-foreground">

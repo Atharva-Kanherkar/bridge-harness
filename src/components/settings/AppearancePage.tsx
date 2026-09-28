@@ -9,8 +9,10 @@
 import type { ReactNode } from "react";
 import { useThemePreference, type EffortSelectorStyle, type ThemePreference, type ThemeSkin } from "../../theme";
 import { useShowWorkerChatsInMissionControl } from "../../missionControlSettings";
-import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
+import { useShowThinking } from "../../transcriptSettings";
+import { SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
+import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
 
 /** A tile previews either two swatches or a drawn figure, never both. */
 type Tile<T> = { id: T; label: string; hint: string } & ({ swatches: [string, string]; preview?: undefined } | { preview: ReactNode; swatches?: undefined });
@@ -101,9 +103,23 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
   </div>;
 }
 
+/* Zoom is a row rather than a tile: the value is a number, and a drawn preview
+   of "125%" would say less than the number does. The stepper is here because
+   Tauri's own step is not adjustable and the level it leaves behind is
+   otherwise only reachable through a chord. */
+function ZoomControl({ level, onChange }: { level: number; onChange: (next: number) => void }) {
+  return <div className="flex items-center gap-1">
+    <TextButton onClick={() => onChange(stepZoom(level, -1))} disabled={!canZoom(level, -1)} ariaLabel="Zoom out">&minus;</TextButton>
+    <span aria-live="polite" className="min-w-11 text-center text-[13px] tabular-nums text-foreground">{Math.round(level * 100)}%</span>
+    <TextButton onClick={() => onChange(stepZoom(level, 1))} disabled={!canZoom(level, 1)} ariaLabel="Zoom in">+</TextButton>
+  </div>;
+}
+
 export function AppearancePage() {
   const { preference, resolved, setPreference, skin, setSkin, effortSelector, setEffortSelector } = useThemePreference();
   const [showWorkerChats, setShowWorkerChats] = useShowWorkerChatsInMissionControl();
+  const [showThinking, setShowThinking] = useShowThinking();
+  const [zoom, setZoom] = useZoomLevel();
   return <SettingsPage
     title="Appearance"
     description={`Bridge follows macOS by default. Currently showing ${resolved === "dark" ? "graphite" : "paper"}.`}
@@ -117,11 +133,25 @@ export function AppearancePage() {
     <SettingsGroup label="Thinking control" note="How the model picker sets reasoning effort">
       <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
+    <SettingsGroup label="Transcript" note="What the conversation draws for the model's work">
+      <SettingsRow
+        label="Show thinking"
+        description="Off hides the model's reasoning text. A thought still pulses while it streams; a finished thought draws nothing."
+        control={<Switch label="Show thinking" checked={showThinking} onChange={setShowThinking} />}
+      />
+    </SettingsGroup>
     <SettingsGroup label="Mission Control">
       <SettingsRow
         label="Show worker chats in Mission Control"
         description="Off by default: only the orchestrator chat surfaces automatically. Turn on to also surface the workers it delegates to."
         control={<Switch label="Show worker chats in Mission Control" checked={showWorkerChats} onChange={setShowWorkerChats} />}
+      />
+    </SettingsGroup>
+    <SettingsGroup label="Zoom" note="Also on ⌘+ and ⌘-">
+      <SettingsRow
+        label="Window zoom"
+        description="Scales the whole window, the way ⌘+ does in a browser. Kept between launches."
+        control={<ZoomControl level={zoom} onChange={setZoom} />}
       />
     </SettingsGroup>
   </SettingsPage>;

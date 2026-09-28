@@ -66,9 +66,14 @@ describe("a hundred-step turn", () => {
 
   it("keeps every call folded away until the reader asks", () => {
     mount(floodStream());
-    // Not one command line, not one path, until the summary is clicked.
-    expect(host.textContent).not.toContain("cargo test -p bridge-core");
+    // Folded, the run shows only its check results: the latest run of each
+    // distinct build or test command, at most four. Every other call, and
+    // every path, stays away until the summary is clicked.
+    const folded = host.querySelectorAll("[data-tool-row]");
+    expect(folded.length).toBeLessThanOrEqual(4);
+    for (const row of folded) expect(row.closest("[data-check-list]")).not.toBeNull();
     act(() => buttonWith(FLOOD_SUMMARY)!.click());
+    expect(host.querySelectorAll("[data-tool-row]").length).toBeGreaterThan(50);
     expect(host.textContent).toContain("cargo test -p bridge-core");
   });
 

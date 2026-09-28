@@ -126,6 +126,20 @@ pub struct ManagedAgentStatus {
     /// The version of the copy that would actually launch, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// The version Bridge currently pins for this agent, when it has a recipe
+    /// for this platform. Reported next to `version` so a client can say what an
+    /// update would move to instead of only that one exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_version: Option<String>,
+    /// True when Bridge owns this payload and the pinned recipe no longer
+    /// matches what is installed.
+    ///
+    /// An installed payload stays launchable and receipt-valid forever, so
+    /// without this a runtime pinned months ago silently keeps winning over the
+    /// current pin — which is how a new provider model never appears. Only ever
+    /// true for a Bridge-managed payload: a runtime the user installed is not
+    /// Bridge's to version.
+    pub update_available: bool,
     /// A vendor-owned message, such as a login requirement, carried verbatim.
     /// Never a Bridge failure and never credential state.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,6 +230,8 @@ mod tests {
             removable: true,
             executable: Some("/managed/agents/codex/installations/i/payload/bin/codex".into()),
             version: Some("0.147.0".into()),
+            pinned_version: Some("0.148.0".into()),
+            update_available: true,
             vendor_message: None,
             process_id: None,
             consecutive_failures: 0,

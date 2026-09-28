@@ -8,10 +8,11 @@ for the main window. A grouped versioned snapshot supplies the native switcher.
 ## Provider sources
 
 - Codex: existing bounded account/rate-limit probe and local usage ledger.
-- Claude: Claude Code OAuth credentials, read-only usage/profile endpoints,
-  5-hour/weekly/scoped limits, and the existing local history ledger. Manual
-  Refresh can use the installed Claude CLI's `/usage` when default credentials
-  are unavailable, without replacing an explicitly configured account.
+- Claude: a no-turn Claude Agent SDK probe asks Claude Code for its account and
+  structured 5-hour/weekly/model-scoped limits. Claude owns credential lookup and
+  renewal. The existing local history ledger stays separate. Explicit OAuth
+  profiles and older SDKs retain the legacy read-only usage/profile reader; a
+  manual Refresh can use the installed CLI's `/usage` as a compatibility fallback.
 - Cursor: read-only Cursor desktop authentication, dashboard usage-summary,
   billing-cycle limits, reported plan/on-demand amounts, and a bounded dashboard
   event window for daily model/token details. Dashboard account history remains
@@ -23,7 +24,8 @@ for the main window. A grouped versioned snapshot supplies the native switcher.
 The provider switcher and settings choose the displayed provider independently
 from enabling collection. Disabled providers do not start scheduled probes.
 Freshness and collection failures are tracked per provider. Failed identity
-reads clear account labels while retaining historical values as stale.
+reads cannot reuse another account's limits. Claude quota failures clear the
+unverified account snapshot; local token history remains independent.
 
 Cursor percentage fields already use percent units. Cents convert to USD;
 OpenCode monthlyUsage/balance use fixed-point 1e8 USD units while monthlyLimit
@@ -33,10 +35,15 @@ is in whole USD. Missing limits never become a fabricated remaining percentage.
 
 New providers are disabled by default when migrating existing preferences.
 Enable them individually in General → Menu Bar. Cursor uses its desktop session;
-Bridge does not scrape browser cookies. Claude reads its explicit OAuth token,
-configured credential file, or the Claude Code Keychain item without background
-authentication prompts. Background collection reports expired credentials
-without attempting interactive repair.
+Bridge does not scrape browser cookies. Claude's default profile uses an isolated
+Agent SDK control request, with no user prompt, hooks, tools, plugins, MCP servers,
+or persisted session. `skipBehaviors: true` also skips transcript scanning.
+Initialization and usage each have a 15-second deadline; the Rust parent caps
+the entire process at 35 seconds and terminates its process group. No credential
+material leaves Claude Code. Only account metadata and quota windows cross the
+sidecar boundary. Explicit OAuth tokens/configuration directories remain
+authoritative. A missing or incompatible SDK falls back to the legacy reader;
+SDK authentication/network failures cannot silently select another credential.
 
 An explicit Refresh can probe Claude Code with tools, hooks, plugins and MCP
 disabled. It waits for the CLI's normal prompt before sending only `/usage`,
@@ -63,7 +70,7 @@ local RPC only writes the session; it provides no credential-read method. API ke
 workspace ID can be overridden in settings; it is not a credential. Dashboard
 server-function IDs can change upstream and return an unavailable state.
 
-Cursor local history import, Claude credential refresh, OpenCode Go, browser
+Cursor local history import, Bridge-owned Claude OAuth refresh, OpenCode Go, browser
 cookie import, hooks and user plugins are outside this provider slice.
 
 ## Reference
@@ -87,3 +94,8 @@ terminal readiness and bounded collection were checked against
 CLI's screen-reader output.
 
 Implementation validation is recorded in `menu-bar-validation.md`.
+
+The default Claude SDK collector follows [T3 Code's capability probe](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/provider/Layers/ClaudeProvider.ts).
+Bridge's pinned SDK 0.3.261 exposes an experimental structured usage method;
+runtime checks and fixture tests cover missing methods and changed response shapes.
+The deployed default-profile path was checked against Claude Code 2.1.276.

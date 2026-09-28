@@ -41,9 +41,10 @@ empty dashboard response is distinct from unavailable history.
 
 Protocol 1.16 adds the local/dashboard source origin and the optional
 `includeDashboard` request flag. Only opted-in summaries can contain dashboard
-buckets with unavailable session counts. Older clients keep local-only summaries
-with integer counts, while the updated client rejects older daemons that cannot
-serve the requested dashboard data.
+buckets with unavailable session counts. On a 1.16 daemon, older clients kept
+local-only summaries with integer counts, while the updated client rejected
+older daemons that could not serve the requested dashboard data. Protocol 1.17
+later introduced a minimum-client boundary for automatic memory behavior.
 
 ## Claude: which source is better?
 

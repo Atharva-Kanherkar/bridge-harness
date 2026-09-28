@@ -41,6 +41,16 @@ const NotionLogo: ConnectorLogo = ({ size = 13 }) => (
   </svg>
 );
 
+/** Git's mark: the rotated square with a branch through it. Drawn as strokes
+ *  in `currentColor`, like the lucide icons it sits among in a tool row. */
+export const GitMark: ConnectorLogo = ({ size = 12 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M10.6 2.6 2.6 10.6a2 2 0 0 0 0 2.8l8 8a2 2 0 0 0 2.8 0l8-8a2 2 0 0 0 0-2.8l-8-8a2 2 0 0 0-2.8 0Z"/>
+    <path d="m8.5 6.5 3.5 3.5v6"/>
+    <path d="m12 10 3 3"/>
+  </svg>
+);
+
 /** Marks by connector family — the same five families evidence resolution knows. */
 export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
   slack: SlackLogo,
@@ -53,4 +63,11 @@ export const CONNECTOR_LOGOS: Record<string, ConnectorLogo> = {
 /** The mark for a task's `sourceKind` ("slack.message" → Slack), or none. */
 export function logoForSourceKind(sourceKind: string): ConnectorLogo | undefined {
   return CONNECTOR_LOGOS[sourceKind.split(".")[0] ?? ""];
+}
+
+/** The mark for an MCP server name, or none. Servers arrive as `notion`,
+ *  `Notion`, or a hosted connector's `claude_ai_Notion`; all three are Notion. */
+export function logoForMcpServer(server: string): ConnectorLogo | undefined {
+  const key = server.toLowerCase().replace(/^claude_ai_/, "");
+  return CONNECTOR_LOGOS[key] ?? Object.entries(CONNECTOR_LOGOS).find(([family]) => key.startsWith(family))?.[1];
 }

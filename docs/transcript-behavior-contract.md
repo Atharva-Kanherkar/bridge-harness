@@ -28,23 +28,30 @@ Transcript-level thinking is drawn by exactly one component (`Reasoning` in
 `src/components/AgentConversation.tsx`), and it reads exactly one input: the
 item's `status`. It has two states, and no third.
 
-**`streaming`.** The thought is still arriving. The card is open, showing the
-text so far, with one animation beside the word `Thinking…`: the
-`thinking-shimmer` sweep from `src/index.css`. The sweep is achromatic and says
-one thing, "there is more of this coming". It is the only animation the
-transcript uses to mean that, and every row that means it draws this same
-component rather than a copy of the markup. An assistant reply whose first token
-has not landed is that same statement, so it draws the same mark.
+**`streaming`.** The thought is still arriving. It draws `ThinkingRow`: the
+harness mark and the word `Thinking`, pulsing on the `thinking-word` keyframe
+from `src/index.css`, with the text so far beneath it in faint ink and no card
+border. The pulse is achromatic, opacity-only, and says one thing, "there is
+more of this coming". It is the only animation the transcript uses to mean that,
+and every row that means it draws this same component rather than a copy of the
+markup. An assistant reply whose first token has not landed is that same
+statement, so it draws the same row. Under reduced motion the word is static.
 
-**`completed`.** The thought is finished. It collapses to a single summary line
-(`Thought for …`, plus the thought's last line as a preview) with the same icon
-it had while streaming, so the row does not change identity as it settles.
+**`completed`.** The thought is finished. It collapses to a single borderless
+summary line (`Thought for …`, plus the thought's last line as a preview).
 Collapsed is the default, always: a settled thought is evidence a reader can go
 and look at, not something the transcript should keep spending vertical space
 on.
 
 **Expanding is a user action.** Nothing expands a settled thought on the
 reader's behalf, and nothing re-collapses one they opened.
+
+**Turning it off is a preference, not a third state.** `Appearance ›
+Transcript › Show thinking` hides the reasoning text: a streaming thought keeps
+the pulsing row and drops the thought beneath it, and a settled thought draws
+nothing at all. The item, its status and its durability are unchanged — the
+preference hides a transcript, it does not change what a thought is — so
+turning it back on draws the thoughts already stored.
 
 ### What settles a thought
 
@@ -82,6 +89,9 @@ folded into the above:
   waiting on a handshake, opening a session, switching models. It is driven by
   session phase rather than by a `ConversationItem`, and it unmounts as the
   first item starts streaming, handing off to the thinking presentation above.
+  It draws the same `ThinkingRow`, so the handoff is seamless. Its labels never
+  name a model or harness (`Starting…`, `Connecting…`, `Opening session…`,
+  `Thinking`); the mark already says who.
   A surface outside the transcript (the composer, the sidebar, the worker
   roster) may have its own indicator for its own state; those are not the
   transcript's thinking presentation and are not governed by this section.
@@ -111,7 +121,10 @@ something.
    A user's choice outranks liveness: a group the reader collapsed stays
    collapsed while it is still running, and one they opened stays open after it
    finishes. One exception, deliberate: a group holding a patch opens itself,
-   because a diff the reader has to go digging for is not an inline diff.
+   because a diff the reader has to go digging for is not an inline diff. A
+   settled group that failed opens on its failed rows, with the rest of the
+   timeline one "Show all" click away: the reader clicking the failure marker
+   wants the broken step, not the hundred that were fine.
 5. **A live group is legible while it is live.** It says what is happening now,
    and it settles into its summary without the row changing identity or the
    scroll position jumping.
@@ -123,6 +136,13 @@ something.
    ordinary tool work folds.
 8. **A frame Bridge has no name for is visible.** It renders as a collapsed raw
    card, never as an anonymous tool row, and never as nothing.
+
+A recognized tool lifecycle may begin before it names an action. Its empty
+pending/running placeholder stays in the reduction without creating a visible
+activity group; a tool name, recognized category, title, or output reveals the
+same item. Completion and failure remain visible even if the call never gains a
+name. This is a presentation delay for known tool events, not a reinterpretation
+of startup intent or an instruction to discard unknown frames.
 
 Invariant 6 holds. The rules live in `src/transcript/grouping.ts`, as pure data
 with no React in them: a turn is the outer bound of a run, a thought or a plan
@@ -158,6 +178,13 @@ Three rules over that table:
   a streaming thought's. A tool call left `inProgress` when a turn ends stays
   `inProgress`: that is a true statement about a call that never reported back,
   and overwriting it with `completed` would be a lie the reader cannot detect.
+- **Liveness, unlike status, is scoped to the turn.** The item keeps what the
+  wire said; the row stops claiming live work once the turn is over. A call
+  whose completion never arrived settles to the past tense with no spinner, and
+  a check it never finished reads `pending` rather than `running` — the state
+  that claims nothing. Without this a provider that drops one completion frame
+  left "Working · editing files" pulsing under a reply that finished an hour
+  ago. The turn is the outer bound of "still happening" for every row.
 - **`streaming` and `inProgress` are not synonyms.** `streaming` means text is
   accumulating into this item. `inProgress` means an operation is running.
   A reader sees the shimmer for the first and a pulse for the second.

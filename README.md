@@ -17,6 +17,11 @@
   <sub>macOS 12+ · Apple Silicon · Early-stage, under active development</sub>
 </p>
 
+<p align="center">
+  <a href="https://github.com/Atharva-Kanherkar/bridge-harness/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Atharva-Kanherkar/bridge-harness/ci.yml?branch=main&label=CI" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Atharva-Kanherkar/bridge-harness" alt="MIT License"></a>
+  <a href="https://github.com/Atharva-Kanherkar/bridge-harness/issues"><img src="https://img.shields.io/github/issues/Atharva-Kanherkar/bridge-harness" alt="Open issues"></a>
+</p>
 
 <p align="center">
   <img src="docs/media/mission-control.webp" alt="Bridge Mission Control: four live agent conversations side by side, each with its own transcript and composer" width="900" />
@@ -158,8 +163,16 @@ Approvals, history, and usage tracking are on from the start.
 - [docs/protocol/README.md](docs/protocol/README.md) — the RPC contract between the app and the runtime
 - [docs/work-brief.md](docs/work-brief.md) — the daily work briefing
 
+## Contributing
+
+Bridge is a **Tauri 2** app with a **Rust** workspace under `src-tauri/` and a **React + TypeScript + Vite** frontend styled with **Tailwind CSS v4**, managed with **Bun**.
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for prerequisites, the full command table (`bun run dev`, `bun run tauri dev`, `bun run check`, `bun run build`, `bun run test`), pull request expectations, and issue etiquette ([`docs/issue-format.md`](docs/issue-format.md) — every issue needs **For humans** and **For agents** sections).
+
+Agent and UI conventions: **[AGENTS.md](AGENTS.md)**.
+
 <details>
-<summary><strong>Building from source &amp; contributing</strong></summary>
+<summary><strong>Quickstart (from source)</strong></summary>
 
 ```sh
 git clone https://github.com/Atharva-Kanherkar/bridge-harness.git
@@ -175,8 +188,6 @@ Before opening a PR:
 bun run build
 bun run test
 ```
-
-Keep changes focused, follow [AGENTS.md](AGENTS.md) (Tailwind CSS v4 only, colocated tests), and use Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
 
 </details>
 

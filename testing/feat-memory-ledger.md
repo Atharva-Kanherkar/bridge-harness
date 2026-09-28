@@ -1,6 +1,9 @@
 # feat/memory-ledger
 
-Thin explicit ledger. Not session recall. Not the learning router. Not a Memory UI.
+This describes the initial thin explicit-ledger slice. Later slices add the
+Memory UI, reviewed and automatic extraction, and bounded future-session
+packets; see `feat-memory-extract.md` and `feat-memory-packet.md`. It remains
+separate from session recall and the learning router.
 
 ## Schema 31
 
@@ -9,12 +12,12 @@ Thin explicit ledger. Not session recall. Not the learning router. Not a Memory 
 
 ## Save / list / forget
 
-- Save always writes `account:local`, provenance `user_explicit`. No extract method.
+- In this slice, save always writes `account:local`, provenance `user_explicit`.
 - List requires `scopeKey`; empty/whitespace rejected; list does not return other scopes.
 - Forget tombstones (`status=deleted`); list omits tombstones.
 - Secret-shaped bodies refused (same interceptors as turns).
 - `/pin`, `/pins`, `/unpin` are Bridge-local (`slash::is_bridge_local`); they do not auto-switch harness.
 
-## Out of scope
+## Out of scope for this initial slice
 
 Time decay, fingerprint clustering, catalog-snapshot dedupe, evaluator executor, Hermes sidecar, injecting pins into prompts, FTS on the ledger, migrating `task_knowledge` rows, Memory review-queue UI.

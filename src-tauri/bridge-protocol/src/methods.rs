@@ -40,6 +40,7 @@ methods![
     // health
     (Health, "health", "health"),
     (RefreshModelCatalogs, "health", "refresh_model_catalogs"),
+    (InstallCodexUpdate, "health", "install_codex_update"),
     // state — the aggregate application snapshot
     (GetState, "state", "get_state"),
     // projects
@@ -93,6 +94,8 @@ methods![
     (CreateChat, "sessions", "create_chat"),
     (CreateChatId, "sessions", "create_chat_id"),
     (CreateAsideChat, "sessions", "create_aside_chat"),
+    (ForkSession, "sessions", "fork_session"),
+    (ResolveReference, "sessions", "resolve_reference"),
     (CreateWorkspaceSession, "sessions", "create_workspace_session"),
     (StartSession, "sessions", "start_session"),
     (StartChat, "sessions", "start_chat"),
@@ -112,6 +115,8 @@ methods![
     (ArchiveChat, "sessions", "archive_chat"),
     (GetWorkerSettings, "config", "get_worker_settings"),
     (SaveWorkerSettings, "config", "save_worker_settings"),
+    (GetReviewerSettings, "config", "get_reviewer_settings"),
+    (SaveReviewerSettings, "config", "save_reviewer_settings"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
     (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
@@ -187,6 +192,7 @@ methods![
     (GetProviderUsageOverviews, "usage", "get_provider_usage_overviews"),
     (RefreshProviderUsageOverviews, "usage", "refresh_provider_usage_overviews"),
     (RefreshProviderUsageOverviewsInteractive, "usage", "refresh_provider_usage_overviews_interactive"),
+    (RedeemProviderUsageReset, "usage", "redeem_provider_usage_reset"),
     (GetUsageOverview, "usage", "get_usage_overview"),
     (RefreshUsageOverview, "usage", "refresh_usage_overview"),
     (GetMenuBarSettings, "menu_bar", "get_menu_bar_settings"),

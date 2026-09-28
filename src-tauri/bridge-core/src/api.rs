@@ -91,6 +91,43 @@ pub fn refresh_model_catalogs(core: &Arc<BridgeCore>) -> Result<Health, BridgeEr
     health(core)
 }
 
+/// The only command the Codex update confirmation may execute. There are no
+/// renderer-supplied URLs or shell arguments at this boundary.
+pub fn install_codex_update() -> Result<(), BridgeError> {
+    const INSTALL_COMMAND: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    if RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Err(BridgeError::Invalid("A Codex update is already running".into()));
+    }
+    struct ResetRunning;
+    impl Drop for ResetRunning {
+        fn drop(&mut self) {
+            RUNNING.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let _reset = ResetRunning;
+
+    // pipefail matters here: an unreachable installer URL must not look like
+    // success merely because `sh` received empty input and exited cleanly.
+    let mut command = std::process::Command::new("/bin/zsh");
+    binary::hydrate_command_path(&mut command);
+    let output = command
+        .args(["-o", "pipefail", "-c", INSTALL_COMMAND])
+        .output()
+        .map_err(|error| BridgeError::Invalid(format!("Could not start the Codex updater: {error}")))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        return Err(BridgeError::Invalid(if detail.is_empty() {
+            format!("Codex update failed: {}", output.status)
+        } else {
+            format!("Codex update failed: {detail}")
+        }));
+    }
+    Ok(())
+}
+
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
 }
@@ -629,26 +666,34 @@ pub fn github_review(
     // Validate the workspace exists before spending a session on it.
     core.workspace_path(workspace_id)?;
 
-    // Resolve the Reviewer model profile. Its tier/effort shape the worker; its
-    // model is only used when the profile's provider matches the chosen harness,
-    // otherwise the launch path picks the harness's tier default.
-    let resolved = {
+    // The reviewer settings name a model and effort per harness; the Reviewer
+    // model profile fills whatever they leave unset, and its tier shapes the
+    // worker. The profile's model is only used when its provider matches the
+    // chosen harness, otherwise the launch path picks the harness's tier default.
+    let (resolved, reviewer_settings, supports_read_only) = {
         let db = core.db.lock().unwrap();
-        crate::model_profiles::resolve_profile(
-            &db,
-            &core.adapter_registry.descriptors(),
-            crate::model_profiles::ProfilePurpose::Reviewer,
-        )?
+        let descriptors = core.adapter_registry.descriptors();
+        let supports_read_only = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == harness)
+            .map(|descriptor| {
+                descriptor.supports_sandbox(crate::model::SandboxMode::ReadOnly)
+            })
+            // An unknown descriptor is treated as unconstrained (read-only
+            // allowed) so a third-party harness is never forced isolated.
+            .unwrap_or(true);
+        (
+            crate::model_profiles::resolve_profile(
+                &db,
+                &descriptors,
+                crate::model_profiles::ProfilePurpose::Reviewer,
+            )?,
+            crate::reviewer_settings::load(&db)?,
+            supports_read_only,
+        )
     };
-    let (capability_tier, effort, model) = match resolved {
-        Some(profile) => {
-            let model = (profile.provider == harness).then(|| profile.model.clone());
-            (profile.tier, profile.effort, model)
-        }
-        // Model setup is incomplete: fall back to a strong reviewer tier and let
-        // the launch path resolve the harness's tier default.
-        None => (CapabilityTier::Strong, delegation::Effort::High, None),
-    };
+    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only);
+    let ReviewerLaunchPlan { capability_tier, effort, model, write_mode, objective } = plan;
 
     // Establish the parent orchestrator session. Reuse the caller's session when
     // it exists and belongs to this workspace; otherwise mint a fresh one.
@@ -663,7 +708,7 @@ pub fn github_review(
             // orchestrator session (depth 0) with no isolated worktree — the
             // worker gets its own read-only sandbox at launch.
             let operation = core.workspace_operation(workspace_id);
-            let _operation = operation.lock().unwrap();
+            let _operation = crate::runtime::lock_operation(&operation);
             let plan = core.plan_workspace_session(workspace_id, false)?;
             let new_id = plan.session_id().to_owned();
             core.persist_workspace_session(plan, None)?;
@@ -674,14 +719,6 @@ pub fn github_review(
     // A turn id is a free-form string here — the launch path takes any id, as the
     // user-driven retry (`retry-<uuid>`) does; no turn row is a precondition.
     let turn_id = format!("github-review-{}", Uuid::new_v4());
-
-    let objective = format!(
-        "Review pull request #{number} in this repository. Run `gh pr view {number}` and \
-         `gh pr diff {number}` to read the change, then post a concise, constructive code \
-         review as a comment using `gh pr comment {number} --body \"...\"`. Cite concrete \
-         files and line numbers; call out correctness bugs, risky changes, and missing tests. \
-         Do NOT approve, merge, request-changes, or close the PR — only post a comment."
-    );
 
     let directive = delegation::DelegationRequest {
         schema_version: delegation::SCHEMA_VERSION,
@@ -696,7 +733,7 @@ pub fn github_review(
         evidence_ids: Vec::new(),
         relevant_files: Vec::new(),
         owned_paths: Vec::new(),
-        write_mode: delegation::WriteMode::ReadOnly,
+        write_mode,
         capability_tier,
         effort,
         network_access: true,
@@ -725,7 +762,14 @@ pub fn github_review(
         live_turn::WorkerLaunchOutcome::AwaitingApproval => wire::GithubReviewResult {
             status: "awaitingApproval".into(),
             session_id: None,
-            message: "Review is pending an approval; resolve it to let the worker start.".into(),
+            message: if write_mode == delegation::WriteMode::Isolated {
+                format!(
+                    "Review with {harness} is pending an approval on the conversation: {harness} cannot run \
+                     read-only, so the reviewer gets its own isolated worktree. Approve it to start."
+                )
+            } else {
+                "Review is pending an approval; resolve it to let the worker start.".into()
+            },
         },
         live_turn::WorkerLaunchOutcome::Failed => wire::GithubReviewResult {
             status: "failed".into(),
@@ -734,6 +778,64 @@ pub fn github_review(
         },
     };
     Ok(result)
+}
+
+/// How the pull-request reviewer launches on one harness, decided before a
+/// session is spent on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReviewerLaunchPlan {
+    pub capability_tier: CapabilityTier,
+    pub effort: delegation::Effort,
+    pub model: Option<String>,
+    pub write_mode: delegation::WriteMode,
+    pub objective: String,
+}
+
+/// Precedence: the reviewer settings for this harness, then the Reviewer model
+/// profile, then the harness default. A harness whose adapter descriptor does
+/// not advertise `read_only` cannot run inside the offline read-only sandbox
+/// (refused at launch by design), so its reviewer runs isolated in its own
+/// worktree instead of failing to start; the policy engine still gates that
+/// with an approval.
+pub(crate) fn reviewer_launch_plan(
+    settings: &wire::ReviewerSettings,
+    profile: Option<&crate::model_profiles::ResolvedProfile>,
+    harness: &str,
+    number: u64,
+    supports_read_only: bool,
+) -> ReviewerLaunchPlan {
+    let per_harness = settings.harnesses.get(harness);
+    let (capability_tier, profile_effort, profile_model) = match profile {
+        Some(profile) => (
+            profile.tier,
+            Some(profile.effort),
+            (profile.provider == harness).then(|| profile.model.clone()),
+        ),
+        // Model setup is incomplete: a strong reviewer tier, and the launch
+        // path resolves the harness's tier default.
+        None => (CapabilityTier::Strong, None, None),
+    };
+    let effort = per_harness
+        .and_then(|entry| entry.effort)
+        .map(crate::reviewer_settings::effort_from_wire)
+        .or(profile_effort)
+        .unwrap_or(delegation::Effort::High);
+    let model = per_harness
+        .and_then(|entry| entry.model.clone())
+        .filter(|model| !model.trim().is_empty())
+        .or(profile_model);
+    let write_mode = if supports_read_only {
+        delegation::WriteMode::ReadOnly
+    } else {
+        delegation::WriteMode::Isolated
+    };
+    ReviewerLaunchPlan {
+        capability_tier,
+        effort,
+        model,
+        write_mode,
+        objective: crate::reviewer_settings::objective(settings, number),
+    }
 }
 
 fn is_cursor_bugbot(harness: &str) -> bool {
@@ -917,7 +1019,7 @@ pub fn connect_workspace_folder(
         return Err(BridgeError::Invalid("workspace does not exist".into()));
     }
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     let still_exists: bool = core.db.lock().unwrap().query_row(
         "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=?1)",
         params![workspace_id],
@@ -981,7 +1083,7 @@ fn with_workspace_lock<T>(
     body: impl FnOnce() -> T,
 ) -> T {
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     body()
 }
 
@@ -991,7 +1093,7 @@ fn with_optional_workspace_lock<T>(
     body: impl FnOnce() -> T,
 ) -> T {
     let operation = workspace_id.map(|workspace_id| core.workspace_operation(workspace_id));
-    let _operation = operation.as_ref().map(|operation| operation.lock().unwrap());
+    let _operation = operation.as_ref().map(|operation| crate::runtime::lock_operation(operation));
     body()
 }
 
@@ -1154,7 +1256,7 @@ pub fn archive_workspace(
     // snapshot failure below cannot leave listeners unaware of it.
     core.workspace_path(workspace_id)?;
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
+    let _operation = crate::runtime::lock_operation(&operation);
     if core
         .runtimes
         .lock()
@@ -1295,23 +1397,73 @@ pub fn create_aside_chat(
     })
 }
 
-/// Create an orchestrator session inside a workspace (the classic Bridge agent
-/// that plans and delegates to workers). Multiple are allowed per workspace.
+/// Resolve a session id, entry id, or `brio_…` alias into its typed
+/// descriptor. `Unknown` is the single shape for both missing ids and
+/// unauthorized ones, so resolution never leaks existence.
+pub fn resolve_reference(
+    core: &Arc<BridgeCore>,
+    id: &str,
+) -> Result<wire::ResolveReferenceResult, BridgeError> {
+    // Returned straight through, not round-tripped through `serde_json::Value`:
+    // the core builds the wire type itself, so the compiler holds the contract
+    // rather than a hand-written payload that only fails at runtime.
+    core.resolve_reference(id)
+}
+
+/// Fork a session's conversation branch at an entry. Returns the exact fork
+/// id, its own forest snapshot, and the app state so the sidebar can switch
+/// to the fork immediately. The parent is never modified.
+pub fn fork_session(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    entry_id: &str,
+    title: Option<&str>,
+    harness: Option<&Harness>,
+    model: Option<&str>,
+    worktree_policy: &str,
+) -> Result<wire::ForkSessionResult, BridgeError> {
+    let (fork_id, snapshot, fidelity) =
+        core.fork_session(session_id, entry_id, title, harness, model, worktree_policy)?;
+    Ok(wire::ForkSessionResult {
+        state: protocol_wire(core.state_snapshot()?)?,
+        session_id: fork_id,
+        snapshot: protocol_wire(snapshot)?,
+        fidelity: fidelity.into(),
+    })
+}
+
+/// Create an orchestrator session inside a workspace. Multiple are allowed.
 pub fn create_workspace_session(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
     create_worktree: bool,
 ) -> Result<BridgeState, BridgeError> {
+    create_workspace_session_with_model(core, workspace_id, create_worktree,
+        sessions::WorkspaceSessionKind::Orchestrator, None, None)
+}
+
+/// Create a workspace root session with its mode and direct provider selection.
+pub fn create_workspace_session_with_model(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    create_worktree: bool,
+    kind: sessions::WorkspaceSessionKind,
+    direct_harness: Option<&Harness>,
+    direct_model: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     core.workspace_path(workspace_id)?;
     let operation = core.workspace_operation(workspace_id);
-    let _operation = operation.lock().unwrap();
-    let plan = core.plan_workspace_session(workspace_id, create_worktree)?;
+    let _operation = crate::runtime::lock_operation(&operation);
+    let plan = core.plan_workspace_session_with_model(
+        workspace_id, create_worktree, kind, direct_harness, direct_model,
+    )?;
     let worktree = match plan.worktree_source().map(str::to_owned) {
-        Some(source) => Some(sessions::prepare_orchestrator_worktree(
+        Some(source) => Some(sessions::prepare_workspace_worktree(
             &core.worktrees,
             plan.workspace_title(),
             Path::new(&source),
             plan.session_id(),
+            kind,
         )?),
         None => None,
     };
@@ -1328,7 +1480,7 @@ pub fn start_session(
 }
 
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
-/// harness/model with no briefing; an `orchestrator` session runs codex with
+/// harness/model with no routing briefing; an `orchestrator` session runs its configured harness with
 /// the routing briefing + delegation protocol.
 pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
     // The "imported history cannot resume" gate lives in `live_turn::start_chat`
@@ -3962,6 +4114,10 @@ pub fn refresh_provider_usage_overviews_interactive(core: &Arc<BridgeCore>) -> R
     crate::usage_overview::refresh_providers_interactive(core)
 }
 
+pub fn redeem_provider_usage_reset(core: &Arc<BridgeCore>, params: &wire::RedeemProviderUsageResetParams) -> Result<wire::RedeemProviderUsageResetResult, BridgeError> {
+    crate::usage_overview::redeem_reset(core, params)
+}
+
 pub fn get_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     crate::usage_overview::snapshot(core)
 }
@@ -4004,6 +4160,14 @@ pub fn get_worker_settings(core: &Arc<BridgeCore>, workspace_id: &str) -> Result
 
 pub fn save_worker_settings(core: &Arc<BridgeCore>, workspace_id: &str, settings: &wire::WorkerSettings) -> Result<wire::WorkerSettings, BridgeError> {
     crate::worker_settings::save(&core.db.lock().unwrap(), workspace_id, settings)
+}
+
+pub fn get_reviewer_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewerSettingsResult, BridgeError> {
+    Ok(crate::reviewer_settings::view(crate::reviewer_settings::load(&core.db.lock().unwrap())?))
+}
+
+pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerSettings) -> Result<wire::ReviewerSettingsResult, BridgeError> {
+    Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
 /// Every worktree Bridge knows about, with the last assessment of what may be
@@ -4218,7 +4382,7 @@ pub fn adopt_worker_worktree(
             BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
         })?;
     let workspace_operation = core.workspace_operation(&workspace_id);
-    let _workspace_operation = workspace_operation.lock().unwrap();
+    let _workspace_operation = crate::runtime::lock_operation(&workspace_operation);
     if core
         .runtimes
         .lock()
@@ -4292,7 +4456,7 @@ pub fn discard_worker_worktree(
             BridgeError::Invalid(format!("worker {session_id} has no repository binding"))
         })?;
     let workspace_operation = core.workspace_operation(&workspace_id);
-    let _workspace_operation = workspace_operation.lock().unwrap();
+    let _workspace_operation = crate::runtime::lock_operation(&workspace_operation);
     let plan = {
         let db = core.db.lock().unwrap();
         worker_adoption::plan_discard(&db, session_id)?
@@ -4555,8 +4719,14 @@ pub fn set_opencode_provider_api_key(
     directory: Option<String>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
-    core.adapter_registry
-        .set_opencode_provider_api_key(&directory, provider_id, api_key)
+    let save = || core.adapter_registry
+        .set_opencode_provider_api_key(&directory, provider_id, api_key);
+    if provider_id == "opencode-go" {
+        ensure_opencode_auth_is_mutable()?;
+        crate::usage_overview::with_opencode_auth_change(core, save)
+    } else {
+        save()
+    }
 }
 
 pub fn remove_opencode_provider_auth(
@@ -4565,8 +4735,21 @@ pub fn remove_opencode_provider_auth(
     directory: Option<String>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
-    core.adapter_registry
-        .remove_opencode_provider_auth(&directory, provider_id)
+    let remove = || core.adapter_registry
+        .remove_opencode_provider_auth(&directory, provider_id);
+    if provider_id == "opencode-go" {
+        ensure_opencode_auth_is_mutable()?;
+        crate::usage_overview::with_opencode_auth_change(core, remove)
+    } else {
+        remove()
+    }
+}
+
+fn ensure_opencode_auth_is_mutable() -> Result<(), BridgeError> {
+    if std::env::var_os("OPENCODE_AUTH_CONTENT").is_some_and(|value| !value.is_empty()) {
+        return Err(BridgeError::Invalid("OpenCode authentication is managed by OPENCODE_AUTH_CONTENT. Update that environment setting instead.".into()));
+    }
+    Ok(())
 }
 
 pub fn save_agent_config(
@@ -5377,6 +5560,59 @@ mod tests {
     }
 
     #[test]
+    fn reviewer_launch_plan_prefers_settings_then_profile_then_defaults() {
+        use bridge_protocol::messages::{self as wire, ReviewerHarnessSettings, ReviewerSettings};
+        use crate::{delegation, model::CapabilityTier};
+        let profile = crate::model_profiles::ResolvedProfile {
+            purpose: crate::model_profiles::ProfilePurpose::Reviewer,
+            profile_version: 1,
+            provider: "codex".into(),
+            model: "gpt-5-codex".into(),
+            tier: CapabilityTier::Standard,
+            effort: delegation::Effort::Medium,
+            selection_mode: crate::model_profiles::ProfileSelectionMode::Pinned,
+            pinned: true,
+            learning_enabled: false,
+            budget_preference: None,
+            latency_preference: None,
+            used_fallback: false,
+        };
+        // Nothing configured: the profile speaks for its own provider only.
+        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true);
+        assert_eq!((plain.model.as_deref(), plain.effort, plain.capability_tier), (Some("gpt-5-codex"), delegation::Effort::Medium, CapabilityTier::Standard));
+        assert_eq!(plain.write_mode, delegation::WriteMode::ReadOnly);
+        assert!(plain.objective.starts_with("Review pull request #9"));
+        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true);
+        assert_eq!(other.model, None, "a Codex model is not handed to Claude");
+        assert_eq!(other.effort, delegation::Effort::Medium);
+        // Settings for the harness win over the profile.
+        let mut settings = ReviewerSettings { system_prompt: "Check PR {number}.".into(), ..Default::default() };
+        settings.harnesses.insert("claude".into(), ReviewerHarnessSettings { model: Some("claude-opus-5".into()), effort: Some(wire::Effort::Xhigh) });
+        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true);
+        assert_eq!((configured.model.as_deref(), configured.effort), (Some("claude-opus-5"), delegation::Effort::Xhigh));
+        assert!(configured.objective.starts_with("Check PR 9."), "{}", configured.objective);
+        assert!(configured.objective.contains("only post a comment"), "custom prompts keep the safety guardrail: {}", configured.objective);
+        // No profile at all: strong tier, high effort, harness default model.
+        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true);
+        assert_eq!((bare.model, bare.effort, bare.capability_tier), (None, delegation::Effort::High, CapabilityTier::Strong));
+        // A harness without read_only support reviews from an isolated worktree.
+        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false);
+        assert_eq!(opencode.write_mode, delegation::WriteMode::Isolated);
+    }
+
+    #[test]
+    fn reviewer_launch_plan_uses_descriptor_sandbox_capability() {
+        use bridge_protocol::messages::ReviewerSettings;
+        use crate::delegation;
+        // The same harness id gets isolated iff its descriptor lacks read_only —
+        // no hard-coded name decides write access.
+        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false);
+        assert_eq!(isolated.write_mode, delegation::WriteMode::Isolated);
+        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true);
+        assert_eq!(readonly.write_mode, delegation::WriteMode::ReadOnly);
+    }
+
+    #[test]
     fn cursor_bugbot_is_not_rejected_as_an_unsupported_harness() {
         let scratch = tempfile::tempdir().unwrap();
         let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
@@ -5803,22 +6039,35 @@ pub fn inspect_managed_agent(
     crate::managed_agents::inspect_managed_agent(agent_id)
 }
 
+/// Install or upgrade an agent's managed payload, then re-read its catalog.
+///
+/// The catalog refresh is the point of the install as often as not: a payload
+/// bump is how a newly released provider model reaches Bridge, and the adapter
+/// caches its model list from whichever payload was resolvable when it last
+/// looked. Without this the models the user just downloaded stay invisible
+/// until the app restarts.
 pub fn install_managed_agent(
+    core: &Arc<BridgeCore>,
     agent_id: &str,
 ) -> Result<
     bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
-    crate::managed_agents::install_managed_agent(agent_id)
+    let result = crate::managed_agents::install_managed_agent(agent_id)?;
+    core.adapter_registry.refresh_availability(agent_id);
+    Ok(result)
 }
 
 pub fn repair_managed_agent(
+    core: &Arc<BridgeCore>,
     agent_id: &str,
 ) -> Result<
     bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
-    crate::managed_agents::repair_managed_agent(agent_id)
+    let result = crate::managed_agents::repair_managed_agent(agent_id)?;
+    core.adapter_registry.refresh_availability(agent_id);
+    Ok(result)
 }
 
 /// Takes the core because removal must first prove nothing is running against

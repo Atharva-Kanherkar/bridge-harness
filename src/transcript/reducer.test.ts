@@ -19,6 +19,21 @@ const entry = (id: string, parentEntryId: string | null, kind: string, payload: 
 });
 
 describe("reduceTranscript", () => {
+  it("keeps an anonymous call's identity when a progress update names it", () => {
+    const started = live(1, "tool.started", { itemId: "context", status: "inProgress", data: { kind: "other" } });
+    const progress = live(0, "tool.progress", { sequence: 0, itemId: "context", title: "Resolve project context", status: "inProgress" });
+    const completed = live(2, "tool.completed", { itemId: "context", status: "completed" });
+    const [initial] = reduce([started]);
+    const [named] = reduce([started, progress]);
+    const finished = reduce([started, progress, completed]);
+    expect(initial.tool?.pendingIdentity).toBe(true);
+    expect(named).toMatchObject({ key: initial.key, identity: initial.identity, title: "Resolve project context" });
+    expect(named.tool?.doing).toBe("Running: Resolve project context");
+    expect(named.tool?.pendingIdentity).not.toBe(true);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].tool?.done).toBe("Finished: Resolve project context");
+  });
+
   it("folds a tool lifecycle into one row", () => {
     const items = reduce([
       live(1, "command.started", { itemId: "c", title: "bun test", status: "inProgress", data: { type: "commandExecution", command: "bun test" } }),
@@ -29,6 +44,23 @@ describe("reduceTranscript", () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ type: "activity", status: "completed", text: "pass 1\npass 2\n" });
     expect(items[0].tool).toMatchObject({ verb: "run", command: "bun test", exitCode: 0 });
+  });
+
+  it("keeps a subagent stamp on tool, message and reasoning rows", () => {
+    const subagent = { sessionId: "ses_child", agent: "general", title: "Look up the facts" };
+    const items = reduce([
+      live(1, "turn.started", { status: "working" }),
+      live(2, "tool.started", { itemId: "task", title: "Look up the facts", status: "inProgress", data: { tool: "task" } }),
+      live(3, "reasoning.completed", { itemId: "r1", status: "completed", text: "Reading the file.", data: { subagent } }),
+      live(4, "command.completed", { itemId: "c1", title: "cat facts.txt", status: "completed", data: { command: "cat facts.txt", subagent } }),
+      live(5, "message.completed", { itemId: "m1", role: "assistant", status: "completed", text: "The answer is 42.", data: { subagent } }),
+      live(6, "message.completed", { itemId: "m2", role: "assistant", status: "completed", text: "It is 42.", data: {} }),
+    ]);
+    const stamped = items.filter(item => item.data.subagent !== undefined).map(item => item.type);
+    expect(stamped).toEqual(["reasoning", "activity", "message"]);
+    expect(items.find(item => item.itemId === "task")?.data.subagent).toBeUndefined();
+    expect(items.find(item => item.itemId === "m2")?.data.subagent).toBeUndefined();
+    expect(items.find(item => item.itemId === "c1")?.data.subagent).toEqual(subagent);
   });
 
   it("folds a replayed lifecycle by item id, across two forest entries", () => {

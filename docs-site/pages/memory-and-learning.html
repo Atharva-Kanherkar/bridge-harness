@@ -23,19 +23,23 @@
         <div>
           <p class="eyebrow">work, memory & learning</p>
           <h1>Memory & adaptive learning</h1>
-          <p class="lede">Bridge separates three distinct systems: explicit user pins that persist across sessions, a learning router that ranks eligible coding agents from workspace history, and full-text search within individual chat sessions.</p>
+          <p class="lede">Bridge separates three distinct systems: durable account memory that can be saved or safely extracted from chats, a learning router that ranks eligible coding agents from workspace history, and full-text search within individual chat sessions.</p>
           <div class="prose">
 
             <h2 id="h-account-memory">Account memory ledger</h2>
-            <p>Your explicit pins live in a `memory_records` table under the named scope `account:local`. Unlike routing decisions or session history, account memory is durable and under your direct control — you save and forget pins explicitly, and they're always scoped to your personal workspace account.</p>
+            <p>Your durable account memory lives in a <code>memory_records</code> table under the named scope <code>account:local</code>. Unlike routing decisions or session history, these records persist across chats and stay visible in the Memory screen, where you can review, edit, or forget them.</p>
 
             <h3>What gets stored</h3>
-            <p>Each pin has a kind (preference, fact, decision, or constraint), a body, timestamps, and a status (active or deleted). The table stores the scope key (`account:local`), provenance (always `user_explicit` at this release), and an optional source session ID if you pinned something that originated in a chat — but there's no embedding, no time-to-live, no confidence score, and no retrieval audit log yet.</p>
+            <p>Each record has a kind (preference, fact, decision, or constraint), a body, provenance, lifecycle status, validity interval, timestamps, and optional source-session, confidence, rationale, expiry, conflict, and revision metadata. Explicit saves use <code>user_explicit</code> provenance; extracted candidates use <code>model_proposal</code>. Deleted, rejected, expired, and superseded rows remain as history, while only active records can be recalled.</p>
 
-            <h3>How pins get in and out</h3>
-            <p>Save a pin via the Bridge command `/pin <text>` or the protocol method `memory/save_memory_record`. List your pins with `/pins` or `memory/list_memory_records` with `scopeKey` set to `account:local`. Forget a pin with `/unpin <id>` or the protocol method `memory/delete_memory_record` — forgetting creates a tombstone (status changed to deleted) rather than actually deleting the row.</p>
+            <h3>How memory gets in and out</h3>
+            <p>Save a pin via the Bridge command <code>/pin &lt;text&gt;</code> or the protocol method <code>memory/save_memory_record</code>. List active memory with <code>/pins</code>, and forget a record with <code>/unpin &lt;id&gt;</code>. Forgetting creates a tombstone rather than erasing the row, so the same extracted body cannot silently return.</p>
 
-            <p>The system rejects empty, whitespace-only, or credential-shaped bodies. Pins are not automatically injected into every turn — they're available when your workflows need them, not hidden context. The server always writes `account:local`; you cannot specify a different scope on save.</p>
+            <p>The Memory screen also controls post-turn extraction. <strong>Manual only</strong> stops future extraction; existing active memory remains active, and new memory is saved only when you ask. <strong>Review first</strong>, the default, places each validated extraction that fits the scope budget in the review queue. <strong>Automatic</strong> promotes only candidates with at least 90% confidence that cite and match an explicit, durable cue in the same unquoted clause of a visible user message, contain no temporary, retracted, or credential-shaped data, do not match forgotten memory, and do not appear to conflict with active, pending, or same-batch memory. Bridge requires Automatic both when the run is queued and when it is applied, so changing the setting cannot escalate existing review work. Other validated candidates that fit the budget stay in the queue for review; invalid, unsafe, duplicate, and over-budget output is refused.</p>
+
+            <p>Every automatic candidate is written as a proposal first and uses the same lifecycle transition as manual approval. A mode change during a run can downgrade automatic promotion to review, but cannot escalate a review-only run. Scope budgets refuse overflow rather than evicting older memory.</p>
+
+            <p>When <strong>Use active memory in new chats</strong> is enabled, active account memory can be selected for future sessions through a bounded, cited packet. Proposed, rejected, deleted, superseded, and expired records are never injected. Turn the setting off to disable that future-chat context without deleting the ledger.</p>
 
             <div class="callout">
               <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
@@ -43,7 +47,7 @@
             </div>
 
             <h3>Why three systems exist</h3>
-            <p>Account memory solves a different problem than the routing learning system: you want a way to save facts about yourself (workflow preferences, your name, a constraint on tool use) that sticks around across workspaces and sessions, under your control, with no learning inference. If Bridge tried to infer your preferences from patterns, or silently merged routing evidence into this space, it would risk forgetting what you explicitly told it. So account memory is separate, explicit, and never touches the learning router.</p>
+            <p>Account memory solves a different problem than the routing learning system: it retains durable preferences, facts, decisions, and constraints across sessions. Its extractor evaluates the user's statements in one visible chat; it does not learn from routing outcomes or silently merge router evidence into memory. The deterministic gate, ledger lifecycle, and user-selected mode remain authoritative.</p>
 
 
             <h2 id="h-adaptive-router">Adaptive learning router</h2>
@@ -92,13 +96,13 @@
             <p>Each system has its own scope and purpose, and they remain independent:</p>
 
             <ul>
-              <li>Account memory pins are never injected as context automatically and never fed into the learning router. You control when to mention a pin.</li>
+              <li>Active account memory can reach future chats through a bounded, cited packet when <strong>Use active memory in new chats</strong> is enabled. It is never fed into the learning router.</li>
               <li>Learning router decisions are never retroactively changed by your account memory. A new pin doesn't rewrite past routing decisions.</li>
               <li>Session recall searches only the current chat's forest. It doesn't pull from other sessions' histories or your account memory.</li>
               <li>The policy engine sits above all three. It decides whether learning can run at all, which providers are available, what scopes you can access, and which candidates qualify to be ranked.</li>
             </ul>
 
-            <p>If you want a fact to influence future learning runs, you'd need to use Bridge's UI to explicitly mark it as a workspace hint or include it in a project README — account memory is for your own reference, not for steering the router.</p>
+            <p>If you want a fact to influence future learning runs, use Bridge's workspace guidance or include it in project documentation. Account memory can guide future chats, but it does not steer the router.</p>
 
           </div>
           <div id="pagerMount"></div>

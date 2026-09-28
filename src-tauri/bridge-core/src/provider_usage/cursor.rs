@@ -13,7 +13,10 @@ use std::{
 
 const HISTORY_PAGE_SIZE: usize = 1_000;
 const HISTORY_MAX_PAGES: usize = 50;
-const HISTORY_DEADLINE: Duration = Duration::from_secs(20);
+// CodexBar grants each sequential page its own timeout. Keep an overall
+// ceiling too, but allow large accounts to finish beyond the old 20s cutoff.
+const HISTORY_PAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const HISTORY_DEADLINE: Duration = Duration::from_secs(60);
 
 fn access_token(path: &Path) -> Result<String, String> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -380,19 +383,36 @@ fn fetch_history(
         .timestamp_millis();
     let end = now_dt.timestamp_millis();
     let started = Instant::now();
+    let raw = fetch_history_pages(
+        |page_number, timeout| {
+            let request = client.post("https://cursor.com/api/dashboard/get-filtered-usage-events")
+                .timeout(timeout)
+                .header("Origin", "https://cursor.com")
+                .json(&json!({"page": page_number, "pageSize": HISTORY_PAGE_SIZE, "startDate": start.to_string(), "endDate": end.to_string()}));
+            http::json(http::secret(request, true, cookie)?, "Cursor")
+        },
+        || started.elapsed(),
+    )?;
+    let events = events_in_window(&raw, start, end)?;
+    Ok(history(events, subject, today, tz, now))
+}
+
+fn fetch_history_pages(
+    mut fetch: impl FnMut(usize, Duration) -> Result<Value, String>,
+    mut elapsed: impl FnMut() -> Duration,
+) -> Result<Vec<Value>, String> {
     let mut pages = Vec::new();
     let mut expected = None;
     let mut completed = false;
     for page_number in 1..=HISTORY_MAX_PAGES {
-        let remaining = HISTORY_DEADLINE.saturating_sub(started.elapsed());
+        let remaining = HISTORY_DEADLINE.saturating_sub(elapsed());
         if remaining.is_zero() {
             return Err("Cursor history request timed out".into());
         }
-        let request = client.post("https://cursor.com/api/dashboard/get-filtered-usage-events")
-            .timeout(remaining)
-            .header("Origin", "https://cursor.com")
-            .json(&json!({"page": page_number, "pageSize": HISTORY_PAGE_SIZE, "startDate": start.to_string(), "endDate": end.to_string()}));
-        let value = http::json(http::secret(request, true, cookie)?, "Cursor")?;
+        let value = fetch(page_number, HISTORY_PAGE_TIMEOUT.min(remaining))?;
+        if elapsed() >= HISTORY_DEADLINE {
+            return Err("Cursor history request timed out".into());
+        }
         let (count, rows) = page(value)?;
         if let Some(count) = count {
             if expected.is_some_and(|old| old != count) {
@@ -407,9 +427,7 @@ fn fetch_history(
             break;
         }
     }
-    let raw = reconcile_pages(pages, expected, completed)?;
-    let events = events_in_window(&raw, start, end)?;
-    Ok(history(events, subject, today, tz, now))
+    reconcile_pages(pages, expected, completed)
 }
 
 #[derive(Default, Clone)]
@@ -767,6 +785,35 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_history_can_finish_after_twenty_seconds_without_partial_totals() {
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let rows = fetch_history_pages(|page_number, timeout| {
+            assert_eq!(timeout, HISTORY_PAGE_TIMEOUT);
+            elapsed.set(elapsed.get() + Duration::from_secs(2));
+            let start = (page_number - 1) * HISTORY_PAGE_SIZE;
+            let events: Vec<_> = (start..(start + HISTORY_PAGE_SIZE).min(13_245))
+                .map(|id| json!({"id": id})).collect();
+            Ok(json!({"totalUsageEventsCount": 13_245, "usageEventsDisplay": events}))
+        }, || elapsed.get()).unwrap();
+        assert_eq!(rows.len(), 13_245);
+        assert_eq!(elapsed.get(), Duration::from_secs(28));
+        assert_eq!(rows.last().unwrap()["id"], 13_244);
+    }
+
+    #[test]
+    fn history_page_budget_shrinks_and_discards_incomplete_results() {
+        let elapsed = std::cell::Cell::new(Duration::from_secs(55));
+        let result = fetch_history_pages(|_, timeout| {
+            assert_eq!(timeout, Duration::from_secs(5));
+            elapsed.set(HISTORY_DEADLINE);
+            Ok(json!({"totalUsageEventsCount": 1, "usageEventsDisplay": [{"id": 1}]}))
+        }, || elapsed.get());
+        assert_eq!(result.unwrap_err(), "Cursor history request timed out");
+        assert_eq!(fetch_history_pages(|_, _| panic!("no request after the deadline"),
+            || HISTORY_DEADLINE).unwrap_err(), "Cursor history request timed out");
+    }
     use serde_json::json;
 
     const ACCOUNT: &str = r#"{"sub":"auth0|account-a","email":"fixture@example.test"}"#;
@@ -799,6 +846,9 @@ mod tests {
                 let account = &account;
                 let usage = &usage;
                 requests.push(threads.spawn(move || {
+                    // macOS can inherit O_NONBLOCK from the listener. A read
+                    // timeout alone does not make the accepted socket blocking.
+                    socket.set_nonblocking(false).unwrap();
                     socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                     let mut request = Vec::new();
                     while !request.ends_with(b"\r\n\r\n") {

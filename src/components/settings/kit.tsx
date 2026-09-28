@@ -91,7 +91,7 @@ export function RowLead({ children }: { children: ReactNode }) {
  * confirmation *beside* the control: a switch that vanishes for a second and a
  * half the moment it is clicked is a switch the user cannot correct.
  */
-export function SettingsRow({ label, openLabel, description, mono, lead, control, onOpen, saved, disabled, className }: {
+export function SettingsRow({ label, openLabel, description, mono, lead, control, adornment, onOpen, expanded, saved, disabled, className }: {
   label: ReactNode;
   /** The accessible name of the open action, when `label` is not plain text. */
   openLabel?: string;
@@ -100,7 +100,10 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   mono?: boolean;
   lead?: ReactNode;
   control?: ReactNode;
+  /** Non-interactive content inside a row that opens when clicked. */
+  adornment?: ReactNode;
   onOpen?: () => void;
+  expanded?: boolean;
   saved?: boolean;
   disabled?: boolean;
   className?: string;
@@ -116,8 +119,11 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   </span>;
   const trailing = <>
     {saved && <SavedFlash />}
+    {adornment}
     {control}
-    {onOpen && <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0 text-muted-foreground" />}
+    {onOpen && (expanded
+      ? <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+      : <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0 text-muted-foreground" />)}
   </>;
 
   // A row that only opens a page is the button, so the hit target matches what
@@ -127,6 +133,7 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
       type="button"
       disabled={disabled}
       aria-label={openLabel}
+      aria-expanded={expanded}
       onClick={onOpen}
       className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", className)}
     >{lead && <RowLead>{lead}</RowLead>}{text}{trailing}</button>;

@@ -27,22 +27,6 @@ pub(crate) fn keychain(service: &str, account: Option<&str>) -> Result<Vec<u8>, 
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn keychain_interactive(
-    service: &str,
-    account: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let helper = keychain_helper_executable()?;
-    bounded_keychain_helper_with_mode(
-        &helper,
-        service,
-        account,
-        Duration::from_secs(30),
-        65_536,
-        true,
-    )
-}
-
-#[cfg(target_os = "macos")]
 fn keychain_helper_executable() -> Result<PathBuf, String> {
     let current = std::env::current_exe().map_err(|_| "Provider session helper is unavailable")?;
     if current.file_name().and_then(|v| v.to_str()) == Some("bridged") {
@@ -218,10 +202,6 @@ fn raw_keychain(
 }
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn keychain(_: &str, _: Option<&str>) -> Result<Vec<u8>, String> {
-    Err("Provider session requires macOS Keychain".into())
-}
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn keychain_interactive(_: &str, _: Option<&str>) -> Result<Vec<u8>, String> {
     Err("Provider session requires macOS Keychain".into())
 }
 #[cfg(not(target_os = "macos"))]

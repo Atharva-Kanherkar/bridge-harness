@@ -27,6 +27,42 @@ impl Default for WorkerSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetWorkerSettingsParams { pub workspace_id: String }
 
+/// What the GitHub pull-request reviewer runs as on one harness. `None`
+/// falls through to the Reviewer model profile, then the harness default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ReviewerHarnessSettings {
+    pub model: Option<String>,
+    pub effort: Option<Effort>,
+}
+
+/// Global settings for the subagent that reviews pull requests from the
+/// GitHub pane: per-harness model and effort, and the instructions it is
+/// given. One record, not per workspace — a reviewer's shape is a preference
+/// about the reviewer, not about the repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ReviewerSettings {
+    /// Keyed by harness id (`claude` | `codex` | `opencode`).
+    pub harnesses: std::collections::BTreeMap<String, ReviewerHarnessSettings>,
+    /// Empty means Bridge's default review instructions. `{number}` expands
+    /// to the pull request number.
+    pub system_prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveReviewerSettingsParams { pub settings: ReviewerSettings }
+
+/// The stored reviewer settings beside the default prompt they replace, so a
+/// client can show the text an empty prompt stands for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewerSettingsResult {
+    pub settings: ReviewerSettings,
+    pub default_system_prompt: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveWorkerSettingsParams { pub workspace_id: String, pub settings: WorkerSettings }
@@ -155,8 +191,9 @@ pub struct SetDefaultAgentParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PermissionPolicy {
-    /// Auto-accept every provider approval, for every agent. Worker write scope
-    /// and browser outward effects are unaffected — those are authorization.
+    /// Full access: auto-accept every provider approval, for every agent, and
+    /// authorize the write scope a worker proposes. Browser outward effects and
+    /// prompt changes still ask.
     #[serde(alias = "bypassAll")]
     pub auto_approve_provider_permissions: bool,
     /// Allows these worker roles to propose guidance; each edit still requires

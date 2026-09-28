@@ -26,6 +26,11 @@ const FILE_COMMANDS: &[Command] = &[
 const VIEW_COMMANDS: &[Command] = &[
     Command("toggle-sidebar", "Toggle Sidebar", "CmdOrCtrl+B"),
     Command("toggle-fullscreen", "Fullscreen Layout", "Alt+CmdOrCtrl+F"),
+    // Zoom, spelled the way `src/keymap.ts` spells it. The step itself is the
+    // webview's to take, in `src/zoom.ts`.
+    Command("zoom-in", "Zoom In", "CmdOrCtrl+="),
+    Command("zoom-out", "Zoom Out", "CmdOrCtrl+-"),
+    Command("zoom-reset", "Actual Size", "CmdOrCtrl+0"),
 ];
 const DOCK_COMMANDS: &[Command] = &[
     Command("toggle-dock", "Toggle Dock", "Alt+CmdOrCtrl+0"),

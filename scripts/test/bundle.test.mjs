@@ -19,7 +19,7 @@ function bundleFixture(t) {
   cpSync(join(root, "src-tauri/icons/icon.icns"), join(contents, "Resources/icon.icns"));
   const sidecar = join(contents, "Resources/sidecar/claude-agent");
   mkdirSync(sidecar, { recursive: true });
-  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs", "package.json", "package-lock.json"])
+  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs", "usage.mjs", "package.json", "package-lock.json"])
     cpSync(join(root, "sidecar/claude-agent", name), join(sidecar, name));
   const sdk = join(sidecar, "node_modules/@anthropic-ai/claude-agent-sdk");
   mkdirSync(sdk, { recursive: true });
@@ -98,6 +98,15 @@ test("app release gate rejects an omitted read-only sidecar dependency", (t) => 
   const out = run();
   assert.notEqual(out.status, 0, "options.mjs needs its read-only helper in the shipped app");
   assert.match(out.stderr, /read-only\.mjs/);
+});
+
+test("app release gate requires the structured Claude usage reader", (t) => {
+  const { run, sidecar } = bundleFixture(t);
+  assert.equal(run().status, 0);
+  rmSync(join(sidecar, "usage.mjs"));
+  const out = run();
+  assert.notEqual(out.status, 0);
+  assert.match(out.stderr, /usage\.mjs/);
 });
 
 test("native Claude SDK must be present, executable, locked, and signed with JIT while allowing its vendor Team ID", (t) => {
