@@ -63,6 +63,21 @@ pub struct ReviewerSettingsResult {
     pub default_system_prompt: String,
 }
 
+/// Global toggle for hiding AI attribution in model-generated git and GitHub
+/// text. One record, not per workspace. When `hide_ai_attribution` is true,
+/// Bridge prepends a strict no-attribution rule to every prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct AttributionSettings {
+    pub hide_ai_attribution: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveAttributionSettingsParams {
+    pub settings: AttributionSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveWorkerSettingsParams { pub workspace_id: String, pub settings: WorkerSettings }

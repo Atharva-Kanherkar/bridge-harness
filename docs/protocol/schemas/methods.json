@@ -506,6 +506,20 @@
       "resultSchema": "reviewer-settings-result.json"
     },
     {
+      "command": "get_attribution_settings",
+      "domain": "config",
+      "method": "config/get_attribution_settings",
+      "paramsSchema": null,
+      "resultSchema": "attribution-settings.json"
+    },
+    {
+      "command": "save_attribution_settings",
+      "domain": "config",
+      "method": "config/save_attribution_settings",
+      "paramsSchema": "save-attribution-settings-params.json",
+      "resultSchema": "attribution-settings.json"
+    },
+    {
       "command": "list_archived_chats",
       "domain": "sessions",
       "method": "sessions/list_archived_chats",
