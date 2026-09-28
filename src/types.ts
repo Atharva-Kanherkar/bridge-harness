@@ -308,7 +308,8 @@ export interface LearningState {
 }
 
 export interface MarketplaceVariant {
-  provider: MarketplaceProvider; pluginId: string; name: string; description: string | null;
+  provider: MarketplaceProvider; pluginId: string; name: string;
+  nameIsFallback?: boolean; category?: string | null; description: string | null;
   marketplace: string | null; version: string | null; source: string | null; repository: string | null; iconDataUrl: string | null;
   publisher: string | null; capabilities: string[]; mcpEndpoint: string | null; connectorType: string | null;
   appConnectorIds: string[];
@@ -320,8 +321,9 @@ export interface MarketplaceProviderCatalog {
 }
 export interface MarketplaceCatalog { providers: MarketplaceProviderCatalog[] }
 export interface MarketplaceAppAuthState {
-  provider: MarketplaceProvider; connectorId: string; displayName: string | null; nativeConnector: boolean;
-  authenticationState: "connected" | "required";
+  provider: MarketplaceProvider; connectorId: string; displayName: string | null;
+  description?: string | null; iconUrl?: string | null; category?: string | null;
+  nativeConnector: boolean; authenticationState: "connected" | "required";
 }
 export interface MarketplaceActionResult {
   provider: MarketplaceProvider; pluginId: string; action: MarketplaceAction;

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyAppAuthStates, authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, verifiedBrandLogoUrl } from "./marketplace";
-import type { MarketplaceCatalog, MarketplaceVariant } from "./types";
+import { applyAppAuthStates, authenticationLabel, categoryLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, isUnnamedService, isUnnamedVariant, MARKETPLACE_ALIASES, serviceCategory, servicePopularity, verifiedBrandLogoUrl } from "./marketplace";
+import type { MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceVariant } from "./types";
+
+const codexAppState = (overrides: Partial<MarketplaceAppAuthState> = {}): MarketplaceAppAuthState => ({
+  provider: "codex", connectorId: "asdk_app_6a057d268ebc81919918d37eec718425", displayName: "Remote Desktop Commander",
+  description: "Build and automate, anywhere", iconUrl: "https://images.example.test/remote.png", category: "DEVELOPER_TOOLS",
+  nativeConnector: false, authenticationState: "required", ...overrides,
+});
 
 function variant(provider: "codex" | "claude", pluginId: string, overrides: Partial<MarketplaceVariant> = {}): MarketplaceVariant {
   return {
@@ -123,6 +129,84 @@ describe("authentication presentation", () => {
     expect(merged.providers[0].variants[1]).toMatchObject({
       pluginId: "claude.ai Notion", name: "Notion", connectorType: "connector", authenticationState: "connected",
     });
+  });
+});
+
+describe("app identity resolution", () => {
+  const fallbackCatalog = (overrides: Partial<MarketplaceVariant> = {}): MarketplaceCatalog => ({
+    providers: [{
+      provider: "codex", available: true, error: null, variants: [
+        variant("codex", "app-6A057D268EBC81919918D37EEC718425@openai-curated-remote", {
+          name: "app-6A057D268EBC81919918D37EEC718425@openai-curated-remote", nameIsFallback: true, ...overrides,
+        }),
+      ],
+    }],
+  });
+
+  it("renames a fallback app id from its app directory identity", () => {
+    const [resolved] = applyAppAuthStates(fallbackCatalog(), [codexAppState()]).providers[0].variants;
+    expect(resolved.name).toBe("Remote Desktop Commander");
+    expect(resolved.nameIsFallback).toBe(false);
+    expect(resolved.description).toBe("Build and automate, anywhere");
+    expect(resolved.iconDataUrl).toBe("https://images.example.test/remote.png");
+    expect(resolved.category).toBe("DEVELOPER_TOOLS");
+    expect(isUnnamedVariant(resolved)).toBe(false);
+  });
+
+  it("keeps provider-supplied detail and never renames a human name", () => {
+    const catalog: MarketplaceCatalog = { providers: [{
+      provider: "codex", available: true, error: null, variants: [
+        variant("codex", "gmail@openai-curated-remote", { name: "Gmail", description: "Bridge description", appConnectorIds: ["connector_gmail"] }),
+      ],
+    }] };
+    const [resolved] = applyAppAuthStates(catalog, [
+      codexAppState({ connectorId: "connector_gmail", displayName: "Gmail (Work)", description: "Directory description", iconUrl: null, category: "PRODUCTIVITY" }),
+    ]).providers[0].variants;
+    expect(resolved.name).toBe("Gmail");
+    expect(resolved.description).toBe("Bridge description");
+    expect(resolved.category).toBe("PRODUCTIVITY");
+  });
+
+  it("leaves unmatched fallbacks unnamed so the UI can hide them", () => {
+    const [unmatched] = applyAppAuthStates(fallbackCatalog(), []).providers[0].variants;
+    expect(isUnnamedVariant(unmatched)).toBe(true);
+    expect(isUnnamedService(groupMarketplaceServices([unmatched])[0])).toBe(true);
+    const [other] = applyAppAuthStates(fallbackCatalog(), [codexAppState({ connectorId: "asdk_app_deadbeefdeadbeefdeadbeefdeadbeef" })]).providers[0].variants;
+    expect(other.nameIsFallback).toBe(true);
+  });
+
+  it("upgrades a grouped service name once a named variant arrives", () => {
+    const services = groupMarketplaceServices([
+      variant("codex", "one", { name: "one", nameIsFallback: true }),
+      variant("claude", "two", { name: "Two" }),
+    ], { "codex:one": "shared", "claude:two": "shared" });
+    expect(services).toHaveLength(1);
+    expect(services[0].name).toBe("Two");
+    expect(isUnnamedService(services[0])).toBe(false);
+  });
+});
+
+describe("catalog categories and popularity", () => {
+  it("formats provider categories for people", () => {
+    expect(categoryLabel("DEVELOPER_TOOLS")).toBe("Developer tools");
+    expect(categoryLabel("productivity")).toBe("Productivity");
+    expect(categoryLabel("Collaboration")).toBe("Collaboration");
+    expect(categoryLabel("   ")).toBe("");
+  });
+
+  it("reads category and install count from variants", () => {
+    const service = groupMarketplaceServices([
+      variant("claude", "one", { category: null, repository: "https://github.com/example/tool", publisher: "example", providerMetadata: { installCount: 120 } }),
+      variant("claude", "two", { category: "BUSINESS", repository: "https://github.com/example/tool", publisher: "example", providerMetadata: { installCount: 40 } }),
+    ])[0];
+    expect(serviceCategory(service)).toBe("BUSINESS");
+    expect(servicePopularity(service)).toBe(120);
+  });
+
+  it("reports no popularity when the provider never counted installs", () => {
+    const service = groupMarketplaceServices([variant("codex", "one", { providerMetadata: {} })])[0];
+    expect(servicePopularity(service)).toBe(0);
+    expect(serviceCategory(service)).toBeNull();
   });
 });
 
