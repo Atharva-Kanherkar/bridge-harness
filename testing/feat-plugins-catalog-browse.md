@@ -21,6 +21,11 @@ single dump of every provider catalog entry.
    - A variant that is renamed is no longer a fallback.
    - A service is hidden iff every variant in it is a fallback; a service whose
      fallback variant is later named shows the human name.
+   - A resolved identity also carries the app's authentication verdict, and a
+     Codex plugin id shaped `app-<hex>` is classified as an app connector even
+     though the catalog listing has no connector metadata for it. The detail
+     page therefore shows `Needs login` and a working `Connect` action for an
+     installed app whose authorization needs renewing.
 
 2. **Default view is small: installed + featured.**
    - View tabs: `Installed` · `Featured` · `All`.
@@ -51,6 +56,9 @@ single dump of every provider catalog entry.
      a bare spinner) plus the existing provider error banners.
    - While app identities are still resolving (catalog present, app states not
      yet), the screen says `Resolving connector names…`.
+   - A failed identity load keeps identities unresolved instead of pretending
+     there were none: the screen says so, offers `Retry`, retries on the
+     Refresh control, and the background poll retries until identities load.
    - A refresh keeps the current list mounted and only spins the refresh control.
 
 Out of scope (deliberate):
@@ -73,6 +81,9 @@ Out of scope (deliberate):
   entries without `name`/`installUrl` are still dropped.
 - `app_identity_icons_must_be_absolute_https_urls` — relative icon paths are
   rejected.
+- `remote_app_plugin_ids_are_classified_as_app_connectors` — a Codex
+  `app-<hex>@…` entry parses with `connector_type == "app"` and no portable MCP
+  fallback, so authentication can route through the app installer.
 - `merge_variant` promotes a real name over a fallback name and keeps the
   fallback flag only while both sides are fallbacks.
 
@@ -81,6 +92,9 @@ Out of scope (deliberate):
   `asdk_app_<hex>` state and clears `nameIsFallback`.
 - `applyAppAuthStates` enriches description/icon/category only when the variant
   lacks them, and never renames a variant that already has a human name.
+- `applyAppAuthStates` carries a hex-matched state's verdict onto the resolved
+  row (`required` and `connected`), with `required` still winning when a direct
+  connector state disagrees.
 - `isUnnamedVariant` / `isUnnamedService` semantics: fallback flag or empty
   name; service hidden only when every variant is unnamed.
 - `categoryLabel`: `DEVELOPER_TOOLS` → `Developer tools`; blank stays blank.
@@ -98,6 +112,11 @@ Out of scope (deliberate):
 - unnamed variants hidden / resolved: an `app-<hex>` fallback fixture never
   renders its id; once the matching app auth state carries a display name the
   row appears under the human name.
+- recovery actions: an installed, resolved app connector with a `required`
+  state shows `Needs login` and a `Connect` action on its detail page.
+- identity retry: when the first app-state call rejects, the screen says names
+  could not be resolved, the installed app stays hidden, and refreshing retries
+  the identity load and reveals it under its real name.
 - search reaches the long tail: querying a non-featured service's name and a
   capability-ish description shows the row.
 - All view paginates: only `PAGE_SIZE` rows mount, "Show more" appends the next
