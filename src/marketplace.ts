@@ -38,9 +38,14 @@ function connectorKey(provider: MarketplaceProvider, connectorId: string): strin
   return `${provider}:${connectorId}`;
 }
 
+// The provider id used as a name: `app-<hex>`. Checked in addition to the
+// backend's nameIsFallback so an id-shaped label can never reach a row even if
+// an older payload omits the flag.
+const PROVIDER_ID_NAME = /^app-[0-9a-f]{16,}$/i;
+
 /** The `<hex>` of a Codex app connector plugin id, `app-<hex>@marketplace`. */
 function codexPluginHex(variant: MarketplaceVariant): string | null {
-  return /^app-([0-9a-f]+)$/i.exec(variant.pluginId.split("@")[0])?.[1]?.toLowerCase() ?? null;
+  return /^app-([0-9a-f]{16,})$/i.exec(variant.pluginId.split("@")[0])?.[1]?.toLowerCase() ?? null;
 }
 
 /** The `<hex>` of a Codex app directory id, `asdk_app_<hex>`. */
@@ -49,7 +54,9 @@ function codexStateHex(state: MarketplaceAppAuthState): string | null {
 }
 
 export function isUnnamedVariant(variant: MarketplaceVariant): boolean {
-  return variant.nameIsFallback === true || !variant.name.trim();
+  if (variant.nameIsFallback === true) return true;
+  const name = variant.name.trim();
+  return !name || PROVIDER_ID_NAME.test(name.split("@")[0]);
 }
 
 /** A service is unnamed only while every variant in it is. */

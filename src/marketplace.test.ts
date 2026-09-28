@@ -167,6 +167,15 @@ describe("app identity resolution", () => {
     expect(resolved.category).toBe("PRODUCTIVITY");
   });
 
+  it("treats an id-shaped label as unnamed even without the backend flag", () => {
+    const unmarked = variant("codex", "app-6a057d268ebc81919918d37eec718425@openai-curated-remote", {
+      name: "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
+    });
+    expect(isUnnamedVariant(unmarked)).toBe(true);
+    const slug = variant("codex", "browser@openai-bundled", { name: "browser" });
+    expect(isUnnamedVariant(slug)).toBe(false);
+  });
+
   it("leaves unmatched fallbacks unnamed so the UI can hide them", () => {
     const [unmatched] = applyAppAuthStates(fallbackCatalog(), []).providers[0].variants;
     expect(isUnnamedVariant(unmatched)).toBe(true);

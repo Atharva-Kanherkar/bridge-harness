@@ -339,6 +339,13 @@ fn provider_catalog(provider: MarketplaceProvider) -> ProviderCatalog {
     }
 }
 
+/// An identifier the provider echoed as if it were a name: `app-<hex>`.
+fn looks_like_app_id(value: &str) -> bool {
+    value.strip_prefix("app-").is_some_and(|suffix| {
+        suffix.len() >= 16 && suffix.chars().all(|c| c.is_ascii_hexdigit())
+    })
+}
+
 fn merge_variant(existing: &mut PluginVariant, incoming: &PluginVariant) {
     if existing.name_is_fallback && !incoming.name_is_fallback {
         existing.name = incoming.name.clone();
@@ -408,7 +415,11 @@ fn candidate_objects(value: &Value) -> Vec<&Value> {
 fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginVariant> {
     let object = value.as_object()?;
     let plugin_id = string_field(object, &["id", "pluginId", "plugin_id", "name"])?;
-    let display_name = string_field(object, &["displayName", "display_name", "title", "name"]);
+    let base_id = plugin_id.split('@').next().unwrap_or(plugin_id.as_str());
+    // Codex listings echo the id into `name` (`name: "app-<hex>"`); a slug
+    // that repeats the id's base ("browser@openai-bundled") is still a name.
+    let display_name = string_field(object, &["displayName", "display_name", "title", "name"])
+        .filter(|name| name != &plugin_id && !(name.as_str() == base_id && looks_like_app_id(name)));
     let name_is_fallback = display_name.is_none();
     let name = display_name.unwrap_or_else(|| plugin_id.clone());
     let mut connector_type = string_field(
@@ -1662,9 +1673,13 @@ mod tests {
 
     #[test]
     fn names_that_fall_back_to_the_provider_id_are_marked() {
+        // The live Codex listing echoes the id into `name`; that is not a name.
         let unnamed = parse_variants(
             MarketplaceProvider::Codex,
-            &json!([{"pluginId": "app-6a057d268ebc81919918d37eec718425@openai-curated-remote"}]),
+            &json!([{
+                "pluginId": "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
+                "name": "app-6a057d268ebc81919918d37eec718425"
+            }]),
         )
         .remove(0);
         assert_eq!(
@@ -1673,6 +1688,7 @@ mod tests {
         );
         assert!(unnamed.name_is_fallback);
 
+        // A slug that repeats the id's base is still a name.
         let named = parse_variants(
             MarketplaceProvider::Codex,
             &json!([{"pluginId": "browser@openai-bundled", "name": "browser"}]),
@@ -1680,6 +1696,15 @@ mod tests {
         .remove(0);
         assert_eq!(named.name, "browser");
         assert!(!named.name_is_fallback);
+
+        // A displayName always wins, even over an id-shaped base.
+        let display = parse_variants(
+            MarketplaceProvider::Claude,
+            &json!([{"id": "app-6a057d268ebc81919918d37eec718425@official", "displayName": "Remote Desktop Commander"}]),
+        )
+        .remove(0);
+        assert_eq!(display.name, "Remote Desktop Commander");
+        assert!(!display.name_is_fallback);
     }
 
     #[test]
