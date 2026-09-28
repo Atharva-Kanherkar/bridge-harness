@@ -22,7 +22,13 @@ async fn check(app: &AppHandle) -> Result<Option<tauri_plugin_updater::Update>, 
         .map_err(|error| error.to_string())?
         .build()
         .map_err(|error| error.to_string())?;
-    updater.check().await.map_err(|error| error.to_string())
+    updater.check().await.map_err(|error| match error {
+        tauri_plugin_updater::Error::ReleaseNotFound => {
+            "The beta nightly feed is unavailable. A nightly build may not be published yet."
+                .to_string()
+        }
+        other => other.to_string(),
+    })
 }
 
 #[tauri::command]
