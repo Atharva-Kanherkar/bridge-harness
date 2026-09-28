@@ -13,9 +13,8 @@
 # main, or when the tag or GitHub release already exists. Empty days exit
 # successfully.
 #
-# Publishing uses --prerelease and --latest=false and uploads only the DMG
-# plus its checksum. It does not write the stable updater manifest, so GitHub
-# Latest and the in-app updater stay on v*.*.* tags from release-macos.yml.
+# Publishing uses --prerelease and --latest=false and uploads the DMG and signed updater artifacts. A separate nightly release
+# hosts the beta manifest; GitHub Latest remains on stable v*.*.* tags.
 # Nightly tags do not have to match src-tauri/tauri.conf.json.
 #
 # workflow_dispatch input `date` (YYYY-MM-DD) backfills that IST day from the
@@ -141,6 +140,13 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
           security list-keychains -d user -s "$RUNNER_TEMP/bridge-signing.keychain-db" login.keychain-db
 
+      - name: Stamp ordered nightly application version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          stable_tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          node scripts/stamp-nightly-version.mjs "${{ needs.plan.outputs.date }}" "${stable_tag#v}"
+
       - name: Build, test, sign, notarize, and verify exact DMG contents
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -198,11 +204,12 @@ jobs:
             *) echo "unsupported architecture" >&2; exit 1 ;;
           esac
           dmg="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.dmg"
-          if [ ! -f "$dmg" ] || [ ! -f "$dmg.sha256" ]; then
+          updater_tar="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.app.tar.gz"
+          if [ ! -f "$dmg" ] || [ ! -f "$dmg.sha256" ] || [ ! -f "$updater_tar" ] || [ ! -f "$updater_tar.sig" ]; then
             echo "missing verified DMG: $dmg" >&2
             exit 1
           fi
-          if ! gh release create "$tag" "$dmg" "$dmg.sha256" --repo "$GITHUB_REPOSITORY" --target "$NIGHTLY_SHA" --prerelease --latest=false --draft --title "Bridge nightly $NIGHTLY_DATE" --notes-file "$NIGHTLY_NOTES_FILE"; then
+          if ! gh release create "$tag" "$dmg" "$dmg.sha256" "$updater_tar" "$updater_tar.sig" --repo "$GITHUB_REPOSITORY" --target "$NIGHTLY_SHA" --prerelease --latest=false --draft --title "Bridge nightly $NIGHTLY_DATE" --notes-file "$NIGHTLY_NOTES_FILE"; then
             if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
               echo "Nightly release $tag was published concurrently; skipping."
               exit 0
@@ -210,6 +217,26 @@ jobs:
             exit 1
           fi
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          # Keep a fixed beta feed while preserving dated releases as immutable history.
+          updater_sig_value=$(cat "$updater_tar.sig")
+          pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          node -e '
+            const fs = require("fs");
+            const [, version, pubDate, sig, tarName, arch, tag] = process.argv;
+            fs.writeFileSync("latest.json", JSON.stringify({
+              version, notes: `Bridge nightly ${tag}`,
+              pub_date: pubDate,
+              platforms: { [`darwin-${arch}`]: {
+                signature: sig,
+                url: `https://github.com/Atharva-Kanherkar/bridge-harness/releases/download/${tag}/${tarName}`,
+              } },
+            }, null, 2));
+          ' "$version" "$pub_date" "$updater_sig_value" "$(basename -- "$updater_tar")" "$arch" "$tag"
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            gh release upload nightly latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create nightly latest.json --repo "$GITHUB_REPOSITORY" --target "$NIGHTLY_SHA" --prerelease --latest=false --title "Bridge beta update feed" --notes "Latest signed nightly update manifest."
+          fi
 
       - name: Remove temporary signing credentials
         if: always()

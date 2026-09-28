@@ -11,6 +11,7 @@ pub mod meter_tray;
 mod menu_bar;
 pub mod window_chrome;
 mod diagnostics;
+mod nightly_updater;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -2861,6 +2862,9 @@ pub fn run() -> i32 {
             if !embedded_browser::trusted_shell(invoke.message.webview_ref().label()) {
                 invoke.resolver.reject("Browser pages cannot invoke Bridge commands");
                 return true;
+            }
+            if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update") {
+                return nightly_updater::commands(invoke);
             }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {

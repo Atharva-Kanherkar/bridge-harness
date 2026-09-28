@@ -241,7 +241,7 @@ test("existing release or tag short-circuits before the pull request search", ()
   assert.deepEqual(calls, ["release"]);
 });
 
-test("nightly workflow reuses the stable signing steps and does not publish the updater channel", () => {
+test("nightly workflow reuses stable signing and publishes a separate signed updater feed", () => {
   const stable = readFileSync(join(root, ".github/workflows/release-macos.yml"), "utf8");
   const nightly = readFileSync(join(root, ".github/workflows/nightly-macos.yml"), "utf8");
   for (const name of [
@@ -263,12 +263,14 @@ test("nightly workflow reuses the stable signing steps and does not publish the 
   const validate = runScript(nightly, "Validate signing inputs");
   assert.doesNotMatch(validate, /v\$version/);
   assert.doesNotMatch(validate, /tauri\.conf\.json/);
+  assert.match(runScript(nightly, "Stamp ordered nightly application version"), /gh release view.*tagName/);
   const publish = runScript(nightly, "Publish nightly prerelease");
   assert.match(publish, /--prerelease/);
   assert.match(publish, /--latest=false/);
   assert.match(publish, /--draft/);
-  assert.doesNotMatch(publish, /latest\.json/);
-  assert.doesNotMatch(publish, /\.app\.tar\.gz/);
+  assert.match(publish, /latest\.json/);
+  assert.match(publish, /\.app\.tar\.gz/);
+  assert.match(publish, /updater_sig_value/);
   assert.match(stable, /workflow_dispatch: \{\}/);
   assert.doesNotMatch(stable, /cron:/);
   assert.doesNotMatch(stable, /--prerelease/);
@@ -283,6 +285,9 @@ test("nightly publish is a prerelease no-op when the tag already exists", (t) =>
   const dmg = join(dir, "src-tauri/target/release/bundle/dmg/Bridge_0.5.10_x64.dmg");
   writeFileSync(dmg, "dmg");
   writeFileSync(`${dmg}.sha256`, "checksum");
+  const updater = join(dir, "src-tauri/target/release/bundle/dmg/Bridge_0.5.10_x64.app.tar.gz");
+  writeFileSync(updater, "signed updater");
+  writeFileSync(`${updater}.sig`, "signature");
   writeFileSync(join(dir, "notes.md"), "notes");
   executable(join(dir, "bin/uname"), "#!/bin/sh\nprintf '%s\\n' x86_64\n");
   const createdFlag = join(dir, "created");
@@ -345,4 +350,18 @@ if (args[1] === "create") {
   const badTag = run({ NIGHTLY_TAG: "v0.5.10", NIGHTLY_DATE: "v0.5.10" });
   assert.notEqual(badTag.out.status, 0);
   assert.equal(badTag.calls.length, 0);
+});
+
+test("nightly stamp keeps Tauri, Cargo, and package versions aligned", (t) => {
+  const { dir } = fixture(t);
+  mkdirSync(join(dir, "src-tauri"));
+  writeFileSync(join(dir, "src-tauri/tauri.conf.json"), '{"version":"0.5.9"}');
+  writeFileSync(join(dir, "src-tauri/Cargo.toml"), '[workspace.package]\nversion = "0.5.9"\n');
+  writeFileSync(join(dir, "package.json"), '{"name":"bridge-deck","version":"0.5.9"}');
+  const out = spawnSync("node", [join(root, "scripts/stamp-nightly-version.mjs"), "2026-09-28", "0.5.10"], { cwd: dir, encoding: "utf8" });
+  assert.equal(out.status, 0, out.stderr);
+  const version = "0.5.11-nightly.20260928";
+  assert.equal(JSON.parse(readFileSync(join(dir, "src-tauri/tauri.conf.json"))).version, version);
+  assert.match(readFileSync(join(dir, "src-tauri/Cargo.toml"), "utf8"), new RegExp(`version = "${version.replaceAll(".", "\\.")}"`));
+  assert.equal(JSON.parse(readFileSync(join(dir, "package.json"))).version, version);
 });

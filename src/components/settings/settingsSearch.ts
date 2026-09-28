@@ -28,6 +28,8 @@ export type SearchGroup = {
 export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "menuBar", label: "Menu Bar icon", description: "Show the icon, quota used or remaining, and today's spend" },
   { section: "menuBar", label: "Providers & accounts", description: "Codex account, plan, token and model breakdown, refresh interval" },
+  { section: "updates", label: "Beta nightly builds", description: "Opt in to signed nightly updates" },
+  { section: "updates", label: "Check for updates", description: "Check the selected channel now" },
   { section: "workers", label: "Worker limits and routing", description: "Default harness, concurrency, retries, failover, stall timeout and warm retention" },
   { section: "workers", label: "Pull request reviewer", description: "Model, effort and instructions per harness for GitHub PR reviews" },
   { section: "archives", label: "Archived chats", description: "Search, read and unarchive conversations without restoring worktrees" },

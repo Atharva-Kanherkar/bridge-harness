@@ -935,8 +935,10 @@ function AppContent() {
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo>();
   useEffect(() => {
     let active = true;
-    void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); });
-    return () => { active = false; };
+    const check = () => { void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); }).catch(() => undefined); };
+    check();
+    const timer = window.setInterval(check, 6 * 60 * 60 * 1000);
+    return () => { active = false; window.clearInterval(timer); };
   }, []);
 
   // The fallback hint is a pointer, not a state — it fades on its own.
@@ -2792,7 +2794,7 @@ function AppContent() {
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onUpdate={setAvailableUpdate} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
