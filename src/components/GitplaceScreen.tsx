@@ -3,6 +3,8 @@ import { Check, ChevronDown, FolderGit2 } from "lucide-react";
 import { MenuItem, MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
 import { cn } from "@/lib/utils";
 import { GitHubPane } from "./GitHubPane";
+import { Switch } from "./settings/kit";
+import { useAttributionSettings } from "../attributionSettings";
 import type { Project, Workspace } from "../types";
 
 // GitHub as a place of its own. The dock pane only exists inside a chat, so
@@ -48,6 +50,7 @@ export function GitplaceScreen({ workspaces, projects, onJumpToFile, onAddProjec
 }) {
   const repos = useMemo(() => gitplaceRepos(workspaces, projects), [workspaces, projects]);
   const [chosen, setChosen] = useState<string | null>(readRemembered);
+  const attribution = useAttributionSettings();
   const current = repos.find(repo => repo.workspace.id === chosen)
     ?? repos.find(repo => repo.workspace.projectId && repo.workspace.projectId === workspaces.find(workspace => workspace.id === chosen)?.projectId)
     ?? repos[0];
@@ -83,6 +86,15 @@ export function GitplaceScreen({ workspaces, projects, onJumpToFile, onAddProjec
         <span className="truncate font-medium">{current.label}</span>
         <ChevronDown size={14} className={cn("shrink-0 text-muted-foreground transition-transform", menu.open && "rotate-180")} aria-hidden="true" />
       </button>
+      <div className="ml-auto flex shrink-0 items-center gap-2" title="When on, models never add Co-authored-by or harness mentions to commits or PR text">
+        <span className="hidden text-[12px] text-muted-foreground sm:inline">Hide AI attribution</span>
+        <Switch
+          label="Hide AI attribution"
+          checked={attribution.hide}
+          onChange={attribution.setHide}
+          disabled={!attribution.loaded || attribution.saving}
+        />
+      </div>
     </div>
     <MenuPanel controller={menu} label="Repositories">
       {repos.map(repo => <MenuItem

@@ -54,6 +54,7 @@ describe("gitplaceRepos", () => {
 describe("GitplaceScreen", () => {
   it("renders the GitHub pane at page width with no session, and switches repositories", async () => {
     const statusSpy = vi.spyOn(bridgeApi, "githubStatus");
+    vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: false });
     await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha"), workspace("beta")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
     await act(flush);
     expect(host.querySelector('section[aria-label="GitHub repository"]')).not.toBeNull();
@@ -68,8 +69,10 @@ describe("GitplaceScreen", () => {
   });
 
   it("reopens the repository it was last on", async () => {
+    vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: false });
     localStorage.setItem(GITPLACE_REPO_KEY, "beta");
     await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha"), workspace("beta")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
+    await act(flush);
     expect(host.querySelector('button[aria-label="Repository: beta"]')).not.toBeNull();
   });
 
@@ -79,5 +82,18 @@ describe("GitplaceScreen", () => {
     expect(host.textContent).toContain("Add a project with a GitHub remote");
     await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Add a project")!.click());
     expect(add).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the hide-attribution toggle and persists the switch", async () => {
+    vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: true });
+    const save = vi.spyOn(bridgeApi, "saveAttributionSettings").mockResolvedValue({ hideAiAttribution: false });
+    await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
+    await act(flush);
+    const toggle = host.querySelector('button[role="switch"][aria-label="Hide AI attribution"]') as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle!.getAttribute("aria-checked")).toBe("true");
+    await act(async () => toggle!.click());
+    await act(flush);
+    expect(save).toHaveBeenCalledWith({ hideAiAttribution: false });
   });
 });
