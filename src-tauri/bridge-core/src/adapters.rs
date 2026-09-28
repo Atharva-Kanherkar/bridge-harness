@@ -1446,7 +1446,9 @@ pub struct DiscoveredModel {
     /// The provider marks this as its own default for the (inferred) tier.
     pub is_default: bool,
     /// Reasoning effort levels the provider says this model accepts.
-    pub supported_effort_levels: Vec<String>,
+    /// `None` means the row omitted the ladder, so a curated ladder can stay.
+    /// `Some`, including an empty list, is the provider's answer.
+    pub supported_effort_levels: Option<Vec<String>>,
 }
 
 /// Priority handed to a discovered model the provider marks as its default. Set
@@ -1500,7 +1502,12 @@ fn runtime_candidates_with_fallbacks(
                 Some(fallback) => {
                     let mut merged = fallback.clone();
                     merged.label = label;
-                    merged.supported_effort_levels = supported_effort_levels;
+                    // An omitted ladder keeps curation. An explicit list,
+                    // including an empty one, replaces it — a model that
+                    // reports no effort knob must not inherit a false control.
+                    if let Some(levels) = supported_effort_levels {
+                        merged.supported_effort_levels = levels;
+                    }
                     if is_default {
                         merged.promotion_priority = DISCOVERED_DEFAULT_PRIORITY;
                     }
@@ -1520,7 +1527,7 @@ fn runtime_candidates_with_fallbacks(
                             -1 - (index as i64)
                         },
                     );
-                    candidate.supported_effort_levels = supported_effort_levels;
+                    candidate.supported_effort_levels = supported_effort_levels.unwrap_or_default();
                     candidate
                 }
             }
@@ -1557,17 +1564,28 @@ impl CodexAdapter {
         adapter
     }
 }
+/// Reasoning efforts the curated Codex catalog advertises until live discovery
+/// reports `supportedReasoningEfforts`. Order is the picker's low-to-ceiling
+/// ladder; a live list replaces it, and an explicit empty list clears it.
+const CODEX_CURATED_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+
+fn codex_fallback_model(
+    id: &str,
+    label: &str,
+    tier: CapabilityTier,
+    promotion_priority: i64,
+) -> CatalogCandidate {
+    let mut candidate = CatalogCandidate::stable(id, label, tier, promotion_priority);
+    candidate.supported_effort_levels = CODEX_CURATED_EFFORTS.iter().map(|level| (*level).to_owned()).collect();
+    candidate
+}
+
 fn codex_fallback_candidates() -> Vec<CatalogCandidate> {
     vec![
-        CatalogCandidate::stable("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 1),
-        CatalogCandidate::stable("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 1),
-        CatalogCandidate::stable("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 1),
-        CatalogCandidate::stable(
-            "gpt-5.3-codex",
-            "GPT-5.3 Codex",
-            CapabilityTier::Standard,
-            0,
-        ),
+        codex_fallback_model("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 1),
+        codex_fallback_model("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 1),
+        codex_fallback_model("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 1),
+        codex_fallback_model("gpt-5.3-codex", "GPT-5.3 Codex", CapabilityTier::Standard, 0),
     ]
 }
 
@@ -2026,7 +2044,7 @@ mod tests {
             id: id.into(),
             label: label.into(),
             is_default: false,
-            supported_effort_levels: Vec::new(),
+            supported_effort_levels: Some(Vec::new()),
         }
     }
 
@@ -2073,7 +2091,7 @@ mod tests {
     fn discovered_effort_levels_flow_onto_the_selectable_model() {
         let fallback = claude_fallback_candidates();
         let mut sonnet = discovered("sonnet", "Claude Sonnet");
-        sonnet.supported_effort_levels = vec!["low".into(), "high".into(), "xhigh".into()];
+        sonnet.supported_effort_levels = Some(vec!["low".into(), "high".into(), "xhigh".into()]);
         let haiku = discovered("haiku", "Claude Haiku");
         let resolved = model_catalog::normalize(
             crate::model::ModelCatalogSource::RuntimeApi,
@@ -2085,6 +2103,41 @@ mod tests {
         // the control rather than offering a fixed list it does not accept.
         let haiku = resolved.iter().find(|model| model.id == "haiku").unwrap();
         assert!(haiku.supported_effort_levels.is_empty());
+    }
+
+    #[test]
+    fn codex_curated_fallback_advertises_a_reasoning_ladder() {
+        let resolved = model_catalog::resolve(
+            "codex",
+            Err("Codex discovery has not completed".into()),
+            &codex_fallback_candidates(),
+            None,
+            chrono::Utc::now(),
+        );
+        for id in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.3-codex"] {
+            let model = resolved.models.iter().find(|model| model.id == id).unwrap();
+            assert_eq!(model.supported_effort_levels, ["low", "medium", "high", "xhigh", "max", "ultra"], "{id}");
+        }
+    }
+
+    #[test]
+    fn a_live_codex_ladder_replaces_curation_and_an_empty_one_clears_it() {
+        let fallback = codex_fallback_candidates();
+        let mut sol = discovered("gpt-5.6-sol", "GPT-5.6-Sol");
+        sol.supported_effort_levels = Some(vec!["low".into(), "high".into()]);
+        let mut omitted = discovered("gpt-5.6-terra", "GPT Terra");
+        omitted.supported_effort_levels = None;
+        let cleared = discovered("gpt-5.6-luna", "GPT Luna");
+        let resolved = model_catalog::normalize(
+            crate::model::ModelCatalogSource::RuntimeApi,
+            runtime_candidates_with_fallbacks(vec![sol, omitted, cleared], &fallback),
+        );
+        assert_eq!(resolved.iter().find(|model| model.id == "gpt-5.6-sol").unwrap().supported_effort_levels, ["low", "high"]);
+        assert_eq!(
+            resolved.iter().find(|model| model.id == "gpt-5.6-terra").unwrap().supported_effort_levels,
+            ["low", "medium", "high", "xhigh", "max", "ultra"],
+        );
+        assert!(resolved.iter().find(|model| model.id == "gpt-5.6-luna").unwrap().supported_effort_levels.is_empty());
     }
 
     #[test]
