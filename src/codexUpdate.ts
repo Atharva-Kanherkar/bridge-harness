@@ -1,5 +1,21 @@
 const CODEX_RELEASE_URL = "https://api.github.com/repos/openai/codex/releases/latest";
 
+/** Refresh is separate from installation; a stuck provider probe must not
+ * keep the completed update busy or later overwrite its timeout message. */
+export async function withCodexRefreshDeadline<T>(refresh: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      refresh,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Checking the Codex runtime timed out")), 30_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 type Version = { parts: [number, number, number]; prerelease: boolean };
 
 function parseVersion(value: string): Version | undefined {

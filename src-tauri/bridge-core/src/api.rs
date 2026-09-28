@@ -94,38 +94,7 @@ pub fn refresh_model_catalogs(core: &Arc<BridgeCore>) -> Result<Health, BridgeEr
 /// The only command the Codex update confirmation may execute. There are no
 /// renderer-supplied URLs or shell arguments at this boundary.
 pub fn install_codex_update() -> Result<(), BridgeError> {
-    const INSTALL_COMMAND: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-    if RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return Err(BridgeError::Invalid("A Codex update is already running".into()));
-    }
-    struct ResetRunning;
-    impl Drop for ResetRunning {
-        fn drop(&mut self) {
-            RUNNING.store(false, std::sync::atomic::Ordering::Release);
-        }
-    }
-    let _reset = ResetRunning;
-
-    // pipefail matters here: an unreachable installer URL must not look like
-    // success merely because `sh` received empty input and exited cleanly.
-    let mut command = std::process::Command::new("/bin/zsh");
-    binary::hydrate_command_path(&mut command);
-    let output = command
-        .args(["-o", "pipefail", "-c", INSTALL_COMMAND])
-        .output()
-        .map_err(|error| BridgeError::Invalid(format!("Could not start the Codex updater: {error}")))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail.trim();
-        return Err(BridgeError::Invalid(if detail.is_empty() {
-            format!("Codex update failed: {}", output.status)
-        } else {
-            format!("Codex update failed: {detail}")
-        }));
-    }
-    Ok(())
+    crate::codex_update::install()
 }
 
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
