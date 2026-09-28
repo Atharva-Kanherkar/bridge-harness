@@ -10,6 +10,7 @@ pub mod meter_tray;
 mod menu_bar;
 pub mod window_chrome;
 mod diagnostics;
+mod nightly_updater;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -2777,6 +2778,9 @@ pub fn run() -> i32 {
             }
         })
         .invoke_handler(move |invoke| {
+            if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update") {
+                return nightly_updater::commands(invoke);
+            }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {
                     daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
