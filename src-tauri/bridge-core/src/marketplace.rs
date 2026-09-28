@@ -487,6 +487,15 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
     } else if connector_type.is_none() && mcp_endpoint.is_some() {
         connector_type = Some(MCP_CONNECTOR.into());
     }
+    // Remote app rows carry no connector metadata, only the id. Classifying
+    // them here lets authentication route to the app installer that opens the
+    // provider's authorization page, and lets the UI offer Connect at all.
+    if connector_type.is_none()
+        && provider == MarketplaceProvider::Codex
+        && looks_like_app_id(base_id)
+    {
+        connector_type = Some(CODEX_APP_CONNECTOR.into());
+    }
     let provider_specific = connector_type.as_deref().is_some_and(|kind| {
         matches!(
             kind.to_lowercase().as_str(),
@@ -1705,6 +1714,26 @@ mod tests {
         .remove(0);
         assert_eq!(display.name, "Remote Desktop Commander");
         assert!(!display.name_is_fallback);
+    }
+
+    #[test]
+    fn remote_app_plugin_ids_are_classified_as_app_connectors() {
+        let variant = parse_variants(
+            MarketplaceProvider::Codex,
+            &json!([{
+                "pluginId": "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
+                "name": "app-6a057d268ebc81919918d37eec718425",
+                "source": {"source": "remote", "id": "plugin_asdk_app_6a057d268ebc81919918d37eec718425"}
+            }]),
+        )
+        .remove(0);
+
+        assert_eq!(variant.connector_type.as_deref(), Some(CODEX_APP_CONNECTOR));
+        assert!(!variant.portable_mcp);
+        assert!(
+            variant.app_connector_ids.is_empty(),
+            "the classification does not invent connector ids"
+        );
     }
 
     #[test]

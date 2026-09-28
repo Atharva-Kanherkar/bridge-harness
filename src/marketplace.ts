@@ -114,23 +114,24 @@ export function applyAppAuthStates(
     const hex = codexStateHex(state);
     if (hex && !codexByHex.has(hex)) codexByHex.set(hex, state);
   }
-  const identityFor = (variant: MarketplaceVariant): MarketplaceAppAuthState | undefined => {
-    for (const id of variant.appConnectorIds) {
-      const match = byConnector.get(connectorKey(variant.provider, id));
-      if (match) return match;
-    }
+  const identitiesFor = (variant: MarketplaceVariant): MarketplaceAppAuthState[] => {
+    const direct = variant.appConnectorIds
+      .map(id => byConnector.get(connectorKey(variant.provider, id)))
+      .filter((state): state is MarketplaceAppAuthState => !!state);
     const hex = variant.provider === "codex" ? codexPluginHex(variant) : null;
-    return hex ? codexByHex.get(hex) : undefined;
+    const app = hex ? codexByHex.get(hex) : undefined;
+    return app && !direct.includes(app) ? [...direct, app] : direct;
   };
   return {
     providers: catalog.providers.map(provider => ({
       ...provider,
       variants: (() => {
         const variants = provider.variants.map(variant => {
-          const explicit = variant.appConnectorIds.map(id => byConnector.get(connectorKey(variant.provider, id))?.authenticationState).filter((state): state is "connected" | "required" => !!state);
+          const identities = identitiesFor(variant);
+          const explicit = identities.map(state => state.authenticationState);
           const authenticationState = explicit.includes("required") ? "required" : explicit.includes("connected") ? "connected" : variant.authenticationState;
           const withAuth = authenticationState === variant.authenticationState ? variant : { ...variant, authenticationState };
-          return applyIdentity(withAuth, identityFor(variant));
+          return applyIdentity(withAuth, identities.find(state => state.displayName?.trim()) ?? identities[0]);
         });
         const represented = new Set(variants.flatMap(variant => variant.appConnectorIds));
         if (provider.provider === "claude") {

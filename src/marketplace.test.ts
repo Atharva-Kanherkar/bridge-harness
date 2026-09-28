@@ -167,6 +167,27 @@ describe("app identity resolution", () => {
     expect(resolved.category).toBe("PRODUCTIVITY");
   });
 
+  it("carries the app verdict onto hex-matched rows", () => {
+    const [resolved] = applyAppAuthStates(fallbackCatalog({ installed: true, connectorType: "app" }), [codexAppState()]).providers[0].variants;
+    expect(resolved.name).toBe("Remote Desktop Commander");
+    expect(resolved.authenticationState).toBe("required");
+    expect(resolved.connectorType).toBe("app");
+
+    const [connected] = applyAppAuthStates(fallbackCatalog(), [codexAppState({ authenticationState: "connected" })]).providers[0].variants;
+    expect(connected.authenticationState).toBe("connected");
+  });
+
+  it("lets a required hex verdict win over a connected connector verdict", () => {
+    const [resolved] = applyAppAuthStates(
+      fallbackCatalog({ appConnectorIds: ["connector_bundled"] }),
+      [
+        { provider: "codex", connectorId: "connector_bundled", displayName: null, nativeConnector: false, authenticationState: "connected" },
+        codexAppState(),
+      ],
+    ).providers[0].variants;
+    expect(resolved.authenticationState).toBe("required");
+  });
+
   it("treats an id-shaped label as unnamed even without the backend flag", () => {
     const unmarked = variant("codex", "app-6a057d268ebc81919918d37eec718425@openai-curated-remote", {
       name: "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
