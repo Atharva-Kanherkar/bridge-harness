@@ -245,15 +245,16 @@ function PluginMarketplace() {
   const [targets, setTargets] = useState<Record<string, InstallTarget>>({});
   const [results, setResults] = useState<Record<string, MarketplaceActionResult[]>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const catalogRef = useRef<MarketplaceCatalog>();
+  const [authFailed, setAuthFailed] = useState(false);
+  const appStatesRef = useRef<MarketplaceAppAuthState[]>();
+  const resolvedRef = useRef<MarketplaceCatalog>();
   const authRefreshBusy = useRef(false);
 
-  useEffect(() => { catalogRef.current = catalog; }, [catalog]);
   const refreshAuth = useCallback(async () => {
     if (authRefreshBusy.current) return;
     authRefreshBusy.current = true;
-    try { setAppStates(await bridgeApi.marketplaceAppAuthStates()); }
-    catch { setAppStates(current => current ?? []); }
+    try { setAppStates(await bridgeApi.marketplaceAppAuthStates()); setAuthFailed(false); }
+    catch { setAuthFailed(true); }
     finally { authRefreshBusy.current = false; }
   }, []);
   const refresh = useCallback(async () => { setLoading(true); try { setCatalog(await bridgeApi.marketplaceCatalog()); } finally { setLoading(false); } }, []);
@@ -261,8 +262,10 @@ function PluginMarketplace() {
   useEffect(() => {
     void refreshAuth();
     const timer = window.setInterval(() => {
-      const needsRefresh = catalogRef.current?.providers.some(item => item.variants.some(variant => variant.installed && variant.appConnectorIds.length > 0 && variant.authenticationState.toLowerCase() !== "connected"));
-      if (needsRefresh) void refreshAuth();
+      const needsAuthRefresh = resolvedRef.current?.providers.some(item => item.variants.some(variant => variant.installed && variant.authenticationState.toLowerCase() !== "connected" && (variant.appConnectorIds.length > 0 || variant.connectorType === "app")));
+      // A failed or never-completed identity load keeps polling, so a single
+      // transient failure cannot hide app rows until the screen is reopened.
+      if (needsAuthRefresh || !appStatesRef.current) void refreshAuth();
     }, 15_000);
     return () => window.clearInterval(timer);
   }, [refreshAuth]);
@@ -272,6 +275,8 @@ function PluginMarketplace() {
   // the same call the auth poll makes). Keeping them in separate state means a
   // late catalog can never drop a resolved name.
   const resolved = useMemo(() => catalog ? applyAppAuthStates(catalog, appStates ?? []) : undefined, [catalog, appStates]);
+  useEffect(() => { appStatesRef.current = appStates; }, [appStates]);
+  useEffect(() => { resolvedRef.current = resolved; }, [resolved]);
   const allServices = useMemo(() => groupMarketplaceServices(resolved?.providers.flatMap(item => item.variants) ?? [], MARKETPLACE_ALIASES), [resolved]);
   const namedServices = useMemo(() => allServices.filter(service => !isUnnamedService(service)), [allServices]);
   const services = useMemo(() => {
@@ -284,7 +289,9 @@ function PluginMarketplace() {
   }, [namedServices, provider, query, scope]);
   const installed = useMemo(() => services.filter(service => service.variants.some(variant => variant.installed)), [services]);
   const searching = !!query.trim();
-  const resolvingNames = useMemo(() => !!resolved && !appStates && allServices.some(isUnnamedService), [resolved, appStates, allServices]);
+  const hasUnnamedServices = useMemo(() => allServices.some(isUnnamedService), [allServices]);
+  const resolvingNames = !!resolved && !appStates && !authFailed && hasUnnamedServices;
+  const namesFailed = !!resolved && !appStates && authFailed && hasUnnamedServices;
   const categories = useMemo(() => {
     const buckets = new Map<string, number>();
     for (const service of services) {
@@ -348,11 +355,12 @@ function PluginMarketplace() {
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => void refresh()} disabled={loading} aria-label="Refresh plugins" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
+      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh plugins" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
       <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search plugins" placeholder="Search plugins" className="h-8 rounded-lg pl-10 text-[13px]" /></div>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
       {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
+      {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<button type="button" onClick={() => void refreshAuth()} className="font-medium text-foreground transition-colors hover:underline">Retry</button></p>}
       {loading && !catalog && <PluginListSkeleton />}
 
       {!!resolved && <>

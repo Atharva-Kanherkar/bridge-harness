@@ -88,6 +88,17 @@ const popularFixtures = Array.from({ length: 12 }, (_, index) => variant(`popula
   providerMetadata: { installCount: 1000 - index },
 }));
 
+const codexAppState: MarketplaceAppAuthState = {
+  provider: "codex", connectorId: "asdk_app_6a057d268ebc81919918d37eec718425",
+  displayName: "Remote Desktop Commander", description: "Build and automate, anywhere",
+  iconUrl: null, category: "DEVELOPER_TOOLS", nativeConnector: false, authenticationState: "required",
+};
+
+const fallbackApp = (overrides: Partial<MarketplaceVariant> = {}): MarketplaceVariant => variant(
+  "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
+  { provider: "codex", name: "app-6a057d268ebc81919918d37eec718425", nameIsFallback: true, ...overrides },
+);
+
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ""; });
 
 describe("Plugins catalog", () => {
@@ -135,19 +146,46 @@ describe("Plugins catalog", () => {
   });
 
   it("resolves an app-<hex> row to its app directory name and category", async () => {
-    const fallback = variant("app-6a057d268ebc81919918d37eec718425@openai-curated-remote", {
-      provider: "codex", name: "app-6a057d268ebc81919918d37eec718425@openai-curated-remote", nameIsFallback: true,
-    });
-    const view = await openPlugins(catalog([fallback]), [{
-      provider: "codex", connectorId: "asdk_app_6a057d268ebc81919918d37eec718425",
-      displayName: "Remote Desktop Commander", description: "Build and automate, anywhere",
-      iconUrl: null, category: "DEVELOPER_TOOLS", nativeConnector: false, authenticationState: "required",
-    }]);
+    const view = await openPlugins(catalog([fallbackApp()]), [codexAppState]);
 
     await view.type("remote");
     expect(view.text()).toContain("Remote Desktop Commander");
     expect(view.text()).not.toContain("app-6a057d268ebc81919918d37eec718425");
     expect(view.articles()).toHaveLength(1);
+    await view.unmount();
+  });
+
+  it("offers Connect for an installed app id whose authorization is required", async () => {
+    const view = await openPlugins(
+      catalog([fallbackApp({ installed: true, connectorType: "app", supportedActions: ["install", "update", "uninstall", "authenticate"] })]),
+      [codexAppState],
+    );
+
+    expect(view.text()).toContain("Remote Desktop Commander");
+    await view.click(view.articles()[0].querySelector("button"));
+    expect(view.text()).toContain("Needs login");
+    expect(view.button("Connect")).not.toBeNull();
+    await view.unmount();
+  });
+
+  it("retries identity loading after a transient failure", async () => {
+    vi.spyOn(bridgeApi, "listManagedAgents").mockResolvedValue({ agents: [agent()] } as Awaited<ReturnType<typeof bridgeApi.listManagedAgents>>);
+    vi.spyOn(bridgeApi, "marketplaceCatalog").mockResolvedValue(catalog([fallbackApp({ installed: true, connectorType: "app" })]));
+    vi.spyOn(bridgeApi, "marketplaceAppAuthStates")
+      .mockRejectedValueOnce(new Error("app directory offline"))
+      .mockResolvedValueOnce([codexAppState]);
+
+    const view = await render();
+    await view.click(view.button("plugins"));
+    await view.flush();
+
+    expect(view.text()).not.toContain("Remote Desktop Commander");
+    expect(view.text()).not.toContain("app-6a057d268ebc81919918d37eec718425");
+    expect(view.text()).toContain("Connector names could not be resolved");
+
+    await view.click(view.host.querySelector('button[aria-label="Refresh plugins"]'));
+    await view.flush();
+    expect(view.text()).toContain("Remote Desktop Commander");
     await view.unmount();
   });
 
