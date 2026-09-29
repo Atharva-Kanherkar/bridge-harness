@@ -67,11 +67,11 @@ export type SessionToolbarProps = {
 };
 
 const MENU_WIDTH = 208;
-const MENU_HEIGHT_ESTIMATE = 288;
+const MENU_HEIGHT_ESTIMATE = 316;
 // Panes that live behind the overflow menu. Anything left off this list keeps
 // a button on the strip — GitHub does, because a review is a place a session
 // returns to rather than a panel it peeks at.
-const OVERFLOW_PANE_IDS: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks"];
+const OVERFLOW_PANE_IDS: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "clone"];
 
 function toolButtonClass(active: boolean) {
   return cn(

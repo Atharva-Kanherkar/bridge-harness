@@ -7,8 +7,9 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
+import type { CloneSettings, CloneSettingsSnapshot } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
@@ -384,6 +385,33 @@ let mockBrowserBridge: BrowserBridgeSnapshot = {
   tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
   promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
 };
+
+// ── Browser clones: MOCK ONLY ────────────────────────────────────────────────
+// No wire method exposes clones yet. The dock surface ships first, against this
+// in-memory fixture; the protocol method and live-turn capability injection are
+// a follow-up. Nothing here reaches Tauri: outside the desktop app the surface
+// runs on this fixture, and inside it every read says "no clone" and every
+// action refuses, so a shipped build never draws an invented clone. A wireframe
+// stands in for the live frame, so the mock carries no page content.
+const mockCloneFrame = (domain: string) => `data:image/svg+xml;utf8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"><rect width="640" height="400" fill="rgb(245,245,244)"/><rect x="200" y="70" width="240" height="250" rx="12" fill="rgb(255,255,255)" stroke="rgb(214,211,209)"/><text x="320" y="112" text-anchor="middle" font-family="sans-serif" font-size="16" fill="rgb(68,64,60)">Sign in to ${domain}</text><rect x="224" y="136" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="182" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="240" width="192" height="32" rx="6" fill="rgb(68,64,60)"/></svg>`,
+)}`;
+const noClone = (status: BrowserCloneSnapshot["status"] = "none"): BrowserCloneSnapshot => ({
+  status, cloneId: null, domain: null, signInPath: null, waitingReason: null, expiresAt: null,
+  screenshot: null, screenshotRedactedRegions: 0, pendingApproval: null,
+});
+const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "import", ttlMinutes: 30 });
+const cloneUnavailable = () => new Error("Browser clones are not connected to the runtime in this build yet.");
+// Starts on a login wall, the state a clone spends its interesting time in, so
+// the surface's whole supervision loop (take over, hand back, destroy) is
+// exercisable without the desktop app.
+let mockBrowserClone: BrowserCloneSnapshot = {
+  status: "waiting_for_you", cloneId: "mock-clone-1", domain: "example.com", signInPath: "sign_in_inside",
+  waitingReason: "Sign in and finish two-factor, then hand the clone back.",
+  expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+  screenshot: mockCloneFrame("example.com"), screenshotRedactedRegions: 2, pendingApproval: null,
+};
+let mockCloneSettings: CloneSettings = defaultCloneSettings();
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   projects: [{ id: "demo-project", name: "Bridge", path: "/Users/you/Developer/bridge", createdAt: now }],
@@ -1351,6 +1379,31 @@ export const bridgeApi = {
   browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? call("browser/browser_skills") : Promise.resolve([]),
   configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return unit(call("browser/configure_remote_browser", { config })); mockBrowserBridge.remoteProvider = config; },
   startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? call("browser/start_remote_browser", { initialUrl }) as Promise<Record<string, unknown>> : Promise.resolve({ id: "mock-remote", initialUrl }),
+  // Browser clones: mock only, see the fixture above. There is no `call()`
+  // because there is no registered method to call yet.
+  browserCloneState: async (): Promise<BrowserCloneSnapshot> => isTauri() ? noClone() : structuredClone(mockBrowserClone),
+  takeoverBrowserClone: async (): Promise<void> => {
+    if (isTauri()) throw cloneUnavailable();
+    if (mockBrowserClone.status === "acting" || mockBrowserClone.status === "waiting_for_you") mockBrowserClone = { ...mockBrowserClone, status: "taken_over", waitingReason: null };
+  },
+  handBackBrowserClone: async (): Promise<void> => {
+    if (isTauri()) throw cloneUnavailable();
+    if (mockBrowserClone.status === "taken_over") mockBrowserClone = { ...mockBrowserClone, status: "acting" };
+  },
+  destroyBrowserClone: async (): Promise<void> => {
+    if (isTauri()) throw cloneUnavailable();
+    if (mockBrowserClone.cloneId) mockBrowserClone = noClone("destroyed");
+  },
+  resolveBrowserCloneApproval: async (approvalId: string, allow: boolean): Promise<void> => {
+    if (isTauri()) throw cloneUnavailable();
+    if (mockBrowserClone.pendingApproval?.id === approvalId) mockBrowserClone = { ...mockBrowserClone, pendingApproval: null, status: allow ? "acting" : "waiting_for_you" };
+  },
+  readCloneSettings: async (): Promise<CloneSettingsSnapshot> => ({ connected: !isTauri(), settings: isTauri() ? defaultCloneSettings() : { ...mockCloneSettings } }),
+  writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
+    if (isTauri()) throw cloneUnavailable();
+    mockCloneSettings = { ...settings };
+    return { connected: true, settings: { ...mockCloneSettings } };
+  },
   skillCatalog: (): Promise<SkillCatalog> => isTauri() ? call("skills/skill_catalog") as Promise<SkillCatalog> : Promise.resolve(structuredClone(mockSkills)),
   skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? call("skills/skill_suggestions", { query, provider }) as Promise<CapabilitySuggestion[]> : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
   previewSkillChange: async (skillId: string, action: SkillAction, targets: SkillProvider[]): Promise<SkillPreview> => {
