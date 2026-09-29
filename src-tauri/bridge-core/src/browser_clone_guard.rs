@@ -88,6 +88,28 @@ impl GuardState {
         &self.blocked
     }
 
+    /// Replace every registered secret value — and its detectable encodings —
+    /// with `[redacted]` anywhere in `value`. Applied to a browser result
+    /// before it reaches an agent, so a page that echoes a session value back
+    /// (a DOM dump, an accessibility tree) cannot hand it over.
+    pub fn scrub_response(&self, value: &mut Value) {
+        match value {
+            Value::String(text) => {
+                for (_, secret) in &self.secrets {
+                    for form in encodings(secret) {
+                        *text = text.replace(&form, "[redacted]");
+                    }
+                    *text = text.replace(secret.as_str(), "[redacted]");
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(|item| self.scrub_response(item)),
+            Value::Object(fields) => {
+                fields.values_mut().for_each(|item| self.scrub_response(item))
+            }
+            _ => {}
+        }
+    }
+
     /// Is `host` (or a parent domain of it) on the allow list?
     fn host_allowed(&self, host: &str) -> bool {
         let host = normalize_host(host);

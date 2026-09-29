@@ -32,6 +32,14 @@ pub mod browser_clone;
 /// Fetch domain and a local egress proxy. Shares an allow list with the clone.
 #[cfg(target_os = "macos")]
 pub mod browser_clone_guard;
+/// macOS-only, one-domain cookie import from the user's Chrome or Brave
+/// profile, decrypting via the system Keychain. Never reads the password store.
+#[cfg(target_os = "macos")]
+pub mod browser_clone_signin;
+/// The narrow, capability-bound command surface an agent uses to drive one
+/// guarded clone. No cookie, storage, or eval kind exists on it.
+#[cfg(target_os = "macos")]
+pub mod clone_browser_tool;
 pub mod builtin_compatibility;
 pub mod capability_projection;
 pub mod check_runner;
