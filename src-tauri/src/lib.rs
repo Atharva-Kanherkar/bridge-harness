@@ -311,14 +311,14 @@ async fn start_remote_browser(
 }
 
 #[tauri::command]
-async fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
-    api::marketplace_catalog()
+async fn marketplace_catalog() -> Result<marketplace::MarketplaceCatalog, BridgeError> {
+    blocking("Marketplace catalog", || Ok(api::marketplace_catalog())).await
 }
 
 #[tauri::command]
 async fn marketplace_app_auth_states(
 ) -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
-    api::marketplace_app_auth_states()
+    blocking("Marketplace auth", api::marketplace_app_auth_states).await
 }
 
 #[tauri::command]

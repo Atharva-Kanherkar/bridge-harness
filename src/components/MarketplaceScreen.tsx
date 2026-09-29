@@ -203,6 +203,7 @@ function PluginMarketplace() {
   const [targets, setTargets] = useState<Record<string, InstallTarget>>({});
   const [results, setResults] = useState<Record<string, MarketplaceActionResult[]>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const catalogRef = useRef<MarketplaceCatalog>();
   const authRefreshBusy = useRef(false);
 
@@ -214,7 +215,7 @@ function PluginMarketplace() {
     catch { /* Connector status is supplementary. */ }
     finally { authRefreshBusy.current = false; }
   }, []);
-  const refresh = useCallback(async () => { setLoading(true); try { setCatalog(await bridgeApi.marketplaceCatalog()); } finally { setLoading(false); } }, []);
+  const refresh = useCallback(async () => { setLoading(true); try { setCatalog(await bridgeApi.marketplaceCatalog()); setCatalogFailed(false); } catch { setCatalogFailed(true); } finally { setLoading(false); } }, []);
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     void refreshAuth();
@@ -273,6 +274,7 @@ function PluginMarketplace() {
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
       {loading && !catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15} /> Discovering provider marketplaces…</div>}
+      {catalogFailed && !loading && !catalog && <p role="status" className="mt-5 flex items-center gap-2 text-[12px] text-warning"><AlertCircle size={12} aria-hidden="true" />Plugins could not be loaded. Use refresh to try again.</p>}
 
       {!!catalog && <>
         <section className="mt-5" aria-labelledby="installed-heading">
