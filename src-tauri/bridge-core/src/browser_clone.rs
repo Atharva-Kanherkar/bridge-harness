@@ -12,6 +12,13 @@
 //!   (file descriptors 3 and 4, NUL-delimited JSON). No TCP debugging port is
 //!   ever opened, and [`validate_launch_args`] refuses to launch if one is
 //!   requested, so another local process cannot reach the browser's DevTools.
+//! - **No inherited descriptors.** Before exec, the child marks every
+//!   descriptor above the pipe close-on-exec, so the browser starts holding
+//!   only stdio and fds 3/4, never a handle to Bridge's database, sockets, or
+//!   terminals that a library forgot to mark.
+//! - **Invisible volume.** The RAM disk is formatted without being mounted and
+//!   then mounted `nobrowse,nosuid,nodev` under the Bridge-owned dir, so it
+//!   never appears in Finder or on the Desktop.
 //! - **No disk residue.** The profile lives on an HFS+ RAM disk mounted under a
 //!   Bridge-owned temp dir. [`CloneSupervisor::destroy`] kills the browser's
 //!   whole process group, ejects the volume, and removes the mount point.
@@ -76,6 +83,21 @@ const VOLUME_LABEL: &str = "BridgeClone";
 const DEFAULT_RAM_DISK_MIB: u64 = 256;
 const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Chromium's HTTP cache cap. The RAM disk is small on purpose, and a
+/// media-heavy site (YouTube) would otherwise fill it and fail writes mid-test.
+const DISK_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+/// How long a SIGKILLed clone's process group gets to disappear.
+const KILL_WAIT: Duration = Duration::from_secs(2);
+/// Highest descriptor a clone's child scrubs before exec. `sysconf` can
+/// report an unbounded limit, and a loop to that is not free.
+const FD_SCRUB_CEILING: libc::c_int = 65_536;
+
+// System tools by absolute path: a daemon's PATH is not something to trust,
+// and these are the ones that mount, format, and inspect processes.
+const HDIUTIL: &str = "/usr/bin/hdiutil";
+const DISKUTIL: &str = "/usr/sbin/diskutil";
+const NEWFS_HFS: &str = "/sbin/newfs_hfs";
+const PS: &str = "/bin/ps";
 
 #[derive(Debug, Error)]
 pub enum CloneError {
@@ -342,6 +364,7 @@ fn launch_args(profile: &Path, headless: bool) -> Vec<String> {
         "--disable-background-networking".to_owned(),
         "--disable-component-update".to_owned(),
         "--disable-breakpad".to_owned(),
+        format!("--disk-cache-size={DISK_CACHE_BYTES}"),
     ];
     if headless {
         args.push("--headless=new".to_owned());
@@ -549,13 +572,27 @@ fn launch(binary: &Path, args: &[String]) -> Result<(Child, Arc<CdpPipe>), Clone
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     adapters::configure_process_group(&mut command);
-    // SAFETY: the closure runs between fork and exec and calls only dup2,
-    // which is async-signal-safe. The source descriptors are >= 10, so neither
-    // dup2 can clobber the other's source.
+    // Rust opens its own files close-on-exec, but a library sharing this
+    // process may not (a SQLite handle, a PTY, a socket), and a clone must not
+    // leave holding a door into Bridge's own state. Computed before the fork:
+    // sysconf is not async-signal-safe.
+    // SAFETY: sysconf only reads a limit.
+    let fd_limit = match unsafe { libc::sysconf(libc::_SC_OPEN_MAX) } {
+        limit if limit > 0 && limit < FD_SCRUB_CEILING as libc::c_long => limit as libc::c_int,
+        _ => FD_SCRUB_CEILING,
+    };
+    // SAFETY: the closure runs between fork and exec and calls only dup2 and
+    // fcntl, which are async-signal-safe. The source descriptors are >= 10, so
+    // neither dup2 can clobber the other's source. Everything above 4 is marked
+    // close-on-exec rather than closed, so std's own exec-error pipe still
+    // reports a failed exec to the parent.
     unsafe {
         command.pre_exec(move || {
             if libc::dup2(read_fd, 3) < 0 || libc::dup2(write_fd, 4) < 0 {
                 return Err(io::Error::last_os_error());
+            }
+            for fd in 5..fd_limit {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
             }
             Ok(())
         });
@@ -641,7 +678,7 @@ struct RamDisk;
 impl VolumeBackend for RamDisk {
     fn create(&self, mount: &Path, size_mib: u64) -> Result<(), CloneError> {
         let sectors = size_mib.saturating_mul(2048);
-        let attached = run_tool("hdiutil", &["attach", "-nomount", &format!("ram://{sectors}")])?;
+        let attached = run_tool(HDIUTIL, &["attach", "-nomount", &format!("ram://{sectors}")])?;
         let device = attached
             .split_whitespace()
             .next()
@@ -649,15 +686,29 @@ impl VolumeBackend for RamDisk {
             .map(str::to_owned)
             .ok_or_else(|| CloneError::Volume("hdiutil did not name a device".into()))?;
         let build = || -> Result<(), CloneError> {
-            run_tool("diskutil", &["erasevolume", "HFS+", VOLUME_LABEL, &device])?;
-            // `erasevolume` mounts under /Volumes. Move it under the
-            // Bridge-owned dir so its path is known and never collides.
-            run_tool("diskutil", &["unmount", "force", &device])?;
+            // Format without mounting. `diskutil erasevolume` would mount the
+            // new volume under /Volumes, where Finder shows it, before it could
+            // be moved; the user should never see a clone's disk appear.
+            run_tool(NEWFS_HFS, &["-v", VOLUME_LABEL, &device])?;
             create_private_dir(mount)?;
+            // nobrowse keeps it off the Desktop and out of Finder's sidebar;
+            // nothing in a browser profile needs setuid binaries or device
+            // nodes.
             run_tool(
-                "diskutil",
-                &["mount", "-mountPoint", &mount.to_string_lossy(), &device],
+                DISKUTIL,
+                &[
+                    "mount",
+                    "-mountOptions",
+                    "nobrowse,nosuid,nodev",
+                    "-mountPoint",
+                    &mount.to_string_lossy(),
+                    &device,
+                ],
             )?;
+            // Once mounted, the mount point shows the volume root's mode, not
+            // the 0700 given above. Tighten the root to match.
+            fs::set_permissions(mount, fs::Permissions::from_mode(0o700))
+                .map_err(|error| CloneError::Volume(format!("{}: {error}", mount.display())))?;
             // Best effort: keep Spotlight from indexing a volume that holds
             // session data. It lives and dies with the volume.
             let _ = fs::write(mount.join(".metadata_never_index"), b"");
@@ -665,7 +716,7 @@ impl VolumeBackend for RamDisk {
         };
         if let Err(error) = build() {
             // Detach by device: the mount may never have happened.
-            let _ = run_tool("hdiutil", &["detach", &device, "-force"]);
+            let _ = run_tool(HDIUTIL, &["detach", &device, "-force"]);
             let _ = fs::remove_dir(mount);
             return Err(error);
         }
@@ -675,8 +726,8 @@ impl VolumeBackend for RamDisk {
     fn eject(&self, mount: &Path) -> Result<(), CloneError> {
         if is_mount_point(mount) {
             let target = mount.to_string_lossy();
-            if run_tool("hdiutil", &["detach", &target, "-force"]).is_err() {
-                run_tool("diskutil", &["eject", &target])?;
+            if run_tool(HDIUTIL, &["detach", &target, "-force"]).is_err() {
+                run_tool(DISKUTIL, &["eject", &target])?;
             }
             if is_mount_point(mount) {
                 return Err(CloneError::Volume(format!(
@@ -696,8 +747,12 @@ fn run_tool(tool: &str, args: &[&str]) -> Result<String, CloneError> {
         .output()
         .map_err(|error| CloneError::Volume(format!("{tool}: {error}")))?;
     if !output.status.success() {
+        let name = Path::new(tool)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(tool);
         return Err(CloneError::Volume(format!(
-            "{tool} {} failed: {}",
+            "{name} {} failed: {}",
             args.first().copied().unwrap_or(""),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
@@ -934,9 +989,11 @@ impl CloneSupervisor {
     }
 
     /// Inject `cookies` into the clone as session cookies. They are readable
-    /// in-page and are never written to the profile's `Cookies` database. Fails
-    /// if any cookie is invalid, dropped by the browser, or stored as
-    /// persistent. Cookie values never appear in an error.
+    /// in-page and stay out of the profile's `Cookies` file while the clone
+    /// runs; [`Self::destroy`] kills the browser without a graceful flush and
+    /// ejects the volume, so they never outlive it. Fails if any cookie is
+    /// invalid, dropped by the browser, or stored as persistent. Cookie values
+    /// never appear in an error.
     pub fn load_session(&self, clone_id: &str, cookies: Vec<CookieSpec>) -> Result<(), CloneError> {
         let pipe = self.pipe(clone_id)?;
         load_session_over(&pipe, &cookies, self.config.call_timeout)
@@ -981,7 +1038,7 @@ impl CloneSupervisor {
             }
             if let Some(pid) = record.pid {
                 if process_group_mentions(pid, &record.mount.to_string_lossy()) {
-                    if adapters::terminate_process_group(pid) {
+                    if kill_group_now(pid) {
                         report.killed.push(pid);
                     } else {
                         report
@@ -1075,7 +1132,7 @@ impl CloneSupervisor {
     /// so the next boot's sweep retries.
     fn teardown(&self, mut clone: LiveClone) -> Result<(), CloneError> {
         let pid = clone.child.id();
-        let stopped = adapters::terminate_process_group(pid);
+        let stopped = kill_group_now(pid);
         if stopped {
             let _ = clone.child.wait();
         } else {
@@ -1105,9 +1162,50 @@ impl Drop for CloneSupervisor {
     }
 }
 
+/// SIGKILL a clone's whole process group at once, then wait for every live
+/// member to be gone. There is deliberately no SIGTERM first: a clone holds
+/// nothing worth a graceful shutdown, and a graceful shutdown is exactly when
+/// Chromium flushes session cookies into the profile's `Cookies` database.
+fn kill_group_now(pgid: u32) -> bool {
+    // SAFETY: killpg only delivers a signal. Callers pass a pgid that is either
+    // their own unreaped child (so it cannot have been recycled) or one the
+    // sweep has just matched against the clone's mount path.
+    unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) };
+    let deadline = Instant::now() + KILL_WAIT;
+    while group_has_live_members(pgid) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// True while group `pgid` has a member that is not a zombie. A SIGKILLed
+/// child stays a zombie until its parent reaps it, and that is not a process
+/// that can touch the volume. Fails closed: if `ps` cannot be run, the group is
+/// treated as alive, so the ledger record survives for the next sweep.
+fn group_has_live_members(pgid: u32) -> bool {
+    let Ok(output) = Command::new(PS)
+        .args(["-ax", "-o", "pgid=", "-o", "stat="])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return true;
+    };
+    if !output.status.success() {
+        return true;
+    }
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next().and_then(|value| value.parse::<u32>().ok()) == Some(pgid)
+            && fields.next().is_some_and(|state| !state.starts_with('Z'))
+    })
+}
+
 /// True while a process in group `pgid` has `needle` in its command line.
 fn process_group_mentions(pgid: u32, needle: &str) -> bool {
-    let Ok(output) = Command::new("ps")
+    let Ok(output) = Command::new(PS)
         .args(["-ax", "-ww", "-o", "pgid=", "-o", "command="])
         .stderr(Stdio::null())
         .output()
@@ -1194,9 +1292,20 @@ use File::Basename qw(dirname);
 
 my $mode = '__MODE__';
 my $here = dirname($0);
+# Probed before this script opens anything of its own, so a freed number
+# cannot be reused and misread as inherited.
+my $inherited;
+if ($mode =~ /^fdcheck:(\d+)$/) {
+    $inherited = (-e "/dev/fd/$1") ? 'open' : 'closed';
+}
 open(my $pidfile, '>', "$here/browser.pid") or exit 2;
 print $pidfile $$;
 close $pidfile;
+if (defined $inherited) {
+    open(my $report, '>', "$here/fd.txt") or exit 9;
+    print $report $inherited;
+    close $report;
+}
 
 open(my $in, '<&=', 3) or exit 3;
 open(my $out, '>&=', 4) or exit 4;
@@ -1487,6 +1596,17 @@ while (defined(my $raw = <$in>)) {
         assert!(args.contains(&"--no-first-run".to_owned()));
     }
 
+    #[test]
+    fn launch_args_cap_the_disk_cache_below_the_ram_disk() {
+        let args = launch_args(Path::new("/tmp/p"), false);
+        let cap = args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("--disk-cache-size="))
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("a disk cache cap is passed");
+        assert!(cap < DEFAULT_RAM_DISK_MIB * 1024 * 1024 / 2, "cap {cap} leaves no room");
+    }
+
     // ------------------------------------------------------ 2. CDP over a pipe
 
     #[test]
@@ -1675,6 +1795,25 @@ while (defined(my $raw = <$in>)) {
     }
 
     // ----------------------------------------------------------- 4. lifecycle
+
+    #[test]
+    fn the_browser_inherits_no_descriptor_beyond_the_pipe() {
+        // A descriptor this process holds without close-on-exec, the way a
+        // library might. Placed high so nothing the fake browser opens for
+        // itself can land on the same number.
+        // SAFETY: F_DUPFD duplicates stdin; the copy is closed below.
+        let leaked = unsafe { libc::fcntl(0, libc::F_DUPFD, 200) };
+        assert!(leaked >= 200, "could not open the test descriptor");
+        let harness = Harness::new(&format!("fdcheck:{leaked}"));
+        let info = harness.supervisor.spawn_clone().unwrap();
+        let report = harness.dir.path().join("fd.txt");
+        assert!(wait_until(3000, || report.exists()), "the fake browser never reported");
+        let seen = fs::read_to_string(&report).unwrap();
+        harness.supervisor.destroy(&info.id).unwrap();
+        // SAFETY: closing the descriptor opened above.
+        unsafe { libc::close(leaked) };
+        assert_eq!(seen, "closed", "the browser inherited descriptor {leaked}");
+    }
 
     #[test]
     fn spawn_returns_a_ready_clone_and_the_child_got_the_pipe_and_no_port() {
@@ -1966,7 +2105,9 @@ while (defined(my $raw = <$in>)) {
                 eprintln!("skipping live clone test: BRIDGE_CLONE_LIVE is not 1");
                 return None;
             }
-            let browser = discover_browser();
+            // BRIDGE_CLONE_BROWSER runs the same checks against Brave or Chrome
+            // for Testing instead of whatever discovery finds first.
+            let browser = CloneConfig::from_env().browser.or_else(discover_browser);
             if browser.is_none() {
                 eprintln!("skipping live clone test: no Chrome, Brave, or Chrome for Testing");
             }
@@ -2037,7 +2178,24 @@ while (defined(my $raw = <$in>)) {
 
             // 6.1: a real clone on a real RAM disk, driven over the pipe.
             let info = supervisor.spawn_clone().expect("the clone starts");
+            eprintln!("live clone: {} pid={} mount={}", info.product, info.pid, info.mount.display());
             assert!(is_mount_point(&info.mount), "the profile is not on its own volume");
+            // The volume is invisible: mounted nobrowse under the Bridge dir,
+            // never under /Volumes where Finder would show it.
+            let canonical = fs::canonicalize(&info.mount).unwrap();
+            let mounts = Command::new("/sbin/mount").output().unwrap();
+            let mounts = String::from_utf8_lossy(&mounts.stdout);
+            let line = mounts
+                .lines()
+                .find(|line| line.contains(&format!(" on {} (", canonical.display())))
+                .unwrap_or_else(|| panic!("{} is not in the mount table", canonical.display()));
+            for option in ["nobrowse", "nosuid", "nodev"] {
+                assert!(line.contains(option), "{option} missing: {line}");
+            }
+            assert!(
+                !mounts.lines().any(|line| line.contains(&format!(" on /Volumes/{VOLUME_LABEL}"))),
+                "a clone volume is visible under /Volumes"
+            );
             let command = command_line(info.pid);
             assert!(command.contains("--remote-debugging-pipe"), "{command}");
             assert!(!command.contains("--remote-debugging-port"), "{command}");
@@ -2149,10 +2307,19 @@ while (defined(my $raw = <$in>)) {
                 supervisor.profile_dir(&info.id).is_none(),
                 "the clone's profile survived destroy"
             );
+            // Every Chrome helper (renderer, GPU, network service) died with
+            // the browser: none still names the profile in its command line.
+            let processes = Command::new(PS).args(["-ax", "-ww", "-o", "command="]).output().unwrap();
+            let survivors: Vec<String> = String::from_utf8_lossy(&processes.stdout)
+                .lines()
+                .filter(|line| line.contains(&info.mount.to_string_lossy().into_owned()))
+                .map(str::to_owned)
+                .collect();
+            assert!(survivors.is_empty(), "processes outlived destroy: {survivors:?}");
             // The control cookie proved reachable (it read back and is a
             // persistent cookie); it, too, is gone now that the volume is.
             let _ = control_name;
-            let devices = Command::new("hdiutil").arg("info").output().unwrap();
+            let devices = Command::new(HDIUTIL).arg("info").output().unwrap();
             assert!(
                 !String::from_utf8_lossy(&devices.stdout).contains(&info.id),
                 "hdiutil still lists the volume"

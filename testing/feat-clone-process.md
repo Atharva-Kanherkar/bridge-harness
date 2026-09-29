@@ -43,6 +43,7 @@ Wiring: `BridgeCore` gains `browser_clones: Arc<CloneSupervisor>`; `boot()` runs
 | 1.3 | The guard refuses a port flag before any launch | `validate_launch_args` returns an error for `--remote-debugging-port=9222` and for a bare `--remote-debugging-port` |
 | 1.4 | Headless is opt-in | `--headless=new` appears only when `CloneConfig.headless` is true |
 | 1.5 | No keychain prompt, no first-run UI | args contain `--use-mock-keychain` and `--no-first-run` |
+| 1.6 | The HTTP cache cannot fill the RAM disk | args carry `--disk-cache-size` below half the default volume |
 
 ## 2. CDP over the pipe — `browser_clone::tests`
 
@@ -84,6 +85,7 @@ directory, so these run without `hdiutil`.
 | 4.8 | The ledger holds only pid + mount | the JSON keys of every record are exactly `pid` and `mount`, and the file does not contain a cookie value loaded into the clone |
 | 4.9 | Dropping the supervisor cleans up | a live clone is destroyed when the last `Arc<CloneSupervisor>` drops |
 | 4.10 | A failed volume create leaves nothing | a backend that fails `create` yields a `Volume` error and no ledger record |
+| 4.11 | The browser inherits no descriptor beyond the pipe | a descriptor this process holds *without* close-on-exec (placed at fd >= 200) is reported closed by the child; mutation-checked: removing the scrub makes this fail |
 
 ## 5. Orphan sweep — `browser_clone::tests`
 
@@ -108,12 +110,24 @@ Chrome, Brave or Chrome for Testing is installed, or the variable is unset.
 
 | # | Behaviour | Assertion |
 |---|---|---|
-| 6.1 | A real clone starts on a real RAM disk | `spawn_clone` returns; the live process' `ps` command line has `--remote-debugging-pipe`, no `--remote-debugging-port`, and its profile under the mount |
+| 6.1 | A real clone starts on a real, invisible RAM disk | `spawn_clone` returns; the live process' `ps` command line has `--remote-debugging-pipe`, no `--remote-debugging-port`, and its profile under the mount; the mount table shows the volume `nobrowse,nosuid,nodev` at the Bridge-owned path and nothing under `/Volumes` |
 | 6.2 | The session cookie is readable in-page | after `load_session`, `document.cookie` on a local page contains the cookie |
 | 6.3 | While the clone runs, the session cookie is not in the on-disk `Cookies` file | the bytes of `<profile>/Default/Cookies` do not contain the session cookie's value during operation |
 | 6.4 | `destroy` is the boundary: RAM disk and profile are gone | `destroy` SIGKILLs the process group (no graceful flush) then ejects; the mount path and `profile_dir` no longer exist and `hdiutil info` no longer lists the volume |
+| 6.5 | No browser helper outlives `destroy` | no process's command line still names the mount (renderer, GPU and network service died with the browser) |
+| 6.6 | Same checks on every engine | `BRIDGE_CLONE_BROWSER` points the live test at Brave or Chrome for Testing; all three pass |
 
 **Finding (verified against real Chrome 154, 2026-09-29):** session cookies are kept in memory *while the browser runs* but modern Chromium flushes them to the profile `Cookies` database on shutdown (for session restore). So the disk guarantee does **not** rest on cookie residence — it rests on the RAM disk. `destroy` kills the whole process group (so nothing is flushed on a graceful exit) and ejects the volume; the profile and anything flushed into it die with the RAM disk and never reach the real disk. The module doc and epic #749 wording were corrected to say this.
+
+## Review findings folded in
+
+Found while reviewing the first draft against a real browser; each has a test above.
+
+- **Teardown sent SIGTERM first.** `adapters::terminate_process_group` terminates gracefully, and a graceful Chromium exit is exactly when session cookies get flushed into the profile. Clones now `killpg(SIGKILL)` at once and wait with a zombie-aware check (6.4).
+- **Inherited descriptors.** Nothing stopped a library's non-close-on-exec handle (SQLite, PTY, socket) from reaching the browser. The child now marks every descriptor above 4 close-on-exec before exec, which keeps std's exec-error pipe working (4.11).
+- **Finder flash.** `diskutil erasevolume` mounted the new volume under `/Volumes` before it was moved, and the final mount was browsable. It is now formatted with `newfs_hfs` without mounting and mounted `nobrowse,nosuid,nodev`, root `0700` (6.1).
+- **PATH-resolved tools.** `hdiutil`, `diskutil`, `newfs_hfs` and `ps` are run by absolute path.
+- **Cache size.** A 256 MiB RAM disk with an uncapped HTTP cache fills on a media site; the cache is capped at 64 MiB (1.6).
 
 ## 7. Repo gates
 
