@@ -259,6 +259,12 @@ methods![
     (BrowserSkills, "browser", "browser_skills"),
     (ConfigureRemoteBrowser, "browser", "configure_remote_browser"),
     (StartRemoteBrowser, "browser", "start_remote_browser"),
+    // browser clones — throwaway signed-in browsers an agent drives
+    (RequestClone, "clones", "request_clone"),
+    (CloneState, "clones", "clone_state"),
+    (TakeoverClone, "clones", "takeover_clone"),
+    (HandBackClone, "clones", "hand_back_clone"),
+    (DestroyClone, "clones", "destroy_clone"),
     // agents — the runtime lifecycle for the built-in integrations. Distinct
     // from `marketplace`, which is about plugins running inside an agent.
     (ListManagedAgents, "agents", "list_managed_agents"),

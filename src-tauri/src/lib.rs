@@ -286,6 +286,58 @@ async fn takeover_browser(state: State<'_, Arc<BridgeCore>>) -> Result<(), Bridg
 }
 
 #[tauri::command]
+async fn request_clone(
+    session_id: String,
+    domain: String,
+    browser: bridge_protocol::messages::CloneBrowserKind,
+    sign_in_path: bridge_protocol::messages::CloneSignInPath,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Option<bridge_protocol::messages::CloneSnapshot>, BridgeError> {
+    let core = Arc::clone(state.inner());
+    let params = bridge_protocol::messages::RequestCloneParams {
+        session_id,
+        domain,
+        browser,
+        sign_in_path,
+    };
+    blocking("request_clone", move || api::request_clone(&core, &params)).await
+}
+
+#[tauri::command]
+async fn clone_state(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Option<bridge_protocol::messages::CloneSnapshot>, BridgeError> {
+    let core = Arc::clone(state.inner());
+    blocking("clone_state", move || api::clone_state(&core, &session_id)).await
+}
+
+#[tauri::command]
+async fn takeover_clone(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::takeover_clone(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn hand_back_clone(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::hand_back_clone(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn destroy_clone(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = Arc::clone(state.inner());
+    blocking("destroy_clone", move || api::destroy_clone(&core, &session_id)).await
+}
+
+#[tauri::command]
 async fn detach_browser(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
     api::detach_browser(state.inner())
 }
@@ -2624,6 +2676,11 @@ pub fn run() -> i32 {
             set_browser_permission,
             resolve_browser_approval,
             takeover_browser,
+            request_clone,
+            clone_state,
+            takeover_clone,
+            hand_back_clone,
+            destroy_clone,
             detach_browser,
             route_browser,
             browser_skills,
