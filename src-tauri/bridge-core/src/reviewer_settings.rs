@@ -119,19 +119,29 @@ pub fn view(settings: ReviewerSettings) -> wire::ReviewerSettingsResult {
 /// custom prompt replaces the default wholesale, so the mandatory
 /// no-approve/no-merge guardrail is re-appended when the custom text drops it.
 pub fn objective(settings: &ReviewerSettings, number: u64) -> String {
+    objective_with_hide(settings, number, false)
+}
+
+/// Same as `objective`, but prepends the strict no-attribution rule first when
+/// hiding is ON.
+pub fn objective_with_hide(settings: &ReviewerSettings, number: u64, hide: bool) -> String {
     let template = if settings.system_prompt.trim().is_empty() {
         DEFAULT_SYSTEM_PROMPT
     } else {
         settings.system_prompt.trim()
     };
     let expanded = template.replace("{number}", &number.to_string());
-    if settings.system_prompt.trim().is_empty() {
-        return expanded;
-    }
-    if expanded.to_ascii_lowercase().contains("do not approve") {
+    let guarded = if settings.system_prompt.trim().is_empty() {
+        expanded
+    } else if expanded.to_ascii_lowercase().contains("do not approve") {
         expanded
     } else {
         format!("{expanded}\n\n{SAFETY_GUARDRAIL}")
+    };
+    if hide {
+        format!("{}\n\n{}", crate::prompts::ATTRIBUTION_HIDING_RULE, guarded)
+    } else {
+        guarded
     }
 }
 
@@ -223,5 +233,15 @@ mod tests {
         assert!(!default.contains("{number}"));
         let blank = ReviewerSettings { system_prompt: "   ".into(), ..Default::default() };
         assert_eq!(objective(&blank, 42), default, "whitespace is not a prompt");
+    }
+
+    #[test]
+    fn objective_with_hide_prepends_strict_rule_first() {
+        let hidden = objective_with_hide(&ReviewerSettings::default(), 7, true);
+        assert!(hidden.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
+        assert!(hidden.contains("Review pull request #7"));
+        let shown = objective_with_hide(&ReviewerSettings::default(), 7, false);
+        assert_eq!(shown, objective(&ReviewerSettings::default(), 7));
+        assert!(!shown.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
     }
 }

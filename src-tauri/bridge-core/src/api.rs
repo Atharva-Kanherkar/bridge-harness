@@ -639,7 +639,7 @@ pub fn github_review(
     // model profile fills whatever they leave unset, and its tier shapes the
     // worker. The profile's model is only used when its provider matches the
     // chosen harness, otherwise the launch path picks the harness's tier default.
-    let (resolved, reviewer_settings, supports_read_only) = {
+    let (resolved, reviewer_settings, supports_read_only, hide_attribution) = {
         let db = core.db.lock().unwrap();
         let descriptors = core.adapter_registry.descriptors();
         let supports_read_only = descriptors
@@ -659,9 +659,10 @@ pub fn github_review(
             )?,
             crate::reviewer_settings::load(&db)?,
             supports_read_only,
+            crate::attribution_settings::hide_enabled(&db),
         )
     };
-    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only);
+    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only, hide_attribution);
     let ReviewerLaunchPlan { capability_tier, effort, model, write_mode, objective } = plan;
 
     // Establish the parent orchestrator session. Reuse the caller's session when
@@ -772,6 +773,7 @@ pub(crate) fn reviewer_launch_plan(
     harness: &str,
     number: u64,
     supports_read_only: bool,
+    hide_attribution: bool,
 ) -> ReviewerLaunchPlan {
     let per_harness = settings.harnesses.get(harness);
     let (capability_tier, profile_effort, profile_model) = match profile {
@@ -803,7 +805,7 @@ pub(crate) fn reviewer_launch_plan(
         effort,
         model,
         write_mode,
-        objective: crate::reviewer_settings::objective(settings, number),
+        objective: crate::reviewer_settings::objective_with_hide(settings, number, hide_attribution),
     }
 }
 
@@ -4139,6 +4141,14 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+pub fn get_attribution_settings(core: &Arc<BridgeCore>) -> Result<wire::AttributionSettings, BridgeError> {
+    crate::attribution_settings::load(&core.db.lock().unwrap())
+}
+
+pub fn save_attribution_settings(core: &Arc<BridgeCore>, params: &wire::SaveAttributionSettingsParams) -> Result<wire::AttributionSettings, BridgeError> {
+    crate::attribution_settings::save(&core.db.lock().unwrap(), params)
+}
+
 /// Every worktree Bridge knows about, with the last assessment of what may be
 /// done with it. A read: the sweep owns reclaiming.
 pub fn list_worktrees(
@@ -5547,25 +5557,25 @@ mod tests {
             used_fallback: false,
         };
         // Nothing configured: the profile speaks for its own provider only.
-        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true);
+        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true, false);
         assert_eq!((plain.model.as_deref(), plain.effort, plain.capability_tier), (Some("gpt-5-codex"), delegation::Effort::Medium, CapabilityTier::Standard));
         assert_eq!(plain.write_mode, delegation::WriteMode::ReadOnly);
         assert!(plain.objective.starts_with("Review pull request #9"));
-        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true);
+        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true, false);
         assert_eq!(other.model, None, "a Codex model is not handed to Claude");
         assert_eq!(other.effort, delegation::Effort::Medium);
         // Settings for the harness win over the profile.
         let mut settings = ReviewerSettings { system_prompt: "Check PR {number}.".into(), ..Default::default() };
         settings.harnesses.insert("claude".into(), ReviewerHarnessSettings { model: Some("claude-opus-5".into()), effort: Some(wire::Effort::Xhigh) });
-        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true);
+        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true, false);
         assert_eq!((configured.model.as_deref(), configured.effort), (Some("claude-opus-5"), delegation::Effort::Xhigh));
         assert!(configured.objective.starts_with("Check PR 9."), "{}", configured.objective);
         assert!(configured.objective.contains("only post a comment"), "custom prompts keep the safety guardrail: {}", configured.objective);
         // No profile at all: strong tier, high effort, harness default model.
-        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true);
+        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true, false);
         assert_eq!((bare.model, bare.effort, bare.capability_tier), (None, delegation::Effort::High, CapabilityTier::Strong));
         // A harness without read_only support reviews from an isolated worktree.
-        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false);
+        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false, false);
         assert_eq!(opencode.write_mode, delegation::WriteMode::Isolated);
     }
 
@@ -5575,10 +5585,20 @@ mod tests {
         use crate::delegation;
         // The same harness id gets isolated iff its descriptor lacks read_only —
         // no hard-coded name decides write access.
-        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false);
+        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false, false);
         assert_eq!(isolated.write_mode, delegation::WriteMode::Isolated);
-        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true);
+        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true, false);
         assert_eq!(readonly.write_mode, delegation::WriteMode::ReadOnly);
+    }
+
+    #[test]
+    fn reviewer_launch_plan_prepends_hiding_rule_when_on() {
+        use bridge_protocol::messages::ReviewerSettings;
+        let hidden = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, true);
+        assert!(hidden.objective.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
+        assert!(hidden.objective.contains("Review pull request #7"));
+        let shown = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, false);
+        assert!(!shown.objective.contains("Co-authored-by"));
     }
 
     #[test]

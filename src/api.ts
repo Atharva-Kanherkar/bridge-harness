@@ -14,7 +14,7 @@ import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
-import type { TurnImage, ArchivedChatsResult, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, AttributionSettings, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -1910,6 +1910,14 @@ export const bridgeApi = {
   saveReviewerSettings: async (settings: ReviewerSettings): Promise<ReviewerSettingsResult> => {
     if (isTauri()) return call("config/save_reviewer_settings", { settings });
     return { settings: structuredClone(settings), defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
+  },
+  attributionSettings: async (): Promise<AttributionSettings> => {
+    if (isTauri()) return call("config/get_attribution_settings");
+    return { hideAiAttribution: false };
+  },
+  saveAttributionSettings: async (settings: AttributionSettings): Promise<AttributionSettings> => {
+    if (isTauri()) return call("config/save_attribution_settings", { settings });
+    return structuredClone(settings);
   },
   unarchiveChat: async (sessionId: string): Promise<void> => {
     if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
