@@ -554,6 +554,38 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
     Ok(wire::GithubChecksResult { checks })
 }
 
+/// The pull requests attached to one chat, newest first, with live state.
+/// Reading (re)arms the poller, so a reopened chat resumes background updates
+/// without the GitHub pane being open.
+pub fn github_session_prs(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    refresh: bool,
+) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+    let views = crate::session_prs::session_pull_requests(core, session_id, refresh)?;
+    let pull_requests = views
+        .into_iter()
+        .map(github_wire)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(wire::GithubSessionPrsResult { pull_requests })
+}
+
+/// Attach a chat to a pull request the user named explicitly. Verification is
+/// server-side and repository-scoped; the client cannot bind an arbitrary PR.
+pub fn github_attach_pr(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    reference: &str,
+) -> Result<wire::GithubAttachPrResult, BridgeError> {
+    let reference = crate::session_prs::parse_attach_reference(reference)?;
+    let view = crate::session_prs::attach(core, session_id, &reference, crate::session_prs::ATTRIBUTION_MANUAL)?;
+    Ok(wire::GithubAttachPrResult {
+        attached: true,
+        message: format!("Attached PR #{}.", view.number),
+        pull_request: Some(github_wire(view)?),
+    })
+}
+
 pub fn github_issues(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubIssuesResult, BridgeError> {
     let path = locked_workspace_path(core, workspace_id)?;
     let issues = github_wire(core.github_surface.list_issues(Path::new(&path)).map_err(github_error)?)?;

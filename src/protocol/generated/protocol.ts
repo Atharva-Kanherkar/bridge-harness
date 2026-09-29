@@ -27,6 +27,8 @@ export type BridgeMethod =
   | "github/github_review"
   | "github/github_checkout"
   | "github/github_connect"
+  | "github/github_session_prs"
+  | "github/github_attach_pr"
   | "connectors/connector_list"
   | "connectors/connector_inbox"
   | "connectors/connector_act"
@@ -243,6 +245,8 @@ export const BRIDGE_METHODS = [
   { method: "github/github_review", domain: "github", command: "github_review" },
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
   { method: "github/github_connect", domain: "github", command: "github_connect" },
+  { method: "github/github_session_prs", domain: "github", command: "github_session_prs" },
+  { method: "github/github_attach_pr", domain: "github", command: "github_attach_pr" },
   { method: "connectors/connector_list", domain: "connectors", command: "connector_list" },
   { method: "connectors/connector_inbox", domain: "connectors", command: "connector_inbox" },
   { method: "connectors/connector_act", domain: "connectors", command: "connector_act" },
@@ -453,6 +457,7 @@ export type BridgeNotification =
   | "session-startup"
   | "github/checks_changed"
   | "github/ci_finished"
+  | "github/session_prs_changed"
   | "connectors/item_arrived"
   | "connectors/card_ready"
   | "connectors/item_resolved"
@@ -473,6 +478,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "session-startup", delivery: "transient" },
   { notification: "github/checks_changed", delivery: "transient" },
   { notification: "github/ci_finished", delivery: "transient" },
+  { notification: "github/session_prs_changed", delivery: "transient" },
   { notification: "connectors/item_arrived", delivery: "transient" },
   { notification: "connectors/card_ready", delivery: "transient" },
   { notification: "connectors/item_resolved", delivery: "transient" },
@@ -529,6 +535,8 @@ export interface BridgeMethodParams {
   "github/github_review": GithubReviewParams;
   "github/github_checkout": GithubCheckoutParams;
   "github/github_connect": GithubConnectParams;
+  "github/github_session_prs": GithubSessionPrsParams;
+  "github/github_attach_pr": GithubAttachPrParams;
   "connectors/connector_list": ConnectorListParams;
   "connectors/connector_inbox": ConnectorInboxParams;
   "connectors/connector_act": ConnectorActParams;
@@ -747,6 +755,8 @@ export interface BridgeMethodResults {
   "github/github_review": GithubReviewResult;
   "github/github_checkout": GithubCheckoutResult;
   "github/github_connect": GithubConnectResult;
+  "github/github_session_prs": GithubSessionPrsResult;
+  "github/github_attach_pr": GithubAttachPrResult;
   "connectors/connector_list": ConnectorListResult;
   "connectors/connector_inbox": ConnectorInboxResult;
   "connectors/connector_act": ConnectorActResult;
@@ -1963,6 +1973,23 @@ export interface SessionHead {
   updatedAt: string;
 }
 
+export interface SessionPullRequest {
+  attachedAt: string;
+  attribution: string;
+  checkDetails: PullRequestCheck[];
+  checks: CheckRollup;
+  error?: string | null;
+  fetchedAt?: string | null;
+  headBranch: string;
+  headSha: string;
+  isDraft: boolean;
+  number: number;
+  stale: boolean;
+  state: PullRequestState;
+  title: string;
+  url: string;
+}
+
 export interface SessionRecallHit {
   createdAt: string;
   entryId: string;
@@ -2803,6 +2830,26 @@ export interface GithubConnectResult {
   initialized: boolean;
   replacedRemote: boolean;
   repository: GithubRepository;
+}
+
+export interface GithubSessionPrsParams {
+  refresh?: boolean;
+  sessionId: string;
+}
+
+export interface GithubSessionPrsResult {
+  pullRequests: SessionPullRequest[];
+}
+
+export interface GithubAttachPrParams {
+  reference: string;
+  sessionId: string;
+}
+
+export interface GithubAttachPrResult {
+  attached: boolean;
+  message: string;
+  pullRequest?: SessionPullRequest | null;
 }
 
 export interface ConnectorListParams {

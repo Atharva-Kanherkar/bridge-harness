@@ -17,7 +17,7 @@ use crate::{
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
     prompts, prompt_mutations, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
-    session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
+    session_prs, session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator, worktree_registry,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
@@ -3421,6 +3421,12 @@ fn handle_agent_value_timed(
                     }
                     state.events.publish(CoreEvent::Agent(event));
                 }
+            }
+            // A finished `gh pr create` links this chat to its PR. Detection
+            // only candidates; `session_prs::attach` verifies repository and
+            // head against the workspace before anything persists.
+            if normalized_event.kind == "command.completed" && !suppress_checkpoint_frame {
+                session_prs::detect_pull_request_creation(core, session_id, &normalized_event);
             }
             if own_depth > 0 && !suppress_checkpoint_frame {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {

@@ -42,6 +42,7 @@ const PR_LIST_BASE_FIELDS: &str = "number,title,state,isDraft,author,headRefName
 const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,headRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
 const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url,comments,labels,commits,additions,deletions,changedFiles";
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
+const PR_BRIEF_FIELDS: &str = "number,title,state,isDraft,headRefName,headRefOid,url";
 const PR_HEAD_FIELDS: &str = "headRefOid";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
 const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
@@ -449,6 +450,7 @@ enum Resource {
     PollingPullRequests,
     PullRequest(u64),
     PullRequestFiles(u64),
+    PullRequestBrief(u64),
     Checks(u64),
     ReviewThreads(u64),
     Issues,
@@ -467,11 +469,28 @@ enum CachedResource {
     PullRequests(Vec<PullRequestSummary>),
     PullRequest(PullRequestDetail),
     PullRequestFiles(Vec<PullRequestFile>),
+    PullRequestBrief(Box<PullRequestBrief>),
     Checks(Vec<PullRequestCheck>),
     ReviewThreads(Vec<ReviewThread>),
     Issues(Vec<IssueSummary>),
     Issue(IssueDetail),
     RepositoryOverview(RepositoryOverview),
+}
+
+/// The cheap identity-plus-state read behind the in-chat PR card. Unlike the
+/// list reads, `pr view` answers for open, closed, and merged pull requests,
+/// which is what lets a card survive its PR leaving the open list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestBrief {
+    pub number: u64,
+    pub title: String,
+    pub state: PullRequestState,
+    pub is_draft: bool,
+    pub head_branch: String,
+    pub head_sha: String,
+    pub url: String,
+    pub repository: GithubRepository,
 }
 
 #[derive(Debug, Clone)]
@@ -994,6 +1013,63 @@ impl GithubSurface {
         Ok(overview)
     }
 
+    /// The light per-PR read for attached-chat cards: identity, state, and
+    /// head. `gh pr view` covers open, closed, and merged pull requests, so a
+    /// card never depends on the open-only list.
+    pub fn pr_brief(
+        &self,
+        workspace: &Path,
+        number: u64,
+    ) -> Result<PullRequestBrief, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let key = CacheKey {
+            repository: repository.selector(),
+            resource: Resource::PullRequestBrief(number),
+        };
+        if let Some(CachedResource::PullRequestBrief(brief)) = self.cached(&key) {
+            return Ok(*brief);
+        }
+        let bytes = self.run_gh(
+            workspace,
+            "pr brief",
+            &[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repository.selector(),
+                "--json".into(),
+                PR_BRIEF_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let raw: RawPullRequestBrief = parse_json("pull-request brief", &bytes)?;
+        if raw.number == 0 {
+            return Err(malformed("pull-request brief", "number was missing"));
+        }
+        let brief = PullRequestBrief {
+            number: raw.number,
+            title: raw.title,
+            state: parse_pull_request_state(&raw.state)?,
+            is_draft: raw.is_draft,
+            head_branch: raw.head_ref_name,
+            head_sha: raw.head_ref_oid,
+            url: raw.url,
+            repository,
+        };
+        self.store(key, CachedResource::PullRequestBrief(Box::new(brief.clone())));
+        Ok(brief)
+    }
+
+    pub fn invalidate_brief(&self, workspace: &Path, number: u64) {
+        if let Ok(repository) = self.resolve_repository(workspace) {
+            self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&CacheKey {
+                repository: repository.selector(), resource: Resource::PullRequestBrief(number),
+            });
+        }
+    }
+
     pub fn pr_checks(
         &self,
         workspace: &Path,
@@ -1506,6 +1582,7 @@ impl GithubSurface {
             Resource::PollingPullRequests,
             Resource::PullRequest(number),
             Resource::PullRequestFiles(number),
+            Resource::PullRequestBrief(number),
             Resource::Checks(number),
             Resource::ReviewThreads(number),
             Resource::Issues,
@@ -1661,6 +1738,24 @@ struct RawPullRequestDetail {
     additions: u64,
     deletions: u64,
     changed_files: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPullRequestBrief {
+    #[serde(default)]
+    number: u64,
+    #[serde(default)]
+    title: String,
+    state: String,
+    #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
+    head_ref_name: String,
+    #[serde(default)]
+    head_ref_oid: String,
+    #[serde(default)]
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]

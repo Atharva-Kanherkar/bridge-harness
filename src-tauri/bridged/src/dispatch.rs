@@ -110,6 +110,14 @@ pub fn dispatch(
             let p: wire::GithubConnectParams = decode(method, params)?;
             reply(api::github_connect(core, &p.workspace_id, &p.remote_url))
         }
+        MethodName::GithubSessionPrs => {
+            let p: wire::GithubSessionPrsParams = decode(method, params)?;
+            reply(api::github_session_prs(core, &p.session_id, p.refresh))
+        }
+        MethodName::GithubAttachPr => {
+            let p: wire::GithubAttachPrParams = decode(method, params)?;
+            reply(api::github_attach_pr(core, &p.session_id, &p.reference))
+        }
 
         MethodName::AddProject => {
             let p: wire::AddProjectParams = decode(method, params)?;

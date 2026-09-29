@@ -1345,10 +1345,15 @@ fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option
     Some(event)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ClaudeToolCall {
     family: ClaudeToolFamily,
     started_at: Instant,
+    /// The Bash command, kept so the completion event can name it — the
+    /// `tool_result` half of the pair carries only output, and features that
+    /// react to a finished command (PR creation detection, for one) need the
+    /// command itself at completion time.
+    command: Option<String>,
 }
 
 /// The normalized item family a Claude tool name belongs to. Mirrors the
@@ -1436,9 +1441,10 @@ fn claude_tool_started(
         .or_insert(ClaudeToolCall {
             family,
             started_at: now,
+            command: None,
         });
     let mut event = with_data(&family.kind("started"), message, block.clone());
-    event.item_id = Some(tool_id);
+    event.item_id = Some(tool_id.clone());
     event.title = Some(name.to_owned());
     event.status = Some("inProgress".into());
     event.data["phase"] = Value::String(phase.as_str().to_owned());
@@ -1450,6 +1456,9 @@ fn claude_tool_started(
                 // matching the Codex commandExecution title.
                 event.data["command"] = Value::String(command.to_owned());
                 event.title = Some(command.to_owned());
+                if let Some(call) = state.tool_calls.get_mut(&tool_id) {
+                    call.command = Some(command.to_owned());
+                }
             }
         }
         ClaudeToolFamily::FileChange => {
@@ -1897,6 +1906,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     .to_owned();
                 let call = state.tool_calls.remove(&tool_id);
                 let family = call
+                    .as_ref()
                     .map(|call| call.family)
                     .unwrap_or(ClaudeToolFamily::Tool);
                 let mut event = with_data(&family.kind("completed"), message, part.clone());
@@ -1905,6 +1915,12 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     // Host-side wall time between tool_use and tool_result.
                     event.data["durationMs"] =
                         json!(u64::try_from(call.started_at.elapsed().as_millis()).unwrap_or(0));
+                    if let Some(command) = call.command {
+                        // `tool_result` carries only output; reattach the
+                        // command so completion-time consumers (PR creation
+                        // detection) see the same pair the started card did.
+                        event.data["command"] = Value::String(command);
+                    }
                 }
                 event.status = Some(
                     if part
@@ -3243,6 +3259,27 @@ mod tests {
         // composing the call.
         let duration = completed[0].data["durationMs"].as_u64().unwrap();
         assert!(duration < 40, "duration {duration}ms includes argument streaming");
+    }
+
+    #[test]
+    fn claude_completion_reattaches_the_command_from_the_started_call() {
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(
+            &json!({
+                "type":"assistant",
+                "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create --fill"}}]}
+            }),
+            &mut state,
+        );
+        let completed = normalize_claude_message_with_state(
+            &json!({
+                "type":"user",
+                "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"https://github.com/o/r/pull/1"}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(completed[0].kind, "command.completed");
+        assert_eq!(completed[0].data["command"], "gh pr create --fill");
     }
 
     #[test]
