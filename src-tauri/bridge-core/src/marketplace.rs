@@ -16,6 +16,7 @@ use std::{
 const CODEX_APP_CONNECTOR: &str = "app";
 const MCP_CONNECTOR: &str = "mcp";
 const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(75);
+const CATALOG_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const CLAUDE_MCP_STATUS_TIMEOUT: Duration = Duration::from_secs(20);
 const CLAUDE_MCP_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_PLUGIN_LOGO_BYTES: u64 = 512 * 1024;
@@ -143,10 +144,14 @@ pub struct CapabilityDiscoveryDiagnostic {
 
 pub fn catalog() -> MarketplaceCatalog {
     MarketplaceCatalog {
-        providers: [MarketplaceProvider::Codex, MarketplaceProvider::Claude]
-            .into_iter()
-            .map(provider_catalog)
-            .collect(),
+        providers: std::thread::scope(|scope| {
+            let handles = [MarketplaceProvider::Codex, MarketplaceProvider::Claude]
+                .map(|provider| scope.spawn(move || provider_catalog(provider)));
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .collect()
+        }),
     }
 }
 
@@ -302,7 +307,7 @@ fn provider_catalog(provider: MarketplaceProvider) -> ProviderCatalog {
     let mut variants = BTreeMap::<String, PluginVariant>::new();
     let mut failures = Vec::new();
     for args in commands {
-        match Command::new(&binary_path).args(*args).output() {
+        match bounded_output(&binary_path, args, CATALOG_LIST_TIMEOUT) {
             Ok(output) if output.status.success() => {
                 match serde_json::from_slice::<Value>(&output.stdout) {
                     Ok(value) => {

@@ -245,6 +245,7 @@ function PluginMarketplace() {
   const [targets, setTargets] = useState<Record<string, InstallTarget>>({});
   const [results, setResults] = useState<Record<string, MarketplaceActionResult[]>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const [authFailed, setAuthFailed] = useState(false);
   const appStatesRef = useRef<MarketplaceAppAuthState[]>();
   const resolvedRef = useRef<MarketplaceCatalog>();
@@ -257,7 +258,7 @@ function PluginMarketplace() {
     catch { setAuthFailed(true); }
     finally { authRefreshBusy.current = false; }
   }, []);
-  const refresh = useCallback(async () => { setLoading(true); try { setCatalog(await bridgeApi.marketplaceCatalog()); } finally { setLoading(false); } }, []);
+  const refresh = useCallback(async () => { setLoading(true); try { setCatalog(await bridgeApi.marketplaceCatalog()); setCatalogFailed(false); } catch { setCatalogFailed(true); } finally { setLoading(false); } }, []);
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     void refreshAuth();
@@ -362,6 +363,7 @@ function PluginMarketplace() {
       {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
       {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<button type="button" onClick={() => void refreshAuth()} className="font-medium text-foreground transition-colors hover:underline">Retry</button></p>}
       {loading && !catalog && <PluginListSkeleton />}
+      {catalogFailed && !loading && !catalog && <p role="status" className="mt-5 flex items-center gap-2 text-[12px] text-warning"><AlertCircle size={12} aria-hidden="true" />Plugins could not be loaded. Use refresh to try again.</p>}
 
       {!!resolved && <>
         <div className="mt-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
