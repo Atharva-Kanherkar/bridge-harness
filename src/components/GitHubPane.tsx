@@ -33,6 +33,8 @@ import {
   Tag,
   TriangleAlert,
   X,
+  MessageSquarePlus,
+  MessageSquareDot,
 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
@@ -170,6 +172,35 @@ const HEADER_ICON =
 
 /** Open something on github.com. Always an anchor, never a button dressed as
  * one, so the webview's own "copy link" still works. */
+/** Pin this PR to the current chat as a live status card. The server verifies
+ * the PR belongs to the chat's repository before anything persists. */
+function ShowInChat({ sessionId, url, number }: { sessionId: string; url: string; number: number }) {
+  const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
+  const [message, setMessage] = useState<string>();
+  useEffect(() => { setState("idle"); setMessage(undefined); }, [sessionId, number]);
+  const pin = async () => {
+    setState("busy");
+    try {
+      const result = await bridgeApi.githubAttachPr(sessionId, url);
+      setState("done"); setMessage(result.message);
+    } catch (value) {
+      setState("error"); setMessage(errorMessage(value));
+    }
+  };
+  const Icon = state === "done" ? MessageSquareDot : MessageSquarePlus;
+  const label = state === "done" ? `#${number} is shown in this chat` : state === "error" ? `Could not show #${number} in this chat: ${message}` : `Show #${number} as a live card in this chat`;
+  return <button
+    type="button"
+    onClick={() => void pin()}
+    disabled={state === "busy" || state === "done"}
+    aria-label={label}
+    title={label}
+    className={cn("inline-grid size-7 place-items-center rounded-md transition-colors hover:bg-accent disabled:cursor-default", state === "done" ? "text-success" : state === "error" ? "text-destructive" : "text-muted-foreground hover:text-foreground")}
+  >
+    <Icon size={13} aria-hidden="true" className={cn(state === "busy" && "github-check-live")} />
+  </button>;
+}
+
 function OpenOnGithub({ url, what, className }: { url: string; what: string; className?: string }) {
   return <a
     href={url}
@@ -1120,6 +1151,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           <span className="truncate">by {summary.author?.login ?? "ghost"}</span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
           <span className="ml-auto flex shrink-0 items-center">
+            {sessionId && <ShowInChat sessionId={sessionId} url={summary.url} number={summary.number} />}
             <CopyButton value={summary.url} label={`Copy the link to #${summary.number}`} />
             <OpenOnGithub url={summary.url} what={`#${summary.number}`} />
           </span>

@@ -51,6 +51,9 @@ import type {
   GithubReviewResult,
   GithubCheckoutResult,
   GithubConnectResult,
+  GithubAttachPrResult,
+  GithubSessionPrsResult,
+  SessionPullRequest,
   SearchGithubReposResult,
   GithubChecksResult,
   GithubIssueResult,
@@ -166,6 +169,7 @@ const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
 type GithubChecksChangedPayload = { workspaceId: string; number: number };
 const githubCiListeners = new Set<(payload: GithubCiFinishedPayload) => void>();
+const sessionPrListeners = new Set<(payload: { sessionId: string }) => void>();
 // Browser-mode stand-in for the daemon's global `agent-event` fan-out. Every
 // surface that renders live turns (the aside panel above all — its optimistic
 // pending rows reconcile only against this stream) subscribes here outside
@@ -1297,6 +1301,14 @@ export const bridgeApi = {
     isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>
     isTauri() ? call("github/github_connect", { workspaceId, remoteUrl }) : Promise.resolve(mockGithubConnect(remoteUrl)),
+  /** The PRs attached to one chat, newest first. `refresh` bypasses the short
+   * server caches — a reopened chat or a manual retry. */
+  githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
+    isTauri() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
+  /** Attach a chat to a PR by URL or number; verified server-side against the
+   * chat's workspace repository. */
+  githubAttachPr: (sessionId: string, reference: string): Promise<GithubAttachPrResult> =>
+    isTauri() ? call("github/github_attach_pr", { sessionId, reference }) : mockGithubAttachPr(sessionId, reference),
   searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>
     isTauri() ? call("workspaces/search_github_repos", { query }) : Promise.resolve(mockSearchGithubRepos(query)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
@@ -2639,6 +2651,11 @@ export const bridgeApi = {
     if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
   },
+  onGithubSessionPrsChanged: async (handler: (payload: { sessionId: string }) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<{ sessionId: string }>("github/session_prs_changed", handler);
+    sessionPrListeners.add(handler);
+    return () => sessionPrListeners.delete(handler);
+  },
   onGithubCiFinished: async (handler: (payload: GithubCiFinishedPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<GithubCiFinishedPayload>("github/ci_finished", handler);
     githubCiListeners.add(handler);
@@ -2725,6 +2742,58 @@ const mockGithubConnect = (remoteUrl: string): GithubConnectResult => {
   const [owner = "bridge", name = "harness"] = remoteUrl.replace(/\.git$/, "").replace(/\/$/, "").split(/[/:]/).slice(-2);
   return { repository: { host: "github.com", owner, name }, initialized: false, replacedRemote: false };
 };
+// Browser-mode chat PRs. Each attached PR runs a simulated CI: checks start
+// queued, move through running, and settle a few seconds apart, so the card's
+// live states are visible in `bun run dev` without GitHub. Append
+// `?mockChatPrs` to the URL to seed every chat with a PR.
+const mockChatPrs = new Map<string, { pr: SessionPullRequest; startedAt: number; failing: boolean }[]>();
+const MOCK_CHECKS: ReadonlyArray<[string, string, number]> = [
+  ["typecheck", "CI", 2_000], ["lint", "CI", 3_500], ["unit tests", "CI", 9_000],
+  ["rust (macos)", "Rust", 14_000], ["bundle size", "Size", 6_000], ["e2e smoke", "E2E", 18_000],
+];
+function mockChatPrView(entry: { pr: SessionPullRequest; startedAt: number; failing: boolean }): SessionPullRequest {
+  const elapsed = Date.now() - entry.startedAt;
+  const checkDetails = MOCK_CHECKS.map(([name, workflow, finishesAt], index): SessionPullRequest["checkDetails"][number] => {
+    if (elapsed < 800 + index * 250) return { name, workflow, status: "queued", conclusion: null, logUrl: "" };
+    if (elapsed < finishesAt) return { name, workflow, status: "inProgress", conclusion: null, logUrl: "" };
+    const failed = entry.failing && name === "unit tests";
+    return { name, workflow, status: "completed", conclusion: failed ? "failure" : "success", logUrl: `${entry.pr.url}/checks` };
+  });
+  const checks = { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 };
+  for (const check of checkDetails) {
+    checks.total += 1;
+    if (check.status === "queued") checks.queued += 1;
+    else if (check.status === "inProgress") checks.inProgress += 1;
+    else if (check.conclusion === "failure") checks.failed += 1;
+    else checks.passed += 1;
+  }
+  return { ...entry.pr, checks, checkDetails, fetchedAt: new Date().toISOString() };
+}
+function mockGithubSessionPrs(sessionId: string): GithubSessionPrsResult {
+  if (!mockChatPrs.has(sessionId) && typeof location !== "undefined" && new URLSearchParams(location.search).has("mockChatPrs")) {
+    mockChatPrs.set(sessionId, [mockChatPrEntry(341, "Show live pull request status in the originating chat", false)]);
+  }
+  return { pullRequests: (mockChatPrs.get(sessionId) ?? []).map(mockChatPrView) };
+}
+function mockChatPrEntry(number: number, title: string, failing: boolean) {
+  const url = `https://github.com/Atharva-Kanherkar/bridge-harness/pull/${number}`;
+  const at = new Date().toISOString();
+  const pr: SessionPullRequest = {
+    number, title, url, state: "open", isDraft: false, headBranch: "feat/pr-status-in-chat", headSha: "e3ad782c0ffee",
+    checks: { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 },
+    checkDetails: [], attribution: "manual", attachedAt: at, fetchedAt: at, stale: false, error: null,
+  };
+  return { pr, startedAt: Date.now(), failing };
+}
+async function mockGithubAttachPr(sessionId: string, reference: string): Promise<GithubAttachPrResult> {
+  const match = reference.trim().match(/(?:\/pull\/|^#?)(\d+)\/?$/);
+  const number = match ? Number(match[1]) : 0;
+  if (!number) throw new Error("Paste a pull request URL like https://github.com/owner/repo/pull/123, or a PR number.");
+  const entry = mockChatPrEntry(number, `Mock pull request #${number}`, number % 2 === 0);
+  mockChatPrs.set(sessionId, [entry, ...(mockChatPrs.get(sessionId) ?? []).filter(existing => existing.pr.number !== number)]);
+  for (const listener of sessionPrListeners) listener({ sessionId });
+  return { attached: true, message: `Attached PR #${number}.`, pullRequest: mockChatPrView(entry) };
+}
 const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
 const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
   confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };

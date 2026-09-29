@@ -39,6 +39,7 @@ import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
+import { ChatPullRequestCards, ChatPullRequestStrip, jumpToChatPullRequests, useChatPullRequests, useInView } from "./components/ChatPullRequests";
 import { GitplaceScreen } from "./components/GitplaceScreen";
 import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
@@ -793,6 +794,10 @@ function AppContent() {
   function openPullRequestPane(number: number) {
     openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
+
+  // The PRs this chat opened (or had attached), kept live after the turn ends.
+  const chatPrs = useChatPullRequests(session?.id, workspace?.id);
+  const [chatPrAnchor, chatPrsInView] = useInView();
 
   // Which repository a workspace is on is read when the link is clicked and
   // again when the reader confirms the inline destination. The pane resolves
@@ -2975,9 +2980,18 @@ function AppContent() {
                   leafEntryIds={forest?.leaves.map(entry => entry.id)}
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
+                  trailing={<ChatPullRequestCards
+                    prs={chatPrs.prs}
+                    refreshing={chatPrs.refreshing}
+                    onRetry={() => void chatPrs.reload(true)}
+                    onAttach={chatPrs.attach}
+                    onOpenPane={hasRepo ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
+                    anchorRef={chatPrAnchor}
+                  />}
                 />
               </div>
               <div className="relative z-10 flex-none safe-bottom">
+                <ChatPullRequestStrip prs={chatPrs.prs} hidden={chatPrsInView} onJump={jumpToChatPullRequests} />
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
