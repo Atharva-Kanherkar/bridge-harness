@@ -45,7 +45,10 @@ impl CloneBrowserTool {
     pub fn new(supervisor: Arc<CloneSupervisor>, directory: PathBuf) -> std::io::Result<Arc<Self>> {
         fs::create_dir_all(&directory)?;
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        let socket = directory.join(format!("clone-{}.sock", Uuid::new_v4()));
+        // A short socket name: the full path must clear SUN_LEN (~104 bytes on
+        // macOS), so the caller should pass a short directory and the file name
+        // stays small too.
+        let socket = directory.join(format!("c{}.sock", &Uuid::new_v4().simple().to_string()[..10]));
         let listener = UnixListener::bind(&socket)?;
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
         let tool = Arc::new(Self {
@@ -100,6 +103,13 @@ impl CloneBrowserTool {
         fs::write(&path, script).ok()?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
         Some(format!("Bridge clone browser tool: {}. Use one JSON argument. Kinds: inspect, screenshot, click(x,y), type(text), scroll(x,y), navigate(url), focus(nodeId), result(commandId). Approved domain: {domain}.", path.display()))
+    }
+
+    /// The unix socket the tool script talks to. The orchestrator's end-to-end
+    /// test connects here directly to exercise the agent-facing path.
+    #[cfg(test)]
+    pub(crate) fn socket_path(&self) -> &std::path::Path {
+        &self.socket
     }
 
     pub fn revoke_session(&self, session: &str) {
@@ -210,12 +220,12 @@ impl CloneBrowserTool {
         let (method, params) = command(&request, &domain)?;
         let mut result = self
             .supervisor
-            .tool_call(&clone_id, method, params)
+            .page_call(&clone_id, method, params)
             .map_err(|_| "browser command failed".to_owned())?;
         if request.get("kind").and_then(Value::as_str) == Some("click") {
             let release = json!({"type":"mouseReleased","x":request["x"],"y":request["y"],"button":"left","clickCount":1});
             self.supervisor
-                .tool_call(&clone_id, "Input.dispatchMouseEvent", release)
+                .page_call(&clone_id, "Input.dispatchMouseEvent", release)
                 .map_err(|_| "browser command failed".to_owned())?;
         }
         guard

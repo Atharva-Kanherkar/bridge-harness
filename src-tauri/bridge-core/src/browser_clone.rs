@@ -372,6 +372,11 @@ fn launch_args(profile: &Path, headless: bool) -> Vec<String> {
         "--disable-component-update".to_owned(),
         "--disable-breakpad".to_owned(),
         format!("--disk-cache-size={DISK_CACHE_BYTES}"),
+        // Chrome 137 removed --load-extension from branded builds; loading the
+        // code under test into the clone goes through the Extensions.loadUnpacked
+        // CDP command instead, which this flag enables. It only affects this
+        // throwaway process, never the user's browser.
+        "--enable-unsafe-extension-debugging".to_owned(),
     ];
     if headless {
         args.push("--headless=new".to_owned());
@@ -929,6 +934,11 @@ struct LiveClone {
     /// session secrets. The egress proxy shuts down when this clone drops.
     guard: Option<Arc<Mutex<GuardState>>>,
     _proxy: Option<Arc<EgressProxy>>,
+    /// The CDP session of the clone's primary page target, attached lazily the
+    /// first time a page-scoped command runs. Page commands (screenshot, input,
+    /// accessibility, navigate) need a page session; the browser endpoint cannot
+    /// serve them.
+    page_session: Mutex<Option<String>>,
 }
 
 /// Owns every clone this process started. Independent of
@@ -954,6 +964,33 @@ impl CloneSupervisor {
             Box::new(RamDisk),
             CloneConfig::from_env(),
         )
+    }
+
+    /// A supervisor whose clones are always guarded: launched behind the egress
+    /// proxy with the request checker armed. This is what the orchestrator uses,
+    /// because a clone that will hold a real session must never be unguarded.
+    pub fn guarded(ledger_path: PathBuf) -> Arc<Self> {
+        Self::with_parts(
+            ledger_path,
+            std::env::temp_dir().join(MOUNTS_DIR_NAME),
+            Box::new(RamDisk),
+            CloneConfig {
+                guarded: true,
+                ..CloneConfig::from_env()
+            },
+        )
+    }
+
+    /// A supervisor on a real RAM disk with an explicit mounts dir and config.
+    /// For the orchestrator's live end-to-end test, which needs a guarded,
+    /// headless clone under a temp mounts dir it can assert on.
+    #[doc(hidden)]
+    pub fn with_ram_disk(
+        ledger_path: PathBuf,
+        mounts_dir: PathBuf,
+        config: CloneConfig,
+    ) -> Arc<Self> {
+        Self::with_parts(ledger_path, mounts_dir, Box::new(RamDisk), config)
     }
 
     fn with_parts(
@@ -1034,6 +1071,7 @@ impl CloneSupervisor {
             mount: mount.clone(),
             guard: guard.clone(),
             _proxy: proxy,
+            page_session: Mutex::new(None),
         };
         if let Err(error) = self.ledger.upsert(LedgerRecord {
             pid: Some(pid),
@@ -1102,6 +1140,71 @@ impl CloneSupervisor {
         params: Value,
     ) -> Result<Value, CloneError> {
         self.pipe(clone_id)?.call(method, params, self.config.call_timeout)
+    }
+
+    /// Run a page-scoped CDP command against the clone's primary page target.
+    /// Attaches to a page target on first use (screenshot, input, accessibility,
+    /// navigate all need a page session; the browser endpoint cannot serve
+    /// them). The agent tool and the live frame go through here.
+    pub(crate) fn page_call(
+        &self,
+        clone_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, CloneError> {
+        let session = self.ensure_page_session(clone_id)?;
+        self.pipe(clone_id)?
+            .request(Some(&session), method, params, self.config.call_timeout)
+    }
+
+    /// The clone's primary page-target session, created and attached the first
+    /// time it is needed.
+    fn ensure_page_session(&self, clone_id: &str) -> Result<String, CloneError> {
+        if let Some(existing) = self
+            .clones
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(clone_id)
+            .and_then(|clone| clone.page_session.lock().unwrap_or_else(|p| p.into_inner()).clone())
+        {
+            return Ok(existing);
+        }
+        let pipe = self.pipe(clone_id)?;
+        let target = pipe.call(
+            "Target.createTarget",
+            json!({ "url": "about:blank" }),
+            self.config.call_timeout,
+        )?;
+        let target_id = target
+            .get("targetId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CloneError::Cdp {
+                method: "Target.createTarget".into(),
+                message: "no targetId".into(),
+            })?;
+        let attached = pipe.call(
+            "Target.attachToTarget",
+            json!({ "targetId": target_id, "flatten": true }),
+            self.config.call_timeout,
+        )?;
+        let session = attached
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CloneError::Cdp {
+                method: "Target.attachToTarget".into(),
+                message: "no sessionId".into(),
+            })?
+            .to_owned();
+        let _ = pipe.request(Some(&session), "Page.enable", json!({}), self.config.call_timeout);
+        if let Some(clone) = self
+            .clones
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(clone_id)
+        {
+            *clone.page_session.lock().unwrap_or_else(|p| p.into_inner()) = Some(session.clone());
+        }
+        Ok(session)
     }
 
     /// Inject `cookies` into the clone as session cookies. They are readable

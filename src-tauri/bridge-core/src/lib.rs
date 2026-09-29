@@ -40,6 +40,10 @@ pub mod browser_clone_signin;
 /// guarded clone. No cookie, storage, or eval kind exists on it.
 #[cfg(target_os = "macos")]
 pub mod clone_browser_tool;
+/// Composes the clone process, guard, sign-in, and agent tool into the
+/// actual flow: approve, spawn, sign in, arm, drive, and destroy.
+#[cfg(target_os = "macos")]
+pub mod clone_orchestrator;
 pub mod builtin_compatibility;
 pub mod capability_projection;
 pub mod check_runner;
