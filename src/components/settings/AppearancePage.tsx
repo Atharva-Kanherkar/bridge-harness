@@ -9,7 +9,7 @@
 import type { ReactNode } from "react";
 import { useThemePreference, type EffortSelectorStyle, type ThemePreference, type ThemeSkin } from "../../theme";
 import { useShowWorkerChatsInMissionControl } from "../../missionControlSettings";
-import { useShowThinking } from "../../transcriptSettings";
+import { useAutoExpandEditActivity, useShowThinking } from "../../transcriptSettings";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
 import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
@@ -119,6 +119,7 @@ export function AppearancePage() {
   const { preference, resolved, setPreference, skin, setSkin, effortSelector, setEffortSelector } = useThemePreference();
   const [showWorkerChats, setShowWorkerChats] = useShowWorkerChatsInMissionControl();
   const [showThinking, setShowThinking] = useShowThinking();
+  const [autoExpandEditActivity, setAutoExpandEditActivity] = useAutoExpandEditActivity();
   const [zoom, setZoom] = useZoomLevel();
   return <SettingsPage
     title="Appearance"
@@ -138,6 +139,11 @@ export function AppearancePage() {
         label="Show thinking"
         description="Off hides the model's reasoning text. A thought still pulses while it streams; a finished thought draws nothing."
         control={<Switch label="Show thinking" checked={showThinking} onChange={setShowThinking} />}
+      />
+      <SettingsRow
+        label="Open edit activity automatically"
+        description="Off by default. Short Activity sections with a file diff stay collapsed until you click them. Turn this on to open them automatically."
+        control={<Switch label="Open edit activity automatically" checked={autoExpandEditActivity} onChange={setAutoExpandEditActivity} />}
       />
     </SettingsGroup>
     <SettingsGroup label="Mission Control">

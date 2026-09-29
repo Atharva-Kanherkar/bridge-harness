@@ -119,10 +119,11 @@ Four faults compound, and only the first is visible:
    across the live-to-complete transition, so a group the reader opened stays
    open and a group they closed stays closed.
 
-   *Bounded exception, kept deliberately:* a run of at most three tool calls
-   that carries a patch still opens itself. The repo's inline-diff doctrine —
-   "what the model wrote is the most important thing on the screen", locked by
-   four cases in `AgentConversation.transcript.test.tsx` — is not worth losing
+   *Bounded exception, now optional:* when the reader enables automatic edit
+   activity expansion in Appearance → Transcript, a run of at most three tool
+   calls that carries a patch opens itself. This preference is off by default.
+   The repo's inline-diff doctrine — "what the model wrote is the most important
+   thing on the screen", covered by `AgentConversation.transcript.test.tsx` — is not worth losing
    to fix a flood, and the bound is what makes it safe: past three calls the
    run is exactly the thing that must not open itself. `SELF_OPENING_STEPS`
    names it.

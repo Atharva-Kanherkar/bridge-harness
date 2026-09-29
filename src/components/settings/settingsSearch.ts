@@ -38,6 +38,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "appearance", label: "Shell", description: "Solid or Cursor translucency" },
   { section: "appearance", label: "Thinking control", description: "Slider, Sentence, or List effort picker" },
   { section: "appearance", label: "Show thinking", description: "Draw or hide the model's reasoning text in the transcript" },
+  { section: "appearance", label: "Open edit activity automatically", description: "Open short Activity sections with file diffs in the transcript" },
 
   { section: "permissions", label: "Auto-approve provider permissions", description: "Accept provider permission requests automatically" },
   { section: "permissions", label: "Worker write scope", description: "Always asks, whatever the switch says" },

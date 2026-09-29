@@ -117,11 +117,11 @@ something.
    emits one. Where a protocol reports no durations at all, the trailer is
    absent rather than zero, on the same rule as the exit code: a field the
    protocol does not have is not reported as a value.
-4. **A completed group is collapsed**, and expansion is an explicit user action.
+4. **A completed group is collapsed by default**, and expansion is an explicit user action.
    A user's choice outranks liveness: a group the reader collapsed stays
    collapsed while it is still running, and one they opened stays open after it
-   finishes. One exception, deliberate: a group holding a patch opens itself,
-   because a diff the reader has to go digging for is not an inline diff. A
+   finishes. Appearance → Transcript offers an opt-in to open short groups
+   holding a patch automatically; this is off by default. A
    settled group that failed opens on its failed rows, with the rest of the
    timeline one "Show all" click away: the reader clicking the failure marker
    wants the broken step, not the hundred that were fine.

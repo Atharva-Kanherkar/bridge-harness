@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SHOW_WORKER_CHATS_STORAGE_KEY } from "../../missionControlSettings";
-import { SHOW_THINKING_STORAGE_KEY } from "../../transcriptSettings";
+import { AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY, SHOW_THINKING_STORAGE_KEY } from "../../transcriptSettings";
 import { AppearancePage } from "./AppearancePage";
 
 let host: HTMLDivElement;
@@ -39,4 +39,16 @@ it("shows thinking by default and persists turning it off", async () => {
   await act(async () => { toggle.click(); });
   expect(toggle.getAttribute("aria-checked")).toBe("false");
   expect(localStorage.getItem(SHOW_THINKING_STORAGE_KEY)).toBe("false");
+});
+
+it("keeps edit activity collapsed by default and persists the opt-in", async () => {
+  await render();
+  const toggle = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Open edit activity automatically"]')!;
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  await act(async () => { toggle.click(); });
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+  expect(localStorage.getItem(AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY)).toBe("true");
+  await act(async () => { toggle.click(); });
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect(localStorage.getItem(AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY)).toBe("false");
 });
