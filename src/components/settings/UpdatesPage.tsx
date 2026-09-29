@@ -1,23 +1,28 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { checkForUpdate, getUpdateChannel, setUpdateChannel, type UpdateInfo } from "../../updater";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 
-export function UpdatesPage({ onUpdate }: { onUpdate: (update: UpdateInfo | undefined) => void }) {
+export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: UpdateInfo; onUpdate: (update: UpdateInfo | undefined) => void }) {
   const [channel, setChannel] = useState(getUpdateChannel);
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<string>();
+  const checkId = useRef(0);
+
+  useEffect(() => { if (availableUpdate) setMessage(undefined); }, [availableUpdate]);
 
   async function check(next = channel) {
+    const id = ++checkId.current;
     setChecking(true);
     setMessage(undefined);
     onUpdate(undefined);
     try {
       const update = await checkForUpdate(next);
-      if (update) onUpdate(update);
-      else setMessage("Bridge is up to date on this channel.");
+      if (id !== checkId.current || getUpdateChannel() !== next) return;
+      onUpdate(update ?? undefined);
+      if (!update) setMessage("Bridge is up to date on this channel.");
     } catch (error) {
-      setMessage(`Could not check for updates: ${String(error)}`);
-    } finally { setChecking(false); }
+      if (id === checkId.current && getUpdateChannel() === next) setMessage(`Could not check for updates: ${String(error)}`);
+    } finally { if (id === checkId.current) setChecking(false); }
   }
 
   function change(beta: boolean) {
@@ -33,7 +38,9 @@ export function UpdatesPage({ onUpdate }: { onUpdate: (update: UpdateInfo | unde
         control={<Switch label="Beta nightly builds" checked={channel === "beta"} onChange={change} />} />
     </SettingsGroup>
     <SettingsGroup label="Check">
-      <SettingsRow label="Check for updates" description={message ?? `Current channel: ${channel === "beta" ? "beta nightly" : "stable"}. Bridge also checks when it opens.`}
+      <SettingsRow label="Check for updates" description={availableUpdate?.channel === channel
+        ? `Bridge ${availableUpdate.version} is available on this channel.`
+        : message ?? `Current channel: ${channel === "beta" ? "beta nightly" : "stable"}. Bridge also checks when it opens.`}
         control={<button type="button" disabled={checking} onClick={() => void check()} className="rounded-lg border border-border px-3 py-1.5 text-xs text-foreground hover:bg-accent disabled:opacity-50">{checking ? "Checking…" : "Check now"}</button>} />
     </SettingsGroup>
   </SettingsPage>;
