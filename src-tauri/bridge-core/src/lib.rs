@@ -24,6 +24,10 @@ pub mod briefing_conformance;
 pub mod briefing_policy;
 pub mod build_cache;
 pub mod browser_bridge;
+/// Throwaway browser clones on a RAM disk. macOS only: it needs `hdiutil` and
+/// `diskutil`, and the attached-tab bridge above stays the cross-platform path.
+#[cfg(target_os = "macos")]
+pub mod browser_clone;
 pub mod builtin_compatibility;
 pub mod capability_projection;
 pub mod check_runner;
