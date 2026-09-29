@@ -41,6 +41,13 @@ const GENERAL_LANES: usize = 4;
 const GITHUB_LANES: usize = 2;
 const POOL_SIZE: usize = GENERAL_LANES + GITHUB_LANES;
 
+/// One more connection than the pool, carrying only the notification stream.
+/// The daemon writes a connection's frames under one writer lock, a response
+/// as a single line, so a live stream sharing an invoke lane waited behind
+/// every multi-megabyte state or forest response on it. Its 1024-frame sink
+/// overflowed behind those writes and dropped the very replies being drawn.
+const CONNECTIONS: usize = POOL_SIZE + 1;
+
 /// Bound the blocking-runtime work retained by an invoke burst. A short queue
 /// absorbs normal UI fan-out; requests beyond it fail promptly instead of
 /// retaining arbitrary payloads and blocking threads for minutes.
@@ -582,7 +589,7 @@ impl Launcher {
         let mut clients = vec![Arc::new(first)];
         // Extra pool connections are an optimization, never a requirement:
         // a daemon near its connection cap still serves us on one.
-        while clients.len() < POOL_SIZE {
+        while clients.len() < CONNECTIONS {
             match DaemonClient::connect_with_timeout(&endpoint, CONNECT_TIMEOUT) {
                 Ok(client) => clients.push(Arc::new(client)),
                 Err(_) => break,
@@ -831,14 +838,27 @@ pub fn supervise<E: Fn(&str, Value)>(
                 }
             },
         };
-        let subscription = clients[0].subscribe();
-        proxy.install(clients);
+        let (events, invokes) = split_event_connection(clients);
+        let subscription = events.subscribe();
+        proxy.install(invokes);
         if attached_before {
             emit_reconciliation(&emit);
         }
         attached_before = true;
         pump(proxy, &subscription, stop, &emit);
         proxy.invalidate_all();
+    }
+}
+
+/// The connection that carries notifications, and the ones that serve invokes.
+/// A pool that came up short still subscribes; with a single connection it
+/// shares it, exactly as before the stream had its own.
+fn split_event_connection<T: Clone>(mut clients: Vec<T>) -> (T, Vec<T>) {
+    if clients.len() > 1 {
+        let events = clients.remove(0);
+        (events, clients)
+    } else {
+        (clients[0].clone(), clients)
     }
 }
 
@@ -1183,6 +1203,18 @@ mod tests {
     }
 
     #[test]
+    fn the_event_stream_gets_its_own_connection_when_there_is_one_to_spare() {
+        let (events, invokes) = split_event_connection((0..CONNECTIONS).collect::<Vec<_>>());
+        assert_eq!(events, 0);
+        assert_eq!(invokes.len(), POOL_SIZE);
+        assert!(!invokes.contains(&events), "no invoke lane shares the stream");
+
+        // A daemon near its connection cap granted one: share it.
+        let (events, invokes) = split_event_connection(vec![7]);
+        assert_eq!((events, invokes), (7, vec![7]));
+    }
+
+    #[test]
     fn an_idle_lane_is_preferred_over_a_busy_rotation_target() {
         // Rotation points at lane 1, which is busy; lane 2 is idle.
         assert_eq!(pick_lane(&(0..4), 1, |index| index == 1), 2);
@@ -1345,7 +1377,7 @@ mod tests {
         let clients = launcher
             .ensure()
             .expect("attach-only clients accept the running build");
-        assert_eq!(clients.len(), POOL_SIZE);
+        assert_eq!(clients.len(), CONNECTIONS);
         drop(clients);
         drop(launcher);
         daemon.assert_untouched();
