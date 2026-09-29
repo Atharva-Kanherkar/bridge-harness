@@ -28,6 +28,10 @@ pub mod browser_bridge;
 /// `diskutil`, and the attached-tab bridge above stays the cross-platform path.
 #[cfg(target_os = "macos")]
 pub mod browser_clone;
+/// Two-layer containment for a browser clone: a request checker on the CDP
+/// Fetch domain and a local egress proxy. Shares an allow list with the clone.
+#[cfg(target_os = "macos")]
+pub mod browser_clone_guard;
 pub mod builtin_compatibility;
 pub mod capability_projection;
 pub mod check_runner;
