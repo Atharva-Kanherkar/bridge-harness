@@ -2205,6 +2205,7 @@ mod tests {
             ("gpt-6-luna", "GPT-6-Luna", CapabilityTier::Fast),
             ("claude-haiku-4-5", "Haiku 4.5", CapabilityTier::Fast),
             ("claude-sonnet-5", "Sonnet 5", CapabilityTier::Standard),
+            ("claude-sonnet-5-5", "Sonnet 5.5", CapabilityTier::Standard),
         ] {
             assert_eq!(inferred_tier(id, label), expected, "{id}");
         }
