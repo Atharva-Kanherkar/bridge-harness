@@ -297,8 +297,15 @@ describe("GitHubPane", () => {
     await act(async () => { root?.unmount(); }); host?.remove();
 
     statusSpy.mockResolvedValue({ availability: { status: "notAuthenticated", remediation: "gh auth login" }, repository: null });
+    const login = vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: "github" });
     await mount();
-    expect(host!.textContent).toContain("gh auth login");
+    expect(host!.textContent).toContain("Sign in to GitHub");
+    expect(host!.textContent).not.toContain("in a terminal");
+    const signIn = [...host!.querySelectorAll("button")].find(button => button.textContent === "Sign in to GitHub") as HTMLButtonElement;
+    await click(signIn);
+    await act(async () => { await Promise.resolve(); });
+    expect(login).toHaveBeenCalledWith("github");
+    expect(host!.querySelector('[aria-label="GitHub sign-in"]')).not.toBeNull();
     await act(async () => { root?.unmount(); }); host?.remove();
 
     statusSpy.mockResolvedValue(status);

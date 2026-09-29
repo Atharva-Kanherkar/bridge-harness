@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ExternalLink, LoaderCircle, ShieldCheck, Terminal } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { UsageProvider } from "../usage";
-import { plainProviderLoginOutput, providerLoginUrl } from "../providerLoginPresentation";
+import { plainProviderLoginOutput, providerLoginCode, providerLoginUrl } from "../providerLoginPresentation";
 
-export function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider; label: string; onClose: () => void }) {
+export function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider | "github"; label: string; onClose: () => void }) {
   const [output, setOutput] = useState("");
   const [entry, setEntry] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +58,7 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
   };
   const cleanOutput = plainProviderLoginOutput(output);
   const loginUrl = providerLoginUrl(output);
+  const loginCode = providerLoginCode(output);
   return <section className="u-glass-soft mt-3 overflow-hidden rounded-xl border border-border-card" aria-label={`${label} sign-in`}>
     <header className="flex items-center gap-3 border-b border-border-card px-4 py-3">
       <span className="grid size-9 shrink-0 place-items-center rounded-xl border border-border-card bg-background text-foreground">
@@ -75,6 +76,7 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-medium text-foreground">Finish in your browser</p>
           <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{loginUrl ? "The provider is ready for authorization. Bridge will detect completion automatically." : `Waiting for ${label} to open its secure sign-in page…`}</p>
+          {loginCode && <p className="mt-3 text-[12px] text-muted-foreground">Enter this code on the sign-in page: <code aria-label="One-time code" className="select-all rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[13px] font-medium text-foreground">{loginCode}</code></p>}
           {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-8 items-center gap-2 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">
             Open sign-in page <ExternalLink size={12} aria-hidden="true" />
           </a>}
