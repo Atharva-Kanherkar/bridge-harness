@@ -142,6 +142,20 @@
       "resultSchema": "github-connect-result.json"
     },
     {
+      "command": "github_session_prs",
+      "domain": "github",
+      "method": "github/github_session_prs",
+      "paramsSchema": "github-session-prs-params.json",
+      "resultSchema": "github-session-prs-result.json"
+    },
+    {
+      "command": "github_attach_pr",
+      "domain": "github",
+      "method": "github/github_attach_pr",
+      "paramsSchema": "github-attach-pr-params.json",
+      "resultSchema": "github-attach-pr-result.json"
+    },
+    {
       "command": "connector_list",
       "domain": "connectors",
       "method": "connectors/connector_list",

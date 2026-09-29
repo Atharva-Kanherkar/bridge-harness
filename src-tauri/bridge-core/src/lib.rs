@@ -104,6 +104,7 @@ pub mod secret_interception;
 pub mod session_context;
 pub mod session_forest;
 pub mod session_input;
+pub mod session_prs;
 pub mod session_recall;
 pub mod session_reference;
 pub mod session_titles;

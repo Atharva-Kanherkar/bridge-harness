@@ -93,6 +93,10 @@ notifications![
     // client that missed it still sees the final rollup on its next refetch —
     // replaying a stale "CI finished" toast would be worse than dropping it.
     (GithubCiFinished, "github/ci_finished", Transient),
+    // A chat's attached pull-request set changed. Transient like the CI
+    // rollup above: the card list refetches on the hint, and a client that
+    // missed it sees the same rows on its next `github/github_session_prs`.
+    (GithubSessionPrsChanged, "github/session_prs_changed", Transient),
     // A connector message Bridge had not seen before. Transient, like the CI
     // rollup above, and for the same reason: at-most-once is guaranteed by the
     // inbox ledger's unique insert rather than by replay, and a client that

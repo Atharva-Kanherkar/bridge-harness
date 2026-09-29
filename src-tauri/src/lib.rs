@@ -223,6 +223,18 @@ async fn github_connect(workspace_id: String, remote_url: String, state: State<'
 }
 
 #[tauri::command]
+async fn github_session_prs(session_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("chat pull requests", move || api::github_session_prs(&core, &session_id, refresh)).await
+}
+
+#[tauri::command]
+async fn github_attach_pr(session_id: String, reference: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubAttachPrResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("attach pull request", move || api::github_attach_pr(&core, &session_id, &reference)).await
+}
+
+#[tauri::command]
 async fn browser_bridge_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
@@ -2593,6 +2605,8 @@ pub fn run() -> i32 {
             github_review,
             github_checkout,
             github_connect,
+            github_session_prs,
+            github_attach_pr,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,
