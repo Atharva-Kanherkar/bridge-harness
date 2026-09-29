@@ -1,5 +1,5 @@
 {
- "snapshotDate": "2026-09-22",
+ "snapshotDate": "2026-09-29",
  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
  "unit": "microusd_per_million_tokens",
  "rates": {
@@ -176,6 +176,12 @@
    "cacheWrite": 3750000
   },
   "claude-sonnet-5": {
+   "input": 2000000,
+   "output": 10000000,
+   "cacheRead": 200000,
+   "cacheWrite": 2500000
+  },
+  "claude-sonnet-5-5": {
    "input": 2000000,
    "output": 10000000,
    "cacheRead": 200000,
@@ -542,8 +548,8 @@
    "cacheRead": 100000
   },
   "gemini/gemini-robotics-er-2-streaming-preview": {
-   "input": 2000000,
-   "output": 10000000
+   "input": 1000000,
+   "output": 5000000
   },
   "gpt-3.5-turbo": {
    "input": 500000,
@@ -869,6 +875,18 @@
    "output": 50000000,
    "cacheRead": 1000000,
    "cacheWrite": 12500000
+  },
+  "gpt-6-luna": {
+   "input": 100000,
+   "output": 500000,
+   "cacheRead": 10000,
+   "cacheWrite": 125000
+  },
+  "gpt-6-sol": {
+   "input": 2000000,
+   "output": 10000000,
+   "cacheRead": 200000,
+   "cacheWrite": 2500000
   },
   "gpt-daybreak-blue-latest": {
    "input": 4000000,

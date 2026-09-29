@@ -2912,7 +2912,7 @@ const mockManagedAgents: ManagedAgentList = {
       executable: "/managed-runtimes/agents/claude/installations/a1b2c3/payload/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
       // Deliberately behind the pin: mock mode is where the Update action is
       // developed and reviewed, so one runtime has to have an update waiting.
-      version: "0.3.209", pinnedVersion: "0.3.280", updateAvailable: true, consecutiveFailures: 0,
+      version: "0.3.209", pinnedVersion: "0.3.284", updateAvailable: true, consecutiveFailures: 0,
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,

@@ -829,6 +829,7 @@ mod tests {
         assert_eq!(pricing.lookup_rate("claude-opus-5-5[1m]").unwrap().input, 4_000_000);
         let usage = tokens(1_000_000, 0, 0, 0);
         assert_eq!(pricing.price(Some("claude-opus-5-5"), &usage, None).cost_microusd, Some(4_000_000));
+        assert_eq!(pricing.lookup_rate("claude-sonnet-5-5[1m]").unwrap().output, 10_000_000);
 
         let empty = refresh_rates_from_document(&db, &json!({}));
         assert!(empty.is_err(), "an empty table never replaces a working one");
