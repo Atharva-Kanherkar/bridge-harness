@@ -41,6 +41,7 @@ import { errorMessage } from "../errors";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "./Markdown";
+import { ProviderLoginPane } from "./ProviderLoginPane";
 import { relativeTime } from "./workDashboard";
 import { normalizeGithubMarkdown, splitGithubDetails } from "./githubMarkdown";
 import {
@@ -387,6 +388,8 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   const [issueDetail, setIssueDetail] = useState<GithubIssueResult>();
   const [issueError, setIssueError] = useState<string>();
 
+  const [signingIn, setSigningIn] = useState(false);
+
   const alive = useRef(true);
   const refreshingChecks = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
@@ -584,7 +587,14 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   } else if (status.availability.status === "notInstalled") {
     body = <PaneNotice icon={CircleSlash} title="GitHub CLI is not installed">Bridge drives GitHub through <code className="font-mono text-foreground/90">gh</code> — install it and sign in, and this pane fills in by itself.</PaneNotice>;
   } else if (status.availability.status === "notAuthenticated") {
-    body = <PaneNotice icon={CircleDot} title="Sign in to GitHub">Run <code className="rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[12px] text-foreground/90">{status.availability.remediation}</code> in a terminal, then refresh.</PaneNotice>;
+    body = <PaneNotice icon={CircleDot} title="Sign in to GitHub">
+      Bridge reads pull requests and issues through the GitHub CLI, which is not signed in yet.
+      {signingIn
+        ? <div className="text-left"><ProviderLoginPane provider="github" label="GitHub" onClose={() => { setSigningIn(false); void loadSurface(true); }} /></div>
+        : <span className="mt-3 block">
+          <button type="button" onClick={() => setSigningIn(true)} className="min-h-8 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">Sign in to GitHub</button>
+        </span>}
+    </PaneNotice>;
   } else if (!status.repository) {
     // Not an error: the folder either has no git repository yet or no GitHub
     // remote. Both are one action away from working, so offer the action.

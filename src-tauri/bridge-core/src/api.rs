@@ -3079,6 +3079,25 @@ fn provider_login_command(core: &Arc<BridgeCore>, provider: &str) -> Result<Comm
             command.args(["auth", "login"]);
             Ok(command)
         }
+        // The device flow without prompts: GH_PROMPT_DISABLED makes gh print
+        // the one-time code and URL, then poll, instead of waiting for Enter.
+        "github" => {
+            let binary = binary::resolve("gh")
+                .ok_or_else(|| BridgeError::Invalid("GitHub CLI is not installed".into()))?;
+            let mut command = CommandBuilder::new(binary);
+            command.args([
+                "auth",
+                "login",
+                "--hostname",
+                "github.com",
+                "--git-protocol",
+                "https",
+                "--web",
+                "--clipboard",
+            ]);
+            command.env("GH_PROMPT_DISABLED", "1");
+            Ok(command)
+        }
         other => Err(BridgeError::Invalid(format!("Unknown provider {other:?}"))),
     }
 }
@@ -3175,9 +3194,13 @@ pub fn start_provider_login(
         // serving the pre-login one until restart. Unconditional — a cancelled
         // login re-probes to the same answer — and non-blocking: the fresh
         // result arrives as its own adapters-changed hint when it lands.
-        core_reader
-            .adapter_registry
-            .refresh_availability(&terminal_reader);
+        if terminal_reader == "github" {
+            core_reader.github_surface.refresh_availability();
+        } else {
+            core_reader
+                .adapter_registry
+                .refresh_availability(&terminal_reader);
+        }
         core_reader.events.publish(CoreEvent::TerminalExited {
             session_id: workspace_reader,
             terminal_id: terminal_reader,
