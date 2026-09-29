@@ -96,4 +96,17 @@ describe("GitplaceScreen", () => {
     await act(flush);
     expect(save).toHaveBeenCalledWith({ hideAiAttribution: false });
   });
+
+  it("rolls the switch back and shows an alert when the save is rejected", async () => {
+    vi.spyOn(bridgeApi, "attributionSettings").mockResolvedValue({ hideAiAttribution: false });
+    vi.spyOn(bridgeApi, "saveAttributionSettings").mockRejectedValue(new Error("method_not_found"));
+    await act(async () => root.render(<GitplaceScreen workspaces={[workspace("alpha")]} projects={[]} onJumpToFile={() => {}} onAddProject={() => {}} />));
+    await act(flush);
+    const toggle = host.querySelector('button[role="switch"][aria-label="Hide AI attribution"]') as HTMLButtonElement | null;
+    expect(toggle!.getAttribute("aria-checked")).toBe("false");
+    await act(async () => toggle!.click());
+    await act(flush);
+    expect(toggle!.getAttribute("aria-checked")).toBe("false");
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+  });
 });

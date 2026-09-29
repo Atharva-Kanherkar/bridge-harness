@@ -94,6 +94,7 @@ export function GitplaceScreen({ workspaces, projects, onJumpToFile, onAddProjec
           onChange={attribution.setHide}
           disabled={!attribution.loaded || attribution.saving}
         />
+        {attribution.error && <span role="alert" className="max-w-44 truncate text-[12px] text-destructive" title={attribution.error}>Not saved</span>}
       </div>
     </div>
     <MenuPanel controller={menu} label="Repositories">

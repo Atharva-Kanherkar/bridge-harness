@@ -69,9 +69,14 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.17 enables the `auto_apply` memory extraction mode.** A new client must
 /// not pair with an older daemon that still rejects that persisted setting,
 /// and an older client must not pair with a daemon that may already hold it.
+/// **1.18 adds `config/get_attribution_settings` and
+/// `config/save_attribution_settings`.** A new client must not pair with an
+/// older daemon that answers both with `method_not_found`, leaving the toggle
+/// unable to load or persist; a 1.17 client still pairs with a 1.18 daemon,
+/// which simply serves it without attribution methods.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 17,
+    minor: 18,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -256,6 +261,24 @@ mod tests {
         assert!(!PROTOCOL_VERSION.accepts(before_automatic_memory));
     }
 
+    #[test]
+    fn attribution_client_rejects_daemon_without_attribution_settings() {
+        // A 1.18 client must not pair with a 1.17 daemon: both attribution
+        // calls would fail with `method_not_found` only when the toggle is
+        // used. A 1.17 client still pairs with a 1.18 daemon, which serves it
+        // without attribution methods.
+        let before_attribution = ProtocolVersion { major: 1, minor: 17 };
+        assert!(!before_attribution.accepts(PROTOCOL_VERSION));
+        assert!(
+            PROTOCOL_VERSION.accepts(before_attribution),
+            "attribution is additive: a 1.17 client still pairs with a 1.18 daemon"
+        );
+        assert!(
+            negotiate(&request(1, 17)).is_ok(),
+            "the 1.17 minimum-client boundary still holds on a 1.18 daemon"
+        );
+    }
+
     fn request(major: u32, minor: u32) -> HandshakeRequest {
         HandshakeRequest {
             protocol_version: ProtocolVersion { major, minor },
@@ -281,7 +304,9 @@ mod tests {
         for incompatible in [
             request(PROTOCOL_VERSION.major + 1, 0),
             request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor + 1),
-            request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor - 1),
+            // A client below the 1.17 minimum boundary, not merely one minor
+            // behind: 1.17 clients still pair with a 1.18 daemon.
+            request(1, 16),
         ] {
             let error = negotiate(&incompatible).unwrap_err();
             assert_eq!(error.code, ErrorCode::IncompatibleProtocol.code());
