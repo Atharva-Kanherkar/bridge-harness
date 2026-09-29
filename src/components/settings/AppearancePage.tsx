@@ -9,6 +9,7 @@
 import type { ReactNode } from "react";
 import { useThemePreference, type EffortSelectorStyle, type ThemePreference, type ThemeSkin } from "../../theme";
 import { useShowWorkerChatsInMissionControl } from "../../missionControlSettings";
+import { useShowThinking } from "../../transcriptSettings";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
 import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
@@ -117,6 +118,7 @@ function ZoomControl({ level, onChange }: { level: number; onChange: (next: numb
 export function AppearancePage() {
   const { preference, resolved, setPreference, skin, setSkin, effortSelector, setEffortSelector } = useThemePreference();
   const [showWorkerChats, setShowWorkerChats] = useShowWorkerChatsInMissionControl();
+  const [showThinking, setShowThinking] = useShowThinking();
   const [zoom, setZoom] = useZoomLevel();
   return <SettingsPage
     title="Appearance"
@@ -130,6 +132,13 @@ export function AppearancePage() {
     </SettingsGroup>
     <SettingsGroup label="Thinking control" note="How the model picker sets reasoning effort">
       <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="@min-[580px]/settings:grid-cols-3" />
+    </SettingsGroup>
+    <SettingsGroup label="Transcript" note="What the conversation draws for the model's work">
+      <SettingsRow
+        label="Show thinking"
+        description="Off hides the model's reasoning text. A thought still pulses while it streams; a finished thought draws nothing."
+        control={<Switch label="Show thinking" checked={showThinking} onChange={setShowThinking} />}
+      />
     </SettingsGroup>
     <SettingsGroup label="Mission Control">
       <SettingsRow

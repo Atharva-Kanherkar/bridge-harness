@@ -43,6 +43,10 @@ pub struct PluginVariant {
     pub provider: MarketplaceProvider,
     pub plugin_id: String,
     pub name: String,
+    /// True when the provider listing carried no display name and `name` is
+    /// only the provider id. The UI hides these until an app identity names
+    /// them; it must never render the id as if it were a name.
+    pub name_is_fallback: bool,
     pub description: Option<String>,
     pub marketplace: Option<String>,
     pub version: Option<String>,
@@ -107,6 +111,12 @@ pub struct MarketplaceAppAuthState {
     pub provider: MarketplaceProvider,
     pub connector_id: String,
     pub display_name: Option<String>,
+    /// Identity carried alongside the auth verdict so the UI can name rows
+    /// whose provider listing only exposed an `app-<hex>` id. Never used for
+    /// authentication decisions.
+    pub description: Option<String>,
+    pub icon_url: Option<String>,
+    pub category: Option<String>,
     pub native_connector: bool,
     pub authentication_state: String,
 }
@@ -334,7 +344,21 @@ fn provider_catalog(provider: MarketplaceProvider) -> ProviderCatalog {
     }
 }
 
+/// An identifier the provider echoed as if it were a name: `app-<hex>`.
+fn looks_like_app_id(value: &str) -> bool {
+    value.strip_prefix("app-").is_some_and(|suffix| {
+        suffix.len() >= 16 && suffix.chars().all(|c| c.is_ascii_hexdigit())
+    })
+}
+
 fn merge_variant(existing: &mut PluginVariant, incoming: &PluginVariant) {
+    if existing.name_is_fallback && !incoming.name_is_fallback {
+        existing.name = incoming.name.clone();
+        existing.name_is_fallback = false;
+        if existing.description.is_none() {
+            existing.description = incoming.description.clone();
+        }
+    }
     existing.installed |= incoming.installed;
     existing.enabled |= incoming.enabled;
     if existing.authentication_state == "unknown" {
@@ -396,8 +420,13 @@ fn candidate_objects(value: &Value) -> Vec<&Value> {
 fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginVariant> {
     let object = value.as_object()?;
     let plugin_id = string_field(object, &["id", "pluginId", "plugin_id", "name"])?;
-    let name = string_field(object, &["displayName", "display_name", "title", "name"])
-        .unwrap_or_else(|| plugin_id.clone());
+    let base_id = plugin_id.split('@').next().unwrap_or(plugin_id.as_str());
+    // Codex listings echo the id into `name` (`name: "app-<hex>"`); a slug
+    // that repeats the id's base ("browser@openai-bundled") is still a name.
+    let display_name = string_field(object, &["displayName", "display_name", "title", "name"])
+        .filter(|name| name != &plugin_id && !(name.as_str() == base_id && looks_like_app_id(name)));
+    let name_is_fallback = display_name.is_none();
+    let name = display_name.unwrap_or_else(|| plugin_id.clone());
     let mut connector_type = string_field(
         object,
         &["connectorType", "connector_type", "transport", "type"],
@@ -463,6 +492,15 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
     } else if connector_type.is_none() && mcp_endpoint.is_some() {
         connector_type = Some(MCP_CONNECTOR.into());
     }
+    // Remote app rows carry no connector metadata, only the id. Classifying
+    // them here lets authentication route to the app installer that opens the
+    // provider's authorization page, and lets the UI offer Connect at all.
+    if connector_type.is_none()
+        && provider == MarketplaceProvider::Codex
+        && looks_like_app_id(base_id)
+    {
+        connector_type = Some(CODEX_APP_CONNECTOR.into());
+    }
     let provider_specific = connector_type.as_deref().is_some_and(|kind| {
         matches!(
             kind.to_lowercase().as_str(),
@@ -480,6 +518,7 @@ fn parse_variant(provider: MarketplaceProvider, value: &Value) -> Option<PluginV
         provider,
         plugin_id,
         name,
+        name_is_fallback,
         description: string_field(object, &["description", "summary"]),
         marketplace: string_field(
             object,
@@ -992,6 +1031,9 @@ fn parse_app_auth_states(result: &Value) -> Vec<MarketplaceAppAuthState> {
         .flatten()
         .filter_map(|app| {
             let connector_id = app.get("id")?.as_str()?.trim();
+            if connector_id.is_empty() {
+                return None;
+            }
             let state = match app.get("isAccessible").and_then(Value::as_bool) {
                 Some(true) => "connected",
                 Some(false) if app.get("installUrl").and_then(Value::as_str).is_some() => {
@@ -1002,12 +1044,63 @@ fn parse_app_auth_states(result: &Value) -> Vec<MarketplaceAppAuthState> {
             Some(MarketplaceAppAuthState {
                 provider: MarketplaceProvider::Codex,
                 connector_id: connector_id.into(),
-                display_name: None,
+                display_name: codex_app_name(app),
+                description: codex_app_description(app),
+                icon_url: codex_app_icon_url(app),
+                category: codex_app_category(app),
                 native_connector: false,
                 authentication_state: state.into(),
             })
         })
         .collect()
+}
+
+/// The app directory entry's own name — the identity the plugin listing
+/// omitted. Codes like `app-<hex>@openai-curated-remote` join to this by the
+/// id `<hex>`.
+fn codex_app_name(app: &Value) -> Option<String> {
+    string_field(
+        app.as_object()?,
+        &["name", "displayName", "display_name", "title"],
+    )
+}
+
+fn codex_app_description(app: &Value) -> Option<String> {
+    string_field(app.as_object()?, &["description", "summary"])
+}
+
+fn codex_app_icon_url(app: &Value) -> Option<String> {
+    let assets = app.get("iconAssets").and_then(Value::as_object);
+    let dark_assets = app.get("iconDarkAssets").and_then(Value::as_object);
+    let mut candidates = Vec::new();
+    for source in [assets, dark_assets].into_iter().flatten() {
+        for key in ["256_square", "original"] {
+            if let Some(value) = source.get(key) {
+                candidates.push(value);
+            }
+        }
+    }
+    if let Some(logo) = app.get("logoUrl") {
+        candidates.push(logo);
+    }
+    candidates
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|url| url.starts_with("https://"))
+        .map(str::to_owned)
+}
+
+fn codex_app_category(app: &Value) -> Option<String> {
+    app.get("appMetadata")
+        .and_then(|metadata| metadata.get("categories"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 fn parse_claude_mcp_auth_states(output: &str) -> Vec<MarketplaceAppAuthState> {
@@ -1032,6 +1125,9 @@ fn parse_claude_mcp_auth_states(output: &str) -> Vec<MarketplaceAppAuthState> {
                 connector_id: connector_id.into(),
                 display_name: native_connector
                     .then(|| connector_id.trim_start_matches("claude.ai ").to_owned()),
+                description: None,
+                icon_url: None,
+                category: None,
                 native_connector,
                 authentication_state: authentication_state.into(),
             })
@@ -1530,7 +1626,15 @@ mod tests {
     fn parses_only_explicit_app_accessibility_states() {
         let states = parse_app_auth_states(&json!({"data": [
             {"id": "connected", "isAccessible": true},
-            {"id": "required", "isAccessible": false, "installUrl": "https://example.test/login?secret=state"},
+            {
+                "id": "required",
+                "isAccessible": false,
+                "installUrl": "https://example.test/login?secret=state",
+                "name": "Gmail",
+                "description": "Find and reference emails from your inbox",
+                "iconAssets": {"256_square": "https://images.example.test/gmail.png"},
+                "appMetadata": {"categories": ["PRODUCTIVITY"]}
+            },
             {"id": "unknown", "isAccessible": false},
             {"id": "missing"}
         ]}));
@@ -1542,18 +1646,129 @@ mod tests {
                     provider: MarketplaceProvider::Codex,
                     connector_id: "connected".into(),
                     display_name: None,
+                    description: None,
+                    icon_url: None,
+                    category: None,
                     native_connector: false,
                     authentication_state: "connected".into()
                 },
                 MarketplaceAppAuthState {
                     provider: MarketplaceProvider::Codex,
                     connector_id: "required".into(),
-                    display_name: None,
+                    display_name: Some("Gmail".into()),
+                    description: Some("Find and reference emails from your inbox".into()),
+                    icon_url: Some("https://images.example.test/gmail.png".into()),
+                    category: Some("PRODUCTIVITY".into()),
                     native_connector: false,
                     authentication_state: "required".into()
                 },
             ]
         );
+    }
+
+    #[test]
+    fn app_identity_icons_must_be_absolute_https_urls() {
+        let states = parse_app_auth_states(&json!({"data": [{
+            "id": "asdk_app_6a057d268ebc81919918d37eec718425",
+            "isAccessible": false,
+            "installUrl": "https://example.test/login",
+            "name": "Remote Desktop Commander",
+            "iconAssets": {"256_square": "/images/ecosystem/apps/remote/icon.png"},
+            "iconDarkAssets": {"original": "http://images.example.test/plain.png"},
+            "logoUrl": "https://images.example.test/fallback.png"
+        }]}));
+
+        assert_eq!(states.len(), 1);
+        assert_eq!(
+            states[0].icon_url.as_deref(),
+            Some("https://images.example.test/fallback.png")
+        );
+    }
+
+    #[test]
+    fn names_that_fall_back_to_the_provider_id_are_marked() {
+        // The live Codex listing echoes the id into `name`; that is not a name.
+        let unnamed = parse_variants(
+            MarketplaceProvider::Codex,
+            &json!([{
+                "pluginId": "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
+                "name": "app-6a057d268ebc81919918d37eec718425"
+            }]),
+        )
+        .remove(0);
+        assert_eq!(
+            unnamed.name,
+            "app-6a057d268ebc81919918d37eec718425@openai-curated-remote"
+        );
+        assert!(unnamed.name_is_fallback);
+
+        // A slug that repeats the id's base is still a name.
+        let named = parse_variants(
+            MarketplaceProvider::Codex,
+            &json!([{"pluginId": "browser@openai-bundled", "name": "browser"}]),
+        )
+        .remove(0);
+        assert_eq!(named.name, "browser");
+        assert!(!named.name_is_fallback);
+
+        // A displayName always wins, even over an id-shaped base.
+        let display = parse_variants(
+            MarketplaceProvider::Claude,
+            &json!([{"id": "app-6a057d268ebc81919918d37eec718425@official", "displayName": "Remote Desktop Commander"}]),
+        )
+        .remove(0);
+        assert_eq!(display.name, "Remote Desktop Commander");
+        assert!(!display.name_is_fallback);
+    }
+
+    #[test]
+    fn remote_app_plugin_ids_are_classified_as_app_connectors() {
+        let variant = parse_variants(
+            MarketplaceProvider::Codex,
+            &json!([{
+                "pluginId": "app-6a057d268ebc81919918d37eec718425@openai-curated-remote",
+                "name": "app-6a057d268ebc81919918d37eec718425",
+                "source": {"source": "remote", "id": "plugin_asdk_app_6a057d268ebc81919918d37eec718425"}
+            }]),
+        )
+        .remove(0);
+
+        assert_eq!(variant.connector_type.as_deref(), Some(CODEX_APP_CONNECTOR));
+        assert!(!variant.portable_mcp);
+        assert!(
+            variant.app_connector_ids.is_empty(),
+            "the classification does not invent connector ids"
+        );
+    }
+
+    #[test]
+    fn merge_promotes_a_real_name_over_a_fallback() {
+        let mut fallback = parse_variants(
+            MarketplaceProvider::Claude,
+            &json!([{"id": "demo@official"}]),
+        )
+        .remove(0);
+        let named = parse_variants(
+            MarketplaceProvider::Claude,
+            &json!([{"id": "demo@official", "displayName": "Demo", "description": "A demo plugin"}]),
+        )
+        .remove(0);
+
+        merge_variant(&mut fallback, &named);
+        assert_eq!(fallback.name, "Demo");
+        assert!(!fallback.name_is_fallback);
+        assert_eq!(fallback.description.as_deref(), Some("A demo plugin"));
+
+        // Two fallbacks stay a fallback; the id is still not a name.
+        let mut other = parse_variants(
+            MarketplaceProvider::Claude,
+            &json!([{"id": "other@official"}]),
+        )
+        .remove(0);
+        let still_fallback = other.clone();
+        merge_variant(&mut other, &still_fallback);
+        assert!(other.name_is_fallback);
+        assert_eq!(other.name, "other@official");
     }
 
     #[test]

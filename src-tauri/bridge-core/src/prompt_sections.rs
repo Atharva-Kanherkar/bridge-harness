@@ -113,6 +113,14 @@ pub fn resolve(
     worker_depth: i64,
 ) -> Result<ResolvedPromptStack, BridgeError> {
     let mut sections = Vec::new();
+    // Strict rule first when hiding is ON, so it cannot drift behind a long
+    // briefing. It is synthetic: never stored, never overridden, never deleted.
+    if crate::attribution_settings::hide_enabled(db) {
+        sections.push(ResolvedPromptSection {
+            id: prompts::ATTRIBUTION_HIDING_SECTION_ID.into(),
+            text: prompts::ATTRIBUTION_HIDING_RULE.into(),
+        });
+    }
     for default in prompts::default_sections(target, worker_depth) {
         let key = PromptSectionKey::new(target, default.id)?;
         match current_state(db, &key)? {
@@ -944,5 +952,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn attribution_rule_is_first_when_hiding_is_on() {
+        use bridge_protocol::messages::{AttributionSettings, SaveAttributionSettingsParams};
+        let db = db();
+        let plain = resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        assert!(!plain.sections.iter().any(|section| section.id == prompts::ATTRIBUTION_HIDING_SECTION_ID));
+
+        crate::attribution_settings::save(
+            &db,
+            &SaveAttributionSettingsParams {
+                settings: AttributionSettings { hide_ai_attribution: true },
+            },
+        )
+        .unwrap();
+
+        for target in [
+            prompts::PromptTarget::Orchestrator,
+            prompts::PromptTarget::Worker(WorkerRole::Implementation),
+            prompts::PromptTarget::Worker(WorkerRole::Research),
+            prompts::PromptTarget::DirectSession,
+        ] {
+            let stack = resolve(&db, target, 1).unwrap();
+            let first = stack.sections.first().expect("stack has a first section");
+            assert_eq!(first.id, prompts::ATTRIBUTION_HIDING_SECTION_ID);
+            assert_eq!(first.text, prompts::ATTRIBUTION_HIDING_RULE);
+        }
+
+        crate::attribution_settings::save(
+            &db,
+            &SaveAttributionSettingsParams {
+                settings: AttributionSettings { hide_ai_attribution: false },
+            },
+        )
+        .unwrap();
+        let off = resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        assert!(!off.sections.iter().any(|section| section.id == prompts::ATTRIBUTION_HIDING_SECTION_ID));
     }
 }

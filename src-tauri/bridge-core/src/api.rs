@@ -94,38 +94,7 @@ pub fn refresh_model_catalogs(core: &Arc<BridgeCore>) -> Result<Health, BridgeEr
 /// The only command the Codex update confirmation may execute. There are no
 /// renderer-supplied URLs or shell arguments at this boundary.
 pub fn install_codex_update() -> Result<(), BridgeError> {
-    const INSTALL_COMMAND: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-    if RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return Err(BridgeError::Invalid("A Codex update is already running".into()));
-    }
-    struct ResetRunning;
-    impl Drop for ResetRunning {
-        fn drop(&mut self) {
-            RUNNING.store(false, std::sync::atomic::Ordering::Release);
-        }
-    }
-    let _reset = ResetRunning;
-
-    // pipefail matters here: an unreachable installer URL must not look like
-    // success merely because `sh` received empty input and exited cleanly.
-    let mut command = std::process::Command::new("/bin/zsh");
-    binary::hydrate_command_path(&mut command);
-    let output = command
-        .args(["-o", "pipefail", "-c", INSTALL_COMMAND])
-        .output()
-        .map_err(|error| BridgeError::Invalid(format!("Could not start the Codex updater: {error}")))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail.trim();
-        return Err(BridgeError::Invalid(if detail.is_empty() {
-            format!("Codex update failed: {}", output.status)
-        } else {
-            format!("Codex update failed: {detail}")
-        }));
-    }
-    Ok(())
+    crate::codex_update::install()
 }
 
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
@@ -585,6 +554,38 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
     Ok(wire::GithubChecksResult { checks })
 }
 
+/// The pull requests attached to one chat, newest first, with live state.
+/// Reading (re)arms the poller, so a reopened chat resumes background updates
+/// without the GitHub pane being open.
+pub fn github_session_prs(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    refresh: bool,
+) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+    let views = crate::session_prs::session_pull_requests(core, session_id, refresh)?;
+    let pull_requests = views
+        .into_iter()
+        .map(github_wire)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(wire::GithubSessionPrsResult { pull_requests })
+}
+
+/// Attach a chat to a pull request the user named explicitly. Verification is
+/// server-side and repository-scoped; the client cannot bind an arbitrary PR.
+pub fn github_attach_pr(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    reference: &str,
+) -> Result<wire::GithubAttachPrResult, BridgeError> {
+    let reference = crate::session_prs::parse_attach_reference(reference)?;
+    let view = crate::session_prs::attach(core, session_id, &reference, crate::session_prs::ATTRIBUTION_MANUAL)?;
+    Ok(wire::GithubAttachPrResult {
+        attached: true,
+        message: format!("Attached PR #{}.", view.number),
+        pull_request: Some(github_wire(view)?),
+    })
+}
+
 pub fn github_issues(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubIssuesResult, BridgeError> {
     let path = locked_workspace_path(core, workspace_id)?;
     let issues = github_wire(core.github_surface.list_issues(Path::new(&path)).map_err(github_error)?)?;
@@ -670,7 +671,7 @@ pub fn github_review(
     // model profile fills whatever they leave unset, and its tier shapes the
     // worker. The profile's model is only used when its provider matches the
     // chosen harness, otherwise the launch path picks the harness's tier default.
-    let (resolved, reviewer_settings, supports_read_only) = {
+    let (resolved, reviewer_settings, supports_read_only, hide_attribution) = {
         let db = core.db.lock().unwrap();
         let descriptors = core.adapter_registry.descriptors();
         let supports_read_only = descriptors
@@ -690,9 +691,10 @@ pub fn github_review(
             )?,
             crate::reviewer_settings::load(&db)?,
             supports_read_only,
+            crate::attribution_settings::hide_enabled(&db),
         )
     };
-    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only);
+    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only, hide_attribution);
     let ReviewerLaunchPlan { capability_tier, effort, model, write_mode, objective } = plan;
 
     // Establish the parent orchestrator session. Reuse the caller's session when
@@ -803,6 +805,7 @@ pub(crate) fn reviewer_launch_plan(
     harness: &str,
     number: u64,
     supports_read_only: bool,
+    hide_attribution: bool,
 ) -> ReviewerLaunchPlan {
     let per_harness = settings.harnesses.get(harness);
     let (capability_tier, profile_effort, profile_model) = match profile {
@@ -834,7 +837,7 @@ pub(crate) fn reviewer_launch_plan(
         effort,
         model,
         write_mode,
-        objective: crate::reviewer_settings::objective(settings, number),
+        objective: crate::reviewer_settings::objective_with_hide(settings, number, hide_attribution),
     }
 }
 
@@ -1432,23 +1435,38 @@ pub fn fork_session(
     })
 }
 
-/// Create an orchestrator session inside a workspace (the classic Bridge agent
-/// that plans and delegates to workers). Multiple are allowed per workspace.
+/// Create an orchestrator session inside a workspace. Multiple are allowed.
 pub fn create_workspace_session(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
     create_worktree: bool,
 ) -> Result<BridgeState, BridgeError> {
+    create_workspace_session_with_model(core, workspace_id, create_worktree,
+        sessions::WorkspaceSessionKind::Orchestrator, None, None)
+}
+
+/// Create a workspace root session with its mode and direct provider selection.
+pub fn create_workspace_session_with_model(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    create_worktree: bool,
+    kind: sessions::WorkspaceSessionKind,
+    direct_harness: Option<&Harness>,
+    direct_model: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     core.workspace_path(workspace_id)?;
     let operation = core.workspace_operation(workspace_id);
     let _operation = crate::runtime::lock_operation(&operation);
-    let plan = core.plan_workspace_session(workspace_id, create_worktree)?;
+    let plan = core.plan_workspace_session_with_model(
+        workspace_id, create_worktree, kind, direct_harness, direct_model,
+    )?;
     let worktree = match plan.worktree_source().map(str::to_owned) {
-        Some(source) => Some(sessions::prepare_orchestrator_worktree(
+        Some(source) => Some(sessions::prepare_workspace_worktree(
             &core.worktrees,
             plan.workspace_title(),
             Path::new(&source),
             plan.session_id(),
+            kind,
         )?),
         None => None,
     };
@@ -1465,7 +1483,7 @@ pub fn start_session(
 }
 
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
-/// harness/model with no briefing; an `orchestrator` session runs codex with
+/// harness/model with no routing briefing; an `orchestrator` session runs its configured harness with
 /// the routing briefing + delegation protocol.
 pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
     // The "imported history cannot resume" gate lives in `live_turn::start_chat`
@@ -4155,6 +4173,14 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+pub fn get_attribution_settings(core: &Arc<BridgeCore>) -> Result<wire::AttributionSettings, BridgeError> {
+    crate::attribution_settings::load(&core.db.lock().unwrap())
+}
+
+pub fn save_attribution_settings(core: &Arc<BridgeCore>, params: &wire::SaveAttributionSettingsParams) -> Result<wire::AttributionSettings, BridgeError> {
+    crate::attribution_settings::save(&core.db.lock().unwrap(), params)
+}
+
 /// Every worktree Bridge knows about, with the last assessment of what may be
 /// done with it. A read: the sweep owns reclaiming.
 pub fn list_worktrees(
@@ -5563,25 +5589,25 @@ mod tests {
             used_fallback: false,
         };
         // Nothing configured: the profile speaks for its own provider only.
-        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true);
+        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true, false);
         assert_eq!((plain.model.as_deref(), plain.effort, plain.capability_tier), (Some("gpt-5-codex"), delegation::Effort::Medium, CapabilityTier::Standard));
         assert_eq!(plain.write_mode, delegation::WriteMode::ReadOnly);
         assert!(plain.objective.starts_with("Review pull request #9"));
-        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true);
+        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true, false);
         assert_eq!(other.model, None, "a Codex model is not handed to Claude");
         assert_eq!(other.effort, delegation::Effort::Medium);
         // Settings for the harness win over the profile.
         let mut settings = ReviewerSettings { system_prompt: "Check PR {number}.".into(), ..Default::default() };
         settings.harnesses.insert("claude".into(), ReviewerHarnessSettings { model: Some("claude-opus-5".into()), effort: Some(wire::Effort::Xhigh) });
-        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true);
+        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true, false);
         assert_eq!((configured.model.as_deref(), configured.effort), (Some("claude-opus-5"), delegation::Effort::Xhigh));
         assert!(configured.objective.starts_with("Check PR 9."), "{}", configured.objective);
         assert!(configured.objective.contains("only post a comment"), "custom prompts keep the safety guardrail: {}", configured.objective);
         // No profile at all: strong tier, high effort, harness default model.
-        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true);
+        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true, false);
         assert_eq!((bare.model, bare.effort, bare.capability_tier), (None, delegation::Effort::High, CapabilityTier::Strong));
         // A harness without read_only support reviews from an isolated worktree.
-        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false);
+        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false, false);
         assert_eq!(opencode.write_mode, delegation::WriteMode::Isolated);
     }
 
@@ -5591,10 +5617,20 @@ mod tests {
         use crate::delegation;
         // The same harness id gets isolated iff its descriptor lacks read_only —
         // no hard-coded name decides write access.
-        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false);
+        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false, false);
         assert_eq!(isolated.write_mode, delegation::WriteMode::Isolated);
-        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true);
+        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true, false);
         assert_eq!(readonly.write_mode, delegation::WriteMode::ReadOnly);
+    }
+
+    #[test]
+    fn reviewer_launch_plan_prepends_hiding_rule_when_on() {
+        use bridge_protocol::messages::ReviewerSettings;
+        let hidden = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, true);
+        assert!(hidden.objective.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
+        assert!(hidden.objective.contains("Review pull request #7"));
+        let shown = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, false);
+        assert!(!shown.objective.contains("Co-authored-by"));
     }
 
     #[test]

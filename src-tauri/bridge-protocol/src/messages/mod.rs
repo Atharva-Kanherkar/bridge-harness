@@ -181,6 +181,8 @@ typed_methods![
     (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
     (GithubConnect, GithubConnectParams, GithubConnectResult),
+    (GithubSessionPrs, GithubSessionPrsParams, GithubSessionPrsResult),
+    (GithubAttachPr, GithubAttachPrParams, GithubAttachPrResult),
     // connectors — in-app surfaces over the harness's own MCP servers
     (ConnectorList, ConnectorListParams, ConnectorListResult),
     (ConnectorInbox, ConnectorInboxParams, ConnectorInboxResult),
@@ -302,6 +304,8 @@ typed_methods![
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
     (GetReviewerSettings, _, ReviewerSettingsResult),
     (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
+    (GetAttributionSettings, _, AttributionSettings),
+    (SaveAttributionSettings, SaveAttributionSettingsParams, AttributionSettings),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
     (UnarchiveChat, UnarchiveChatParams, UnitResult),
     // token and cost usage

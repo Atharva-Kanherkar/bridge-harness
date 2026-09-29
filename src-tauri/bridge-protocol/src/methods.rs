@@ -62,6 +62,8 @@ methods![
     (GithubReview, "github", "github_review"),
     (GithubCheckout, "github", "github_checkout"),
     (GithubConnect, "github", "github_connect"),
+    (GithubSessionPrs, "github", "github_session_prs"),
+    (GithubAttachPr, "github", "github_attach_pr"),
     // connectors — in-app surfaces over the harness's own authenticated MCP servers
     (ConnectorList, "connectors", "connector_list"),
     (ConnectorInbox, "connectors", "connector_inbox"),
@@ -117,6 +119,8 @@ methods![
     (SaveWorkerSettings, "config", "save_worker_settings"),
     (GetReviewerSettings, "config", "get_reviewer_settings"),
     (SaveReviewerSettings, "config", "save_reviewer_settings"),
+    (GetAttributionSettings, "config", "get_attribution_settings"),
+    (SaveAttributionSettings, "config", "save_attribution_settings"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
     (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router

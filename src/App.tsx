@@ -3,7 +3,7 @@ import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
-import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
@@ -17,7 +17,8 @@ import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, medi
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import { createLiveReplay } from "./liveReplay";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -39,6 +40,7 @@ import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
+import { ChatPullRequestCards, ChatPullRequestStrip, jumpToChatPullRequests, useChatPullRequests, useInView } from "./components/ChatPullRequests";
 import { GitplaceScreen } from "./components/GitplaceScreen";
 import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
@@ -72,6 +74,7 @@ import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { overviewUsage } from "./usageOverview";
 import { SteerComposer } from "./components/SteerComposer";
 import { ComposerPill } from "./components/ComposerPill";
+import { SessionModeToggle, sessionModeDescription } from "./components/SessionModeToggle";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
@@ -102,7 +105,8 @@ import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage, isThrottleKind } from "./errors";
-import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion } from "./codexUpdate";
+import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion, withCodexRefreshDeadline } from "./codexUpdate";
+import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpdateDialog";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
@@ -173,6 +177,8 @@ type NewChatDraft = {
   model: string | null;
   workspaceId: string | null;
   createWorktree: boolean;
+  /** Workspace drafts only: orchestrate (default) or chat with the harness directly. */
+  sessionKind?: WorkspaceSessionKind;
   carryFromSessionId?: string;
 };
 
@@ -268,7 +274,7 @@ function AppContent() {
   const [latestCodex, setLatestCodex] = useState<string>();
   const [codexUpdateNotice, setCodexUpdateNotice] = useState(false);
   const [codexUpdatePrompt, setCodexUpdatePrompt] = useState(false);
-  const [codexUpdateBusy, setCodexUpdateBusy] = useState(false);
+  const [codexUpdatePhase, setCodexUpdatePhase] = useState<CodexUpdatePhase>(null);
   const [codexUpdateSuccess, setCodexUpdateSuccess] = useState(false);
 
   useEffect(() => {
@@ -290,19 +296,20 @@ function AppContent() {
   };
 
   const confirmCodexUpdate = async () => {
-    if (codexUpdateBusy) return;
-    setCodexUpdateBusy(true);
+    if (codexUpdatePhase) return;
+    setCodexUpdatePhase("installing");
     try {
       await bridgeApi.installCodexUpdate();
     } catch (cause) {
       const message = errorMessage(cause);
-      setError(message.startsWith("Codex update failed:") ? message : `Codex update failed: ${message}`);
+      setError(message.startsWith("Codex update") ? message : `Codex update failed: ${message}`);
       setCodexUpdatePrompt(false);
-      setCodexUpdateBusy(false);
+      setCodexUpdatePhase(null);
       return;
     }
     try {
-      const refreshed = await bridgeApi.refreshModelCatalogs();
+      setCodexUpdatePhase("refreshing");
+      const refreshed = await withCodexRefreshDeadline(bridgeApi.refreshModelCatalogs());
       invalidateHealth();
       const refreshedVersion = refreshed.adapters.find(adapter => adapter.id === "codex")?.version;
       if (codexVersion && refreshedVersion === codexVersion) {
@@ -314,7 +321,7 @@ function AppContent() {
       setError(`The Codex installer finished, but Bridge could not refresh its runtime: ${errorMessage(cause)}. Restart Bridge to check the new version.`);
     } finally {
       setCodexUpdatePrompt(false);
-      setCodexUpdateBusy(false);
+      setCodexUpdatePhase(null);
     }
   };
   const [forkDraft, setForkDraft] = useState<{ sessionId: string; entryId: string } | null>(null);
@@ -443,6 +450,12 @@ function AppContent() {
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
   const forestCacheRef = useRef(new ForestCache());
+  // Durable frames the live channel dropped, put back from each session's
+  // cursor. The forest poll alone was too slow to be the only recovery.
+  const [liveReplay] = useState(() => createLiveReplay({
+    replay: (sessionId, afterSequence, limit) => bridgeApi.replaySessionEvents(sessionId, afterSequence, limit),
+    deliver: events => setAgentEvents(current => appendAgentEventBatch(current, events)),
+  }));
   const browserSessionRef = useRef<string>();
   const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
@@ -463,6 +476,7 @@ function AppContent() {
     void reload().catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
+    let offLagged: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
     let offAdapters: (() => void) | undefined;
     let offProviderLogin: (() => void) | undefined;
@@ -503,6 +517,7 @@ function AppContent() {
     });
     void bridgeApi.onAgentEvent(event => {
       display.push(event);
+      liveReplay.observe(event);
       const target = loginSessionRef.current;
       if (active && target?.id === event.sessionId) {
         const provider = providerSignInForEvent(target.harness, event);
@@ -511,6 +526,15 @@ function AppContent() {
     }).then(fn => {
       if (!active) { fn(); return; }
       offAgent = fn;
+    });
+    void bridgeApi.onStreamLagged(() => {
+      // Frames were dropped: refill them now, and make the next forest poll
+      // refetch instead of trusting a digest it may already have seen.
+      forestKeyRef.current = "";
+      liveReplay.lagged();
+    }).then(fn => {
+      if (!active) { fn(); return; }
+      offLagged = fn;
     });
     void bridgeApi.onAccountUsage(payload => {
       // Codex quota comes from the versioned shared overview. A legacy
@@ -543,10 +567,10 @@ function AppContent() {
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
-      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
+      offState?.(); offAgent?.(); offLagged?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
       display.dispose();
     };
-  }, [invalidateHealth, openMeter, refreshMeter, reload]);
+  }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
   // Attention notifications: diff every `state.sessions` refresh for status
   // transitions across visible sessions (hidden kinds filtered inside
   // `diffAttentionEvents`), not just the open one, so a background chat that
@@ -789,6 +813,10 @@ function AppContent() {
     openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
 
+  // The PRs this chat opened (or had attached), kept live after the turn ends.
+  const chatPrs = useChatPullRequests(session?.id, workspace?.id);
+  const [chatPrAnchor, chatPrsInView] = useInView();
+
   // Which repository a workspace is on is read when the link is clicked and
   // again when the reader confirms the inline destination. The pane resolves
   // the repository itself, server-side and at call time, from the workspace's
@@ -930,8 +958,10 @@ function AppContent() {
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo>();
   useEffect(() => {
     let active = true;
-    void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); });
-    return () => { active = false; };
+    const check = () => { void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); }).catch(() => undefined); };
+    check();
+    const timer = window.setInterval(check, 6 * 60 * 60 * 1000);
+    return () => { active = false; window.clearInterval(timer); };
   }, []);
 
   // The fallback hint is a pointer, not a state — it fades on its own.
@@ -1317,10 +1347,11 @@ function AppContent() {
       forestKeyRef.current = digest ?? "";
       forestCacheRef.current.set(sessionId, value);
       setForest(current => mergeForestSnapshot(current, value));
+      liveReplay.seed(sessionId, value.entries.reduce((newest, entry) => Math.max(newest, entry.sequence), 0));
     };
     const stop = startSerialPoll(refresh, 3000);
     return () => { active = false; stop(); };
-  }, [session?.id]);
+  }, [liveReplay, session?.id]);
 
   // Keep git stats fresh for the selected chat's connected workspace.
   useEffect(() => {
@@ -1632,11 +1663,12 @@ function AppContent() {
       if (!text && initialAttachments.length === 0) return undefined;
       setBusy(true); setError(undefined);
       try {
-        // create_chat takes harness/model directly; create_workspace_session doesn't,
-        // so a workspace orchestrator is aligned to the draft's chosen model right
-        // after creation — the model picked on the draft is the model it starts with.
+        // Direct workspace chats start with their selected harness/model. An
+        // orchestrator can still be aligned after creation to the draft picker.
         let next = draft.workspaceId
-          ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
+          ? draft.sessionKind === "direct"
+            ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree, "direct", draft.harness, draft.model)
+            : await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
           : await bridgeApi.createChat(draft.harness, draft.model, null);
         let created = draft.workspaceId
           ? [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === draft.workspaceId)
@@ -2639,17 +2671,8 @@ function AppContent() {
       action={{ label: "Update Codex", onClick: startCodexUpdate }}
       onDismiss={() => setCodexUpdateNotice(false)}
     />}
-    <Dialog open={codexUpdatePrompt} onOpenChange={open => { if (!open && !codexUpdateBusy) setCodexUpdatePrompt(false); }}>
-      <DialogContent showCloseButton={false} className="gap-4 p-6">
-        <DialogTitle>Update Codex CLI?</DialogTitle>
-        <DialogDescription>Bridge will run the official Codex installer on this computer:</DialogDescription>
-        <code className="block break-all rounded-lg bg-muted p-3 font-mono text-xs text-foreground">curl -fsSL https://chatgpt.com/codex/install.sh | sh</code>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" disabled={codexUpdateBusy} onClick={() => setCodexUpdatePrompt(false)}>Ignore</Button>
-          <Button loading={codexUpdateBusy} onClick={() => void confirmCodexUpdate()}>Yes</Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <CodexUpdateDialog open={codexUpdatePrompt} phase={codexUpdatePhase}
+      onOpenChange={setCodexUpdatePrompt} onConfirm={() => void confirmCodexUpdate()} />
   </>;
   if (!health || !modelSetup || !stateLoaded) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;
@@ -2795,7 +2818,7 @@ function AppContent() {
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onUpdate={setAvailableUpdate} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
@@ -2976,9 +2999,18 @@ function AppContent() {
                   leafEntryIds={forest?.leaves.map(entry => entry.id)}
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
+                  trailing={<ChatPullRequestCards
+                    prs={chatPrs.prs}
+                    refreshing={chatPrs.refreshing}
+                    onRetry={() => void chatPrs.reload(true)}
+                    onAttach={chatPrs.attach}
+                    onOpenPane={hasRepo ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
+                    anchorRef={chatPrAnchor}
+                  />}
                 />
               </div>
               <div className="relative z-10 flex-none safe-bottom">
+                <ChatPullRequestStrip prs={chatPrs.prs} hidden={chatPrsInView} onJump={jumpToChatPullRequests} />
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
@@ -3213,6 +3245,11 @@ function AppContent() {
         workspace={welcomeWorkspace}
         projectName={welcomeWorkspace?.projectId ? state.projects.find(project => project.id === welcomeWorkspace.projectId)?.name : undefined}
         worktree={newChatDraft?.createWorktree ?? false}
+        sessionKind={newChatDraft?.sessionKind ?? "orchestrator"}
+        onSelectSessionKind={sessionKind => setNewChatDraft(current => ({
+          ...(current ?? { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
+          sessionKind,
+        }))}
         branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
         currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
         branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
@@ -3354,7 +3391,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -3374,6 +3411,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
    *  which can differ from the workspace's own title. */
   projectName?: string;
   worktree: boolean;
+  /** Only offered with a workspace; a chat without one is always direct. */
+  sessionKind: WorkspaceSessionKind;
+  onSelectSessionKind: (kind: WorkspaceSessionKind) => void;
   branches: string[];
   currentBranch: string | null;
   branchBusy: boolean;
@@ -3389,6 +3429,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   // Falls back to the workspace title only when it has no distinct project.
   const heroProject = projectName ?? workspace?.title;
   const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
+  const sessionModeHintId = useId();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
@@ -3456,6 +3497,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
+      trailing={workspace ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}
@@ -3473,7 +3515,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
     />
     {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
-      <span>{greeting.hint}</span>
+      {workspace
+        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
+        : <span>{greeting.hint}</span>}
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
     </div>
     {workspaces.length === 0 && <div className="mt-6 flex justify-center">

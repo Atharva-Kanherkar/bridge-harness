@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SHOW_WORKER_CHATS_STORAGE_KEY } from "../../missionControlSettings";
+import { SHOW_THINKING_STORAGE_KEY } from "../../transcriptSettings";
 import { AppearancePage } from "./AppearancePage";
 
 let host: HTMLDivElement;
@@ -29,4 +30,13 @@ it("persists the worker-visibility switch to local storage", async () => {
   await act(async () => { toggle.click(); });
   expect(toggle.getAttribute("aria-checked")).toBe("true");
   expect(localStorage.getItem(SHOW_WORKER_CHATS_STORAGE_KEY)).toBe("true");
+});
+
+it("shows thinking by default and persists turning it off", async () => {
+  await render();
+  const toggle = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Show thinking"]')!;
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+  await act(async () => { toggle.click(); });
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect(localStorage.getItem(SHOW_THINKING_STORAGE_KEY)).toBe("false");
 });

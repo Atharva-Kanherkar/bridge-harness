@@ -39,7 +39,9 @@ describe("PermissionsSection", () => {
     const { container, unmount } = await mount(
       <PermissionsSection policy={policy(true)} autoApprovals={[]} busy={false} onChange={() => undefined} />,
     );
-    expect(container.textContent).toContain("Worker write scope");
+    // Full access covers worker write scope, so it is not listed as asking.
+    expect(container.textContent).not.toContain("Worker write scope");
+    expect(container.textContent).toContain("workers start without a write-scope card");
     expect(container.textContent).toContain("Browser outward effects");
     expect(container.textContent).toContain("Agent prompt changes");
     expect(container.textContent).toContain("These keep asking either way");

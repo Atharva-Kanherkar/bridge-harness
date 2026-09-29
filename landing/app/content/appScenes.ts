@@ -151,7 +151,7 @@ export const scenes: Scene[] = [
         rows: [
           { label: "Read", path: "worktree_coordinator.rs" },
           { label: "Edited", path: "worktree_coordinator.rs", stat: "+12 −9" },
-          { label: "Ran", path: "cargo test -p bridge-core worktree::", stat: "exit 0" },
+          { label: "Ran", path: "cargo test -p bridge-core worktree::", stat: "2.1s" },
         ],
         diff: codeDiff,
       },
@@ -235,7 +235,7 @@ export const scenes: Scene[] = [
         lines: [
           { kind: "collapsed", label: "Edited tokenStore.ts · +9 −4" },
           { kind: "rail", label: "Worktree", status: "clean", text: ".worktrees/worker-2f9a" },
-          { kind: "notice", edge: "info", title: "Ran bun test src/auth", status: "exit 0", text: "42 passed, 0 failed." },
+          { kind: "notice", edge: "info", title: "Ran bun test src/auth", status: "passed", text: "42 passed, 0 failed." },
         ],
       },
     ],

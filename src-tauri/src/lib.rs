@@ -11,6 +11,7 @@ pub mod meter_tray;
 mod menu_bar;
 pub mod window_chrome;
 mod diagnostics;
+mod nightly_updater;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -219,6 +220,18 @@ async fn github_checkout(workspace_id: String, number: u64, state: State<'_, Arc
 async fn github_connect(workspace_id: String, remote_url: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubConnectResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub repository connect", move || api::github_connect(&core, &workspace_id, &remote_url)).await
+}
+
+#[tauri::command]
+async fn github_session_prs(session_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("chat pull requests", move || api::github_session_prs(&core, &session_id, refresh)).await
+}
+
+#[tauri::command]
+async fn github_attach_pr(session_id: String, reference: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubAttachPrResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("attach pull request", move || api::github_attach_pr(&core, &session_id, &reference)).await
 }
 
 #[tauri::command]
@@ -725,6 +738,16 @@ async fn get_reviewer_settings(state: State<'_, Arc<BridgeCore>>) -> Result<brid
 #[tauri::command]
 async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
     api::save_reviewer_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
+async fn get_attribution_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AttributionSettings, BridgeError> {
+    api::get_attribution_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_attribution_settings(settings: bridge_protocol::messages::AttributionSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AttributionSettings, BridgeError> {
+    api::save_attribution_settings(state.inner(), &bridge_protocol::messages::SaveAttributionSettingsParams { settings })
 }
 
 #[tauri::command]
@@ -1426,12 +1449,19 @@ async fn resolve_reference(
 async fn create_workspace_session(
     workspace_id: String,
     create_worktree: Option<bool>,
+    kind: Option<bridge_core::sessions::WorkspaceSessionKind>,
+    harness: Option<Harness>,
+    model: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Worktree creation shells out to Git; keep it on the blocking pool.
     let core = state.inner().clone();
     blocking("Worktree creation", move || {
-        api::create_workspace_session(&core, &workspace_id, create_worktree.unwrap_or(false))
+        api::create_workspace_session_with_model(
+            &core, &workspace_id, create_worktree.unwrap_or(false),
+            kind.unwrap_or(bridge_core::sessions::WorkspaceSessionKind::Orchestrator),
+            harness.as_ref(), model.as_deref(),
+        )
     })
     .await
 }
@@ -2585,6 +2615,8 @@ pub fn run() -> i32 {
             github_review,
             github_checkout,
             github_connect,
+            github_session_prs,
+            github_attach_pr,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,
@@ -2643,6 +2675,8 @@ pub fn run() -> i32 {
             save_worker_settings,
             get_reviewer_settings,
             save_reviewer_settings,
+            get_attribution_settings,
+            save_attribution_settings,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,
@@ -2854,6 +2888,9 @@ pub fn run() -> i32 {
             if !embedded_browser::trusted_shell(invoke.message.webview_ref().label()) {
                 invoke.resolver.reject("Browser pages cannot invoke Bridge commands");
                 return true;
+            }
+            if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update") {
+                return nightly_updater::commands(invoke);
             }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {
@@ -4652,6 +4689,7 @@ mod tests {
             owned_path_provenance: policy::OwnedPathProvenance {
                 trusted_paths: request.owned_paths.clone(),
                 source_entry_ids: vec!["test-user-entry".into()],
+                ..Default::default()
             },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),

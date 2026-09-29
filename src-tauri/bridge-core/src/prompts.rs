@@ -13,6 +13,11 @@ pub const DELEGATION_PROTOCOL_SECTION_ID: &str = "delegation_protocol";
 pub const WORKER_CONTRACT_SECTION_ID: &str = "worker_contract";
 pub const RENDERING_SECTION_ID: &str = "rendering_note";
 pub const ADDITIONAL_GUIDANCE_SECTION_ID: &str = "additional_guidance";
+pub const ATTRIBUTION_HIDING_SECTION_ID: &str = "attribution_hiding";
+
+/// Strict first rule when hiding AI attribution is ON. It must stay first so
+/// a long prompt cannot drift it out of attention.
+pub const ATTRIBUTION_HIDING_RULE: &str = "STRICT RULE: Never add Co-authored-by, Generated-by, or harness mentions to commits, PR titles, PR descriptions, comments, or any other text. Write commits and PR text as the user only, with no AI attribution footer or trailer.";
 
 pub const ORCHESTRATOR_SECTION_IDS: &[&str] = &[
     BRIDGE_ROLE_SECTION_ID,

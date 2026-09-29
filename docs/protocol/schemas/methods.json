@@ -142,6 +142,20 @@
       "resultSchema": "github-connect-result.json"
     },
     {
+      "command": "github_session_prs",
+      "domain": "github",
+      "method": "github/github_session_prs",
+      "paramsSchema": "github-session-prs-params.json",
+      "resultSchema": "github-session-prs-result.json"
+    },
+    {
+      "command": "github_attach_pr",
+      "domain": "github",
+      "method": "github/github_attach_pr",
+      "paramsSchema": "github-attach-pr-params.json",
+      "resultSchema": "github-attach-pr-result.json"
+    },
+    {
       "command": "connector_list",
       "domain": "connectors",
       "method": "connectors/connector_list",
@@ -504,6 +518,20 @@
       "method": "config/save_reviewer_settings",
       "paramsSchema": "save-reviewer-settings-params.json",
       "resultSchema": "reviewer-settings-result.json"
+    },
+    {
+      "command": "get_attribution_settings",
+      "domain": "config",
+      "method": "config/get_attribution_settings",
+      "paramsSchema": null,
+      "resultSchema": "attribution-settings.json"
+    },
+    {
+      "command": "save_attribution_settings",
+      "domain": "config",
+      "method": "config/save_attribution_settings",
+      "paramsSchema": "save-attribution-settings-params.json",
+      "resultSchema": "attribution-settings.json"
     },
     {
       "command": "list_archived_chats",
@@ -1488,7 +1516,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 17
+    "minor": 18
   },
   "reserved": {
     "cancel": "$/cancel",

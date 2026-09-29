@@ -110,6 +110,14 @@ pub fn dispatch(
             let p: wire::GithubConnectParams = decode(method, params)?;
             reply(api::github_connect(core, &p.workspace_id, &p.remote_url))
         }
+        MethodName::GithubSessionPrs => {
+            let p: wire::GithubSessionPrsParams = decode(method, params)?;
+            reply(api::github_session_prs(core, &p.session_id, p.refresh))
+        }
+        MethodName::GithubAttachPr => {
+            let p: wire::GithubAttachPrParams = decode(method, params)?;
+            reply(api::github_attach_pr(core, &p.session_id, &p.reference))
+        }
 
         MethodName::AddProject => {
             let p: wire::AddProjectParams = decode(method, params)?;
@@ -240,10 +248,14 @@ pub fn dispatch(
         }
         MethodName::CreateWorkspaceSession => {
             let p: wire::CreateWorkspaceSessionParams = decode(method, params)?;
-            reply(api::create_workspace_session(
+            let direct_harness = p.harness.map(Into::into);
+            reply(api::create_workspace_session_with_model(
                 core,
                 &p.workspace_id,
                 p.create_worktree.unwrap_or(false),
+                p.kind.unwrap_or(wire::WorkspaceSessionKind::Orchestrator),
+                direct_harness.as_ref(),
+                p.model.as_deref(),
             ))
         }
         MethodName::StartSession => {
@@ -547,6 +559,11 @@ pub fn dispatch(
         MethodName::SaveReviewerSettings => {
             let p: wire::SaveReviewerSettingsParams = decode(method, params)?;
             reply(api::save_reviewer_settings(core, &p.settings))
+        }
+        MethodName::GetAttributionSettings => reply(api::get_attribution_settings(core)),
+        MethodName::SaveAttributionSettings => {
+            let p: wire::SaveAttributionSettingsParams = decode(method, params)?;
+            reply(api::save_attribution_settings(core, &p))
         }
         MethodName::UnarchiveChat => {
             let p: wire::UnarchiveChatParams = decode(method, params)?;

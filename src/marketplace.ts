@@ -34,19 +34,104 @@ export function authenticationLabel(state: string): "Connected" | "Needs login" 
   return null;
 }
 
+function connectorKey(provider: MarketplaceProvider, connectorId: string): string {
+  return `${provider}:${connectorId}`;
+}
+
+// The provider id used as a name: `app-<hex>`. Checked in addition to the
+// backend's nameIsFallback so an id-shaped label can never reach a row even if
+// an older payload omits the flag.
+const PROVIDER_ID_NAME = /^app-[0-9a-f]{16,}$/i;
+
+/** The `<hex>` of a Codex app connector plugin id, `app-<hex>@marketplace`. */
+function codexPluginHex(variant: MarketplaceVariant): string | null {
+  return /^app-([0-9a-f]{16,})$/i.exec(variant.pluginId.split("@")[0])?.[1]?.toLowerCase() ?? null;
+}
+
+/** The `<hex>` of a Codex app directory id, `asdk_app_<hex>`. */
+function codexStateHex(state: MarketplaceAppAuthState): string | null {
+  return /asdk_app_([0-9a-f]+)$/i.exec(state.connectorId)?.[1]?.toLowerCase() ?? null;
+}
+
+export function isUnnamedVariant(variant: MarketplaceVariant): boolean {
+  if (variant.nameIsFallback === true) return true;
+  const name = variant.name.trim();
+  return !name || PROVIDER_ID_NAME.test(name.split("@")[0]);
+}
+
+/** A service is unnamed only while every variant in it is. */
+export function isUnnamedService(service: MarketplaceService): boolean {
+  return service.variants.every(isUnnamedVariant);
+}
+
+export function serviceCategory(service: MarketplaceService): string | null {
+  for (const variant of service.variants) {
+    const category = variant.category?.trim();
+    if (category) return category;
+  }
+  return null;
+}
+
+export function categoryLabel(raw: string): string {
+  const words = raw.trim().toLowerCase().replace(/[_-]+/g, " ").split(/\s+/).filter(Boolean);
+  if (!words.length) return "";
+  return [words[0][0].toUpperCase() + words[0].slice(1), ...words.slice(1)].join(" ");
+}
+
+export function servicePopularity(service: MarketplaceService): number {
+  return service.variants.reduce((best, variant) => {
+    const value = variant.providerMetadata?.installCount;
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(best, value) : best;
+  }, 0);
+}
+
+function applyIdentity(variant: MarketplaceVariant, identity: MarketplaceAppAuthState | undefined): MarketplaceVariant {
+  if (!identity) return variant;
+  const displayName = identity.displayName?.trim();
+  const named = !!displayName && isUnnamedVariant(variant);
+  const description = variant.description ?? identity.description ?? null;
+  const iconDataUrl = variant.iconDataUrl ?? identity.iconUrl ?? null;
+  const category = variant.category ?? identity.category ?? null;
+  if (!named && description === variant.description && iconDataUrl === variant.iconDataUrl && (variant.category ?? null) === category) return variant;
+  return {
+    ...variant,
+    name: named ? displayName : variant.name,
+    nameIsFallback: named ? false : variant.nameIsFallback,
+    description,
+    iconDataUrl,
+    category,
+  };
+}
+
 export function applyAppAuthStates(
   catalog: MarketplaceCatalog,
   states: MarketplaceAppAuthState[],
 ): MarketplaceCatalog {
-  const byConnector = new Map(states.map(state => [`${state.provider}:${state.connectorId}`, state.authenticationState]));
+  const byConnector = new Map(states.map(state => [connectorKey(state.provider, state.connectorId), state]));
+  const codexByHex = new Map<string, MarketplaceAppAuthState>();
+  for (const state of states) {
+    if (state.provider !== "codex") continue;
+    const hex = codexStateHex(state);
+    if (hex && !codexByHex.has(hex)) codexByHex.set(hex, state);
+  }
+  const identitiesFor = (variant: MarketplaceVariant): MarketplaceAppAuthState[] => {
+    const direct = variant.appConnectorIds
+      .map(id => byConnector.get(connectorKey(variant.provider, id)))
+      .filter((state): state is MarketplaceAppAuthState => !!state);
+    const hex = variant.provider === "codex" ? codexPluginHex(variant) : null;
+    const app = hex ? codexByHex.get(hex) : undefined;
+    return app && !direct.includes(app) ? [...direct, app] : direct;
+  };
   return {
     providers: catalog.providers.map(provider => ({
       ...provider,
       variants: (() => {
         const variants = provider.variants.map(variant => {
-          const explicit = variant.appConnectorIds.map(id => byConnector.get(`${variant.provider}:${id}`)).filter((state): state is "connected" | "required" => !!state);
+          const identities = identitiesFor(variant);
+          const explicit = identities.map(state => state.authenticationState);
           const authenticationState = explicit.includes("required") ? "required" : explicit.includes("connected") ? "connected" : variant.authenticationState;
-          return authenticationState === variant.authenticationState ? variant : { ...variant, authenticationState };
+          const withAuth = authenticationState === variant.authenticationState ? variant : { ...variant, authenticationState };
+          return applyIdentity(withAuth, identities.find(state => state.displayName?.trim()) ?? identities[0]);
         });
         const represented = new Set(variants.flatMap(variant => variant.appConnectorIds));
         if (provider.provider === "claude") {
@@ -119,6 +204,10 @@ export function groupMarketplaceServices(
       if (reason) { target = service; break; }
     }
     if (target && reason) {
+      if (target.variants.every(isUnnamedVariant) && !isUnnamedVariant(variant)) {
+        target.name = variant.name;
+        target.description = variant.description;
+      }
       target.variants.push(variant);
       target.matchReason = reason;
       continue;

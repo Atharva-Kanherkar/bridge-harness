@@ -19,6 +19,7 @@ use crate::{
     context::ContextProjector, git, handoff, model_profiles, orchestrator, restoration,
     session_forest, session_supervisor, store, BridgeError,
 };
+pub use bridge_protocol::messages::WorkspaceSessionKind;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -167,6 +168,7 @@ pub struct OrchestratorWorktree {
 pub struct WorkspaceSessionPlan {
     workspace_id: String,
     session_id: String,
+    kind: WorkspaceSessionKind,
     selection: OrchestratorSelection,
     workspace_title: String,
     workspace_path: Option<String>,
@@ -481,9 +483,25 @@ impl BridgeCore {
         workspace_id: &str,
         isolated: bool,
     ) -> Result<WorkspaceSessionPlan, BridgeError> {
+        self.plan_workspace_session_with_model(
+            workspace_id, isolated, WorkspaceSessionKind::Orchestrator, None, None,
+        )
+    }
+
+    pub fn plan_workspace_session_with_model(
+        &self,
+        workspace_id: &str,
+        isolated: bool,
+        kind: WorkspaceSessionKind,
+        direct_harness: Option<&Harness>,
+        direct_model: Option<&str>,
+    ) -> Result<WorkspaceSessionPlan, BridgeError> {
         let (selection, workspace_title, workspace_path, project_id) = {
             let db = self.db.lock().unwrap();
-            let selection = resolve_orchestrator_selection(&db, &self.adapter_registry)?;
+            let selection = match kind {
+                WorkspaceSessionKind::Orchestrator => resolve_orchestrator_selection(&db, &self.adapter_registry)?,
+                WorkspaceSessionKind::Direct => resolve_direct_selection(&self.adapter_registry, direct_harness, direct_model)?,
+            };
             let (title, path, project_id): (String, Option<String>, Option<String>) = db
                 .query_row(
                     "SELECT title,path,project_id FROM workspaces WHERE id=?1",
@@ -515,6 +533,7 @@ impl BridgeCore {
         Ok(WorkspaceSessionPlan {
             workspace_id: workspace_id.to_owned(),
             session_id: Uuid::new_v4().to_string(),
+            kind,
             selection,
             workspace_title,
             workspace_path,
@@ -539,12 +558,16 @@ impl BridgeCore {
                     .to_string_lossy()
                     .to_string()
             });
+        let (kind, label) = match plan.kind {
+            WorkspaceSessionKind::Orchestrator => ("orchestrator", plan.selection.label.as_str()),
+            WorkspaceSessionKind::Direct => ("direct", "Chat"),
+        };
         let persisted = (|| -> Result<BridgeState, BridgeError> {
             let db = self.db.lock().unwrap();
             let transaction = db.unchecked_transaction()?;
             transaction.execute(
-                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
-                params![plan.session_id, plan.workspace_id, plan.selection.adapter_id, plan.selection.label, plan.selection.model, plan.selection.tier.as_str(), plan.selection.effort.map(|effort| effort.as_str()), cwd],
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,0)",
+                params![plan.session_id, plan.workspace_id, plan.selection.adapter_id, label, plan.selection.model, plan.selection.tier.as_str(), plan.selection.effort.map(|effort| effort.as_str()), kind, cwd],
             )?;
             store::event(
                 &transaction,
@@ -554,15 +577,15 @@ impl BridgeCore {
                 "New agent session",
             )?;
             if let Some(created) = &worktree {
-                // The class that used to leak permanently: an orchestrator
-                // checkout was named only by `sessions.cwd`, which no cleanup
-                // path consulted, so nothing could find it — let alone reclaim
-                // it. It gets an owned inventory row here, in the same
-                // transaction as the session that owns it.
+                // The inventory kind follows the stored chat mode, while both
+                // root chat checkouts use the same ownership lifecycle.
                 crate::worktree_registry::register(
                     &transaction,
                     &crate::worktree_registry::NewWorktree {
-                        kind: crate::worktree_registry::KIND_ORCHESTRATOR.to_owned(),
+                        kind: match plan.kind {
+                            WorkspaceSessionKind::Orchestrator => crate::worktree_registry::KIND_ORCHESTRATOR,
+                            WorkspaceSessionKind::Direct => crate::worktree_registry::KIND_DIRECT,
+                        }.to_owned(),
                         repo_root: plan.workspace_path.clone().unwrap_or_default(),
                         path: created.path.to_string_lossy().to_string(),
                         branch: Some(created.branch.clone()),
@@ -2009,6 +2032,16 @@ pub fn prepare_orchestrator_worktree(
     workspace_path: &Path,
     session_id: &str,
 ) -> Result<OrchestratorWorktree, BridgeError> {
+    prepare_workspace_worktree(namespace_root, workspace_title, workspace_path, session_id, WorkspaceSessionKind::Orchestrator)
+}
+
+pub fn prepare_workspace_worktree(
+    namespace_root: &Path,
+    workspace_title: &str,
+    workspace_path: &Path,
+    session_id: &str,
+    kind: WorkspaceSessionKind,
+) -> Result<OrchestratorWorktree, BridgeError> {
     git::validate_repo(workspace_path).map_err(|_| {
         BridgeError::Invalid("Connect a Git repository before creating an isolated worktree".into())
     })?;
@@ -2023,12 +2056,53 @@ pub fn prepare_orchestrator_worktree(
     let session_slug = git::slug(session_id);
     let short_session = session_slug.chars().take(8).collect::<String>();
     let branch = format!("bridge/{workspace_slug}-{short_session}");
+    let directory = match kind {
+        WorkspaceSessionKind::Orchestrator => "orchestrators",
+        WorkspaceSessionKind::Direct => "direct",
+    };
     let path = namespace_root
-        .join("orchestrators")
+        .join(directory)
         .join(&workspace_slug)
         .join(session_id);
     git::create_worktree(workspace_path, &path, &branch)?;
     Ok(OrchestratorWorktree { path, branch })
+}
+
+fn resolve_direct_selection(
+    registry: &adapters::AdapterRegistry,
+    harness: Option<&Harness>,
+    model: Option<&str>,
+) -> Result<OrchestratorSelection, BridgeError> {
+    let descriptors = registry.descriptors();
+    let selected_id = harness.map(store::harness_name);
+    let descriptor = descriptors
+        .iter()
+        .find(|descriptor| selected_id.as_deref().is_some_and(|id| descriptor.id == id))
+        .or_else(|| selected_id.is_none().then(|| descriptors.iter().find(|descriptor| descriptor.available)).flatten())
+        .ok_or_else(|| BridgeError::Invalid("No model adapter is available for a direct chat".into()))?;
+    if !descriptor.available {
+        return Err(BridgeError::Invalid(descriptor.unavailable_reason.clone()
+            .unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
+    }
+    let requested = model.filter(|value| !value.trim().is_empty());
+    let selected = requested
+        .or(descriptor.default_model.as_deref())
+        .or_else(|| descriptor.models.iter().find(|option| option.available && option.compatible).map(|option| option.id.as_str()));
+    let advertised = selected.and_then(|id| descriptor.models.iter().find(|option| option.id.eq_ignore_ascii_case(id)));
+    if let Some(option) = advertised {
+        if !option.available || !option.compatible {
+            return Err(BridgeError::Invalid(format!("{} is not available for this session", option.label)));
+        }
+    } else if requested.is_some() && !descriptor.models.is_empty() {
+        return Err(BridgeError::Invalid(format!("{} does not offer model {}", descriptor.label, requested.unwrap())));
+    }
+    Ok(OrchestratorSelection {
+        adapter_id: descriptor.id.clone(),
+        model: selected.map(str::to_owned),
+        tier: advertised.map(|option| option.tier).unwrap_or(CapabilityTier::Fast),
+        effort: None,
+        label: "Chat".into(),
+    })
 }
 
 pub fn resolve_orchestrator_selection(
@@ -2864,6 +2938,211 @@ mod tests {
                 |row| row.get::<_, bool>(0),
             )
             .unwrap());
+    }
+
+    #[test]
+    fn direct_workspace_session_persists_direct_kind_in_workspace() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let plan = core
+            .plan_workspace_session_with_model("w", false, WorkspaceSessionKind::Direct, None, None)
+            .unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
+        let row: (String, Option<String>, String, String, i64) = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT kind,workspace_id,cwd,label,depth FROM sessions",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "direct".into(),
+                Some("w".into()),
+                "/tmp/sessions-demo".into(),
+                "Chat".into(),
+                0
+            )
+        );
+    }
+
+    #[test]
+    fn direct_workspace_checkout_is_inventoried_as_direct() {
+        let (scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let plan = core.plan_workspace_session_with_model(
+            "w", false, WorkspaceSessionKind::Direct, Some(&Harness::Codex), Some("stub-fast"),
+        ).unwrap();
+        let worktree = OrchestratorWorktree {
+            path: scratch.path().join("direct-checkout"),
+            branch: "bridge/direct-test".into(),
+        };
+        std::fs::create_dir(&worktree.path).unwrap();
+        core.persist_workspace_session(plan, Some(worktree)).unwrap();
+        let kind: String = core.db.lock().unwrap().query_row(
+            "SELECT kind FROM worktrees", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(kind, crate::worktree_registry::KIND_DIRECT);
+    }
+
+    #[test]
+    fn direct_workspace_uses_selected_model_at_creation() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+
+        let plan = core
+            .plan_workspace_session_with_model(
+                "w",
+                false,
+                WorkspaceSessionKind::Direct,
+                Some(&Harness::Codex),
+                Some("stub-fast"),
+            )
+            .unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
+        let row: (String, String, String) = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT kind,harness,model FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(row, ("direct".into(), "codex".into(), "stub-fast".into()));
+    }
+
+    #[test]
+    fn direct_workspace_needs_no_orchestrator_model_catalog() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry.register(Box::new(StubAdapter {
+            catalog_empty: true,
+            expected_model: None,
+        })).unwrap();
+        core.adapter_registry = std::sync::Arc::new(registry);
+        seed_workspace(&core, false);
+        assert!(core.plan_workspace_session("w", false).is_err());
+        let plan = core.plan_workspace_session_with_model(
+            "w", false, WorkspaceSessionKind::Direct, Some(&Harness::Cursor), None,
+        ).unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
+        let row: (String, String, Option<String>) = core.db.lock().unwrap().query_row(
+            "SELECT kind,harness,model FROM sessions", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(row, ("direct".into(), "cursor".into(), None));
+    }
+
+    /// Records every launch's instructions, then refuses to start, so a test
+    /// can read exactly what Bridge would have handed the provider.
+    struct CapturingAdapter {
+        instructions: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl adapters::HarnessAdapter for CapturingAdapter {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            adapters::HarnessAdapter::descriptor(&StubAdapter {
+                catalog_empty: false,
+                expected_model: None,
+            })
+        }
+        fn start(
+            &self,
+            request: adapters::StartRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
+            self.instructions
+                .lock()
+                .unwrap()
+                .push(request.instructions.unwrap_or_default().to_owned());
+            Err(BridgeError::Adapter(
+                "capturing adapter cannot start".into(),
+            ))
+        }
+        fn resume(
+            &self,
+            _: adapters::ResumeRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Adapter(
+                "capturing adapter cannot resume".into(),
+            ))
+        }
+        fn supports_native_resume(&self) -> bool {
+            false
+        }
+        fn normalize(&self, _: &Value) -> Vec<agent::NormalizedEvent> {
+            Vec::new()
+        }
+    }
+
+    fn launched_instructions(kind: WorkspaceSessionKind) -> Vec<String> {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry
+            .register(Box::new(CapturingAdapter {
+                instructions: captured.clone(),
+            }))
+            .unwrap();
+        core.adapter_registry = std::sync::Arc::new(registry);
+        seed_workspace(&core, false);
+        let plan = core.plan_workspace_session_with_model("w", false, kind, None, None).unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
+        let id = only_session_id(&core);
+        let core = std::sync::Arc::new(core);
+        // Twice: the first turn and a later one both read the stored kind.
+        for _ in 0..2 {
+            let error = crate::live_turn::start_chat(&core, id.clone()).unwrap_err();
+            assert!(
+                error.to_string().contains("capturing adapter cannot start"),
+                "{error}"
+            );
+        }
+        let launches = captured.lock().unwrap().clone();
+        assert_eq!(launches.len(), 2);
+        launches
+    }
+
+    #[test]
+    fn direct_workspace_session_launches_without_bridge_briefing() {
+        for instructions in launched_instructions(WorkspaceSessionKind::Direct) {
+            assert!(
+                !instructions.contains("starter orchestrator"),
+                "{instructions}"
+            );
+            assert!(!instructions.contains("bridge_role"), "{instructions}");
+            assert!(
+                !instructions.contains("delegation_protocol"),
+                "{instructions}"
+            );
+        }
+        // The same launch path in orchestrator mode still carries both, so the
+        // absence above is the mode's doing, not the fixture's.
+        for instructions in launched_instructions(WorkspaceSessionKind::Orchestrator) {
+            assert!(
+                instructions.contains("starter orchestrator"),
+                "{instructions}"
+            );
+            assert!(
+                instructions.contains("delegation_protocol"),
+                "{instructions}"
+            );
+        }
     }
 
     #[test]

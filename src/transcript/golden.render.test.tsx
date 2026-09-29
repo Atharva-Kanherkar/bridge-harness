@@ -77,6 +77,7 @@ function rowDigest(row: Element): string {
 async function render(
   harness: GoldenHarness,
   source: { events?: AgentEvent[]; forestEntries?: SessionEntry[] },
+  working = false,
 ): Promise<{ container: HTMLDivElement; digest: string[]; unmount: () => Promise<void> }> {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement("div");
@@ -89,6 +90,7 @@ async function render(
       events={source.events ?? []}
       forestEntries={source.forestEntries}
       activeLeafId={source.forestEntries?.at(-1)?.id ?? null}
+      working={working}
     />,
   ));
   const rows = container.querySelector("[data-conversation-content]");
@@ -170,7 +172,9 @@ it("renders a distinct finished cue for an ACP action, including replay", async 
   for (const completed of [false, true]) {
     const events = completed ? frames : frames.slice(0, 2);
     for (const source of [{ events }, { forestEntries: durableEntriesFrom("cursor", events) }]) {
-      const view = await render("cursor", source);
+      // A stream cut before its completion frame is still a live turn: the
+      // session's own status is not passed on this surface, so `working` is.
+      const view = await render("cursor", source, !completed);
       try {
         for (const button of view.container.querySelectorAll('button[aria-expanded="false"]')) {
           if (/steps?/.test(button.textContent ?? "")) await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));

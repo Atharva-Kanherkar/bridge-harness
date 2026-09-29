@@ -47,6 +47,12 @@ pub struct OpenCodeStreamState {
     /// another child), keyed by session id. Their frames are tagged, and their
     /// lifecycle never drives the root turn.
     children: HashMap<String, OpenCodeChildSession>,
+    /// Assistant prose that has only ever arrived as deltas, keyed by text part
+    /// in first-seen order. OpenCode does not reliably finish a text part with a
+    /// snapshot, so a reply that existed only as deltas used to live in the
+    /// reader's live window and nowhere else: evicted, it vanished, and a reload
+    /// never had it. The turn's end flushes these as durable messages.
+    pending_text: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -97,14 +103,59 @@ fn opencode_part_finished(part: &Value) -> bool {
         || part.get("completed").and_then(Value::as_bool) == Some(true)
 }
 
+/// Remember prose a delta carried, so an unfinished text part still lands in
+/// history when its turn ends. Root prose only: a subagent's text is tagged on
+/// its own frames and must never flush as the root chat's reply.
+fn accumulate_pending_text(state: &mut OpenCodeStreamState, session_id: Option<&str>, part_id: &str, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if session_id.is_some_and(|id| state.children.contains_key(id)) {
+        return;
+    }
+    if let Some(entry) = state.pending_text.iter_mut().find(|(id, _)| id == part_id) {
+        entry.1.push_str(text);
+    } else {
+        state.pending_text.push((part_id.to_owned(), text.to_owned()));
+    }
+}
+
+/// Drop a part's delta run: the finished snapshot carries the whole text, and
+/// persisting both is exactly the duplicate this accumulator exists to avoid.
+fn forget_pending_text(state: &mut OpenCodeStreamState, part_id: &str) {
+    state.pending_text.retain(|(id, _)| id != part_id);
+}
+
+/// One durable message per text part that never finished, in arrival order.
+fn flush_pending_text(state: &mut OpenCodeStreamState) -> Vec<NormalizedEvent> {
+    state
+        .pending_text
+        .drain(..)
+        .filter_map(|(part_id, text)| {
+            if text.trim().is_empty() {
+                return None;
+            }
+            let mut event = NormalizedEvent::new("message.completed");
+            event.item_id = Some(part_id);
+            event.role = Some("assistant".into());
+            event.status = Some("completed".into());
+            event.text = Some(text);
+            event.data = json!({ "assembledFrom": "message.delta" });
+            Some(event)
+        })
+        .collect()
+}
+
 fn complete_opencode_turn(properties: &Value, state: &mut OpenCodeStreamState) -> Vec<NormalizedEvent> {
     if state.turn_active == Some(false) {
         return vec![];
     }
     state.turn_active = Some(false);
+    let mut events = flush_pending_text(state);
     let mut event = with_data("turn.completed", properties, properties.clone());
     event.status = Some("completed".into());
-    vec![event]
+    events.push(event);
+    events
 }
 
 pub fn normalize_opencode_message_with_state(
@@ -232,6 +283,7 @@ fn normalize_opencode_root_frame(
                         state.message_roles.clear();
                         state.message_models.clear();
                         state.parts.clear();
+                        state.pending_text.clear();
                     }
                     state.turn_active = Some(true);
                     let mut event = with_data("turn.started", &properties, properties.clone());
@@ -323,6 +375,13 @@ fn normalize_opencode_root_frame(
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
+            // Prose is held until the turn ends in case no snapshot ever closes
+            // the part; reasoning has its own completion frames.
+            if !is_reasoning_field {
+                if let (Some(part_id), Some(text)) = (event.item_id.as_deref(), event.text.as_deref()) {
+                    accumulate_pending_text(state, properties.get("sessionID").and_then(Value::as_str), part_id, text);
+                }
+            }
             vec![event]
         }
         "message.part.updated" => {
@@ -444,13 +503,18 @@ fn normalize_opencode_root_frame(
         }
         "session.error" => {
             state.turn_active = Some(false);
+            // Prose the reader already watched stream is history even when the
+            // turn died before its part finished.
+            let mut events = flush_pending_text(state);
             let mut event = with_data("error", &properties, properties.clone());
             event.status = Some("failed".into());
             event.title = Some("OpenCode error".into());
             event.text = opencode_error_text(&properties);
             let mut ended = NormalizedEvent::new("turn.completed");
             ended.status = Some("failed".into());
-            vec![event, ended]
+            events.push(event);
+            events.push(ended);
+            events
         }
         _ => {
             let mut event = with_data("provider.unknown", &properties, properties.clone());
@@ -486,6 +550,9 @@ fn normalize_opencode_part(
             event.role = Some("assistant".into());
             event.status = Some("completed".into());
             event.text = part.get("text").and_then(Value::as_str).map(str::to_owned);
+            if let Some(id) = event.item_id.as_deref() {
+                forget_pending_text(state, id);
+            }
             vec![event]
         }
         "reasoning" if is_assistant => {
@@ -1278,10 +1345,15 @@ fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option
     Some(event)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ClaudeToolCall {
     family: ClaudeToolFamily,
     started_at: Instant,
+    /// The Bash command, kept so the completion event can name it — the
+    /// `tool_result` half of the pair carries only output, and features that
+    /// react to a finished command (PR creation detection, for one) need the
+    /// command itself at completion time.
+    command: Option<String>,
 }
 
 /// The normalized item family a Claude tool name belongs to. Mirrors the
@@ -1369,9 +1441,10 @@ fn claude_tool_started(
         .or_insert(ClaudeToolCall {
             family,
             started_at: now,
+            command: None,
         });
     let mut event = with_data(&family.kind("started"), message, block.clone());
-    event.item_id = Some(tool_id);
+    event.item_id = Some(tool_id.clone());
     event.title = Some(name.to_owned());
     event.status = Some("inProgress".into());
     event.data["phase"] = Value::String(phase.as_str().to_owned());
@@ -1383,6 +1456,9 @@ fn claude_tool_started(
                 // matching the Codex commandExecution title.
                 event.data["command"] = Value::String(command.to_owned());
                 event.title = Some(command.to_owned());
+                if let Some(call) = state.tool_calls.get_mut(&tool_id) {
+                    call.command = Some(command.to_owned());
+                }
             }
         }
         ClaudeToolFamily::FileChange => {
@@ -1830,6 +1906,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     .to_owned();
                 let call = state.tool_calls.remove(&tool_id);
                 let family = call
+                    .as_ref()
                     .map(|call| call.family)
                     .unwrap_or(ClaudeToolFamily::Tool);
                 let mut event = with_data(&family.kind("completed"), message, part.clone());
@@ -1838,6 +1915,12 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
                     // Host-side wall time between tool_use and tool_result.
                     event.data["durationMs"] =
                         json!(u64::try_from(call.started_at.elapsed().as_millis()).unwrap_or(0));
+                    if let Some(command) = call.command {
+                        // `tool_result` carries only output; reattach the
+                        // command so completion-time consumers (PR creation
+                        // detection) see the same pair the started card did.
+                        event.data["command"] = Value::String(command);
+                    }
                 }
                 event.status = Some(
                     if part
@@ -3179,6 +3262,27 @@ mod tests {
     }
 
     #[test]
+    fn claude_completion_reattaches_the_command_from_the_started_call() {
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(
+            &json!({
+                "type":"assistant",
+                "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create --fill"}}]}
+            }),
+            &mut state,
+        );
+        let completed = normalize_claude_message_with_state(
+            &json!({
+                "type":"user",
+                "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"https://github.com/o/r/pull/1"}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(completed[0].kind, "command.completed");
+        assert_eq!(completed[0].data["command"], "gh pr create --fill");
+    }
+
+    #[test]
     fn claude_tool_result_without_started_falls_back_to_tool_completed() {
         let completed = normalize_claude_message(&json!({
             "type":"user",
@@ -3640,6 +3744,49 @@ mod tests {
         assert!(normalize_opencode_message_with_state(&json!({"type":"message.part.delta", "properties":{
             "sessionID":"ses_1", "messageID":"msg_1", "partID":"prt_r", "field":"text", "delta":"late"
         }}), &mut state).is_empty());
+    }
+
+    #[test]
+    fn opencode_flushes_streamed_prose_that_never_finished() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant"}}}), &mut state);
+        for delta in ["All ", "done."] {
+            normalize_opencode_message_with_state(&json!({"type":"message.part.delta","properties":{"sessionID":"ses_1","messageID":"msg_1","partID":"prt_text","field":"text","delta":delta}}), &mut state);
+        }
+        let idle = normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"idle"}}}), &mut state);
+        assert_eq!(
+            idle.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>(),
+            vec!["message.completed", "turn.completed"]
+        );
+        assert_eq!(idle[0].item_id.as_deref(), Some("prt_text"));
+        assert_eq!(idle[0].role.as_deref(), Some("assistant"));
+        assert_eq!(idle[0].status.as_deref(), Some("completed"));
+        assert_eq!(idle[0].text.as_deref(), Some("All done."));
+    }
+
+    #[test]
+    fn opencode_finished_snapshot_supersedes_its_delta_run() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"message.part.delta","properties":{"sessionID":"ses_1","messageID":"msg_1","partID":"prt_text","field":"text","delta":"Here it is."}}), &mut state);
+        let snapshot = normalize_opencode_message_with_state(&json!({"type":"message.part.updated","properties":{"sessionID":"ses_1","part":{"id":"prt_text","messageID":"msg_1","type":"text","text":"Here it is.","time":{"start":1,"end":2}}}}), &mut state);
+        assert_eq!(snapshot[0].kind, "message.completed");
+        let idle = normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"idle"}}}), &mut state);
+        assert_eq!(idle.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>(), vec!["turn.completed"]);
+    }
+
+    #[test]
+    fn opencode_child_prose_never_flushes_as_the_root_reply() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"ses_1","info":{"id":"ses_1"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"busy"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"session.created","properties":{"sessionID":"ses_2","info":{"id":"ses_2","parentID":"ses_1","agent":"explore"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"message.updated","properties":{"sessionID":"ses_2","info":{"id":"msg_c","role":"assistant"}}}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"message.part.delta","properties":{"sessionID":"ses_2","messageID":"msg_c","partID":"prt_child","field":"text","delta":"Child findings."}}), &mut state);
+        let idle = normalize_opencode_message_with_state(&json!({"type":"session.status","properties":{"sessionID":"ses_1","status":{"type":"idle"}}}), &mut state);
+        assert_eq!(idle.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>(), vec!["turn.completed"]);
     }
 
     #[test]

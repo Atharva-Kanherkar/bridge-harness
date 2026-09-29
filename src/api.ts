@@ -7,14 +7,14 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
+import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
-import type { TurnImage, ArchivedChatsResult, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, AttributionSettings, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -51,6 +51,9 @@ import type {
   GithubReviewResult,
   GithubCheckoutResult,
   GithubConnectResult,
+  GithubAttachPrResult,
+  GithubSessionPrsResult,
+  SessionPullRequest,
   SearchGithubReposResult,
   GithubChecksResult,
   GithubIssueResult,
@@ -166,6 +169,7 @@ const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
 type GithubChecksChangedPayload = { workspaceId: string; number: number };
 const githubCiListeners = new Set<(payload: GithubCiFinishedPayload) => void>();
+const sessionPrListeners = new Set<(payload: { sessionId: string }) => void>();
 // Browser-mode stand-in for the daemon's global `agent-event` fan-out. Every
 // surface that renders live turns (the aside panel above all — its optimistic
 // pending rows reconcile only against this stream) subscribes here outside
@@ -799,7 +803,7 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 const mockHealth: Health = {
   ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, cursor: true, opencode: true, shell: true }, database: "demo", snapshot_directory: "demo-snapshots", snapshot_count: 3, snapshot_total_bytes: 12_288, telemetry_database: "demo-telemetry", warnings: [],
   adapters: [
-    { id: "codex", label: "Codex", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
+    { id: "codex", label: "Codex", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }], defaultModel: "gpt-5.6-luna" },
     { id: "claude", label: "Claude Code", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "file_changes", "approvals", "usage", "interrupt", "steering"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
     { id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "auto", label: "Auto", tier: "standard", defaultForTier: true }, { id: "composer-2.5", label: "Composer 2.5", tier: "fast", defaultForTier: true }, { id: "gpt-5.3-codex", label: "Codex 5.3", tier: "standard", defaultForTier: false }, { id: "claude-opus-5-thinking-high", label: "Claude Opus 5 1M Thinking", tier: "strong", defaultForTier: true }], defaultModel: "auto" },
     { id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", tier: "fast", defaultForTier: true }, { id: "opencode/north-mini-code-free", label: "North Mini Code", tier: "standard", defaultForTier: true }, { id: "opencode/big-pickle", label: "Big Pickle", tier: "strong", defaultForTier: true }], defaultModel: "opencode/north-mini-code-free" }
@@ -1297,6 +1301,14 @@ export const bridgeApi = {
     isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>
     isTauri() ? call("github/github_connect", { workspaceId, remoteUrl }) : Promise.resolve(mockGithubConnect(remoteUrl)),
+  /** The PRs attached to one chat, newest first. `refresh` bypasses the short
+   * server caches — a reopened chat or a manual retry. */
+  githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
+    isTauri() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
+  /** Attach a chat to a PR by URL or number; verified server-side against the
+   * chat's workspace repository. */
+  githubAttachPr: (sessionId: string, reference: string): Promise<GithubAttachPrResult> =>
+    isTauri() ? call("github/github_attach_pr", { sessionId, reference }) : mockGithubAttachPr(sessionId, reference),
   searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>
     isTauri() ? call("workspaces/search_github_repos", { query }) : Promise.resolve(mockSearchGithubRepos(query)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
@@ -1911,6 +1923,14 @@ export const bridgeApi = {
     if (isTauri()) return call("config/save_reviewer_settings", { settings });
     return { settings: structuredClone(settings), defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
   },
+  attributionSettings: async (): Promise<AttributionSettings> => {
+    if (isTauri()) return call("config/get_attribution_settings");
+    return { hideAiAttribution: false };
+  },
+  saveAttributionSettings: async (settings: AttributionSettings): Promise<AttributionSettings> => {
+    if (isTauri()) return call("config/save_attribution_settings", { settings });
+    return structuredClone(settings);
+  },
   unarchiveChat: async (sessionId: string): Promise<void> => {
     if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
     throw new Error("Unarchiving a chat needs the desktop app");
@@ -2357,13 +2377,13 @@ export const bridgeApi = {
       fidelity: "projected_at_boundary",
     };
   },
-  createWorkspaceSession: async (workspaceId: string, createWorktree = false): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree });
+  createWorkspaceSession: async (workspaceId: string, createWorktree = false, kind: WorkspaceSessionKind = "orchestrator", harness?: Harness, model?: string | null): Promise<BridgeState> => {
+    if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree, kind, harness, model });
     const id = crypto.randomUUID();
     const workspace = mockState.workspaces.find(item => item.id === workspaceId);
     if (createWorktree && !workspace?.projectId) throw new Error("Connect a Git repository before creating an isolated worktree");
     const cwd = createWorktree ? `/tmp/bridge/worktrees/${id}` : workspace?.path ?? null;
-    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind: "orchestrator", cwd }); emitState(); return snapshot();
+    mockState.sessions.push({ id, workspaceId, harness: kind === "direct" ? harness ?? "codex" : "codex", label: kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: kind === "direct" ? model ?? null : null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind, cwd }); emitState(); return snapshot();
   },
   updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null): Promise<BridgeState> => {
     if (isTauri()) return call("sessions/update_chat_model", { sessionId, harness, model, effort });
@@ -2515,6 +2535,8 @@ export const bridgeApi = {
   renameTerminal: async (workspaceId: string, terminalId: string, title: string): Promise<TerminalRecord> => isTauri() ? call("terminal/rename_terminal", { workspaceId, terminalId, title }) : mockRenameTerminal(workspaceId, terminalId, title),
   onTerminalFrame: async (handler: (frame: TerminalFrame) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalFrame>("terminal-frame", handler) : () => undefined,
   onTerminalLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
+  /** The live channel dropped frames. Durable ones come back by cursor replay. */
+  onStreamLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
   openTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
   writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
@@ -2639,6 +2661,11 @@ export const bridgeApi = {
     if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
   },
+  onGithubSessionPrsChanged: async (handler: (payload: { sessionId: string }) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<{ sessionId: string }>("github/session_prs_changed", handler);
+    sessionPrListeners.add(handler);
+    return () => sessionPrListeners.delete(handler);
+  },
   onGithubCiFinished: async (handler: (payload: GithubCiFinishedPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<GithubCiFinishedPayload>("github/ci_finished", handler);
     githubCiListeners.add(handler);
@@ -2725,6 +2752,58 @@ const mockGithubConnect = (remoteUrl: string): GithubConnectResult => {
   const [owner = "bridge", name = "harness"] = remoteUrl.replace(/\.git$/, "").replace(/\/$/, "").split(/[/:]/).slice(-2);
   return { repository: { host: "github.com", owner, name }, initialized: false, replacedRemote: false };
 };
+// Browser-mode chat PRs. Each attached PR runs a simulated CI: checks start
+// queued, move through running, and settle a few seconds apart, so the card's
+// live states are visible in `bun run dev` without GitHub. Append
+// `?mockChatPrs` to the URL to seed every chat with a PR.
+const mockChatPrs = new Map<string, { pr: SessionPullRequest; startedAt: number; failing: boolean }[]>();
+const MOCK_CHECKS: ReadonlyArray<[string, string, number]> = [
+  ["typecheck", "CI", 2_000], ["lint", "CI", 3_500], ["unit tests", "CI", 9_000],
+  ["rust (macos)", "Rust", 14_000], ["bundle size", "Size", 6_000], ["e2e smoke", "E2E", 18_000],
+];
+function mockChatPrView(entry: { pr: SessionPullRequest; startedAt: number; failing: boolean }): SessionPullRequest {
+  const elapsed = Date.now() - entry.startedAt;
+  const checkDetails = MOCK_CHECKS.map(([name, workflow, finishesAt], index): SessionPullRequest["checkDetails"][number] => {
+    if (elapsed < 800 + index * 250) return { name, workflow, status: "queued", conclusion: null, logUrl: "" };
+    if (elapsed < finishesAt) return { name, workflow, status: "inProgress", conclusion: null, logUrl: "" };
+    const failed = entry.failing && name === "unit tests";
+    return { name, workflow, status: "completed", conclusion: failed ? "failure" : "success", logUrl: `${entry.pr.url}/checks` };
+  });
+  const checks = { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 };
+  for (const check of checkDetails) {
+    checks.total += 1;
+    if (check.status === "queued") checks.queued += 1;
+    else if (check.status === "inProgress") checks.inProgress += 1;
+    else if (check.conclusion === "failure") checks.failed += 1;
+    else checks.passed += 1;
+  }
+  return { ...entry.pr, checks, checkDetails, fetchedAt: new Date().toISOString() };
+}
+function mockGithubSessionPrs(sessionId: string): GithubSessionPrsResult {
+  if (!mockChatPrs.has(sessionId) && typeof location !== "undefined" && new URLSearchParams(location.search).has("mockChatPrs")) {
+    mockChatPrs.set(sessionId, [mockChatPrEntry(341, "Show live pull request status in the originating chat", false)]);
+  }
+  return { pullRequests: (mockChatPrs.get(sessionId) ?? []).map(mockChatPrView) };
+}
+function mockChatPrEntry(number: number, title: string, failing: boolean) {
+  const url = `https://github.com/Atharva-Kanherkar/bridge-harness/pull/${number}`;
+  const at = new Date().toISOString();
+  const pr: SessionPullRequest = {
+    number, title, url, state: "open", isDraft: false, headBranch: "feat/pr-status-in-chat", headSha: "e3ad782c0ffee",
+    checks: { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 },
+    checkDetails: [], attribution: "manual", attachedAt: at, fetchedAt: at, stale: false, error: null,
+  };
+  return { pr, startedAt: Date.now(), failing };
+}
+async function mockGithubAttachPr(sessionId: string, reference: string): Promise<GithubAttachPrResult> {
+  const match = reference.trim().match(/(?:\/pull\/|^#?)(\d+)\/?$/);
+  const number = match ? Number(match[1]) : 0;
+  if (!number) throw new Error("Paste a pull request URL like https://github.com/owner/repo/pull/123, or a PR number.");
+  const entry = mockChatPrEntry(number, `Mock pull request #${number}`, number % 2 === 0);
+  mockChatPrs.set(sessionId, [entry, ...(mockChatPrs.get(sessionId) ?? []).filter(existing => existing.pr.number !== number)]);
+  for (const listener of sessionPrListeners) listener({ sessionId });
+  return { attached: true, message: `Attached PR #${number}.`, pullRequest: mockChatPrView(entry) };
+}
 const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
 const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
   confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };
@@ -2912,7 +2991,7 @@ const mockManagedAgents: ManagedAgentList = {
       executable: "/managed-runtimes/agents/claude/installations/a1b2c3/payload/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
       // Deliberately behind the pin: mock mode is where the Update action is
       // developed and reviewed, so one runtime has to have an update waiting.
-      version: "0.3.209", pinnedVersion: "0.3.280", updateAvailable: true, consecutiveFailures: 0,
+      version: "0.3.209", pinnedVersion: "0.3.284", updateAvailable: true, consecutiveFailures: 0,
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,

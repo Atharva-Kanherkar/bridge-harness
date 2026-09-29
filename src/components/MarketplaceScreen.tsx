@@ -2,8 +2,8 @@ import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, ChevronLeft, ChevronRight, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import { applyAppAuthStates, authenticationLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, MARKETPLACE_ALIASES, verifiedBrandLogoUrl, type MarketplaceService } from "../marketplace";
-import type { MarketplaceAction, MarketplaceActionResult, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
+import { applyAppAuthStates, authenticationLabel, categoryLabel, compatibilityLabels, failedVariants, groupMarketplaceServices, installVariants, isUnnamedService, MARKETPLACE_ALIASES, serviceCategory, servicePopularity, verifiedBrandLogoUrl, type MarketplaceService } from "../marketplace";
+import type { MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MarketplaceVariant } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,15 @@ import { SkillMarketplace } from "./SkillMarketplace";
 
 type InstallTarget = MarketplaceProvider | "both";
 type CatalogScope = "public" | "personal";
+type PluginView = "installed" | "featured" | "all";
+
+const PAGE_SIZE = 24;
+const FEATURED_LIMIT = 12;
+const PLUGIN_VIEWS: PluginView[] = ["installed", "featured", "all"];
+
+function pluginViewLabel(view: PluginView): string {
+  return view === "all" ? "All" : view === "featured" ? "Featured" : "Installed";
+}
 
 function providerLabel(provider: MarketplaceProvider): string {
   return provider === "codex" ? "Codex" : "Claude Code";
@@ -193,26 +202,60 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
   </div>;
 }
 
+function PluginListSkeleton() {
+  return <div data-testid="plugin-catalog-skeleton" aria-label="Loading plugins" className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+    {Array.from({ length: 6 }, (_, index) => <div key={index} className="flex min-h-18 items-center gap-3.5 px-4 py-3.5">
+      <span className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-muted" />
+      <span className="min-w-0 flex-1">
+        <span className="block h-3 w-40 max-w-[40%] animate-pulse rounded bg-muted" />
+        <span className="mt-2 block h-3 w-72 max-w-[80%] animate-pulse rounded bg-muted/70" />
+      </span>
+    </div>)}
+  </div>;
+}
+
+function PluginEmptyState({ title, detail }: { title: string; detail: string }) {
+  return <div className="u-surface mt-3.5 flex min-h-44 flex-col items-center justify-center rounded-2xl px-4 text-center"><Unplug className="mb-2.5 text-muted-foreground" size={22} /><p className="text-[13px] font-medium text-foreground">{title}</p><p className="mt-1 text-[11px] text-muted-foreground">{detail}</p></div>;
+}
+
+function ServiceList({ services, busyKey, onOpen, onInstall }: {
+  services: MarketplaceService[];
+  busyKey: string | null;
+  onOpen: (service: MarketplaceService) => void;
+  onInstall: (service: MarketplaceService) => void;
+}) {
+  return <div className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{services.map(service => <ServiceRow key={service.id} service={service} busyKey={busyKey} onOpen={() => onOpen(service)} onInstall={() => onInstall(service)} />)}</div>;
+}
+
+function ShowMore({ remaining, onClick }: { remaining: number; onClick: () => void }) {
+  return <div className="mt-3 flex justify-center"><Button size="sm" variant="secondary" data-testid="plugin-show-more" onClick={onClick}>Show {Math.min(remaining, PAGE_SIZE)} more</Button></div>;
+}
+
 function PluginMarketplace() {
   const [catalog, setCatalog] = useState<MarketplaceCatalog>();
+  const [appStates, setAppStates] = useState<MarketplaceAppAuthState[]>();
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState<MarketplaceProvider | "all">("all");
   const [scope, setScope] = useState<CatalogScope>("public");
+  const [view, setView] = useState<PluginView>("featured");
+  const [category, setCategory] = useState("all");
+  const [pageLimit, setPageLimit] = useState(PAGE_SIZE);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [targets, setTargets] = useState<Record<string, InstallTarget>>({});
   const [results, setResults] = useState<Record<string, MarketplaceActionResult[]>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [catalogFailed, setCatalogFailed] = useState(false);
-  const catalogRef = useRef<MarketplaceCatalog>();
+  const [authFailed, setAuthFailed] = useState(false);
+  const appStatesRef = useRef<MarketplaceAppAuthState[]>();
+  const resolvedRef = useRef<MarketplaceCatalog>();
   const authRefreshBusy = useRef(false);
 
-  useEffect(() => { catalogRef.current = catalog; }, [catalog]);
   const refreshAuth = useCallback(async () => {
     if (authRefreshBusy.current) return;
     authRefreshBusy.current = true;
-    try { const states = await bridgeApi.marketplaceAppAuthStates(); setCatalog(current => current ? applyAppAuthStates(current, states) : current); }
-    catch { /* Connector status is supplementary. */ }
+    try { setAppStates(await bridgeApi.marketplaceAppAuthStates()); setAuthFailed(false); }
+    catch { setAuthFailed(true); }
     finally { authRefreshBusy.current = false; }
   }, []);
   const refresh = useCallback(async () => { setLoading(true); try { setCatalog(await bridgeApi.marketplaceCatalog()); setCatalogFailed(false); } catch { setCatalogFailed(true); } finally { setLoading(false); } }, []);
@@ -220,22 +263,66 @@ function PluginMarketplace() {
   useEffect(() => {
     void refreshAuth();
     const timer = window.setInterval(() => {
-      const needsRefresh = catalogRef.current?.providers.some(item => item.variants.some(variant => variant.installed && variant.appConnectorIds.length > 0 && variant.authenticationState.toLowerCase() !== "connected"));
-      if (needsRefresh) void refreshAuth();
+      const needsAuthRefresh = resolvedRef.current?.providers.some(item => item.variants.some(variant => variant.installed && variant.authenticationState.toLowerCase() !== "connected" && (variant.appConnectorIds.length > 0 || variant.connectorType === "app")));
+      // A failed or never-completed identity load keeps polling, so a single
+      // transient failure cannot hide app rows until the screen is reopened.
+      if (needsAuthRefresh || !appStatesRef.current) void refreshAuth();
     }, 15_000);
     return () => window.clearInterval(timer);
   }, [refreshAuth]);
+  useEffect(() => { setPageLimit(PAGE_SIZE); }, [query, provider, scope, view, category]);
 
-  const allServices = useMemo(() => groupMarketplaceServices(catalog?.providers.flatMap(item => item.variants) ?? [], MARKETPLACE_ALIASES), [catalog]);
+  // App identities arrive after the catalog (Codex app/list is slow, and it is
+  // the same call the auth poll makes). Keeping them in separate state means a
+  // late catalog can never drop a resolved name.
+  const resolved = useMemo(() => catalog ? applyAppAuthStates(catalog, appStates ?? []) : undefined, [catalog, appStates]);
+  useEffect(() => { appStatesRef.current = appStates; }, [appStates]);
+  useEffect(() => { resolvedRef.current = resolved; }, [resolved]);
+  const allServices = useMemo(() => groupMarketplaceServices(resolved?.providers.flatMap(item => item.variants) ?? [], MARKETPLACE_ALIASES), [resolved]);
+  const namedServices = useMemo(() => allServices.filter(service => !isUnnamedService(service)), [allServices]);
   const services = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return allServices.filter(service => {
+    return namedServices.filter(service => {
       const providerMatch = provider === "all" || service.variants.some(variant => variant.provider === provider);
       const searchMatch = !needle || service.name.toLowerCase().includes(needle) || service.description?.toLowerCase().includes(needle) || service.variants.some(variant => variant.capabilities.some(capability => capability.toLowerCase().includes(needle)));
       return providerMatch && searchMatch && serviceScope(service) === scope;
     });
-  }, [allServices, provider, query, scope]);
-  const installed = useMemo(() => allServices.filter(service => service.variants.some(variant => variant.installed)), [allServices]);
+  }, [namedServices, provider, query, scope]);
+  const installed = useMemo(() => services.filter(service => service.variants.some(variant => variant.installed)), [services]);
+  const searching = !!query.trim();
+  const hasUnnamedServices = useMemo(() => allServices.some(isUnnamedService), [allServices]);
+  const resolvingNames = !!resolved && !appStates && !authFailed && hasUnnamedServices;
+  const namesFailed = !!resolved && !appStates && authFailed && hasUnnamedServices;
+  const categories = useMemo(() => {
+    const buckets = new Map<string, number>();
+    for (const service of services) {
+      const key = serviceCategory(service) ?? "";
+      buckets.set(key, (buckets.get(key) ?? 0) + 1);
+    }
+    return [...buckets.entries()]
+      .map(([key, count]) => ({ key, count, label: key ? categoryLabel(key) : "Other" }))
+      .sort((a, b) => {
+        if ((a.key === "") !== (b.key === "")) return a.key === "" ? 1 : -1;
+        return b.count - a.count || a.label.localeCompare(b.label);
+      });
+  }, [services]);
+  useEffect(() => { if (category !== "all" && !categories.some(item => item.key === category)) setCategory("all"); }, [categories, category]);
+  const visible = useMemo(() => {
+    if (searching) return services;
+    if (view === "all") return category === "all" ? services : services.filter(service => (serviceCategory(service) ?? "") === category);
+    if (view === "installed") return installed;
+    return [];
+  }, [searching, services, view, category, installed]);
+  const paged = useMemo(() => visible.slice(0, pageLimit), [visible, pageLimit]);
+  const remaining = Math.max(0, visible.length - paged.length);
+  const featuredInstalled = installed.slice(0, FEATURED_LIMIT);
+  const popular = useMemo(() => services
+    .filter(service => !service.variants.some(variant => variant.installed))
+    .map(service => ({ service, popularity: servicePopularity(service) }))
+    .filter(item => item.popularity > 0)
+    .sort((a, b) => b.popularity - a.popularity || a.service.name.localeCompare(b.service.name))
+    .slice(0, FEATURED_LIMIT)
+    .map(item => item.service), [services]);
 
   const install = async (service: MarketplaceService, retry = false) => {
     const previous = results[service.id] ?? [];
@@ -269,27 +356,57 @@ function PluginMarketplace() {
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => void refresh()} disabled={loading} aria-label="Refresh plugins" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
+      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh plugins" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
       <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search plugins" placeholder="Search plugins" className="h-8 rounded-lg pl-10 text-[13px]" /></div>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
-      {loading && !catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15} /> Discovering provider marketplaces…</div>}
+      {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
+      {namesFailed && <p role="status" className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-warning"><AlertCircle size={12} aria-hidden="true" />Connector names could not be resolved.<button type="button" onClick={() => void refreshAuth()} className="font-medium text-foreground transition-colors hover:underline">Retry</button></p>}
+      {loading && !catalog && <PluginListSkeleton />}
       {catalogFailed && !loading && !catalog && <p role="status" className="mt-5 flex items-center gap-2 text-[12px] text-warning"><AlertCircle size={12} aria-hidden="true" />Plugins could not be loaded. Use refresh to try again.</p>}
 
-      {!!catalog && <>
-        <section className="mt-5" aria-labelledby="installed-heading">
-          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-[12px] font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} plugins</span></div>
-          {installed.length ? <div className="mt-3.5 flex flex-wrap gap-2.5">{installed.map(service => <button key={service.id} type="button" title={service.name} aria-label={`Open ${service.name}`} onClick={() => setSelectedId(service.id)} className="inline-flex items-center gap-2 rounded-lg border border-border bg-card p-1 pr-3 text-ui transition-colors hover:bg-accent"><ServiceIcon service={service} size="sm" /><span>{service.name}</span></button>)}</div> : <p className="mt-3 text-[11px] text-muted-foreground">No plugins installed yet.</p>}
-        </section>
-
-        <section className="mt-6" aria-labelledby="catalog-heading">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      {!!resolved && <>
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+          <div className="u-segmented" role="group" aria-label="Plugin views">{PLUGIN_VIEWS.map(value => <button key={value} type="button" data-active={view === value} aria-pressed={view === value} onClick={() => setView(value)} className="u-segmented-item">{pluginViewLabel(value)}</button>)}</div>
+          <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
             <div className="u-segmented">{(["public", "personal"] as CatalogScope[]).map(value => <button key={value} type="button" data-active={scope === value} aria-pressed={scope === value} onClick={() => setScope(value)} className="u-segmented-item capitalize">{value}</button>)}</div>
-            <div className="flex items-center gap-2 text-muted-foreground"><SlidersHorizontal size={12} aria-hidden="true" /><div className="u-segmented">{(["all", "codex", "claude"] as const).map(value => <button key={value} type="button" data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div></div>
+            <SlidersHorizontal size={12} aria-hidden="true" />
+            <div className="u-segmented">{(["all", "codex", "claude"] as const).map(value => <button key={value} type="button" data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div>
           </div>
-          <h2 id="catalog-heading" className="mt-5 text-ui font-medium text-muted-foreground">{query ? "Search results" : scope === "public" ? "Featured" : "Personal plugins"}</h2>
-          {services.length ? <div className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{services.map(service => <ServiceRow key={service.id} service={service} busyKey={busyKey} onOpen={() => setSelectedId(service.id)} onInstall={() => void install(service)} />)}</div> : <div className="u-surface mt-3.5 flex min-h-44 flex-col items-center justify-center rounded-2xl px-4 text-center"><Unplug className="mb-2.5 text-muted-foreground" size={22} /><p className="text-[13px] font-medium text-foreground">No matching plugins</p><p className="mt-1 text-[11px] text-muted-foreground">Try another search, scope, or provider.</p></div>}
-        </section>
+        </div>
+
+        {searching || view === "all" ? <>
+          {!searching && categories.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">
+            <button type="button" data-category="all" data-active={category === "all"} aria-pressed={category === "all"} onClick={() => setCategory("all")} className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${category === "all" ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>All <span className="text-muted-foreground">{services.length}</span></button>
+            {categories.map(item => <button key={item.key || "other"} type="button" data-category={item.key || "other"} data-active={category === item.key} aria-pressed={category === item.key} onClick={() => setCategory(item.key)} className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${category === item.key ? "border-foreground/25 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"}`}>{item.label} <span className="text-muted-foreground">{item.count}</span></button>)}
+          </div>}
+          <section className="mt-5" aria-labelledby="catalog-heading">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="catalog-heading" className="text-ui font-medium text-muted-foreground">{searching ? "Search results" : category === "all" ? "All plugins" : category === "" ? "Other" : categoryLabel(category)}</h2>
+              <span className="shrink-0 text-[11px] text-muted-foreground">{visible.length} plugins</span>
+            </div>
+            {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No matching plugins" detail="Try another search, scope, or provider." />}
+            {remaining > 0 && <ShowMore remaining={remaining} onClick={() => setPageLimit(limit => limit + PAGE_SIZE)} />}
+          </section>
+        </> : view === "installed" ? <section className="mt-5" aria-labelledby="installed-heading">
+          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-ui font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} plugins</span></div>
+          {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No plugins installed yet" detail="Switch scope or browse the catalog to add one." />}
+          {remaining > 0 && <ShowMore remaining={remaining} onClick={() => setPageLimit(limit => limit + PAGE_SIZE)} />}
+        </section> : <>
+          <section className="mt-5" aria-labelledby="installed-heading">
+            <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-[12px] font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} plugins</span></div>
+            {featuredInstalled.length ? <ServiceList services={featuredInstalled} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">No plugins installed yet.</p>}
+            {installed.length > featuredInstalled.length && <button type="button" onClick={() => setView("installed")} className="mt-3 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">{installed.length - featuredInstalled.length} more installed plugins</button>}
+          </section>
+          <section className="mt-6" aria-labelledby="popular-heading">
+            <h2 id="popular-heading" className="text-[12px] font-medium text-muted-foreground">Popular</h2>
+            {popular.length ? <ServiceList services={popular} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">Popular plugins appear as providers report install counts.</p>}
+          </section>
+          <button type="button" onClick={() => setView("all")} className="u-surface mt-6 flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-left transition-colors hover:bg-accent">
+            <span className="text-[13px] font-medium text-foreground">Browse all {services.length} {services.length === 1 ? "plugin" : "plugins"}</span>
+            <ChevronRight size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          </button>
+        </>}
       </>}
     </div>
   </div>;

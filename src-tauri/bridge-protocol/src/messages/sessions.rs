@@ -334,6 +334,24 @@ pub struct CreateWorkspaceSessionParams {
     /// repository).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub create_worktree: Option<bool>,
+    /// Omitted keeps the existing orchestrator behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<WorkspaceSessionKind>,
+    /// Selected provider for a direct workspace chat. Ignored for orchestrators.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    /// Selected model for a direct workspace chat. Ignored for orchestrators.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// The session kind chosen when a workspace chat is created. Fixed for the
+/// session's lifetime: every later turn reads it from the stored row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSessionKind {
+    Orchestrator,
+    Direct,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -851,11 +869,24 @@ mod tests {
         let session = CreateWorkspaceSessionParams {
             workspace_id: "w-1".into(),
             create_worktree: Some(true),
+            kind: None,
+            harness: None,
+            model: None,
         };
         assert_eq!(
             serde_json::to_value(&session).unwrap(),
             json!({"workspaceId": "w-1", "createWorktree": true})
         );
+        let direct = CreateWorkspaceSessionParams {
+            workspace_id: "w-1".into(),
+            create_worktree: None,
+            kind: Some(WorkspaceSessionKind::Direct),
+            harness: Some(HarnessId::parse("codex").unwrap()),
+            model: Some("gpt-5".into()),
+        };
+        assert_eq!(serde_json::to_value(&direct).unwrap(), json!({"workspaceId": "w-1", "kind": "direct", "harness": "codex", "model": "gpt-5"}));
+        assert_eq!(round_trip(&direct), direct);
+        assert!(serde_json::from_value::<CreateWorkspaceSessionParams>(json!({"workspaceId": "w-1", "kind": "worker"})).is_err());
         let activate =
             ActivateSessionEntryParams { session_id: "s-1".into(), entry_id: "e-9".into() };
         assert_eq!(round_trip(&activate), activate);

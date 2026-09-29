@@ -8,18 +8,13 @@ import { Lock as LockSimple } from "lucide-react";
 import type { BridgeEvent, PermissionPolicy } from "../../types";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 
-/// Host authorization gates that outlive the provider convenience switch.
+/// Host gates that outlive the provider convenience switch.
 ///
 /// Named in the UI, not only in a doc comment, because the issue makes the copy
 /// part of the contract: a switch that claims to silence everything and then
-/// still prompts has to say up front where and why. Both are authorization
-/// rather than convenience: a worker writing outside its lease, and an outward
-/// effect like sending or purchasing.
+/// still prompts has to say up front where and why. Worker write scope is not
+/// here: Full access authorizes it like any other approval.
 const SURVIVING_GATES = [
-  {
-    title: "Worker write scope",
-    copy: "A worker still needs your authorization for the paths it may write. Bypass covers convenience, not authorization.",
-  },
   {
     title: "Browser outward effects",
     copy: "Send, submit, purchase, publish, and credential steps in the browser still ask, every time.",
@@ -45,7 +40,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
     <SettingsGroup label="Provider prompts">
       <SettingsRow
         label="Auto-approve provider permissions"
-        description="Permission requests from Claude, Codex, OpenCode, and Cursor are accepted automatically when the provider offers an allow option. Questions and macOS prompts still wait for you."
+        description="Permission requests from Claude, Codex, OpenCode, and Cursor are accepted automatically when the provider offers an allow option, and workers start without a write-scope card. Questions and macOS prompts still wait for you."
         saved={saved}
         control={<Switch
           label="Auto-approve provider permissions"
