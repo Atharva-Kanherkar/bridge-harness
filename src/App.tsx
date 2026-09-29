@@ -17,6 +17,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, medi
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
+import { createLiveReplay } from "./liveReplay";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
@@ -449,6 +450,12 @@ function AppContent() {
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
   const forestCacheRef = useRef(new ForestCache());
+  // Durable frames the live channel dropped, put back from each session's
+  // cursor. The forest poll alone was too slow to be the only recovery.
+  const [liveReplay] = useState(() => createLiveReplay({
+    replay: (sessionId, afterSequence, limit) => bridgeApi.replaySessionEvents(sessionId, afterSequence, limit),
+    deliver: events => setAgentEvents(current => appendAgentEventBatch(current, events)),
+  }));
   const browserSessionRef = useRef<string>();
   const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
@@ -469,6 +476,7 @@ function AppContent() {
     void reload().catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
+    let offLagged: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
     let offAdapters: (() => void) | undefined;
     let offProviderLogin: (() => void) | undefined;
@@ -509,6 +517,7 @@ function AppContent() {
     });
     void bridgeApi.onAgentEvent(event => {
       display.push(event);
+      liveReplay.observe(event);
       const target = loginSessionRef.current;
       if (active && target?.id === event.sessionId) {
         const provider = providerSignInForEvent(target.harness, event);
@@ -517,6 +526,15 @@ function AppContent() {
     }).then(fn => {
       if (!active) { fn(); return; }
       offAgent = fn;
+    });
+    void bridgeApi.onStreamLagged(() => {
+      // Frames were dropped: refill them now, and make the next forest poll
+      // refetch instead of trusting a digest it may already have seen.
+      forestKeyRef.current = "";
+      liveReplay.lagged();
+    }).then(fn => {
+      if (!active) { fn(); return; }
+      offLagged = fn;
     });
     void bridgeApi.onAccountUsage(payload => {
       // Codex quota comes from the versioned shared overview. A legacy
@@ -549,10 +567,10 @@ function AppContent() {
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
-      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
+      offState?.(); offAgent?.(); offLagged?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
       display.dispose();
     };
-  }, [invalidateHealth, openMeter, refreshMeter, reload]);
+  }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
   // Attention notifications: diff every `state.sessions` refresh for status
   // transitions across visible sessions (hidden kinds filtered inside
   // `diffAttentionEvents`), not just the open one, so a background chat that
@@ -1329,10 +1347,11 @@ function AppContent() {
       forestKeyRef.current = digest ?? "";
       forestCacheRef.current.set(sessionId, value);
       setForest(current => mergeForestSnapshot(current, value));
+      liveReplay.seed(sessionId, value.entries.reduce((newest, entry) => Math.max(newest, entry.sequence), 0));
     };
     const stop = startSerialPoll(refresh, 3000);
     return () => { active = false; stop(); };
-  }, [session?.id]);
+  }, [liveReplay, session?.id]);
 
   // Keep git stats fresh for the selected chat's connected workspace.
   useEffect(() => {
