@@ -426,13 +426,15 @@ export type CloneSignInPath = "import" | "sign_in_inside";
 
 /** `none` is "no clone yet"; `destroyed` is "one just ended" (destroy or TTL),
  *  kept distinct so the surface can say the profile is gone. */
-export type BrowserCloneStatus = "none" | "starting" | "acting" | "waiting_for_you" | "taken_over" | "destroyed";
+export type BrowserCloneStatus = "none" | "requested" | "starting" | "acting" | "waiting_for_you" | "taken_over" | "destroyed";
 
 export interface BrowserCloneSnapshot {
   status: BrowserCloneStatus;
   cloneId: string | null;
   domain: string | null;
   signInPath: CloneSignInPath | null;
+  /** The domain the agent asked for, awaiting the person. Set while `requested`. */
+  pendingRequest: string | null;
   /** Why the agent stopped (login wall, 2FA). Set only while waiting_for_you. */
   waitingReason: string | null;
   /** The TTL deadline; the clone destroys itself when it passes. */

@@ -12,6 +12,7 @@ vi.mock("../api", () => ({
   bridgeApi: {
     browserCloneState: vi.fn(),
     requestClone: vi.fn(),
+    resolveCloneRequest: vi.fn(),
     takeoverBrowserClone: vi.fn(),
     handBackBrowserClone: vi.fn(),
     destroyBrowserClone: vi.fn(),
@@ -22,12 +23,13 @@ vi.mock("../api", () => ({
 const state = vi.mocked(bridgeApi.browserCloneState);
 
 const clone = (overrides: Partial<BrowserCloneSnapshot> = {}): BrowserCloneSnapshot => ({
-  status: "acting", cloneId: "clone-1", domain: "example.com", signInPath: "import", waitingReason: null,
+  status: "acting", cloneId: "clone-1", domain: "example.com", signInPath: "import", pendingRequest: null, waitingReason: null,
   expiresAt: new Date(Date.now() + 25 * 60_000).toISOString(),
   screenshot: "data:image/png;base64,AAAA", screenshotRedactedRegions: 0, pendingApproval: null,
   ...overrides,
 });
 const none = () => clone({ status: "none", cloneId: null, domain: null, signInPath: null, expiresAt: null, screenshot: null });
+const requested = () => clone({ status: "requested", cloneId: null, domain: "youtube.com", pendingRequest: "youtube.com", expiresAt: null, screenshot: null });
 const approval = { id: "a1", commandId: "c1", action: "click", domain: "example.com", effect: "Submit a payment form", createdAt: "now" };
 
 let container: HTMLDivElement;
@@ -96,6 +98,24 @@ describe("CloneSurface as a dock tenant", () => {
     expect(button("Start clone")).toBeDefined();
     expect(button("Take over")).toBeUndefined();
     expect(button("Destroy")).toBeUndefined();
+  });
+
+  it("shows an Allow/Deny card when the agent asks for a clone", async () => {
+    state.mockResolvedValue(requested());
+    await render({ sessionId: "session-9" });
+    expect(container.textContent).toContain("The agent wants a signed-in browser");
+    expect(container.textContent).toContain("youtube.com");
+    expect(button("Allow")).toBeDefined();
+    expect(button("Deny")).toBeDefined();
+  });
+
+  it("allowing the request calls resolveCloneRequest", async () => {
+    const resolve = vi.mocked(bridgeApi.resolveCloneRequest);
+    resolve.mockResolvedValue(clone());
+    state.mockResolvedValue(requested());
+    await render({ sessionId: "session-9" });
+    await act(async () => { button("Allow")!.click(); });
+    expect(resolve).toHaveBeenCalledWith("session-9", true);
   });
 
   it("starts a clone for the typed site", async () => {

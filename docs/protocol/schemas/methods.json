@@ -1374,6 +1374,13 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "resolve_clone_request",
+      "domain": "clones",
+      "method": "clones/resolve_clone_request",
+      "paramsSchema": "resolve-clone-request-params.json",
+      "resultSchema": "clone-state-result.json"
+    },
+    {
       "command": "list_managed_agents",
       "domain": "agents",
       "method": "agents/list_managed_agents",

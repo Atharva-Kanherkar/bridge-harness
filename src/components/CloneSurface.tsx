@@ -14,7 +14,7 @@ import { Button } from "./ui/button";
 // upward) but reads clone state, not a lease on one of your own tabs.
 
 const statusLabel: Record<BrowserCloneStatus, string> = {
-  none: "No clone", starting: "Starting", acting: "Acting", waiting_for_you: "Waiting for you", taken_over: "You’re in control", destroyed: "Destroyed",
+  none: "No clone", requested: "Awaiting your approval", starting: "Starting", acting: "Acting", waiting_for_you: "Waiting for you", taken_over: "You’re in control", destroyed: "Destroyed",
 };
 const signInLabel: Record<CloneSignInPath, string> = { import: "Imported sign-in", sign_in_inside: "Signed in inside the clone" };
 
@@ -67,7 +67,7 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
     finally { setBusy(false); setConfirmingDestroy(false); }
   };
 
-  const attention = status === "waiting_for_you" || !!snapshot?.pendingApproval;
+  const attention = status === "requested" || status === "waiting_for_you" || !!snapshot?.pendingApproval;
   const supervisionRef = useRef<string>();
   useEffect(() => {
     const signature = `${status}:${attention}`;
@@ -100,6 +100,17 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
             <input aria-label="Site to clone" value={domainDraft} onChange={(event) => setDomainDraft(event.target.value)} placeholder="youtube.com" className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 text-[12px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
             <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}><Ghost size={12} />Start clone</Button>
           </form>
+        </div>
+      : status === "requested" ? <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+          <Hand size={22} className="text-warning" aria-hidden="true" />
+          <div>
+            <p className="text-[12px] font-medium text-foreground">The agent wants a signed-in browser</p>
+            <p className="mt-1 max-w-sm text-[11px] leading-5 text-muted-foreground">It is asking to test on <b className="break-all font-mono text-foreground">{snapshot.pendingRequest ?? snapshot.domain}</b> using your sign-in, in a throwaway clone that is destroyed afterwards.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => bridgeApi.resolveCloneRequest(sessionId ?? "", false))}>Deny</Button>
+            <Button size="sm" disabled={busy} onClick={() => void run(() => bridgeApi.resolveCloneRequest(sessionId ?? "", true))}><Hand size={12} />Allow</Button>
+          </div>
         </div>
       : status === "destroyed" ? <PaneState icon={Trash2} title="Clone destroyed">Its profile, cookies, and session are gone. Nothing from it stays on disk.</PaneState>
       : <>

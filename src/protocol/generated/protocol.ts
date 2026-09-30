@@ -203,6 +203,7 @@ export type BridgeMethod =
   | "clones/takeover_clone"
   | "clones/hand_back_clone"
   | "clones/destroy_clone"
+  | "clones/resolve_clone_request"
   | "agents/list_managed_agents"
   | "agents/inspect_managed_agent"
   | "agents/install_managed_agent"
@@ -426,6 +427,7 @@ export const BRIDGE_METHODS = [
   { method: "clones/takeover_clone", domain: "clones", command: "takeover_clone" },
   { method: "clones/hand_back_clone", domain: "clones", command: "hand_back_clone" },
   { method: "clones/destroy_clone", domain: "clones", command: "destroy_clone" },
+  { method: "clones/resolve_clone_request", domain: "clones", command: "resolve_clone_request" },
   { method: "agents/list_managed_agents", domain: "agents", command: "list_managed_agents" },
   { method: "agents/inspect_managed_agent", domain: "agents", command: "inspect_managed_agent" },
   { method: "agents/install_managed_agent", domain: "agents", command: "install_managed_agent" },
@@ -721,6 +723,7 @@ export interface BridgeMethodParams {
   "clones/takeover_clone": TakeoverCloneParams;
   "clones/hand_back_clone": HandBackCloneParams;
   "clones/destroy_clone": DestroyCloneParams;
+  "clones/resolve_clone_request": ResolveCloneRequestParams;
   "agents/list_managed_agents": undefined;
   "agents/inspect_managed_agent": InspectManagedAgentParams;
   "agents/install_managed_agent": InstallManagedAgentParams;
@@ -946,6 +949,7 @@ export interface BridgeMethodResults {
   "clones/takeover_clone": UnitResult;
   "clones/hand_back_clone": UnitResult;
   "clones/destroy_clone": UnitResult;
+  "clones/resolve_clone_request": CloneStateResult;
   "agents/list_managed_agents": ManagedAgentList;
   "agents/inspect_managed_agent": ManagedAgentInspection;
   "agents/install_managed_agent": ManagedAgentOperationResult;
@@ -1123,6 +1127,7 @@ export interface CloneSnapshot {
   cloneId: string;
   domain: string;
   minutesLeft: number;
+  pendingRequest?: string | null;
   screenshot?: string | null;
   screenshotRedactedRegions: number;
   sessionId: string;
@@ -4007,6 +4012,11 @@ export interface HandBackCloneParams {
 }
 
 export interface DestroyCloneParams {
+  sessionId: string;
+}
+
+export interface ResolveCloneRequestParams {
+  allow: boolean;
   sessionId: string;
 }
 

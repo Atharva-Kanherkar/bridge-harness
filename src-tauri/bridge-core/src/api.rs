@@ -5137,7 +5137,25 @@ use bridge_protocol::messages::{
 #[cfg(target_os = "macos")]
 fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnapshot> {
     use crate::clone_orchestrator::{CloneStatus, SignInPath};
-    let view = core.browser_clone_orchestrator.view(session_id)?;
+    let view = match core.browser_clone_orchestrator.view(session_id) {
+        Some(view) => view,
+        None => {
+            // No clone yet, but the agent may have asked for one; surface that so
+            // the dock can show the Allow/Deny card.
+            let domain = core.browser_clone_orchestrator.pending_request(session_id)?;
+            return Some(CloneSnapshot {
+                session_id: session_id.to_owned(),
+                clone_id: String::new(),
+                domain: domain.clone(),
+                status: "requested".to_owned(),
+                sign_in_path: CloneSignInPath::Import,
+                minutes_left: 0,
+                screenshot: None,
+                screenshot_redacted_regions: 0,
+                pending_request: Some(domain),
+            });
+        }
+    };
     // A fresh frame for the dock's live view; absent until a page has painted.
     let screenshot = core
         .browser_clone_orchestrator
@@ -5162,6 +5180,7 @@ fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnaps
         minutes_left: view.minutes_left,
         screenshot,
         screenshot_redacted_regions: 0,
+        pending_request: None,
     })
 }
 
@@ -5233,6 +5252,32 @@ pub fn destroy_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), Bri
     #[cfg(not(target_os = "macos"))]
     let _ = (core, session_id);
     Ok(())
+}
+
+/// The person answers the agent's clone request. On allow, the clone is spawned
+/// for the asked domain and page actions are approved; on deny, the request is
+/// dropped. Returns the resulting snapshot (the running clone, or `None`).
+pub fn resolve_clone_request(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    allow: bool,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        if allow {
+            core.browser_clone_orchestrator
+                .approve_request(session_id, 0)
+                .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        } else {
+            core.browser_clone_orchestrator.deny_request(session_id);
+        }
+        Ok(clone_snapshot(core, session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id, allow);
+        Ok(None)
+    }
 }
 
 pub fn configure_remote_browser(

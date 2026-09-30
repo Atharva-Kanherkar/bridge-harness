@@ -10745,12 +10745,23 @@ fn deliver_prepared_input(
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
     let browser_context = state.browser_bridge.capability_context(session_id, runtime.process_id());
-    // A guarded clone for this session hands the agent its narrow browser tool,
-    // the same way the attached tab does. `None` when the session has no clone.
+    // Two clone capabilities. The "ask for a clone" one is offered every turn so
+    // the agent can request a signed-in browser; the drive tool is added only
+    // once a clone exists (after the person approved), the same way the attached
+    // tab works.
     #[cfg(target_os = "macos")]
-    let clone_context = state
-        .browser_clone_orchestrator
-        .capability_context(session_id, runtime.process_id());
+    let clone_context: Option<String> = {
+        let request = state
+            .browser_clone_orchestrator
+            .request_capability_context(session_id, runtime.process_id());
+        let drive = state
+            .browser_clone_orchestrator
+            .capability_context(session_id, runtime.process_id());
+        match (request, drive) {
+            (Some(request), Some(drive)) => Some(format!("{request}\n\n{drive}")),
+            (request, drive) => request.or(drive),
+        }
+    };
     #[cfg(not(target_os = "macos"))]
     let clone_context: Option<String> = None;
     let application_context = [credential_context, browser_context, clone_context]
@@ -13536,9 +13547,12 @@ mod submit_input_tests {
             "the user's words are untouched"
         );
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
+        // The session frame is delivered on the first turn and not re-sent.
+        // (Every turn also carries the always-offered clone-request capability,
+        // which is not the frame.)
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
         assert!(
-            contexts[1].is_empty(),
+            !contexts[1].iter().any(|c| c.as_str() == frame.text()),
             "the thread holds the frame now; re-sending it every turn is what the tail delivery avoids"
         );
     }
@@ -13568,8 +13582,8 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "after the switch".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
-        assert!(contexts[1].is_empty());
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
+        assert!(!contexts[1].iter().any(|c| c.as_str() == frame.text()), "the frame is not re-sent");
     }
 
     /// A frame Bridge could not hand over is still owed. Otherwise a provider
@@ -13595,7 +13609,10 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "retry".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts.last().unwrap(), &vec![frame.text().to_owned()]);
+        assert!(
+            contexts.last().unwrap().iter().any(|c| c.as_str() == frame.text()),
+            "the owed frame is re-delivered on the retry",
+        );
     }
 
     // -- stop / interrupt ----------------------------------------------------

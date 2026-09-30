@@ -3,7 +3,7 @@
 use crate::browser_clone::CloneSupervisor;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{Read, Write},
     os::unix::{
@@ -30,15 +30,28 @@ struct Capability {
 /// screenshot, result) never mutate and are always allowed.
 const MUTATING_KINDS: [&str; 5] = ["click", "type", "scroll", "navigate", "focus"];
 
+/// A session's request capability: the token and agent process allowed to ask
+/// for a clone, before any clone exists.
+struct RequestCapability {
+    token: String,
+    runtime_pid: u32,
+}
+
 pub struct CloneBrowserTool {
     supervisor: Arc<CloneSupervisor>,
     socket: PathBuf,
     directory: PathBuf,
     capabilities: Mutex<HashMap<String, Capability>>,
     results: Mutex<HashMap<String, (String, String, Value)>>,
-    /// Whether page-mutating kinds are permitted. Off until an approval path
-    /// gates them; see [`MUTATING_KINDS`].
-    allow_mutation: bool,
+    /// The agent-facing "ask for a clone" capability, minted every turn so the
+    /// agent can request one before any exists.
+    request_caps: Mutex<HashMap<String, RequestCapability>>,
+    /// A session's outstanding request (the domain the agent asked for), waiting
+    /// for the person to approve or deny.
+    pending: Mutex<HashMap<String, String>>,
+    /// Sessions whose clone the person approved for page actions. A mutating
+    /// kind is refused until the session is in here.
+    mutable: Mutex<HashSet<String>>,
 }
 
 impl CloneBrowserTool {
@@ -57,8 +70,9 @@ impl CloneBrowserTool {
             directory,
             capabilities: Mutex::new(HashMap::new()),
             results: Mutex::new(HashMap::new()),
-            // Read-only until an approval path can gate page mutations.
-            allow_mutation: false,
+            request_caps: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            mutable: Mutex::new(HashSet::new()),
         });
         let server = Arc::clone(&tool);
         thread::spawn(move || {
@@ -112,13 +126,64 @@ impl CloneBrowserTool {
         &self.socket
     }
 
+    /// Mint the session's "ask for a clone" capability, injected every turn so
+    /// the agent can request one before any exists. Returns the instruction the
+    /// agent reads.
+    pub fn request_capability_context(&self, session: &str, runtime_pid: u32) -> Option<String> {
+        let token = Uuid::new_v4().to_string();
+        self.request_caps.lock().ok()?.insert(
+            session.to_owned(),
+            RequestCapability { token: token.clone(), runtime_pid },
+        );
+        let safe_session: String = session
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        let path = self.directory.join(format!("clone-request-{safe_session}"));
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let script = format!("#!/bin/sh\n[ \"$#\" -eq 1 ] || exit 2\nexec curl --silent --show-error --fail-with-body --unix-socket {} -H {} -H {} -H 'Content-Type: application/json' --data-binary \"$1\" http://localhost/v1/clone-browser\n",
+            quote(&self.socket.to_string_lossy()), quote(&format!("Authorization: Bearer {token}")), quote(&format!("X-Bridge-Session: {session}")));
+        fs::write(&path, script).ok()?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
+        Some(format!("To test in a signed-in browser, ask for a throwaway clone (the person approves it): {tool} '{{\"kind\":\"request\",\"domain\":\"example.com\"}}'. Once approved, a separate clone tool appears for that domain. Do not ask unless the task needs a signed-in site.", tool = path.display()))
+    }
+
+    /// The domain a session's agent has asked for, awaiting the person's answer.
+    pub fn pending_request(&self, session: &str) -> Option<String> {
+        self.pending.lock().ok()?.get(session).cloned()
+    }
+
+    /// Take the pending request (on approval), clearing it.
+    pub fn take_pending_request(&self, session: &str) -> Option<String> {
+        self.pending.lock().ok()?.remove(session)
+    }
+
+    /// Drop the pending request (on denial).
+    pub fn clear_pending_request(&self, session: &str) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(session);
+        }
+    }
+
+    /// Approve page actions for a session's clone: mutating kinds are allowed
+    /// from now on.
+    pub fn allow_mutations(&self, session: &str) {
+        if let Ok(mut set) = self.mutable.lock() {
+            set.insert(session.to_owned());
+        }
+    }
+
     pub fn revoke_session(&self, session: &str) {
         self.capabilities.lock().unwrap().remove(session);
+        let _ = self.request_caps.lock().map(|mut m| m.remove(session));
+        let _ = self.pending.lock().map(|mut m| m.remove(session));
+        let _ = self.mutable.lock().map(|mut m| m.remove(session));
         let safe: String = session
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
             .collect();
         let _ = fs::remove_file(self.directory.join(format!("clone-browser-{safe}")));
+        let _ = fs::remove_file(self.directory.join(format!("clone-request-{safe}")));
     }
 
     fn handle(&self, mut stream: UnixStream) {
@@ -181,6 +246,28 @@ impl CloneBrowserTool {
         peer: Option<u32>,
         request: Value,
     ) -> Result<Value, String> {
+        // "request" is the one kind an agent can call before any clone exists:
+        // it asks the person for a clone. It rides the session's request
+        // capability, not a per-clone one.
+        if request.get("kind").and_then(Value::as_str) == Some("request") {
+            let reqs = self.request_caps.lock().map_err(|_| "capability unavailable")?;
+            let cap = reqs.get(session).ok_or("capability unavailable")?;
+            if cap.token != token || !peer.is_some_and(|pid| descendant_of(pid, cap.runtime_pid)) {
+                return Err("capability invalid".into());
+            }
+            drop(reqs);
+            let domain = request
+                .get("domain")
+                .and_then(Value::as_str)
+                .and_then(normalized_domain)
+                .ok_or("a valid domain is required")?;
+            self.pending
+                .lock()
+                .map_err(|_| "request unavailable")?
+                .insert(session.to_owned(), domain.clone());
+            return Ok(json!({"ok": true, "requested": domain, "awaiting": "user approval"}));
+        }
+
         let caps = self
             .capabilities
             .lock()
@@ -214,8 +301,9 @@ impl CloneBrowserTool {
             return Ok(json!({"ok":true,"result":value}));
         }
         let kind = request.get("kind").and_then(Value::as_str).unwrap_or("");
-        if MUTATING_KINDS.contains(&kind) && !self.allow_mutation {
-            return Err("page actions await user approval and are not yet available".into());
+        let approved = self.mutable.lock().map(|set| set.contains(session)).unwrap_or(false);
+        if MUTATING_KINDS.contains(&kind) && !approved {
+            return Err("page actions are not approved for this clone".into());
         }
         let (method, params) = command(&request, &domain)?;
         let mut result = self
