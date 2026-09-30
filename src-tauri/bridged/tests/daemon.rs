@@ -886,15 +886,33 @@ fn requests_after_shutdown_are_refused_with_their_own_id() {
     let mut client = Client::connect(&running.socket_path);
     client.handshake(&running.token);
 
+    // Discovery can notify this connection before the shutdown refusal. Queue
+    // that traffic explicitly so it cannot be mistaken for a null-id reply.
+    running.daemon.core.events.publish(bridge_core::events::CoreEvent::AdaptersChanged);
     running.daemon.state.shutting_down.store(true, Ordering::SeqCst);
     client.send(json!({"jsonrpc": "2.0", "id": 41, "method": "health/health"}));
     // The read loop may close the connection on an idle poll before reading
     // the frame; a refusal, when one arrives, must carry the request's id.
-    let mut line = String::new();
-    if client.reader.read_line(&mut line).is_ok() && !line.is_empty() {
+    loop {
+        let mut line = String::new();
+        match client.reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+            Err(error) => panic!("reading shutdown refusal: {error}"),
+        }
         let response: Value = serde_json::from_str(&line).unwrap();
+        if response.get("id").is_none() {
+            assert_eq!(response["jsonrpc"], json!("2.0"));
+            assert!(response["method"].is_string()
+                && response.get("result").is_none()
+                && response.get("error").is_none(),
+                "expected a notification, got {response:?}");
+            continue;
+        }
         assert_eq!(response["id"], json!(41));
         assert_eq!(response["error"]["code"], json!(2003));
+        break;
     }
 
     running.stop();
