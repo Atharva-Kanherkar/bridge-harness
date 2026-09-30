@@ -22,6 +22,7 @@ pub mod parse;
 pub mod retrieve;
 pub mod settings;
 pub mod tools;
+pub mod warm;
 
 #[cfg(test)]
 mod eval;
@@ -200,9 +201,15 @@ pub fn search(core: &Arc<BridgeCore>, params: &SearchChatsParams) -> Result<Sear
     let settings = settings::load(&core.db.lock().unwrap())?;
     let gate = deep_gate(core, &settings);
     let model = settings::model(&settings);
-    search_with(&core.db, params, Utc::now(), gate, || {
-        live::ClaudeSearchModel::start(core, &model).map(|model| Box::new(model) as Box<dyn SearchModel>)
-    })
+    let result = search_with(&core.db, params, Utc::now(), gate, || {
+        live::take_or_start(core, &model).map(|model| Box::new(model) as Box<dyn SearchModel>)
+    })?;
+    // The index is unsure and the user may press Enter next: start the model
+    // now, off the request, so Enter pays for turns rather than a cold start.
+    if !params.deep && result.deep_available {
+        live::prewarm(core, &model);
+    }
+    Ok(result)
 }
 
 /// A plain-text reply for `/find`, index only. The composer opens the

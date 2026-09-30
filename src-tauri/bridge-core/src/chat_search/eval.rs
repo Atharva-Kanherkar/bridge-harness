@@ -11,7 +11,6 @@
 //! it would be sent rather than what it would answer. `bench` (ignored) scales
 //! the corpus to 100k entries for latency and the three baselines.
 
-
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
@@ -380,4 +379,166 @@ fn live() {
         .query_row("SELECT count(*) FROM sessions WHERE kind='chat_search' AND ended_at IS NULL", [], |row| row.get(0))
         .unwrap();
     println!("unsettled chat_search sessions: {visible}");
+}
+
+/// The whole funnel on the labelled corpus with the model stage live on
+/// Claude: the numbers CI cannot produce. Synthetic chats only, so nothing
+/// real is sent to a provider.
+///
+/// `cargo test -p bridge-core --lib chat_search::eval::live_fixture -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_fixture() {
+    use bridge_protocol::messages::{ChatSearchStage, SearchChatsParams};
+    let corpus = corpus();
+    let (_dir, db) = load(&corpus, 1);
+    let scratch = tempfile::tempdir().unwrap();
+    let mut core = crate::runtime::BridgeCore::for_tests(scratch.path());
+    core.db = std::sync::Mutex::new(db);
+    core.adapter_registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::claude_only().unwrap());
+    let core = std::sync::Arc::new(core);
+    let waited = Instant::now();
+    while !core
+        .adapter_registry
+        .descriptors()
+        .iter()
+        .any(|descriptor| descriptor.id == "claude" && descriptor.available)
+    {
+        assert!(waited.elapsed().as_secs() < 60, "claude never became available");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let model = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_MODEL").unwrap_or_else(|_| super::settings::DEFAULT_MODEL.into());
+    // Seconds between typing and Enter. The warm start overlaps this, and a
+    // cold start longer than it still shows up in the measured time.
+    let think_seconds: u64 = std::env::var("BRIDGE_CHAT_SEARCH_THINK_SECONDS").ok().and_then(|value| value.parse().ok()).unwrap_or(3);
+    let now = now(&corpus);
+    let mut found = [0usize; 3];
+    let mut totals = [0usize; 3];
+    let mut deep_tokens = Vec::new();
+    let mut deep_ms = Vec::new();
+    let mut deep_calls = Vec::new();
+    let mut fallbacks = 0;
+    for query in &corpus.queries {
+        let class = ["exact", "vague", "time"].iter().position(|class| *class == query.class).unwrap();
+        // As the sidebar does it: the typed query hits the index, an unsure
+        // answer prewarms the model, and Enter follows a moment later.
+        let shallow = super::search_with(
+            &core.db,
+            &SearchChatsParams { query: query.query.clone(), limit: None, deep: false },
+            now,
+            super::DeepGate::Allowed,
+            || Err("shallow".into()),
+        )
+        .unwrap();
+        if shallow.deep_available {
+            super::live::prewarm(&core, &model);
+            std::thread::sleep(std::time::Duration::from_secs(think_seconds));
+        }
+        let result = super::search_with(
+            &core.db,
+            &SearchChatsParams { query: query.query.clone(), limit: None, deep: true },
+            now,
+            super::DeepGate::Allowed,
+            || {
+                super::live::take_or_start(&core, &model)
+                    .map(|model| Box::new(model) as Box<dyn super::agent::SearchModel>)
+            },
+        )
+        .unwrap();
+        assert!(
+            !result.detail.as_deref().is_some_and(|detail| {
+                detail.contains("session limit") || detail.contains("rate_limit") || detail.contains("rate limit")
+            }),
+            "live measurement blocked by provider quota: {:?}", result.detail
+        );
+        let hit = result.hits.iter().take(4).any(|hit| hit.session_id == query.expect);
+        totals[class] += 1;
+        found[class] += usize::from(hit);
+        if result.stage != ChatSearchStage::Index {
+            deep_tokens.push(result.model_tokens as u128);
+            deep_ms.push(result.elapsed_ms as u128);
+            deep_calls.push(result.tool_calls as u128);
+            if result.stage == ChatSearchStage::IndexFallback {
+                fallbacks += 1;
+            }
+        }
+        println!(
+            "{} [{}] {:?} stage={:?} tokens={} calls={} ms={} top={:?} {:?}",
+            if hit { "ok  " } else { "MISS" },
+            query.class,
+            query.query,
+            result.stage,
+            result.model_tokens,
+            result.tool_calls,
+            result.elapsed_ms,
+            result.hits.first().map(|hit| hit.session_id.as_str()),
+            result.detail
+        );
+    }
+    println!("\n| class | recall@4 (funnel, model live) |\n|---|---|");
+    for (index, class) in ["exact", "vague", "time"].iter().enumerate() {
+        println!("| {class} | {}/{} |", found[index], totals[index]);
+    }
+    println!("| all | {}/{} |", found.iter().sum::<usize>(), totals.iter().sum::<usize>());
+    if !deep_tokens.is_empty() {
+        println!(
+            "model stage ran {} times ({} fell back): median {} tokens (max {}), median {} ms (max {}), median {} lookups",
+            deep_tokens.len(),
+            fallbacks,
+            percentile(&mut deep_tokens.clone(), 0.5),
+            deep_tokens.iter().max().unwrap(),
+            percentile(&mut deep_ms.clone(), 0.5),
+            deep_ms.iter().max().unwrap(),
+            percentile(&mut deep_calls, 0.5),
+        );
+    }
+    let db = core.db.lock().unwrap();
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM usage_ledger WHERE task_family='chat_search'", [], |row| row.get(0))
+        .unwrap();
+    let open: i64 = db
+        .query_row("SELECT count(*) FROM sessions WHERE kind='chat_search' AND ended_at IS NULL", [], |row| row.get(0))
+        .unwrap();
+    let forest: i64 = db
+        .query_row(
+            "SELECT count(*) FROM session_entries e JOIN sessions s ON s.id=e.session_id WHERE s.kind='chat_search'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    println!("usage rows tagged chat_search: {rows}; unsettled search sessions: {open}; forest entries written by search: {forest}");
+    assert_eq!(open, 0, "every search session must settle");
+    assert_eq!(forest, 0, "search must never write a forest entry");
+    assert!(deep_tokens.iter().any(|tokens| *tokens > 0), "no model usage measured");
+}
+
+/// Where a deep search's time goes: provider start, then each model turn.
+/// `cargo test -p bridge-core --lib chat_search::eval::live_timing -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_timing() {
+    use super::agent::SearchModel;
+    let scratch = tempfile::tempdir().unwrap();
+    let mut core = crate::runtime::BridgeCore::for_tests(scratch.path());
+    core.adapter_registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::claude_only().unwrap());
+    let core = std::sync::Arc::new(core);
+    let waited = Instant::now();
+    while !core.adapter_registry.descriptors().iter().any(|descriptor| descriptor.id == "claude" && descriptor.available) {
+        assert!(waited.elapsed().as_secs() < 60, "claude never became available");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    for round in 0..3 {
+        let started = Instant::now();
+        let mut model = super::live::ClaudeSearchModel::start(&core, super::settings::DEFAULT_MODEL).unwrap();
+        let start_ms = started.elapsed().as_millis();
+        let mut turns = Vec::new();
+        for _ in 0..3 {
+            let turn_started = Instant::now();
+            let reply = model
+                .turn("Query: reply with {\"answer\":[]}", Instant::now() + std::time::Duration::from_secs(60))
+                .unwrap();
+            turns.push((turn_started.elapsed().as_millis(), reply.tokens));
+        }
+        println!("round {round}: start {start_ms} ms, turns {turns:?}");
+    }
 }

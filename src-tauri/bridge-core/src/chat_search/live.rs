@@ -2,9 +2,12 @@
 //! deep search.
 //!
 //! Same shape as the extraction and insights runs: a `chat_search`-kind
-//! session no list shows, started under a briefing policy with an empty scope
-//! so the provider admits no tool at all. Each model turn records its usage on
-//! that session, so the spend shows up wherever provider usage does. The
+//! session no list shows, started under a toolless briefing policy, so the
+//! provider is sent no tool definitions and not the coding preset either.
+//! Measured on the harness's default preset, one search cost about 19k
+//! tokens a turn, nearly all of it tool schemas and preset text. Each model
+//! turn records its usage on that session, so the spend shows up wherever
+//! provider usage does. The
 //! session is stopped and settled when the search is dropped, whichever way
 //! it ended. No turn is written to any forest.
 
@@ -49,7 +52,7 @@ impl ClaudeSearchModel {
             max_output_tokens: None,
             cost_ceiling_microusd: None,
         };
-        let policy = BriefingRuntimePolicy::compile_scoped(Vec::new(), limits)
+        let policy = BriefingRuntimePolicy::compile_toolless(limits)
             .map_err(|unsupported| format!("policy: {}", unsupported.reason()))?;
 
         let session_id = Uuid::new_v4().to_string();
@@ -169,12 +172,16 @@ impl SearchModel for ClaudeSearchModel {
                             }
                         }
                         Some("result") => {
+                            let tokens = self.record_usage(&message);
+                            if let Some(error) = result_error(&message) {
+                                self.failed = true;
+                                return Err(error);
+                            }
                             if reply.trim().is_empty() {
                                 if let Some(result) = message.get("result").and_then(Value::as_str) {
                                     reply.push_str(result);
                                 }
                             }
-                            let tokens = self.record_usage(&message);
                             return Ok(ModelTurn { text: reply, tokens });
                         }
                         _ => {}
@@ -190,6 +197,25 @@ impl SearchModel for ClaudeSearchModel {
     }
 }
 
+// The SDK can emit subtype="success" for an API failure (including 429).
+// Its error flag and terminal reason are authoritative, not the subtype.
+fn result_error(message: &Value) -> Option<String> {
+    if message.get("is_error").and_then(Value::as_bool) != Some(true)
+        && message.get("terminal_reason").and_then(Value::as_str) != Some("api_error")
+    {
+        return None;
+    }
+    let error = message.get("result").and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| message.get("errors").and_then(Value::as_array).map(|errors| {
+            errors.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")
+        }))
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| "the provider returned an error".into());
+    Some(super::tools::redact(&error))
+}
+
 impl Drop for ClaudeSearchModel {
     fn drop(&mut self) {
         if let Some(mut runtime) = self.runtime.take() {
@@ -199,10 +225,58 @@ impl Drop for ClaudeSearchModel {
     }
 }
 
+static WARM: std::sync::LazyLock<Arc<super::warm::Pool<ClaudeSearchModel>>> =
+    std::sync::LazyLock::new(|| Arc::new(super::warm::Pool::new()));
+
+fn warm_key(core: &Arc<BridgeCore>, model: &str) -> String {
+    format!("{:p}:{model}", Arc::as_ptr(core))
+}
+
+/// Start a search session in the background, for a query the index was
+/// unsure about, so a following Enter does not wait for a cold start.
+pub fn prewarm(core: &Arc<BridgeCore>, model: &str) {
+    let owned = Arc::clone(core);
+    let model_name = model.to_owned();
+    WARM.prewarm(&warm_key(core, model), super::warm::IDLE, move || {
+        ClaudeSearchModel::start(&owned, &model_name)
+    });
+}
+
+/// The warm session when there is one for this model, else a fresh start.
+pub fn take_or_start(core: &Arc<BridgeCore>, model: &str) -> Result<ClaudeSearchModel, String> {
+    match WARM.take(&warm_key(core, model), super::warm::WAIT_FOR_START) {
+        Some(session) => Ok(session),
+        None => ClaudeSearchModel::start(core, model),
+    }
+}
+
 fn settle(core: &Arc<BridgeCore>, session_id: &str, status: &str) {
     let db = core.db.lock().unwrap();
     let _ = db.execute(
         "UPDATE sessions SET status=?2,ended_at=?3 WHERE id=?1",
         params![session_id, status, Utc::now().to_rfc3339()],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn an_sdk_quota_error_is_reported_even_with_a_success_subtype() {
+        let message = json!({
+            "type": "result", "subtype": "success", "is_error": true,
+            "terminal_reason": "api_error", "api_error_status": 429,
+            "result": "You've hit your session limit"
+        });
+        assert_eq!(result_error(&message).as_deref(), Some("You've hit your session limit"));
+    }
+
+    #[test]
+    fn a_normal_result_is_not_an_error_and_error_arrays_are_supported() {
+        assert_eq!(result_error(&json!({"is_error": false, "result": "{\"answer\":[]}"})), None);
+        assert_eq!(result_error(&json!({"is_error": true, "errors": ["Not signed in"]})).as_deref(), Some("Not signed in"));
+        assert_eq!(result_error(&json!({"terminal_reason": "api_error"})).as_deref(), Some("the provider returned an error"));
+    }
 }

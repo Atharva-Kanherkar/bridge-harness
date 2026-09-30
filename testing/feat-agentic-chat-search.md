@@ -7,7 +7,9 @@ tool-free model loop only when T1 is unsure and the caller asked for it.
 ## Decisions locked before code
 
 - **Wire:** `sessions/search_chats` with `{ query, limit?, deep? }`. `deep`
-  omitted or false runs T0+T1 only and never touches a model. `deep: true`
+  omitted or false runs T0+T1 only and never submits a model turn. When the
+  index is unsure and deep search is available, it pre-starts one tool-free
+  session in the background for a following Enter. `deep: true`
   runs T1, then T2 only when the confidence gate fails. The UI calls T1 on
   type (debounced) and the deep call on Enter, so T1 renders first and the
   deep result is the "second response".
@@ -24,7 +26,14 @@ tool-free model loop only when T1 is unsure and the caller asked for it.
   next turn. That keeps every budget in Rust and gives the provider no tools.
 - **Wall clock:** 8 s is counted from the first model turn. Provider start is
   not in that budget (a Claude sidecar cold start alone is several seconds);
-  it is bounded by the adapter's own start timeout.
+  a deep request waits at most 30 s for a background start before trying a
+  fresh session. An unused warm session expires after 180 s. Each session
+  serves exactly one search; model context never crosses searches.
+- **Tool-free launch:** an empty `compile_toolless` briefing policy sends
+  `tools: []` to the SDK and replaces its coding preset with the search
+  instructions. It skips plugin/MCP discovery entirely. An ordinary briefing keeps its existing preset and tool
+  configuration. Quota/API errors are reported as provider errors, including
+  SDK results that carry `subtype = 'success'` alongside `is_error = true`.
 - **Usage:** T2 writes one `usage_ledger` row per model turn with
   `source = 'provider.claude'` and `task_family = 'chat_search'`, on the hidden
   session. A literal `chat_search` source would hide the spend from every usage
@@ -138,6 +147,13 @@ Rust (`bridge-core`):
 - `…::model_bound_text_is_redacted`
 - `…::first_turn_puts_the_query_last`
 - `chat_search::settings` load default / save round-trip / reject blank model.
+- `chat_search::warm` — take once, wait for in-flight start, reject another
+  model, expire unused sessions, reject expired sessions before the timer,
+  recover after a failed start, stop replaced providers outside the slot lock.
+- `chat_search::live` — SDK quota errors with a success subtype are failures;
+  ordinary results pass through and error arrays are supported.
+- Sidecar briefing tests — tool-free options omit tool definitions and replace
+  the coding preset; ordinary and non-briefing launches preserve their behavior.
 - `work_briefing_config::tests` — `chat_search` is a hidden kind.
 - `slash::tests` — `/find` dispatches to `SlashDispatch::Find` and is bridge-local.
 - Protocol: params `deny_unknown_fields`, naming gate, mirror gate, artifacts
@@ -159,8 +175,9 @@ Frontend (Vitest):
 - Daemon dispatch arms for the three methods (compile + registry gate).
 - Eval (`chat_search::eval`, runs in `cargo test`): fixture corpus of 200
   chats / 20k entries from `testing/fixtures/chat_search/`, 40 labelled
-  queries in three classes; asserts recall@4 ≥ 90% overall for T1 alone
-  (T2 needs a live model, so CI cannot assert its contribution), and reports
+  queries in three classes; asserts recall@4 ≥ 90% for exact and time queries
+  and the measured index-only vague floor of 6/15. T2 needs a live model, so
+  CI cannot assert its contribution. Reports
   per-class recall and the fraction the gate resolves without T2.
 
 ## Smoke Tests
@@ -183,3 +200,9 @@ Frontend (Vitest):
   `search_session_entries` ms, (c) dump-all-summaries prompt tokens.
 - Daemon probe: `sessions/search_chats {"query":"plugins stall"}` on the real
   socket returns hits without error.
+- Live fixture: `cargo test -p bridge-core --release --lib
+  chat_search::eval::live_fixture -- --ignored --nocapture`. Runs Claude over
+  all 40 synthetic labelled queries, including a three-second typing-to-Enter
+  delay (`BRIDGE_CHAT_SEARCH_THINK_SECONDS` overrides it). Reports full funnel
+  recall, actual model usage, elapsed time including startup, and fallbacks;
+  provider quota failures abort instead of passing as a measurement.

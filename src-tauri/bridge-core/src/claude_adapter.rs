@@ -161,6 +161,20 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
     )
 }
 
+fn sdk_configuration_for_launch(
+    briefing: Option<&crate::briefing_policy::BriefingRuntimePolicy>,
+    discover: impl FnOnce() -> crate::marketplace::ClaudeSdkConfiguration,
+) -> crate::marketplace::ClaudeSdkConfiguration {
+    if briefing.is_some_and(|policy| policy.toolless()) {
+        // There can be no plugin or connector in this run. Discovery invokes
+        // CLI commands and connection probes; skip it rather than discarding
+        // its output after paying for it on every search.
+        crate::marketplace::ClaudeSdkConfiguration::default()
+    } else {
+        discover()
+    }
+}
+
 fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
@@ -223,11 +237,14 @@ fn launch(
                 })),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
+                // No tool definitions and no coding preset. Present only for a
+                // policy compiled toolless, whose scope is empty by construction.
+                "toolless": policy.toolless(),
             }))
         }
         None => None,
     };
-    let sdk_configuration = crate::marketplace::claude_sdk_configuration();
+    let sdk_configuration = sdk_configuration_for_launch(briefing, crate::marketplace::claude_sdk_configuration);
     let lifecycle_phase = if resume_session_id.is_some() {
         ContextLifecyclePhase::Resume
     } else {
@@ -1533,6 +1550,32 @@ mod briefing_boundary_tests {
             );
         }
         assert!(BriefingRuntimePolicy::check_write_mode(Some(WriteMode::ReadOnly)).is_ok());
+    }
+
+    #[test]
+    fn a_toolless_launch_skips_discovery_but_other_launches_keep_it() {
+        let ordinary = policy();
+        let toolless = BriefingRuntimePolicy::compile_toolless(wire::WorkBriefLimits {
+            max_wall_seconds: 60, max_turns: 4, max_tool_calls: 1,
+            max_output_tokens: None, cost_ceiling_microusd: None,
+        }).unwrap();
+        let empty = super::sdk_configuration_for_launch(Some(&toolless), || {
+            panic!("tool-free search must not run plugin or connector discovery")
+        });
+        assert!(empty.plugins.is_empty());
+        assert!(empty.mcp_servers.is_empty());
+        for briefing in [None, Some(&ordinary)] {
+            let calls = std::cell::Cell::new(0);
+            let configuration = super::sdk_configuration_for_launch(briefing, || {
+                calls.set(calls.get() + 1);
+                crate::marketplace::ClaudeSdkConfiguration {
+                    plugins: vec!["fixture-plugin".into()],
+                    ..Default::default()
+                }
+            });
+            assert_eq!(calls.get(), 1);
+            assert_eq!(configuration.plugins, vec!["fixture-plugin"]);
+        }
     }
 
     #[test]

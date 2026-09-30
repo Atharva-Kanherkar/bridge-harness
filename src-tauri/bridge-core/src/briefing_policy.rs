@@ -249,6 +249,11 @@ pub struct BriefingRuntimePolicy {
     /// reads. Empty under [`Self::compile`], whose exact-identity semantics are
     /// unchanged; only [`Self::compile_scoped`] populates it.
     read_scope_servers: Vec<String>,
+    /// No tools exist at all: the provider is sent no tool definitions and
+    /// the harness's own coding preset is replaced by the run's instructions.
+    /// Only [`Self::compile_toolless`] sets it, and only with an empty scope,
+    /// so it can narrow a run and never widen one.
+    toolless: bool,
 }
 
 /// What a single approved connector action is allowed to do.
@@ -412,6 +417,7 @@ impl BriefingRuntimePolicy {
             compiled_against,
             action_scope: None,
             read_scope_servers: Vec::new(),
+            toolless: false,
         })
     }
 
@@ -449,7 +455,24 @@ impl BriefingRuntimePolicy {
             compiled_against: Vec::new(),
             action_scope: None,
             read_scope_servers: scope,
+            toolless: false,
         })
+    }
+
+    /// Compile a policy for a run that needs no tools of any kind: an answer
+    /// from text alone, such as a search re-ranking. Same empty scope and
+    /// ceilings as [`Self::compile_scoped`] with no servers, plus the promise
+    /// that no tool definition reaches the provider, which is also what keeps
+    /// such a turn to its own few hundred tokens instead of a coding agent's
+    /// full preset.
+    pub fn compile_toolless(limits: wire::WorkBriefLimits) -> Result<Self, BriefingUnsupported> {
+        let mut policy = Self::compile_scoped(Vec::new(), limits)?;
+        policy.toolless = true;
+        Ok(policy)
+    }
+
+    pub fn toolless(&self) -> bool {
+        self.toolless
     }
 
     /// Compile a policy for **one approved connector action**.
@@ -2042,6 +2065,19 @@ mod tests {
             limits(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_toolless_policy_has_an_empty_scope_and_only_it_is_toolless() {
+        let toolless = BriefingRuntimePolicy::compile_toolless(limits()).unwrap();
+        assert!(toolless.toolless());
+        assert!(toolless.read_scope_servers().is_empty());
+        assert!(toolless.allowed_wire_names().is_empty());
+        assert!(toolless.action_scope_config().is_none());
+        assert!(!scoped(&[]).toolless());
+        assert!(!scoped(&["slack"]).toolless());
+        let bad = wire::WorkBriefLimits { max_turns: 0, ..limits() };
+        assert!(BriefingRuntimePolicy::compile_toolless(bad).is_err(), "the same ceilings still apply");
     }
 
     #[test]
