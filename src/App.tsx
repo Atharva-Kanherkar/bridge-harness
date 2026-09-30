@@ -11,7 +11,7 @@ import { findReferences, insertMention, referenceAlias, removeReferenceToken, ty
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, Ghost, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
@@ -35,6 +35,8 @@ import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effort
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { SimpleBrowser } from "./components/SimpleBrowser";
+import { CloneRequestInbox } from "./components/CloneRequestInbox";
+import { CloneSurface, type CloneSupervision } from "./components/CloneSurface";
 import { sanitizeBrowserSelection, serializeBrowserSelections, type BrowserSelectionContext } from "./browserSelection";
 import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
@@ -729,6 +731,21 @@ function AppContent() {
   const [connectorUnread, setConnectorUnread] = useState(0);
   const [connectorFocus, setConnectorFocus] = useState<string>();
   const connectorAttention = connectorToasts.some(toast => !toast.settled);
+  // The clone surface reports whether it needs the person (waiting_for_you or a
+  // pending approval). Only a mounted surface is polling, so the mark is drawn
+  // only while the pane has been visited: an unmounted surface cannot vouch for
+  // a state it is no longer watching.
+  const [cloneAttention, setCloneAttention] = useState(false);
+  const reportCloneSupervision = useCallback((state: CloneSupervision) => setCloneAttention(state.attention), []);
+  useEffect(() => setCloneAttention(false), [selectedSessionId]);
+  const cloneAlert = cloneAttention;
+  const [cloneFocus, setCloneFocus] = useState<string>();
+  useEffect(() => {
+    if (cloneFocus && selectedSessionId === cloneFocus) {
+      dispatchDock({ type: "open-pane", pane: "clone" });
+      setCloneFocus(undefined);
+    }
+  }, [cloneFocus, selectedSessionId, dispatchDock]);
 
   const dockPanes: DockPaneDescriptor[] = [
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
@@ -741,6 +758,9 @@ function AppContent() {
     // Always available: an inbox is about an account, not a repository, so
     // gating it on a worktree would hide it exactly where a direct chat is.
     { id: "inbox", label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined },
+    // Last, so no existing ⌥⌘N chord moves. A clone is a private browser, not a
+    // tree, so like Browser it needs no repository.
+    { id: "clone", label: "Clone", icon: Ghost, available: true, alert: cloneAlert || undefined },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
@@ -2678,6 +2698,7 @@ function AppContent() {
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   const codexUpdateOverlays = <>
+    <CloneRequestInbox sessionLabels={Object.fromEntries(state.sessions.map(item => [item.id, item.label]))} onOpen={id => { openSession(id); setCloneFocus(id); }} onError={setError} />
     {!error && codexUpdateSuccess && <TransientAlert title="Codex updated" message="Bridge refreshed the Codex runtime." variant="success" onDismiss={() => setCodexUpdateSuccess(false)} />}
     {!error && !codexUpdateSuccess && codexUpdateNotice && latestCodex && codexVersion && <TransientAlert
       title="Codex update available"
@@ -3225,6 +3246,13 @@ function AppContent() {
               // below this line it rendered nothing in exactly the direct-chat
               // case the always-available descriptor exists to support.
               if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
+              // Also before the workspace guard: a clone needs no tree.
+              if (pane === "clone") return <CloneSurface
+                visible={dock.open && dock.pane === "clone" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !recallOpen && !navOpen}
+                sessionId={session?.id}
+                onSupervisionChange={reportCloneSupervision}
+                onError={setError}
+              />;
               if (!workspace) return null;
               /* Keyed on the workspace: these panes hold open buffers, shells,
                  and relative paths, and none of that survives a change of tree.

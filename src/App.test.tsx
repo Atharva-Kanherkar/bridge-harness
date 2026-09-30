@@ -515,6 +515,57 @@ describe("the dock in the session view", () => {
     expect(dockAside()!.querySelector('[aria-label="Browser pages"]')).not.toBeNull();
   });
 
+  // Contract: testing/feat-dock-clone.md §3.
+  it("opens the clone pane from the toolbar menu and keeps the surface across pane switches", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(container.querySelector('button[aria-label="Session actions"]')!);
+    const item = [...document.querySelectorAll('[role="menu"] [role="menuitemcheckbox"]')].find(node => node.textContent?.startsWith("Clone"))!;
+    await click(item);
+    await settle(2);
+
+    const cloneTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Clone")!;
+    expect(cloneTab.getAttribute("aria-selected")).toBe("true");
+    const surface = () => dockAside()!.querySelector("[data-clone-viewport]");
+    const before = surface();
+    expect(before).not.toBeNull();
+
+    await key({ ...chord, code: "Digit1", key: "1" });
+    expect(surface()).toBe(before);
+    expect(before!.closest(".hidden")).not.toBeNull();
+    await key({ ...chord, code: "Digit9", key: "9" });
+    expect(surface()).toBe(before);
+    expect(before!.closest(".hidden")).toBeNull();
+  });
+
+  it("gives direct chats a clone pane, not an excuse", async () => {
+    await mountApp();
+    await act(async () => {
+      await bridgeApi.createChat("codex", null, "Clone scratch");
+    });
+    await settle();
+    await click(chatRows().find(row => row.title.includes("Clone scratch"))!);
+    await key({ ...chord, code: "Digit9", key: "9" });
+    await settle(2);
+    expect(dockAside()!.textContent).not.toContain("needs a repository");
+    expect(dockAside()!.querySelector("[data-clone-viewport]")).not.toBeNull();
+  });
+
+  it("shows the attention dot on the Clone tab once it is opened, while another pane is active", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(dockToggle()!);
+    // A pane that was never opened is not polling, so it cannot claim attention.
+    expect(container.querySelector('[data-testid="dock-alert-clone"]')).toBeNull();
+
+    await key({ ...chord, code: "Digit9", key: "9" });
+    await settle(3);
+    await key({ ...chord, code: "Digit1", key: "1" });
+    // The mock clone starts on a login wall, i.e. waiting_for_you.
+    expect(container.querySelector('[data-testid="dock-alert-clone"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="dock-alert-overflow"]')).not.toBeNull();
+  });
+
   // Contract: testing/feat-dock-terminal.md §4.
   it("opens the multi-shell terminal pane on the third chord", async () => {
     await mountApp();

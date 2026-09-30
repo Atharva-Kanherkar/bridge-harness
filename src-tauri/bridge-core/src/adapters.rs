@@ -1593,7 +1593,8 @@ fn codex_fallback_candidates() -> Vec<CatalogCandidate> {
     vec![
         codex_fallback_model("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 1),
         codex_fallback_model("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 1),
-        codex_fallback_model("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 1),
+        codex_fallback_model("gpt-6.1-sol", "GPT-6.1 Sol", CapabilityTier::Strong, 1),
+        codex_fallback_model("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 0),
         codex_fallback_model("gpt-5.3-codex", "GPT-5.3 Codex", CapabilityTier::Standard, 0),
     ]
 }
@@ -2123,7 +2124,7 @@ mod tests {
             None,
             chrono::Utc::now(),
         );
-        for id in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.3-codex"] {
+        for id in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.3-codex"] {
             let model = resolved.models.iter().find(|model| model.id == id).unwrap();
             assert_eq!(model.supported_effort_levels, ["low", "medium", "high", "xhigh", "max", "ultra"], "{id}");
         }

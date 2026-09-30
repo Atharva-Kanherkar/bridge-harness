@@ -411,3 +411,50 @@ export interface BrowserBridgeSnapshot {
   audit: BrowserAuditEvent[]; debugEvents: Record<string, unknown>[]; siteMetrics: BrowserSiteMetric[];
   remoteProvider: RemoteBrowserConfig | null;
 }
+
+// ---------------------------------------------------------------------------
+// Browser clones (dock surface, UI slice). No wire method exposes clones yet,
+// so these are UI-local shapes, not restated protocol types. When the protocol
+// slice lands they move to the generated contract and this block shrinks to
+// renames. Approvals reuse `BrowserApproval`: a clone asks for the same
+// sensitive-effect grants an attached tab does.
+// ---------------------------------------------------------------------------
+
+/** How a clone gets signed in: seed it from the real browser's cookies for an
+ *  approved domain, or leave it blank and let the user sign in inside it. */
+export type CloneSignInPath = "import" | "sign_in_inside";
+
+/** `none` is "no clone yet"; `destroyed` is "one just ended" (destroy or TTL),
+ *  kept distinct so the surface can say the profile is gone. */
+export type BrowserCloneStatus = "none" | "requested" | "starting" | "acting" | "waiting_for_you" | "taken_over" | "destroyed";
+
+export interface BrowserCloneSnapshot {
+  status: BrowserCloneStatus;
+  cloneId: string | null;
+  domain: string | null;
+  signInPath: CloneSignInPath | null;
+  /** The domain the agent asked for, awaiting the person. Set while `requested`. */
+  pendingRequest: string | null;
+  pendingRequestId?: string | null;
+  extensionPath?: string | null;
+  additionalDomains?: string[] | null;
+  /** Why the agent stopped (login wall, 2FA). Set only while waiting_for_you. */
+  waitingReason: string | null;
+  /** The TTL deadline; the clone destroys itself when it passes. */
+  expiresAt: string | null;
+  /** Latest local frame for the person, as a data URL. */
+  screenshot: string | null;
+  screenshotRedactedRegions: number;
+  pendingApproval: BrowserApproval | null;
+}
+
+export interface CloneSettings {
+  defaultSignInPath: CloneSignInPath;
+  ttlMinutes: number;
+}
+
+export interface CloneSettingsSnapshot {
+  /** False when the runtime has no clone backend, so nothing would honour a write. */
+  connected: boolean;
+  settings: CloneSettings;
+}

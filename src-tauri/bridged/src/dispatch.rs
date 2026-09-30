@@ -855,6 +855,40 @@ pub fn dispatch(
             encode(api::route_browser(into_core(method, &p.request)?))
         }
         MethodName::BrowserSkills => encode(api::browser_skills()),
+        MethodName::RequestClone => {
+            let p: wire::RequestCloneParams = decode(method, params)?;
+            reply(api::request_clone(core, &p))
+        }
+        MethodName::CloneState => {
+            let p: wire::CloneStateParams = decode(method, params)?;
+            reply(api::clone_state(core, &p.session_id))
+        }
+        MethodName::TakeoverClone => {
+            let p: wire::TakeoverCloneParams = decode(method, params)?;
+            reply(api::takeover_clone(core, &p.session_id))
+        }
+        MethodName::HandBackClone => {
+            let p: wire::HandBackCloneParams = decode(method, params)?;
+            reply(api::hand_back_clone(core, &p.session_id))
+        }
+        MethodName::DestroyClone => {
+            let p: wire::DestroyCloneParams = decode(method, params)?;
+            reply(api::destroy_clone(core, &p.session_id))
+        }
+        MethodName::CloneInput => {
+            let p: wire::CloneInputParams = decode(method, params)?;
+            reply(api::clone_input(core, &p.session_id, &p.input))
+        }
+        MethodName::ResolveCloneRequest => {
+            let p: wire::ResolveCloneRequestParams = decode(method, params)?;
+            reply(api::resolve_clone_request(core, &p.session_id, p.allow, &p.request_id, p.sign_in_path, p.ttl_minutes))
+        }
+        MethodName::ReadCloneSettings => reply(api::read_clone_settings(core)),
+        MethodName::WriteCloneSettings => {
+            let p: wire::WriteCloneSettingsParams = decode(method, params)?;
+            reply(api::write_clone_settings(core, &p.settings))
+        }
+        MethodName::CloneRequests => encode(api::clone_requests(core)),
         MethodName::ConfigureRemoteBrowser => {
             let p: wire::ConfigureRemoteBrowserParams = decode(method, params)?;
             let config = match &p.config {

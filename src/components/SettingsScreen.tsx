@@ -22,6 +22,7 @@ import { ModelsPage } from "./settings/ModelsPage";
 import { StoragePage } from "./settings/StoragePage";
 import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
 import { WorkersPage } from "./settings/WorkersPage";
+import { ClonesPage } from "./settings/ClonesPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { type Section } from "./settings/sections";
 
@@ -264,6 +265,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "storage" && <StoragePage onError={onError} />}
       {section === "archives" && <ArchivedChatsPage />}
       {section === "workers" && <WorkersPage adapters={adapters} />}
+      {section === "clones" && <ClonesPage onError={onError} />}
       {section === "work" && <WorkSettingsSection onError={onError} onOpenBoard={onOpenWorkBoard} />}
 
       {section === "agents" && config && <PresetsPage

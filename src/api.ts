@@ -7,14 +7,16 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
+import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -384,6 +386,55 @@ let mockBrowserBridge: BrowserBridgeSnapshot = {
   tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
   promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
 };
+
+// ── Browser clones: MOCK ONLY ────────────────────────────────────────────────
+// No wire method exposes clones yet. The dock surface ships first, against this
+// in-memory fixture; the protocol method and live-turn capability injection are
+// a follow-up. Nothing here reaches Tauri: outside the desktop app the surface
+// runs on this fixture, and inside it every read says "no clone" and every
+// action refuses, so a shipped build never draws an invented clone. A wireframe
+// stands in for the live frame, so the mock carries no page content.
+const mockCloneFrame = (domain: string) => `data:image/svg+xml;utf8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"><rect width="640" height="400" fill="rgb(245,245,244)"/><rect x="200" y="70" width="240" height="250" rx="12" fill="rgb(255,255,255)" stroke="rgb(214,211,209)"/><text x="320" y="112" text-anchor="middle" font-family="sans-serif" font-size="16" fill="rgb(68,64,60)">Sign in to ${domain}</text><rect x="224" y="136" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="182" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="240" width="192" height="32" rx="6" fill="rgb(68,64,60)"/></svg>`,
+)}`;
+const noClone = (status: BrowserCloneSnapshot["status"] = "none"): BrowserCloneSnapshot => ({
+  status, cloneId: null, domain: null, signInPath: null, pendingRequest: null, waitingReason: null, expiresAt: null,
+  screenshot: null, screenshotRedactedRegions: 0, pendingApproval: null,
+});
+const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "sign_in_inside", ttlMinutes: 30 });
+const cloneUnavailable = () => new Error("Browser clones are not connected to the runtime in this build yet.");
+// The runtime's CloneSnapshot carries no cookie value; map it to what the dock
+// surface renders. `null` (no clone for this session) becomes the empty state.
+const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnapshot => {
+  if (!wire) return noClone();
+  return {
+    status: wire.status as BrowserCloneStatus,
+    pendingRequest: wire.pendingRequest ?? null,
+    pendingRequestId: wire.pendingRequestId ?? null,
+    extensionPath: wire.extensionPath ?? null,
+    additionalDomains: wire.additionalDomains ?? null,
+    cloneId: wire.cloneId,
+    domain: wire.domain,
+    signInPath: wire.signInPath,
+    waitingReason: wire.status === "waiting_for_you"
+      ? "Sign in and finish two-factor, then hand the clone back."
+      : null,
+    expiresAt: new Date(Date.now() + wire.minutesLeft * 60_000).toISOString(),
+    screenshot: wire.screenshot ?? null,
+    screenshotRedactedRegions: wire.screenshotRedactedRegions,
+    pendingApproval: null,
+  };
+};
+// Starts on a login wall, the state a clone spends its interesting time in, so
+// the surface's whole supervision loop (take over, hand back, destroy) is
+// exercisable without the desktop app.
+let mockBrowserClone: BrowserCloneSnapshot = {
+  status: "waiting_for_you", cloneId: "mock-clone-1", domain: "example.com", signInPath: "sign_in_inside",
+  waitingReason: "Sign in and finish two-factor, then hand the clone back.",
+  expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+  screenshot: mockCloneFrame("example.com"), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
+};
+let mockCloneSettings: CloneSettings = defaultCloneSettings();
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   projects: [{ id: "demo-project", name: "Bridge", path: "/Users/you/Developer/bridge", createdAt: now }],
@@ -860,7 +911,7 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 const mockHealth: Health = {
   ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, cursor: true, opencode: true, shell: true }, database: "demo", snapshot_directory: "demo-snapshots", snapshot_count: 3, snapshot_total_bytes: 12_288, telemetry_database: "demo-telemetry", warnings: [],
   adapters: [
-    { id: "codex", label: "Codex", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }], defaultModel: "gpt-5.6-luna" },
+    { id: "codex", label: "Codex", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", tier: "strong", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }], defaultModel: "gpt-5.6-luna" },
     { id: "claude", label: "Claude Code", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "file_changes", "approvals", "usage", "interrupt", "steering"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
     { id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "auto", label: "Auto", tier: "standard", defaultForTier: true }, { id: "composer-2.5", label: "Composer 2.5", tier: "fast", defaultForTier: true }, { id: "gpt-5.3-codex", label: "Codex 5.3", tier: "standard", defaultForTier: false }, { id: "claude-opus-5-thinking-high", label: "Claude Opus 5 1M Thinking", tier: "strong", defaultForTier: true }], defaultModel: "auto" },
     { id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", tier: "fast", defaultForTier: true }, { id: "opencode/north-mini-code-free", label: "North Mini Code", tier: "standard", defaultForTier: true }, { id: "opencode/big-pickle", label: "Big Pickle", tier: "strong", defaultForTier: true }], defaultModel: "opencode/north-mini-code-free" }
@@ -1408,6 +1459,73 @@ export const bridgeApi = {
   browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? call("browser/browser_skills") : Promise.resolve([]),
   configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return unit(call("browser/configure_remote_browser", { config })); mockBrowserBridge.remoteProvider = config; },
   startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? call("browser/start_remote_browser", { initialUrl }) as Promise<Record<string, unknown>> : Promise.resolve({ id: "mock-remote", initialUrl }),
+  // Browser clones. In the desktop app these hit the real runtime through the
+  // `clones/*` wire methods; outside it (dev, tests) they drive the in-memory
+  // fixture above so the surface is exercisable without Tauri.
+  browserCloneState: async (sessionId?: string): Promise<BrowserCloneSnapshot> => {
+    if (isTauri() && sessionId) return cloneSnapshotFromWire(await call("clones/clone_state", { sessionId }));
+    return structuredClone(mockBrowserClone);
+  },
+  requestClone: async (
+    sessionId: string,
+    domain: string,
+    browser: CloneBrowserKind,
+    signInPath: CloneSignInPath,
+  ): Promise<BrowserCloneSnapshot> => {
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/request_clone", { sessionId, domain, browser, signInPath }));
+    mockBrowserClone = {
+      status: signInPath === "import" ? "acting" : "waiting_for_you",
+      cloneId: "mock-clone-1", domain, signInPath,
+      waitingReason: signInPath === "import" ? null : "Sign in and finish two-factor, then hand the clone back.",
+      expiresAt: new Date(Date.now() + mockCloneSettings.ttlMinutes * 60_000).toISOString(),
+      screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
+    };
+    return structuredClone(mockBrowserClone);
+  },
+  // The person's input into a clone they have taken over (click, scroll, typing,
+  // a login key). Coordinates are a fraction of the viewport.
+  cloneInput: async (sessionId: string, input: CloneInputEvent): Promise<void> => {
+    if (isTauri()) { await call("clones/clone_input", { sessionId, input }); return; }
+  },
+  takeoverBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/takeover_clone", { sessionId }); return; }
+    if (mockBrowserClone.status === "acting" || mockBrowserClone.status === "waiting_for_you") mockBrowserClone = { ...mockBrowserClone, status: "taken_over", waitingReason: null };
+  },
+  handBackBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/hand_back_clone", { sessionId }); return; }
+    if (mockBrowserClone.status === "taken_over") mockBrowserClone = { ...mockBrowserClone, status: "acting" };
+  },
+  destroyBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/destroy_clone", { sessionId }); return; }
+    if (mockBrowserClone.cloneId) mockBrowserClone = noClone("destroyed");
+  },
+  resolveBrowserCloneApproval: async (approvalId: string, allow: boolean): Promise<void> => {
+    if (isTauri()) throw cloneUnavailable();
+    if (mockBrowserClone.pendingApproval?.id === approvalId) mockBrowserClone = { ...mockBrowserClone, pendingApproval: null, status: allow ? "acting" : "waiting_for_you" };
+  },
+  cloneRequests: async (): Promise<import("./protocol/generated/protocol").CloneRequest[]> => isTauri() ? call("clones/clone_requests") : [],
+  readCloneSettings: async (): Promise<CloneSettingsSnapshot> => isTauri() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
+  writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
+    if (isTauri()) return call("clones/write_clone_settings", { settings });
+    mockCloneSettings = { ...settings };
+    return { connected: true, settings: { ...mockCloneSettings } };
+  },
+  // The person answers an agent's clone request. Allow builds the clone and lets
+  // the agent act; deny drops it.
+  resolveCloneRequest: async (sessionId: string, allow: boolean, requestId: string, settings: CloneSettings): Promise<BrowserCloneSnapshot> => {
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes }));
+    if (allow) {
+      const domain = mockBrowserClone.pendingRequest ?? mockBrowserClone.domain ?? "example.com";
+      mockBrowserClone = {
+        status: "acting", cloneId: "mock-clone-1", domain, signInPath: "import", pendingRequest: null,
+        waitingReason: null, expiresAt: new Date(Date.now() + mockCloneSettings.ttlMinutes * 60_000).toISOString(),
+        screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingApproval: null,
+      };
+    } else {
+      mockBrowserClone = noClone();
+    }
+    return structuredClone(mockBrowserClone);
+  },
   skillCatalog: (): Promise<SkillCatalog> => isTauri() ? call("skills/skill_catalog") as Promise<SkillCatalog> : Promise.resolve(structuredClone(mockSkills)),
   skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? call("skills/skill_suggestions", { query, provider }) as Promise<CapabilitySuggestion[]> : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
   previewSkillChange: async (skillId: string, action: SkillAction, targets: SkillProvider[]): Promise<SkillPreview> => {

@@ -5146,6 +5146,240 @@ pub fn browser_skills() -> Vec<browser_bridge::BrowserSkill> {
     browser_bridge::bundled_skills()
 }
 
+// ---- browser clones -------------------------------------------------------
+// The wire methods exist on every platform; the runtime is macOS-only, so off
+// macOS they report "no clone" / "not available".
+
+use bridge_protocol::messages::{
+    CloneBrowserKind, CloneSignInPath, CloneSnapshot, RequestCloneParams,
+};
+
+#[cfg(target_os = "macos")]
+fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnapshot> {
+    use crate::clone_orchestrator::{CloneStatus, SignInPath};
+    let view = match core.browser_clone_orchestrator.view(session_id) {
+        Some(view) => view,
+        None => {
+            // No clone yet, but the agent may have asked for one; surface that so
+            // the dock can show the Allow/Deny card.
+            let request = core.browser_clone_orchestrator.pending_details(session_id)?;
+            let domain = request.domain;
+            return Some(CloneSnapshot {
+                session_id: session_id.to_owned(),
+                clone_id: String::new(),
+                domain: domain.clone(),
+                status: "requested".to_owned(),
+                sign_in_path: read_clone_settings(core).ok()?.settings.default_sign_in_path,
+                minutes_left: 0,
+                screenshot: None,
+                screenshot_redacted_regions: 0,
+                pending_request: Some(domain),
+                pending_request_id: Some(request.id),
+                extension_path: request.extension_path,
+                additional_domains: Some(request.additional_domains),
+            });
+        }
+    };
+    // A fresh frame for the dock's live view; absent until a page has painted.
+    let screenshot = core
+        .browser_clone_orchestrator
+        .frame(session_id)
+        .ok()
+        .map(|data| format!("data:image/png;base64,{data}"));
+    let status = match view.status {
+        CloneStatus::Acting => "acting",
+        CloneStatus::WaitingForYou => "waiting_for_you",
+        CloneStatus::TakenOver => "taken_over",
+    };
+    let sign_in_path = match view.sign_in_path {
+        SignInPath::Import => CloneSignInPath::Import,
+        SignInPath::SignInInside => CloneSignInPath::SignInInside,
+    };
+    Some(CloneSnapshot {
+        session_id: view.session_id,
+        clone_id: view.clone_id,
+        domain: view.domain,
+        status: status.to_owned(),
+        sign_in_path,
+        minutes_left: view.minutes_left,
+        screenshot,
+        screenshot_redacted_regions: 0,
+        pending_request: None,
+        pending_request_id: None,
+        extension_path: None,
+        additional_domains: None,
+    })
+}
+
+pub fn clone_state(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(clone_snapshot(core, session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id);
+        Ok(None)
+    }
+}
+
+pub fn request_clone(
+    core: &Arc<BridgeCore>,
+    params: &RequestCloneParams,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::clone_orchestrator::{CloneBrowser, SignInPath};
+        let browser = match params.browser {
+            CloneBrowserKind::Chrome => CloneBrowser::Chrome,
+            CloneBrowserKind::Brave => CloneBrowser::Brave,
+        };
+        let path = match params.sign_in_path {
+            CloneSignInPath::Import => SignInPath::Import,
+            CloneSignInPath::SignInInside => SignInPath::SignInInside,
+        };
+        // The tool capability is re-minted with the live runtime pid on each
+        // turn (see live_turn), so the initial mint's pid does not matter here.
+        core.browser_clone_orchestrator
+            .start_approved_clone(&params.session_id, &params.domain, browser, path, Some(std::time::Duration::from_secs(read_clone_settings(core)?.settings.ttl_minutes * 60)), 0)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        Ok(clone_snapshot(core, &params.session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, params);
+        Err(BridgeError::Invalid(
+            "Browser clones are only available on macOS".into(),
+        ))
+    }
+}
+
+pub fn takeover_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.take_over(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+pub fn hand_back_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.hand_back(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+pub fn destroy_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+/// Input from the person into a clone they have taken over (click, scroll,
+/// typing, a login key). Refused unless the clone is taken over.
+pub fn clone_input(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    input: &bridge_protocol::messages::CloneInputEvent,
+) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::clone_orchestrator::CloneInput;
+        use bridge_protocol::messages::CloneInputEvent as Wire;
+        let input = match input.clone() {
+            Wire::Click { x, y } => CloneInput::Click { x, y },
+            Wire::Scroll { x, y, delta_y } => CloneInput::Scroll { x, y, delta_y },
+            Wire::Type { text } => CloneInput::Type { text },
+            Wire::Key { key } => CloneInput::Key { key },
+        };
+        core.browser_clone_orchestrator
+            .forward_input(session_id, input)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id, input);
+        Err(BridgeError::Invalid("Browser clones are only available on macOS".into()))
+    }
+}
+
+/// The person answers the agent's clone request. On allow, the clone is spawned
+/// for the asked domain and page actions are approved; on deny, the request is
+/// dropped. Returns the resulting snapshot (the running clone, or `None`).
+pub fn resolve_clone_request(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    allow: bool,
+    request_id: &str,
+    sign_in_path: CloneSignInPath,
+    ttl_minutes: u64,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        validate_clone_ttl(ttl_minutes)?;
+        if allow {
+            let runtime_pid = core.adapters.lock().unwrap_or_else(|p| p.into_inner())
+                .get(session_id)
+                .map(|runtime| runtime.process_id())
+                .filter(|pid| *pid != 0)
+                .ok_or_else(|| BridgeError::Invalid("The requesting agent is no longer running".into()))?;
+            core.browser_clone_orchestrator
+                .approve_request(session_id, request_id, runtime_pid,
+                    match sign_in_path { CloneSignInPath::Import => crate::clone_orchestrator::SignInPath::Import, CloneSignInPath::SignInInside => crate::clone_orchestrator::SignInPath::SignInInside },
+                    Some(std::time::Duration::from_secs(ttl_minutes * 60)))
+                .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        } else {
+            core.browser_clone_orchestrator.deny_request(session_id, request_id).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        }
+        Ok(clone_snapshot(core, session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id, allow, request_id, sign_in_path, ttl_minutes);
+        Ok(None)
+    }
+}
+
+fn validate_clone_ttl(minutes: u64) -> Result<(), BridgeError> {
+    if !(1..=240).contains(&minutes) { return Err(BridgeError::Invalid("Clone lifetime must be between 1 and 240 minutes".into())); }
+    Ok(())
+}
+
+pub fn read_clone_settings(core: &Arc<BridgeCore>) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    use bridge_protocol::messages::{CloneSettings, CloneSettingsSnapshot};
+    let payload: Option<String> = core.db.lock().unwrap_or_else(|p| p.into_inner())
+        .query_row("SELECT payload FROM configuration_entries WHERE kind='browser_clones' AND id='settings'", [], |row| row.get(0)).optional()?;
+    let settings = match payload {
+        Some(payload) => serde_json::from_str::<CloneSettings>(&payload).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+        None => CloneSettings { default_sign_in_path: CloneSignInPath::SignInInside, ttl_minutes: 30 },
+    };
+    validate_clone_ttl(settings.ttl_minutes)?;
+    Ok(CloneSettingsSnapshot { connected: cfg!(target_os = "macos"), settings })
+}
+
+pub fn write_clone_settings(core: &Arc<BridgeCore>, settings: &bridge_protocol::messages::CloneSettings) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    if !cfg!(target_os = "macos") { return Err(BridgeError::Invalid("Browser clones are only available on macOS".into())); }
+    validate_clone_ttl(settings.ttl_minutes)?;
+    let payload = serde_json::to_string(settings).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let now = chrono::Utc::now().to_rfc3339();
+    core.db.lock().unwrap_or_else(|p| p.into_inner()).execute(
+        "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('browser_clones','settings',?1,?2,?2) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at", params![payload, now])?;
+    read_clone_settings(core)
+}
+
+pub fn clone_requests(core: &Arc<BridgeCore>) -> Vec<bridge_protocol::messages::CloneRequest> {
+    #[cfg(target_os = "macos")]
+    { core.browser_clone_orchestrator.pending_requests() }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = core; Vec::new() }
+}
+
 pub fn configure_remote_browser(
     core: &Arc<BridgeCore>,
     config: Option<browser_bridge::RemoteBrowserConfig>,
@@ -6210,5 +6444,34 @@ mod chat_effort_tests {
         assert!(selected_chat_effort(&model, Some("low"), Some("high")).is_err());
         assert_eq!(selected_chat_effort(&model, None, Some("low")).unwrap(), None);
         assert_eq!(selected_chat_effort(&model, None, Some("high")).unwrap().as_deref(), Some("high"));
+    }
+}
+
+#[cfg(test)]
+mod clone_settings_tests {
+    use super::*;
+    #[test]
+    fn clone_lifetime_validation_rejects_zero_and_unbounded_leases() {
+        assert!(validate_clone_ttl(0).is_err());
+        assert!(validate_clone_ttl(241).is_err());
+        assert!(validate_clone_ttl(u64::MAX).is_err());
+        assert!(validate_clone_ttl(1).is_ok());
+        assert!(validate_clone_ttl(240).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_settings_round_trip_through_the_native_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        let defaults = read_clone_settings(&core).unwrap();
+        assert!(defaults.connected);
+        assert_eq!(defaults.settings.default_sign_in_path, CloneSignInPath::SignInInside);
+        let settings = bridge_protocol::messages::CloneSettings { default_sign_in_path: CloneSignInPath::Import, ttl_minutes: 60 };
+        write_clone_settings(&core, &settings).unwrap();
+        assert_eq!(read_clone_settings(&core).unwrap().settings, settings);
+        let mut invalid = settings.clone(); invalid.ttl_minutes = 0;
+        assert!(write_clone_settings(&core, &invalid).is_err());
+        assert_eq!(read_clone_settings(&core).unwrap().settings, settings);
     }
 }

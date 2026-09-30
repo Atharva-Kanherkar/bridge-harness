@@ -1360,6 +1360,76 @@
       "resultDeferred": "provider-defined remote browser session descriptor"
     },
     {
+      "command": "request_clone",
+      "domain": "clones",
+      "method": "clones/request_clone",
+      "paramsSchema": "request-clone-params.json",
+      "resultSchema": "clone-state-result.json"
+    },
+    {
+      "command": "clone_state",
+      "domain": "clones",
+      "method": "clones/clone_state",
+      "paramsSchema": "clone-state-params.json",
+      "resultSchema": "clone-state-result.json"
+    },
+    {
+      "command": "takeover_clone",
+      "domain": "clones",
+      "method": "clones/takeover_clone",
+      "paramsSchema": "takeover-clone-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "hand_back_clone",
+      "domain": "clones",
+      "method": "clones/hand_back_clone",
+      "paramsSchema": "hand-back-clone-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "destroy_clone",
+      "domain": "clones",
+      "method": "clones/destroy_clone",
+      "paramsSchema": "destroy-clone-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "resolve_clone_request",
+      "domain": "clones",
+      "method": "clones/resolve_clone_request",
+      "paramsSchema": "resolve-clone-request-params.json",
+      "resultSchema": "clone-state-result.json"
+    },
+    {
+      "command": "clone_input",
+      "domain": "clones",
+      "method": "clones/clone_input",
+      "paramsSchema": "clone-input-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "read_clone_settings",
+      "domain": "clones",
+      "method": "clones/read_clone_settings",
+      "paramsSchema": null,
+      "resultSchema": "clone-settings-snapshot.json"
+    },
+    {
+      "command": "write_clone_settings",
+      "domain": "clones",
+      "method": "clones/write_clone_settings",
+      "paramsSchema": "write-clone-settings-params.json",
+      "resultSchema": "clone-settings-snapshot.json"
+    },
+    {
+      "command": "clone_requests",
+      "domain": "clones",
+      "method": "clones/clone_requests",
+      "paramsSchema": null,
+      "resultSchema": "clone-requests-result.json"
+    },
+    {
       "command": "list_managed_agents",
       "domain": "agents",
       "method": "agents/list_managed_agents",

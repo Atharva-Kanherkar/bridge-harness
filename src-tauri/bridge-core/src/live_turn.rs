@@ -3573,6 +3573,8 @@ fn handle_agent_value_timed(
     }
 
     if turn_completed {
+        #[cfg(target_os = "macos")]
+        state.browser_clone_orchestrator.destroy(session_id);
         // The turn is terminal: the chat watchdog must stop measuring this
         // session until its reader serves the next turn. Workers never hold
         // a chat entry, so this is a no-op for them.
@@ -10613,6 +10615,8 @@ fn prepare_input(
         slash::SlashDispatch::Clear => {
             state.credential_broker.clear_session(session_id);
             state.browser_bridge.revoke_session(session_id);
+            #[cfg(target_os = "macos")]
+            state.browser_clone_orchestrator.destroy(session_id);
             // The conversation that held the frame is gone, so the claim that
             // it was delivered goes with it.
             state.session_context.lock().unwrap().forget(session_id);
@@ -10766,10 +10770,31 @@ fn deliver_prepared_input(
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
     let browser_context = state.browser_bridge.capability_context(session_id, runtime.process_id());
-    let application_context = match (credential_context, browser_context) {
-        (Some(credentials), Some(browser)) => Some(format!("{credentials}\n\n{browser}")),
-        (credentials, browser) => credentials.or(browser),
+    // Two clone capabilities. The "ask for a clone" one is offered every turn so
+    // the agent can request a signed-in browser; the drive tool is added only
+    // once a clone exists (after the person approved), the same way the attached
+    // tab works.
+    #[cfg(target_os = "macos")]
+    let clone_context: Option<String> = {
+        let request = state
+            .browser_clone_orchestrator
+            .request_capability_context(session_id, runtime.process_id());
+        let drive = state
+            .browser_clone_orchestrator
+            .capability_context(session_id, runtime.process_id());
+        match (request, drive) {
+            (Some(request), Some(drive)) => Some(format!("{request}\n\n{drive}")),
+            (request, drive) => request.or(drive),
+        }
     };
+    #[cfg(not(target_os = "macos"))]
+    let clone_context: Option<String> = None;
+    let application_context = [credential_context, browser_context, clone_context]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let application_context =
+        (!application_context.is_empty()).then(|| application_context.join("\n\n"));
     let turn_context = adapters::TurnContext {
         session: session_frame.as_ref().map(session_context::SessionContext::text),
         credentials: application_context.as_deref(),
@@ -12151,6 +12176,8 @@ pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
     };
     core.events.publish(CoreEvent::StateChanged);
     core.browser_bridge.revoke_session(session_id);
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
     if let Some(mut runtime) = runtime {
         // Calling interrupt first could wait ten seconds on an HTTP abort or
         // a blocked pipe. Process-group shutdown is the bounded hard guarantee.
@@ -12166,6 +12193,8 @@ pub fn stop_session(
     let state = core;
     void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
     state.browser_bridge.revoke_session(&session_id);
+    #[cfg(target_os = "macos")]
+    state.browser_clone_orchestrator.destroy(&session_id);
     let is_worker = state.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         params![session_id],
@@ -13225,11 +13254,14 @@ fn managed_root_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod submit_input_tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::api;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A live provider that records what it was told, and can be made to fail
     /// the write so the queue's release path is reachable.
     pub(super) struct FakeRuntime {
+        runtime_pid: u32,
         steering: bool,
         /// Whether this fake advertises image support. `false` keeps the
         /// trait default so the refusal path stays reachable in tests.
@@ -13276,16 +13308,16 @@ mod submit_input_tests {
 
     impl FakeRuntime {
         pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, false)
+            Self::build(steering, false, 0)
         }
 
         pub(super) fn new_with_images(
             steering: bool,
         ) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, true)
+            Self::build(steering, true, 0)
         }
 
-        fn build(steering: bool, images: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+        fn build(steering: bool, images: bool, runtime_pid: u32) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let contexts = Arc::new(Mutex::new(Vec::new()));
             let sent_images = Arc::new(Mutex::new(Vec::new()));
@@ -13296,6 +13328,7 @@ mod submit_input_tests {
             let interrupts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let refuse_interrupt = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
+                runtime_pid,
                 steering,
                 images,
                 sent: sent.clone(),
@@ -13327,7 +13360,7 @@ mod submit_input_tests {
 
     impl adapters::AdapterRuntime for FakeRuntime {
         fn process_id(&self) -> u32 {
-            0
+            self.runtime_pid
         }
         fn provider_session_id(&self) -> &str {
             "fake"
@@ -13510,6 +13543,73 @@ mod submit_input_tests {
         handles
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_application_request_approval_handoff_and_turn_cleanup_repeat() {
+        fn invoke(path: &std::path::Path, value: serde_json::Value) -> (bool, serde_json::Value) {
+            let output = std::process::Command::new(path).arg(value.to_string()).output().unwrap();
+            (output.status.success(), serde_json::from_slice(&output.stdout).unwrap())
+        }
+        let (_fixture, mut core, _managed_root) = core_with_chat("ready");
+        let browser = tempfile::tempdir_in("/tmp").unwrap();
+        let directory = browser.path().join("tool");
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(browser.path(), true);
+        let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), directory.clone()).unwrap();
+        let owner = Arc::get_mut(&mut core).unwrap();
+        owner.browser_clones = supervisor;
+        owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
+        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let extension = browser.path().join("extension");
+        std::fs::create_dir(&extension).unwrap();
+        std::fs::write(extension.join("manifest.json"), r#"{"manifest_version":3,"name":"Synthetic fixture","version":"1.0"}"#).unwrap();
+        for _ in 0..2 {
+            submit_input(&core, "chat".into(), "Test my local extension with a browser".into()).unwrap();
+            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text| text.contains("clone-request-chat")));
+            let request_tool = directory.join("clone-request-chat");
+            let (ok, asked) = invoke(&request_tool, serde_json::json!({"kind":"request","domain":"example.test","extensionPath":extension,"additionalDomains":["cdn.example.test"]}));
+            assert!(ok);
+            let id = asked["requestId"].as_str().unwrap();
+            assert_eq!(api::clone_requests(&core).len(), 1);
+            assert!(api::resolve_clone_request(&core, "chat", true, "stale", wire::CloneSignInPath::SignInInside, 10).is_err());
+            let snapshot = api::resolve_clone_request(&core, "chat", true, id, wire::CloneSignInPath::SignInInside, 10).unwrap().unwrap();
+            assert_eq!(snapshot.status, "waiting_for_you");
+            let guard = core.browser_clones.clone_guard(&snapshot.clone_id).unwrap();
+            let guard = guard.lock().unwrap();
+            assert!(guard.host_allowed("cdn.example.test"));
+            assert!(!guard.host_allowed("unapproved.test"));
+            drop(guard);
+            let (ok, approved) = invoke(&request_tool, serde_json::json!({"kind":"request_status","requestId":id}));
+            assert!(ok);
+            assert_eq!(approved["awaiting"], false);
+            assert!(approved["tool"].as_str().unwrap().contains("clone-browser-chat"));
+            let drive = directory.join("clone-browser-chat");
+            assert_eq!(invoke(&drive, serde_json::json!({"kind":"status"})).1, serde_json::json!({"ok":true,"paused":true}));
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0, "reads must pause during sign-in");
+            api::takeover_clone(&core, "chat").unwrap();
+            api::clone_input(&core, "chat", &wire::CloneInputEvent::Type { text: "123456".into() }).unwrap();
+            api::hand_back_clone(&core, "chat").unwrap();
+            let (ok, inspected) = invoke(&drive, serde_json::json!({"kind":"inspect"}));
+            assert!(ok);
+            assert!(!inspected.to_string().contains("123456"), "the person's typed secret leaked");
+            assert!(!invoke(&drive, serde_json::json!({"kind":"screenshot"})).0);
+            assert!(invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::takeover_clone(&core, "chat").unwrap();
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0);
+            assert!(!invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::hand_back_clone(&core, "chat").unwrap();
+            handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+            assert!(core.browser_clone_orchestrator.view("chat").is_none());
+            assert!(api::clone_requests(&core).is_empty());
+            assert!(!drive.exists());
+            assert!(!request_tool.exists());
+            assert_eq!(std::fs::read_dir(browser.path().join("mounts")).unwrap().count(), 0);
+        }
+        let commands = std::fs::read_to_string(browser.path().join("commands.jsonl")).unwrap();
+        assert_eq!(commands.lines().filter(|line| line.contains("Extensions.loadUnpacked")).count(), 2);
+    }
+
     // -- session-context frame (#528) ---------------------------------------
 
     /// The frame reaches the provider beside the message, once, and only while
@@ -13543,9 +13643,12 @@ mod submit_input_tests {
             "the user's words are untouched"
         );
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
+        // The session frame is delivered on the first turn and not re-sent.
+        // (Every turn also carries the always-offered clone-request capability,
+        // which is not the frame.)
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
         assert!(
-            contexts[1].is_empty(),
+            !contexts[1].iter().any(|c| c.as_str() == frame.text()),
             "the thread holds the frame now; re-sending it every turn is what the tail delivery avoids"
         );
     }
@@ -13575,8 +13678,8 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "after the switch".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
-        assert!(contexts[1].is_empty());
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
+        assert!(!contexts[1].iter().any(|c| c.as_str() == frame.text()), "the frame is not re-sent");
     }
 
     /// A frame Bridge could not hand over is still owed. Otherwise a provider
@@ -13602,7 +13705,10 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "retry".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts.last().unwrap(), &vec![frame.text().to_owned()]);
+        assert!(
+            contexts.last().unwrap().iter().any(|c| c.as_str() == frame.text()),
+            "the owed frame is re-delivered on the retry",
+        );
     }
 
     // -- stop / interrupt ----------------------------------------------------
