@@ -204,6 +204,7 @@ export type BridgeMethod =
   | "clones/hand_back_clone"
   | "clones/destroy_clone"
   | "clones/resolve_clone_request"
+  | "clones/clone_input"
   | "agents/list_managed_agents"
   | "agents/inspect_managed_agent"
   | "agents/install_managed_agent"
@@ -428,6 +429,7 @@ export const BRIDGE_METHODS = [
   { method: "clones/hand_back_clone", domain: "clones", command: "hand_back_clone" },
   { method: "clones/destroy_clone", domain: "clones", command: "destroy_clone" },
   { method: "clones/resolve_clone_request", domain: "clones", command: "resolve_clone_request" },
+  { method: "clones/clone_input", domain: "clones", command: "clone_input" },
   { method: "agents/list_managed_agents", domain: "agents", command: "list_managed_agents" },
   { method: "agents/inspect_managed_agent", domain: "agents", command: "inspect_managed_agent" },
   { method: "agents/install_managed_agent", domain: "agents", command: "install_managed_agent" },
@@ -724,6 +726,7 @@ export interface BridgeMethodParams {
   "clones/hand_back_clone": HandBackCloneParams;
   "clones/destroy_clone": DestroyCloneParams;
   "clones/resolve_clone_request": ResolveCloneRequestParams;
+  "clones/clone_input": CloneInputParams;
   "agents/list_managed_agents": undefined;
   "agents/inspect_managed_agent": InspectManagedAgentParams;
   "agents/install_managed_agent": InstallManagedAgentParams;
@@ -950,6 +953,7 @@ export interface BridgeMethodResults {
   "clones/hand_back_clone": UnitResult;
   "clones/destroy_clone": UnitResult;
   "clones/resolve_clone_request": CloneStateResult;
+  "clones/clone_input": UnitResult;
   "agents/list_managed_agents": ManagedAgentList;
   "agents/inspect_managed_agent": ManagedAgentInspection;
   "agents/install_managed_agent": ManagedAgentOperationResult;
@@ -1120,6 +1124,8 @@ export interface ClientInfo {
 }
 
 export type CloneBrowserKind = "chrome" | "brave";
+
+export type CloneInputEvent = { kind: "click"; x: number; y: number } | { deltaY: number; kind: "scroll"; x: number; y: number } | { kind: "type"; text: string } | { key: string; kind: "key" };
 
 export type CloneSignInPath = "import" | "sign_in_inside";
 
@@ -4017,6 +4023,11 @@ export interface DestroyCloneParams {
 
 export interface ResolveCloneRequestParams {
   allow: boolean;
+  sessionId: string;
+}
+
+export interface CloneInputParams {
+  input: CloneInputEvent;
   sessionId: string;
 }
 

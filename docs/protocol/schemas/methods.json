@@ -1381,6 +1381,13 @@
       "resultSchema": "clone-state-result.json"
     },
     {
+      "command": "clone_input",
+      "domain": "clones",
+      "method": "clones/clone_input",
+      "paramsSchema": "clone-input-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "list_managed_agents",
       "domain": "agents",
       "method": "agents/list_managed_agents",

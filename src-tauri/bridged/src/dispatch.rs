@@ -866,6 +866,10 @@ pub fn dispatch(
             let p: wire::DestroyCloneParams = decode(method, params)?;
             reply(api::destroy_clone(core, &p.session_id))
         }
+        MethodName::CloneInput => {
+            let p: wire::CloneInputParams = decode(method, params)?;
+            reply(api::clone_input(core, &p.session_id, &p.input))
+        }
         MethodName::ResolveCloneRequest => {
             let p: wire::ResolveCloneRequestParams = decode(method, params)?;
             reply(api::resolve_clone_request(core, &p.session_id, p.allow))

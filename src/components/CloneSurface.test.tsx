@@ -13,6 +13,7 @@ vi.mock("../api", () => ({
     browserCloneState: vi.fn(),
     requestClone: vi.fn(),
     resolveCloneRequest: vi.fn(),
+    cloneInput: vi.fn(),
     takeoverBrowserClone: vi.fn(),
     handBackBrowserClone: vi.fn(),
     destroyBrowserClone: vi.fn(),
@@ -116,6 +117,26 @@ describe("CloneSurface as a dock tenant", () => {
     await render({ sessionId: "session-9" });
     await act(async () => { button("Allow")!.click(); });
     expect(resolve).toHaveBeenCalledWith("session-9", true);
+  });
+
+  it("forwards a click on the frame to the page while taken over", async () => {
+    const cloneInput = vi.mocked(bridgeApi.cloneInput);
+    state.mockResolvedValue(clone({ status: "taken_over" }));
+    await render({ sessionId: "session-t" });
+    const img = container.querySelector<HTMLImageElement>("[data-clone-viewport] img")!;
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100, x: 0, y: 0, toJSON() {} });
+    await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 })); });
+    expect(cloneInput).toHaveBeenCalledWith("session-t", { kind: "click", x: 0.5, y: 0.5 });
+  });
+
+  it("does not forward clicks unless taken over", async () => {
+    const cloneInput = vi.mocked(bridgeApi.cloneInput);
+    cloneInput.mockClear();
+    state.mockResolvedValue(clone({ status: "acting" }));
+    await render({ sessionId: "session-t" });
+    const img = container.querySelector<HTMLImageElement>("[data-clone-viewport] img")!;
+    await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 })); });
+    expect(cloneInput).not.toHaveBeenCalled();
   });
 
   it("starts a clone for the typed site", async () => {

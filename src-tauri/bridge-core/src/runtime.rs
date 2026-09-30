@@ -527,7 +527,19 @@ fn build_clone_orchestrator(
     let tools_dir = std::env::temp_dir().join("bridge-clone-tools");
     let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), tools_dir)
         .expect("bind the clone browser tool socket");
-    crate::clone_orchestrator::CloneOrchestrator::new(supervisor, tool)
+    let orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(supervisor, tool);
+    // The lease is enforced here: every few seconds, destroy any clone whose
+    // time is up. The thread holds only a Weak, so it ends with the core.
+    let weak = Arc::downgrade(&orchestrator);
+    std::thread::Builder::new()
+        .name("bridge-clone-lease".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            let Some(orchestrator) = weak.upgrade() else { break };
+            orchestrator.sweep_expired();
+        })
+        .ok();
+    orchestrator
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
-import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind } from "./protocol/generated/protocol";
+import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -1421,6 +1421,11 @@ export const bridgeApi = {
       screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
     };
     return structuredClone(mockBrowserClone);
+  },
+  // The person's input into a clone they have taken over (click, scroll, typing,
+  // a login key). Coordinates are a fraction of the viewport.
+  cloneInput: async (sessionId: string, input: CloneInputEvent): Promise<void> => {
+    if (isTauri()) { await call("clones/clone_input", { sessionId, input }); return; }
   },
   takeoverBrowserClone: async (sessionId?: string): Promise<void> => {
     if (isTauri() && sessionId) { await call("clones/takeover_clone", { sessionId }); return; }

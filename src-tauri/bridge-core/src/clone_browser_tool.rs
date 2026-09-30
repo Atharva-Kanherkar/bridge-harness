@@ -173,6 +173,13 @@ impl CloneBrowserTool {
         }
     }
 
+    /// Pause the agent's page actions for a session (the person took over).
+    pub fn revoke_mutations(&self, session: &str) {
+        if let Ok(mut set) = self.mutable.lock() {
+            set.remove(session);
+        }
+    }
+
     pub fn revoke_session(&self, session: &str) {
         self.capabilities.lock().unwrap().remove(session);
         let _ = self.request_caps.lock().map(|mut m| m.remove(session));

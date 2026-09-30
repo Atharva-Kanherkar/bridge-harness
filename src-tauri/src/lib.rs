@@ -338,6 +338,16 @@ async fn destroy_clone(
 }
 
 #[tauri::command]
+async fn clone_input(
+    session_id: String,
+    input: bridge_protocol::messages::CloneInputEvent,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = Arc::clone(state.inner());
+    blocking("clone_input", move || api::clone_input(&core, &session_id, &input)).await
+}
+
+#[tauri::command]
 async fn resolve_clone_request(
     session_id: String,
     allow: bool,
@@ -2692,6 +2702,7 @@ pub fn run() -> i32 {
             hand_back_clone,
             destroy_clone,
             resolve_clone_request,
+            clone_input,
             detach_browser,
             route_browser,
             browser_skills,

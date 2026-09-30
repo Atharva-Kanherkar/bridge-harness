@@ -5254,6 +5254,34 @@ pub fn destroy_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), Bri
     Ok(())
 }
 
+/// Input from the person into a clone they have taken over (click, scroll,
+/// typing, a login key). Refused unless the clone is taken over.
+pub fn clone_input(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    input: &bridge_protocol::messages::CloneInputEvent,
+) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::clone_orchestrator::CloneInput;
+        use bridge_protocol::messages::CloneInputEvent as Wire;
+        let input = match input.clone() {
+            Wire::Click { x, y } => CloneInput::Click { x, y },
+            Wire::Scroll { x, y, delta_y } => CloneInput::Scroll { x, y, delta_y },
+            Wire::Type { text } => CloneInput::Type { text },
+            Wire::Key { key } => CloneInput::Key { key },
+        };
+        core.browser_clone_orchestrator
+            .forward_input(session_id, input)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id, input);
+        Err(BridgeError::Invalid("Browser clones are only available on macOS".into()))
+    }
+}
+
 /// The person answers the agent's clone request. On allow, the clone is spawned
 /// for the asked domain and page actions are approved; on deny, the request is
 /// dropped. Returns the resulting snapshot (the running clone, or `None`).

@@ -392,6 +392,7 @@ typed_methods![
     (HandBackClone, HandBackCloneParams, UnitResult),
     (DestroyClone, DestroyCloneParams, UnitResult),
     (ResolveCloneRequest, ResolveCloneRequestParams, CloneStateResult),
+    (CloneInput, CloneInputParams, UnitResult),
     // marketplace
     // agents — whether an agent's runtime is installed at all
     (ListManagedAgents, _, ManagedAgentList),

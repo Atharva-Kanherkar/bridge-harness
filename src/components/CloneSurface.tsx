@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { AlertTriangle, Bot, Camera, ChevronRight, Ghost, Hand, LoaderCircle, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
 import type { BrowserCloneSnapshot, BrowserCloneStatus, CloneSignInPath } from "../types";
+import type { CloneInputEvent } from "../protocol/generated/protocol";
 import { PaneState } from "./ui/pane";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -45,6 +46,7 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
   const [busy, setBusy] = useState(false);
   const [confirmingDestroy, setConfirmingDestroy] = useState(false);
   const [domainDraft, setDomainDraft] = useState("");
+  const [typeDraft, setTypeDraft] = useState("");
   const latestRequest = useRef(0);
 
   const refresh = async () => {
@@ -119,8 +121,11 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
         {snapshot.screenshotRedactedRegions > 0 && <div className="border-b border-border px-3 py-1 text-[11px] text-muted-foreground">{snapshot.screenshotRedactedRegions} sensitive region{snapshot.screenshotRedactedRegions === 1 ? "" : "s"} redacted before persistence</div>}
 
         <div className="min-h-0 flex-1 overflow-auto">
-          <LiveView snapshot={snapshot} />
+          <LiveView snapshot={snapshot} takenOver={status === "taken_over"} onInput={(input) => void bridgeApi.cloneInput(sessionId ?? "", input).catch((error) => onError(error instanceof Error ? error.message : String(error)))} />
         </div>
+        {status === "taken_over" && <form className="flex items-center gap-1.5 border-t border-border p-2" onSubmit={(event) => { event.preventDefault(); const text = typeDraft; if (!text) return; setTypeDraft(""); void (async () => { await bridgeApi.cloneInput(sessionId ?? "", { kind: "type", text }); await bridgeApi.cloneInput(sessionId ?? "", { kind: "key", key: "Enter" }); })().catch((error) => onError(error instanceof Error ? error.message : String(error))); }}>
+          <input aria-label="Type into the page" value={typeDraft} onChange={(event) => setTypeDraft(event.target.value)} placeholder="Type into the page, then Enter (for a login or 2FA code)" className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 text-[12px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+        </form>}
 
         <div className="flex flex-wrap items-center gap-1.5 border-t border-border p-2">
           {status === "taken_over"
@@ -150,7 +155,15 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
   </div>;
 }
 
-function LiveView({ snapshot }: { snapshot: BrowserCloneSnapshot }) {
+function LiveView({ snapshot, takenOver, onInput }: { snapshot: BrowserCloneSnapshot; takenOver: boolean; onInput: (input: CloneInputEvent) => void }) {
+  // While the person holds the clone, a click on the frame is forwarded to the
+  // page as a fraction of the viewport, so the scaled image maps onto the site.
+  const forwardClick = (event: ReactMouseEvent<HTMLImageElement>) => {
+    if (!takenOver) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    onInput({ kind: "click", x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height });
+  };
   if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><Camera size={24} className="mx-auto text-muted-foreground" /><p className="mt-2 max-w-sm text-[11px] leading-5 text-muted-foreground">{snapshot.status === "starting" ? "Starting the clone…" : "Waiting for the first redacted frame…"}</p></div></div>;
-  return <div data-clone-viewport><img src={snapshot.screenshot} alt="Redacted live view of the browser clone" className="block h-auto w-full" /></div>;
+  return <div data-clone-viewport><img src={snapshot.screenshot} alt="Redacted live view of the browser clone" onClick={forwardClick} className={`block h-auto w-full ${takenOver ? "cursor-pointer" : ""}`} /></div>;
 }

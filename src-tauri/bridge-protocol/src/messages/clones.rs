@@ -87,3 +87,33 @@ pub struct CloneSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct CloneStateResult(pub Option<CloneSnapshot>);
+
+/// Input the person sends to a clone they have taken over. Coordinates are a
+/// fraction of the viewport (0..1) so the dock's scaled frame maps onto the page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CloneInputEvent {
+    Click {
+        x: f64,
+        y: f64,
+    },
+    Scroll {
+        x: f64,
+        y: f64,
+        #[serde(rename = "deltaY")]
+        delta_y: f64,
+    },
+    Type {
+        text: String,
+    },
+    Key {
+        key: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneInputParams {
+    pub session_id: String,
+    pub input: CloneInputEvent,
+}
