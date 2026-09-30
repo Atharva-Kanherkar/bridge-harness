@@ -715,7 +715,7 @@ describe("the dock in the session view", () => {
     const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
     expect(aside).not.toBeNull();
     // The prompt is conversation content, not a permanent user-chosen title.
-    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", null);
+    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-6-sol", null);
   });
 
   // Contract: testing/fix-side-chat-model.md. The header picker switches the

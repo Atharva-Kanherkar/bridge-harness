@@ -1582,9 +1582,12 @@ fn codex_fallback_model(
 
 fn codex_fallback_candidates() -> Vec<CatalogCandidate> {
     vec![
-        codex_fallback_model("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 1),
-        codex_fallback_model("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 1),
-        codex_fallback_model("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 1),
+        codex_fallback_model("gpt-6-luna", "GPT-6 Luna", CapabilityTier::Fast, 1),
+        codex_fallback_model("gpt-6-sol", "GPT-6 Sol", CapabilityTier::Standard, 1),
+        codex_fallback_model("gpt-6-astra", "GPT-6 Astra", CapabilityTier::Strong, 1),
+        codex_fallback_model("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 0),
+        codex_fallback_model("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 0),
+        codex_fallback_model("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 0),
         codex_fallback_model("gpt-5.3-codex", "GPT-5.3 Codex", CapabilityTier::Standard, 0),
     ]
 }
@@ -1599,7 +1602,7 @@ impl HarnessAdapter for CodexAdapter {
         // descriptor. Re-entering it can deadlock behind a pending refresh
         // writer while an earlier field's temporary guard is still alive.
         let catalog = self.models.read().unwrap().clone();
-        let default_model = promoted_default_model(&catalog.models, "gpt-5.6-luna");
+        let default_model = promoted_default_model(&catalog.models, "gpt-6-luna");
         AdapterDescriptor {
             id: "codex".into(),
             label: "Codex".into(),
@@ -2114,7 +2117,7 @@ mod tests {
             None,
             chrono::Utc::now(),
         );
-        for id in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.3-codex"] {
+        for id in ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.3-codex"] {
             let model = resolved.models.iter().find(|model| model.id == id).unwrap();
             assert_eq!(model.supported_effort_levels, ["low", "medium", "high", "xhigh", "max", "ultra"], "{id}");
         }

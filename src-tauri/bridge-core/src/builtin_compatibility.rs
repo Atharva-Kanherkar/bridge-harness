@@ -147,7 +147,7 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         sandbox_modes: ALL_SANDBOXES,
         model_source: ModelSource::RuntimeCatalog,
         model_ids: &[],
-        default_model_id: Some("gpt-5.6-luna"),
+        default_model_id: Some("gpt-6-luna"),
     },
     BuiltInAgentContract {
         id: "cursor",

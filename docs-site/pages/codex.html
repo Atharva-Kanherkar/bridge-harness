@@ -159,7 +159,7 @@
               <p>The schema probe runs once per process lifetime — its result is cached in a <code>OnceLock</code>, not re-checked on every session start. Upgrading the installed Codex binary to a version that adds <code>thread/resume</code> support needs a Bridge restart before that capability is picked up.</p>
             </div>
 
-            <p>The descriptor also advertises four models across three tiers: <code>gpt-5.6-luna</code> (fast, and the overall default), <code>gpt-5.6-terra</code> (standard), <code>gpt-5.6-sol</code> (strong), and <code>gpt-5.3-codex</code> (a non-default standard-tier option).</p>
+            <p>The descriptor also advertises the GPT-6 family across three tiers: <code>gpt-6-luna</code> (fast, and the overall default), <code>gpt-6-sol</code> (standard), and <code>gpt-6-astra</code> (strong). The 5.6 models and <code>gpt-5.3-codex</code> stay selectable as non-default options, and live discovery adds anything else Codex reports.</p>
 
             <h2 id="h-failure">When the process dies</h2>
             <p>Codex's stderr is captured on a dedicated thread into a rolling tail — the last 30 non-empty lines, each truncated to 500 bytes — the same <code>StderrTail</code> machinery Claude's adapter uses. <code>failure_context()</code> pairs that tail with the exit status, when there is one, into a single string; if the process is still running and has said nothing on stderr, it returns nothing rather than reporting a failure that hasn't happened. When a worker's typed result never arrives, this is what gets attached to the synthetic failure a supervisor reports — Codex's own last words, not a bare "process exited."</p>
