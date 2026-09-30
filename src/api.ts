@@ -9,13 +9,14 @@ import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
-import type { CloneSettings, CloneSettingsSnapshot } from "./types";
+import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -402,6 +403,24 @@ const noClone = (status: BrowserCloneSnapshot["status"] = "none"): BrowserCloneS
 });
 const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "import", ttlMinutes: 30 });
 const cloneUnavailable = () => new Error("Browser clones are not connected to the runtime in this build yet.");
+// The runtime's CloneSnapshot carries no cookie value; map it to what the dock
+// surface renders. `null` (no clone for this session) becomes the empty state.
+const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnapshot => {
+  if (!wire) return noClone();
+  return {
+    status: wire.status as BrowserCloneStatus,
+    cloneId: wire.cloneId,
+    domain: wire.domain,
+    signInPath: wire.signInPath,
+    waitingReason: wire.status === "waiting_for_you"
+      ? "Sign in and finish two-factor, then hand the clone back."
+      : null,
+    expiresAt: new Date(Date.now() + wire.minutesLeft * 60_000).toISOString(),
+    screenshot: wire.screenshot ?? null,
+    screenshotRedactedRegions: wire.screenshotRedactedRegions,
+    pendingApproval: null,
+  };
+};
 // Starts on a login wall, the state a clone spends its interesting time in, so
 // the surface's whole supervision loop (take over, hand back, destroy) is
 // exercisable without the desktop app.
@@ -1379,19 +1398,39 @@ export const bridgeApi = {
   browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? call("browser/browser_skills") : Promise.resolve([]),
   configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return unit(call("browser/configure_remote_browser", { config })); mockBrowserBridge.remoteProvider = config; },
   startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? call("browser/start_remote_browser", { initialUrl }) as Promise<Record<string, unknown>> : Promise.resolve({ id: "mock-remote", initialUrl }),
-  // Browser clones: mock only, see the fixture above. There is no `call()`
-  // because there is no registered method to call yet.
-  browserCloneState: async (): Promise<BrowserCloneSnapshot> => isTauri() ? noClone() : structuredClone(mockBrowserClone),
-  takeoverBrowserClone: async (): Promise<void> => {
-    if (isTauri()) throw cloneUnavailable();
+  // Browser clones. In the desktop app these hit the real runtime through the
+  // `clones/*` wire methods; outside it (dev, tests) they drive the in-memory
+  // fixture above so the surface is exercisable without Tauri.
+  browserCloneState: async (sessionId?: string): Promise<BrowserCloneSnapshot> => {
+    if (isTauri() && sessionId) return cloneSnapshotFromWire(await call("clones/clone_state", { sessionId }));
+    return structuredClone(mockBrowserClone);
+  },
+  requestClone: async (
+    sessionId: string,
+    domain: string,
+    browser: CloneBrowserKind,
+    signInPath: CloneSignInPath,
+  ): Promise<BrowserCloneSnapshot> => {
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/request_clone", { sessionId, domain, browser, signInPath }));
+    mockBrowserClone = {
+      status: signInPath === "import" ? "acting" : "waiting_for_you",
+      cloneId: "mock-clone-1", domain, signInPath,
+      waitingReason: signInPath === "import" ? null : "Sign in and finish two-factor, then hand the clone back.",
+      expiresAt: new Date(Date.now() + mockCloneSettings.ttlMinutes * 60_000).toISOString(),
+      screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingApproval: null,
+    };
+    return structuredClone(mockBrowserClone);
+  },
+  takeoverBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/takeover_clone", { sessionId }); return; }
     if (mockBrowserClone.status === "acting" || mockBrowserClone.status === "waiting_for_you") mockBrowserClone = { ...mockBrowserClone, status: "taken_over", waitingReason: null };
   },
-  handBackBrowserClone: async (): Promise<void> => {
-    if (isTauri()) throw cloneUnavailable();
+  handBackBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/hand_back_clone", { sessionId }); return; }
     if (mockBrowserClone.status === "taken_over") mockBrowserClone = { ...mockBrowserClone, status: "acting" };
   },
-  destroyBrowserClone: async (): Promise<void> => {
-    if (isTauri()) throw cloneUnavailable();
+  destroyBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/destroy_clone", { sessionId }); return; }
     if (mockBrowserClone.cloneId) mockBrowserClone = noClone("destroyed");
   },
   resolveBrowserCloneApproval: async (approvalId: string, allow: boolean): Promise<void> => {

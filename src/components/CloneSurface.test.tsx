@@ -11,6 +11,7 @@ import { CLONE_POLL_HIDDEN_MS, CLONE_POLL_VISIBLE_MS, CloneSurface, type CloneSu
 vi.mock("../api", () => ({
   bridgeApi: {
     browserCloneState: vi.fn(),
+    requestClone: vi.fn(),
     takeoverBrowserClone: vi.fn(),
     handBackBrowserClone: vi.fn(),
     destroyBrowserClone: vi.fn(),
@@ -89,11 +90,28 @@ describe("CloneSurface as a dock tenant", () => {
     expect(container.textContent).toContain("Acting");
   });
 
-  it("says so, with no controls, when no clone is running", async () => {
+  it("offers a start control, and no takeover/destroy, when no clone is running", async () => {
     await render();
-    expect(container.textContent).toContain("No clone running");
+    expect(container.textContent).toContain("throwaway copy of your browser");
+    expect(button("Start clone")).toBeDefined();
     expect(button("Take over")).toBeUndefined();
     expect(button("Destroy")).toBeUndefined();
+  });
+
+  it("starts a clone for the typed site", async () => {
+    const requestClone = vi.mocked(bridgeApi.requestClone);
+    requestClone.mockResolvedValue(clone());
+    await render({ sessionId: "session-7" });
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Site to clone']")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(input, "youtube.com");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      button("Start clone")!.click();
+    });
+    expect(requestClone).toHaveBeenCalledWith("session-7", "youtube.com", "chrome", "import");
   });
 
   it("polls at the foreground cadence while visible", async () => {

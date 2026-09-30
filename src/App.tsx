@@ -3223,6 +3223,7 @@ function AppContent() {
               // Also before the workspace guard: a clone needs no tree.
               if (pane === "clone") return <CloneSurface
                 visible={dock.open && dock.pane === "clone" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !recallOpen && !navOpen}
+                sessionId={session?.id}
                 onSupervisionChange={reportCloneSupervision}
                 onError={setError}
               />;

@@ -30,10 +30,13 @@ export type CloneSupervision = { status: BrowserCloneStatus; attention: boolean 
 const isLive = (status: BrowserCloneStatus) => status === "starting" || status === "acting" || status === "waiting_for_you" || status === "taken_over";
 const minutesLeft = (expiresAt: string | null) => expiresAt ? Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 60_000)) : undefined;
 
-export function CloneSurface({ visible = true, onClose, onError, onSupervisionChange }: {
+export function CloneSurface({ visible = true, sessionId, onClose, onError, onSupervisionChange }: {
   /** False while another dock pane is showing. The surface stays mounted, so
    *  the clone keeps running, but polling backs off or stops. */
   visible?: boolean;
+  /** The session this pane belongs to. Its clone (if any) is what shows here;
+   *  without it, only the mock fixture is exercisable (dev and tests). */
+  sessionId?: string;
   onClose?: () => void;
   onError: (message: string) => void;
   onSupervisionChange?: (state: CloneSupervision) => void;
@@ -41,13 +44,14 @@ export function CloneSurface({ visible = true, onClose, onError, onSupervisionCh
   const [snapshot, setSnapshot] = useState<BrowserCloneSnapshot>();
   const [busy, setBusy] = useState(false);
   const [confirmingDestroy, setConfirmingDestroy] = useState(false);
+  const [domainDraft, setDomainDraft] = useState("");
   const latestRequest = useRef(0);
 
   const refresh = async () => {
     // Only the newest read lands: an action's refresh must not be overwritten
     // by a slower poll that started before it.
     const request = ++latestRequest.current;
-    const next = await bridgeApi.browserCloneState();
+    const next = await bridgeApi.browserCloneState(sessionId);
     if (request === latestRequest.current) setSnapshot(next);
   };
   const status = snapshot?.status ?? "none";
@@ -89,7 +93,14 @@ export function CloneSurface({ visible = true, onClose, onError, onSupervisionCh
     </header>
 
     {!snapshot ? <div className="grid flex-1 place-items-center text-muted-foreground"><LoaderCircle className="animate-spin" size={18} /></div>
-      : status === "none" ? <PaneState icon={Ghost} title="No clone running">A clone is a throwaway copy of your browser an agent starts when a task needs a signed-in site. It shows up here so you can watch it, take over for a login or 2FA, or destroy it.</PaneState>
+      : status === "none" ? <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+          <Ghost size={22} className="text-muted-foreground" aria-hidden="true" />
+          <p className="max-w-sm text-[11px] leading-5 text-muted-foreground">A clone is a throwaway copy of your browser, signed in only to the site you name. Start one to test a signed-in flow; it is destroyed when you are done.</p>
+          <form className="flex w-full max-w-sm items-center gap-1.5" onSubmit={(event) => { event.preventDefault(); const domain = domainDraft.trim(); if (domain) void run(() => bridgeApi.requestClone(sessionId ?? "", domain, "chrome", "import").then(() => setDomainDraft(""))); }}>
+            <input aria-label="Site to clone" value={domainDraft} onChange={(event) => setDomainDraft(event.target.value)} placeholder="youtube.com" className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 text-[12px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+            <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}><Ghost size={12} />Start clone</Button>
+          </form>
+        </div>
       : status === "destroyed" ? <PaneState icon={Trash2} title="Clone destroyed">Its profile, cookies, and session are gone. Nothing from it stays on disk.</PaneState>
       : <>
         {status === "waiting_for_you" && <div role="status" className="flex items-start gap-2 border-b border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-4 text-warning"><Hand size={14} className="mt-0.5 shrink-0" /><span><b className="font-semibold">The clone is waiting for you.</b> {snapshot.waitingReason ?? "Take over to sign in, then hand it back."}</span></div>}
@@ -102,13 +113,13 @@ export function CloneSurface({ visible = true, onClose, onError, onSupervisionCh
 
         <div className="flex flex-wrap items-center gap-1.5 border-t border-border p-2">
           {status === "taken_over"
-            ? <Button size="xs" disabled={busy} onClick={() => void run(bridgeApi.handBackBrowserClone)}><Bot size={12} />Hand back</Button>
-            : <Button variant={status === "waiting_for_you" ? "default" : "secondary"} size="xs" disabled={busy || status === "starting"} onClick={() => void run(bridgeApi.takeoverBrowserClone)}><Hand size={12} />Take over</Button>}
+            ? <Button size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.handBackBrowserClone(sessionId))}><Bot size={12} />Hand back</Button>
+            : <Button variant={status === "waiting_for_you" ? "default" : "secondary"} size="xs" disabled={busy || status === "starting"} onClick={() => void run(() => bridgeApi.takeoverBrowserClone(sessionId))}><Hand size={12} />Take over</Button>}
           {confirmingDestroy
             ? <div className="ml-auto flex flex-wrap items-center gap-1.5">
               <span className="text-[11px] text-muted-foreground">Wipe this clone’s profile and cookies?</span>
               <Button variant="ghost" size="xs" disabled={busy} onClick={() => setConfirmingDestroy(false)}>Cancel</Button>
-              <Button variant="destructive" size="xs" disabled={busy} onClick={() => void run(bridgeApi.destroyBrowserClone)}><Trash2 size={12} />Destroy clone</Button>
+              <Button variant="destructive" size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.destroyBrowserClone(sessionId))}><Trash2 size={12} />Destroy clone</Button>
             </div>
             : <Button variant="ghost" size="xs" disabled={busy} onClick={() => setConfirmingDestroy(true)} className="ml-auto text-muted-foreground"><Trash2 size={12} />Destroy</Button>}
         </div>

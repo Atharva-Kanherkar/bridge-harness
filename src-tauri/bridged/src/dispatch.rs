@@ -846,6 +846,26 @@ pub fn dispatch(
             encode(api::route_browser(into_core(method, &p.request)?))
         }
         MethodName::BrowserSkills => encode(api::browser_skills()),
+        MethodName::RequestClone => {
+            let p: wire::RequestCloneParams = decode(method, params)?;
+            reply(api::request_clone(core, &p))
+        }
+        MethodName::CloneState => {
+            let p: wire::CloneStateParams = decode(method, params)?;
+            reply(api::clone_state(core, &p.session_id))
+        }
+        MethodName::TakeoverClone => {
+            let p: wire::TakeoverCloneParams = decode(method, params)?;
+            reply(api::takeover_clone(core, &p.session_id))
+        }
+        MethodName::HandBackClone => {
+            let p: wire::HandBackCloneParams = decode(method, params)?;
+            reply(api::hand_back_clone(core, &p.session_id))
+        }
+        MethodName::DestroyClone => {
+            let p: wire::DestroyCloneParams = decode(method, params)?;
+            reply(api::destroy_clone(core, &p.session_id))
+        }
         MethodName::ConfigureRemoteBrowser => {
             let p: wire::ConfigureRemoteBrowserParams = decode(method, params)?;
             let config = match &p.config {

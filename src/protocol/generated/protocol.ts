@@ -198,6 +198,11 @@ export type BridgeMethod =
   | "browser/browser_skills"
   | "browser/configure_remote_browser"
   | "browser/start_remote_browser"
+  | "clones/request_clone"
+  | "clones/clone_state"
+  | "clones/takeover_clone"
+  | "clones/hand_back_clone"
+  | "clones/destroy_clone"
   | "agents/list_managed_agents"
   | "agents/inspect_managed_agent"
   | "agents/install_managed_agent"
@@ -416,6 +421,11 @@ export const BRIDGE_METHODS = [
   { method: "browser/browser_skills", domain: "browser", command: "browser_skills" },
   { method: "browser/configure_remote_browser", domain: "browser", command: "configure_remote_browser" },
   { method: "browser/start_remote_browser", domain: "browser", command: "start_remote_browser" },
+  { method: "clones/request_clone", domain: "clones", command: "request_clone" },
+  { method: "clones/clone_state", domain: "clones", command: "clone_state" },
+  { method: "clones/takeover_clone", domain: "clones", command: "takeover_clone" },
+  { method: "clones/hand_back_clone", domain: "clones", command: "hand_back_clone" },
+  { method: "clones/destroy_clone", domain: "clones", command: "destroy_clone" },
   { method: "agents/list_managed_agents", domain: "agents", command: "list_managed_agents" },
   { method: "agents/inspect_managed_agent", domain: "agents", command: "inspect_managed_agent" },
   { method: "agents/install_managed_agent", domain: "agents", command: "install_managed_agent" },
@@ -706,6 +716,11 @@ export interface BridgeMethodParams {
   "browser/browser_skills": undefined;
   "browser/configure_remote_browser": ConfigureRemoteBrowserParams;
   "browser/start_remote_browser": StartRemoteBrowserParams;
+  "clones/request_clone": RequestCloneParams;
+  "clones/clone_state": CloneStateParams;
+  "clones/takeover_clone": TakeoverCloneParams;
+  "clones/hand_back_clone": HandBackCloneParams;
+  "clones/destroy_clone": DestroyCloneParams;
   "agents/list_managed_agents": undefined;
   "agents/inspect_managed_agent": InspectManagedAgentParams;
   "agents/install_managed_agent": InstallManagedAgentParams;
@@ -926,6 +941,11 @@ export interface BridgeMethodResults {
   "browser/browser_skills": BrowserSkillsResult;
   "browser/configure_remote_browser": UnitResult;
   "browser/start_remote_browser": unknown;
+  "clones/request_clone": CloneStateResult;
+  "clones/clone_state": CloneStateResult;
+  "clones/takeover_clone": UnitResult;
+  "clones/hand_back_clone": UnitResult;
+  "clones/destroy_clone": UnitResult;
   "agents/list_managed_agents": ManagedAgentList;
   "agents/inspect_managed_agent": ManagedAgentInspection;
   "agents/install_managed_agent": ManagedAgentOperationResult;
@@ -1093,6 +1113,21 @@ export type CheckStatus = "pending" | "running" | "passed" | "failed" | "skipped
 export interface ClientInfo {
   name: string;
   version: string;
+}
+
+export type CloneBrowserKind = "chrome" | "brave";
+
+export type CloneSignInPath = "import" | "sign_in_inside";
+
+export interface CloneSnapshot {
+  cloneId: string;
+  domain: string;
+  minutesLeft: number;
+  screenshot?: string | null;
+  screenshotRedactedRegions: number;
+  sessionId: string;
+  signInPath: CloneSignInPath;
+  status: string;
 }
 
 export interface CompletionSummary {
@@ -3948,6 +3983,31 @@ export interface ConfigureRemoteBrowserParams {
 
 export interface StartRemoteBrowserParams {
   initialUrl: string;
+}
+
+export interface RequestCloneParams {
+  browser: CloneBrowserKind;
+  domain: string;
+  sessionId: string;
+  signInPath: CloneSignInPath;
+}
+
+export type CloneStateResult = CloneSnapshot | null;
+
+export interface CloneStateParams {
+  sessionId: string;
+}
+
+export interface TakeoverCloneParams {
+  sessionId: string;
+}
+
+export interface HandBackCloneParams {
+  sessionId: string;
+}
+
+export interface DestroyCloneParams {
+  sessionId: string;
 }
 
 export interface ManagedAgentList {

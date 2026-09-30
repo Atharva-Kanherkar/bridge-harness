@@ -38,7 +38,8 @@ impl CloneBrowser {
 }
 
 /// How the clone gets signed in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SignInPath {
     /// Copy the approved site's cookies from the user's browser.
     Import,
@@ -53,6 +54,7 @@ pub struct CloneView {
     pub clone_id: String,
     pub domain: String,
     pub status: CloneStatus,
+    pub sign_in_path: SignInPath,
     pub minutes_left: u64,
 }
 
@@ -68,6 +70,7 @@ struct Active {
     clone_id: String,
     domain: String,
     status: CloneStatus,
+    sign_in_path: SignInPath,
     expires_at: Instant,
     /// The agent process the tool capability is bound to; read back only in the
     /// end-to-end test's assertion today.
@@ -153,6 +156,7 @@ impl CloneOrchestrator {
             clone_id: info.id.clone(),
             domain: domain.clone(),
             status,
+            sign_in_path: path,
             expires_at: Instant::now() + ttl,
             runtime_pid,
         };
@@ -298,6 +302,7 @@ fn view_of(session_id: &str, active: &Active, remaining: Duration) -> CloneView 
         clone_id: active.clone_id.clone(),
         domain: active.domain.clone(),
         status: active.status,
+        sign_in_path: active.sign_in_path,
         minutes_left: remaining.as_secs().div_ceil(60),
     }
 }
@@ -332,6 +337,7 @@ mod tests {
             clone_id: "c1".into(),
             domain: "example.com".into(),
             status: CloneStatus::WaitingForYou,
+            sign_in_path: SignInPath::SignInInside,
             expires_at: Instant::now() + Duration::from_secs(600),
             runtime_pid: 1,
         };

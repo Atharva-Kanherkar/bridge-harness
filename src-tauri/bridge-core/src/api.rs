@@ -5126,6 +5126,115 @@ pub fn browser_skills() -> Vec<browser_bridge::BrowserSkill> {
     browser_bridge::bundled_skills()
 }
 
+// ---- browser clones -------------------------------------------------------
+// The wire methods exist on every platform; the runtime is macOS-only, so off
+// macOS they report "no clone" / "not available".
+
+use bridge_protocol::messages::{
+    CloneBrowserKind, CloneSignInPath, CloneSnapshot, RequestCloneParams,
+};
+
+#[cfg(target_os = "macos")]
+fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnapshot> {
+    use crate::clone_orchestrator::{CloneStatus, SignInPath};
+    let view = core.browser_clone_orchestrator.view(session_id)?;
+    // A fresh frame for the dock's live view; absent until a page has painted.
+    let screenshot = core
+        .browser_clone_orchestrator
+        .frame(session_id)
+        .ok()
+        .map(|data| format!("data:image/png;base64,{data}"));
+    let status = match view.status {
+        CloneStatus::Acting => "acting",
+        CloneStatus::WaitingForYou => "waiting_for_you",
+        CloneStatus::TakenOver => "taken_over",
+    };
+    let sign_in_path = match view.sign_in_path {
+        SignInPath::Import => CloneSignInPath::Import,
+        SignInPath::SignInInside => CloneSignInPath::SignInInside,
+    };
+    Some(CloneSnapshot {
+        session_id: view.session_id,
+        clone_id: view.clone_id,
+        domain: view.domain,
+        status: status.to_owned(),
+        sign_in_path,
+        minutes_left: view.minutes_left,
+        screenshot,
+        screenshot_redacted_regions: 0,
+    })
+}
+
+pub fn clone_state(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(clone_snapshot(core, session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id);
+        Ok(None)
+    }
+}
+
+pub fn request_clone(
+    core: &Arc<BridgeCore>,
+    params: &RequestCloneParams,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::clone_orchestrator::{CloneBrowser, SignInPath};
+        let browser = match params.browser {
+            CloneBrowserKind::Chrome => CloneBrowser::Chrome,
+            CloneBrowserKind::Brave => CloneBrowser::Brave,
+        };
+        let path = match params.sign_in_path {
+            CloneSignInPath::Import => SignInPath::Import,
+            CloneSignInPath::SignInInside => SignInPath::SignInInside,
+        };
+        // The tool capability is re-minted with the live runtime pid on each
+        // turn (see live_turn), so the initial mint's pid does not matter here.
+        core.browser_clone_orchestrator
+            .request_clone(&params.session_id, &params.domain, browser, path, None, 0)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        Ok(clone_snapshot(core, &params.session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, params);
+        Err(BridgeError::Invalid(
+            "Browser clones are only available on macOS".into(),
+        ))
+    }
+}
+
+pub fn takeover_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.take_over(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+pub fn hand_back_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.hand_back(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+pub fn destroy_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
 pub fn configure_remote_browser(
     core: &Arc<BridgeCore>,
     config: Option<browser_bridge::RemoteBrowserConfig>,

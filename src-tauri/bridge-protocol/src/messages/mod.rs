@@ -26,6 +26,7 @@ mod approvals;
 mod auth;
 mod automations;
 mod browser;
+mod clones;
 mod common;
 mod completion;
 mod config;
@@ -56,6 +57,7 @@ pub use approvals::*;
 pub use auth::*;
 pub use automations::*;
 pub use browser::*;
+pub use clones::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
@@ -383,6 +385,12 @@ typed_methods![
     (BrowserSkills, _, BrowserSkillsResult),
     (ConfigureRemoteBrowser, ConfigureRemoteBrowserParams, UnitResult),
     (StartRemoteBrowser, StartRemoteBrowserParams, _),
+    // browser clones
+    (RequestClone, RequestCloneParams, CloneStateResult),
+    (CloneState, CloneStateParams, CloneStateResult),
+    (TakeoverClone, TakeoverCloneParams, UnitResult),
+    (HandBackClone, HandBackCloneParams, UnitResult),
+    (DestroyClone, DestroyCloneParams, UnitResult),
     // marketplace
     // agents — whether an agent's runtime is installed at all
     (ListManagedAgents, _, ManagedAgentList),
