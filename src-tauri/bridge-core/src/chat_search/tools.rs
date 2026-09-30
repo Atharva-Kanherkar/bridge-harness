@@ -368,6 +368,7 @@ mod tests {
             best_entry_id: None,
             entry_matches: 1,
             digest_match: false,
+            covered_all: true,
             snippet: "a snippet".into(),
             score: 1.0,
             archived: false,

@@ -94,9 +94,10 @@ pub fn search_with(
     let parsed = parse::parse(&query, now);
     let (terms, retrieval) = {
         let db = db.lock().unwrap();
-        let terms = parse::rank_terms(&db, &parsed)?;
+        let (terms, unknown) = parse::rank_terms_counted(&db, &parsed)?;
         // The model sees more candidates than the user does.
-        let retrieval = retrieve::retrieve(&db, &parsed, &terms, limit.max(SEED_CARDS), now)?;
+        let mut retrieval = retrieve::retrieve(&db, &parsed, &terms, limit.max(SEED_CARDS), now)?;
+        retrieval.unknown_terms = unknown;
         (terms, retrieval)
     };
     let words: Vec<String> = terms.iter().map(|term| term.text.clone()).collect();

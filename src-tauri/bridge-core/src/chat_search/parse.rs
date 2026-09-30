@@ -17,6 +17,8 @@ use crate::BridgeError;
 
 /// The most terms a query keeps after ranking. More only adds cost.
 pub const MAX_TERMS: usize = 6;
+/// Unknown words at least this long retry as a prefix.
+const PREFIX_FALLBACK_CHARS: usize = 4;
 
 const HARNESS_WORDS: [&str; 5] = ["codex", "claude", "opencode", "cursor", "grok"];
 
@@ -392,6 +394,14 @@ fn document_frequency(db: &Connection, term: &Term) -> Result<i64, BridgeError> 
 /// never typed into a chat gets a synonym. Phrases are kept as typed: they
 /// are the user saying exactly which words matter.
 pub fn rank_terms(db: &Connection, parsed: &ParsedQuery) -> Result<Vec<Term>, BridgeError> {
+    Ok(rank_terms_counted(db, parsed)?.0)
+}
+
+/// [`rank_terms`], plus how many typed words the index has never seen. An
+/// unknown word means the index is answering part of the question, which the
+/// confidence gate must know.
+pub fn rank_terms_counted(db: &Connection, parsed: &ParsedQuery) -> Result<(Vec<Term>, usize), BridgeError> {
+    let mut unknown = 0;
     let mut ranked: Vec<(i64, Term)> = Vec::new();
     for term in &parsed.terms {
         if term.phrase {
@@ -408,16 +418,28 @@ pub fn rank_terms(db: &Connection, parsed: &ParsedQuery) -> Result<Vec<Term>, Br
             ranked.push((exact_count, exact));
             continue;
         }
-        if term.prefix && term.text.chars().count() >= 2 {
-            let prefix_count = document_frequency(db, term)?;
+        // A fragment still being typed, or a word the index only holds in
+        // another form ("subagent" for "subagents", "restart" for
+        // "restarts"): match it as a prefix. The unicode61 tokenizer does no
+        // stemming, and a prefix is the cheap half of it. Short words stay
+        // exact, since "ab*" matches too much to mean anything.
+        let chars = term.text.chars().count();
+        if (term.prefix && chars >= 2) || chars >= PREFIX_FALLBACK_CHARS {
+            let prefixed = Term {
+                prefix: true,
+                ..term.clone()
+            };
+            let prefix_count = document_frequency(db, &prefixed)?;
             if prefix_count > 0 {
-                ranked.push((prefix_count, term.clone()));
+                ranked.push((prefix_count, prefixed));
+                continue;
             }
         }
+        unknown += 1;
     }
     ranked.sort_by_key(|(count, _)| *count);
     ranked.truncate(MAX_TERMS);
-    Ok(ranked.into_iter().map(|(_, term)| term).collect())
+    Ok((ranked.into_iter().map(|(_, term)| term).collect(), unknown))
 }
 
 #[cfg(test)]
@@ -605,6 +627,7 @@ mod tests {
         let ranked = rank_terms(&db, &parsed).unwrap();
         let texts: Vec<_> = ranked.iter().map(|term| term.text.as_str()).collect();
         assert_eq!(texts, vec!["catalog", "plugin"], "rarest first, unknown dropped");
+        assert_eq!(rank_terms_counted(&db, &parsed).unwrap().1, 1);
     }
 
     #[test]
@@ -615,6 +638,17 @@ mod tests {
         assert_eq!(exact[0].to_match(), "\"stall\"");
         let fragment = rank_terms(&db, &parse("catalog sta", at(NOW))).unwrap();
         assert!(fragment.iter().any(|term| term.to_match() == "\"sta\"*"));
+    }
+
+    #[test]
+    fn an_unknown_word_retries_as_a_prefix_of_its_plural() {
+        let (_dir, db) = vocab_db();
+        chat_with(&db, "a", &["fanning out subagents hit the limit"]);
+        let (ranked, unknown) = rank_terms_counted(&db, &parse("subagent limit ", at(NOW))).unwrap();
+        assert!(ranked.iter().any(|term| term.to_match() == "\"subagent\"*"), "{ranked:?}");
+        assert_eq!(unknown, 0);
+        let (_, unknown) = rank_terms_counted(&db, &parse("zzz limit ", at(NOW))).unwrap();
+        assert_eq!(unknown, 1, "a short unknown word stays unknown");
     }
 
     #[test]

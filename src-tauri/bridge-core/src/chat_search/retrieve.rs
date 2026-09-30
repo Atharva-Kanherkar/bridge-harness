@@ -8,7 +8,7 @@
 //! with a small bonus for several matching entries and a smaller one for
 //! recency, which only breaks ties.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -56,6 +56,9 @@ pub struct Candidate {
     pub best_entry_id: Option<String>,
     pub entry_matches: u32,
     pub digest_match: bool,
+    /// Matched every searched term, in one entry or in its digest. After an
+    /// OR relaxation only some candidates have.
+    pub covered_all: bool,
     pub snippet: String,
     pub score: f64,
     pub archived: bool,
@@ -90,11 +93,20 @@ pub struct Retrieval {
     pub terms: Vec<Term>,
     /// Whether the AND query found too little and OR was used.
     pub relaxed: bool,
+    /// Typed words the index has never seen, set by the caller from
+    /// [`super::parse::rank_terms_counted`].
+    pub unknown_terms: usize,
 }
 
 impl Retrieval {
     /// The gate that decides whether a model could add anything.
     pub fn confident(&self) -> bool {
+        // An answer to part of the question is not a clear answer: a word
+        // the index never saw, or a winner that matched only some terms,
+        // leaves the rest to the model.
+        if self.unknown_terms > 0 || self.candidates.first().is_some_and(|first| !first.covered_all) {
+            return false;
+        }
         match self.candidates.as_slice() {
             [] => false,
             [_] => true,
@@ -286,6 +298,7 @@ pub fn describe(db: &Connection, session_id: &str) -> Result<Option<Candidate>, 
                 best_entry_id: None,
                 entry_matches: 0,
                 digest_match: false,
+                covered_all: false,
                 snippet: String::new(),
                 score: 0.0,
                 archived: row.get(7)?,
@@ -324,6 +337,7 @@ pub fn retrieve(
         if parsed.has_filter() {
             for id in recent_chats(db, parsed, limit)? {
                 if let Some(mut candidate) = describe(db, &id)? {
+                    candidate.covered_all = true;
                     candidate.score = RECENCY_WEIGHT * (-age_days(&candidate.last_active_at, now) / RECENCY_DAYS).exp() / (RRF_K + 1.0);
                     candidates.push(candidate);
                 }
@@ -333,6 +347,7 @@ pub fn retrieve(
             candidates,
             terms: Vec::new(),
             relaxed: false,
+            unknown_terms: 0,
         });
     }
 
@@ -347,7 +362,7 @@ pub fn retrieve(
         ids.dedup();
         ids
     };
-    let covered = chats(&entries, &digests);
+    let mut covered: HashSet<String> = chats(&entries, &digests).into_iter().collect();
     if terms.len() > 1 && covered.len() < RELAX_BELOW {
         // Rare terms still dominate an OR through their IDF in bm25, so the
         // relaxed list stays led by what the AND would have found.
@@ -355,6 +370,25 @@ pub fn retrieve(
         entries = entry_hits(db, &or, parsed)?;
         digests = digest_hits(db, &or, parsed)?;
         relaxed = true;
+        // A chat can say every term without any one row saying them all:
+        // the product name in its title, the symptom in a message. Coverage
+        // is a property of the chat, so it is checked term by term. Each
+        // check keeps the same row limit, so a very common term can only
+        // under-report coverage, which errs toward asking the model.
+        let mut per_term: Option<HashSet<String>> = None;
+        for term in terms {
+            let expression = term.to_match();
+            let mut sessions: HashSet<String> = entry_hits(db, &expression, parsed)?
+                .into_iter()
+                .map(|hit| hit.session_id)
+                .collect();
+            sessions.extend(digest_hits(db, &expression, parsed)?.into_iter().map(|hit| hit.session_id));
+            per_term = Some(match per_term {
+                None => sessions,
+                Some(previous) => previous.intersection(&sessions).cloned().collect(),
+            });
+        }
+        covered.extend(per_term.unwrap_or_default());
     }
 
     // Group entry hits by chat, preserving bm25 order for the rank.
@@ -401,6 +435,7 @@ pub fn retrieve(
         candidate.entry_matches = per_chat.get(&id).map_or(0, |(strengths, _, _)| strengths.len() as u32);
         candidate.best_entry_id = per_chat.get(&id).map(|(_, _, entry_id)| entry_id.clone());
         candidate.digest_match = digest_snippets.contains_key(&id);
+        candidate.covered_all = !relaxed || covered.contains(&id);
         let snippet = per_chat
             .get(&id)
             .map(|(_, snippet, _)| snippet.clone())
@@ -422,12 +457,13 @@ pub fn retrieve(
         candidates,
         terms: terms.to_vec(),
         relaxed,
+        unknown_terms: 0,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::parse::{parse, rank_terms};
+    use super::super::parse::{parse, rank_terms_counted};
     use super::*;
     use crate::store::{self, append_session_entry};
     use serde_json::json;
@@ -468,8 +504,10 @@ mod tests {
 
     fn search(db: &Connection, query: &str) -> Retrieval {
         let parsed = parse(query, now());
-        let terms = rank_terms(db, &parsed).unwrap();
-        retrieve(db, &parsed, &terms, 4, now()).unwrap()
+        let (terms, unknown) = rank_terms_counted(db, &parsed).unwrap();
+        let mut retrieval = retrieve(db, &parsed, &terms, 4, now()).unwrap();
+        retrieval.unknown_terms = unknown;
+        retrieval
     }
 
     fn ids(retrieval: &Retrieval) -> Vec<&str> {
@@ -602,6 +640,18 @@ mod tests {
         say(&db, "only", "user.message", "axolotl");
         assert!(search(&db, "axolotl").confident(), "exactly one hit is clear");
         assert!(!search(&db, "nothing-matches-this").confident());
+        // One hit on one of three typed words is a guess, not a clear answer.
+        assert!(!search(&db, "axolotl printout zzzunknown").confident(), "an unknown word leaves the rest unanswered");
+
+        let (_dir, db) = fresh();
+        chat(&db, "w", "codex", "One");
+        chat(&db, "p", "codex", "Two");
+        say(&db, "w", "user.message", "wombat");
+        say(&db, "p", "user.message", "printout");
+        let partial = search(&db, "wombat printout");
+        assert!(partial.relaxed);
+        assert!(partial.candidates.iter().all(|candidate| !candidate.covered_all));
+        assert!(!partial.confident(), "a winner that matched one of two words is not clear");
     }
 
     #[test]
