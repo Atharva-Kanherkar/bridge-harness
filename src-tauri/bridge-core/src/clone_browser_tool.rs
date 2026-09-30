@@ -42,6 +42,7 @@ pub struct PendingRequest {
     pub domain: String,
     pub runtime_pid: u32,
     pub extension_path: Option<String>,
+    pub additional_domains: Vec<String>,
 }
 
 pub struct CloneBrowserTool {
@@ -162,7 +163,7 @@ impl CloneBrowserTool {
             quote(&self.socket.to_string_lossy()), quote(&format!("Authorization: Bearer {token}")), quote(&format!("X-Bridge-Session: {session}")));
         fs::write(&path, script).ok()?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
-        Some(format!("To test in a signed-in browser, ask for a throwaway clone (the person approves it): {tool} '{{\"kind\":\"request\",\"domain\":\"example.com\"}}'. The result includes requestId. Poll this same tool with kind=request_status and requestId until awaiting=false; it returns the approved browser tool instructions in this turn. Approval may need several minutes, so keep polling every two seconds without ending your turn. Optional extensionPath must be an absolute directory for the extension under test and is shown for approval. Use the returned browser tool, then finish your turn to destroy the browser. Do not ask unless the task needs a signed-in site.", tool = path.display()))
+        Some(format!("To test in a signed-in browser, ask for a throwaway clone (the person approves it): {tool} '{{\"kind\":\"request\",\"domain\":\"example.com\"}}'. The result includes requestId. Poll this same tool with kind=request_status and requestId until awaiting=false; it returns the approved browser tool instructions in this turn. Approval may need several minutes, so keep polling every two seconds without ending your turn. Optional additionalDomains lists CDN or sign-in domains needed by the site; those are shown for explicit approval. Optional extensionPath must be an absolute directory for the extension under test and is shown for approval. Use the returned browser tool, then finish your turn to destroy the browser. Do not ask unless the task needs a signed-in site.", tool = path.display()))
     }
 
     /// The domain a session's agent has asked for, awaiting the person's answer.
@@ -179,7 +180,7 @@ impl CloneBrowserTool {
 
     pub fn pending_requests(&self) -> Vec<bridge_protocol::messages::CloneRequest> {
         self.pending.lock().unwrap_or_else(|p| p.into_inner()).iter().map(|(session, request)| bridge_protocol::messages::CloneRequest {
-            session_id: session.clone(), request_id: request.id.clone(), domain: request.domain.clone(), extension_path: request.extension_path.clone(),
+            session_id: session.clone(), request_id: request.id.clone(), domain: request.domain.clone(), extension_path: request.extension_path.clone(), additional_domains: Some(request.additional_domains.clone()),
         }).collect()
     }
 
@@ -347,15 +348,25 @@ impl CloneBrowserTool {
             if extension_path.as_ref().is_some_and(|path| !std::path::Path::new(path).is_absolute() || !std::path::Path::new(path).join("manifest.json").is_file()) {
                 return Err("extensionPath must be an absolute directory containing manifest.json".into());
             }
+            let mut additional_domains = Vec::new();
+            if let Some(hosts) = request.get("additionalDomains") {
+                let hosts = hosts.as_array().ok_or("additionalDomains must be an array")?;
+                if hosts.len() > 16 { return Err("at most 16 additional domains are allowed".into()); }
+                for host in hosts {
+                    let host = host.as_str().and_then(normalized_domain).ok_or("invalid additional domain")?;
+                    if host != domain { additional_domains.push(host); }
+                }
+                additional_domains.sort(); additional_domains.dedup();
+            }
             let mut pending = self.pending.lock().map_err(|_| "request unavailable")?;
             if let Some(existing) = pending.get(session) {
-                if existing.domain != domain || existing.extension_path != extension_path || existing.runtime_pid != cap.runtime_pid {
+                if existing.domain != domain || existing.extension_path != extension_path || existing.additional_domains != additional_domains || existing.runtime_pid != cap.runtime_pid {
                     return Err("a different browser request is already awaiting approval".into());
                 }
                 return Ok(json!({"ok":true,"requested":domain,"awaiting":true,"requestId":existing.id}));
             }
             let id = Uuid::new_v4().to_string();
-            pending.insert(session.to_owned(), PendingRequest { id: id.clone(), domain: domain.clone(), runtime_pid: cap.runtime_pid, extension_path });
+            pending.insert(session.to_owned(), PendingRequest { id: id.clone(), domain: domain.clone(), runtime_pid: cap.runtime_pid, extension_path, additional_domains });
             self.answers.lock().map_err(|_| "answer unavailable")?.remove(session);
             return Ok(json!({"ok":true,"requested":domain,"awaiting":true,"requestId":id}));
         }
@@ -373,7 +384,14 @@ impl CloneBrowserTool {
         drop(caps);
         if kind == "status" {
             let paused = self.paused.lock().map_err(|_| "clone unavailable")?.contains(session);
-            return Ok(json!({"ok":true,"paused":paused}));
+            if paused { return Ok(json!({"ok":true,"paused":true})); }
+            let blocked = self.supervisor.clone_guard(&clone_id).map(|guard| {
+                let guard = guard.lock().unwrap_or_else(|p| p.into_inner());
+                let mut blocked = json!(guard.blocked().iter().map(|request| request.host.clone()).collect::<Vec<_>>());
+                guard.scrub_response(&mut blocked);
+                blocked
+            }).unwrap_or_else(|| json!([]));
+            return Ok(json!({"ok":true,"paused":paused,"blockedHosts":blocked}));
         }
         if self.paused.lock().map_err(|_| "clone unavailable")?.contains(session) {
             return Err("the person controls the browser; all agent access is paused".into());
@@ -569,6 +587,7 @@ mod tests {
         let asked = tool.execute("chat", &token, Some(pid), json!({"kind":"request","domain":"example.test"})).unwrap();
         let id = asked["requestId"].as_str().unwrap();
         assert!(tool.execute("chat", &token, Some(pid), json!({"kind":"request","domain":"other.test"})).is_err());
+        assert!(tool.execute("chat", &token, Some(pid), json!({"kind":"request","domain":"example.test","additionalDomains":["cdn.other.test"]})).is_err());
         assert_eq!(tool.pending_request("chat").as_deref(), Some("example.test"));
         assert!(tool.take_pending_request("chat", "old-request", pid).is_err());
         assert!(tool.take_pending_request("chat", id, pid + 1).is_err());

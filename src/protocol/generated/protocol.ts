@@ -1140,6 +1140,7 @@ export type CloneBrowserKind = "chrome" | "brave";
 export type CloneInputEvent = { kind: "click"; x: number; y: number } | { deltaY: number; kind: "scroll"; x: number; y: number } | { kind: "type"; text: string } | { key: string; kind: "key" };
 
 export interface CloneRequest {
+  additionalDomains?: string[] | null;
   domain: string;
   extensionPath?: string | null;
   requestId: string;
@@ -1154,6 +1155,7 @@ export interface CloneSettings {
 export type CloneSignInPath = "import" | "sign_in_inside";
 
 export interface CloneSnapshot {
+  additionalDomains?: string[] | null;
   cloneId: string;
   domain: string;
   extensionPath?: string | null;

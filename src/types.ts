@@ -437,6 +437,7 @@ export interface BrowserCloneSnapshot {
   pendingRequest: string | null;
   pendingRequestId?: string | null;
   extensionPath?: string | null;
+  additionalDomains?: string[] | null;
   /** Why the agent stopped (login wall, 2FA). Set only while waiting_for_you. */
   waitingReason: string | null;
   /** The TTL deadline; the clone destroys itself when it passes. */

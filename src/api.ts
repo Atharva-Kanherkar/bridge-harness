@@ -412,6 +412,7 @@ const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnap
     pendingRequest: wire.pendingRequest ?? null,
     pendingRequestId: wire.pendingRequestId ?? null,
     extensionPath: wire.extensionPath ?? null,
+    additionalDomains: wire.additionalDomains ?? null,
     cloneId: wire.cloneId,
     domain: wire.domain,
     signInPath: wire.signInPath,

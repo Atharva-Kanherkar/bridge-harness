@@ -21,12 +21,13 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); });
 
 it("surfaces background requests without a dock and submits the displayed identity and choices", async () => {
-  const request = { sessionId: "other-chat", requestId: "immutable-1", domain: "example.test", extensionPath: "/tmp/extension-under-test" };
+  const request = { sessionId: "other-chat", requestId: "immutable-1", domain: "example.test", extensionPath: "/tmp/extension-under-test", additionalDomains: ["cdn.example.test"] };
   vi.mocked(bridgeApi.cloneRequests).mockResolvedValue([request]);
   const onOpen = vi.fn();
   await act(async () => root.render(<CloneRequestInbox sessionLabels={{ "other-chat": "Other chat" }} onOpen={onOpen} onError={vi.fn()} />));
   expect(host.textContent).toContain("Other chat · browser request");
   expect(host.textContent).toContain(request.extensionPath);
+  expect(host.textContent).toContain("cdn.example.test");
   const lifetime = host.querySelector<HTMLSelectElement>('[aria-label="Browser request lifetime"]')!;
   await act(async () => { lifetime.value = "60"; lifetime.dispatchEvent(new Event("change", { bubbles: true })); });
   const allow = [...host.querySelectorAll("button")].find(button => button.textContent === "Allow")!;

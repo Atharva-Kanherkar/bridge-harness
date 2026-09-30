@@ -34,6 +34,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
     <p className="text-xs font-semibold text-foreground">{label ?? "The agent wants a browser"}</p>
     <p className="mt-1 break-all font-mono text-xs text-foreground">{request.domain}</p>
     <p className="mt-2 text-xs leading-5 text-muted-foreground">Allow this agent to read and interact with this site in a throwaway browser. It closes when the task finishes.</p>
+    {!!request.additionalDomains?.length && <p className="mt-2 break-all text-xs text-muted-foreground">Also connects to: <span className="font-mono">{request.additionalDomains.join(", ")}</span></p>}
     {request.extensionPath && <p className="mt-2 break-all text-xs text-muted-foreground">Load extension under test: <span className="font-mono">{request.extensionPath}</span></p>}
     {settings && <div className="mt-3 flex flex-wrap gap-2">
       <select aria-label="Browser request sign-in path" value={settings.defaultSignInPath} disabled={busy} className="min-w-0 rounded-md border border-border bg-background p-2 text-xs" onChange={event => setSettings({ ...settings, defaultSignInPath: event.target.value as CloneSettings["defaultSignInPath"] })}>

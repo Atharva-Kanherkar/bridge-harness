@@ -117,7 +117,7 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
           </form>
         </div>
       : status === "requested" ? <div className="grid flex-1 place-items-center p-6">
-          {snapshot.pendingRequestId && <CloneConsentCard key={snapshot.pendingRequestId} request={{ sessionId: sessionId ?? "", requestId: snapshot.pendingRequestId, domain: snapshot.pendingRequest ?? snapshot.domain ?? "", extensionPath: snapshot.extensionPath }} onError={onError} onResolved={() => void refresh().catch(error => onError(String(error)))} />}
+          {snapshot.pendingRequestId && <CloneConsentCard key={snapshot.pendingRequestId} request={{ sessionId: sessionId ?? "", requestId: snapshot.pendingRequestId, domain: snapshot.pendingRequest ?? snapshot.domain ?? "", extensionPath: snapshot.extensionPath, additionalDomains: snapshot.additionalDomains }} onError={onError} onResolved={() => void refresh().catch(error => onError(String(error)))} />}
         </div>
       : status === "destroyed" ? <PaneState icon={Trash2} title="Clone destroyed">Its profile, cookies, and session are gone. Nothing from it stays on disk.</PaneState>
       : <>

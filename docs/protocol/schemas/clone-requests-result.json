@@ -4,6 +4,15 @@
   "definitions": {
     "CloneRequest": {
       "properties": {
+        "additionalDomains": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "domain": {
           "type": "string"
         },

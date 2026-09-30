@@ -5156,6 +5156,7 @@ fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnaps
                 pending_request: Some(domain),
                 pending_request_id: Some(request.id),
                 extension_path: request.extension_path,
+                additional_domains: Some(request.additional_domains),
             });
         }
     };
@@ -5186,6 +5187,7 @@ fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnaps
         pending_request: None,
         pending_request_id: None,
         extension_path: None,
+        additional_domains: None,
     })
 }
 

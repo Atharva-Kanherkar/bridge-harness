@@ -111,7 +111,7 @@ impl GuardState {
     }
 
     /// Is `host` (or a parent domain of it) on the allow list?
-    fn host_allowed(&self, host: &str) -> bool {
+    pub(crate) fn host_allowed(&self, host: &str) -> bool {
         let host = normalize_host(host);
         self.allowed_hosts
             .iter()

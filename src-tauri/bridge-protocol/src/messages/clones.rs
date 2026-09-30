@@ -86,6 +86,7 @@ pub struct CloneSnapshot {
     pub pending_request: Option<String>,
     pub pending_request_id: Option<String>,
     pub extension_path: Option<String>,
+    pub additional_domains: Option<Vec<String>>,
 }
 
 /// The session's clone, or `None` when it has no clone (or off macOS).
@@ -150,6 +151,7 @@ pub struct CloneRequest {
     pub request_id: String,
     pub domain: String,
     pub extension_path: Option<String>,
+    pub additional_domains: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

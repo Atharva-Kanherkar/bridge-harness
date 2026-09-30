@@ -157,14 +157,14 @@ impl CloneOrchestrator {
     ) -> Result<CloneView, CloneError> {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
-        self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid)
+        self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid, &[])
     }
 
     /// A person explicitly starts a browser through the native UI.
     pub fn start_approved_clone(&self, session_id: &str, domain: &str, browser: CloneBrowser, path: SignInPath, ttl: Option<Duration>, runtime_pid: u32) -> Result<CloneView, CloneError> {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
-        let view = self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid)?;
+        let view = self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid, &[])?;
         if let Some(entry) = self.active.lock().unwrap_or_else(|p| p.into_inner()).get_mut(session_id) { entry.actions_approved = true; }
         if path == SignInPath::Import { self.tool.allow_mutations(session_id); }
         Ok(view)
@@ -172,7 +172,7 @@ impl CloneOrchestrator {
 
     fn request_clone_locked(
         &self, session_id: &str, domain: &str, browser: CloneBrowser,
-        path: SignInPath, ttl: Option<Duration>, runtime_pid: u32,
+        path: SignInPath, ttl: Option<Duration>, runtime_pid: u32, additional_domains: &[String],
     ) -> Result<CloneView, CloneError> {
         let domain = normalize_domain(domain)
             .ok_or_else(|| CloneError::Launch("invalid approved domain".into()))?;
@@ -189,6 +189,7 @@ impl CloneOrchestrator {
         {
             let mut guard = guard.lock().unwrap_or_else(|p| p.into_inner());
             guard.allow_host(&domain);
+            for host in additional_domains { guard.allow_host(host); }
         }
 
         // Sign in. Import copies the approved domain's cookies from the user's
@@ -313,7 +314,7 @@ impl CloneOrchestrator {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let request = self.tool.take_pending_request(session_id, request_id, runtime_pid).map_err(CloneError::Launch)?;
-        let started = self.request_clone_locked(session_id, &request.domain, CloneBrowser::Chrome, path, ttl, runtime_pid);
+        let started = self.request_clone_locked(session_id, &request.domain, CloneBrowser::Chrome, path, ttl, runtime_pid, &request.additional_domains);
         let view = match started {
             Ok(view) => view,
             Err(error) => {
@@ -432,7 +433,12 @@ impl CloneOrchestrator {
             }
             CloneInput::Type { text } => {
                 if let Some(guard) = self.supervisor.clone_guard(&clone_id) {
-                    let domain = self.active.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map(|entry| entry.domain.clone()).unwrap_or_default();
+                    let history = self.supervisor.page_call(&clone_id, "Page.getNavigationHistory", json!({}))?;
+                    let current = history.get("currentIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let domain = history.get("entries").and_then(Value::as_array).and_then(|entries| entries.get(current))
+                        .and_then(|entry| entry.get("url")).and_then(Value::as_str)
+                        .and_then(|url| reqwest::Url::parse(url).ok()).and_then(|url| url.host_str().map(str::to_owned))
+                        .unwrap_or_else(|| self.active.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map(|entry| entry.domain.clone()).unwrap_or_default());
                     guard.lock().unwrap_or_else(|p| p.into_inner()).add_secret(&domain, &text);
                 }
                 self.supervisor
