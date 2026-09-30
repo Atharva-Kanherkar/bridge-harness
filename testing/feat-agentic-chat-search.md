@@ -206,3 +206,17 @@ Frontend (Vitest):
   delay (`BRIDGE_CHAT_SEARCH_THINK_SECONDS` overrides it). Reports full funnel
   recall, actual model usage, elapsed time including startup, and fallbacks;
   provider quota failures abort instead of passing as a measurement.
+- `BRIDGE_CHAT_SEARCH_LIVE_HARNESS=codex` runs the same fixture and funnel
+  through the installed Codex CLI, independently of the Claude subscription.
+  Defaults to `gpt-6-luna`; `BRIDGE_CHAT_SEARCH_LIVE_MODEL` overrides it.
+  This is an evaluation transport, not Codex production briefing support.
+  It uses `codex exec` with an empty scratch directory, read-only sandbox,
+  no user configuration, disabled native integrations, and rejection of any
+  native tool event. Input/output/cache usage is written as `provider.codex`.
+  Search history is replayed on each CLI turn, so measured time includes a
+  CLI launch per turn and token counts include remaining harness overhead.
+- The live fixture defaults to the production eight-second budget.
+  `BRIDGE_CHAT_SEARCH_LIVE_WALL_SECONDS` (1–120) permits a labelled diagnostic
+  run with a different budget. It never changes production search settings
+  or limits. A relaxed run is recall evidence, not a pass for the eight-second
+  production budget or three-second latency target.

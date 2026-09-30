@@ -27,7 +27,7 @@ use crate::adapters::{AdapterRuntime, ShutdownReason, StartRequest};
 use crate::briefing_policy::BriefingRuntimePolicy;
 use crate::runtime::BridgeCore;
 
-/// The only harness that can enforce a turn with no tools.
+/// The production adapter certified for tool-free briefing runs.
 pub const HARNESS: &str = "claude";
 /// Ceiling the provider itself is told; the loop's own budget is far tighter.
 const PROVIDER_WALL_SECONDS: i64 = 60;

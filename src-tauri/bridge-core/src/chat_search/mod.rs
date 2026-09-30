@@ -26,6 +26,8 @@ pub mod warm;
 
 #[cfg(test)]
 mod eval;
+#[cfg(test)]
+mod eval_codex;
 
 /// The hidden session a deep search runs its model turns in.
 pub const CHAT_SEARCH_SESSION_KIND: &str = "chat_search";
@@ -89,6 +91,17 @@ pub fn search_with(
     gate: DeepGate,
     start_model: impl FnOnce() -> Result<Box<dyn SearchModel>, String>,
 ) -> Result<SearchChatsResult, BridgeError> {
+    search_with_budget(db, params, now, gate, &Budget::default(), start_model)
+}
+
+fn search_with_budget(
+    db: &Mutex<Connection>,
+    params: &SearchChatsParams,
+    now: DateTime<Utc>,
+    gate: DeepGate,
+    budget: &Budget,
+    start_model: impl FnOnce() -> Result<Box<dyn SearchModel>, String>,
+) -> Result<SearchChatsResult, BridgeError> {
     let started = Instant::now();
     let limit = resolve_limit(params.limit)?;
     let query = params.query.trim().to_owned();
@@ -132,7 +145,7 @@ pub fn search_with(
                     terms: &words,
                     seed: &retrieval.candidates,
                 };
-                let run = agent::run(db, model.as_mut(), &input, &Budget::default(), now);
+                let run = agent::run(db, model.as_mut(), &input, budget, now);
                 // Stop the provider before answering, not after.
                 drop(model);
                 result.tool_calls = run.tool_calls;

@@ -1,10 +1,11 @@
 # Chat search measurements — 2026-09-30
 
-The index benchmark passes its latency target. The last completed live run
+The index benchmark passes its latency target. The completed Claude tool-free run
 meets the token target after removing the coding preset and tool schemas,
 but misses overall recall and elapsed-time targets. The final warm-session
-implementation has not yet had a successful live rerun: Claude returned a
-429 session limit, resetting at 15:30 Asia/Kolkata.
+implementation has not yet had a successful Claude live rerun: Claude returned
+a 429 session limit, resetting at 15:30 Asia/Kolkata. Codex CLI now independently
+evaluates the shared funnel; its measured results are below.
 
 ## Index benchmark
 
@@ -71,6 +72,75 @@ live measurement is required to quantify both changes. The attempted rerun
 during this continuation returned only quota errors and was stopped; it is
 not performance or recall evidence.
 
+## Codex CLI evaluation
+
+Codex CLI 0.157.1, `gpt-6-luna`, low effort, 200 synthetic chats / 20,000
+entries and the same 40 labelled queries. Both runs made 18 deep searches.
+The evaluator ignores user configuration, disables native integrations,
+uses read-only sandboxing, rejects native tool events, and writes usage under
+`provider.codex`. It replays the search's text history through a fresh
+`codex exec` on each turn. These token and timing figures include that CLI's
+remaining harness overhead and per-turn startup; they are separate from the
+production Claude transport.
+
+| Metric | Production 8 s budget | Diagnostic 30 s budget |
+|---|---:|---:|
+| Exact recall@4 | 15/15 | 15/15 |
+| Vague recall@4 | 6/15 | 10/15 |
+| Time + topic recall@4 | 10/10 | 10/10 |
+| Overall recall@4 | 31/40 (77.5%) | 35/40 (87.5%) |
+| T2 median reported tokens | 10,933 | 43,946 |
+| T2 maximum reported tokens | 21,917 | 77,783 |
+| T2 median elapsed time | 8,029 ms | 18,526 ms |
+| T2 maximum elapsed time | 8,239 ms | 27,116 ms |
+| T2 fallbacks | 14/18 | 3/18 |
+| Tagged usage rows | 14 | 44 |
+| Unsettled search sessions | 0 | 0 |
+| Forest entries written by search | 0 | 0 |
+
+Token figures cover completed turns with provider-reported usage; interrupted
+turns may not report final usage. Codex's input includes cache reads, which
+the evaluator does not add again. The 30-second diagnostic improves vague
+recall but still misses the 90% overall target. It does not demonstrate the
+eight-second production budget or three-second latency target. Production
+search continues to use the certified Claude briefing adapter.
+
+```sh
+BRIDGE_CHAT_SEARCH_LIVE_HARNESS=codex \
+  CARGO_TARGET_DIR=src-tauri/target-wt cargo test --manifest-path src-tauri/Cargo.toml \
+  -p bridge-core --release --lib chat_search::eval::live_fixture -- --exact --ignored --nocapture
+```
+
+Add `BRIDGE_CHAT_SEARCH_LIVE_WALL_SECONDS=30` for the diagnostic run.
+`BRIDGE_CHAT_SEARCH_LIVE_MODEL` selects another available Codex model.
+The wall override is confined to the ignored evaluator; production limits
+remain unchanged.
+
+## Real database smoke probe on Codex
+
+A consistent SQLite read snapshot was backed up to a separate temporary
+directory: 3,869,351,936 bytes in 16.8 seconds. An earlier backup without a
+held read snapshot repeatedly restarted as the app wrote and was cancelled
+after 180 seconds; its partial copy was removed. Opening and migrating the
+successful copy took 28.6 seconds. The live app database was only opened
+read-only for backup; the probe ran on the copy without booting/reaping any
+of the live app's recorded adapter processes.
+
+Codex CLI with the labelled 30-second diagnostic budget:
+
+| Query | T1 time | Deep result | Deep elapsed | Reported tokens | Lookups |
+|---|---:|---|---:|---:|---:|
+| plugins catalog stall | 43 ms | index fallback (budget) | 30,087 ms | 57,792 | 3 |
+| finding an old conversation from a vague memory | 62 ms | model answer | 27,061 ms | 70,217 | 3 |
+| the work about searching chats | 2 ms | model answer | 22,358 ms | 67,002 | 2 |
+
+The probe passed, recorded 10 usage rows across three hidden sessions, left
+zero unsettled search sessions, and wrote zero search forest entries. These
+queries have no labelled expected answers; this is integration/smoke evidence,
+not a recall measurement or a production latency pass.
+The temporary database copy and its migration backup were removed after checking
+the session, usage, and forest counts.
+
 ## Remaining evidence
 
 After Claude's quota resets, rerun the final implementation:
@@ -87,9 +157,11 @@ sessions settle and no forest entries are written. Overall recall and live
 elapsed-time targets remain open; do not describe the feature as meeting
 them until measured.
 
-The real-database smoke run also remains pending. Use a consistent SQLite
-backup in a separate directory, then set `BRIDGE_CHAT_SEARCH_LIVE_DB` to that
-copy and run `chat_search::eval::live` with `--exact --ignored --nocapture`.
+The production-Claude real-database probe remains pending. The same probe
+can now select either harness. Use a consistent SQLite backup in a separate
+directory, then set `BRIDGE_CHAT_SEARCH_LIVE_DB` to that copy and run
+`chat_search::eval::live` with `--exact --ignored --nocapture`.
+Set `BRIDGE_CHAT_SEARCH_LIVE_HARNESS=codex` to select Codex CLI.
 Queries can be supplied with `BRIDGE_CHAT_SEARCH_LIVE_QUERIES`, separated by
 `|`. Never point the measurement at the app's live file: opening the store
 applies migrations and search writes its hidden session/usage rows.
@@ -101,8 +173,10 @@ applies migrations and search writes its hidden session/usage rows.
 - All 229 frontend test files / 2,856 tests passed with
   `NODE_OPTIONS=--no-experimental-webstorage` (Node 26 otherwise masks jsdom's
   `window.localStorage`, causing the unchanged updater tests to fail).
-- The latest search implementation passed 67 Rust tests, with four live/bench
-  tests ignored. The adapter boundary passed all three tests, including the
+- The latest search implementation passed 70 Rust tests, with four live/bench
+  tests ignored. Added Codex tests cover cache accounting, native tool rejection,
+  and reaping a timed-out CLI process while settling its hidden session.
+  The adapter boundary passed all three tests, including the
   discovery-skipping regression test.
 - The remaining Rust workspace tests passed on the final implementation:
   `cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude bridge-core -- --test-threads=8`.

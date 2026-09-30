@@ -315,7 +315,7 @@ fn bench() {
 }
 
 /// One live deep search per query against a copy of a real database, on the
-/// real Claude adapter. Never run against the live file: the store migrates
+/// selected live harness. Never run against the live file: the store migrates
 /// what it opens.
 ///
 /// `BRIDGE_CHAT_SEARCH_LIVE_DB=/tmp/copy/bridge.db cargo test -p bridge-core --lib
@@ -338,10 +338,14 @@ fn live() {
     let opened = Instant::now();
     core.db = std::sync::Mutex::new(crate::store::open(std::path::Path::new(&path)).unwrap());
     println!("open + migrate: {:.1} s", opened.elapsed().as_secs_f64());
-    core.adapter_registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::claude_only().unwrap());
+    let harness = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_HARNESS").unwrap_or_else(|_| "claude".into());
+    assert!(matches!(harness.as_str(), "claude" | "codex"), "live harness must be claude or codex");
+    if harness == "claude" {
+        core.adapter_registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::claude_only().unwrap());
+    }
     let core = std::sync::Arc::new(core);
     let waited = Instant::now();
-    while !core
+    while harness == "claude" && !core
         .adapter_registry
         .descriptors()
         .iter()
@@ -351,9 +355,21 @@ fn live() {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     let queries = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_QUERIES").unwrap_or_else(|_| "plugins catalog stall".into());
+    let model = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_MODEL").unwrap_or_else(|_| super::eval_codex::DEFAULT_MODEL.into());
+    // Claude goes through the production entry point and its fixed budget.
+    let budget = if harness == "codex" { live_budget() } else { super::agent::Budget::default() };
+    println!("live harness={harness} wall_budget={}s (production=8s)", budget.wall.as_secs());
     for query in queries.split('|') {
         for deep in [false, true] {
-            let result = super::search(&core, &SearchChatsParams { query: query.into(), limit: None, deep }).unwrap();
+            let params = SearchChatsParams { query: query.into(), limit: None, deep };
+            let result = if harness == "codex" {
+                super::search_with_budget(&core.db, &params, Utc::now(), super::DeepGate::Allowed, &budget, || {
+                    super::eval_codex::CodexEvalModel::start(&core, &model)
+                        .map(|model| Box::new(model) as Box<dyn super::agent::SearchModel>)
+                })
+            } else {
+                super::search(&core, &params)
+            }.unwrap();
             println!(
                 "{query:?} deep={deep} stage={:?} confident={} ms={} model_tokens={} tool_calls={} detail={:?}",
                 result.stage, result.confident, result.elapsed_ms, result.model_tokens, result.tool_calls, result.detail
@@ -382,7 +398,7 @@ fn live() {
 }
 
 /// The whole funnel on the labelled corpus with the model stage live on
-/// Claude: the numbers CI cannot produce. Synthetic chats only, so nothing
+/// the selected harness: the numbers CI cannot produce. Synthetic chats only, so nothing
 /// real is sent to a provider.
 ///
 /// `cargo test -p bridge-core --lib chat_search::eval::live_fixture -- --ignored --nocapture`
@@ -395,10 +411,14 @@ fn live_fixture() {
     let scratch = tempfile::tempdir().unwrap();
     let mut core = crate::runtime::BridgeCore::for_tests(scratch.path());
     core.db = std::sync::Mutex::new(db);
-    core.adapter_registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::claude_only().unwrap());
+    let harness = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_HARNESS").unwrap_or_else(|_| "claude".into());
+    assert!(matches!(harness.as_str(), "claude" | "codex"), "live harness must be claude or codex");
+    if harness == "claude" {
+        core.adapter_registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::claude_only().unwrap());
+    }
     let core = std::sync::Arc::new(core);
     let waited = Instant::now();
-    while !core
+    while harness == "claude" && !core
         .adapter_registry
         .descriptors()
         .iter()
@@ -407,7 +427,14 @@ fn live_fixture() {
         assert!(waited.elapsed().as_secs() < 60, "claude never became available");
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    let model = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_MODEL").unwrap_or_else(|_| super::settings::DEFAULT_MODEL.into());
+    let model = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_MODEL").unwrap_or_else(|_| {
+        if harness == "codex" { super::eval_codex::DEFAULT_MODEL.into() } else { super::settings::DEFAULT_MODEL.into() }
+    });
+    let budget = live_budget();
+    println!("live harness={harness} model={model} wall_budget={}s (production=8s)", budget.wall.as_secs());
+    if harness == "codex" {
+        println!("evaluation-only codex exec: native tools rejected; per-turn CLI startup and harness overhead included");
+    }
     // Seconds between typing and Enter. The warm start overlaps this, and a
     // cold start longer than it still shows up in the measured time.
     let think_seconds: u64 = std::env::var("BRIDGE_CHAT_SEARCH_THINK_SECONDS").ok().and_then(|value| value.parse().ok()).unwrap_or(3);
@@ -430,24 +457,32 @@ fn live_fixture() {
             || Err("shallow".into()),
         )
         .unwrap();
-        if shallow.deep_available {
+        if harness == "claude" && shallow.deep_available {
             super::live::prewarm(&core, &model);
             std::thread::sleep(std::time::Duration::from_secs(think_seconds));
         }
-        let result = super::search_with(
+        let result = super::search_with_budget(
             &core.db,
             &SearchChatsParams { query: query.query.clone(), limit: None, deep: true },
             now,
             super::DeepGate::Allowed,
+            &budget,
             || {
-                super::live::take_or_start(&core, &model)
-                    .map(|model| Box::new(model) as Box<dyn super::agent::SearchModel>)
+                if harness == "codex" {
+                    super::eval_codex::CodexEvalModel::start(&core, &model)
+                        .map(|model| Box::new(model) as Box<dyn super::agent::SearchModel>)
+                } else {
+                    super::live::take_or_start(&core, &model)
+                        .map(|model| Box::new(model) as Box<dyn super::agent::SearchModel>)
+                }
             },
         )
         .unwrap();
         assert!(
             !result.detail.as_deref().is_some_and(|detail| {
-                detail.contains("session limit") || detail.contains("rate_limit") || detail.contains("rate limit")
+                let detail = detail.to_ascii_lowercase();
+                ["session limit", "usage limit", "rate_limit", "rate limit", "quota", "too many requests"]
+                    .iter().any(|reason| detail.contains(reason))
             }),
             "live measurement blocked by provider quota: {:?}", result.detail
         );
@@ -475,7 +510,7 @@ fn live_fixture() {
             result.detail
         );
     }
-    println!("\n| class | recall@4 (funnel, model live) |\n|---|---|");
+    println!("\n| class | recall@4 (funnel, {harness} live) |\n|---|---|");
     for (index, class) in ["exact", "vague", "time"].iter().enumerate() {
         println!("| {class} | {}/{} |", found[index], totals[index]);
     }
@@ -509,7 +544,18 @@ fn live_fixture() {
     println!("usage rows tagged chat_search: {rows}; unsettled search sessions: {open}; forest entries written by search: {forest}");
     assert_eq!(open, 0, "every search session must settle");
     assert_eq!(forest, 0, "search must never write a forest entry");
+    assert!(rows > 0, "provider usage must reach the ledger");
     assert!(deep_tokens.iter().any(|tokens| *tokens > 0), "no model usage measured");
+}
+
+fn live_budget() -> super::agent::Budget {
+    let mut budget = super::agent::Budget::default();
+    if let Ok(seconds) = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_WALL_SECONDS") {
+        let seconds: u64 = seconds.parse().expect("live wall seconds must be an integer");
+        assert!((1..=120).contains(&seconds), "live wall seconds must be 1..=120");
+        budget.wall = std::time::Duration::from_secs(seconds);
+    }
+    budget
 }
 
 /// Where a deep search's time goes: provider start, then each model turn.
