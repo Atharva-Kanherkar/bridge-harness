@@ -240,6 +240,7 @@ typed_methods![
     ),
     (CompactSession, CompactSessionParams, UnitResult),
     (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
+    (SearchChats, SearchChatsParams, SearchChatsResult),
     (ExportSessionTranscript, ExportSessionTranscriptParams, ExportSessionTranscriptResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
@@ -306,6 +307,8 @@ typed_methods![
     (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
     (GetAttributionSettings, _, AttributionSettings),
     (SaveAttributionSettings, SaveAttributionSettingsParams, AttributionSettings),
+    (GetChatSearchSettings, _, ChatSearchSettings),
+    (SaveChatSearchSettings, SaveChatSearchSettingsParams, ChatSearchSettings),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
     (UnarchiveChat, UnarchiveChatParams, UnitResult),
     // token and cost usage

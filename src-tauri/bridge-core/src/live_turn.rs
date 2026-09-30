@@ -10453,6 +10453,29 @@ fn prepare_input(
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
+        slash::SlashDispatch::Find { query } => {
+            let text = if query.trim().is_empty() {
+                "Usage: /find <what you remember about the chat>. Searches every chat.".to_string()
+            } else {
+                let params = bridge_protocol::messages::SearchChatsParams {
+                    query: query.clone(),
+                    limit: None,
+                    deep: false,
+                };
+                // Index only: a slash reply lands in this chat's forest, and
+                // a model turn has no business being recorded there.
+                let result = crate::chat_search::search_with(
+                    &state.db,
+                    &params,
+                    chrono::Utc::now(),
+                    crate::chat_search::DeepGate::Unavailable(String::new()),
+                    || Err(String::new()),
+                )?;
+                crate::chat_search::format_reply(&result)
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
         slash::SlashDispatch::Pin { body } => {
             // The slash writes the same ledger the dialog reads, so it owes the
             // same hint. A refused save publishes nothing.

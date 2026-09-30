@@ -309,6 +309,10 @@ pub fn dispatch(
                 p.offset,
             ))
         }
+        MethodName::SearchChats => {
+            let p: wire::SearchChatsParams = decode(method, params)?;
+            reply(api::search_chats(core, &p))
+        }
         MethodName::ExportSessionTranscript => {
             let p: wire::ExportSessionTranscriptParams = decode(method, params)?;
             reply(api::export_session_transcript(
@@ -559,6 +563,11 @@ pub fn dispatch(
         MethodName::SaveReviewerSettings => {
             let p: wire::SaveReviewerSettingsParams = decode(method, params)?;
             reply(api::save_reviewer_settings(core, &p.settings))
+        }
+        MethodName::GetChatSearchSettings => reply(api::get_chat_search_settings(core)),
+        MethodName::SaveChatSearchSettings => {
+            let p: wire::SaveChatSearchSettingsParams = decode(method, params)?;
+            reply(api::save_chat_search_settings(core, &p))
         }
         MethodName::GetAttributionSettings => reply(api::get_attribution_settings(core)),
         MethodName::SaveAttributionSettings => {

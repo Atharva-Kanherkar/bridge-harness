@@ -71,6 +71,7 @@ export type BridgeMethod =
   | "sessions/dispatch_agent_shortcut"
   | "sessions/compact_session"
   | "sessions/search_session_entries"
+  | "sessions/search_chats"
   | "sessions/export_session_transcript"
   | "sessions/interrupt_turn"
   | "sessions/retry_worker_task"
@@ -83,6 +84,8 @@ export type BridgeMethod =
   | "config/save_reviewer_settings"
   | "config/get_attribution_settings"
   | "config/save_attribution_settings"
+  | "config/get_chat_search_settings"
+  | "config/save_chat_search_settings"
   | "sessions/list_archived_chats"
   | "sessions/unarchive_chat"
   | "memory/save_memory_record"
@@ -289,6 +292,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/dispatch_agent_shortcut", domain: "sessions", command: "dispatch_agent_shortcut" },
   { method: "sessions/compact_session", domain: "sessions", command: "compact_session" },
   { method: "sessions/search_session_entries", domain: "sessions", command: "search_session_entries" },
+  { method: "sessions/search_chats", domain: "sessions", command: "search_chats" },
   { method: "sessions/export_session_transcript", domain: "sessions", command: "export_session_transcript" },
   { method: "sessions/interrupt_turn", domain: "sessions", command: "interrupt_turn" },
   { method: "sessions/retry_worker_task", domain: "sessions", command: "retry_worker_task" },
@@ -301,6 +305,8 @@ export const BRIDGE_METHODS = [
   { method: "config/save_reviewer_settings", domain: "config", command: "save_reviewer_settings" },
   { method: "config/get_attribution_settings", domain: "config", command: "get_attribution_settings" },
   { method: "config/save_attribution_settings", domain: "config", command: "save_attribution_settings" },
+  { method: "config/get_chat_search_settings", domain: "config", command: "get_chat_search_settings" },
+  { method: "config/save_chat_search_settings", domain: "config", command: "save_chat_search_settings" },
   { method: "sessions/list_archived_chats", domain: "sessions", command: "list_archived_chats" },
   { method: "sessions/unarchive_chat", domain: "sessions", command: "unarchive_chat" },
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
@@ -579,6 +585,7 @@ export interface BridgeMethodParams {
   "sessions/dispatch_agent_shortcut": DispatchAgentShortcutParams;
   "sessions/compact_session": CompactSessionParams;
   "sessions/search_session_entries": SearchSessionEntriesParams;
+  "sessions/search_chats": SearchChatsParams;
   "sessions/export_session_transcript": ExportSessionTranscriptParams;
   "sessions/interrupt_turn": InterruptTurnParams;
   "sessions/retry_worker_task": RetryWorkerTaskParams;
@@ -636,6 +643,8 @@ export interface BridgeMethodParams {
   "config/save_reviewer_settings": SaveReviewerSettingsParams;
   "config/get_attribution_settings": undefined;
   "config/save_attribution_settings": SaveAttributionSettingsParams;
+  "config/get_chat_search_settings": undefined;
+  "config/save_chat_search_settings": SaveChatSearchSettingsParams;
   "sessions/list_archived_chats": ListArchivedChatsParams;
   "sessions/unarchive_chat": UnarchiveChatParams;
   "usage/summary": SummaryParams;
@@ -799,6 +808,7 @@ export interface BridgeMethodResults {
   "sessions/dispatch_agent_shortcut": DispatchAgentShortcutResult;
   "sessions/compact_session": UnitResult;
   "sessions/search_session_entries": SearchSessionEntriesResult;
+  "sessions/search_chats": SearchChatsResult;
   "sessions/export_session_transcript": ExportSessionTranscriptResult;
   "sessions/interrupt_turn": UnitResult;
   "sessions/retry_worker_task": UnitResult;
@@ -811,6 +821,8 @@ export interface BridgeMethodResults {
   "config/save_reviewer_settings": ReviewerSettingsResult;
   "config/get_attribution_settings": AttributionSettings;
   "config/save_attribution_settings": AttributionSettings;
+  "config/get_chat_search_settings": ChatSearchSettings;
+  "config/save_chat_search_settings": ChatSearchSettings;
   "sessions/list_archived_chats": ArchivedChatsResult;
   "sessions/unarchive_chat": UnitResult;
   "memory/save_memory_record": MemoryRecord;
@@ -1064,6 +1076,28 @@ export interface BrowserSkill {
 }
 
 export type CapabilityTier = "fast" | "standard" | "strong";
+
+export interface ChatSearchHit {
+  archived: boolean;
+  ended: boolean;
+  harness: string;
+  lastActiveAt: string;
+  matchCount: number;
+  score: number;
+  sessionId: string;
+  snippet: string;
+  title: string;
+  why: string;
+  workspaceId?: string | null;
+  workspaceTitle?: string | null;
+}
+
+export interface ChatSearchSettings {
+  deepSearch?: boolean;
+  model?: string | null;
+}
+
+export type ChatSearchStage = "index" | "model" | "index_fallback";
 
 export interface CheckRollup {
   cancelled: number;
@@ -3200,6 +3234,25 @@ export interface SearchSessionEntriesResult {
   sessionId: string;
 }
 
+export interface SearchChatsParams {
+  deep?: boolean;
+  limit?: number | null;
+  query: string;
+}
+
+export interface SearchChatsResult {
+  confident: boolean;
+  deepAvailable: boolean;
+  detail?: string | null;
+  elapsedMs: number;
+  hits: ChatSearchHit[];
+  modelTokens: number;
+  query: string;
+  stage: ChatSearchStage;
+  terms: string[];
+  toolCalls: number;
+}
+
 export interface ExportSessionTranscriptParams {
   destinationPath?: string | null;
   includeHidden?: boolean | null;
@@ -3587,6 +3640,10 @@ export interface SaveReviewerSettingsParams {
 
 export interface SaveAttributionSettingsParams {
   settings: AttributionSettings;
+}
+
+export interface SaveChatSearchSettingsParams {
+  settings: ChatSearchSettings;
 }
 
 export interface ListArchivedChatsParams {

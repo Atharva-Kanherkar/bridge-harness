@@ -1736,6 +1736,26 @@ pub fn search_session_entries(
     session_recall::search_page(&db, session_id, query, limit, offset)
 }
 
+/// Find a chat across every chat. Index only unless `deep` is set and the
+/// index is unsure; the model stage, when it runs, blocks for seconds.
+pub fn search_chats(
+    core: &Arc<BridgeCore>,
+    params: &wire::SearchChatsParams,
+) -> Result<wire::SearchChatsResult, BridgeError> {
+    crate::chat_search::search(core, params)
+}
+
+pub fn get_chat_search_settings(core: &Arc<BridgeCore>) -> Result<wire::ChatSearchSettings, BridgeError> {
+    crate::chat_search::settings::load(&core.db.lock().unwrap())
+}
+
+pub fn save_chat_search_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::SaveChatSearchSettingsParams,
+) -> Result<wire::ChatSearchSettings, BridgeError> {
+    crate::chat_search::settings::save(&core.db.lock().unwrap(), params)
+}
+
 /// Write one session's durable record out as JSONL.
 ///
 /// The data directory is derived from the database path rather than carried
