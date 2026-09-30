@@ -149,7 +149,14 @@ fn measure(db: &Connection, corpus: &Corpus) -> Vec<Measured> {
             let micros = started.elapsed().as_micros();
             let hit = found.candidates.iter().take(4).any(|candidate| candidate.session_id == query.expect);
             let words: Vec<String> = terms.iter().map(|term| term.text.clone()).collect();
-            let input = SearchInput { query: &query.query, parsed: &parsed, terms: &words, seed: &found.candidates };
+            let input = SearchInput {
+                query: &query.query,
+                parsed: &parsed,
+                terms: &words,
+                seed: &found.candidates,
+                partial: found.unknown_terms > 0
+                    || found.candidates.first().is_some_and(|first| !first.covered_all),
+            };
             let prompt = first_turn(db, &mut Shown::default(), &input);
             Measured {
                 query: query.query.clone(),

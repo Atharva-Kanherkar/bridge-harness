@@ -144,6 +144,8 @@ fn search_with_budget(
                     parsed: &parsed,
                     terms: &words,
                     seed: &retrieval.candidates,
+                    partial: retrieval.unknown_terms > 0
+                        || retrieval.candidates.first().is_some_and(|first| !first.covered_all),
                 };
                 let run = agent::run(db, model.as_mut(), &input, budget, now);
                 // Stop the provider before answering, not after.

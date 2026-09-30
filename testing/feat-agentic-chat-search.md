@@ -94,13 +94,22 @@ tool-free model loop only when T1 is unsure and the caller asked for it.
 ### T2 agent (`chat_search::agent` + `tools`)
 - Only when `deep` and not `confident` and the deep-search setting is on.
 - First turn shows up to 8 T1 cards (≈60 tokens each), then the query last.
+  When the index matched only part of the memory — an unknown word, or a best
+  chat that covered only some terms — the first turn says so and warns that the
+  cards may not be the one, because a decoy cluster otherwise reads as the
+  answer.
 - Tools: `find_chats{terms[], since?, until?, harness?, limit ≤ 8}`,
   `peek_chat{id, term, n ≤ 3}` (200-char windows),
   `chat_outline{id}` (title, first user message 300 chars, latest summary 300
   chars, entry count).
+- A reply may carry `"answer"` and `"tool"` in the same object. The guess is
+  resolved against what had been shown at that moment and kept, so a run the
+  wall clock cuts short returns the model's judgement rather than the index's
+  cards. Every early exit — wall clock, budget, provider error, malformed
+  reply — prefers that kept answer over a fallback.
 - Budget in Rust: ≤ 3 tool calls, ≤ 2,000 tool-output tokens
-  (chars/4), 8 s model wall clock. Exhaustion or model error → T1 hits with
-  `why = "budget"` / the error class, `stage = "t1_fallback"`.
+  (chars/4), 8 s model wall clock. Exhaustion or model error with no kept
+  answer → T1 hits with `why = "budget"` / the error class, `stage = "t1_fallback"`.
 - Answer `[{id, why}]` ≤ 4, why ≤ 15 words (truncated server-side). Ids are
   resolved only against ids the model was shown; unknown ids dropped.
 - Every model-bound string passes `secret_interception::sanitize`.
@@ -146,6 +155,9 @@ Rust (`bridge-core`):
 - `…::why_is_truncated_to_fifteen_words`
 - `…::model_bound_text_is_redacted`
 - `…::first_turn_puts_the_query_last`
+- `…::a_partial_index_is_told_so_the_model_does_not_answer_from_decoys`
+- `…::a_reply_may_carry_a_lookup_and_an_answer_together`
+- `…::a_guess_offered_with_a_lookup_survives_the_budget`
 - `chat_search::settings` load default / save round-trip / reject blank model.
 - `chat_search::warm` — take once, wait for in-flight start, reject another
   model, expire unused sessions, reject expired sessions before the timer,
@@ -179,6 +191,10 @@ Frontend (Vitest):
   and the measured index-only vague floor of 6/15. T2 needs a live model, so
   CI cannot assert its contribution. Reports
   per-class recall and the fraction the gate resolves without T2.
+- Why the vague class has a ceiling at all, and the two retrieval changes that
+  were measured and rejected, are in
+  [`chat-search-vocabulary-gap.md`](chat-search-vocabulary-gap.md). That file
+  is the thing to read before proposing an index change for vague recall.
 
 ## Smoke Tests
 - `bun run build` and `bun run test` green.
