@@ -160,13 +160,23 @@ impl CloneOrchestrator {
         self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid)
     }
 
+    /// A person explicitly starts a browser through the native UI.
+    pub fn start_approved_clone(&self, session_id: &str, domain: &str, browser: CloneBrowser, path: SignInPath, ttl: Option<Duration>, runtime_pid: u32) -> Result<CloneView, CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        let view = self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid)?;
+        if let Some(entry) = self.active.lock().unwrap_or_else(|p| p.into_inner()).get_mut(session_id) { entry.actions_approved = true; }
+        if path == SignInPath::Import { self.tool.allow_mutations(session_id); }
+        Ok(view)
+    }
+
     fn request_clone_locked(
         &self, session_id: &str, domain: &str, browser: CloneBrowser,
         path: SignInPath, ttl: Option<Duration>, runtime_pid: u32,
     ) -> Result<CloneView, CloneError> {
         let domain = normalize_domain(domain)
             .ok_or_else(|| CloneError::Launch("invalid approved domain".into()))?;
-        self.destroy_locked(session_id);
+        self.destroy_browser_locked(session_id);
 
         let info = self.supervisor.spawn_clone()?;
         let mut pending_clone = PendingClone { supervisor: &self.supervisor, id: Some(info.id.clone()) };
@@ -196,9 +206,15 @@ impl CloneOrchestrator {
             }
         }
 
+        if path == SignInPath::SignInInside {
+            self.supervisor.page_call(&info.id, "Page.navigate", json!({"url":format!("https://{domain}")}))?;
+            self.tool.pause(session_id);
+        }
         // Bind the agent tool to the agent's runtime process, not the clone.
-        self.tool
-            .capability_context(session_id, &info.id, runtime_pid, &domain);
+        if self.tool.capability_context(session_id, &info.id, runtime_pid, &domain).is_none() {
+            self.tool.revoke_browser(session_id);
+            return Err(CloneError::Launch("browser tool unavailable".into()));
+        }
 
         let status = match path {
             SignInPath::Import => CloneStatus::Acting,
@@ -242,7 +258,7 @@ impl CloneOrchestrator {
             .to_owned())
     }
 
-    /// A fresh redacted frame of the clone, base64 PNG, for the dock's live
+    /// A fresh local frame of the clone, base64 PNG, for the dock's live
     /// view. (Streaming screencast is a later optimization; a captured frame is
     /// the same picture.)
     pub fn frame(&self, session_id: &str) -> Result<String, CloneError> {
@@ -293,34 +309,56 @@ impl CloneOrchestrator {
 
     /// The person allowed the agent's request: spawn the clone for the asked
     /// domain (import the sign-in), and approve page actions on it.
-    pub fn approve_request(&self, session_id: &str, runtime_pid: u32) -> Result<CloneView, CloneError> {
+    pub fn approve_request(&self, session_id: &str, request_id: &str, runtime_pid: u32, path: SignInPath, ttl: Option<Duration>) -> Result<CloneView, CloneError> {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
-        let domain = self
-            .tool
-            .take_pending_request(session_id)
-            .ok_or_else(|| CloneError::Launch("no pending clone request".into()))?;
-        let view = self.request_clone_locked(
-            session_id,
-            &domain,
-            CloneBrowser::Chrome,
-            SignInPath::Import,
-            None,
-            runtime_pid,
-        )?;
+        let request = self.tool.take_pending_request(session_id, request_id, runtime_pid).map_err(CloneError::Launch)?;
+        let started = self.request_clone_locked(session_id, &request.domain, CloneBrowser::Chrome, path, ttl, runtime_pid);
+        let view = match started {
+            Ok(view) => view,
+            Err(error) => {
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"browser startup failed"}));
+                return Err(error);
+            }
+        };
+        if let Some(extension) = request.extension_path {
+            if let Err(error) = self.load_extension(session_id, &extension) {
+                self.destroy_browser_locked(session_id);
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"extension loading failed"}));
+                return Err(error);
+            }
+        }
         // The person approved the agent acting, so page actions are allowed.
         if let Some(entry) = self.active.lock().unwrap_or_else(|p| p.into_inner()).get_mut(session_id) {
             entry.actions_approved = true;
         }
-        self.tool.allow_mutations(session_id);
+        if path == SignInPath::SignInInside { self.tool.pause(session_id); } else { self.tool.allow_mutations(session_id); }
+        let context = match self.tool.capability_context(session_id, &view.clone_id, runtime_pid, &view.domain) {
+            Some(context) => context,
+            None => {
+                self.destroy_browser_locked(session_id);
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"browser tool unavailable"}));
+                return Err(CloneError::Launch("browser tool unavailable".into()));
+            }
+        };
+        self.tool.answer_request(session_id, request_id, json!({"ok":true,"awaiting":false,"tool":context,"waitingForUser":path == SignInPath::SignInInside}));
         Ok(view)
     }
 
     /// The person denied the request; drop it.
-    pub fn deny_request(&self, session_id: &str) {
+    pub fn deny_request(&self, session_id: &str, request_id: &str) -> Result<(), CloneError> {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
-        self.tool.clear_pending_request(session_id);
+        let request = self.tool.pending_details(session_id).ok_or_else(|| CloneError::Launch("no pending clone request".into()))?;
+        self.tool.take_pending_request(session_id, request_id, request.runtime_pid).map_err(CloneError::Launch)?;
+        self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"request denied"}));
+        Ok(())
+    }
+
+    pub fn pending_requests(&self) -> Vec<bridge_protocol::messages::CloneRequest> { self.tool.pending_requests() }
+
+    pub fn pending_details(&self, session_id: &str) -> Option<crate::clone_browser_tool::PendingRequest> {
+        self.tool.pending_details(session_id)
     }
 
     pub fn view(&self, session_id: &str) -> Option<CloneView> {
@@ -335,7 +373,7 @@ impl CloneOrchestrator {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.set_status(session_id, CloneStatus::TakenOver);
-        self.tool.revoke_mutations(session_id);
+        self.tool.pause(session_id);
     }
 
     /// The person hands control back. The agent's page actions come back only
@@ -344,6 +382,7 @@ impl CloneOrchestrator {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.set_status(session_id, CloneStatus::Acting);
+        self.tool.resume(session_id);
         let approved = self
             .active
             .lock()
@@ -392,6 +431,10 @@ impl CloneOrchestrator {
                 )?;
             }
             CloneInput::Type { text } => {
+                if let Some(guard) = self.supervisor.clone_guard(&clone_id) {
+                    let domain = self.active.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map(|entry| entry.domain.clone()).unwrap_or_default();
+                    guard.lock().unwrap_or_else(|p| p.into_inner()).add_secret(&domain, &text);
+                }
                 self.supervisor
                     .page_call(&clone_id, "Input.insertText", json!({ "text": text }))?;
             }
@@ -448,6 +491,11 @@ impl CloneOrchestrator {
     }
 
     fn destroy_locked(&self, session_id: &str) {
+        self.destroy_browser_locked(session_id);
+        self.tool.revoke_session(session_id);
+    }
+
+    fn destroy_browser_locked(&self, session_id: &str) {
         let clone_id = self
             .active
             .lock()
@@ -457,7 +505,7 @@ impl CloneOrchestrator {
         if let Some(clone_id) = clone_id {
             let _ = self.supervisor.destroy(&clone_id);
         }
-        self.tool.revoke_session(session_id);
+        self.tool.revoke_browser(session_id);
     }
 
     /// Destroy every clone whose lease has run out. The host calls this on a
@@ -522,11 +570,10 @@ fn view_of(session_id: &str, active: &Active, remaining: Duration) -> CloneView 
 
 fn normalize_domain(domain: &str) -> Option<String> {
     let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
-    (!domain.is_empty()
-        && domain
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
-    .then_some(domain)
+    (domain.len() <= 253 && domain.contains('.') && domain.split('.').all(|label| {
+        !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-')
+            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })).then_some(domain)
 }
 
 fn map_import(error: ImportError) -> CloneError {
@@ -712,9 +759,10 @@ mod tests {
             let ext_id = orchestrator.load_extension(session, &ext_path).expect("the extension loads");
             assert!(!ext_id.is_empty(), "loadUnpacked returned no id");
 
+            orchestrator.hand_back(session);
             // The agent drives it through its real tool socket: a read command
             // returns, an out-of-contract one is refused.
-            let (ok_status, ok_body) = tool_call(&tool, session, r#"{"kind":"screenshot"}"#);
+            let (ok_status, ok_body) = tool_call(&tool, session, r#"{"kind":"inspect"}"#);
             assert!(ok_status.contains("200"), "{ok_status} {ok_body}");
             assert!(ok_body.contains("\"ok\":true"), "{ok_body}");
             let (bad_status, _) = tool_call(&tool, session, r#"{"kind":"eval","expression":"1"}"#);
@@ -770,7 +818,8 @@ mod tests {
             assert!(orchestrator.view(session).is_none(), "a clone existed before approval");
 
             // The person approves. The clone is built and the agent gets its tool.
-            orchestrator.approve_request(session, pid).expect("approve builds the clone");
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None).expect("approve builds the clone");
+            orchestrator.hand_back(session);
             assert!(orchestrator.view(session).is_some(), "no clone after approval");
             assert!(orchestrator.pending_request(session).is_none(), "the request outlived approval");
 
@@ -797,7 +846,8 @@ mod tests {
                 .unwrap();
             let (status, body) = tool_call(&tool, session, r#"{"kind":"scroll","x":1,"y":1,"deltaY":10}"#);
             assert!(status.contains("403"), "an unapproved action was allowed: {status} {body}");
-            let (read_status, _) = tool_call(&tool, session, r#"{"kind":"screenshot"}"#);
+            orchestrator.hand_back(session);
+            let (read_status, _) = tool_call(&tool, session, r#"{"kind":"inspect"}"#);
             assert!(read_status.contains("200"), "reading should still work: {read_status}");
             orchestrator.destroy(session);
         }
@@ -830,7 +880,8 @@ mod tests {
             // Go through the real request -> approve flow so actions are approved.
             orchestrator.request_capability_context(session, pid).unwrap();
             call_script(&tool, session, &format!("clone-request-{session}"), r#"{"kind":"request","domain":"127.0.0.1"}"#);
-            orchestrator.approve_request(session, pid).unwrap();
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None).unwrap();
+            orchestrator.hand_back(session);
             let clone_id = orchestrator.view(session).unwrap().clone_id;
             supervisor
                 .page_call(&clone_id, "Page.navigate", json!({ "url": "data:text/html,<input id=u style=%22position:fixed;inset:0;width:100%25;height:100%25;font-size:40px%22 autofocus>" }))

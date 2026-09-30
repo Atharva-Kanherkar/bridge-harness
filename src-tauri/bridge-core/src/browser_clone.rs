@@ -1554,15 +1554,33 @@ if ($mode eq 'helper') {
 
 my $json = JSON::PP->new->canonical;
 my @cookies;
+my $typed = "";
 $/ = "\0";
 while (defined(my $raw = <$in>)) {
     chomp $raw;
     next if $mode eq 'silent';
     my $message = $json->decode($raw);
     my $method = $message->{method} // '';
+    open(my $calls, '>>', "$here/commands.jsonl") or exit 10;
+    print $calls $json->encode($message), "\n";
+    close $calls;
     my $result = {};
     if ($method eq 'Browser.getVersion') {
         $result = { product => 'FakeChrome/1.0' };
+    } elsif ($method eq 'Target.getTargets') {
+        $result = { targetInfos => [{ targetId => 'fixture-page', type => 'page', url => 'about:blank' }] };
+    } elsif ($method eq 'Target.createTarget') {
+        $result = { targetId => 'fixture-page' };
+    } elsif ($method eq 'Target.attachToTarget') {
+        $result = { sessionId => 'fixture-session' };
+    } elsif ($method eq 'Extensions.loadUnpacked') {
+        $result = { id => 'fixture-extension' };
+    } elsif ($method eq 'Page.captureScreenshot') {
+        $result = { data => 'fixture-person-only-image' };
+    } elsif ($method eq 'Accessibility.getFullAXTree') {
+        $result = { nodes => [{ nodeId => '1', role => { value => 'textField' }, value => { value => $typed } }, { nodeId => '2', role => { value => 'StaticText' }, name => { value => "echo:$typed" } }] };
+    } elsif ($method eq 'Input.insertText') {
+        $typed = $message->{params}{text};
     } elsif ($method eq 'Storage.setCookies') {
         push @cookies, @{ $message->{params}{cookies} // [] };
     } elsif ($method eq 'Storage.getCookies') {

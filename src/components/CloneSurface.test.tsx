@@ -12,6 +12,7 @@ vi.mock("../api", () => ({
   bridgeApi: {
     browserCloneState: vi.fn(),
     requestClone: vi.fn(),
+    readCloneSettings: vi.fn(),
     resolveCloneRequest: vi.fn(),
     cloneInput: vi.fn(),
     takeoverBrowserClone: vi.fn(),
@@ -30,7 +31,7 @@ const clone = (overrides: Partial<BrowserCloneSnapshot> = {}): BrowserCloneSnaps
   ...overrides,
 });
 const none = () => clone({ status: "none", cloneId: null, domain: null, signInPath: null, expiresAt: null, screenshot: null });
-const requested = () => clone({ status: "requested", cloneId: null, domain: "youtube.com", pendingRequest: "youtube.com", expiresAt: null, screenshot: null });
+const requested = () => clone({ status: "requested", cloneId: null, domain: "youtube.com", pendingRequest: "youtube.com", pendingRequestId: "request-1", expiresAt: null, screenshot: null });
 const approval = { id: "a1", commandId: "c1", action: "click", domain: "example.com", effect: "Submit a payment form", createdAt: "now" };
 
 let container: HTMLDivElement;
@@ -58,6 +59,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
   state.mockReset().mockResolvedValue(none());
+  vi.mocked(bridgeApi.readCloneSettings).mockReset().mockResolvedValue({ connected: true, settings: { defaultSignInPath: "import", ttlMinutes: 30 } });
   vi.mocked(bridgeApi.requestClone).mockReset().mockResolvedValue(clone());
   vi.mocked(bridgeApi.resolveCloneRequest).mockReset().mockResolvedValue(clone());
   vi.mocked(bridgeApi.cloneInput).mockReset().mockResolvedValue();
@@ -110,7 +112,7 @@ describe("CloneSurface as a dock tenant", () => {
   it("shows the live view with Take over and Destroy for a running clone", async () => {
     state.mockResolvedValue(clone());
     await render();
-    expect(container.querySelector("[data-clone-viewport] img")?.getAttribute("alt")).toBe("Redacted live view of the browser clone");
+    expect(container.querySelector("[data-clone-viewport] img")?.getAttribute("alt")).toBe("Live view of the browser clone");
     expect(button("Take over")).toBeDefined();
     expect(button("Destroy")).toBeDefined();
     expect(container.textContent).toContain("example.com");
@@ -128,7 +130,7 @@ describe("CloneSurface as a dock tenant", () => {
   it("shows an Allow/Deny card when the agent asks for a clone", async () => {
     state.mockResolvedValue(requested());
     await render({ sessionId: "session-9" });
-    expect(container.textContent).toContain("The agent wants a signed-in browser");
+    expect(container.textContent).toContain("The agent wants a browser");
     expect(container.textContent).toContain("youtube.com");
     expect(button("Allow")).toBeDefined();
     expect(button("Deny")).toBeDefined();
@@ -140,7 +142,7 @@ describe("CloneSurface as a dock tenant", () => {
     state.mockResolvedValue(requested());
     await render({ sessionId: "session-9" });
     await act(async () => { button("Allow")!.click(); });
-    expect(resolve).toHaveBeenCalledWith("session-9", true);
+    expect(resolve).toHaveBeenCalledWith("session-9", true, "request-1", { defaultSignInPath: "import", ttlMinutes: 30 });
   });
 
   it("forwards a click on the frame to the page while taken over", async () => {

@@ -24,17 +24,24 @@ struct Capability {
     domain: String,
 }
 
-/// Kinds that act on the page rather than read it. Until the approval card
-/// (a later part) exists, these are refused: the epic's rule is that an agent
-/// click, keystroke, or navigation waits for the user. Read kinds (inspect,
-/// screenshot, result) never mutate and are always allowed.
+/// Kinds that act on the page. The person must approve them. Takeover pauses
+/// all page access, including reads. Images remain in the person's dock.
 const MUTATING_KINDS: [&str; 5] = ["click", "type", "scroll", "navigate", "focus"];
 
 /// A session's request capability: the token and agent process allowed to ask
 /// for a clone, before any clone exists.
+#[derive(Clone)]
 struct RequestCapability {
     token: String,
     runtime_pid: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRequest {
+    pub id: String,
+    pub domain: String,
+    pub runtime_pid: u32,
+    pub extension_path: Option<String>,
 }
 
 pub struct CloneBrowserTool {
@@ -48,7 +55,9 @@ pub struct CloneBrowserTool {
     request_caps: Mutex<HashMap<String, RequestCapability>>,
     /// A session's outstanding request (the domain the agent asked for), waiting
     /// for the person to approve or deny.
-    pending: Mutex<HashMap<String, String>>,
+    pending: Mutex<HashMap<String, PendingRequest>>,
+    answers: Mutex<HashMap<String, (String, Value)>>,
+    paused: Mutex<HashSet<String>>,
     /// Sessions whose clone the person approved for page actions. A mutating
     /// kind is refused until the session is in here.
     mutable: Mutex<HashSet<String>>,
@@ -73,6 +82,8 @@ impl CloneBrowserTool {
             results: Mutex::new(HashMap::new()),
             request_caps: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            answers: Mutex::new(HashMap::new()),
+            paused: Mutex::new(HashSet::new()),
             mutable: Mutex::new(HashSet::new()),
             operations: Mutex::new(HashMap::new()),
         });
@@ -121,7 +132,7 @@ impl CloneBrowserTool {
             quote(&self.socket.to_string_lossy()), quote(&format!("Authorization: Bearer {token}")), quote(&format!("X-Bridge-Session: {session}")));
         fs::write(&path, script).ok()?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
-        Some(format!("Bridge clone browser tool: {}. Use one JSON argument. Kinds: inspect, screenshot, click(x,y), type(text), scroll(x,y), navigate(url), focus(nodeId), result(commandId). Approved domain: {domain}.", path.display()))
+        Some(format!("Bridge clone browser tool: {}. Use one JSON argument. Kinds: status (poll while paused), inspect, click(x,y), type(text), scroll(x,y), navigate(url), focus(nodeId), result(commandId). Approved domain: {domain}. Page images stay in the person’s dock. The browser is destroyed when your turn ends.", path.display()))
     }
 
     /// The unix socket the tool script talks to. The orchestrator's end-to-end
@@ -151,12 +162,12 @@ impl CloneBrowserTool {
             quote(&self.socket.to_string_lossy()), quote(&format!("Authorization: Bearer {token}")), quote(&format!("X-Bridge-Session: {session}")));
         fs::write(&path, script).ok()?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
-        Some(format!("To test in a signed-in browser, ask for a throwaway clone (the person approves it): {tool} '{{\"kind\":\"request\",\"domain\":\"example.com\"}}'. Once approved, a separate clone tool appears for that domain. Do not ask unless the task needs a signed-in site.", tool = path.display()))
+        Some(format!("To test in a signed-in browser, ask for a throwaway clone (the person approves it): {tool} '{{\"kind\":\"request\",\"domain\":\"example.com\"}}'. The result includes requestId. Poll this same tool with kind=request_status and requestId until awaiting=false; it returns the approved browser tool instructions in this turn. Approval may need several minutes, so keep polling every two seconds without ending your turn. Optional extensionPath must be an absolute directory for the extension under test and is shown for approval. Use the returned browser tool, then finish your turn to destroy the browser. Do not ask unless the task needs a signed-in site.", tool = path.display()))
     }
 
     /// The domain a session's agent has asked for, awaiting the person's answer.
     pub fn pending_request(&self, session: &str) -> Option<String> {
-        self.pending.lock().ok()?.get(session).cloned()
+        self.pending.lock().ok()?.get(session).map(|request| request.domain.clone())
     }
 
     /// Serialize state changes and in-flight page commands within one chat.
@@ -166,16 +177,54 @@ impl CloneBrowserTool {
             .entry(session.to_owned()).or_insert_with(|| Arc::new(Mutex::new(()))))
     }
 
-    /// Take the pending request (on approval), clearing it.
-    pub fn take_pending_request(&self, session: &str) -> Option<String> {
-        self.pending.lock().ok()?.remove(session)
+    pub fn pending_requests(&self) -> Vec<bridge_protocol::messages::CloneRequest> {
+        self.pending.lock().unwrap_or_else(|p| p.into_inner()).iter().map(|(session, request)| bridge_protocol::messages::CloneRequest {
+            session_id: session.clone(), request_id: request.id.clone(), domain: request.domain.clone(), extension_path: request.extension_path.clone(),
+        }).collect()
     }
 
-    /// Drop the pending request (on denial).
-    pub fn clear_pending_request(&self, session: &str) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(session);
+    pub fn pending_details(&self, session: &str) -> Option<PendingRequest> {
+        self.pending.lock().ok()?.get(session).cloned()
+    }
+
+    pub fn take_pending_request(&self, session: &str, id: &str, runtime_pid: u32) -> Result<PendingRequest, String> {
+        let mut pending = self.pending.lock().map_err(|_| "request unavailable")?;
+        let request = pending.get(session).ok_or("no pending clone request")?;
+        if request.id != id || request.runtime_pid != runtime_pid {
+            return Err("clone request changed or its agent restarted; review the current request".into());
         }
+        Ok(pending.remove(session).unwrap())
+    }
+
+    pub fn answer_request(&self, session: &str, id: &str, answer: Value) {
+        self.answers.lock().unwrap_or_else(|p| p.into_inner()).insert(session.to_owned(), (id.to_owned(), answer));
+    }
+
+    pub fn clear_pending_request(&self, session: &str) {
+        if let Some(request) = self.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(session) {
+            self.answer_request(session, &request.id, json!({"ok":false,"awaiting":false,"error":"request denied"}));
+        }
+    }
+
+    pub fn pause(&self, session: &str) {
+        self.paused.lock().unwrap_or_else(|p| p.into_inner()).insert(session.to_owned());
+        self.revoke_mutations(session);
+        self.results.lock().unwrap_or_else(|p| p.into_inner()).retain(|_, (owner, _, _)| owner != session);
+    }
+
+    pub fn resume(&self, session: &str) {
+        self.paused.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
+    }
+
+    // Replacing a browser preserves the authenticated request channel so its
+    // status operation can receive the approval result in the requesting turn.
+    pub fn revoke_browser(&self, session: &str) {
+        self.capabilities.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
+        self.mutable.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
+        self.paused.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
+        self.results.lock().unwrap_or_else(|p| p.into_inner()).retain(|_, (owner, _, _)| owner != session);
+        let safe: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+        let _ = fs::remove_file(self.directory.join(format!("clone-browser-{safe}")));
     }
 
     /// Approve page actions for a session's clone: mutating kinds are allowed
@@ -194,7 +243,8 @@ impl CloneBrowserTool {
     }
 
     pub fn revoke_session(&self, session: &str) {
-        self.capabilities.lock().unwrap().remove(session);
+        self.revoke_browser(session);
+        self.answers.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
         let _ = self.request_caps.lock().map(|mut m| m.remove(session));
         let _ = self.pending.lock().map(|mut m| m.remove(session));
         let _ = self.mutable.lock().map(|mut m| m.remove(session));
@@ -273,23 +323,41 @@ impl CloneBrowserTool {
         // "request" is the one kind an agent can call before any clone exists:
         // it asks the person for a clone. It rides the session's request
         // capability, not a per-clone one.
-        if request.get("kind").and_then(Value::as_str) == Some("request") {
-            let reqs = self.request_caps.lock().map_err(|_| "capability unavailable")?;
-            let cap = reqs.get(session).ok_or("capability unavailable")?;
-            if cap.token != token || !peer.is_some_and(|pid| descendant_of(pid, cap.runtime_pid)) {
+        let kind = request.get("kind").and_then(Value::as_str).unwrap_or("");
+        if matches!(kind, "request" | "request_status") {
+            let cap = self.request_caps.lock().map_err(|_| "capability unavailable")?
+                .get(session).cloned().ok_or("capability unavailable")?;
+            if cap.token != token || cap.runtime_pid == 0 || !peer.is_some_and(|pid| descendant_of(pid, cap.runtime_pid)) {
                 return Err("capability invalid".into());
             }
-            drop(reqs);
-            let domain = request
-                .get("domain")
-                .and_then(Value::as_str)
-                .and_then(normalized_domain)
-                .ok_or("a valid domain is required")?;
-            self.pending
-                .lock()
-                .map_err(|_| "request unavailable")?
-                .insert(session.to_owned(), domain.clone());
-            return Ok(json!({"ok": true, "requested": domain, "awaiting": "user approval"}));
+            if kind == "request_status" {
+                let id = request.get("requestId").and_then(Value::as_str).ok_or("missing requestId")?;
+                if let Some(pending) = self.pending_details(session) {
+                    if pending.id != id { return Err("request changed".into()); }
+                    return Ok(json!({"ok":true,"awaiting":true,"requestId":id}));
+                }
+                let answers = self.answers.lock().map_err(|_| "answer unavailable")?;
+                let (answer_id, answer) = answers.get(session).ok_or("request no longer available")?;
+                if answer_id != id { return Err("request changed".into()); }
+                return Ok(answer.clone());
+            }
+            let domain = request.get("domain").and_then(Value::as_str)
+                .and_then(normalized_domain).ok_or("a valid domain is required")?;
+            let extension_path = request.get("extensionPath").and_then(Value::as_str).map(str::to_owned);
+            if extension_path.as_ref().is_some_and(|path| !std::path::Path::new(path).is_absolute() || !std::path::Path::new(path).join("manifest.json").is_file()) {
+                return Err("extensionPath must be an absolute directory containing manifest.json".into());
+            }
+            let mut pending = self.pending.lock().map_err(|_| "request unavailable")?;
+            if let Some(existing) = pending.get(session) {
+                if existing.domain != domain || existing.extension_path != extension_path || existing.runtime_pid != cap.runtime_pid {
+                    return Err("a different browser request is already awaiting approval".into());
+                }
+                return Ok(json!({"ok":true,"requested":domain,"awaiting":true,"requestId":existing.id}));
+            }
+            let id = Uuid::new_v4().to_string();
+            pending.insert(session.to_owned(), PendingRequest { id: id.clone(), domain: domain.clone(), runtime_pid: cap.runtime_pid, extension_path });
+            self.answers.lock().map_err(|_| "answer unavailable")?.remove(session);
+            return Ok(json!({"ok":true,"requested":domain,"awaiting":true,"requestId":id}));
         }
 
         let caps = self
@@ -303,6 +371,16 @@ impl CloneBrowserTool {
         let clone_id = cap.clone_id.clone();
         let domain = cap.domain.clone();
         drop(caps);
+        if kind == "status" {
+            let paused = self.paused.lock().map_err(|_| "clone unavailable")?.contains(session);
+            return Ok(json!({"ok":true,"paused":paused}));
+        }
+        if self.paused.lock().map_err(|_| "clone unavailable")?.contains(session) {
+            return Err("the person controls the browser; all agent access is paused".into());
+        }
+        if kind == "screenshot" {
+            return Err("browser images stay in the person's dock; use inspect for scrubbed page text".into());
+        }
         let guard = self
             .supervisor
             .clone_guard(&clone_id)
@@ -340,14 +418,15 @@ impl CloneBrowserTool {
                 .page_call(&clone_id, "Input.dispatchMouseEvent", release)
                 .map_err(|_| "browser command failed".to_owned())?;
         }
+        if kind == "inspect" { redact_editable_values(&mut result); }
         guard
             .lock()
             .map_err(|_| "clone guard unavailable")?
             .scrub_response(&mut result);
         let id = Uuid::new_v4().to_string();
         let mut results = self.results.lock().map_err(|_| "result unavailable")?;
-        if results.len() >= 128 {
-            results.clear();
+        if results.values().filter(|(owner, _, _)| owner == session).count() >= 128 {
+            results.retain(|_, (owner, _, _)| owner != session);
         }
         results.insert(id.clone(), (session.to_owned(), clone_id, result.clone()));
         Ok(json!({"ok":true,"commandId":id,"result":result}))
@@ -367,12 +446,21 @@ impl Drop for CloneBrowserTool {
     }
 }
 
+fn redact_editable_values(result: &mut Value) {
+    if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in nodes {
+            let editable = matches!(node.pointer("/role/value").and_then(Value::as_str), Some("textField" | "textFieldWithComboBox" | "comboBox"));
+            if editable && node.get("value").is_some() { node["value"] = json!({"type":"string","value":"[redacted]"}); }
+        }
+    }
+}
+
 fn normalized_domain(domain: &str) -> Option<String> {
     let d = domain.trim().to_ascii_lowercase();
-    (d.contains('.')
-        && d.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
-    .then_some(d)
+    (d.len() <= 253 && d.contains('.') && d.split('.').all(|label| {
+        !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-')
+            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })).then_some(d)
 }
 
 fn command(request: &Value, domain: &str) -> Result<(&'static str, Value), String> {
@@ -389,7 +477,7 @@ fn command(request: &Value, domain: &str) -> Result<(&'static str, Value), Strin
     };
     match kind {
         "inspect" => Ok(("Accessibility.getFullAXTree", json!({}))),
-        "screenshot" => Ok(("Page.captureScreenshot", json!({"format":"png"}))),
+        "screenshot" => Err("browser images remain local to the person".into()),
         "click" => Ok((
             "Input.dispatchMouseEvent",
             json!({"type":"mousePressed","x":number("x")?,"y":number("y")?,"button":"left","clickCount":1}),
@@ -470,6 +558,28 @@ fn descendant_of(mut pid: u32, ancestor: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn consent_is_immutable_and_stale_answers_fail_closed() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = CloneSupervisor::guarded(dir.path().join("ledger.json"));
+        let tool = CloneBrowserTool::new(supervisor, dir.path().to_owned()).unwrap();
+        let pid = std::process::id();
+        tool.request_capability_context("chat", pid).unwrap();
+        let token = tool.request_caps.lock().unwrap()["chat"].token.clone();
+        let asked = tool.execute("chat", &token, Some(pid), json!({"kind":"request","domain":"example.test"})).unwrap();
+        let id = asked["requestId"].as_str().unwrap();
+        assert!(tool.execute("chat", &token, Some(pid), json!({"kind":"request","domain":"other.test"})).is_err());
+        assert_eq!(tool.pending_request("chat").as_deref(), Some("example.test"));
+        assert!(tool.take_pending_request("chat", "old-request", pid).is_err());
+        assert!(tool.take_pending_request("chat", id, pid + 1).is_err());
+        assert!(tool.pending_details("chat").is_some());
+        tool.clear_pending_request("chat");
+        let answer = tool.execute("chat", &token, Some(pid), json!({"kind":"request_status","requestId":id})).unwrap();
+        assert_eq!(answer["awaiting"], false);
+        assert_eq!(answer["ok"], false);
+        assert!(tool.execute("chat", &token, Some(pid), json!({"kind":"request_status","requestId":"wrong"})).is_err());
+    }
+
     #[test]
     fn dropping_the_tool_releases_its_listener_and_supervisor() {
         let dir = tempfile::tempdir_in("/tmp").unwrap();

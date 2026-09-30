@@ -3,6 +3,24 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "CloneSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "defaultSignInPath": {
+          "$ref": "#/definitions/CloneSignInPath"
+        },
+        "ttlMinutes": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "defaultSignInPath",
+        "ttlMinutes"
+      ],
+      "type": "object"
+    },
     "CloneSignInPath": {
       "description": "How the clone gets signed in.",
       "oneOf": [
@@ -23,33 +41,14 @@
       ]
     }
   },
-  "description": "The person's answer to an agent's clone request.",
   "properties": {
-    "allow": {
-      "type": "boolean"
-    },
-    "requestId": {
-      "type": "string"
-    },
-    "sessionId": {
-      "type": "string"
-    },
-    "signInPath": {
-      "$ref": "#/definitions/CloneSignInPath"
-    },
-    "ttlMinutes": {
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
+    "settings": {
+      "$ref": "#/definitions/CloneSettings"
     }
   },
   "required": [
-    "allow",
-    "requestId",
-    "sessionId",
-    "signInPath",
-    "ttlMinutes"
+    "settings"
   ],
-  "title": "ResolveCloneRequestParams",
+  "title": "WriteCloneSettingsParams",
   "type": "object"
 }

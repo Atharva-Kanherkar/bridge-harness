@@ -267,6 +267,9 @@ methods![
     (DestroyClone, "clones", "destroy_clone"),
     (ResolveCloneRequest, "clones", "resolve_clone_request"),
     (CloneInput, "clones", "clone_input"),
+    (ReadCloneSettings, "clones", "read_clone_settings"),
+    (WriteCloneSettings, "clones", "write_clone_settings"),
+    (CloneRequests, "clones", "clone_requests"),
     // agents — the runtime lifecycle for the built-in integrations. Distinct
     // from `marketplace`, which is about plugins running inside an agent.
     (ListManagedAgents, "agents", "list_managed_agents"),

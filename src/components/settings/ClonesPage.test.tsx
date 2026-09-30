@@ -46,15 +46,15 @@ afterEach(async () => {
   host.remove();
   vi.restoreAllMocks();
   // The mock api keeps its state for the life of the module.
-  await bridgeApi.writeCloneSettings({ defaultSignInPath: "import", ttlMinutes: 30 });
+  await bridgeApi.writeCloneSettings({ defaultSignInPath: "sign_in_inside", ttlMinutes: 30 });
 });
 
 describe("Clones settings", () => {
-  it("starts from import and thirty minutes", async () => {
+  it("starts blank with a thirty minute lifetime", async () => {
     await mount();
-    expect(trigger("Default sign-in path").textContent).toContain("Import from my browser");
+    expect(trigger("Default sign-in path").textContent).toContain("Sign in inside the clone");
     expect(trigger("Clone time to live").textContent).toContain("30 minutes");
-    expect(await bridgeApi.readCloneSettings()).toEqual({ connected: true, settings: { defaultSignInPath: "import", ttlMinutes: 30 } });
+    expect(await bridgeApi.readCloneSettings()).toEqual({ connected: true, settings: { defaultSignInPath: "sign_in_inside", ttlMinutes: 30 } });
   });
 
   it("writes each change through the api and reads it back after a remount", async () => {

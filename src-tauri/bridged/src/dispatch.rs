@@ -872,8 +872,14 @@ pub fn dispatch(
         }
         MethodName::ResolveCloneRequest => {
             let p: wire::ResolveCloneRequestParams = decode(method, params)?;
-            reply(api::resolve_clone_request(core, &p.session_id, p.allow))
+            reply(api::resolve_clone_request(core, &p.session_id, p.allow, &p.request_id, p.sign_in_path, p.ttl_minutes))
         }
+        MethodName::ReadCloneSettings => reply(api::read_clone_settings(core)),
+        MethodName::WriteCloneSettings => {
+            let p: wire::WriteCloneSettingsParams = decode(method, params)?;
+            reply(api::write_clone_settings(core, &p.settings))
+        }
+        MethodName::CloneRequests => encode(api::clone_requests(core)),
         MethodName::ConfigureRemoteBrowser => {
             let p: wire::ConfigureRemoteBrowserParams = decode(method, params)?;
             let config = match &p.config {

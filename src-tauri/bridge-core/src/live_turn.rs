@@ -3573,6 +3573,8 @@ fn handle_agent_value_timed(
     }
 
     if turn_completed {
+        #[cfg(target_os = "macos")]
+        state.browser_clone_orchestrator.destroy(session_id);
         // The turn is terminal: the chat watchdog must stop measuring this
         // session until its reader serves the next turn. Workers never hold
         // a chat entry, so this is a no-op for them.
@@ -13229,11 +13231,14 @@ fn managed_root_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod submit_input_tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::api;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A live provider that records what it was told, and can be made to fail
     /// the write so the queue's release path is reachable.
     pub(super) struct FakeRuntime {
+        runtime_pid: u32,
         steering: bool,
         /// Whether this fake advertises image support. `false` keeps the
         /// trait default so the refusal path stays reachable in tests.
@@ -13280,16 +13285,16 @@ mod submit_input_tests {
 
     impl FakeRuntime {
         pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, false)
+            Self::build(steering, false, 0)
         }
 
         pub(super) fn new_with_images(
             steering: bool,
         ) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, true)
+            Self::build(steering, true, 0)
         }
 
-        fn build(steering: bool, images: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+        fn build(steering: bool, images: bool, runtime_pid: u32) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let contexts = Arc::new(Mutex::new(Vec::new()));
             let sent_images = Arc::new(Mutex::new(Vec::new()));
@@ -13300,6 +13305,7 @@ mod submit_input_tests {
             let interrupts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let refuse_interrupt = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
+                runtime_pid,
                 steering,
                 images,
                 sent: sent.clone(),
@@ -13331,7 +13337,7 @@ mod submit_input_tests {
 
     impl adapters::AdapterRuntime for FakeRuntime {
         fn process_id(&self) -> u32 {
-            0
+            self.runtime_pid
         }
         fn provider_session_id(&self) -> &str {
             "fake"
@@ -13512,6 +13518,67 @@ mod submit_input_tests {
         let (runtime, handles) = FakeRuntime::new(steering);
         core.adapters.lock().unwrap().insert("chat".into(), runtime);
         handles
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_application_request_approval_handoff_and_turn_cleanup_repeat() {
+        fn invoke(path: &std::path::Path, value: serde_json::Value) -> (bool, serde_json::Value) {
+            let output = std::process::Command::new(path).arg(value.to_string()).output().unwrap();
+            (output.status.success(), serde_json::from_slice(&output.stdout).unwrap())
+        }
+        let (_fixture, mut core, _managed_root) = core_with_chat("ready");
+        let browser = tempfile::tempdir_in("/tmp").unwrap();
+        let directory = browser.path().join("tool");
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(browser.path(), true);
+        let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), directory.clone()).unwrap();
+        let owner = Arc::get_mut(&mut core).unwrap();
+        owner.browser_clones = supervisor;
+        owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
+        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let extension = browser.path().join("extension");
+        std::fs::create_dir(&extension).unwrap();
+        std::fs::write(extension.join("manifest.json"), r#"{"manifest_version":3,"name":"Synthetic fixture","version":"1.0"}"#).unwrap();
+        for _ in 0..2 {
+            submit_input(&core, "chat".into(), "Test my local extension with a browser".into()).unwrap();
+            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text| text.contains("clone-request-chat")));
+            let request_tool = directory.join("clone-request-chat");
+            let (ok, asked) = invoke(&request_tool, serde_json::json!({"kind":"request","domain":"example.test","extensionPath":extension}));
+            assert!(ok);
+            let id = asked["requestId"].as_str().unwrap();
+            assert_eq!(api::clone_requests(&core).len(), 1);
+            assert!(api::resolve_clone_request(&core, "chat", true, "stale", wire::CloneSignInPath::SignInInside, 10).is_err());
+            let snapshot = api::resolve_clone_request(&core, "chat", true, id, wire::CloneSignInPath::SignInInside, 10).unwrap().unwrap();
+            assert_eq!(snapshot.status, "waiting_for_you");
+            let (ok, approved) = invoke(&request_tool, serde_json::json!({"kind":"request_status","requestId":id}));
+            assert!(ok);
+            assert_eq!(approved["awaiting"], false);
+            assert!(approved["tool"].as_str().unwrap().contains("clone-browser-chat"));
+            let drive = directory.join("clone-browser-chat");
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0, "reads must pause during sign-in");
+            api::takeover_clone(&core, "chat").unwrap();
+            api::clone_input(&core, "chat", &wire::CloneInputEvent::Type { text: "123456".into() }).unwrap();
+            api::hand_back_clone(&core, "chat").unwrap();
+            let (ok, inspected) = invoke(&drive, serde_json::json!({"kind":"inspect"}));
+            assert!(ok);
+            assert!(!inspected.to_string().contains("123456"), "the person's typed secret leaked");
+            assert!(!invoke(&drive, serde_json::json!({"kind":"screenshot"})).0);
+            assert!(invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::takeover_clone(&core, "chat").unwrap();
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0);
+            assert!(!invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::hand_back_clone(&core, "chat").unwrap();
+            handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+            assert!(core.browser_clone_orchestrator.view("chat").is_none());
+            assert!(api::clone_requests(&core).is_empty());
+            assert!(!drive.exists());
+            assert!(!request_tool.exists());
+            assert_eq!(std::fs::read_dir(browser.path().join("mounts")).unwrap().count(), 0);
+        }
+        let commands = std::fs::read_to_string(browser.path().join("commands.jsonl")).unwrap();
+        assert_eq!(commands.lines().filter(|line| line.contains("Extensions.loadUnpacked")).count(), 2);
     }
 
     // -- session-context frame (#528) ---------------------------------------

@@ -6,9 +6,8 @@ import { Select, SettingsGroup, SettingsPage, SettingsRow, useSavedFlash, type S
 
 // Clones: the two defaults a new throwaway browser starts from. Both controls
 // are selects, so each change persists on the spot and the page has no save
-// bar, like Work briefing. The values are read and written through the mock
-// api until the protocol slice lands; a build with no clone backend says so and
-// disables the controls rather than accepting a write nothing would honour.
+// bar, like Work briefing. The values are read and written through the
+// native API. A build without clone support disables the controls.
 
 const SIGN_IN_OPTIONS: SelectOption[] = [
   { value: "import", label: "Import from my browser", description: "Copy the cookies for an approved domain into the clone" },

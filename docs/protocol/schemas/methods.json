@@ -1388,6 +1388,27 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "read_clone_settings",
+      "domain": "clones",
+      "method": "clones/read_clone_settings",
+      "paramsSchema": null,
+      "resultSchema": "clone-settings-snapshot.json"
+    },
+    {
+      "command": "write_clone_settings",
+      "domain": "clones",
+      "method": "clones/write_clone_settings",
+      "paramsSchema": "write-clone-settings-params.json",
+      "resultSchema": "clone-settings-snapshot.json"
+    },
+    {
+      "command": "clone_requests",
+      "domain": "clones",
+      "method": "clones/clone_requests",
+      "paramsSchema": null,
+      "resultSchema": "clone-requests-result.json"
+    },
+    {
       "command": "list_managed_agents",
       "domain": "agents",
       "method": "agents/list_managed_agents",

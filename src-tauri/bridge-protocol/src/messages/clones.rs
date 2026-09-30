@@ -63,10 +63,13 @@ pub struct DestroyCloneParams {
 pub struct ResolveCloneRequestParams {
     pub session_id: String,
     pub allow: bool,
+    pub request_id: String,
+    pub sign_in_path: CloneSignInPath,
+    pub ttl_minutes: u64,
 }
 
 /// What the dock shows about a session's clone. Never carries a cookie value.
-/// The `screenshot` is a redacted frame the surface renders directly.
+/// The `screenshot` stays in the person’s dock; it is not sent to the agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CloneSnapshot {
@@ -81,6 +84,8 @@ pub struct CloneSnapshot {
     /// Set when the agent has asked for a clone and is waiting on the person.
     /// The dock turns this into an Allow/Deny card. `None` once a clone exists.
     pub pending_request: Option<String>,
+    pub pending_request_id: Option<String>,
+    pub extension_path: Option<String>,
 }
 
 /// The session's clone, or `None` when it has no clone (or off macOS).
@@ -117,3 +122,36 @@ pub struct CloneInputParams {
     pub session_id: String,
     pub input: CloneInputEvent,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneSettings {
+    pub default_sign_in_path: CloneSignInPath,
+    pub ttl_minutes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneSettingsSnapshot {
+    pub connected: bool,
+    pub settings: CloneSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteCloneSettingsParams {
+    pub settings: CloneSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub domain: String,
+    pub extension_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct CloneRequestsResult(pub Vec<CloneRequest>);

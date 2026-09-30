@@ -4,6 +4,7 @@ import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
 import type { BrowserCloneSnapshot, BrowserCloneStatus, CloneSignInPath } from "../types";
 import type { CloneInputEvent } from "../protocol/generated/protocol";
+import { CloneConsentCard } from "./CloneRequestInbox";
 import { PaneState } from "./ui/pane";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -110,21 +111,13 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
       : status === "none" ? <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
           <Ghost size={22} className="text-muted-foreground" aria-hidden="true" />
           <p className="max-w-sm text-[11px] leading-5 text-muted-foreground">A clone is a throwaway copy of your browser, signed in only to the site you name. Start one to test a signed-in flow; it is destroyed when you are done.</p>
-          <form className="flex w-full max-w-sm items-center gap-1.5" onSubmit={(event) => { event.preventDefault(); const domain = domainDraft.trim(); if (domain) void run(() => bridgeApi.requestClone(sessionId ?? "", domain, "chrome", "import").then(() => setDomainDraft(""))); }}>
+          <form className="flex w-full max-w-sm items-center gap-1.5" onSubmit={(event) => { event.preventDefault(); const domain = domainDraft.trim(); if (domain) void run(() => bridgeApi.readCloneSettings().then(({ settings }) => bridgeApi.requestClone(sessionId ?? "", domain, "chrome", settings.defaultSignInPath)).then(() => setDomainDraft(""))); }}>
             <input aria-label="Site to clone" value={domainDraft} onChange={(event) => setDomainDraft(event.target.value)} placeholder="youtube.com" className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 text-[12px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
             <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}><Ghost size={12} />Start clone</Button>
           </form>
         </div>
-      : status === "requested" ? <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-          <Hand size={22} className="text-warning" aria-hidden="true" />
-          <div>
-            <p className="text-[12px] font-medium text-foreground">The agent wants a signed-in browser</p>
-            <p className="mt-1 max-w-sm text-[11px] leading-5 text-muted-foreground">It is asking to test on <b className="break-all font-mono text-foreground">{snapshot.pendingRequest ?? snapshot.domain}</b> using your sign-in, in a throwaway clone that is destroyed afterwards.</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => bridgeApi.resolveCloneRequest(sessionId ?? "", false))}>Deny</Button>
-            <Button size="sm" disabled={busy} onClick={() => void run(() => bridgeApi.resolveCloneRequest(sessionId ?? "", true))}><Hand size={12} />Allow</Button>
-          </div>
+      : status === "requested" ? <div className="grid flex-1 place-items-center p-6">
+          {snapshot.pendingRequestId && <CloneConsentCard key={snapshot.pendingRequestId} request={{ sessionId: sessionId ?? "", requestId: snapshot.pendingRequestId, domain: snapshot.pendingRequest ?? snapshot.domain ?? "", extensionPath: snapshot.extensionPath }} onError={onError} onResolved={() => void refresh().catch(error => onError(String(error)))} />}
         </div>
       : status === "destroyed" ? <PaneState icon={Trash2} title="Clone destroyed">Its profile, cookies, and session are gone. Nothing from it stays on disk.</PaneState>
       : <>
@@ -142,7 +135,7 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
         <div className="flex flex-wrap items-center gap-1.5 border-t border-border p-2">
           {status === "taken_over"
             ? <Button size="xs" disabled={busy} onClick={() => void run(() => bridgeApi.handBackBrowserClone(sessionId))}><Bot size={12} />Hand back</Button>
-            : <Button variant={status === "waiting_for_you" ? "default" : "secondary"} size="xs" disabled={busy || status === "starting"} onClick={() => void run(() => bridgeApi.takeoverBrowserClone(sessionId))}><Hand size={12} />Take over</Button>}
+            : <Button variant="secondary" size="xs" disabled={busy || status === "starting"} onClick={() => void run(() => bridgeApi.takeoverBrowserClone(sessionId))}><Hand size={12} />Take over</Button>}
           {confirmingDestroy
             ? <div className="ml-auto flex flex-wrap items-center gap-1.5">
               <span className="text-[11px] text-muted-foreground">Wipe this clone’s profile and cookies?</span>
@@ -176,6 +169,6 @@ function LiveView({ snapshot, takenOver, onInput }: { snapshot: BrowserCloneSnap
     if (rect.width === 0 || rect.height === 0) return;
     onInput({ kind: "click", x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height });
   };
-  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><Camera size={24} className="mx-auto text-muted-foreground" /><p className="mt-2 max-w-sm text-[11px] leading-5 text-muted-foreground">{snapshot.status === "starting" ? "Starting the clone…" : "Waiting for the first redacted frame…"}</p></div></div>;
-  return <div data-clone-viewport><img src={snapshot.screenshot} alt="Redacted live view of the browser clone" onClick={forwardClick} className={`block h-auto w-full ${takenOver ? "cursor-pointer" : ""}`} /></div>;
+  if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><Camera size={24} className="mx-auto text-muted-foreground" /><p className="mt-2 max-w-sm text-[11px] leading-5 text-muted-foreground">{snapshot.status === "starting" ? "Starting the clone…" : "Waiting for the first frame…"}</p></div></div>;
+  return <div data-clone-viewport><img src={snapshot.screenshot} alt="Live view of the browser clone" onClick={forwardClick} className={`block h-auto w-full ${takenOver ? "cursor-pointer" : ""}`} /></div>;
 }

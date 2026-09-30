@@ -351,10 +351,28 @@ async fn clone_input(
 async fn resolve_clone_request(
     session_id: String,
     allow: bool,
+    request_id: String,
+    sign_in_path: bridge_protocol::messages::CloneSignInPath,
+    ttl_minutes: u64,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Option<bridge_protocol::messages::CloneSnapshot>, BridgeError> {
     let core = Arc::clone(state.inner());
-    blocking("resolve_clone_request", move || api::resolve_clone_request(&core, &session_id, allow)).await
+    blocking("resolve_clone_request", move || api::resolve_clone_request(&core, &session_id, allow, &request_id, sign_in_path, ttl_minutes)).await
+}
+
+#[tauri::command]
+async fn read_clone_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    api::read_clone_settings(state.inner())
+}
+
+#[tauri::command]
+async fn write_clone_settings(settings: bridge_protocol::messages::CloneSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    api::write_clone_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
+async fn clone_requests(state: State<'_, Arc<BridgeCore>>) -> Result<Vec<bridge_protocol::messages::CloneRequest>, BridgeError> {
+    Ok(api::clone_requests(state.inner()))
 }
 
 #[tauri::command]
@@ -2703,6 +2721,9 @@ pub fn run() -> i32 {
             destroy_clone,
             resolve_clone_request,
             clone_input,
+            read_clone_settings,
+            write_clone_settings,
+            clone_requests,
             detach_browser,
             route_browser,
             browser_skills,

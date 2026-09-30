@@ -205,6 +205,9 @@ export type BridgeMethod =
   | "clones/destroy_clone"
   | "clones/resolve_clone_request"
   | "clones/clone_input"
+  | "clones/read_clone_settings"
+  | "clones/write_clone_settings"
+  | "clones/clone_requests"
   | "agents/list_managed_agents"
   | "agents/inspect_managed_agent"
   | "agents/install_managed_agent"
@@ -430,6 +433,9 @@ export const BRIDGE_METHODS = [
   { method: "clones/destroy_clone", domain: "clones", command: "destroy_clone" },
   { method: "clones/resolve_clone_request", domain: "clones", command: "resolve_clone_request" },
   { method: "clones/clone_input", domain: "clones", command: "clone_input" },
+  { method: "clones/read_clone_settings", domain: "clones", command: "read_clone_settings" },
+  { method: "clones/write_clone_settings", domain: "clones", command: "write_clone_settings" },
+  { method: "clones/clone_requests", domain: "clones", command: "clone_requests" },
   { method: "agents/list_managed_agents", domain: "agents", command: "list_managed_agents" },
   { method: "agents/inspect_managed_agent", domain: "agents", command: "inspect_managed_agent" },
   { method: "agents/install_managed_agent", domain: "agents", command: "install_managed_agent" },
@@ -727,6 +733,9 @@ export interface BridgeMethodParams {
   "clones/destroy_clone": DestroyCloneParams;
   "clones/resolve_clone_request": ResolveCloneRequestParams;
   "clones/clone_input": CloneInputParams;
+  "clones/read_clone_settings": undefined;
+  "clones/write_clone_settings": WriteCloneSettingsParams;
+  "clones/clone_requests": undefined;
   "agents/list_managed_agents": undefined;
   "agents/inspect_managed_agent": InspectManagedAgentParams;
   "agents/install_managed_agent": InstallManagedAgentParams;
@@ -954,6 +963,9 @@ export interface BridgeMethodResults {
   "clones/destroy_clone": UnitResult;
   "clones/resolve_clone_request": CloneStateResult;
   "clones/clone_input": UnitResult;
+  "clones/read_clone_settings": CloneSettingsSnapshot;
+  "clones/write_clone_settings": CloneSettingsSnapshot;
+  "clones/clone_requests": CloneRequestsResult;
   "agents/list_managed_agents": ManagedAgentList;
   "agents/inspect_managed_agent": ManagedAgentInspection;
   "agents/install_managed_agent": ManagedAgentOperationResult;
@@ -1127,13 +1139,27 @@ export type CloneBrowserKind = "chrome" | "brave";
 
 export type CloneInputEvent = { kind: "click"; x: number; y: number } | { deltaY: number; kind: "scroll"; x: number; y: number } | { kind: "type"; text: string } | { key: string; kind: "key" };
 
+export interface CloneRequest {
+  domain: string;
+  extensionPath?: string | null;
+  requestId: string;
+  sessionId: string;
+}
+
+export interface CloneSettings {
+  defaultSignInPath: CloneSignInPath;
+  ttlMinutes: number;
+}
+
 export type CloneSignInPath = "import" | "sign_in_inside";
 
 export interface CloneSnapshot {
   cloneId: string;
   domain: string;
+  extensionPath?: string | null;
   minutesLeft: number;
   pendingRequest?: string | null;
+  pendingRequestId?: string | null;
   screenshot?: string | null;
   screenshotRedactedRegions: number;
   sessionId: string;
@@ -4023,13 +4049,27 @@ export interface DestroyCloneParams {
 
 export interface ResolveCloneRequestParams {
   allow: boolean;
+  requestId: string;
   sessionId: string;
+  signInPath: CloneSignInPath;
+  ttlMinutes: number;
 }
 
 export interface CloneInputParams {
   input: CloneInputEvent;
   sessionId: string;
 }
+
+export interface CloneSettingsSnapshot {
+  connected: boolean;
+  settings: CloneSettings;
+}
+
+export interface WriteCloneSettingsParams {
+  settings: CloneSettings;
+}
+
+export type CloneRequestsResult = CloneRequest[];
 
 export interface ManagedAgentList {
   agents: ManagedAgentStatus[];
