@@ -1092,6 +1092,18 @@ impl CloneSupervisor {
         lock(&self.clones).get(clone_id).and_then(|clone| clone.guard.clone())
     }
 
+    /// Run one CDP command against a clone on behalf of the agent tool. The tool
+    /// (`clone_browser_tool`) is the only caller; it restricts the method set
+    /// and scrubs the result, so this stays crate-internal.
+    pub(crate) fn tool_call(
+        &self,
+        clone_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, CloneError> {
+        self.pipe(clone_id)?.call(method, params, self.config.call_timeout)
+    }
+
     /// Inject `cookies` into the clone as session cookies. They are readable
     /// in-page and stay out of the profile's `Cookies` file while the clone
     /// runs; [`Self::destroy`] kills the browser without a graceful flush and
