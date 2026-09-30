@@ -401,7 +401,7 @@ const noClone = (status: BrowserCloneSnapshot["status"] = "none"): BrowserCloneS
   status, cloneId: null, domain: null, signInPath: null, pendingRequest: null, waitingReason: null, expiresAt: null,
   screenshot: null, screenshotRedactedRegions: 0, pendingApproval: null,
 });
-const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "sign_in_inside", ttlMinutes: 30 });
+const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "import", ttlMinutes: 30, agentVision: true });
 const cloneUnavailable = () => new Error("Browser clones are not connected to the runtime in this build yet.");
 // The runtime's CloneSnapshot carries no cookie value; map it to what the dock
 // surface renders. `null` (no clone for this session) becomes the empty state.
@@ -423,6 +423,7 @@ const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnap
     screenshot: wire.screenshot ?? null,
     screenshotRedactedRegions: wire.screenshotRedactedRegions,
     pendingApproval: null,
+    agentVision: wire.agentVision ?? undefined,
   };
 };
 // Starts on a login wall, the state a clone spends its interesting time in, so
@@ -1513,13 +1514,13 @@ export const bridgeApi = {
   // The person answers an agent's clone request. Allow builds the clone and lets
   // the agent act; deny drops it.
   resolveCloneRequest: async (sessionId: string, allow: boolean, requestId: string, settings: CloneSettings): Promise<BrowserCloneSnapshot> => {
-    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes }));
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes, agentVision: settings.agentVision ?? true }));
     if (allow) {
       const domain = mockBrowserClone.pendingRequest ?? mockBrowserClone.domain ?? "example.com";
       mockBrowserClone = {
-        status: "acting", cloneId: "mock-clone-1", domain, signInPath: "import", pendingRequest: null,
-        waitingReason: null, expiresAt: new Date(Date.now() + mockCloneSettings.ttlMinutes * 60_000).toISOString(),
-        screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingApproval: null,
+        status: settings.defaultSignInPath === "import" ? "acting" : "waiting_for_you", cloneId: "mock-clone-1", domain, signInPath: settings.defaultSignInPath, pendingRequest: null,
+        waitingReason: null, expiresAt: new Date(Date.now() + settings.ttlMinutes * 60_000).toISOString(),
+        screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 0, pendingApproval: null, agentVision: settings.agentVision ?? true,
       };
     } else {
       mockBrowserClone = noClone();

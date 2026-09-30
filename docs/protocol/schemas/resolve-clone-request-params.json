@@ -25,6 +25,13 @@
   },
   "description": "The person's answer to an agent's clone request.",
   "properties": {
+    "agentVision": {
+      "description": "Let the agent see screenshots of the clone. Absent means the saved default, which is on.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "allow": {
       "type": "boolean"
     },

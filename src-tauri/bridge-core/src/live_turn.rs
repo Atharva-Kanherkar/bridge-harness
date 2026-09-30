@@ -13572,8 +13572,8 @@ mod submit_input_tests {
             assert!(ok);
             let id = asked["requestId"].as_str().unwrap();
             assert_eq!(api::clone_requests(&core).len(), 1);
-            assert!(api::resolve_clone_request(&core, "chat", true, "stale", wire::CloneSignInPath::SignInInside, 10).is_err());
-            let snapshot = api::resolve_clone_request(&core, "chat", true, id, wire::CloneSignInPath::SignInInside, 10).unwrap().unwrap();
+            assert!(api::resolve_clone_request(&core, "chat", true, "stale", wire::CloneSignInPath::SignInInside, 10, None).is_err());
+            let snapshot = api::resolve_clone_request(&core, "chat", true, id, wire::CloneSignInPath::SignInInside, 10, None).unwrap().unwrap();
             assert_eq!(snapshot.status, "waiting_for_you");
             let guard = core.browser_clones.clone_guard(&snapshot.clone_id).unwrap();
             let guard = guard.lock().unwrap();

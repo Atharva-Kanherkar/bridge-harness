@@ -20,6 +20,13 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); });
 
+/** Open a kit select and pick an option by its visible label. */
+async function pick(label: string, option: string) {
+  await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click());
+  const choice = [...document.querySelectorAll<HTMLElement>(`[role="listbox"][aria-label="${label}"] [role="option"]`)].find(node => node.textContent?.includes(option))!;
+  await act(async () => { choice.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); choice.click(); });
+}
+
 it("surfaces background requests without a dock and submits the displayed identity and choices", async () => {
   const request = { sessionId: "other-chat", requestId: "immutable-1", domain: "example.test", extensionPath: "/tmp/extension-under-test", additionalDomains: ["cdn.example.test"] };
   vi.mocked(bridgeApi.cloneRequests).mockResolvedValue([request]);
@@ -28,12 +35,24 @@ it("surfaces background requests without a dock and submits the displayed identi
   expect(host.textContent).toContain("Other chat · browser request");
   expect(host.textContent).toContain(request.extensionPath);
   expect(host.textContent).toContain("cdn.example.test");
-  const lifetime = host.querySelector<HTMLSelectElement>('[aria-label="Browser request lifetime"]')!;
-  await act(async () => { lifetime.value = "60"; lifetime.dispatchEvent(new Event("change", { bubbles: true })); });
+  await pick("Browser request lifetime", "1 hour");
   const allow = [...host.querySelectorAll("button")].find(button => button.textContent === "Allow")!;
   await act(async () => allow.click());
-  expect(bridgeApi.resolveCloneRequest).toHaveBeenCalledWith("other-chat", true, "immutable-1", { defaultSignInPath: "sign_in_inside", ttlMinutes: 60 });
+  expect(bridgeApi.resolveCloneRequest).toHaveBeenCalledWith("other-chat", true, "immutable-1", { defaultSignInPath: "sign_in_inside", ttlMinutes: 60, agentVision: true });
   expect(onOpen).toHaveBeenCalledWith("other-chat");
+});
+
+it("defaults to signed in as you with vision on, and lets the person turn vision off", async () => {
+  vi.mocked(bridgeApi.readCloneSettings).mockResolvedValue({ connected: true, settings: { defaultSignInPath: "import", ttlMinutes: 30 } });
+  vi.mocked(bridgeApi.cloneRequests).mockResolvedValue([{ sessionId: "s", requestId: "r", domain: "app.test" }]);
+  await act(async () => root.render(<CloneRequestInbox sessionLabels={{}} onOpen={vi.fn()} onError={vi.fn()} />));
+  expect(host.textContent).toContain("signed in as you");
+  expect(host.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("Signed in as you");
+  const vision = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Agent sees screenshots"]')!;
+  expect(vision.getAttribute("aria-checked")).toBe("true");
+  await act(async () => vision.click());
+  await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Allow")!.click());
+  expect(bridgeApi.resolveCloneRequest).toHaveBeenCalledWith("s", true, "r", { defaultSignInPath: "import", ttlMinutes: 30, agentVision: false });
 });
 
 it("keeps simultaneous chats separate and denies the selected request", async () => {
@@ -45,7 +64,7 @@ it("keeps simultaneous chats separate and denies the selected request", async ()
   const card = host.querySelector('[aria-label="Browser request for two.test"]')!;
   const deny = [...card.querySelectorAll("button")].find(button => button.textContent === "Deny")!;
   await act(async () => deny.click());
-  expect(bridgeApi.resolveCloneRequest).toHaveBeenCalledWith("b", false, "b1", { defaultSignInPath: "sign_in_inside", ttlMinutes: 30 });
+  expect(bridgeApi.resolveCloneRequest).toHaveBeenCalledWith("b", false, "b1", { defaultSignInPath: "sign_in_inside", ttlMinutes: 30, agentVision: true });
   expect(bridgeApi.resolveCloneRequest).toHaveBeenCalledTimes(1);
 });
 

@@ -2,16 +2,16 @@ import { useEffect, useState } from "react";
 import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath } from "../../types";
-import { Select, SettingsGroup, SettingsPage, SettingsRow, useSavedFlash, type SelectOption } from "./kit";
+import { Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash, type SelectOption } from "./kit";
 
-// Clones: the two defaults a new throwaway browser starts from. Both controls
-// are selects, so each change persists on the spot and the page has no save
-// bar, like Work briefing. The values are read and written through the
-// native API. A build without clone support disables the controls.
+// Clones: the defaults a new throwaway browser starts from. Every control
+// persists on the spot, so the page has no save bar, like Work briefing. The
+// values are read and written through the native API. A build without clone
+// support disables the controls.
 
 const SIGN_IN_OPTIONS: SelectOption[] = [
-  { value: "import", label: "Import from my browser", description: "Copy the cookies for an approved domain into the clone" },
-  { value: "sign_in_inside", label: "Sign in inside the clone", description: "Start blank and sign in yourself, so nothing is copied" },
+  { value: "import", label: "Signed in as you", description: "Copy the approved site's sign-in from Chrome into the clone" },
+  { value: "sign_in_inside", label: "Blank browser", description: "Copy nothing; sign in inside the clone yourself" },
 ];
 
 /** Lifetime choices. A stored value outside the list is shown, not dropped. */
@@ -71,6 +71,17 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
           disabled={busy || !connected}
           options={SIGN_IN_OPTIONS}
           onChange={value => void persist({ ...settings, defaultSignInPath: value as CloneSignInPath }, "signIn")}
+        />}
+      />
+      <SettingsRow
+        label="Agent sees screenshots"
+        description="The agent can look at the page, not only read its text. You can still turn it off for any one request."
+        saved={isFlashed("vision")}
+        control={<Switch
+          label="Agent sees screenshots"
+          checked={settings.agentVision ?? true}
+          disabled={busy || !connected}
+          onChange={agentVision => void persist({ ...settings, agentVision }, "vision")}
         />}
       />
       <SettingsRow

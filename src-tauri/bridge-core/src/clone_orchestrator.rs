@@ -89,6 +89,11 @@ fn key_codes(key: &str) -> Option<(&'static str, i64, Option<&'static str>)> {
         "ArrowDown" => ("ArrowDown", 40, None),
         "ArrowLeft" => ("ArrowLeft", 37, None),
         "ArrowRight" => ("ArrowRight", 39, None),
+        "Delete" => ("Delete", 46, None),
+        "Home" => ("Home", 36, None),
+        "End" => ("End", 35, None),
+        "PageUp" => ("PageUp", 33, None),
+        "PageDown" => ("PageDown", 34, None),
         _ => return None,
     })
 }
@@ -161,10 +166,11 @@ impl CloneOrchestrator {
     }
 
     /// A person explicitly starts a browser through the native UI.
-    pub fn start_approved_clone(&self, session_id: &str, domain: &str, browser: CloneBrowser, path: SignInPath, ttl: Option<Duration>, runtime_pid: u32) -> Result<CloneView, CloneError> {
+    pub fn start_approved_clone(&self, session_id: &str, domain: &str, browser: CloneBrowser, path: SignInPath, ttl: Option<Duration>, runtime_pid: u32, vision: bool) -> Result<CloneView, CloneError> {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let view = self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid, &[])?;
+        self.tool.set_vision(session_id, vision);
         if let Some(entry) = self.active.lock().unwrap_or_else(|p| p.into_inner()).get_mut(session_id) { entry.actions_approved = true; }
         if path == SignInPath::Import { self.tool.allow_mutations(session_id); }
         Ok(view)
@@ -310,7 +316,7 @@ impl CloneOrchestrator {
 
     /// The person allowed the agent's request: spawn the clone for the asked
     /// domain (import the sign-in), and approve page actions on it.
-    pub fn approve_request(&self, session_id: &str, request_id: &str, runtime_pid: u32, path: SignInPath, ttl: Option<Duration>) -> Result<CloneView, CloneError> {
+    pub fn approve_request(&self, session_id: &str, request_id: &str, runtime_pid: u32, path: SignInPath, ttl: Option<Duration>, vision: bool) -> Result<CloneView, CloneError> {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let request = self.tool.take_pending_request(session_id, request_id, runtime_pid).map_err(CloneError::Launch)?;
@@ -329,6 +335,7 @@ impl CloneOrchestrator {
                 return Err(error);
             }
         }
+        self.tool.set_vision(session_id, vision);
         // The person approved the agent acting, so page actions are allowed.
         if let Some(entry) = self.active.lock().unwrap_or_else(|p| p.into_inner()).get_mut(session_id) {
             entry.actions_approved = true;
@@ -357,6 +364,9 @@ impl CloneOrchestrator {
     }
 
     pub fn pending_requests(&self) -> Vec<bridge_protocol::messages::CloneRequest> { self.tool.pending_requests() }
+
+    /// Whether the session's agent can see screenshots of its clone.
+    pub fn agent_vision(&self, session_id: &str) -> bool { self.tool.vision(session_id) }
 
     pub fn pending_details(&self, session_id: &str) -> Option<crate::clone_browser_tool::PendingRequest> {
         self.tool.pending_details(session_id)
@@ -432,7 +442,9 @@ impl CloneOrchestrator {
                 )?;
             }
             CloneInput::Type { text } => {
-                if let Some(guard) = self.supervisor.clone_guard(&clone_id) {
+                // A burst long enough to be a credential is kept from the
+                // agent; single keystrokes would scrub ordinary letters.
+                if let Some(guard) = self.supervisor.clone_guard(&clone_id).filter(|_| text.chars().count() >= 4) {
                     let history = self.supervisor.page_call(&clone_id, "Page.getNavigationHistory", json!({}))?;
                     let current = history.get("currentIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
                     let domain = history.get("entries").and_then(Value::as_array).and_then(|entries| entries.get(current))
@@ -771,8 +783,8 @@ mod tests {
             let (ok_status, ok_body) = tool_call(&tool, session, r#"{"kind":"inspect"}"#);
             assert!(ok_status.contains("200"), "{ok_status} {ok_body}");
             assert!(ok_body.contains("\"ok\":true"), "{ok_body}");
-            let (bad_status, _) = tool_call(&tool, session, r#"{"kind":"eval","expression":"1"}"#);
-            assert!(bad_status.contains("403"), "eval was not refused: {bad_status}");
+            let (bad_status, _) = tool_call(&tool, session, r#"{"kind":"cookie"}"#);
+            assert!(bad_status.contains("403"), "an unknown kind was not refused: {bad_status}");
 
             // The person can see a live frame.
             let frame = orchestrator.frame(session).expect("a frame");
@@ -824,7 +836,7 @@ mod tests {
             assert!(orchestrator.view(session).is_none(), "a clone existed before approval");
 
             // The person approves. The clone is built and the agent gets its tool.
-            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None).expect("approve builds the clone");
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true).expect("approve builds the clone");
             orchestrator.hand_back(session);
             assert!(orchestrator.view(session).is_some(), "no clone after approval");
             assert!(orchestrator.pending_request(session).is_none(), "the request outlived approval");
@@ -886,7 +898,7 @@ mod tests {
             // Go through the real request -> approve flow so actions are approved.
             orchestrator.request_capability_context(session, pid).unwrap();
             call_script(&tool, session, &format!("clone-request-{session}"), r#"{"kind":"request","domain":"127.0.0.1"}"#);
-            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None).unwrap();
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true).unwrap();
             orchestrator.hand_back(session);
             let clone_id = orchestrator.view(session).unwrap().clone_id;
             supervisor
@@ -912,6 +924,69 @@ mod tests {
             orchestrator.hand_back(session);
             assert!(tool_call(&tool, session, r#"{"kind":"scroll","x":1,"y":1,"deltaY":5}"#).0.contains("200"), "the agent did not get control back");
             orchestrator.destroy(session);
+        }
+
+        /// The agent has full control of an approved clone: it sees the page
+        /// (a screenshot in CSS pixels, a ref-addressed outline), clicks by ref,
+        /// types, fills a select and a checkbox, presses keys, and runs page
+        /// script. Turning vision off withholds screenshots and nothing else.
+        #[test]
+        fn the_agent_sees_and_fully_drives_an_approved_clone() {
+            use base64::Engine as _;
+            if browser().is_none() { return }
+            let (_dir, supervisor, tool, orchestrator) = build();
+            let session = "sess-full";
+            let pid = std::process::id();
+            orchestrator.request_capability_context(session, pid).unwrap();
+            call_script(&tool, session, &format!("clone-request-{session}"), r#"{"kind":"request","domain":"127.0.0.1"}"#);
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true).unwrap();
+            orchestrator.hand_back(session);
+            let clone_id = orchestrator.view(session).unwrap().clone_id;
+            let page = r#"<h1>Checkout</h1><label for=e>Email</label><input id=e><select id=s><option>Red</option><option>Blue</option></select><input type=checkbox id=c aria-label=Agree><button id=b onclick="document.title='clicked '+document.getElementById('e').value">Pay</button><div id=k></div><script>addEventListener('keydown',e=>document.getElementById('k').textContent+=e.key)</script>"#;
+            let url = format!("data:text/html;base64,{}", base64::engine::general_purpose::STANDARD.encode(page));
+            supervisor.page_call(&clone_id, "Page.navigate", json!({ "url": url })).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            let call = |body: &str| {
+                let (status, reply) = tool_call(&tool, session, body);
+                assert!(status.contains("200"), "{body} -> {status} {reply}");
+                serde_json::from_str::<Value>(&reply).unwrap()
+            };
+
+            // It sees: a real PNG whose pixels are the page's CSS pixels.
+            let shot = call(r#"{"kind":"screenshot"}"#);
+            let png = std::fs::read(shot["path"].as_str().unwrap()).expect("the screenshot file exists");
+            assert_eq!(&png[1..4], b"PNG");
+            let dimension = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+            assert_eq!(f64::from(dimension(16)), shot["width"].as_f64().unwrap(), "png width is not css width");
+            assert_eq!(f64::from(dimension(20)), shot["height"].as_f64().unwrap(), "png height is not css height");
+
+            // It reads a ref-addressed outline, not a per-character tree.
+            let outline = call(r#"{"kind":"read_page"}"#)["result"].as_str().unwrap().to_owned();
+            assert!(outline.contains(r#"heading"#) || outline.contains(r#"h1 "Checkout""#), "{outline}");
+            let reference = |needle: &str| outline.lines().find(|line| line.contains(needle))
+                .and_then(|line| line.split(']').next()).map(|head| head.trim_start_matches('[').to_owned())
+                .unwrap_or_else(|| panic!("{needle} not in {outline}"));
+            let (email, select, agree, pay) = (reference("input:text"), reference("select"), reference("\"Agree\""), reference("button \"Pay\""));
+
+            // It acts: click to focus, type, fill, check, press a key, click by ref.
+            call(&format!(r#"{{"kind":"click","ref":"{email}"}}"#));
+            call(r#"{"kind":"type","text":"a@b.co"}"#);
+            call(&format!(r#"{{"kind":"form_input","ref":"{select}","value":"Blue"}}"#));
+            call(&format!(r#"{{"kind":"form_input","ref":"{agree}","value":true}}"#));
+            call(r#"{"kind":"key","key":"Enter"}"#);
+            call(&format!(r#"{{"kind":"click","ref":"{pay}"}}"#));
+            let state = call(r#"{"kind":"evaluate","expression":"({title:document.title,select:document.getElementById('s').value,agree:document.getElementById('c').checked,keys:document.getElementById('k').textContent})"}"#);
+            assert_eq!(state["result"]["title"], "clicked a@b.co", "{state}");
+            assert_eq!(state["result"]["select"], "Blue");
+            assert_eq!(state["result"]["agree"], true);
+            assert!(state["result"]["keys"].as_str().unwrap().contains("Enter"), "{state}");
+
+            // Vision off withholds screenshots only.
+            tool.set_vision(session, false);
+            assert!(tool_call(&tool, session, r#"{"kind":"screenshot"}"#).0.contains("403"), "a blind clone returned a screenshot");
+            call(r#"{"kind":"read_page","filter":"interactive"}"#);
+            orchestrator.destroy(session);
+            assert!(!std::path::Path::new(shot["path"].as_str().unwrap()).exists(), "the screenshot outlived its clone");
         }
 
         /// A clone whose lease has run out is swept away.

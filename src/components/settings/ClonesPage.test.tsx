@@ -46,32 +46,40 @@ afterEach(async () => {
   host.remove();
   vi.restoreAllMocks();
   // The mock api keeps its state for the life of the module.
-  await bridgeApi.writeCloneSettings({ defaultSignInPath: "sign_in_inside", ttlMinutes: 30 });
+  await bridgeApi.writeCloneSettings({ defaultSignInPath: "import", ttlMinutes: 30, agentVision: true });
 });
 
 describe("Clones settings", () => {
-  it("starts blank with a thirty minute lifetime", async () => {
+  it("starts signed in as you, with vision on and a thirty minute lifetime", async () => {
     await mount();
-    expect(trigger("Default sign-in path").textContent).toContain("Sign in inside the clone");
+    expect(trigger("Default sign-in path").textContent).toContain("Signed in as you");
     expect(trigger("Clone time to live").textContent).toContain("30 minutes");
-    expect(await bridgeApi.readCloneSettings()).toEqual({ connected: true, settings: { defaultSignInPath: "sign_in_inside", ttlMinutes: 30 } });
+    expect(host.querySelector('[role="switch"][aria-label="Agent sees screenshots"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(await bridgeApi.readCloneSettings()).toEqual({ connected: true, settings: { defaultSignInPath: "import", ttlMinutes: 30, agentVision: true } });
+  });
+
+  it("turns agent vision off and keeps it off", async () => {
+    await mount();
+    await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Agent sees screenshots"]')!.click());
+    expect((await bridgeApi.readCloneSettings()).settings.agentVision).toBe(false);
+    expect(host.querySelector('[role="switch"][aria-label="Agent sees screenshots"]')?.getAttribute("aria-checked")).toBe("false");
   });
 
   it("writes each change through the api and reads it back after a remount", async () => {
     await mount();
-    await pick("Default sign-in path", "Sign in inside the clone");
+    await pick("Default sign-in path", "Blank browser");
     await pick("Clone time to live", "1 hour");
 
     // The writer reached the store: the reader sees both values.
-    expect((await bridgeApi.readCloneSettings()).settings).toEqual({ defaultSignInPath: "sign_in_inside", ttlMinutes: 60 });
-    expect(trigger("Default sign-in path").textContent).toContain("Sign in inside the clone");
+    expect((await bridgeApi.readCloneSettings()).settings).toEqual({ defaultSignInPath: "sign_in_inside", ttlMinutes: 60, agentVision: true });
+    expect(trigger("Default sign-in path").textContent).toContain("Blank browser");
     expect(host.textContent).toContain("Saved");
 
     // And the page's own reader restores them from a cold mount.
     await unmount();
     root = createRoot(host);
     await mount();
-    expect(trigger("Default sign-in path").textContent).toContain("Sign in inside the clone");
+    expect(trigger("Default sign-in path").textContent).toContain("Blank browser");
     expect(trigger("Clone time to live").textContent).toContain("1 hour");
     expect(onError).not.toHaveBeenCalled();
   });

@@ -76,6 +76,12 @@ impl GuardState {
         self.allowed_hosts.insert(normalize_host(host));
     }
 
+    /// True if the clone may reach `host` (the approved site or an approved dependency).
+    pub fn allows_host(&self, host: &str) -> bool {
+        let host = normalize_host(host);
+        self.allowed_hosts.iter().any(|allowed| Self::host_covers(&host, allowed))
+    }
+
     /// Register a secret owned by `host`. It may be sent to `host` (or a
     /// subdomain of it), never to any other host.
     pub fn add_secret(&mut self, host: &str, value: &str) {
