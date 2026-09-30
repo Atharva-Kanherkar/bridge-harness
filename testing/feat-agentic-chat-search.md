@@ -31,8 +31,15 @@ tool-free model loop only when T1 is unsure and the caller asked for it.
   surface, since they all read `source LIKE 'provider.%'`.
 - **Scope of search:** top-level chats only (`parent_session_id IS NULL`),
   hidden kinds excluded, ended and archived chats included and marked.
-- **Digest rowid = `sessions.rowid`**, so digest maintenance is an O(log n)
-  rowid delete instead of an UNINDEXED-column scan.
+- **Digest key:** `chat_digests(id INTEGER PRIMARY KEY, session_id UNIQUE,
+  body)` with `chat_digest_fts` as external content over it. Maintenance is an
+  indexed upsert, not an UNINDEXED-column scan, and an INTEGER PRIMARY KEY is
+  never renumbered by `VACUUM` (a bare `sessions.rowid` can be).
+- **Model-bound snippets** are cut from the whole entry body after redaction,
+  never from an FTS `snippet()` fragment, which can split a secret into a
+  piece no detector recognises.
+- **Coverage bonus:** after relaxing AND to OR, chats that matched every term
+  get +2/61, since rank fusion alone cannot tell "all terms" from "one term".
 
 ## Functional Behavior
 
