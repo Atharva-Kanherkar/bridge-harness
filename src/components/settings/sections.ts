@@ -16,6 +16,7 @@ export type Section =
   | "models"
   | "prompts"
   | "harnesses"
+  | "clones"
   | "work"
   | "import"
   | "archives"
@@ -34,6 +35,7 @@ export const SECTION_LABELS: Record<Section, string> = {
   models: "Models",
   prompts: "Prompts",
   harnesses: "Harnesses",
+  clones: "Clones",
   work: "Work briefing",
   import: "Import",
   storage: "Storage",
@@ -45,7 +47,7 @@ export const SECTION_LABELS: Record<Section, string> = {
 export const SECTION_ORDER: { group: RailGroup; sections: Section[] }[] = [
   { group: "General", sections: ["appearance", "menuBar", "updates", "permissions", "composer"] },
   { group: "Agents", sections: ["agents", "models", "workers", "prompts"] },
-  { group: "Runtimes", sections: ["harnesses"] },
+  { group: "Runtimes", sections: ["harnesses", "clones"] },
   { group: "Data", sections: ["work", "import", "storage", "archives"] },
 ];
 
