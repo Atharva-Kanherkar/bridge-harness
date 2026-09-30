@@ -30,9 +30,18 @@ How that projection is drawn, and what a reader is entitled to see identically w
 
 ## Session recall
 
-FTS5 indexes conversational `session_entries` (`user.message`, `assistant.message`, `worker.result`, plus checkpoint/compaction/branch summaries). Search is always `session_id = ?`. Direct chats with a NULL workspace still do not share a bucket: each chat has its own id. There is no workspace-wide MATCH, no LLM, and no account-memory lookup.
+FTS5 indexes conversational `session_entries` (`user.message`, `assistant.message`, `worker.result`, plus checkpoint/compaction/branch summaries). There are two ways to search it, and they never share a code path for scoping.
 
-The protocol method is `sessions/search_session_entries`. `/recall <query>` is Bridge-handled (it never auto-switches harness) and prints hits as a local assistant card. The session toolbar search box is the same API. Hits stay in this session even after the chat has ended.
+**Recall in one chat.** `sessions/search_session_entries` is always `session_id = ?`. Direct chats with a NULL workspace still do not share a bucket: each chat has its own id. No LLM and no account-memory lookup. `/recall <query>` is Bridge-handled (it never auto-switches harness) and prints hits as a local assistant card. The session toolbar search box is the same API. Hits stay in this session even after the chat has ended.
+
+**Finding a chat.** `sessions/search_chats` is the one place Bridge searches across chats, and it returns chats, never entry bodies. It is a funnel (`bridge-core/src/chat_search/`):
+
+- **T0, parse.** Time phrases ("yesterday", "3 days ago", "last week", "in march") become a window against an injected clock; harness words become a filter; quoted text becomes a phrase. Stopwords go, and the rest are ranked by document frequency from two `fts5vocab` tables. The rarest six are kept, unknown words of four or more letters retry as a prefix, and words the index has never seen are counted.
+- **T1, index.** One MATCH over `session_entry_fts` with no session filter (its rows already carry `session_id`, so going global needed no reindex) and one over `chat_digest_fts`, a per-chat digest of title, first user message and latest summary. AND first, relaxed to OR below four chats. The two lists are fused per chat by reciprocal rank, with small bonuses for several matching entries, for covering every term, and for recency. Top-level visible chats only; ended and archived chats are included and marked.
+- **The gate.** The index calls itself confident only when every typed word is known, the top chat matched all of them, and it leads the next by 1.5x with at least two matches (or is the only hit). A confident search never starts a model.
+- **T2, model.** Only on a `deep` request that the gate did not settle, with deep search on and Claude available. A hidden `chat_search` session runs under an empty briefing scope, so the provider has no tools. The model sees about 60-token cards and may ask Bridge for three lookups (`find_chats`, `peek_chat`, `chat_outline`); Bridge runs them, truncates them, and sends them back. The loop enforces three lookups, 2,000 lookup tokens and eight seconds of model time, and falls back to the index's answer on any overrun or error. Answers may only name chats the model was shown. Model-bound text is redacted with `secret_interception` on whole bodies before any window is cut. Usage is recorded on the hidden session as `provider.claude` with `task_family = 'chat_search'`; nothing is written to any forest.
+
+The sidebar search shows T1 as you type; Enter opens a confident winner or runs T2. `/find <query>` opens the same search from the composer, and its Bridge-handled fallback for direct clients is index-only.
 
 This is not the memory ledger and not router learning. Account memory is a separately keyed product named `account:local`; it can come from an explicit pin, a reviewed extraction, or the separately controlled automatic-extraction mode. See [memory-ledger.md](./memory-ledger.md).
 

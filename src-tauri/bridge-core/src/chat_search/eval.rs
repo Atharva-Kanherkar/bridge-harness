@@ -314,3 +314,70 @@ fn bench() {
     let digest_bytes: i64 = db.query_row("SELECT sum(length(body)) FROM chat_digests", [], |row| row.get(0)).unwrap();
     println!("digest index size: {} bytes over {} chats", digest_bytes, ids.len());
 }
+
+/// One live deep search per query against a copy of a real database, on the
+/// real Claude adapter. Never run against the live file: the store migrates
+/// what it opens.
+///
+/// `BRIDGE_CHAT_SEARCH_LIVE_DB=/tmp/copy/bridge.db cargo test -p bridge-core --lib
+/// chat_search::eval::live -- --ignored --nocapture`, with queries in
+/// `BRIDGE_CHAT_SEARCH_LIVE_QUERIES` separated by `|`.
+///
+/// It builds the core without `BridgeCore::boot` on purpose: boot reaps the
+/// adapter processes a database records, and a copy's records name the live
+/// app's processes.
+#[test]
+#[ignore]
+fn live() {
+    use bridge_protocol::messages::SearchChatsParams;
+    let Ok(path) = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_DB") else {
+        println!("set BRIDGE_CHAT_SEARCH_LIVE_DB");
+        return;
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let mut core = crate::runtime::BridgeCore::for_tests(scratch.path());
+    let opened = Instant::now();
+    core.db = std::sync::Mutex::new(crate::store::open(std::path::Path::new(&path)).unwrap());
+    println!("open + migrate: {:.1} s", opened.elapsed().as_secs_f64());
+    core.adapter_registry = std::sync::Arc::new(crate::adapters::AdapterRegistry::claude_only().unwrap());
+    let core = std::sync::Arc::new(core);
+    let waited = Instant::now();
+    while !core
+        .adapter_registry
+        .descriptors()
+        .iter()
+        .any(|descriptor| descriptor.id == "claude" && descriptor.available)
+    {
+        assert!(waited.elapsed().as_secs() < 60, "claude never became available");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let queries = std::env::var("BRIDGE_CHAT_SEARCH_LIVE_QUERIES").unwrap_or_else(|_| "plugins catalog stall".into());
+    for query in queries.split('|') {
+        for deep in [false, true] {
+            let result = super::search(&core, &SearchChatsParams { query: query.into(), limit: None, deep }).unwrap();
+            println!(
+                "{query:?} deep={deep} stage={:?} confident={} ms={} model_tokens={} tool_calls={} detail={:?}",
+                result.stage, result.confident, result.elapsed_ms, result.model_tokens, result.tool_calls, result.detail
+            );
+            for hit in &result.hits {
+                println!("    {} | {} | {}", &hit.session_id[..8.min(hit.session_id.len())], hit.title, hit.why);
+            }
+            if result.confident {
+                break;
+            }
+        }
+    }
+    let db = core.db.lock().unwrap();
+    let (rows, turns): (i64, i64) = db
+        .query_row(
+            "SELECT count(*), count(DISTINCT session_id) FROM usage_ledger WHERE task_family='chat_search'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    println!("usage_ledger rows with task_family=chat_search: {rows} across {turns} hidden sessions");
+    let visible: i64 = db
+        .query_row("SELECT count(*) FROM sessions WHERE kind='chat_search' AND ended_at IS NULL", [], |row| row.get(0))
+        .unwrap();
+    println!("unsettled chat_search sessions: {visible}");
+}
