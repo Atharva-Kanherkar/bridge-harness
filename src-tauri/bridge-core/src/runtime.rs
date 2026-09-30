@@ -99,6 +99,11 @@ pub struct BridgeCore {
     /// See `session_context`.
     pub session_context: Mutex<crate::session_context::SessionContextLedger>,
     pub browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
+    /// Throwaway browser processes on RAM disks. Separate from the bridge above,
+    /// which attaches to the user's own browser; boot sweeps any clone a
+    /// previous core left running before this one serves.
+    #[cfg(target_os = "macos")]
+    pub browser_clones: Arc<crate::browser_clone::CloneSupervisor>,
     /// Read-only `gh` CLI surface. It owns no credentials and is deliberately
     /// separate from model adapters and their sidecars.
     pub github_surface: crate::github_surface::GithubSurface,
@@ -337,6 +342,10 @@ impl BridgeCore {
                 scratch.join("no-extension"),
                 scratch.join("browser-site-metrics.json"),
             ),
+            #[cfg(target_os = "macos")]
+            browser_clones: crate::browser_clone::CloneSupervisor::new(
+                scratch.join("browser-clones.json"),
+            ),
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
@@ -431,6 +440,18 @@ impl BridgeCore {
         let catalog_registration =
             integrations.offer_catalog(&loaded.catalog, &mut backend_resolver);
 
+        // A core that died without shutting down leaves its browser clones
+        // running with their RAM disks mounted. Reap them before serving; a
+        // record that cannot be resolved stays for the next boot and must not
+        // abort this one.
+        #[cfg(target_os = "macos")]
+        let browser_clones = {
+            let clones = crate::browser_clone::CloneSupervisor::new(
+                config.data_dir.join("browser-clones.json"),
+            );
+            let _ = clones.sweep_orphans();
+            clones
+        };
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),
@@ -459,6 +480,8 @@ impl BridgeCore {
             skill_consents: Arc::new(Mutex::new(HashMap::new())),
             credential_broker,
             browser_bridge,
+            #[cfg(target_os = "macos")]
+            browser_clones,
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
@@ -566,6 +589,49 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(sessions, 0);
+    }
+
+    /// A core that crashed leaves its browser clone running and its RAM disk
+    /// mounted. Boot must reap both before it returns, so nothing serves while
+    /// a stale clone still holds session data.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn boot_sweeps_orphaned_browser_clones_before_returning() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let mut id = uuid::Uuid::new_v4().simple().to_string();
+        id.truncate(12);
+        let mount = std::env::temp_dir().join("bridge-clones").join(&id);
+        std::fs::create_dir_all(&mount).unwrap();
+        std::fs::write(mount.join("session-data"), b"x").unwrap();
+
+        // A stand-in for the orphaned browser: same shape of command line, in
+        // its own process group like a real clone.
+        let mut orphan = std::process::Command::new("perl");
+        orphan
+            .args(["-e", "sleep 300", "--"])
+            .arg(format!("--user-data-dir={}", mount.display()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        adapters::configure_process_group(&mut orphan);
+        let mut orphan = orphan.spawn().unwrap();
+        let ledger = data_dir.join("browser-clones.json");
+        std::fs::write(
+            &ledger,
+            serde_json::to_vec(&serde_json::json!([{ "pid": orphan.id(), "mount": mount }]))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let _core = BridgeCore::boot(seeded_config(data_dir)).unwrap();
+
+        let killed = orphan.try_wait().unwrap().is_some();
+        let _ = orphan.kill();
+        let _ = orphan.wait();
+        assert!(killed, "boot left the orphaned browser running");
+        assert!(!mount.exists(), "boot left the orphaned mount behind");
+        assert!(!ledger.exists(), "boot left the ledger record behind");
     }
 
     #[test]
