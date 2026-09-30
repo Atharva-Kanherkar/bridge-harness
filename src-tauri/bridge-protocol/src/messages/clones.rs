@@ -66,10 +66,14 @@ pub struct ResolveCloneRequestParams {
     pub request_id: String,
     pub sign_in_path: CloneSignInPath,
     pub ttl_minutes: u64,
+    /// Let the agent see screenshots of the clone. Absent means the saved
+    /// default, which is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_vision: Option<bool>,
 }
 
 /// What the dock shows about a session's clone. Never carries a cookie value.
-/// The `screenshot` stays in the person’s dock; it is not sent to the agent.
+/// `agent_vision` says whether the agent can also see screenshots.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CloneSnapshot {
@@ -87,6 +91,8 @@ pub struct CloneSnapshot {
     pub pending_request_id: Option<String>,
     pub extension_path: Option<String>,
     pub additional_domains: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_vision: Option<bool>,
 }
 
 /// The session's clone, or `None` when it has no clone (or off macOS).
@@ -129,6 +135,13 @@ pub struct CloneInputParams {
 pub struct CloneSettings {
     pub default_sign_in_path: CloneSignInPath,
     pub ttl_minutes: u64,
+    /// The agent sees screenshots of its clone. On unless the person turns it off.
+    #[serde(default = "agent_vision_default")]
+    pub agent_vision: bool,
+}
+
+fn agent_vision_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

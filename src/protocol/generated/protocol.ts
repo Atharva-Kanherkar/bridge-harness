@@ -1182,6 +1182,7 @@ export interface CloneRequest {
 }
 
 export interface CloneSettings {
+  agentVision?: boolean;
   defaultSignInPath: CloneSignInPath;
   ttlMinutes: number;
 }
@@ -1190,6 +1191,7 @@ export type CloneSignInPath = "import" | "sign_in_inside";
 
 export interface CloneSnapshot {
   additionalDomains?: string[] | null;
+  agentVision?: boolean | null;
   cloneId: string;
   domain: string;
   extensionPath?: string | null;
@@ -4107,6 +4109,7 @@ export interface DestroyCloneParams {
 }
 
 export interface ResolveCloneRequestParams {
+  agentVision?: boolean | null;
   allow: boolean;
   requestId: string;
   sessionId: string;

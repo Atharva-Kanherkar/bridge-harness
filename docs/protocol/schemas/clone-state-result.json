@@ -30,7 +30,7 @@
       ]
     },
     "CloneSnapshot": {
-      "description": "What the dock shows about a session's clone. Never carries a cookie value. The `screenshot` stays in the person’s dock; it is not sent to the agent.",
+      "description": "What the dock shows about a session's clone. Never carries a cookie value. `agent_vision` says whether the agent can also see screenshots.",
       "properties": {
         "additionalDomains": {
           "items": {
@@ -38,6 +38,12 @@
           },
           "type": [
             "array",
+            "null"
+          ]
+        },
+        "agentVision": {
+          "type": [
+            "boolean",
             "null"
           ]
         },

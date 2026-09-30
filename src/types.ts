@@ -446,11 +446,15 @@ export interface BrowserCloneSnapshot {
   screenshot: string | null;
   screenshotRedactedRegions: number;
   pendingApproval: BrowserApproval | null;
+  /** The agent also sees screenshots of this clone. */
+  agentVision?: boolean;
 }
 
 export interface CloneSettings {
   defaultSignInPath: CloneSignInPath;
   ttlMinutes: number;
+  /** Screenshots reach the agent. On unless the person turns it off. */
+  agentVision?: boolean;
 }
 
 export interface CloneSettingsSnapshot {

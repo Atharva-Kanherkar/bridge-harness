@@ -881,7 +881,7 @@ pub fn dispatch(
         }
         MethodName::ResolveCloneRequest => {
             let p: wire::ResolveCloneRequestParams = decode(method, params)?;
-            reply(api::resolve_clone_request(core, &p.session_id, p.allow, &p.request_id, p.sign_in_path, p.ttl_minutes))
+            reply(api::resolve_clone_request(core, &p.session_id, p.allow, &p.request_id, p.sign_in_path, p.ttl_minutes, p.agent_vision))
         }
         MethodName::ReadCloneSettings => reply(api::read_clone_settings(core)),
         MethodName::WriteCloneSettings => {

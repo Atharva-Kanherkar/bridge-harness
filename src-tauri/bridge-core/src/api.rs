@@ -5177,6 +5177,7 @@ fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnaps
                 pending_request_id: Some(request.id),
                 extension_path: request.extension_path,
                 additional_domains: Some(request.additional_domains),
+                agent_vision: None,
             });
         }
     };
@@ -5208,6 +5209,7 @@ fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnaps
         pending_request_id: None,
         extension_path: None,
         additional_domains: None,
+        agent_vision: Some(core.browser_clone_orchestrator.agent_vision(session_id)),
     })
 }
 
@@ -5243,8 +5245,9 @@ pub fn request_clone(
         };
         // The tool capability is re-minted with the live runtime pid on each
         // turn (see live_turn), so the initial mint's pid does not matter here.
+        let settings = read_clone_settings(core)?.settings;
         core.browser_clone_orchestrator
-            .start_approved_clone(&params.session_id, &params.domain, browser, path, Some(std::time::Duration::from_secs(read_clone_settings(core)?.settings.ttl_minutes * 60)), 0)
+            .start_approved_clone(&params.session_id, &params.domain, browser, path, Some(std::time::Duration::from_secs(settings.ttl_minutes * 60)), 0, settings.agent_vision)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         Ok(clone_snapshot(core, &params.session_id))
     }
@@ -5319,10 +5322,15 @@ pub fn resolve_clone_request(
     request_id: &str,
     sign_in_path: CloneSignInPath,
     ttl_minutes: u64,
+    agent_vision: Option<bool>,
 ) -> Result<Option<CloneSnapshot>, BridgeError> {
     #[cfg(target_os = "macos")]
     {
         validate_clone_ttl(ttl_minutes)?;
+        let agent_vision = match agent_vision {
+            Some(vision) => vision,
+            None => read_clone_settings(core)?.settings.agent_vision,
+        };
         if allow {
             let runtime_pid = core.adapters.lock().unwrap_or_else(|p| p.into_inner())
                 .get(session_id)
@@ -5332,7 +5340,7 @@ pub fn resolve_clone_request(
             core.browser_clone_orchestrator
                 .approve_request(session_id, request_id, runtime_pid,
                     match sign_in_path { CloneSignInPath::Import => crate::clone_orchestrator::SignInPath::Import, CloneSignInPath::SignInInside => crate::clone_orchestrator::SignInPath::SignInInside },
-                    Some(std::time::Duration::from_secs(ttl_minutes * 60)))
+                    Some(std::time::Duration::from_secs(ttl_minutes * 60)), agent_vision)
                 .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         } else {
             core.browser_clone_orchestrator.deny_request(session_id, request_id).map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -5341,7 +5349,7 @@ pub fn resolve_clone_request(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (core, session_id, allow, request_id, sign_in_path, ttl_minutes);
+        let _ = (core, session_id, allow, request_id, sign_in_path, ttl_minutes, agent_vision);
         Ok(None)
     }
 }
@@ -5357,7 +5365,8 @@ pub fn read_clone_settings(core: &Arc<BridgeCore>) -> Result<bridge_protocol::me
         .query_row("SELECT payload FROM configuration_entries WHERE kind='browser_clones' AND id='settings'", [], |row| row.get(0)).optional()?;
     let settings = match payload {
         Some(payload) => serde_json::from_str::<CloneSettings>(&payload).map_err(|error| BridgeError::Invalid(error.to_string()))?,
-        None => CloneSettings { default_sign_in_path: CloneSignInPath::SignInInside, ttl_minutes: 30 },
+        // Import is the default: the clone starts signed in as you, like your own browser.
+        None => CloneSettings { default_sign_in_path: CloneSignInPath::Import, ttl_minutes: 30, agent_vision: true },
     };
     validate_clone_ttl(settings.ttl_minutes)?;
     Ok(CloneSettingsSnapshot { connected: cfg!(target_os = "macos"), settings })
@@ -6466,8 +6475,9 @@ mod clone_settings_tests {
         let core = Arc::new(BridgeCore::for_tests(dir.path()));
         let defaults = read_clone_settings(&core).unwrap();
         assert!(defaults.connected);
-        assert_eq!(defaults.settings.default_sign_in_path, CloneSignInPath::SignInInside);
-        let settings = bridge_protocol::messages::CloneSettings { default_sign_in_path: CloneSignInPath::Import, ttl_minutes: 60 };
+        assert_eq!(defaults.settings.default_sign_in_path, CloneSignInPath::Import);
+        assert!(defaults.settings.agent_vision);
+        let settings = bridge_protocol::messages::CloneSettings { default_sign_in_path: CloneSignInPath::SignInInside, ttl_minutes: 60, agent_vision: false };
         write_clone_settings(&core, &settings).unwrap();
         assert_eq!(read_clone_settings(&core).unwrap().settings, settings);
         let mut invalid = settings.clone(); invalid.ttl_minutes = 0;

@@ -6,6 +6,11 @@
     "CloneSettings": {
       "additionalProperties": false,
       "properties": {
+        "agentVision": {
+          "default": true,
+          "description": "The agent sees screenshots of its clone. On unless the person turns it off.",
+          "type": "boolean"
+        },
         "defaultSignInPath": {
           "$ref": "#/definitions/CloneSignInPath"
         },

@@ -142,7 +142,7 @@ describe("CloneSurface as a dock tenant", () => {
     state.mockResolvedValue(requested());
     await render({ sessionId: "session-9" });
     await act(async () => { button("Allow")!.click(); });
-    expect(resolve).toHaveBeenCalledWith("session-9", true, "request-1", { defaultSignInPath: "import", ttlMinutes: 30 });
+    expect(resolve).toHaveBeenCalledWith("session-9", true, "request-1", { defaultSignInPath: "import", ttlMinutes: 30, agentVision: true });
   });
 
   it("forwards a click on the frame to the page while taken over", async () => {
@@ -153,6 +153,27 @@ describe("CloneSurface as a dock tenant", () => {
     img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100, x: 0, y: 0, toJSON() {} });
     await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 })); });
     expect(cloneInput).toHaveBeenCalledWith("session-t", { kind: "click", x: 0.5, y: 0.5 });
+  });
+
+  it("types into the page from the keyboard while taken over, in one burst per word", async () => {
+    const cloneInput = vi.mocked(bridgeApi.cloneInput);
+    state.mockResolvedValue(clone({ status: "taken_over" }));
+    await render({ sessionId: "session-k" });
+    const viewport = container.querySelector<HTMLElement>("[data-clone-viewport]")!;
+    expect(viewport.tabIndex).toBe(0);
+    for (const key of ["h", "u", "n", "t", "e", "r", "2"]) await act(async () => { viewport.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })); });
+    expect(cloneInput).not.toHaveBeenCalled();
+    await act(async () => { viewport.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(cloneInput.mock.calls).toEqual([["session-k", { kind: "type", text: "hunter2" }], ["session-k", { kind: "key", key: "Enter" }]]);
+  });
+
+  it("shows whether the agent can see the page", async () => {
+    state.mockResolvedValue(clone({ agentVision: false }));
+    await render();
+    expect(container.textContent).toContain("Agent reads text only");
+    state.mockResolvedValue(clone({ agentVision: true }));
+    await tick(CLONE_POLL_VISIBLE_MS);
+    expect(container.textContent).toContain("Agent sees the page");
   });
 
   it("does not forward clicks unless taken over", async () => {
