@@ -1462,7 +1462,7 @@ impl CloneSupervisor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
 
@@ -1577,6 +1577,15 @@ while (defined(my $raw = <$in>)) {
         fs::write(&path, FAKE_BROWSER.replace("__MODE__", mode)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// Synthetic child and ordinary temporary directory; never a real browser,
+    /// RAM disk, Keychain item or user profile.
+    pub(crate) fn synthetic_supervisor(dir: &Path, guarded: bool) -> Arc<CloneSupervisor> {
+        CloneSupervisor::with_parts(
+            dir.join("ledger.json"), dir.join("mounts"), Box::new(DirBackend),
+            CloneConfig { browser: Some(fake_browser(dir, "normal")), guarded, ..CloneConfig::default() },
+        )
     }
 
     /// A supervisor over the fake browser and a directory-backed volume. The

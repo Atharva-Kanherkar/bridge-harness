@@ -58,6 +58,9 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
   state.mockReset().mockResolvedValue(none());
+  vi.mocked(bridgeApi.requestClone).mockReset().mockResolvedValue(clone());
+  vi.mocked(bridgeApi.resolveCloneRequest).mockReset().mockResolvedValue(clone());
+  vi.mocked(bridgeApi.cloneInput).mockReset().mockResolvedValue();
   vi.mocked(bridgeApi.takeoverBrowserClone).mockReset().mockResolvedValue();
   vi.mocked(bridgeApi.handBackBrowserClone).mockReset().mockResolvedValue();
   vi.mocked(bridgeApi.destroyBrowserClone).mockReset().mockResolvedValue();
@@ -75,6 +78,27 @@ afterEach(async () => {
 });
 
 describe("CloneSurface as a dock tenant", () => {
+  it("switches polling to the new chat without displaying the old chat's frame", async () => {
+    state.mockImplementation(async (sessionId) => clone({ domain: `${sessionId}.test` }));
+    await render({ sessionId: "first" });
+    expect(container.textContent).toContain("first.test");
+    await render({ sessionId: "second" });
+    expect(state).toHaveBeenLastCalledWith("second");
+    expect(container.textContent).toContain("second.test");
+    expect(container.textContent).not.toContain("first.test");
+  });
+
+  it("reports failed takeover input without an unhandled rejection", async () => {
+    const onError = vi.fn();
+    state.mockResolvedValue(clone({ status: "taken_over" }));
+    vi.mocked(bridgeApi.cloneInput).mockRejectedValue(new Error("clone expired"));
+    await render({ sessionId: "session-t", onError });
+    const img = container.querySelector<HTMLImageElement>("[data-clone-viewport] img")!;
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100, x: 0, y: 0, toJSON() {} });
+    await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 })); });
+    expect(onError).toHaveBeenCalledWith("clone expired");
+  });
+
   it("fills its host instead of positioning itself", async () => {
     await render();
     const rootNode = container.firstElementChild as HTMLElement;

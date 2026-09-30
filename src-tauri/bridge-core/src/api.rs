@@ -5293,8 +5293,13 @@ pub fn resolve_clone_request(
     #[cfg(target_os = "macos")]
     {
         if allow {
+            let runtime_pid = core.adapters.lock().unwrap_or_else(|p| p.into_inner())
+                .get(session_id)
+                .map(|runtime| runtime.process_id())
+                .filter(|pid| *pid != 0)
+                .ok_or_else(|| BridgeError::Invalid("The requesting agent is no longer running".into()))?;
             core.browser_clone_orchestrator
-                .approve_request(session_id, 0)
+                .approve_request(session_id, runtime_pid)
                 .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         } else {
             core.browser_clone_orchestrator.deny_request(session_id);

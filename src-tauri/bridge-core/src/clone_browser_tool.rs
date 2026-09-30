@@ -52,6 +52,7 @@ pub struct CloneBrowserTool {
     /// Sessions whose clone the person approved for page actions. A mutating
     /// kind is refused until the session is in here.
     mutable: Mutex<HashSet<String>>,
+    operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl CloneBrowserTool {
@@ -73,11 +74,14 @@ impl CloneBrowserTool {
             request_caps: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             mutable: Mutex::new(HashSet::new()),
+            operations: Mutex::new(HashMap::new()),
         });
-        let server = Arc::clone(&tool);
+        // The accept loop must not own the tool: otherwise dropping the core
+        // leaves the listener, supervisor and every browser alive forever.
+        let server = Arc::downgrade(&tool);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let server = Arc::clone(&server);
+                let Some(server) = server.upgrade() else { break };
                 thread::spawn(move || server.handle(stream));
             }
         });
@@ -92,6 +96,7 @@ impl CloneBrowserTool {
         runtime_pid: u32,
         domain: &str,
     ) -> Option<String> {
+        self.session_operation(session);
         if self.supervisor.clone_guard(clone_id).is_none() {
             return None;
         }
@@ -130,6 +135,7 @@ impl CloneBrowserTool {
     /// the agent can request one before any exists. Returns the instruction the
     /// agent reads.
     pub fn request_capability_context(&self, session: &str, runtime_pid: u32) -> Option<String> {
+        self.session_operation(session);
         let token = Uuid::new_v4().to_string();
         self.request_caps.lock().ok()?.insert(
             session.to_owned(),
@@ -151,6 +157,13 @@ impl CloneBrowserTool {
     /// The domain a session's agent has asked for, awaiting the person's answer.
     pub fn pending_request(&self, session: &str) -> Option<String> {
         self.pending.lock().ok()?.get(session).cloned()
+    }
+
+    /// Serialize state changes and in-flight page commands within one chat.
+    /// Different chats retain independent gates.
+    pub(crate) fn session_operation(&self, session: &str) -> Arc<Mutex<()>> {
+        Arc::clone(self.operations.lock().unwrap_or_else(|p| p.into_inner())
+            .entry(session.to_owned()).or_insert_with(|| Arc::new(Mutex::new(()))))
     }
 
     /// Take the pending request (on approval), clearing it.
@@ -185,6 +198,7 @@ impl CloneBrowserTool {
         let _ = self.request_caps.lock().map(|mut m| m.remove(session));
         let _ = self.pending.lock().map(|mut m| m.remove(session));
         let _ = self.mutable.lock().map(|mut m| m.remove(session));
+        let _ = self.results.lock().map(|mut results| results.retain(|_, (owner, _, _)| owner != session));
         let safe: String = session
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
@@ -253,6 +267,9 @@ impl CloneBrowserTool {
         peer: Option<u32>,
         request: Value,
     ) -> Result<Value, String> {
+        let operation = self.operations.lock().map_err(|_| "capability unavailable")?
+            .get(session).cloned().ok_or("capability unavailable")?;
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         // "request" is the one kind an agent can call before any clone exists:
         // it asks the person for a clone. It rides the session's request
         // capability, not a per-clone one.
@@ -334,6 +351,19 @@ impl CloneBrowserTool {
         }
         results.insert(id.clone(), (session.to_owned(), clone_id, result.clone()));
         Ok(json!({"ok":true,"commandId":id,"result":result}))
+    }
+}
+
+impl Drop for CloneBrowserTool {
+    fn drop(&mut self) {
+        let sessions: HashSet<String> = self.capabilities.lock().unwrap_or_else(|p| p.into_inner()).keys().cloned()
+            .chain(self.request_caps.lock().unwrap_or_else(|p| p.into_inner()).keys().cloned()).collect();
+        for session in sessions {
+            self.revoke_session(&session);
+        }
+        // Wake the blocking accept loop; its Weak can no longer be upgraded.
+        let _ = UnixStream::connect(&self.socket);
+        let _ = fs::remove_file(&self.socket);
     }
 }
 
@@ -440,6 +470,35 @@ fn descendant_of(mut pid: u32, ancestor: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dropping_the_tool_releases_its_listener_and_supervisor() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = CloneSupervisor::guarded(dir.path().join("ledger.json"));
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().to_owned()).unwrap();
+        let socket = tool.socket.clone();
+        tool.request_capability_context("s1", std::process::id()).unwrap();
+        let weak = Arc::downgrade(&tool);
+        drop(tool);
+        assert!(weak.upgrade().is_none(), "listener retained its owner");
+        assert!(!socket.exists());
+        assert!(!dir.path().join("clone-request-s1").exists());
+        assert_eq!(Arc::strong_count(&supervisor), 1);
+    }
+
+    #[test]
+    fn destroy_revokes_a_request_even_before_a_browser_exists() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = CloneSupervisor::guarded(dir.path().join("ledger.json"));
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().to_owned()).unwrap();
+        let pid = std::process::id();
+        tool.request_capability_context("s1", pid).unwrap();
+        let token = tool.request_caps.lock().unwrap()["s1"].token.clone();
+        tool.execute("s1", &token, Some(pid), json!({"kind":"request","domain":"example.test"})).unwrap();
+        let orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(supervisor, Arc::clone(&tool));
+        orchestrator.destroy("s1");
+        assert!(tool.pending_request("s1").is_none());
+        assert!(tool.execute("s1", &token, Some(pid), json!({"kind":"request","domain":"example.test"})).is_err());
+    }
     #[test]
     fn refuses_out_of_contract_kinds() {
         for kind in ["cookie", "storage", "eval", "Runtime.evaluate"] {

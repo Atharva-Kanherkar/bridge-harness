@@ -315,6 +315,10 @@ impl BridgeCore {
     /// a dormant browser supervisor — for exercising domain methods in tests.
     #[cfg(test)]
     pub(crate) fn for_tests(scratch: &std::path::Path) -> BridgeCore {
+        #[cfg(target_os = "macos")]
+        let browser_clones = crate::browser_clone::CloneSupervisor::guarded(scratch.join("browser-clones.json"));
+        #[cfg(target_os = "macos")]
+        let browser_clone_orchestrator = build_clone_orchestrator(Arc::clone(&browser_clones)).unwrap();
         BridgeCore {
             db: Mutex::new(store::open(std::path::Path::new(":memory:")).unwrap()),
             telemetry_db: Mutex::new(
@@ -348,13 +352,9 @@ impl BridgeCore {
                 scratch.join("browser-site-metrics.json"),
             ),
             #[cfg(target_os = "macos")]
-            browser_clones: crate::browser_clone::CloneSupervisor::guarded(
-                scratch.join("browser-clones.json"),
-            ),
+            browser_clones,
             #[cfg(target_os = "macos")]
-            browser_clone_orchestrator: build_clone_orchestrator(
-                scratch.join("browser-clones.json"),
-            ),
+            browser_clone_orchestrator,
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
@@ -463,7 +463,7 @@ impl BridgeCore {
         };
         #[cfg(target_os = "macos")]
         let browser_clone_orchestrator =
-            build_clone_orchestrator(config.data_dir.join("browser-clones.json"));
+            build_clone_orchestrator(Arc::clone(&browser_clones))?;
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),
@@ -514,19 +514,18 @@ impl BridgeCore {
     }
 }
 
-/// Build the clone orchestrator: a guarded supervisor sharing the boot ledger
-/// (so crash recovery covers its clones too) and the agent tool on a short
+/// Build the clone orchestrator using the same supervisor as crash recovery,
+/// and the agent tool on a short
 /// socket path. Kept out of the struct literal because the orchestrator needs
 /// its supervisor and tool as values.
 #[cfg(target_os = "macos")]
 fn build_clone_orchestrator(
-    ledger_path: std::path::PathBuf,
-) -> Arc<crate::clone_orchestrator::CloneOrchestrator> {
-    let supervisor = crate::browser_clone::CloneSupervisor::guarded(ledger_path);
+    supervisor: Arc<crate::browser_clone::CloneSupervisor>,
+) -> Result<Arc<crate::clone_orchestrator::CloneOrchestrator>, BridgeError> {
     // A short base dir so the tool's unix socket clears SUN_LEN.
-    let tools_dir = std::env::temp_dir().join("bridge-clone-tools");
+    let tools_dir = std::env::temp_dir().join(format!("bc-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]));
     let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), tools_dir)
-        .expect("bind the clone browser tool socket");
+        .map_err(|error| BridgeError::Invalid(format!("Could not start browser clone tools: {error}")))?;
     let orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(supervisor, tool);
     // The lease is enforced here: every few seconds, destroy any clone whose
     // time is up. The thread holds only a Weak, so it ends with the core.
@@ -539,7 +538,7 @@ fn build_clone_orchestrator(
             orchestrator.sweep_expired();
         })
         .ok();
-    orchestrator
+    Ok(orchestrator)
 }
 
 #[cfg(test)]

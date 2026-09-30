@@ -118,6 +118,20 @@ pub struct CloneOrchestrator {
     default_ttl: Duration,
 }
 
+// A startup error must clean up even before the clone reaches the active map.
+struct PendingClone<'a> {
+    supervisor: &'a CloneSupervisor,
+    id: Option<String>,
+}
+
+impl Drop for PendingClone<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            let _ = self.supervisor.destroy(&id);
+        }
+    }
+}
+
 impl CloneOrchestrator {
     pub fn new(supervisor: Arc<CloneSupervisor>, tool: Arc<CloneBrowserTool>) -> Arc<Self> {
         Arc::new(Self {
@@ -141,11 +155,21 @@ impl CloneOrchestrator {
         ttl: Option<Duration>,
         runtime_pid: u32,
     ) -> Result<CloneView, CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid)
+    }
+
+    fn request_clone_locked(
+        &self, session_id: &str, domain: &str, browser: CloneBrowser,
+        path: SignInPath, ttl: Option<Duration>, runtime_pid: u32,
+    ) -> Result<CloneView, CloneError> {
         let domain = normalize_domain(domain)
             .ok_or_else(|| CloneError::Launch("invalid approved domain".into()))?;
-        self.destroy(session_id);
+        self.destroy_locked(session_id);
 
         let info = self.supervisor.spawn_clone()?;
+        let mut pending_clone = PendingClone { supervisor: &self.supervisor, id: Some(info.id.clone()) };
         let guard = self
             .supervisor
             .clone_guard(&info.id)
@@ -168,7 +192,6 @@ impl CloneOrchestrator {
                 }
             }
             if let Err(error) = self.load_session(&info.id, cookies) {
-                self.supervisor.destroy(&info.id)?;
                 return Err(error);
             }
         }
@@ -196,6 +219,7 @@ impl CloneOrchestrator {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(session_id.to_owned(), active);
+        pending_clone.id = None;
         Ok(view)
     }
 
@@ -242,6 +266,8 @@ impl CloneOrchestrator {
     /// a live capability. `None` when the session has no clone. This is what
     /// `live_turn` injects into the agent's application context.
     pub fn capability_context(&self, session_id: &str, runtime_pid: u32) -> Option<String> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let (clone_id, domain) = {
             let active = self.active.lock().unwrap_or_else(|p| p.into_inner());
             let entry = active.get(session_id)?;
@@ -254,6 +280,8 @@ impl CloneOrchestrator {
     /// The agent's "ask for a clone" capability, minted every turn (see
     /// `live_turn`) so the agent can request one before any exists.
     pub fn request_capability_context(&self, session_id: &str, runtime_pid: u32) -> Option<String> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.tool.request_capability_context(session_id, runtime_pid)
     }
 
@@ -266,11 +294,13 @@ impl CloneOrchestrator {
     /// The person allowed the agent's request: spawn the clone for the asked
     /// domain (import the sign-in), and approve page actions on it.
     pub fn approve_request(&self, session_id: &str, runtime_pid: u32) -> Result<CloneView, CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let domain = self
             .tool
             .take_pending_request(session_id)
             .ok_or_else(|| CloneError::Launch("no pending clone request".into()))?;
-        let view = self.request_clone(
+        let view = self.request_clone_locked(
             session_id,
             &domain,
             CloneBrowser::Chrome,
@@ -288,6 +318,8 @@ impl CloneOrchestrator {
 
     /// The person denied the request; drop it.
     pub fn deny_request(&self, session_id: &str) {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.tool.clear_pending_request(session_id);
     }
 
@@ -300,6 +332,8 @@ impl CloneOrchestrator {
     /// The person takes control (to sign in, finish 2FA). The agent is paused:
     /// its page actions are refused until the clone is handed back.
     pub fn take_over(&self, session_id: &str) {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.set_status(session_id, CloneStatus::TakenOver);
         self.tool.revoke_mutations(session_id);
     }
@@ -307,6 +341,8 @@ impl CloneOrchestrator {
     /// The person hands control back. The agent's page actions come back only
     /// if the person had approved them.
     pub fn hand_back(&self, session_id: &str) {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.set_status(session_id, CloneStatus::Acting);
         let approved = self
             .active
@@ -324,6 +360,8 @@ impl CloneOrchestrator {
     /// of a small set of keys. Refused unless the clone is taken over, so this
     /// can never become a side door for the agent.
     pub fn forward_input(&self, session_id: &str, input: CloneInput) -> Result<(), CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let (clone_id, status) = {
             let active = self.active.lock().unwrap_or_else(|p| p.into_inner());
             let entry = active
@@ -404,6 +442,12 @@ impl CloneOrchestrator {
     /// Tear down the session's clone: kill the process, eject the RAM disk,
     /// revoke the agent tool. Idempotent.
     pub fn destroy(&self, session_id: &str) {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        self.destroy_locked(session_id);
+    }
+
+    fn destroy_locked(&self, session_id: &str) {
         let clone_id = self
             .active
             .lock()
@@ -412,24 +456,28 @@ impl CloneOrchestrator {
             .map(|entry| entry.clone_id);
         if let Some(clone_id) = clone_id {
             let _ = self.supervisor.destroy(&clone_id);
-            self.tool.revoke_session(session_id);
         }
+        self.tool.revoke_session(session_id);
     }
 
     /// Destroy every clone whose lease has run out. The host calls this on a
     /// timer; it is also what a 30-minute default comes to.
     pub fn sweep_expired(&self) {
         let now = Instant::now();
-        let expired: Vec<String> = self
+        let expired: Vec<(String, String)> = self
             .active
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
             .filter(|(_, entry)| entry.expires_at <= now)
-            .map(|(session, _)| session.clone())
+            .map(|(session, entry)| (session.clone(), entry.clone_id.clone()))
             .collect();
-        for session in expired {
-            self.destroy(&session);
+        for (session, clone_id) in expired {
+            let operation = self.tool.session_operation(&session);
+            let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+            let still_expired = self.active.lock().unwrap_or_else(|p| p.into_inner())
+                .get(&session).is_some_and(|entry| entry.clone_id == clone_id && entry.expires_at <= now);
+            if still_expired { self.destroy_locked(&session); }
         }
     }
 
@@ -449,6 +497,15 @@ impl CloneOrchestrator {
             .unwrap()
             .get(session_id)
             .map(|entry| entry.runtime_pid)
+    }
+}
+
+impl Drop for CloneOrchestrator {
+    fn drop(&mut self) {
+        let sessions: Vec<String> = self.active.lock().unwrap_or_else(|p| p.into_inner()).keys().cloned().collect();
+        for session in sessions {
+            self.destroy(&session);
+        }
     }
 }
 
@@ -479,6 +536,55 @@ fn map_import(error: ImportError) -> CloneError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_starts_in_one_chat_leave_only_one_managed_profile() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(supervisor, tool);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = ["first.test", "second.test"].into_iter().map(|domain| {
+            let orchestrator = Arc::clone(&orchestrator);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                orchestrator.request_clone("s1", domain, CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id()).unwrap();
+            })
+        }).collect();
+        barrier.wait();
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 1);
+        assert!(orchestrator.view("s1").is_some());
+        orchestrator.destroy("s1");
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn failure_after_spawn_destroys_the_untracked_child_and_profile() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), false);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(supervisor, tool);
+        let result = orchestrator.request_clone("s1", "example.test", CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id());
+        assert!(result.is_err(), "an unguarded clone must be refused");
+        assert!(orchestrator.view("s1").is_none());
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+        let pid: u32 = std::fs::read_to_string(dir.path().join("browser.pid")).unwrap().parse().unwrap();
+        assert_ne!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0, "failed startup left a child alive");
+    }
+
+    #[test]
+    fn dropping_the_orchestrator_destroys_its_active_profiles() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), tool);
+        let view = orchestrator.request_clone("s1", "example.test", CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id()).unwrap();
+        drop(orchestrator);
+        assert!(supervisor.clone_guard(&view.clone_id).is_none());
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+    }
 
     #[test]
     fn a_domain_is_normalized_and_validated() {

@@ -48,25 +48,37 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
   const [domainDraft, setDomainDraft] = useState("");
   const [typeDraft, setTypeDraft] = useState("");
   const latestRequest = useRef(0);
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
 
   const refresh = async () => {
+    if (currentSession.current !== sessionId) return;
     // Only the newest read lands: an action's refresh must not be overwritten
     // by a slower poll that started before it.
     const request = ++latestRequest.current;
     const next = await bridgeApi.browserCloneState(sessionId);
-    if (request === latestRequest.current) setSnapshot(next);
+    if (request === latestRequest.current && currentSession.current === sessionId) setSnapshot(next);
   };
   const status = snapshot?.status ?? "none";
   const live = isLive(status);
   useEffect(() => {
+    ++latestRequest.current;
+    setSnapshot(undefined);
+    setBusy(false);
+    setConfirmingDestroy(false);
+    setDomainDraft("");
+    setTypeDraft("");
+    return () => { ++latestRequest.current; };
+  }, [sessionId]);
+  useEffect(() => {
     if (!visible && !live) return;
     return startSerialPoll(refresh, visible ? CLONE_POLL_VISIBLE_MS : CLONE_POLL_HIDDEN_MS);
-  }, [visible, live]);
+  }, [visible, live, sessionId]);
   const run = async (task: () => Promise<unknown>) => {
     setBusy(true);
     try { await task(); await refresh(); }
     catch (error) { onError(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); setConfirmingDestroy(false); }
+    finally { if (currentSession.current === sessionId) { setBusy(false); setConfirmingDestroy(false); } }
   };
 
   const attention = status === "requested" || status === "waiting_for_you" || !!snapshot?.pendingApproval;
