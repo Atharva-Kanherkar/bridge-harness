@@ -870,6 +870,12 @@
    "cacheRead": 200000,
    "cacheWrite": 2500000
   },
+  "gpt-6.1-sol": {
+   "input": 2000000,
+   "output": 10000000,
+   "cacheRead": 100000,
+   "cacheWrite": 2500000
+  },
   "gpt-6-astra": {
    "input": 10000000,
    "output": 50000000,
