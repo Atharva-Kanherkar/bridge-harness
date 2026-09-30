@@ -41,3 +41,5 @@ merge while any consent, isolation, confidentiality, or lifecycle blocker remain
 - Page images stay in the person's dock and are accurately labelled. The agent uses scrubbed accessibility text; screenshot commands are refused because raster redaction is not implemented. All agent reads and writes pause during takeover.
 - An optional extension directory is part of the immutable request, displayed before approval and loaded only for that approved request.
 - Tests use isolated synthetic browser/account fixtures and never read existing browser profiles or Keychain.
+
+- Sites that need separate CDN or sign-in hosts can request an explicit additional-domain list. The person sees that immutable list before approval; Bridge never silently expands network access.
