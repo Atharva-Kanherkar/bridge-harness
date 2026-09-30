@@ -57,6 +57,14 @@ pub struct DestroyCloneParams {
     pub session_id: String,
 }
 
+/// The person's answer to an agent's clone request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveCloneRequestParams {
+    pub session_id: String,
+    pub allow: bool,
+}
+
 /// What the dock shows about a session's clone. Never carries a cookie value.
 /// The `screenshot` is a redacted frame the surface renders directly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -70,6 +78,9 @@ pub struct CloneSnapshot {
     pub minutes_left: u64,
     pub screenshot: Option<String>,
     pub screenshot_redacted_regions: usize,
+    /// Set when the agent has asked for a clone and is waiting on the person.
+    /// The dock turns this into an Allow/Deny card. `None` once a clone exists.
+    pub pending_request: Option<String>,
 }
 
 /// The session's clone, or `None` when it has no clone (or off macOS).

@@ -43,6 +43,13 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "pendingRequest": {
+          "description": "Set when the agent has asked for a clone and is waiting on the person. The dock turns this into an Allow/Deny card. `None` once a clone exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "screenshot": {
           "type": [
             "string",

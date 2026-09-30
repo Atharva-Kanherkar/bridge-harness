@@ -220,6 +220,43 @@ impl CloneOrchestrator {
             .capability_context(session_id, &clone_id, runtime_pid, &domain)
     }
 
+    /// The agent's "ask for a clone" capability, minted every turn (see
+    /// `live_turn`) so the agent can request one before any exists.
+    pub fn request_capability_context(&self, session_id: &str, runtime_pid: u32) -> Option<String> {
+        self.tool.request_capability_context(session_id, runtime_pid)
+    }
+
+    /// The domain a session's agent has asked for, waiting on the person. The
+    /// dock turns this into the Allow/Deny card.
+    pub fn pending_request(&self, session_id: &str) -> Option<String> {
+        self.tool.pending_request(session_id)
+    }
+
+    /// The person allowed the agent's request: spawn the clone for the asked
+    /// domain (import the sign-in), and approve page actions on it.
+    pub fn approve_request(&self, session_id: &str, runtime_pid: u32) -> Result<CloneView, CloneError> {
+        let domain = self
+            .tool
+            .take_pending_request(session_id)
+            .ok_or_else(|| CloneError::Launch("no pending clone request".into()))?;
+        let view = self.request_clone(
+            session_id,
+            &domain,
+            CloneBrowser::Chrome,
+            SignInPath::Import,
+            None,
+            runtime_pid,
+        )?;
+        // The person approved the agent acting, so page actions are allowed.
+        self.tool.allow_mutations(session_id);
+        Ok(view)
+    }
+
+    /// The person denied the request; drop it.
+    pub fn deny_request(&self, session_id: &str) {
+        self.tool.clear_pending_request(session_id);
+    }
+
     pub fn view(&self, session_id: &str) -> Option<CloneView> {
         let active = self.active.lock().unwrap_or_else(|p| p.into_inner());
         let entry = active.get(session_id)?;
@@ -380,17 +417,22 @@ mod tests {
         /// Call the agent tool the way the agent's command runner does: an HTTP
         /// POST over the unix socket with the capability headers.
         fn tool_call(tool: &CloneBrowserTool, session: &str, body: &str) -> (String, String) {
+            call_script(tool, session, &format!("clone-browser-{session}"), body)
+        }
+
+        /// Drive the tool the way the agent's command runner does, reading the
+        /// token from the named wrapper script (the drive tool or the request
+        /// tool) the tool wrote for this session.
+        fn call_script(
+            tool: &CloneBrowserTool,
+            session: &str,
+            script_name: &str,
+            body: &str,
+        ) -> (String, String) {
             let mut stream = UnixStream::connect(tool.socket_path()).unwrap();
-            // The capability the orchestrator minted is bound to the session; we
-            // do not know the token here, so read it from the wrapper script the
-            // tool wrote for this session.
-            let script = std::fs::read_to_string(
-                tool.socket_path()
-                    .parent()
-                    .unwrap()
-                    .join(format!("clone-browser-{session}")),
-            )
-            .unwrap();
+            let script =
+                std::fs::read_to_string(tool.socket_path().parent().unwrap().join(script_name))
+                    .unwrap();
             let token = script
                 .split("Authorization: Bearer ")
                 .nth(1)
@@ -461,6 +503,94 @@ mod tests {
             orchestrator.sweep_expired();
             assert!(orchestrator.view(session).is_none(), "the clone outlived its lease");
             assert!(orchestrator.frame(session).is_err(), "the clone is still reachable after destroy");
+        }
+
+        fn build() -> (tempfile::TempDir, Arc<CloneSupervisor>, Arc<CloneBrowserTool>, Arc<CloneOrchestrator>) {
+            let dir = tempfile::tempdir().unwrap();
+            let supervisor = CloneSupervisor::with_ram_disk(
+                dir.path().join("clones.json"),
+                dir.path().join("mounts"),
+                CloneConfig {
+                    browser: Some(browser().unwrap()),
+                    headless: true,
+                    guarded: true,
+                    ..CloneConfig::default()
+                },
+            );
+            let tool_dir = std::path::PathBuf::from("/tmp").join(format!("bctl-{}", uuid::Uuid::new_v4().simple()));
+            let tool = CloneBrowserTool::new(Arc::clone(&supervisor), tool_dir).unwrap();
+            let orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), Arc::clone(&tool));
+            (dir, supervisor, tool, orchestrator)
+        }
+
+        /// The whole agent-driven lifecycle: the agent asks Bridge for a clone,
+        /// the person approves, the agent then acts (a mutating command that was
+        /// refused before approval now succeeds), and it is destroyed.
+        #[test]
+        fn the_agent_asks_the_person_approves_and_the_agent_acts() {
+            if browser().is_none() { return }
+            let (_dir, _supervisor, tool, orchestrator) = build();
+            let session = "sess-loop";
+            let pid = std::process::id();
+
+            // Turn 1: the agent is offered the "ask for a clone" capability and uses it.
+            let ask = orchestrator.request_capability_context(session, pid).expect("ask capability");
+            assert!(ask.contains("request"));
+            let (status, _) = call_script(&tool, session, &format!("clone-request-{session}"), r#"{"kind":"request","domain":"127.0.0.1"}"#);
+            assert!(status.contains("200"), "the request was refused: {status}");
+
+            // Bridge now shows the person a pending request; no clone yet.
+            assert_eq!(orchestrator.pending_request(session).as_deref(), Some("127.0.0.1"));
+            assert!(orchestrator.view(session).is_none(), "a clone existed before approval");
+
+            // The person approves. The clone is built and the agent gets its tool.
+            orchestrator.approve_request(session, pid).expect("approve builds the clone");
+            assert!(orchestrator.view(session).is_some(), "no clone after approval");
+            assert!(orchestrator.pending_request(session).is_none(), "the request outlived approval");
+
+            // The agent now acts: a mutating command (scroll) that was refused
+            // before approval succeeds now.
+            let (act_status, act_body) = tool_call(&tool, session, r#"{"kind":"scroll","x":10,"y":10,"deltaY":100}"#);
+            assert!(act_status.contains("200"), "the approved agent could not act: {act_status} {act_body}");
+
+            // Destroy tears it down and revokes the agent's access.
+            orchestrator.destroy(session);
+            assert!(orchestrator.view(session).is_none());
+        }
+
+        /// A mutating command is refused until the person approves.
+        #[test]
+        fn the_agent_cannot_act_before_approval() {
+            if browser().is_none() { return }
+            let (_dir, _supervisor, tool, orchestrator) = build();
+            let session = "sess-noact";
+            // A clone exists (say from a prior approval path) but this session's
+            // actions are not approved: request one directly without approving.
+            orchestrator
+                .request_clone(session, "127.0.0.1", CloneBrowser::Chrome, SignInPath::SignInInside, Some(Duration::from_secs(60)), std::process::id())
+                .unwrap();
+            let (status, body) = tool_call(&tool, session, r#"{"kind":"scroll","x":1,"y":1,"deltaY":10}"#);
+            assert!(status.contains("403"), "an unapproved action was allowed: {status} {body}");
+            let (read_status, _) = tool_call(&tool, session, r#"{"kind":"screenshot"}"#);
+            assert!(read_status.contains("200"), "reading should still work: {read_status}");
+            orchestrator.destroy(session);
+        }
+
+        /// Two chats each get their own clone at the same time; destroying one
+        /// leaves the other running.
+        #[test]
+        fn two_sessions_run_independent_clones_at_once() {
+            if browser().is_none() { return }
+            let (_dir, _supervisor, _tool, orchestrator) = build();
+            let a = orchestrator.request_clone("chat-a", "127.0.0.1", CloneBrowser::Chrome, SignInPath::SignInInside, Some(Duration::from_secs(60)), std::process::id()).unwrap();
+            let b = orchestrator.request_clone("chat-b", "127.0.0.1", CloneBrowser::Chrome, SignInPath::SignInInside, Some(Duration::from_secs(60)), std::process::id()).unwrap();
+            assert_ne!(a.clone_id, b.clone_id, "the two chats shared a clone");
+            assert!(orchestrator.view("chat-a").is_some() && orchestrator.view("chat-b").is_some());
+            orchestrator.destroy("chat-a");
+            assert!(orchestrator.view("chat-a").is_none(), "chat-a survived its destroy");
+            assert!(orchestrator.view("chat-b").is_some(), "destroying chat-a took chat-b down");
+            assert!(orchestrator.frame("chat-b").is_ok(), "chat-b's clone stopped working");
+            orchestrator.destroy("chat-b");
         }
     }
 }

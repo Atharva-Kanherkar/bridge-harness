@@ -866,6 +866,10 @@ pub fn dispatch(
             let p: wire::DestroyCloneParams = decode(method, params)?;
             reply(api::destroy_clone(core, &p.session_id))
         }
+        MethodName::ResolveCloneRequest => {
+            let p: wire::ResolveCloneRequestParams = decode(method, params)?;
+            reply(api::resolve_clone_request(core, &p.session_id, p.allow))
+        }
         MethodName::ConfigureRemoteBrowser => {
             let p: wire::ConfigureRemoteBrowserParams = decode(method, params)?;
             let config = match &p.config {

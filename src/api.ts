@@ -398,7 +398,7 @@ const mockCloneFrame = (domain: string) => `data:image/svg+xml;utf8,${encodeURIC
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"><rect width="640" height="400" fill="rgb(245,245,244)"/><rect x="200" y="70" width="240" height="250" rx="12" fill="rgb(255,255,255)" stroke="rgb(214,211,209)"/><text x="320" y="112" text-anchor="middle" font-family="sans-serif" font-size="16" fill="rgb(68,64,60)">Sign in to ${domain}</text><rect x="224" y="136" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="182" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="240" width="192" height="32" rx="6" fill="rgb(68,64,60)"/></svg>`,
 )}`;
 const noClone = (status: BrowserCloneSnapshot["status"] = "none"): BrowserCloneSnapshot => ({
-  status, cloneId: null, domain: null, signInPath: null, waitingReason: null, expiresAt: null,
+  status, cloneId: null, domain: null, signInPath: null, pendingRequest: null, waitingReason: null, expiresAt: null,
   screenshot: null, screenshotRedactedRegions: 0, pendingApproval: null,
 });
 const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "import", ttlMinutes: 30 });
@@ -409,6 +409,7 @@ const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnap
   if (!wire) return noClone();
   return {
     status: wire.status as BrowserCloneStatus,
+    pendingRequest: wire.pendingRequest ?? null,
     cloneId: wire.cloneId,
     domain: wire.domain,
     signInPath: wire.signInPath,
@@ -428,7 +429,7 @@ let mockBrowserClone: BrowserCloneSnapshot = {
   status: "waiting_for_you", cloneId: "mock-clone-1", domain: "example.com", signInPath: "sign_in_inside",
   waitingReason: "Sign in and finish two-factor, then hand the clone back.",
   expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
-  screenshot: mockCloneFrame("example.com"), screenshotRedactedRegions: 2, pendingApproval: null,
+  screenshot: mockCloneFrame("example.com"), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
 };
 let mockCloneSettings: CloneSettings = defaultCloneSettings();
 
@@ -1417,7 +1418,7 @@ export const bridgeApi = {
       cloneId: "mock-clone-1", domain, signInPath,
       waitingReason: signInPath === "import" ? null : "Sign in and finish two-factor, then hand the clone back.",
       expiresAt: new Date(Date.now() + mockCloneSettings.ttlMinutes * 60_000).toISOString(),
-      screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingApproval: null,
+      screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
     };
     return structuredClone(mockBrowserClone);
   },
@@ -1442,6 +1443,22 @@ export const bridgeApi = {
     if (isTauri()) throw cloneUnavailable();
     mockCloneSettings = { ...settings };
     return { connected: true, settings: { ...mockCloneSettings } };
+  },
+  // The person answers an agent's clone request. Allow builds the clone and lets
+  // the agent act; deny drops it.
+  resolveCloneRequest: async (sessionId: string, allow: boolean): Promise<BrowserCloneSnapshot> => {
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow }));
+    if (allow) {
+      const domain = mockBrowserClone.pendingRequest ?? mockBrowserClone.domain ?? "example.com";
+      mockBrowserClone = {
+        status: "acting", cloneId: "mock-clone-1", domain, signInPath: "import", pendingRequest: null,
+        waitingReason: null, expiresAt: new Date(Date.now() + mockCloneSettings.ttlMinutes * 60_000).toISOString(),
+        screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingApproval: null,
+      };
+    } else {
+      mockBrowserClone = noClone();
+    }
+    return structuredClone(mockBrowserClone);
   },
   skillCatalog: (): Promise<SkillCatalog> => isTauri() ? call("skills/skill_catalog") as Promise<SkillCatalog> : Promise.resolve(structuredClone(mockSkills)),
   skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? call("skills/skill_suggestions", { query, provider }) as Promise<CapabilitySuggestion[]> : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
