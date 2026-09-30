@@ -1,6 +1,6 @@
 import type { CapabilityTier, SessionStatus, SlashCommand } from "./types";
 
-const MODEL_LABELS: Record<string, string> = { "gpt-5.6-luna": "GPT Luna", "gpt-5.6-terra": "GPT Terra", "gpt-5.6-sol": "GPT Sol", "gpt-5.3-codex": "GPT-5.3 Codex", sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", fable: "Fable" };
+const MODEL_LABELS: Record<string, string> = { "gpt-5.6-luna": "GPT Luna", "gpt-5.6-terra": "GPT Terra", "gpt-6.1-sol": "GPT-6.1 Sol", "gpt-5.6-sol": "GPT Sol", "gpt-5.3-codex": "GPT-5.3 Codex", sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", fable: "Fable" };
 
 export const modelLabel = (model?: string | null) => (model ? MODEL_LABELS[model] ?? model : "—");
 
