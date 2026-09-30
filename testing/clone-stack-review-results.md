@@ -9,9 +9,9 @@ Verdict: **changes required; do not merge the stack yet**.
 | 754 | 3eeb58f465a09e299173c8c379f885373fff16c2 | Process, RAM disk, crash recovery | Foundation tests pass; application acceptance depends on the later slices. |
 | 755 | ef3b6d70bbf674a1060f4d18c21c914dcc22b9ae | Request scanner and proxy | Synthetic checks pass. Network containment and real-site dependencies still need application proof. |
 | 756 | d351d542163665701f9c0420ecccc3fdac0dff0f | Sign-in import and agent tool | Listener ownership and revocation fixed in the stack tip. Image confidentiality remains unresolved. |
-| 757 | de6af3c | Dock and settings | Production settings remain disconnected. Mock screenshots establish layout only. |
-| 759 | 421a8b3 | Orchestration | Startup cleanup, supervisor ownership and overlapping starts fixed in the stack tip. Extension loading remains an internal method. |
-| 760 | 437a612 | Wire methods and manual start | API compiles. The failed frontend CI run passed on rerun; this is not an application journey proof. |
+| 757 | de6af3c79f860a2e55de2f5901c07b2d5ba61586 | Dock and settings | Production settings remain disconnected. Mock screenshots establish layout only. |
+| 759 | 421a8b3184979f0abd930cb0342985a22169cf7e | Orchestration | Startup cleanup, supervisor ownership and overlapping starts fixed in the stack tip. Extension loading remains an internal method. |
+| 760 | 437a612077877c10239c99ac716e1a37f700de4f | Wire methods and manual start | API compiles. The failed frontend CI run passed on rerun; this is not an application journey proof. |
 | 764 | 981079672de87f96c5e672f62d95f00664b3cf21 | Agent request and approval | Approval delivery and consent binding remain blockers. |
 | 765 | 939b2f1, plus landing fixes | Takeover and expiry | Cleanup, chat switching and CI test error fixed. Normal task completion is still missing. |
 
@@ -100,3 +100,15 @@ environment; all four updater tests pass without modifying or skipping them.
 The shared build cache was changed by concurrent builds during one doctest run.
 Final validation uses a separate copy-on-write cache to avoid artifact races.
 See the PR's validation section for final command results.
+
+## Final executed results
+
+- `bun run build`: passed.
+- `bun run test`: exit 0 with the environment and isolated cache described above.
+- Frontend: 228 files and 2,874 tests passed; zero failures or unhandled errors.
+- Core: 2,759 passed, zero failures, 11 standard ignored tests.
+- Other workspace test binaries, integration suites and doctests: passed.
+- Release-script, sidecar and native menu checks: passed as part of the full command.
+- The focused final lifecycle run passed 40 matching tests, including the synthetic cleanup and overlapping-start regressions.
+
+Passing these checks does not satisfy the unresolved application acceptance criteria above.
