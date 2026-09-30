@@ -1630,7 +1630,6 @@ mod tests {
     use crate::acp_events::AcpTurnOutcome;
     use crate::adapters::HarnessAdapter;
     use agent_client_protocol::schema::v1::{SessionConfigSelectGroup, SessionConfigSelectOption};
-    use std::os::unix::fs::PermissionsExt;
 
     /// A shim on the search path that behaves like one build of the vendor CLI.
     ///
@@ -1671,23 +1670,16 @@ mod tests {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../testing/fixtures/cursor-fake-cli.sh");
             let path = directory.join(name);
+            // Publish a link to a stable executable only after its per-test
+            // data is complete. Freshly written executable wrappers can race
+            // other tests' process launches on Linux.
             std::fs::write(
-                &path,
-                format!(
-                    "#!/bin/sh\n\
-                     BRIDGE_CURSOR_FAKE_MODE='{}' \\\n\
-                     BRIDGE_CURSOR_FAKE_VERSION='{}' \\\n\
-                     BRIDGE_CURSOR_FAKE_AGENT_NAME='{}' \\\n\
-                     exec /bin/sh '{}' \"$@\"\n",
-                    self.mode,
-                    self.version,
-                    self.agent_name,
-                    fixture.display()
-                ),
+                directory.join(format!("{name}.fixture-config")),
+                format!("{}\n{}\n{}\n", self.version, self.mode, self.agent_name),
             )
-            .expect("the fake CLI is written");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("the fake CLI is executable");
+            .expect("the fake CLI data is written");
+            std::os::unix::fs::symlink(&fixture, &path)
+                .expect("the stable fake CLI is published");
             path
         }
     }
