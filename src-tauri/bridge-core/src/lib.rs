@@ -26,6 +26,7 @@ pub mod build_cache;
 pub mod browser_bridge;
 pub mod builtin_compatibility;
 pub mod capability_projection;
+pub mod chat_search;
 pub mod check_runner;
 pub mod claude_adapter;
 pub mod claude_import;

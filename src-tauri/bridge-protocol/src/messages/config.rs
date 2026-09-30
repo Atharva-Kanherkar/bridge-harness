@@ -63,6 +63,33 @@ pub struct ReviewerSettingsResult {
     pub default_system_prompt: String,
 }
 
+/// How `sessions/search_chats` may use a model when the index is unsure.
+/// One record for the account. The model stage runs on Claude only, because
+/// it is the one harness that can enforce a turn with no tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ChatSearchSettings {
+    /// Off means search never calls a model, even when asked to go deeper.
+    pub deep_search: bool,
+    /// A Claude model id. `None` is the cheapest one Bridge knows.
+    pub model: Option<String>,
+}
+
+impl Default for ChatSearchSettings {
+    fn default() -> Self {
+        Self {
+            deep_search: true,
+            model: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveChatSearchSettingsParams {
+    pub settings: ChatSearchSettings,
+}
+
 /// Global toggle for hiding AI attribution in model-generated git and GitHub
 /// text. One record, not per workspace. When `hide_ai_attribution` is true,
 /// Bridge prepends a strict no-attribution rule to every prompt.
