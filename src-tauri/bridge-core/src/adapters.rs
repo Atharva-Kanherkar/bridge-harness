@@ -758,6 +758,15 @@ impl AdapterRegistry {
         }
     }
 
+    /// Claude alone, for the live chat-search measurement: no Codex or
+    /// OpenCode discovery processes.
+    #[cfg(test)]
+    pub(crate) fn claude_only() -> Result<Self, BridgeError> {
+        let mut registry = Self::empty();
+        registry.register(Box::new(ClaudeAdapter::new(None)))?;
+        Ok(registry)
+    }
+
     pub fn built_in() -> Result<Self, BridgeError> {
         Self::built_in_with_opencode(opencode_adapter::OpenCodeSettings::default())
     }

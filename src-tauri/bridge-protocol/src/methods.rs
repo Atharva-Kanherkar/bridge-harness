@@ -109,6 +109,7 @@ methods![
     (DispatchAgentShortcut, "sessions", "dispatch_agent_shortcut"),
     (CompactSession, "sessions", "compact_session"),
     (SearchSessionEntries, "sessions", "search_session_entries"),
+    (SearchChats, "sessions", "search_chats"),
     (ExportSessionTranscript, "sessions", "export_session_transcript"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RetryWorkerTask, "sessions", "retry_worker_task"),
@@ -121,6 +122,8 @@ methods![
     (SaveReviewerSettings, "config", "save_reviewer_settings"),
     (GetAttributionSettings, "config", "get_attribution_settings"),
     (SaveAttributionSettings, "config", "save_attribution_settings"),
+    (GetChatSearchSettings, "config", "get_chat_search_settings"),
+    (SaveChatSearchSettings, "config", "save_chat_search_settings"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
     (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router

@@ -12,6 +12,8 @@ import { harnessLabel } from "../utils";
 import { mentionToken, toPublicAlias } from "../referenceChip";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
+import { ChatSearchResults } from "./ChatSearchResults";
+import { CHAT_SEARCH_MIN_CHARS, enterAction, useChatSearch } from "../chatSearch";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 import {
   GROUP_ROW_CAP,
@@ -400,6 +402,9 @@ export type BridgeSidebarProps = {
   onOpenGitplace?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
+  /** Open the search field on `query` and search deeper, as `/find` does.
+   * A new `nonce` repeats the request for the same query. */
+  searchRequest?: { query: string; nonce: number };
   /** Absent when the host cannot archive — the row then shows no action. */
   onArchiveChat?: (chat: Session) => void;
   /** Drop `@session:<alias>` for this chat into the open chat's draft. */
@@ -447,6 +452,7 @@ export function BridgeSidebar({
   onOpenGitplace,
   onOpenSettings,
   onOpenSession,
+  searchRequest,
   onArchiveChat,
   onMentionChat,
   onForkChat,
@@ -513,6 +519,38 @@ export function BridgeSidebar({
   // While filtering, the field takes the wide slot and New Chat stays
   // available beside it. Escape or an empty blur restores the main action.
   const openSearch = useCallback(() => setSearchOpen(true), []);
+
+  // Content search across every chat, beside the title filter. Only while
+  // the field is open: a closed field must not keep a deep search alive.
+  const chatSearch = useChatSearch(searchOpen ? query : "");
+  const { runDeep } = chatSearch;
+  const [pendingDeep, setPendingDeep] = useState<string | null>(null);
+  useEffect(() => {
+    if (!searchRequest) return;
+    setSearchOpen(true);
+    setQuery(searchRequest.query);
+    setPendingDeep(searchRequest.query.trim());
+  }, [searchRequest]);
+  // `/find` asks for the deep stage once the open field holds its query.
+  useEffect(() => {
+    if (pendingDeep === null || !searchOpen || pendingDeep !== query.trim()) return;
+    setPendingDeep(null);
+    runDeep();
+  }, [pendingDeep, searchOpen, query, runDeep]);
+
+  const onSearchEnter = useCallback(() => {
+    const trimmed = query.trim();
+    if (trimmed.length < CHAT_SEARCH_MIN_CHARS) return;
+    const current = chatSearch.result?.query === trimmed && !chatSearch.loading ? chatSearch.result : undefined;
+    // No fresh index answer yet: ask for the deep one, which the host skips
+    // the model for when the index turns out to be sure.
+    const action = current ? enterAction(current, chatSearch.deepRunning) : chatSearch.deepRunning ? "none" : "deep";
+    if (action === "deep") runDeep();
+    if (action === "open" && current?.hits[0]) {
+      onOpenSession(current.hits[0].sessionId);
+      closeSearch();
+    }
+  }, [query, chatSearch.result, chatSearch.loading, chatSearch.deepRunning, runDeep, onOpenSession, closeSearch]);
 
   const stopResize = useCallback((pointerId?: number) => {
     setResizing(false);
@@ -679,8 +717,14 @@ export function BridgeSidebar({
                 value={query}
                 autoFocus
                 onChange={event => setQuery(event.target.value)}
-                onKeyDown={event => { if (event.key === "Escape") closeSearch(); }}
-                placeholder="Filter chats and projects…"
+                onKeyDown={event => {
+                  if (event.key === "Escape") closeSearch();
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    onSearchEnter();
+                  }
+                }}
+                placeholder="Search chats and what was said…"
                 aria-label="Filter chats and projects"
                 className="h-8 w-full rounded-[7px] border border-ring/50 bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
               />
@@ -728,6 +772,17 @@ export function BridgeSidebar({
         </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
+          {searchOpen && query.trim().length >= CHAT_SEARCH_MIN_CHARS && (
+            <ChatSearchResults
+              result={chatSearch.result}
+              loading={chatSearch.loading}
+              deepRunning={chatSearch.deepRunning}
+              error={chatSearch.error}
+              activeSessionId={activeSessionId}
+              now={now}
+              onOpen={id => { onOpenSession(id); closeSearch(); }}
+            />
+          )}
           <SectionLabel action={
             <span className="flex items-center gap-0.5">
               <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping onChange={changeView} />
@@ -810,7 +865,7 @@ export function BridgeSidebar({
               </div>
             );
           })}
-          {!visible.length && (
+          {!visible.length && !(searching && chatSearch.result?.hits.length) && (
             <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
               {chats.length ? "No chat matches this filter." : "No chats yet. New Chat opens in the repo you were last in."}
             </p>

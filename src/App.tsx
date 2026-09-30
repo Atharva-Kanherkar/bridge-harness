@@ -95,6 +95,7 @@ import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
+import { parseFindCommand } from "./chatSearch";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
@@ -226,6 +227,9 @@ function AppContent() {
   });
   const [workBriefingError, setWorkBriefingError] = useState<string>();
   const [navOpen, setNavOpen] = useState(false);
+  // `/find` hands its query to the sidebar search; the nonce repeats a
+  // request for the same words.
+  const [sidebarSearch, setSidebarSearch] = useState<{ query: string; nonce: number }>();
   // Two ways to look at the workspace: the classic single-session view, or the
   // Agent Fleet grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
@@ -2217,6 +2221,17 @@ function AppContent() {
       return;
     }
     if (!submittedText && sentAttachments.length === 0) return;
+    // `/find` searches every chat from the sidebar. It is never a turn: the
+    // words go to the search field, which runs the deep stage, and nothing
+    // is written to the open chat.
+    const find = parseFindCommand(submittedText);
+    if (find !== null) {
+      setSidebarCollapsed(false);
+      setNavOpen(true);
+      setSidebarSearch(current => ({ query: find, nonce: (current?.nonce ?? 0) + 1 }));
+      setComposer("");
+      return;
+    }
     // `/btw` and `/side` are Bridge's side-chat commands, not turns for the
     // open chat: the question opens beside this conversation with its context,
     // and the chat underneath is untouched. Images on the composer ride along
@@ -2765,6 +2780,7 @@ function AppContent() {
       onOpenGitplace={() => setView("gitplace")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
+      searchRequest={sidebarSearch}
       onArchiveChat={archiveChat}
       // Only while a chat is open: the Welcome screen owns its own draft, so
       // a mention there would land in a composer nobody can see.

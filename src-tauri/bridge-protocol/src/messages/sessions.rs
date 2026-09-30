@@ -706,6 +706,88 @@ pub struct SearchSessionEntriesResult {
     pub has_more: bool,
 }
 
+pub const DEFAULT_CHAT_SEARCH_LIMIT: u32 = 4;
+pub const MAX_CHAT_SEARCH_LIMIT: u32 = 8;
+
+/// Find a chat from a vague memory, across every top-level chat.
+///
+/// Unlike `sessions/search_session_entries` this is not scoped to one
+/// session: it is the one place Bridge searches across chats, and it only
+/// ever returns chats, never entry bodies. Without `deep` it never calls a
+/// model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchChatsParams {
+    pub query: String,
+    /// Omitted requests return 4; the server rejects values outside 1..=8.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 8))]
+    pub limit: Option<u32>,
+    /// Allow the model stage when the index alone is unsure. Omitted or false
+    /// requests are index-only and never spend a token.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deep: bool,
+}
+
+/// Which stage of the search funnel produced the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatSearchStage {
+    /// The index alone: no model was asked.
+    Index,
+    /// The model re-ranked the index's candidates.
+    Model,
+    /// The model was asked but ran out of budget or failed, so these are the
+    /// index's candidates.
+    IndexFallback,
+}
+
+/// One chat the search thinks you meant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSearchHit {
+    pub session_id: String,
+    pub title: String,
+    pub harness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_title: Option<String>,
+    pub last_active_at: String,
+    /// Matching entries in this chat, from the bounded candidate set.
+    pub match_count: u32,
+    /// At most 160 characters around the best match.
+    pub snippet: String,
+    pub score: f64,
+    /// Why this chat was suggested: the model's reason, or the index's.
+    pub why: String,
+    pub archived: bool,
+    pub ended: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchChatsResult {
+    pub query: String,
+    pub hits: Vec<ChatSearchHit>,
+    pub stage: ChatSearchStage,
+    /// The index's own verdict: its top hit is clear enough that the model
+    /// stage would add nothing.
+    pub confident: bool,
+    /// Whether a deep request would run the model stage for this query: the
+    /// index is unsure, deep search is on, and a model is available.
+    pub deep_available: bool,
+    /// Why deep search is not available, or what stopped it early.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Terms the index actually searched, after parsing.
+    pub terms: Vec<String>,
+    pub elapsed_ms: u32,
+    /// Model tokens spent (input + output); zero for index-only results.
+    pub model_tokens: u32,
+    pub tool_calls: u32,
+}
+
 /// Mirrors `bridge_core::secret_interception::SecretInterception` — one
 /// secret replaced by a broker reference before the turn left the machine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

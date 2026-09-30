@@ -51,6 +51,11 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
   // Reasoning effort is handled natively by the SDK; low/medium are honoured
   // rather than dropped the way the old thinking-budget mapping dropped them.
   const resolvedEffort = sdkEffort(effort);
+  // A toolless briefing answers from text alone: no tool definitions are sent
+  // at all, and its instructions replace the coding preset instead of riding
+  // on it. Rust only sets this for a policy with an empty scope, and the
+  // briefing gate still stands behind it.
+  const toolless = isBriefing({ briefing }) && briefing.toolless === true;
   return {
     ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(model ? { model } : {}),
@@ -58,9 +63,10 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...(resume && sessionId ? { resume: sessionId } : sessionId ? { sessionId } : {}),
     includePartialMessages: true,
     ...(instructions
-      ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
+      ? { systemPrompt: toolless ? instructions : { type: "preset", preset: "claude_code", append: instructions } }
       : {}),
     ...authority,
+    ...(toolless ? { tools: [] } : {}),
   };
 }
 

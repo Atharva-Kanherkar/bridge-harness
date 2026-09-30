@@ -338,3 +338,23 @@ test("without an action scope every write stays denied", async () => {
   const gate = makeBriefingGate({ readScopeServers: ["slack"] });
   assert.equal((await gate("mcp__slack__slack_send_message", {})).behavior, "deny");
 });
+
+test("a toolless briefing sends no tools and replaces the coding preset", () => {
+  const options = buildOptions({ ...base, briefing: { ...briefing, allowedTools: [], allowedServers: [], toolless: true } });
+  assert.deepEqual(options.tools, [], "no tool definition may reach the provider");
+  assert.equal(options.systemPrompt, base.instructions, "the instructions replace the preset");
+  assert.equal(typeof options.canUseTool, "function", "the briefing gate still stands behind it");
+  assert.deepEqual(options.settingSources, []);
+});
+
+test("an ordinary briefing keeps the preset and the SDK's tool list", () => {
+  const options = buildOptions({ ...base, briefing });
+  assert.equal(options.tools, undefined);
+  assert.equal(options.systemPrompt.preset, "claude_code");
+});
+
+test("toolless is ignored outside a briefing", () => {
+  const options = buildOptions({ ...base, toolless: true });
+  assert.equal(options.tools, undefined);
+  assert.equal(options.systemPrompt.preset, "claude_code");
+});

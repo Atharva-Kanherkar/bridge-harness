@@ -1933,6 +1933,29 @@ async fn search_session_entries(
 }
 
 #[tauri::command]
+async fn search_chats(
+    query: String,
+    limit: Option<u32>,
+    deep: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SearchChatsResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::SearchChatsParams { query, limit, deep };
+    // A deep search runs a provider turn, so it stays off the async runtime.
+    blocking("Chat search", move || api::search_chats(&core, &params)).await
+}
+
+#[tauri::command]
+async fn get_chat_search_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSearchSettings, BridgeError> {
+    api::get_chat_search_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_chat_search_settings(settings: bridge_protocol::messages::ChatSearchSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSearchSettings, BridgeError> {
+    api::save_chat_search_settings(state.inner(), &bridge_protocol::messages::SaveChatSearchSettingsParams { settings })
+}
+
+#[tauri::command]
 async fn export_session_transcript(
     session_id: String,
     scope: Option<bridge_protocol::messages::TranscriptExportScope>,
@@ -2777,6 +2800,8 @@ pub fn run() -> i32 {
             save_reviewer_settings,
             get_attribution_settings,
             save_attribution_settings,
+            get_chat_search_settings,
+            save_chat_search_settings,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,
@@ -2880,6 +2905,7 @@ pub fn run() -> i32 {
             write_workspace_file,
             compact_session,
             search_session_entries,
+            search_chats,
             export_session_transcript,
             save_memory_record,
             list_memory_records,

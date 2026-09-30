@@ -450,6 +450,13 @@
       "resultSchema": "search-session-entries-result.json"
     },
     {
+      "command": "search_chats",
+      "domain": "sessions",
+      "method": "sessions/search_chats",
+      "paramsSchema": "search-chats-params.json",
+      "resultSchema": "search-chats-result.json"
+    },
+    {
       "command": "export_session_transcript",
       "domain": "sessions",
       "method": "sessions/export_session_transcript",
@@ -532,6 +539,20 @@
       "method": "config/save_attribution_settings",
       "paramsSchema": "save-attribution-settings-params.json",
       "resultSchema": "attribution-settings.json"
+    },
+    {
+      "command": "get_chat_search_settings",
+      "domain": "config",
+      "method": "config/get_chat_search_settings",
+      "paramsSchema": null,
+      "resultSchema": "chat-search-settings.json"
+    },
+    {
+      "command": "save_chat_search_settings",
+      "domain": "config",
+      "method": "config/save_chat_search_settings",
+      "paramsSchema": "save-chat-search-settings-params.json",
+      "resultSchema": "chat-search-settings.json"
     },
     {
       "command": "list_archived_chats",
@@ -1586,7 +1607,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 18
+    "minor": 19
   },
   "reserved": {
     "cancel": "$/cancel",

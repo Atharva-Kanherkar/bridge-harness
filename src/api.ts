@@ -15,7 +15,7 @@ import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
-import type { TurnImage, ArchivedChatsResult, AttributionSettings, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
@@ -818,6 +818,63 @@ function mockForest(sessionId: string): SessionForestSnapshot {
   const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: mockChildRuntimes(sessionId), workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null, entryWindow: { returned: 1, total: 1, trimmedPayloads: 0 } };
   mockForests[sessionId] = created;
   return structuredClone(created);
+}
+let mockChatSearchSettings: ChatSearchSettings = { deepSearch: true, model: null };
+
+/**
+ * The mock funnel: every word must appear in a top-level demo chat's title,
+ * workspace, or messages. Good enough for `bun run dev` to exercise both the
+ * index-only card list and the "searching deeper" state.
+ */
+async function mockSearchChats(query: string, options: { limit?: number; deep?: boolean }): Promise<SearchChatsResult> {
+  const terms = query.toLowerCase().split(/[^a-z0-9]+/).filter(term => term.length > 1);
+  const limit = options.limit ?? 4;
+  const base = { query: query.trim(), terms, elapsedMs: 3, modelTokens: 0, toolCalls: 0 };
+  if (!terms.length) return { ...base, hits: [], stage: "index", confident: false, deepAvailable: false, detail: "Type what you remember about the chat." };
+  const scored: ChatSearchHit[] = [];
+  for (const session of mockState.sessions.filter(item => !item.parentSessionId)) {
+    const workspace = mockState.workspaces.find(item => item.id === session.workspaceId);
+    const topic = `${session.title ?? ""} ${session.label} ${workspace?.title ?? ""}`.toLowerCase();
+    const messages = mockState.agentEvents
+      .filter(event => event.sessionId === session.id && typeof event.text === "string")
+      .map(event => String(event.text));
+    const matching = messages.filter(text => terms.some(term => text.toLowerCase().includes(term)));
+    const corpus = `${topic} ${messages.join(" ")}`.toLowerCase();
+    if (!terms.every(term => corpus.includes(term))) continue;
+    const topicMatch = terms.some(term => topic.includes(term));
+    scored.push({
+      sessionId: session.id,
+      title: session.title ?? workspace?.title ?? session.label,
+      harness: session.harness,
+      workspaceId: session.workspaceId ?? undefined,
+      workspaceTitle: workspace?.title,
+      lastActiveAt: session.startedAt ?? now,
+      matchCount: matching.length + (topicMatch ? 1 : 0),
+      snippet: (matching[0] ?? topic).slice(0, 160),
+      score: matching.length + (topicMatch ? 2 : 0),
+      why: topicMatch ? "topic matches" : `${matching.length} messages match`,
+      archived: false,
+      ended: session.endedAt != null,
+    });
+  }
+  scored.sort((left, right) => right.score - left.score);
+  const [first, second] = scored;
+  const confident = scored.length === 1 || (!!first && !!second && first.score / second.score >= 1.5 && first.matchCount >= 2);
+  const deepAvailable = !confident && mockChatSearchSettings.deepSearch !== false;
+  const hits = scored.slice(0, limit);
+  if (!options.deep || !deepAvailable) {
+    return { ...base, hits, stage: "index", confident, deepAvailable, detail: !confident && mockChatSearchSettings.deepSearch === false ? "Deeper search is off in Settings → Composer." : undefined };
+  }
+  await new Promise(resolve => setTimeout(resolve, 600));
+  return {
+    ...base,
+    hits: hits.map(hit => ({ ...hit, why: `closest match for “${query.trim()}”` })),
+    stage: "model",
+    confident,
+    deepAvailable,
+    modelTokens: 1_200,
+    toolCalls: 1,
+  };
 }
 function mockContextBreakdown(sessionId: string): ContextBreakdownResult {
   const reason = "no prompt compilation recorded";
@@ -2049,6 +2106,16 @@ export const bridgeApi = {
     if (isTauri()) return call("config/save_attribution_settings", { settings });
     return structuredClone(settings);
   },
+  chatSearchSettings: async (): Promise<ChatSearchSettings> => {
+    if (isTauri()) return call("config/get_chat_search_settings");
+    return structuredClone(mockChatSearchSettings);
+  },
+  saveChatSearchSettings: async (settings: ChatSearchSettings): Promise<ChatSearchSettings> => {
+    if (isTauri()) return call("config/save_chat_search_settings", { settings });
+    const model = settings.model?.trim() || null;
+    mockChatSearchSettings = { deepSearch: settings.deepSearch !== false, model };
+    return structuredClone(mockChatSearchSettings);
+  },
   unarchiveChat: async (sessionId: string): Promise<void> => {
     if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
     throw new Error("Unarchiving a chat needs the desktop app");
@@ -2262,6 +2329,21 @@ export const bridgeApi = {
     const size = limit ?? 20;
     const start = offset ?? 0;
     return { sessionId, query, hits: hits.slice(start, start + size), offset: start, hasMore: hits.length > start + size };
+  },
+  /**
+   * Find a chat across every chat from what the user remembers. Index only
+   * unless `deep` is set; a deep call runs the model stage only when the
+   * index is unsure, and can take seconds.
+   */
+  searchChats: async (query: string, options: { limit?: number; deep?: boolean } = {}): Promise<SearchChatsResult> => {
+    if (isTauri()) {
+      return call("sessions/search_chats", {
+        query,
+        ...(options.limit != null ? { limit: options.limit } : {}),
+        ...(options.deep ? { deep: true } : {}),
+      });
+    }
+    return mockSearchChats(query, options);
   },
   /**
    * Write one session's durable record out as JSONL.
