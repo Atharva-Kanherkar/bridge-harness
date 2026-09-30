@@ -30,3 +30,14 @@ test is supporting evidence, not a substitute for this application path.
 
 Track confirmed blockers and their resolution in the final review report. Do not
 merge while any consent, isolation, confidentiality, or lifecycle blocker remains.
+
+## Blocker remediation expectations
+
+- Each approval binds an immutable request ID, domain, extension path and live requester PID. Conflicting requests and stale answers fail closed.
+- A status call on the requesting capability delivers the drive tool in the same agent turn; denial, startup failure and revocation return terminal results.
+- Approval is visible globally for unvisited panes and background chats.
+- A completed agent turn destroys its browser and request capabilities; takeover does not prolong an ended task.
+- Settings persist through the native protocol; approval displays and submits the chosen sign-in path and lifetime.
+- Page images stay in the person's dock and are accurately labelled. The agent uses scrubbed accessibility text; screenshot commands are refused because raster redaction is not implemented. All agent reads and writes pause during takeover.
+- An optional extension directory is part of the immutable request, displayed before approval and loaded only for that approved request.
+- Tests use isolated synthetic browser/account fixtures and never read existing browser profiles or Keychain.
