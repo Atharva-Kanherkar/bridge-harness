@@ -1762,6 +1762,7 @@ pub fn model_display(model: &str) -> String {
         "fable" => "Fable",
         "gpt-5.6-luna" => "GPT Luna",
         "gpt-5.6-terra" => "GPT Terra",
+        "gpt-6.1-sol" => "GPT-6.1 Sol",
         "gpt-5.6-sol" => "GPT Sol",
         "gpt-5.3-codex" => "GPT-5.3 Codex",
         other => other,
