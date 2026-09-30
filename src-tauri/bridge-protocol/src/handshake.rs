@@ -74,9 +74,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// older daemon that answers both with `method_not_found`, leaving the toggle
 /// unable to load or persist; a 1.17 client still pairs with a 1.18 daemon,
 /// which simply serves it without attribution methods.
+/// **1.19 adds `sessions/search_chats`, `config/get_chat_search_settings` and
+/// `config/save_chat_search_settings`.** A new client must not pair with an
+/// older daemon, whose sidebar search would fail with `method_not_found` on
+/// the first keystroke; a 1.18 client still pairs with a 1.19 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 18,
+    minor: 19,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -277,6 +281,17 @@ mod tests {
             negotiate(&request(1, 17)).is_ok(),
             "the 1.17 minimum-client boundary still holds on a 1.18 daemon"
         );
+    }
+
+    #[test]
+    fn chat_search_client_rejects_daemon_without_search_chats() {
+        let before_search = ProtocolVersion { major: 1, minor: 18 };
+        assert!(!before_search.accepts(PROTOCOL_VERSION));
+        assert!(
+            PROTOCOL_VERSION.accepts(before_search),
+            "chat search is additive: a 1.18 client still pairs with a 1.19 daemon"
+        );
+        assert!(negotiate(&request(1, 18)).is_ok());
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {
