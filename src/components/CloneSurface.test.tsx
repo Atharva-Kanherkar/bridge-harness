@@ -12,7 +12,9 @@ vi.mock("../api", () => ({
   bridgeApi: {
     browserCloneState: vi.fn(),
     requestClone: vi.fn(),
+    readCloneSettings: vi.fn(),
     resolveCloneRequest: vi.fn(),
+    cloneInput: vi.fn(),
     takeoverBrowserClone: vi.fn(),
     handBackBrowserClone: vi.fn(),
     destroyBrowserClone: vi.fn(),
@@ -29,7 +31,7 @@ const clone = (overrides: Partial<BrowserCloneSnapshot> = {}): BrowserCloneSnaps
   ...overrides,
 });
 const none = () => clone({ status: "none", cloneId: null, domain: null, signInPath: null, expiresAt: null, screenshot: null });
-const requested = () => clone({ status: "requested", cloneId: null, domain: "youtube.com", pendingRequest: "youtube.com", expiresAt: null, screenshot: null });
+const requested = () => clone({ status: "requested", cloneId: null, domain: "youtube.com", pendingRequest: "youtube.com", pendingRequestId: "request-1", expiresAt: null, screenshot: null });
 const approval = { id: "a1", commandId: "c1", action: "click", domain: "example.com", effect: "Submit a payment form", createdAt: "now" };
 
 let container: HTMLDivElement;
@@ -57,6 +59,10 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
   state.mockReset().mockResolvedValue(none());
+  vi.mocked(bridgeApi.readCloneSettings).mockReset().mockResolvedValue({ connected: true, settings: { defaultSignInPath: "import", ttlMinutes: 30 } });
+  vi.mocked(bridgeApi.requestClone).mockReset().mockResolvedValue(clone());
+  vi.mocked(bridgeApi.resolveCloneRequest).mockReset().mockResolvedValue(clone());
+  vi.mocked(bridgeApi.cloneInput).mockReset().mockResolvedValue();
   vi.mocked(bridgeApi.takeoverBrowserClone).mockReset().mockResolvedValue();
   vi.mocked(bridgeApi.handBackBrowserClone).mockReset().mockResolvedValue();
   vi.mocked(bridgeApi.destroyBrowserClone).mockReset().mockResolvedValue();
@@ -74,6 +80,27 @@ afterEach(async () => {
 });
 
 describe("CloneSurface as a dock tenant", () => {
+  it("switches polling to the new chat without displaying the old chat's frame", async () => {
+    state.mockImplementation(async (sessionId) => clone({ domain: `${sessionId}.test` }));
+    await render({ sessionId: "first" });
+    expect(container.textContent).toContain("first.test");
+    await render({ sessionId: "second" });
+    expect(state).toHaveBeenLastCalledWith("second");
+    expect(container.textContent).toContain("second.test");
+    expect(container.textContent).not.toContain("first.test");
+  });
+
+  it("reports failed takeover input without an unhandled rejection", async () => {
+    const onError = vi.fn();
+    state.mockResolvedValue(clone({ status: "taken_over" }));
+    vi.mocked(bridgeApi.cloneInput).mockRejectedValue(new Error("clone expired"));
+    await render({ sessionId: "session-t", onError });
+    const img = container.querySelector<HTMLImageElement>("[data-clone-viewport] img")!;
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100, x: 0, y: 0, toJSON() {} });
+    await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 })); });
+    expect(onError).toHaveBeenCalledWith("clone expired");
+  });
+
   it("fills its host instead of positioning itself", async () => {
     await render();
     const rootNode = container.firstElementChild as HTMLElement;
@@ -85,7 +112,7 @@ describe("CloneSurface as a dock tenant", () => {
   it("shows the live view with Take over and Destroy for a running clone", async () => {
     state.mockResolvedValue(clone());
     await render();
-    expect(container.querySelector("[data-clone-viewport] img")?.getAttribute("alt")).toBe("Redacted live view of the browser clone");
+    expect(container.querySelector("[data-clone-viewport] img")?.getAttribute("alt")).toBe("Live view of the browser clone");
     expect(button("Take over")).toBeDefined();
     expect(button("Destroy")).toBeDefined();
     expect(container.textContent).toContain("example.com");
@@ -103,7 +130,7 @@ describe("CloneSurface as a dock tenant", () => {
   it("shows an Allow/Deny card when the agent asks for a clone", async () => {
     state.mockResolvedValue(requested());
     await render({ sessionId: "session-9" });
-    expect(container.textContent).toContain("The agent wants a signed-in browser");
+    expect(container.textContent).toContain("The agent wants a browser");
     expect(container.textContent).toContain("youtube.com");
     expect(button("Allow")).toBeDefined();
     expect(button("Deny")).toBeDefined();
@@ -115,7 +142,27 @@ describe("CloneSurface as a dock tenant", () => {
     state.mockResolvedValue(requested());
     await render({ sessionId: "session-9" });
     await act(async () => { button("Allow")!.click(); });
-    expect(resolve).toHaveBeenCalledWith("session-9", true);
+    expect(resolve).toHaveBeenCalledWith("session-9", true, "request-1", { defaultSignInPath: "import", ttlMinutes: 30 });
+  });
+
+  it("forwards a click on the frame to the page while taken over", async () => {
+    const cloneInput = vi.mocked(bridgeApi.cloneInput);
+    state.mockResolvedValue(clone({ status: "taken_over" }));
+    await render({ sessionId: "session-t" });
+    const img = container.querySelector<HTMLImageElement>("[data-clone-viewport] img")!;
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100, x: 0, y: 0, toJSON() {} });
+    await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 50 })); });
+    expect(cloneInput).toHaveBeenCalledWith("session-t", { kind: "click", x: 0.5, y: 0.5 });
+  });
+
+  it("does not forward clicks unless taken over", async () => {
+    const cloneInput = vi.mocked(bridgeApi.cloneInput);
+    cloneInput.mockClear();
+    state.mockResolvedValue(clone({ status: "acting" }));
+    await render({ sessionId: "session-t" });
+    const img = container.querySelector<HTMLImageElement>("[data-clone-viewport] img")!;
+    await act(async () => { img.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 })); });
+    expect(cloneInput).not.toHaveBeenCalled();
   });
 
   it("starts a clone for the typed site", async () => {

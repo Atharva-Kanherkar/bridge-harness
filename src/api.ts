@@ -16,7 +16,7 @@ import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ReviewerSettings, ReviewerSettingsResult, WorkerSettings } from "./protocol/generated/protocol";
-import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind } from "./protocol/generated/protocol";
+import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -401,7 +401,7 @@ const noClone = (status: BrowserCloneSnapshot["status"] = "none"): BrowserCloneS
   status, cloneId: null, domain: null, signInPath: null, pendingRequest: null, waitingReason: null, expiresAt: null,
   screenshot: null, screenshotRedactedRegions: 0, pendingApproval: null,
 });
-const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "import", ttlMinutes: 30 });
+const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "sign_in_inside", ttlMinutes: 30 });
 const cloneUnavailable = () => new Error("Browser clones are not connected to the runtime in this build yet.");
 // The runtime's CloneSnapshot carries no cookie value; map it to what the dock
 // surface renders. `null` (no clone for this session) becomes the empty state.
@@ -410,6 +410,9 @@ const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnap
   return {
     status: wire.status as BrowserCloneStatus,
     pendingRequest: wire.pendingRequest ?? null,
+    pendingRequestId: wire.pendingRequestId ?? null,
+    extensionPath: wire.extensionPath ?? null,
+    additionalDomains: wire.additionalDomains ?? null,
     cloneId: wire.cloneId,
     domain: wire.domain,
     signInPath: wire.signInPath,
@@ -1422,6 +1425,11 @@ export const bridgeApi = {
     };
     return structuredClone(mockBrowserClone);
   },
+  // The person's input into a clone they have taken over (click, scroll, typing,
+  // a login key). Coordinates are a fraction of the viewport.
+  cloneInput: async (sessionId: string, input: CloneInputEvent): Promise<void> => {
+    if (isTauri()) { await call("clones/clone_input", { sessionId, input }); return; }
+  },
   takeoverBrowserClone: async (sessionId?: string): Promise<void> => {
     if (isTauri() && sessionId) { await call("clones/takeover_clone", { sessionId }); return; }
     if (mockBrowserClone.status === "acting" || mockBrowserClone.status === "waiting_for_you") mockBrowserClone = { ...mockBrowserClone, status: "taken_over", waitingReason: null };
@@ -1438,16 +1446,17 @@ export const bridgeApi = {
     if (isTauri()) throw cloneUnavailable();
     if (mockBrowserClone.pendingApproval?.id === approvalId) mockBrowserClone = { ...mockBrowserClone, pendingApproval: null, status: allow ? "acting" : "waiting_for_you" };
   },
-  readCloneSettings: async (): Promise<CloneSettingsSnapshot> => ({ connected: !isTauri(), settings: isTauri() ? defaultCloneSettings() : { ...mockCloneSettings } }),
+  cloneRequests: async (): Promise<import("./protocol/generated/protocol").CloneRequest[]> => isTauri() ? call("clones/clone_requests") : [],
+  readCloneSettings: async (): Promise<CloneSettingsSnapshot> => isTauri() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
   writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
-    if (isTauri()) throw cloneUnavailable();
+    if (isTauri()) return call("clones/write_clone_settings", { settings });
     mockCloneSettings = { ...settings };
     return { connected: true, settings: { ...mockCloneSettings } };
   },
   // The person answers an agent's clone request. Allow builds the clone and lets
   // the agent act; deny drops it.
-  resolveCloneRequest: async (sessionId: string, allow: boolean): Promise<BrowserCloneSnapshot> => {
-    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow }));
+  resolveCloneRequest: async (sessionId: string, allow: boolean, requestId: string, settings: CloneSettings): Promise<BrowserCloneSnapshot> => {
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes }));
     if (allow) {
       const domain = mockBrowserClone.pendingRequest ?? mockBrowserClone.domain ?? "example.com";
       mockBrowserClone = {

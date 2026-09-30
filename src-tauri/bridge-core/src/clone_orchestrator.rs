@@ -66,12 +66,42 @@ pub enum CloneStatus {
     TakenOver,
 }
 
+/// Input the person sends to a clone they have taken over.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CloneInput {
+    /// A click at a point given as a fraction of the viewport (0..1), so the
+    /// dock's scaled frame maps straight onto the page.
+    Click { x: f64, y: f64 },
+    Scroll { x: f64, y: f64, delta_y: f64 },
+    Type { text: String },
+    /// One of the keys a login form needs.
+    Key { key: String },
+}
+
+/// CDP codes for the keys a sign-in needs. Anything else is refused.
+fn key_codes(key: &str) -> Option<(&'static str, i64, Option<&'static str>)> {
+    Some(match key {
+        "Enter" => ("Enter", 13, Some("\r")),
+        "Tab" => ("Tab", 9, None),
+        "Backspace" => ("Backspace", 8, None),
+        "Escape" => ("Escape", 27, None),
+        "ArrowUp" => ("ArrowUp", 38, None),
+        "ArrowDown" => ("ArrowDown", 40, None),
+        "ArrowLeft" => ("ArrowLeft", 37, None),
+        "ArrowRight" => ("ArrowRight", 39, None),
+        _ => return None,
+    })
+}
+
 struct Active {
     clone_id: String,
     domain: String,
     status: CloneStatus,
     sign_in_path: SignInPath,
     expires_at: Instant,
+    /// The person approved the agent acting on this clone. Takeover pauses the
+    /// agent; handing back restores its actions only if this is set.
+    actions_approved: bool,
     /// The agent process the tool capability is bound to; read back only in the
     /// end-to-end test's assertion today.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -86,6 +116,20 @@ pub struct CloneOrchestrator {
     tool: Arc<CloneBrowserTool>,
     active: Mutex<HashMap<String, Active>>,
     default_ttl: Duration,
+}
+
+// A startup error must clean up even before the clone reaches the active map.
+struct PendingClone<'a> {
+    supervisor: &'a CloneSupervisor,
+    id: Option<String>,
+}
+
+impl Drop for PendingClone<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            let _ = self.supervisor.destroy(&id);
+        }
+    }
 }
 
 impl CloneOrchestrator {
@@ -111,11 +155,31 @@ impl CloneOrchestrator {
         ttl: Option<Duration>,
         runtime_pid: u32,
     ) -> Result<CloneView, CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid, &[])
+    }
+
+    /// A person explicitly starts a browser through the native UI.
+    pub fn start_approved_clone(&self, session_id: &str, domain: &str, browser: CloneBrowser, path: SignInPath, ttl: Option<Duration>, runtime_pid: u32) -> Result<CloneView, CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        let view = self.request_clone_locked(session_id, domain, browser, path, ttl, runtime_pid, &[])?;
+        if let Some(entry) = self.active.lock().unwrap_or_else(|p| p.into_inner()).get_mut(session_id) { entry.actions_approved = true; }
+        if path == SignInPath::Import { self.tool.allow_mutations(session_id); }
+        Ok(view)
+    }
+
+    fn request_clone_locked(
+        &self, session_id: &str, domain: &str, browser: CloneBrowser,
+        path: SignInPath, ttl: Option<Duration>, runtime_pid: u32, additional_domains: &[String],
+    ) -> Result<CloneView, CloneError> {
         let domain = normalize_domain(domain)
             .ok_or_else(|| CloneError::Launch("invalid approved domain".into()))?;
-        self.destroy(session_id);
+        self.destroy_browser_locked(session_id);
 
         let info = self.supervisor.spawn_clone()?;
+        let mut pending_clone = PendingClone { supervisor: &self.supervisor, id: Some(info.id.clone()) };
         let guard = self
             .supervisor
             .clone_guard(&info.id)
@@ -125,6 +189,7 @@ impl CloneOrchestrator {
         {
             let mut guard = guard.lock().unwrap_or_else(|p| p.into_inner());
             guard.allow_host(&domain);
+            for host in additional_domains { guard.allow_host(host); }
         }
 
         // Sign in. Import copies the approved domain's cookies from the user's
@@ -138,14 +203,19 @@ impl CloneOrchestrator {
                 }
             }
             if let Err(error) = self.load_session(&info.id, cookies) {
-                self.supervisor.destroy(&info.id)?;
                 return Err(error);
             }
         }
 
+        if path == SignInPath::SignInInside {
+            self.supervisor.page_call(&info.id, "Page.navigate", json!({"url":format!("https://{domain}")}))?;
+            self.tool.pause(session_id);
+        }
         // Bind the agent tool to the agent's runtime process, not the clone.
-        self.tool
-            .capability_context(session_id, &info.id, runtime_pid, &domain);
+        if self.tool.capability_context(session_id, &info.id, runtime_pid, &domain).is_none() {
+            self.tool.revoke_browser(session_id);
+            return Err(CloneError::Launch("browser tool unavailable".into()));
+        }
 
         let status = match path {
             SignInPath::Import => CloneStatus::Acting,
@@ -158,6 +228,7 @@ impl CloneOrchestrator {
             status,
             sign_in_path: path,
             expires_at: Instant::now() + ttl,
+            actions_approved: false,
             runtime_pid,
         };
         let view = view_of(session_id, &active, ttl);
@@ -165,6 +236,7 @@ impl CloneOrchestrator {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(session_id.to_owned(), active);
+        pending_clone.id = None;
         Ok(view)
     }
 
@@ -187,7 +259,7 @@ impl CloneOrchestrator {
             .to_owned())
     }
 
-    /// A fresh redacted frame of the clone, base64 PNG, for the dock's live
+    /// A fresh local frame of the clone, base64 PNG, for the dock's live
     /// view. (Streaming screencast is a later optimization; a captured frame is
     /// the same picture.)
     pub fn frame(&self, session_id: &str) -> Result<String, CloneError> {
@@ -211,6 +283,8 @@ impl CloneOrchestrator {
     /// a live capability. `None` when the session has no clone. This is what
     /// `live_turn` injects into the agent's application context.
     pub fn capability_context(&self, session_id: &str, runtime_pid: u32) -> Option<String> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let (clone_id, domain) = {
             let active = self.active.lock().unwrap_or_else(|p| p.into_inner());
             let entry = active.get(session_id)?;
@@ -223,6 +297,8 @@ impl CloneOrchestrator {
     /// The agent's "ask for a clone" capability, minted every turn (see
     /// `live_turn`) so the agent can request one before any exists.
     pub fn request_capability_context(&self, session_id: &str, runtime_pid: u32) -> Option<String> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.tool.request_capability_context(session_id, runtime_pid)
     }
 
@@ -234,27 +310,56 @@ impl CloneOrchestrator {
 
     /// The person allowed the agent's request: spawn the clone for the asked
     /// domain (import the sign-in), and approve page actions on it.
-    pub fn approve_request(&self, session_id: &str, runtime_pid: u32) -> Result<CloneView, CloneError> {
-        let domain = self
-            .tool
-            .take_pending_request(session_id)
-            .ok_or_else(|| CloneError::Launch("no pending clone request".into()))?;
-        let view = self.request_clone(
-            session_id,
-            &domain,
-            CloneBrowser::Chrome,
-            SignInPath::Import,
-            None,
-            runtime_pid,
-        )?;
+    pub fn approve_request(&self, session_id: &str, request_id: &str, runtime_pid: u32, path: SignInPath, ttl: Option<Duration>) -> Result<CloneView, CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        let request = self.tool.take_pending_request(session_id, request_id, runtime_pid).map_err(CloneError::Launch)?;
+        let started = self.request_clone_locked(session_id, &request.domain, CloneBrowser::Chrome, path, ttl, runtime_pid, &request.additional_domains);
+        let view = match started {
+            Ok(view) => view,
+            Err(error) => {
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"browser startup failed"}));
+                return Err(error);
+            }
+        };
+        if let Some(extension) = request.extension_path {
+            if let Err(error) = self.load_extension(session_id, &extension) {
+                self.destroy_browser_locked(session_id);
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"extension loading failed"}));
+                return Err(error);
+            }
+        }
         // The person approved the agent acting, so page actions are allowed.
-        self.tool.allow_mutations(session_id);
+        if let Some(entry) = self.active.lock().unwrap_or_else(|p| p.into_inner()).get_mut(session_id) {
+            entry.actions_approved = true;
+        }
+        if path == SignInPath::SignInInside { self.tool.pause(session_id); } else { self.tool.allow_mutations(session_id); }
+        let context = match self.tool.capability_context(session_id, &view.clone_id, runtime_pid, &view.domain) {
+            Some(context) => context,
+            None => {
+                self.destroy_browser_locked(session_id);
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"browser tool unavailable"}));
+                return Err(CloneError::Launch("browser tool unavailable".into()));
+            }
+        };
+        self.tool.answer_request(session_id, request_id, json!({"ok":true,"awaiting":false,"tool":context,"waitingForUser":path == SignInPath::SignInInside}));
         Ok(view)
     }
 
     /// The person denied the request; drop it.
-    pub fn deny_request(&self, session_id: &str) {
-        self.tool.clear_pending_request(session_id);
+    pub fn deny_request(&self, session_id: &str, request_id: &str) -> Result<(), CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        let request = self.tool.pending_details(session_id).ok_or_else(|| CloneError::Launch("no pending clone request".into()))?;
+        self.tool.take_pending_request(session_id, request_id, request.runtime_pid).map_err(CloneError::Launch)?;
+        self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"request denied"}));
+        Ok(())
+    }
+
+    pub fn pending_requests(&self) -> Vec<bridge_protocol::messages::CloneRequest> { self.tool.pending_requests() }
+
+    pub fn pending_details(&self, session_id: &str) -> Option<crate::clone_browser_tool::PendingRequest> {
+        self.tool.pending_details(session_id)
     }
 
     pub fn view(&self, session_id: &str) -> Option<CloneView> {
@@ -263,12 +368,113 @@ impl CloneOrchestrator {
         Some(view_of(session_id, entry, entry.expires_at.saturating_duration_since(Instant::now())))
     }
 
+    /// The person takes control (to sign in, finish 2FA). The agent is paused:
+    /// its page actions are refused until the clone is handed back.
     pub fn take_over(&self, session_id: &str) {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.set_status(session_id, CloneStatus::TakenOver);
+        self.tool.pause(session_id);
     }
 
+    /// The person hands control back. The agent's page actions come back only
+    /// if the person had approved them.
     pub fn hand_back(&self, session_id: &str) {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         self.set_status(session_id, CloneStatus::Acting);
+        self.tool.resume(session_id);
+        let approved = self
+            .active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(session_id)
+            .is_some_and(|entry| entry.actions_approved);
+        if approved {
+            self.tool.allow_mutations(session_id);
+        }
+    }
+
+    /// Input from the person while they hold the clone (takeover): a click or
+    /// scroll at a point given as a fraction of the viewport, typed text, or one
+    /// of a small set of keys. Refused unless the clone is taken over, so this
+    /// can never become a side door for the agent.
+    pub fn forward_input(&self, session_id: &str, input: CloneInput) -> Result<(), CloneError> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        let (clone_id, status) = {
+            let active = self.active.lock().unwrap_or_else(|p| p.into_inner());
+            let entry = active
+                .get(session_id)
+                .ok_or_else(|| CloneError::UnknownClone(session_id.to_owned()))?;
+            (entry.clone_id.clone(), entry.status)
+        };
+        if status != CloneStatus::TakenOver {
+            return Err(CloneError::Launch("take over the clone before typing into it".into()));
+        }
+        match input {
+            CloneInput::Click { x, y } => {
+                let (px, py) = self.viewport_point(&clone_id, x, y)?;
+                for kind in ["mousePressed", "mouseReleased"] {
+                    self.supervisor.page_call(
+                        &clone_id,
+                        "Input.dispatchMouseEvent",
+                        json!({"type": kind, "x": px, "y": py, "button": "left", "clickCount": 1}),
+                    )?;
+                }
+            }
+            CloneInput::Scroll { x, y, delta_y } => {
+                let (px, py) = self.viewport_point(&clone_id, x, y)?;
+                self.supervisor.page_call(
+                    &clone_id,
+                    "Input.dispatchMouseEvent",
+                    json!({"type": "mouseWheel", "x": px, "y": py, "deltaX": 0, "deltaY": delta_y}),
+                )?;
+            }
+            CloneInput::Type { text } => {
+                if let Some(guard) = self.supervisor.clone_guard(&clone_id) {
+                    let history = self.supervisor.page_call(&clone_id, "Page.getNavigationHistory", json!({}))?;
+                    let current = history.get("currentIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let domain = history.get("entries").and_then(Value::as_array).and_then(|entries| entries.get(current))
+                        .and_then(|entry| entry.get("url")).and_then(Value::as_str)
+                        .and_then(|url| reqwest::Url::parse(url).ok()).and_then(|url| url.host_str().map(str::to_owned))
+                        .unwrap_or_else(|| self.active.lock().unwrap_or_else(|p| p.into_inner()).get(session_id).map(|entry| entry.domain.clone()).unwrap_or_default());
+                    guard.lock().unwrap_or_else(|p| p.into_inner()).add_secret(&domain, &text);
+                }
+                self.supervisor
+                    .page_call(&clone_id, "Input.insertText", json!({ "text": text }))?;
+            }
+            CloneInput::Key { key } => {
+                let (code, vk, text) = key_codes(&key)
+                    .ok_or_else(|| CloneError::Launch(format!("unsupported key {key}")))?;
+                let mut down = json!({"type": "keyDown", "key": key, "code": code, "windowsVirtualKeyCode": vk});
+                if let Some(text) = text {
+                    down["text"] = json!(text);
+                }
+                self.supervisor.page_call(&clone_id, "Input.dispatchKeyEvent", down)?;
+                self.supervisor.page_call(
+                    &clone_id,
+                    "Input.dispatchKeyEvent",
+                    json!({"type": "keyUp", "key": key, "code": code, "windowsVirtualKeyCode": vk}),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Map a viewport fraction (0..1) onto CSS pixels of the page.
+    fn viewport_point(&self, clone_id: &str, x: f64, y: f64) -> Result<(f64, f64), CloneError> {
+        let metrics = self
+            .supervisor
+            .page_call(clone_id, "Page.getLayoutMetrics", json!({}))?;
+        let viewport = metrics
+            .get("cssVisualViewport")
+            .or_else(|| metrics.get("visualViewport"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let width = viewport.get("clientWidth").and_then(Value::as_f64).unwrap_or(800.0);
+        let height = viewport.get("clientHeight").and_then(Value::as_f64).unwrap_or(600.0);
+        Ok((x.clamp(0.0, 1.0) * width, y.clamp(0.0, 1.0) * height))
     }
 
     fn set_status(&self, session_id: &str, status: CloneStatus) {
@@ -285,6 +491,17 @@ impl CloneOrchestrator {
     /// Tear down the session's clone: kill the process, eject the RAM disk,
     /// revoke the agent tool. Idempotent.
     pub fn destroy(&self, session_id: &str) {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        self.destroy_locked(session_id);
+    }
+
+    fn destroy_locked(&self, session_id: &str) {
+        self.destroy_browser_locked(session_id);
+        self.tool.revoke_session(session_id);
+    }
+
+    fn destroy_browser_locked(&self, session_id: &str) {
         let clone_id = self
             .active
             .lock()
@@ -293,24 +510,28 @@ impl CloneOrchestrator {
             .map(|entry| entry.clone_id);
         if let Some(clone_id) = clone_id {
             let _ = self.supervisor.destroy(&clone_id);
-            self.tool.revoke_session(session_id);
         }
+        self.tool.revoke_browser(session_id);
     }
 
     /// Destroy every clone whose lease has run out. The host calls this on a
     /// timer; it is also what a 30-minute default comes to.
     pub fn sweep_expired(&self) {
         let now = Instant::now();
-        let expired: Vec<String> = self
+        let expired: Vec<(String, String)> = self
             .active
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
             .filter(|(_, entry)| entry.expires_at <= now)
-            .map(|(session, _)| session.clone())
+            .map(|(session, entry)| (session.clone(), entry.clone_id.clone()))
             .collect();
-        for session in expired {
-            self.destroy(&session);
+        for (session, clone_id) in expired {
+            let operation = self.tool.session_operation(&session);
+            let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+            let still_expired = self.active.lock().unwrap_or_else(|p| p.into_inner())
+                .get(&session).is_some_and(|entry| entry.clone_id == clone_id && entry.expires_at <= now);
+            if still_expired { self.destroy_locked(&session); }
         }
     }
 
@@ -333,6 +554,15 @@ impl CloneOrchestrator {
     }
 }
 
+impl Drop for CloneOrchestrator {
+    fn drop(&mut self) {
+        let sessions: Vec<String> = self.active.lock().unwrap_or_else(|p| p.into_inner()).keys().cloned().collect();
+        for session in sessions {
+            self.destroy(&session);
+        }
+    }
+}
+
 fn view_of(session_id: &str, active: &Active, remaining: Duration) -> CloneView {
     CloneView {
         session_id: session_id.to_owned(),
@@ -346,11 +576,10 @@ fn view_of(session_id: &str, active: &Active, remaining: Duration) -> CloneView 
 
 fn normalize_domain(domain: &str) -> Option<String> {
     let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
-    (!domain.is_empty()
-        && domain
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
-    .then_some(domain)
+    (domain.len() <= 253 && domain.contains('.') && domain.split('.').all(|label| {
+        !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-')
+            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })).then_some(domain)
 }
 
 fn map_import(error: ImportError) -> CloneError {
@@ -360,6 +589,55 @@ fn map_import(error: ImportError) -> CloneError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_starts_in_one_chat_leave_only_one_managed_profile() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(supervisor, tool);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = ["first.test", "second.test"].into_iter().map(|domain| {
+            let orchestrator = Arc::clone(&orchestrator);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                orchestrator.request_clone("s1", domain, CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id()).unwrap();
+            })
+        }).collect();
+        barrier.wait();
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 1);
+        assert!(orchestrator.view("s1").is_some());
+        orchestrator.destroy("s1");
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn failure_after_spawn_destroys_the_untracked_child_and_profile() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), false);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(supervisor, tool);
+        let result = orchestrator.request_clone("s1", "example.test", CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id());
+        assert!(result.is_err(), "an unguarded clone must be refused");
+        assert!(orchestrator.view("s1").is_none());
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+        let pid: u32 = std::fs::read_to_string(dir.path().join("browser.pid")).unwrap().parse().unwrap();
+        assert_ne!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0, "failed startup left a child alive");
+    }
+
+    #[test]
+    fn dropping_the_orchestrator_destroys_its_active_profiles() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), tool);
+        let view = orchestrator.request_clone("s1", "example.test", CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id()).unwrap();
+        drop(orchestrator);
+        assert!(supervisor.clone_guard(&view.clone_id).is_none());
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+    }
 
     #[test]
     fn a_domain_is_normalized_and_validated() {
@@ -376,6 +654,7 @@ mod tests {
             status: CloneStatus::WaitingForYou,
             sign_in_path: SignInPath::SignInInside,
             expires_at: Instant::now() + Duration::from_secs(600),
+            actions_approved: false,
             runtime_pid: 1,
         };
         let json = serde_json::to_string(&view_of("s1", &active, Duration::from_secs(600))).unwrap();
@@ -486,9 +765,10 @@ mod tests {
             let ext_id = orchestrator.load_extension(session, &ext_path).expect("the extension loads");
             assert!(!ext_id.is_empty(), "loadUnpacked returned no id");
 
+            orchestrator.hand_back(session);
             // The agent drives it through its real tool socket: a read command
             // returns, an out-of-contract one is refused.
-            let (ok_status, ok_body) = tool_call(&tool, session, r#"{"kind":"screenshot"}"#);
+            let (ok_status, ok_body) = tool_call(&tool, session, r#"{"kind":"inspect"}"#);
             assert!(ok_status.contains("200"), "{ok_status} {ok_body}");
             assert!(ok_body.contains("\"ok\":true"), "{ok_body}");
             let (bad_status, _) = tool_call(&tool, session, r#"{"kind":"eval","expression":"1"}"#);
@@ -544,7 +824,8 @@ mod tests {
             assert!(orchestrator.view(session).is_none(), "a clone existed before approval");
 
             // The person approves. The clone is built and the agent gets its tool.
-            orchestrator.approve_request(session, pid).expect("approve builds the clone");
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None).expect("approve builds the clone");
+            orchestrator.hand_back(session);
             assert!(orchestrator.view(session).is_some(), "no clone after approval");
             assert!(orchestrator.pending_request(session).is_none(), "the request outlived approval");
 
@@ -571,7 +852,8 @@ mod tests {
                 .unwrap();
             let (status, body) = tool_call(&tool, session, r#"{"kind":"scroll","x":1,"y":1,"deltaY":10}"#);
             assert!(status.contains("403"), "an unapproved action was allowed: {status} {body}");
-            let (read_status, _) = tool_call(&tool, session, r#"{"kind":"screenshot"}"#);
+            orchestrator.hand_back(session);
+            let (read_status, _) = tool_call(&tool, session, r#"{"kind":"inspect"}"#);
             assert!(read_status.contains("200"), "reading should still work: {read_status}");
             orchestrator.destroy(session);
         }
@@ -591,6 +873,58 @@ mod tests {
             assert!(orchestrator.view("chat-b").is_some(), "destroying chat-a took chat-b down");
             assert!(orchestrator.frame("chat-b").is_ok(), "chat-b's clone stopped working");
             orchestrator.destroy("chat-b");
+        }
+
+        /// The person takes over and types a login; input is refused until they
+        /// do, and the agent's actions are paused while they hold it.
+        #[test]
+        fn the_person_takes_over_and_types_into_the_clone() {
+            if browser().is_none() { return }
+            let (_dir, supervisor, tool, orchestrator) = build();
+            let session = "sess-typing";
+            let pid = std::process::id();
+            // Go through the real request -> approve flow so actions are approved.
+            orchestrator.request_capability_context(session, pid).unwrap();
+            call_script(&tool, session, &format!("clone-request-{session}"), r#"{"kind":"request","domain":"127.0.0.1"}"#);
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None).unwrap();
+            orchestrator.hand_back(session);
+            let clone_id = orchestrator.view(session).unwrap().clone_id;
+            supervisor
+                .page_call(&clone_id, "Page.navigate", json!({ "url": "data:text/html,<input id=u style=%22position:fixed;inset:0;width:100%25;height:100%25;font-size:40px%22 autofocus>" }))
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+
+            // Before takeover: the person's input is refused, and the agent can act.
+            assert!(orchestrator.forward_input(session, CloneInput::Type { text: "x".into() }).is_err());
+            assert!(tool_call(&tool, session, r#"{"kind":"scroll","x":1,"y":1,"deltaY":5}"#).0.contains("200"));
+
+            // Take over: the agent is paused, and the person can type.
+            orchestrator.take_over(session);
+            assert!(tool_call(&tool, session, r#"{"kind":"scroll","x":1,"y":1,"deltaY":5}"#).0.contains("403"), "the agent kept acting during takeover");
+            orchestrator.forward_input(session, CloneInput::Click { x: 0.5, y: 0.5 }).unwrap();
+            orchestrator.forward_input(session, CloneInput::Type { text: "hunter2".into() }).unwrap();
+            let value = supervisor
+                .page_call(&clone_id, "Runtime.evaluate", json!({ "expression": "document.getElementById('u').value", "returnByValue": true }))
+                .unwrap();
+            assert_eq!(value["result"]["value"].as_str(), Some("hunter2"), "the person's typing did not land");
+
+            // Hand back: the agent's actions return (they were approved).
+            orchestrator.hand_back(session);
+            assert!(tool_call(&tool, session, r#"{"kind":"scroll","x":1,"y":1,"deltaY":5}"#).0.contains("200"), "the agent did not get control back");
+            orchestrator.destroy(session);
+        }
+
+        /// A clone whose lease has run out is swept away.
+        #[test]
+        fn an_expired_lease_is_swept() {
+            if browser().is_none() { return }
+            let (_dir, _supervisor, _tool, orchestrator) = build();
+            orchestrator
+                .request_clone("sess-ttl", "127.0.0.1", CloneBrowser::Chrome, SignInPath::SignInInside, Some(Duration::from_millis(1)), std::process::id())
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+            orchestrator.sweep_expired();
+            assert!(orchestrator.view("sess-ttl").is_none(), "the expired clone was not swept");
         }
     }
 }

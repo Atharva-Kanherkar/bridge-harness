@@ -30,13 +30,28 @@
       ]
     },
     "CloneSnapshot": {
-      "description": "What the dock shows about a session's clone. Never carries a cookie value. The `screenshot` is a redacted frame the surface renders directly.",
+      "description": "What the dock shows about a session's clone. Never carries a cookie value. The `screenshot` stays in the person’s dock; it is not sent to the agent.",
       "properties": {
+        "additionalDomains": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "cloneId": {
           "type": "string"
         },
         "domain": {
           "type": "string"
+        },
+        "extensionPath": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "minutesLeft": {
           "format": "uint64",
@@ -45,6 +60,12 @@
         },
         "pendingRequest": {
           "description": "Set when the agent has asked for a clone and is waiting on the person. The dock turns this into an Allow/Deny card. `None` once a clone exists.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pendingRequestId": {
           "type": [
             "string",
             "null"

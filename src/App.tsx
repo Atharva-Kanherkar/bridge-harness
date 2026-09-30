@@ -35,6 +35,7 @@ import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effort
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { SimpleBrowser } from "./components/SimpleBrowser";
+import { CloneRequestInbox } from "./components/CloneRequestInbox";
 import { CloneSurface, type CloneSupervision } from "./components/CloneSurface";
 import { sanitizeBrowserSelection, serializeBrowserSelections, type BrowserSelectionContext } from "./browserSelection";
 import { validateBrowserSelectionPage } from "./browserRuntime";
@@ -732,7 +733,15 @@ function AppContent() {
   // a state it is no longer watching.
   const [cloneAttention, setCloneAttention] = useState(false);
   const reportCloneSupervision = useCallback((state: CloneSupervision) => setCloneAttention(state.attention), []);
-  const cloneAlert = cloneAttention && dock.visited.includes("clone");
+  useEffect(() => setCloneAttention(false), [selectedSessionId]);
+  const cloneAlert = cloneAttention;
+  const [cloneFocus, setCloneFocus] = useState<string>();
+  useEffect(() => {
+    if (cloneFocus && selectedSessionId === cloneFocus) {
+      dispatchDock({ type: "open-pane", pane: "clone" });
+      setCloneFocus(undefined);
+    }
+  }, [cloneFocus, selectedSessionId, dispatchDock]);
 
   const dockPanes: DockPaneDescriptor[] = [
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
@@ -2674,6 +2683,7 @@ function AppContent() {
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   const codexUpdateOverlays = <>
+    <CloneRequestInbox sessionLabels={Object.fromEntries(state.sessions.map(item => [item.id, item.label]))} onOpen={id => { openSession(id); setCloneFocus(id); }} onError={setError} />
     {!error && codexUpdateSuccess && <TransientAlert title="Codex updated" message="Bridge refreshed the Codex runtime." variant="success" onDismiss={() => setCodexUpdateSuccess(false)} />}
     {!error && !codexUpdateSuccess && codexUpdateNotice && latestCodex && codexVersion && <TransientAlert
       title="Codex update available"

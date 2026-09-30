@@ -1462,7 +1462,7 @@ impl CloneSupervisor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
 
@@ -1554,15 +1554,33 @@ if ($mode eq 'helper') {
 
 my $json = JSON::PP->new->canonical;
 my @cookies;
+my $typed = "";
 $/ = "\0";
 while (defined(my $raw = <$in>)) {
     chomp $raw;
     next if $mode eq 'silent';
     my $message = $json->decode($raw);
     my $method = $message->{method} // '';
+    open(my $calls, '>>', "$here/commands.jsonl") or exit 10;
+    print $calls $json->encode($message), "\n";
+    close $calls;
     my $result = {};
     if ($method eq 'Browser.getVersion') {
         $result = { product => 'FakeChrome/1.0' };
+    } elsif ($method eq 'Target.getTargets') {
+        $result = { targetInfos => [{ targetId => 'fixture-page', type => 'page', url => 'about:blank' }] };
+    } elsif ($method eq 'Target.createTarget') {
+        $result = { targetId => 'fixture-page' };
+    } elsif ($method eq 'Target.attachToTarget') {
+        $result = { sessionId => 'fixture-session' };
+    } elsif ($method eq 'Extensions.loadUnpacked') {
+        $result = { id => 'fixture-extension' };
+    } elsif ($method eq 'Page.captureScreenshot') {
+        $result = { data => 'fixture-person-only-image' };
+    } elsif ($method eq 'Accessibility.getFullAXTree') {
+        $result = { nodes => [{ nodeId => '1', role => { value => 'textField' }, value => { value => $typed } }, { nodeId => '2', role => { value => 'StaticText' }, name => { value => "echo:$typed" } }] };
+    } elsif ($method eq 'Input.insertText') {
+        $typed = $message->{params}{text};
     } elsif ($method eq 'Storage.setCookies') {
         push @cookies, @{ $message->{params}{cookies} // [] };
     } elsif ($method eq 'Storage.getCookies') {
@@ -1577,6 +1595,15 @@ while (defined(my $raw = <$in>)) {
         fs::write(&path, FAKE_BROWSER.replace("__MODE__", mode)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// Synthetic child and ordinary temporary directory; never a real browser,
+    /// RAM disk, Keychain item or user profile.
+    pub(crate) fn synthetic_supervisor(dir: &Path, guarded: bool) -> Arc<CloneSupervisor> {
+        CloneSupervisor::with_parts(
+            dir.join("ledger.json"), dir.join("mounts"), Box::new(DirBackend),
+            CloneConfig { browser: Some(fake_browser(dir, "normal")), guarded, ..CloneConfig::default() },
+        )
     }
 
     /// A supervisor over the fake browser and a directory-backed volume. The

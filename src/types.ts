@@ -435,11 +435,14 @@ export interface BrowserCloneSnapshot {
   signInPath: CloneSignInPath | null;
   /** The domain the agent asked for, awaiting the person. Set while `requested`. */
   pendingRequest: string | null;
+  pendingRequestId?: string | null;
+  extensionPath?: string | null;
+  additionalDomains?: string[] | null;
   /** Why the agent stopped (login wall, 2FA). Set only while waiting_for_you. */
   waitingReason: string | null;
   /** The TTL deadline; the clone destroys itself when it passes. */
   expiresAt: string | null;
-  /** Latest redacted frame, as a data URL. */
+  /** Latest local frame for the person, as a data URL. */
   screenshot: string | null;
   screenshotRedactedRegions: number;
   pendingApproval: BrowserApproval | null;
