@@ -180,8 +180,11 @@ applies migrations and search writes its hidden session/usage rows.
   discovery-skipping regression test.
 - The remaining Rust workspace tests passed on the final implementation:
   `cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude bridge-core -- --test-threads=8`.
-- The full `bun run test` run reached 2,754 passing core tests, 15 ignored, and
-  one failure in the unchanged
-  `provider_usage::claude_cli::tests::startup_prompt_aborts_without_writing_a_command`.
-  That test passed immediately when rerun alone. The full command is therefore
-  not yet a clean pass; preserve this qualification when reporting validation.
+- The latest full `bun run test` passed, including 2,759 core tests (15 ignored),
+  all frontend tests, sidecar/native/release checks, the remaining Rust workspace
+  tests, and doc tests. Exact command:
+  `NODE_OPTIONS=--no-experimental-webstorage RUST_TEST_THREADS=8 CARGO_TARGET_DIR=src-tauri/target-wt bun run test`.
+  The bounded Rust test concurrency also passed the unchanged
+  `provider_usage::claude_cli::tests::startup_prompt_aborts_without_writing_a_command`,
+  which failed in an earlier full run and passed on its immediate isolated retry.
+  No test was skipped or changed to obtain the clean full-suite result.
