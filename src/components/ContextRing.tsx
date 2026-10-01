@@ -4,7 +4,13 @@
 import { cn } from "@/lib/utils";
 import { contextTone, TONE_TEXT, type ContextTone } from "../contextWindows";
 
-export function ContextGauge({ percent, size = 20, className }: { percent: number | null | undefined; size?: number; className?: string }) {
+export function ContextGauge({ percent, size = 20, className, fillClassName }: {
+  percent: number | null | undefined;
+  size?: number;
+  className?: string;
+  /** Ink for the filled arc; defaults to the pressure tone the composer uses. */
+  fillClassName?: string;
+}) {
   const radius = 8;
   const circumference = 2 * Math.PI * radius;
   const drawn = percent == null ? 0 : Math.max(0, Math.min(100, percent));
@@ -14,7 +20,7 @@ export function ContextGauge({ percent, size = 20, className }: { percent: numbe
     {percent != null && <circle
       cx="10" cy="10" r={radius} fill="none" strokeWidth="2.25" strokeLinecap="round" stroke="currentColor"
       strokeDasharray={circumference} strokeDashoffset={circumference * (1 - drawn / 100)}
-      className={cn(TONE_TEXT[tone], "transition-[stroke-dashoffset,color] duration-700 ease-out motion-reduce:transition-none")}
+      className={cn(fillClassName ?? TONE_TEXT[tone], "transition-[stroke-dashoffset,color] duration-700 ease-out motion-reduce:transition-none")}
     />}
   </svg>;
 }
