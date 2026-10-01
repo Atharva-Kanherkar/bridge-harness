@@ -176,6 +176,154 @@ pub struct ContextBreakdownResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetContextWindowsParams {
+    pub session_id: String,
+}
+
+/// How a window reading's numbers were obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextReadingState {
+    /// The provider stated used and window tokens.
+    Reported,
+    /// The harness counted its own window.
+    Measured,
+    /// At least one figure is Bridge's own (a catalog window size).
+    Estimated,
+}
+
+/// Where a window sits in the agent tree of the requested chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextWindowRole {
+    Chat,
+    Orchestrator,
+    Worker,
+}
+
+/// The classification Claude Code gives each `/context` row: `used` content
+/// occupies the window, `free` is headroom, `buffer` is the compaction
+/// reserve, `deferred` tool schemas sit outside the window until loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextSegmentKind {
+    Used,
+    Free,
+    Buffer,
+    Deferred,
+}
+
+/// Who shrinks this window when it fills: the harness (Claude, Codex and
+/// OpenCode compact their own live context) or Bridge (agent-protocol
+/// harnesses with no compaction of their own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextCompactionOwner {
+    Harness,
+    Bridge,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowSegment {
+    pub name: String,
+    pub tokens: i64,
+    pub kind: ContextSegmentKind,
+}
+
+/// One of the largest things in the window: a tool's results or an MCP
+/// server's tool schemas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowConsumer {
+    pub label: String,
+    pub tokens: i64,
+    pub detail: Option<String>,
+}
+
+/// Turns left before the window reaches its compaction point at the recent
+/// growth rate. Always an estimate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowForecast {
+    pub growth_per_turn: i64,
+    pub turns_remaining: i64,
+    pub samples: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowReading {
+    pub used_tokens: i64,
+    pub window_tokens: i64,
+    pub percent: i64,
+    pub state: ContextReadingState,
+    pub source: String,
+    pub observed_at: String,
+    pub turn_id: Option<String>,
+    /// Where the harness auto-compacts, when it says.
+    pub auto_compact_tokens: Option<i64>,
+    pub compaction_owner: ContextCompactionOwner,
+    /// Largest first; empty when the harness does not split its window.
+    pub segments: Vec<ContextWindowSegment>,
+    pub consumers: Vec<ContextWindowConsumer>,
+    pub forecast: Option<ContextWindowForecast>,
+}
+
+/// One live window in the chat's agent tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindow {
+    pub session_id: String,
+    pub label: String,
+    pub kind: String,
+    pub role: ContextWindowRole,
+    pub harness: String,
+    pub model: Option<String>,
+    pub status: String,
+    pub depth: i64,
+    /// The newest reading of the window as it is now; `null` when there is
+    /// none, with `unavailableReason` saying why. Never a zero.
+    pub current: Option<ContextWindowReading>,
+    pub unavailable_reason: Option<String>,
+}
+
+/// The last reading of a window this chat has since replaced (a model switch
+/// or a fresh provider thread).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EarlierContextWindow {
+    pub harness: String,
+    pub model: Option<String>,
+    pub used_tokens: i64,
+    pub window_tokens: i64,
+    pub percent: i64,
+    pub state: ContextReadingState,
+    pub observed_at: String,
+}
+
+/// What Bridge itself put in the window: its compiled prompt sections.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBridgeContribution {
+    pub stable_tokens: Option<i64>,
+    pub variable_tokens: Option<i64>,
+    pub method: Option<String>,
+}
+
+/// `sessions/get_context_windows`'s result: every live window in the chat's
+/// agent tree, the chat's replaced windows, and Bridge's own share.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowsResult {
+    pub session_id: String,
+    pub windows: Vec<ContextWindow>,
+    pub earlier: Vec<EarlierContextWindow>,
+    pub bridge: Option<ContextBridgeContribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivateSessionEntryParams {
     pub session_id: String,

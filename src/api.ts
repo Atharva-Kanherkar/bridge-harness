@@ -14,7 +14,7 @@ import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, Summ
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
-import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
 import type {
@@ -875,6 +875,69 @@ async function mockSearchChats(query: string, options: { limit?: number; deep?: 
     deepAvailable,
     modelTokens: 1_200,
     toolCalls: 1,
+  };
+}
+/** Mock windows derived from the mock agent tree, so the Context pane and
+ *  ring have something honest to draw outside Tauri. */
+function mockContextWindows(sessionId: string): ContextWindowsResult {
+  const tree: BridgeState["sessions"] = [];
+  const visit = (id: string, depth: number) => {
+    const session = mockState.sessions.find(candidate => candidate.id === id);
+    if (!session || depth > 8) return;
+    tree.push(session);
+    for (const child of mockState.sessions.filter(candidate => candidate.parentSessionId === id)) visit(child.id, depth + 1);
+  };
+  visit(sessionId, 0);
+  const now = new Date().toISOString();
+  const windows: ContextWindow[] = tree.map(session => {
+    const harness = String(session.harness);
+    const windowTokens = harness === "claude" ? 200_000 : harness === "codex" ? 400_000 : 262_144;
+    const percent = session.contextPercent ?? null;
+    const usedTokens = percent == null ? 0 : Math.round(windowTokens * percent / 100);
+    const claude = harness === "claude";
+    return {
+      sessionId: session.id,
+      label: session.label,
+      kind: session.kind ?? "direct",
+      role: (session.depth ?? 0) > 0 ? "worker" : session.kind === "orchestrator" ? "orchestrator" : "chat",
+      harness,
+      model: session.model ?? null,
+      status: String(session.status),
+      depth: session.depth ?? 0,
+      unavailableReason: percent == null ? "Starts reporting after its first reply." : null,
+      current: percent == null ? null : {
+        usedTokens,
+        windowTokens,
+        percent,
+        state: claude ? "measured" : harness === "opencode" ? "estimated" : "reported",
+        source: claude ? "claude.context_usage" : harness === "codex" ? "codex.token_usage" : "opencode.step_tokens",
+        observedAt: now,
+        turnId: session.activeTurnId ?? null,
+        autoCompactTokens: claude ? Math.round(windowTokens * 0.93) : null,
+        compactionOwner: "harness",
+        segments: claude ? [
+          { name: "Free space", tokens: windowTokens - usedTokens, kind: "free" },
+          { name: "Messages", tokens: Math.round(usedTokens * 0.42), kind: "used" },
+          { name: "Tool results", tokens: Math.round(usedTokens * 0.26), kind: "used" },
+          { name: "System tools", tokens: Math.round(usedTokens * 0.12), kind: "used" },
+          { name: "MCP tools", tokens: Math.round(usedTokens * 0.08), kind: "used" },
+          { name: "Autocompact buffer", tokens: Math.round(windowTokens * 0.07), kind: "buffer" },
+          { name: "Memory files", tokens: Math.round(usedTokens * 0.04), kind: "used" },
+        ] : [],
+        consumers: claude ? [
+          { label: "Bash calls and results", tokens: Math.round(usedTokens * 0.15), detail: null },
+          { label: "Read calls and results", tokens: Math.round(usedTokens * 0.1), detail: null },
+          { label: "MCP · railway", tokens: Math.round(usedTokens * 0.06), detail: "47 tools · every turn" },
+        ] : [],
+        forecast: percent > 10 ? { growthPerTurn: Math.round(windowTokens * 0.03), turnsRemaining: Math.max(1, Math.round((93 - percent) / 3)), samples: 6 } : null,
+      },
+    };
+  });
+  return {
+    sessionId,
+    windows,
+    earlier: tree.length ? [{ harness: "claude", model: "claude-sonnet-5-5", usedTokens: 52_000, windowTokens: 200_000, percent: 26, state: "measured", observedAt: now }] : [],
+    bridge: { stableTokens: 3_200, variableTokens: 1_800, method: "chars/4" },
   };
 }
 function mockContextBreakdown(sessionId: string): ContextBreakdownResult {
@@ -1942,6 +2005,7 @@ export const bridgeApi = {
   contextBreakdown: (sessionId: string): Promise<ContextBreakdownResult> => isTauri() ? call("sessions/get_context_breakdown", { sessionId }) : Promise.resolve(mockContextBreakdown(sessionId)),
   // Same change-token contract as sessionForestDigest, scoped to breakdown
   // inputs: compilations, config revisions, adapter observations, branch.
+  contextWindows: (sessionId: string): Promise<ContextWindowsResult> => isTauri() ? call("sessions/get_context_windows", { sessionId }) : Promise.resolve(mockContextWindows(sessionId)),
   contextBreakdownDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
   /** Durable backfill of one session's event log — any session id, including a
    * worker child's. Cursor semantics: pass the last sequence already held. */

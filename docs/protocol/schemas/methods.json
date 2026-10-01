@@ -324,6 +324,13 @@
       "resultSchema": "context-breakdown-digest-result.json"
     },
     {
+      "command": "get_context_windows",
+      "domain": "sessions",
+      "method": "sessions/get_context_windows",
+      "paramsSchema": "get-context-windows-params.json",
+      "resultSchema": "context-windows-result.json"
+    },
+    {
       "command": "replay_session_events",
       "domain": "sessions",
       "method": "sessions/replay_session_events",
@@ -1607,7 +1614,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 19
+    "minor": 20
   },
   "reserved": {
     "cancel": "$/cancel",
