@@ -36,6 +36,12 @@ import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
 import { SHORTCUTS } from "./keymap";
 
+// jsdom has no Web Animations API; Base UI's dialog asks for running
+// animations when it closes.
+if (typeof Element !== "undefined" && !Element.prototype.getAnimations) {
+  Element.prototype.getAnimations = () => [];
+}
+
 const adapters: AdapterDescriptor[] = [
   {
     id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
@@ -639,14 +645,18 @@ describe("the dock in the session view", () => {
     expect(dot!.closest("[data-composer-frame]")).toBeNull();
   });
 
-  it("opens the Context pane on the chat's window from the composer ring", async () => {
+  it("opens the Context lens as a modal from the composer ring, not in the dock", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]')!);
     await settle(3);
-    const contextTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Context")!;
-    expect(contextTab.getAttribute("aria-selected")).toBe("true");
-    expect(dockAside()!.querySelector('[aria-label="Context pressure"]')).not.toBeNull();
+    const lens = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="Context lens"]');
+    expect(lens).not.toBeNull();
+    expect(lens!.querySelector('[aria-label="Context pressure"]')).not.toBeNull();
+    expect([...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Context")).toBeUndefined();
+    await click(lens!.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!);
+    await settle(3);
+    expect(document.body.querySelector('[role="dialog"][aria-label="Context lens"]')).toBeNull();
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {

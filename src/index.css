@@ -106,6 +106,14 @@
     --color-chart-cursor: var(--chart-cursor);
     --color-chart-claude: var(--chart-claude);
     --color-chart-opencode: var(--chart-opencode);
+    /* Context lens segments: an ordinal ramp for what fills a window, worn
+       by the composition bar and its legend in rank order. */
+    --color-ctx-1: var(--ctx-1);
+    --color-ctx-2: var(--ctx-2);
+    --color-ctx-3: var(--ctx-3);
+    --color-ctx-4: var(--ctx-4);
+    --color-ctx-5: var(--ctx-5);
+    --color-ctx-6: var(--ctx-6);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -179,6 +187,15 @@
     --chart-cursor: #2f6cb3;
     --chart-claude: #b8542f;
     --chart-opencode: #7a58c9;
+
+    /* Context lens segments on paper: six hues in one lightness band, ranked
+       largest first, so a window's composition reads at a glance. */
+    --ctx-1: #2f6cb3;
+    --ctx-2: #0f8f6f;
+    --ctx-3: #7a58c9;
+    --ctx-4: #b8542f;
+    --ctx-5: #a3771f;
+    --ctx-6: #b03a6e;
 
     /* Cursor draws its own five facets rather than taking a Bridge hue. Paper
        runs the ladder inverted so the mark keeps its shape against light. */
@@ -318,6 +335,14 @@
     --chart-cursor: #5688cf;
     --chart-claude: #c8684a;
     --chart-opencode: #9378e6;
+
+    /* Context lens segments on graphite — lifted like the chart series. */
+    --ctx-1: #5688cf;
+    --ctx-2: #2fa07b;
+    --ctx-3: #9378e6;
+    --ctx-4: #c8684a;
+    --ctx-5: #c9a24a;
+    --ctx-6: #d05c8e;
 
     /* Cursor's own greys, as the vendor draws them. */
     --cursor-facet-darkest: #4a4a4a;

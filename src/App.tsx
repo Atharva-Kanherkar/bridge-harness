@@ -11,7 +11,7 @@ import { findReferences, insertMention, referenceAlias, removeReferenceToken, ty
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, Gauge, Ghost, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, Ghost, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
@@ -88,7 +88,7 @@ import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { ProviderLoginPane } from "./components/ProviderLoginPane";
 import { ChatUsageDot } from "./components/UsageDot";
 import { ContextRing } from "./components/ContextRing";
-import { ContextWindowsPane } from "./components/ContextWindowsPane";
+import { ContextLensDialog } from "./components/ContextLensDialog";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
@@ -742,9 +742,10 @@ function AppContent() {
   useEffect(() => setCloneAttention(false), [selectedSessionId]);
   const cloneAlert = cloneAttention;
   const [cloneFocus, setCloneFocus] = useState<string>();
-  // The composer ring asks the Context pane to open a window's detail; the
-  // nonce tells "open it again" from a re-render.
-  const [contextDetail, setContextDetail] = useState<{ sessionId: string; nonce: number }>();
+  // The composer ring opens the Context lens over the chat it belongs to.
+  // Switching chats closes it, so a stale chat's windows are never shown.
+  const [contextLensFor, setContextLensFor] = useState<string | null>(null);
+  useEffect(() => setContextLensFor(null), [selectedSessionId]);
   useEffect(() => {
     if (cloneFocus && selectedSessionId === cloneFocus) {
       dispatchDock({ type: "open-pane", pane: "clone" });
@@ -766,8 +767,6 @@ function AppContent() {
     // Last, so no existing ⌥⌘N chord moves. A clone is a private browser, not a
     // tree, so like Browser it needs no repository.
     { id: "clone", label: "Clone", icon: Ghost, available: true, alert: cloneAlert || undefined },
-    // Every live context window in this chat. About the model, not a tree.
-    { id: "context", label: "Context", icon: Gauge, available: true },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
@@ -2750,11 +2749,8 @@ function AppContent() {
   const contextRing = session ? <ContextRing
     percent={session.contextPercent}
     model={session.model ? modelLabel(session.model) : null}
-    active={dock.open && dock.pane === "context"}
-    onOpen={() => {
-      setContextDetail(current => ({ sessionId: session.id, nonce: (current?.nonce ?? 0) + 1 }));
-      dispatchDock({ type: "open-pane", pane: "context" });
-    }}
+    active={contextLensFor === session.id}
+    onOpen={() => setContextLensFor(session.id)}
   /> : null;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
@@ -3240,7 +3236,7 @@ function AppContent() {
               if (pane === "browser") return <SimpleBrowser
                 key={session.id}
                 sessionId={session.id}
-                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !recallOpen && !navOpen}
+                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !contextLensFor && !githubLinkChoice && !recallOpen && !navOpen}
                 onAttachSelection={attachBrowserSelection}
                 onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
               />;
@@ -3263,17 +3259,10 @@ function AppContent() {
               // tree, and the dock advertises it as always available. Left
               // below this line it rendered nothing in exactly the direct-chat
               // case the always-available descriptor exists to support.
-              if (pane === "context") return <ContextWindowsPane
-                key={session.id}
-                sessionId={session.id}
-                visible={dock.open && dock.pane === "context" && !fullscreen}
-                refreshKey={session.contextPercent}
-                detailRequest={contextDetail?.sessionId === session.id ? contextDetail : undefined}
-              />;
               if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
               // Also before the workspace guard: a clone needs no tree.
               if (pane === "clone") return <CloneSurface
-                visible={dock.open && dock.pane === "clone" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !githubLinkChoice && !recallOpen && !navOpen}
+                visible={dock.open && dock.pane === "clone" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !contextLensFor && !githubLinkChoice && !recallOpen && !navOpen}
                 sessionId={session?.id}
                 onSupervisionChange={reportCloneSupervision}
                 onError={setError}
@@ -3433,6 +3422,7 @@ function AppContent() {
       onClose={() => { if (!forkBusy) { setForkDraft(null); setForkError(null); } }}
     />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+    {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} />}
   </div>;
 }
 
