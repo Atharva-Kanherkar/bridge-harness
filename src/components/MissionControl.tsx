@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowUpRight, Hand, LayoutGrid, Maximize2, Minimize2, Pin, PinOff, Square, X } from "lucide-react";
+import { ArrowUpRight, Hand, LayoutGrid, Maximize2, Minimize2, MessageSquarePlus, Pin, PinOff, Square, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { useShowWorkerChatsInMissionControl } from "../missionControlSettings";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,8 @@ export type MissionControlProps = {
   activeSessionId?: string;
   onFocusSession: (sessionId: string) => void;
   onStopWorker?: (childSessionId: string) => Promise<void>;
+  /** Start a chat in `workspaceId`, or let the host pick a project when the board can't tell. */
+  onNewChat?: (workspaceId?: string) => void;
 };
 
 const ACTIVE_STATUSES = new Set<Session["status"]>(["working", "waiting", "starting", "resuming", "checkpointing"]);
@@ -263,7 +265,7 @@ function SplitTree({ node, path = "", actions }: { node: PaneNode; path?: string
   </div>;
 }
 
-export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker }: MissionControlProps) {
+export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat }: MissionControlProps) {
   const [forests, setForests] = useState<Record<string, SessionForestSnapshot>>({});
   const [stored, setStored] = useState(() => readLayout());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -320,6 +322,17 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     return [...counts];
   }, [order, projectOf]);
   const highlightedProject = hoveredProject ?? (heldProject && legend.some(([name]) => name === heldProject) ? heldProject : null);
+
+  // Which project a new chat is for: the one being highlighted, else the active
+  // chat's, else the board's only project; when it is ambiguous the host decides.
+  function newChatWorkspaceId(): string | undefined {
+    const workspaceOf = (id: string) => sessionMap.get(id)?.workspaceId ?? undefined;
+    const highlighted = highlightedProject ? order.find(id => projectOf(id) === highlightedProject) : undefined;
+    if (highlighted) return workspaceOf(highlighted);
+    const active = activeSessionId && order.includes(activeSessionId) ? workspaceOf(activeSessionId) : undefined;
+    if (active) return active;
+    return legend.length === 1 ? workspaceOf(order.find(id => projectOf(id) === legend[0][0]) ?? "") : undefined;
+  }
 
   function dropChat(id: string, fromSidebar: boolean, target?: string, edge?: DropEdge) {
     setDropOnCanvas(false);
@@ -404,8 +417,13 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
           <span className="truncate font-medium">{name}</span><span className="font-mono text-[10px] text-muted-foreground">{count}</span>
         </button>)}
       </div>}
-      <button type="button" onClick={arrange} title="Group tiles by project into an even grid. Drag a header to move one tile; drag a chat in from the sidebar to add it."
+      {onNewChat && <button type="button" onClick={() => onNewChat(newChatWorkspaceId())}
+        title={highlightedProject ? `Start a new chat in ${highlightedProject}` : "Start a new chat"}
         className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+        <MessageSquarePlus size={13} aria-hidden="true" />New chat
+      </button>}
+      <button type="button" onClick={arrange} title="Group tiles by project into an even grid. Drag a header to move one tile; drag a chat in from the sidebar to add it."
+        className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring", !onNewChat && "ml-auto")}>
         <LayoutGrid size={13} aria-hidden="true" />Arrange
       </button>
     </div>}

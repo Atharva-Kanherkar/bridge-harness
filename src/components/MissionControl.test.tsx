@@ -559,3 +559,24 @@ it("keeps the view title out of the board toolbar", async () => {
   expect(host.querySelector("h1")?.className).toContain("sr-only");
   expect(host.querySelector("[role='toolbar']")?.textContent).not.toContain("Mission Control");
 });
+
+const newChatButton = () => [...host.querySelectorAll("button")].find(button => button.textContent === "New chat");
+
+it("starts a new chat in the single project on the board", async () => {
+  const onNewChat = vi.fn();
+  await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working", { workspaceId: "ws" })], onNewChat });
+  await act(async () => newChatButton()!.click());
+  expect(onNewChat).toHaveBeenCalledWith("ws");
+});
+
+it("starts a new chat in the highlighted project, and leaves it to the host when ambiguous", async () => {
+  const spaces = [...workspaces, { id: "k", title: "kairo" }] as Workspace[];
+  const onNewChat = vi.fn();
+  await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working", { workspaceId: "k" })], workspaces: spaces, onNewChat });
+  await act(async () => newChatButton()!.click());
+  expect(onNewChat).toHaveBeenLastCalledWith(undefined);
+  const kairo = [...host.querySelectorAll("[aria-label='Projects on the board'] button")].find(button => button.textContent?.startsWith("kairo"))!;
+  await act(async () => kairo.click());
+  await act(async () => newChatButton()!.click());
+  expect(onNewChat).toHaveBeenLastCalledWith("k");
+});
