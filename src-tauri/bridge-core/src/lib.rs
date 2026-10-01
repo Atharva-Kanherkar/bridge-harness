@@ -63,6 +63,7 @@ pub mod completion;
 pub mod context;
 pub mod context_breakdown;
 pub mod context_inventory;
+pub mod context_windows;
 pub mod credential_broker;
 pub mod cursor_adapter;
 pub mod grok_adapter;

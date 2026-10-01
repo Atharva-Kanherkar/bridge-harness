@@ -13,7 +13,7 @@ use crate::runtime::BridgeCore;
 use crate::sessions;
 use crate::switch_summary;
 use crate::{
-    adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
+    adapters, agent, agent_config, backend_binding, check_runner, compaction_controller, context_windows,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
     prompts, prompt_mutations, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
@@ -2602,6 +2602,25 @@ fn handle_agent_value_timed(
         core.clone().publish_account_usage("codex", rate_limits);
         return;
     }
+    // Claude's measured window, read by the sidecar after a turn. It is a
+    // gauge, not conversation: record it and refresh state, never the event
+    // log or the forest.
+    if let Some(reading) = context_windows::reading_from_claude_frame(value) {
+        let recorded = {
+            let db = core.db.lock().unwrap();
+            let current = expected_launch.is_none_or(|(started_at, provider_session_id)| {
+                reader_launch_is_current(&db, session_id, started_at, provider_session_id)
+            });
+            let turn_id = current_turn.lock().unwrap().clone();
+            current
+                && context_windows::record_reading(&db, session_id, turn_id.as_deref(), &reading)
+                    .unwrap_or(false)
+        };
+        if recorded {
+            core.events.publish(CoreEvent::StateChanged);
+        }
+        return;
+    }
     let state = core.clone();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
@@ -2915,6 +2934,16 @@ fn handle_agent_value_timed(
                         &format!("provider.{adapter_id}"),
                         &event.data,
                     );
+                    if let Some(reading) =
+                        context_windows::reading_from_usage_event(&adapter_id, &event.data)
+                    {
+                        let _ = context_windows::record_reading(
+                            &db,
+                            session_id,
+                            observed_turn_id.as_deref(),
+                            &reading,
+                        );
+                    }
                 }
                 // An agent-protocol permission Bridge answered on the agent's
                 // behalf, which is the one settlement no card-driven path
@@ -13510,6 +13539,26 @@ mod submit_input_tests {
             )
             .unwrap();
         (fixture, Arc::new(core), managed_root)
+    }
+
+    #[test]
+    fn claude_context_usage_frame_records_a_reading_and_no_session_event() {
+        let (_dir, core, _guard) = core_with_chat("ready");
+        core.db.lock().unwrap().execute("UPDATE sessions SET model='claude-opus-5-5',provider_session_id='p1' WHERE id='chat'", []).unwrap();
+        let events_before: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat'", [], |r| r.get(0)).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &serde_json::json!({
+            "type":"context_usage","usedTokens":76_000,"windowTokens":200_000,"categories":[]
+        }));
+        let db = core.db.lock().unwrap();
+        let reading: (i64, i64, String, Option<String>, String) = db.query_row(
+            "SELECT used_tokens,window_tokens,state,turn_id,provider_session_id FROM context_readings WHERE session_id='chat'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).unwrap();
+        assert_eq!(reading, (76_000, 200_000, "measured".into(), Some("turn-1".into()), "p1".into()));
+        let percent: i64 = db.query_row("SELECT context_percent FROM sessions WHERE id='chat'", [], |r| r.get(0)).unwrap();
+        assert_eq!(percent, 38);
+        let events_after: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat'", [], |r| r.get(0)).unwrap();
+        assert_eq!(events_after, events_before, "a context gauge is not conversation");
     }
 
     #[test]
