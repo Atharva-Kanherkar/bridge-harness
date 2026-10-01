@@ -559,3 +559,23 @@ it("keeps the view title out of the board toolbar", async () => {
   expect(host.querySelector("h1")?.className).toContain("sr-only");
   expect(host.querySelector("[role='toolbar']")?.textContent).not.toContain("Mission Control");
 });
+
+const newChatButton = () => [...host.querySelectorAll("button")].find(button => button.textContent === "New chat");
+
+it("starts a new chat straight away when there is only one project", async () => {
+  const onNewChat = vi.fn();
+  await render({ sessions: [session("a", "working", { workspaceId: "ws" })], onNewChat });
+  await act(async () => newChatButton()!.click());
+  expect(onNewChat).toHaveBeenCalledWith(workspaces[0].id);
+});
+
+it("asks which project a new chat is for when there are several", async () => {
+  const spaces = [...workspaces, { id: "k", title: "kairo" }] as Workspace[];
+  const onNewChat = vi.fn();
+  await render({ sessions: [session("a", "working", { workspaceId: "ws" })], workspaces: spaces, onNewChat });
+  await act(async () => newChatButton()!.click());
+  expect(onNewChat).not.toHaveBeenCalled();
+  const kairo = [...document.querySelectorAll<HTMLElement>("[role='menuitem']")].find(item => item.textContent === "kairo")!;
+  await act(async () => kairo.click());
+  expect(onNewChat).toHaveBeenCalledWith("k");
+});
