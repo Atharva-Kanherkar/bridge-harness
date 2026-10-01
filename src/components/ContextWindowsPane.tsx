@@ -50,7 +50,7 @@ export function CompositionBar({ reading, tall = false }: { reading: ContextWind
     className={cn("relative flex overflow-hidden rounded-full border border-border bg-muted", tall ? "h-3.5" : "h-2")}
   >
     {composition.used.map((segment, index) => <span key={segment.name} className={cn("h-full", rampClass(index))} style={{ width: width(segment.tokens) }} />)}
-    {composition.unattributed > 0 && <span className={cn("ctx-hatch h-full", composition.used.length === 0 && "bg-foreground/30")} style={{ width: width(composition.unattributed) }} />}
+    {composition.unattributed > 0 && <span className={cn("h-full", composition.used.length === 0 ? "bg-foreground/45" : "ctx-hatch-neutral")} style={{ width: width(composition.unattributed) }} />}
     {reading.autoCompactTokens != null && reading.autoCompactTokens < reading.windowTokens && <span
       aria-hidden="true"
       className="absolute inset-y-0 w-px bg-ring"
@@ -170,7 +170,7 @@ function WindowDetail({ window, bridge, onBack }: { window: ContextWindow; bridg
           <span className="w-10 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{percentOf(segment.tokens, reading.windowTokens)}</span>
         </div>)}
         {composition.unattributed > 0 && <div className="flex items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-2">
-          <span className="ctx-hatch size-2 shrink-0 rounded-[3px]" />
+          <span className="ctx-hatch-neutral size-2 shrink-0 rounded-[3px]" />
           <span className="min-w-0 flex-1 truncate text-xs font-medium">Not attributed</span>
           <span className="font-mono text-xs tabular-nums">{compactTokens(composition.unattributed)}</span>
           <span className="w-10 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{percentOf(composition.unattributed, reading.windowTokens)}</span>
