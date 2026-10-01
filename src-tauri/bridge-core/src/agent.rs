@@ -721,6 +721,22 @@ pub struct CodexStreamState {
     pub serving_model: Option<String>,
 }
 
+/// Codex answers a refused `turn/start` with a bare JSON-RPC error response, no
+/// `method`, and then emits nothing for that turn. Dropping it left the chat on
+/// "thinking" forever, so surface it as the turn's failure.
+fn codex_turn_start_rejection(message: &Value) -> Option<NormalizedEvent> {
+    let id = message.get("id").and_then(Value::as_i64)?;
+    if id < crate::codex_adapter::TURN_START_REQUEST_ID_BASE {
+        return None;
+    }
+    let reason = message.pointer("/error/message").and_then(Value::as_str)?;
+    let mut event = with_data("error", message, message.clone());
+    event.status = Some("failed".into());
+    event.title = Some("Codex rejected the turn".into());
+    event.text = Some(format!("Codex rejected the turn: {reason}"));
+    Some(event)
+}
+
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
     normalize_codex_message_with_state(message, &mut CodexStreamState::default())
 }
@@ -730,7 +746,7 @@ pub fn normalize_codex_message_with_state(
     state: &mut CodexStreamState,
 ) -> Vec<NormalizedEvent> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
-        return vec![];
+        return codex_turn_start_rejection(message).into_iter().collect();
     };
     let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
     match method {
@@ -2517,6 +2533,25 @@ fn native_compaction(harness: &str, facts: Value) -> NormalizedEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_codex_turn_start_surfaces_as_a_failed_error() {
+        let id = crate::codex_adapter::TURN_START_REQUEST_ID_BASE;
+        let events = normalize_codex_message(&json!({
+            "id": id,
+            "error": {"code": -32600, "message": "turn/start.additionalContext requires experimentalApi capability"}
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+        assert_eq!(events[0].status.as_deref(), Some("failed"));
+        assert!(events[0].text.as_deref().unwrap().contains("additionalContext"));
+    }
+
+    #[test]
+    fn other_codex_response_errors_stay_silent() {
+        assert!(normalize_codex_message(&json!({"id": 11, "error": {"message": "no active turn"}})).is_empty());
+        assert!(normalize_codex_message(&json!({"id": crate::codex_adapter::TURN_START_REQUEST_ID_BASE, "result": {}})).is_empty());
+    }
     #[test]
     fn normalizes_streaming_assistant_delta() {
         let events = normalize_codex_message(
