@@ -927,7 +927,7 @@ function mockContextWindows(sessionId: string): ContextWindowsResult {
         consumers: claude ? [
           { label: "Bash calls and results", tokens: Math.round(usedTokens * 0.15), detail: null },
           { label: "Read calls and results", tokens: Math.round(usedTokens * 0.1), detail: null },
-          { label: "MCP · railway", tokens: Math.round(usedTokens * 0.06), detail: "47 tools · every turn" },
+          { label: "MCP · railway", tokens: Math.round(usedTokens * 0.06), detail: "3 of 47 tools loaded · rest on demand" },
         ] : [],
         forecast: percent > 10 ? { growthPerTurn: Math.round(windowTokens * 0.03), turnsRemaining: Math.max(1, Math.round((93 - percent) / 3)), samples: 6 } : null,
       },

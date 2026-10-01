@@ -3422,7 +3422,7 @@ function AppContent() {
       onClose={() => { if (!forkBusy) { setForkDraft(null); setForkError(null); } }}
     />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-    {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} />}
+    {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
 }
 

@@ -373,14 +373,21 @@ fn consumers(breakdown: Option<&Value>) -> Vec<ContextWindowConsumer> {
         .into_iter()
         .flatten()
         .filter_map(|server| {
-            let tools = positive(server.get("tools")).unwrap_or(0);
+            // `tokens` is the loaded tools only: with tool search on, a
+            // deferred tool's schema is not in the window until the model
+            // looks it up. A frame without `loaded` predates that split and
+            // summed every schema, so it cannot say what the window holds.
+            let loaded = positive(server.get("loaded"))?;
+            let tools = positive(server.get("tools")).unwrap_or(loaded);
+            let detail = if loaded >= tools {
+                format!("{tools} tool{} loaded", if tools == 1 { "" } else { "s" })
+            } else {
+                format!("{loaded} of {tools} tools loaded · rest on demand")
+            };
             Some(ContextWindowConsumer {
                 label: format!("MCP · {}", server.get("name")?.as_str()?),
                 tokens: positive(server.get("tokens"))?,
-                detail: Some(format!(
-                    "{tools} tool{} · every turn",
-                    if tools == 1 { "" } else { "s" }
-                )),
+                detail: Some(detail),
             })
         });
     let mut all: Vec<_> = tools.chain(servers).filter(|consumer| consumer.tokens > 0).collect();
@@ -625,7 +632,7 @@ pub(crate) mod tests_support {
                         consumers: vec![ContextWindowConsumer {
                             label: "MCP · railway".into(),
                             tokens: 9_000,
-                            detail: Some("47 tools · every turn".into()),
+                            detail: Some("3 of 47 tools loaded · rest on demand".into()),
                         }],
                         forecast: Some(ContextWindowForecast {
                             growth_per_turn: 11_000,
@@ -865,7 +872,12 @@ mod tests {
         let reading = reading_from_claude_frame(&json!({
             "type":"context_usage","usedTokens":142_000,"windowTokens":1_000_000,"autoCompactTokens":955_000,"autoCompactEnabled":true,
             "categories":[{"name":"Messages","tokens":61_000,"kind":"used"},{"name":"Free space","tokens":858_000,"kind":"free"}],
-            "mcpServers":[{"name":"railway","tokens":9_000,"tools":47}],
+            "mcpServers":[
+                {"name":"railway","tokens":9_000,"tools":47,"loaded":47,"deferredTokens":0},
+                {"name":"claude_ai_Notion","tokens":1_200,"tools":45,"loaded":1,"deferredTokens":85_492},
+                {"name":"claude_ai_Slack","tokens":0,"tools":19,"loaded":0,"deferredTokens":20_900},
+                {"name":"legacy","tokens":40_000,"tools":12}
+            ],
             "messages":{"toolsByType":[{"name":"Bash","tokens":21_000}]}
         })).unwrap();
         record_reading(&db, "chat", None, &reading).unwrap();
@@ -876,7 +888,14 @@ mod tests {
         assert_eq!(current.segments[1].name, "Messages");
         assert_eq!(current.consumers[0].label, "Bash calls and results");
         assert_eq!(current.consumers[1].label, "MCP · railway");
-        assert_eq!(current.consumers[1].detail.as_deref(), Some("47 tools · every turn"));
+        assert_eq!(current.consumers[1].detail.as_deref(), Some("47 tools loaded"));
+        // Deferred schemas are not in the window: Notion counts only its one
+        // loaded tool, Slack with nothing loaded drops out, and a frame from
+        // before the loaded split is not trusted to say what the window holds.
+        assert_eq!(current.consumers[2].label, "MCP · claude_ai_Notion");
+        assert_eq!(current.consumers[2].tokens, 1_200);
+        assert_eq!(current.consumers[2].detail.as_deref(), Some("1 of 45 tools loaded · rest on demand"));
+        assert_eq!(current.consumers.len(), 3);
     }
 
     #[test]

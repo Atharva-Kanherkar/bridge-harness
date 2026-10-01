@@ -31,7 +31,7 @@ const result: ContextWindowsResult = {
           { name: "Messages", tokens: 70_000, kind: "used" },
           { name: "Tool results", tokens: 50_000, kind: "used" },
         ],
-        consumers: [{ label: "MCP · railway", tokens: 9_000, detail: "47 tools · every turn" }],
+        consumers: [{ label: "MCP · railway", tokens: 9_000, detail: "3 of 47 tools loaded · rest on demand" }],
         forecast: { growthPerTurn: 8_000, turnsRemaining: 3, samples: 6 },
       },
     },
@@ -107,7 +107,7 @@ describe("ContextLensDialog", () => {
     expect(text).toContain("Not attributed");
     expect(text).toContain("44k"); // 164k − 70k − 50k
     expect(text).toContain("MCP · railway");
-    expect(text).toContain("47 tools · every turn");
+    expect(text).toContain("3 of 47 tools loaded · rest on demand");
     expect(text).toContain("About 3 turns until it compacts");
     expect(text).toContain("What Bridge adds");
     expect(text).toContain("Earlier in this chat");
@@ -156,6 +156,37 @@ describe("ContextLensDialog", () => {
     await mount({ open: false });
     expect(fetch).not.toHaveBeenCalled();
     expect(dialog()).toBeNull();
+  });
+
+  it("compacts the selected window through its own harness, or says Bridge checkpoints instead", async () => {
+    vi.spyOn(bridgeApi, "contextWindows").mockResolvedValue(result);
+    const onCompact = vi.fn().mockResolvedValue(undefined);
+    await mount({ onCompact });
+    const button = () => dialog()!.querySelector<HTMLButtonElement>('button[aria-label^="Compact"]')!;
+    expect(button().getAttribute("aria-label")).toBe("Compact Chat");
+    expect(button().textContent).toBe("Compact");
+    expect(dialog()!.textContent).toContain("Runs Claude's own /compact on this window.");
+    await act(async () => button().click());
+    expect(onCompact).toHaveBeenCalledWith("chat");
+    expect(button().disabled).toBe(true);
+    expect(dialog()!.textContent).toContain("Claude is compacting.");
+
+    await act(async () => tabs()[1].click());
+    await act(async () => button().click());
+    expect(onCompact).toHaveBeenLastCalledWith("w1");
+
+    await act(async () => tabs()[2].click());
+    expect(button().textContent).toBe("Checkpoint");
+    expect(dialog()!.textContent).toContain("Cursor has no compact command, so Bridge saves a checkpoint instead.");
+  });
+
+  it("shows why a compaction was refused", async () => {
+    vi.spyOn(bridgeApi, "contextWindows").mockResolvedValue(result);
+    const onCompact = vi.fn().mockRejectedValue(new Error("Wait for the current turn to finish before /compact."));
+    await mount({ onCompact });
+    await act(async () => dialog()!.querySelector<HTMLButtonElement>('button[aria-label^="Compact"]')!.click());
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toBe("Wait for the current turn to finish before /compact.");
+    expect(dialog()!.querySelector<HTMLButtonElement>('button[aria-label^="Compact"]')!.disabled).toBe(false);
   });
 
   it("closes through the dialog", async () => {

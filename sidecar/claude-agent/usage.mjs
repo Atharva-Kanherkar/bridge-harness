@@ -114,9 +114,20 @@ export function contextUsageFrame(usage) {
   for (const tool of Array.isArray(usage.mcpTools) ? usage.mcpTools : []) {
     const name = contextName(tool?.serverName);
     if (!name) continue;
-    const server = servers.get(name) ?? { name, tokens: 0, tools: 0 };
-    server.tokens += tokenCount(tool?.tokens);
+    // With tool search on, Claude Code sends an MCP tool's schema only once
+    // the model has looked it up; until then the tool costs its name. The SDK
+    // still reports every schema's size, so only a loaded tool is a per-turn
+    // cost. `isLoaded` is absent when tool search is off, and then every tool
+    // is loaded.
+    const server = servers.get(name) ?? { name, tokens: 0, tools: 0, loaded: 0, deferredTokens: 0 };
+    const tokens = tokenCount(tool?.tokens);
     server.tools += 1;
+    if (tool?.isLoaded === false) {
+      server.deferredTokens += tokens;
+    } else {
+      server.tokens += tokens;
+      server.loaded += 1;
+    }
     servers.set(name, server);
   }
   const memoryFiles = Array.isArray(usage.memoryFiles) ? usage.memoryFiles : [];
