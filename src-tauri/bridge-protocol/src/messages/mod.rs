@@ -216,6 +216,7 @@ typed_methods![
         GetContextBreakdownDigestParams,
         ContextBreakdownDigestResult
     ),
+    (GetContextWindows, GetContextWindowsParams, ContextWindowsResult),
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),

@@ -398,6 +398,8 @@ export type BridgeSidebarProps = {
   onOpenMemory: () => void;
   /** Token and cost usage across harnesses. */
   onOpenUsage?: () => void;
+  /** Drawn at the end of the bottom rail, after Gitplace: the usage dot. */
+  railTrailing?: React.ReactNode;
   /** GitHub for any repository, with no chat open. */
   onOpenGitplace?: () => void;
   onOpenSettings: () => void;
@@ -449,6 +451,7 @@ export function BridgeSidebar({
   onOpenMissionControl,
   onOpenMemory,
   onOpenUsage,
+  railTrailing,
   onOpenGitplace,
   onOpenSettings,
   onOpenSession,
@@ -876,11 +879,12 @@ export function BridgeSidebar({
             (the account's settings entry) and Gitplace. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
           <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
-          {/* Source control is Gitplace. Usage already has its nav row, so the
-              rail no longer repeats it. */}
+          {/* Source control is Gitplace. The usage dot follows it: a quick
+              look at account quota, with the Usage row for the full screen. */}
           {onOpenGitplace && <RailBottomButton label="Gitplace" active={gitplaceActive} onClick={onOpenGitplace}>
             <GitPullRequest size={16} strokeWidth={1.6} aria-hidden="true" />
           </RailBottomButton>}
+          {railTrailing}
         </div>
       </div>
       </div>

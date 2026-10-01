@@ -78,9 +78,12 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `config/save_chat_search_settings`.** A new client must not pair with an
 /// older daemon, whose sidebar search would fail with `method_not_found` on
 /// the first keystroke; a 1.18 client still pairs with a 1.19 daemon.
+/// **1.20 adds `sessions/get_context_windows`.** A new client must not pair
+/// with an older daemon, whose Context pane would fail with
+/// `method_not_found`; a 1.19 client still pairs with a 1.20 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 19,
+    minor: 20,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -292,6 +295,17 @@ mod tests {
             "chat search is additive: a 1.18 client still pairs with a 1.19 daemon"
         );
         assert!(negotiate(&request(1, 18)).is_ok());
+    }
+
+    #[test]
+    fn context_windows_client_rejects_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 19 };
+        assert!(!before.accepts(PROTOCOL_VERSION));
+        assert!(
+            PROTOCOL_VERSION.accepts(before),
+            "context windows are additive: a 1.19 client still pairs with a 1.20 daemon"
+        );
+        assert!(negotiate(&request(1, 19)).is_ok());
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

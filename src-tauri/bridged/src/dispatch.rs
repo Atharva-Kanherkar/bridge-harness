@@ -216,6 +216,10 @@ pub fn dispatch(
             let p: wire::GetContextBreakdownParams = decode(method, params)?;
             reply(api::get_context_breakdown(core, &p.session_id))
         }
+        MethodName::GetContextWindows => {
+            let p: wire::GetContextWindowsParams = decode(method, params)?;
+            reply(api::get_context_windows(core, &p.session_id))
+        }
         MethodName::GetContextBreakdownDigest => {
             let p: wire::GetContextBreakdownDigestParams = decode(method, params)?;
             reply(api::get_context_breakdown_digest(core, &p.session_id))
@@ -1128,6 +1132,24 @@ mod tests {
         // rather than something quietly ignored.
         let error = dispatch(&core, MethodName::GetWorkBoard, Some(json!({})))
             .expect_err("params must be refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn context_windows_route_and_enforce_their_params() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        dispatch(&core, MethodName::GetContextWindows, Some(json!({"sessionId": "missing"})))
+            .expect_err("unknown sessions must error, not list nothing");
+        let error = dispatch(&core, MethodName::GetContextWindows, None)
+            .expect_err("params are required");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        let error = dispatch(
+            &core,
+            MethodName::GetContextWindows,
+            Some(json!({"sessionId": "s", "extra": 1})),
+        )
+        .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 

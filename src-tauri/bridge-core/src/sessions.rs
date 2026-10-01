@@ -916,6 +916,15 @@ impl BridgeCore {
         crate::context_breakdown::context_breakdown(&db, session_id, &inventories)
     }
 
+    /// Live context windows for a chat and its agents.
+    pub fn context_windows(
+        &self,
+        session_id: &str,
+    ) -> Result<bridge_protocol::messages::ContextWindowsResult, BridgeError> {
+        let db = self.db.lock().unwrap();
+        crate::context_windows::context_windows(&db, session_id)
+    }
+
     /// The cheap half of breakdown polling; same inputs as
     /// [`BridgeCore::context_breakdown`], including the live observations —
     /// the digest reads this session's own inventories so a turn elsewhere
@@ -1388,6 +1397,16 @@ impl BridgeCore {
                         // the claim truthful would have hidden the row.
                         "modelChanged": true,
                         "freshProviderSession": !resumes_natively,
+                        // Catalog window sizes, so the divider can say how
+                        // much room the incoming model has.
+                        "previousWindowTokens": crate::model_catalog::context_window_tokens(
+                            &change.previous_harness,
+                            change.previous_model.as_deref(),
+                        ),
+                        "windowTokens": crate::model_catalog::context_window_tokens(
+                            &change.adapter_id,
+                            change.selected_model(),
+                        ),
                     });
                     if let Some(carried) = carried {
                         obj["carriedContext"] = serde_json::json!({
@@ -4033,6 +4052,8 @@ mod tests {
         let mut events = core.events.subscribe();
         let event = core.commit_chat_model_change(change).unwrap();
         assert_eq!(event.kind, "session.model_changed");
+        assert!(event.data["previousWindowTokens"].as_i64().is_some_and(|tokens| tokens > 0));
+        assert_eq!(event.data["windowTokens"], crate::model_catalog::context_window_tokens("codex", Some("stub-fast")));
         // The durable agent event rides the bus with its replay cursor.
         match events.try_recv().unwrap() {
             crate::events::CoreEvent::Agent(published) => {

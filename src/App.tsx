@@ -11,7 +11,7 @@ import { findReferences, insertMention, referenceAlias, removeReferenceToken, ty
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, Ghost, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, Gauge, Ghost, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
@@ -87,8 +87,10 @@ import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { ProviderLoginPane } from "./components/ProviderLoginPane";
 import { ChatUsageDot } from "./components/UsageDot";
+import { ContextRing } from "./components/ContextRing";
+import { ContextWindowsPane } from "./components/ContextWindowsPane";
 import type { MeterRegistry } from "./types";
-import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
+import { formatElapsed, harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption } from "./modelProfiles";
@@ -740,6 +742,9 @@ function AppContent() {
   useEffect(() => setCloneAttention(false), [selectedSessionId]);
   const cloneAlert = cloneAttention;
   const [cloneFocus, setCloneFocus] = useState<string>();
+  // The composer ring asks the Context pane to open a window's detail; the
+  // nonce tells "open it again" from a re-render.
+  const [contextDetail, setContextDetail] = useState<{ sessionId: string; nonce: number }>();
   useEffect(() => {
     if (cloneFocus && selectedSessionId === cloneFocus) {
       dispatchDock({ type: "open-pane", pane: "clone" });
@@ -761,6 +766,8 @@ function AppContent() {
     // Last, so no existing ⌥⌘N chord moves. A clone is a private browser, not a
     // tree, so like Browser it needs no repository.
     { id: "clone", label: "Clone", icon: Ghost, available: true, alert: cloneAlert || undefined },
+    // Every live context window in this chat. About the model, not a tree.
+    { id: "context", label: "Context", icon: Gauge, available: true },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
@@ -2736,10 +2743,19 @@ function AppContent() {
     }
   };
   const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
-  // The usage dot beside the composer reads the same provider overviews the
-  // menu-bar meter does, so the health it reports is next to the box that
-  // spends it and never disagrees with the status item.
-  const usageDot = <ChatUsageDot adapters={health?.adapters} onOpenUsage={() => setView("usage")} onSignIn={provider => setLoginProvider(provider)} />;
+  // Account quota lives in the sidebar rail, reading the same provider
+  // overviews the menu-bar meter does. The composer shows the model's own
+  // context window instead: the two are different things.
+  const usageDot = <ChatUsageDot rail adapters={health?.adapters} onOpenUsage={() => setView("usage")} onSignIn={provider => setLoginProvider(provider)} />;
+  const contextRing = session ? <ContextRing
+    percent={session.contextPercent}
+    model={session.model ? modelLabel(session.model) : null}
+    active={dock.open && dock.pane === "context"}
+    onOpen={() => {
+      setContextDetail(current => ({ sessionId: session.id, nonce: (current?.nonce ?? 0) + 1 }));
+      dispatchDock({ type: "open-pane", pane: "context" });
+    }}
+  /> : null;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2778,6 +2794,7 @@ function AppContent() {
       onOpenMemory={() => setView("memory")}
       onOpenUsage={() => setView("usage")}
       onOpenGitplace={() => setView("gitplace")}
+      railTrailing={usageDot}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       searchRequest={sidebarSearch}
@@ -3074,7 +3091,7 @@ function AppContent() {
                     the orchestrator is told so it does not fight the change. */}
                 {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
-                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={usageDot}/>
+                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -3165,7 +3182,7 @@ function AppContent() {
                     agentsWorking={chatAgents.length > 0}
                     onStop={session ? stopChat : undefined}
                     inputRef={composerRef}
-                    leading={usageDot}
+                    leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
@@ -3245,6 +3262,13 @@ function AppContent() {
               // tree, and the dock advertises it as always available. Left
               // below this line it rendered nothing in exactly the direct-chat
               // case the always-available descriptor exists to support.
+              if (pane === "context") return <ContextWindowsPane
+                key={session.id}
+                sessionId={session.id}
+                visible={dock.open && dock.pane === "context" && !fullscreen}
+                refreshKey={session.contextPercent}
+                detailRequest={contextDetail?.sessionId === session.id ? contextDetail : undefined}
+              />;
               if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
               // Also before the workspace guard: a clone needs no tree.
               if (pane === "clone") return <CloneSurface

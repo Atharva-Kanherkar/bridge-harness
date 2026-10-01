@@ -694,6 +694,15 @@ async fn get_context_breakdown(
 }
 
 #[tauri::command]
+async fn get_context_windows(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ContextWindowsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Context windows", move || api::get_context_windows(&core, &session_id)).await
+}
+
+#[tauri::command]
 async fn get_context_breakdown_digest(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -2783,6 +2792,7 @@ pub fn run() -> i32 {
             get_session_forest_digest,
             get_context_breakdown,
             get_context_breakdown_digest,
+            get_context_windows,
             replay_session_events,
             create_completion_plan,
             record_completion_check,

@@ -1315,6 +1315,11 @@ fn result_payloads_mirror_core() {
     assert_mirrors::<wire::SessionForestDigestResult>(&crate::api::ForestDigest {
         digest: "v1:42:2026-08-20T00:00:00Z".into(),
     });
+    assert_mirrors::<wire::GetContextWindowsParams>(&wire::GetContextWindowsParams {
+        session_id: "s-1".into(),
+    });
+    let windows = crate::context_windows::tests_support::sample_result();
+    assert_mirrors::<wire::ContextWindowsResult>(&windows);
     assert_mirrors::<wire::GetContextBreakdownParams>(&wire::GetContextBreakdownParams {
         session_id: "s-1".into(),
     });

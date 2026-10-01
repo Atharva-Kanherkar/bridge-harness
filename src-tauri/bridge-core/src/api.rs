@@ -1282,7 +1282,9 @@ pub struct ForestDigest {
     pub digest: String,
 }
 
-pub use bridge_protocol::messages::{ContextBreakdownDigestResult, ContextBreakdownResult};
+pub use bridge_protocol::messages::{
+    ContextBreakdownDigestResult, ContextBreakdownResult, ContextWindowsResult,
+};
 
 /// The cheap half of forest polling: an opaque token that changes whenever
 /// `get_session_forest` would return different store-derived content.
@@ -1310,6 +1312,15 @@ pub fn get_context_breakdown_digest(
     session_id: &str,
 ) -> Result<wire::ContextBreakdownDigestResult, BridgeError> {
     core.context_breakdown_digest(session_id)
+}
+
+/// Every live context window in the chat's agent tree, as each harness
+/// reports it.
+pub fn get_context_windows(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<wire::ContextWindowsResult, BridgeError> {
+    core.context_windows(session_id)
 }
 
 pub fn get_session_forest(
