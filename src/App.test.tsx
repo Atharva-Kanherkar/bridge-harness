@@ -604,7 +604,7 @@ describe("the dock in the session view", () => {
     expect(agentsTab.textContent).toContain("1");
   });
 
-  it("mounts the usage dot beside a worker's steer composer", async () => {
+  it("mounts the context ring beside a worker's steer composer", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
@@ -618,7 +618,7 @@ describe("the dock in the session view", () => {
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");
-    expect(container.querySelector('[aria-label^="Open usage"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label^="Context window"]')).not.toBeNull();
   });
 
   it("keeps the usage dot out of the title bar", async () => {
@@ -627,12 +627,26 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('header [aria-label^="Open usage"]')).toBeNull();
   });
 
-  it("mounts the usage dot at the chat composer's leading edge", async () => {
+  it("puts the context ring in the composer and the usage dot in the sidebar rail", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    const dot = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Open usage"]');
+    const ring = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]');
+    expect(ring).not.toBeNull();
+    expect(container.querySelector('[data-composer-frame] [aria-label^="Open usage"]')).toBeNull();
+    const dot = container.querySelector<HTMLButtonElement>('[aria-label^="Open usage"]');
     expect(dot).not.toBeNull();
     expect(dot!.getAttribute("aria-controls")).toBe("usage-dot-panel");
+    expect(dot!.closest("[data-composer-frame]")).toBeNull();
+  });
+
+  it("opens the Context pane on the chat's window from the composer ring", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]')!);
+    await settle(3);
+    const contextTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Context")!;
+    expect(contextTab.getAttribute("aria-selected")).toBe("true");
+    expect(dockAside()!.querySelector('[aria-label="Context pressure"]')).not.toBeNull();
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {

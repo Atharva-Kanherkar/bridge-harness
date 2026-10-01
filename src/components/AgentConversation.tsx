@@ -1477,11 +1477,45 @@ function ModelChangedRow({ item }: { item: ConversationItem }) {
   ].filter(Boolean).join(" · ");
   const from = side(item.data.previousHarness, item.data.previousModel);
   const to = side(item.data.harness, item.data.model);
+  const detail = modelChangeDetail(item.data);
   return <div className="my-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
     <span className="h-px flex-1 bg-border" aria-hidden="true"/>
-    <span className="shrink-0 normal-case tracking-normal">{from && to ? `${from} → ${to}` : item.title || "Model changed"}</span>
+    <span className="flex min-w-0 shrink flex-col items-center gap-0.5 normal-case tracking-normal">
+      <span className="text-center">{from && to ? `${from} → ${to}` : item.title || "Model changed"}</span>
+      {detail && <span className="text-center text-muted-foreground/80">{detail}</span>}
+    </span>
     <span className="h-px flex-1 bg-border" aria-hidden="true"/>
   </div>;
+}
+
+function compactWindow(tokens: number): string {
+  return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1_000)}k`;
+}
+
+/// The second line of a model change: how much room the incoming model has
+/// and what it inherited. Built only from fields the entry carries, so an
+/// older entry renders exactly as it always did.
+export function modelChangeDetail(data: Record<string, unknown>): string | null {
+  const parts: string[] = [];
+  const before = typeof data.previousWindowTokens === "number" ? data.previousWindowTokens : null;
+  const after = typeof data.windowTokens === "number" ? data.windowTokens : null;
+  if (!before || !after) return null;
+  parts.push(before === after ? `window ${compactWindow(after)}` : `window ${compactWindow(before)} → ${compactWindow(after)}`);
+  if (data.freshProviderSession === true) {
+    parts.push("fresh thread");
+    const carried = data.carriedContext as { summary?: unknown; decisions?: unknown; filesTouched?: unknown } | undefined;
+    if (carried && typeof carried === "object") {
+      const pieces = [
+        carried.summary ? "summary" : null,
+        typeof carried.decisions === "number" && carried.decisions > 0 ? `${carried.decisions} decision${carried.decisions === 1 ? "" : "s"}` : null,
+        typeof carried.filesTouched === "number" && carried.filesTouched > 0 ? `${carried.filesTouched} file${carried.filesTouched === 1 ? "" : "s"}` : null,
+      ].filter(Boolean);
+      if (pieces.length) parts.push(`carried ${pieces.join(" + ")}`);
+    }
+  } else if (data.freshProviderSession === false) {
+    parts.push("same thread");
+  }
+  return parts.join(" · ");
 }
 
 /// A root branch summary that only says the session began. The chat opening is

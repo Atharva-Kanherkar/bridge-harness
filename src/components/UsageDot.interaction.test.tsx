@@ -75,6 +75,20 @@ describe("ChatUsageDot", () => {
     expect(trigger().getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("in the sidebar rail, portals onto the document and opens upward from the trigger", async () => {
+    await mount({ rail: true });
+    const card = document.querySelector<HTMLElement>("#usage-dot-panel")!;
+    expect(card.parentElement).toBe(document.body);
+    expect(card.className).toContain("fixed");
+    expect(card.className).not.toContain("bottom-full");
+    await act(async () => { trigger().click(); });
+    expect(card.className).toContain("opacity-100");
+    expect(card.style.bottom).not.toBe("");
+    // A click inside the portalled card does not dismiss it.
+    await act(async () => { card.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); });
+    expect(trigger().getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("follows pushed overviews and refreshes through the interactive method", async () => {
     await mount();
     await act(async () => { listener?.(overviews(88, Math.floor(Date.now() / 1000) + 1)); });
