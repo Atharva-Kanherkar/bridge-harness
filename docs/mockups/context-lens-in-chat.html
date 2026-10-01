@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bridge · Context lens in chat</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-background: #fafaf9;
+      --color-foreground: #1f1f1d;
+      --color-card: #ffffff;
+      --color-border: #deded9;
+      --color-muted: #f0f0ee;
+      --color-subtle: #62625c;
+      --color-success: #2f7d4f;
+      --color-warning: #8a6a2f;
+      --color-danger: #be3d3d;
+      --color-ring: #3d6fa5;
+      --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+      --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .hatch { background-image: repeating-linear-gradient(135deg, rgb(31 31 29 / .22) 0 2px, transparent 2px 6px); }
+    .ring-track { stroke: #deded9; }
+  </style>
+</head>
+<body class="min-h-screen bg-background font-sans text-foreground antialiased">
+<main class="mx-auto max-w-[1280px] px-4 py-8 sm:px-8">
+
+  <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <p class="mb-2 font-mono text-[11px] uppercase tracking-[0.16em] text-subtle">Bridge · product mockup · Context lens</p>
+      <h1 class="text-3xl font-semibold tracking-tight">One chat, several windows</h1>
+      <p class="mt-2 max-w-2xl text-sm text-subtle">Every model, orchestrator and worker has its own context window. The ring in the composer, the chips in the transcript and the Context pane all read the same numbers.</p>
+    </div>
+    <div class="flex flex-wrap gap-3">
+      <div role="tablist" aria-label="Pressure" class="flex rounded-xl border border-border bg-card p-1 shadow-sm" id="pressure-tabs">
+        <button data-p="healthy" class="rounded-lg px-3 py-2 text-xs font-medium">Healthy</button>
+        <button data-p="elevated" class="rounded-lg px-3 py-2 text-xs font-medium">Elevated</button>
+        <button data-p="high" class="rounded-lg px-3 py-2 text-xs font-medium">High</button>
+        <button data-p="critical" class="rounded-lg px-3 py-2 text-xs font-medium">Critical</button>
+      </div>
+      <div role="tablist" aria-label="Pane" class="flex rounded-xl border border-border bg-card p-1 shadow-sm" id="pane-tabs">
+        <button data-pane="windows" class="rounded-lg px-3 py-2 text-xs font-medium">All windows</button>
+        <button data-pane="detail" class="rounded-lg px-3 py-2 text-xs font-medium">Window detail</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
+
+    <!-- Conversation -->
+    <section aria-label="Conversation" class="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+      <header class="flex items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+        <div class="min-w-0">
+          <p class="truncate text-sm font-semibold">Migrate billing webhooks</p>
+          <p class="mt-0.5 truncate font-mono text-[11px] text-subtle">rimo-backend · feat/billing-webhooks</p>
+        </div>
+        <span class="rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium text-subtle">3 windows live</span>
+      </header>
+
+      <div class="flex-1 space-y-5 px-5 py-6 sm:px-8">
+        <div class="ml-auto max-w-[80%] rounded-2xl rounded-tr-md bg-muted px-4 py-3 text-sm leading-6">Move the Stripe webhook handlers onto the new event bus and keep retries idempotent.</div>
+
+        <div class="max-w-[90%] text-sm leading-7">
+          <p>I mapped the six handlers and the retry table. Starting the migration with <span class="font-mono text-[13px]">invoice.paid</span> and <span class="font-mono text-[13px]">invoice.failed</span>.</p>
+          <div class="mt-2 inline-flex items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[11px] text-subtle hover:bg-muted" title="Context at the end of this reply">
+            <svg width="14" height="14" viewBox="0 0 20 20" class="-rotate-90"><circle cx="10" cy="10" r="7.5" fill="none" stroke-width="3" class="ring-track"/><circle cx="10" cy="10" r="7.5" fill="none" stroke-width="3" stroke="#1f1f1d" stroke-dasharray="47.1" stroke-dashoffset="35" stroke-linecap="round"/></svg>
+            26% · 52k / 200k · Sonnet 5.5
+          </div>
+        </div>
+
+        <!-- model switch divider -->
+        <div class="flex items-center gap-3 py-1">
+          <div class="h-px flex-1 bg-border"></div>
+          <div class="max-w-md rounded-xl border border-dashed border-border px-3.5 py-2 text-center text-xs text-subtle">
+            <span class="font-medium text-foreground">Sonnet 5.5 → Opus 5.5</span>
+            <span class="mx-1">·</span> window 200k → 1M
+            <div class="mt-0.5 font-mono text-[11px]">fresh thread · 6.1k carried via checkpoint · cache cold</div>
+          </div>
+          <div class="h-px flex-1 bg-border"></div>
+        </div>
+
+        <div class="max-w-[90%] text-sm leading-7">
+          <p>Switched to Opus for the retry-table reasoning. Delegating verification to two workers while I finish the handlers.</p>
+          <div class="mt-3 rounded-2xl border border-border bg-background px-4 py-3">
+            <div class="flex items-center justify-between text-sm font-medium"><span>Delegated 2 workers</span><span class="font-mono text-xs text-subtle">open in Agents ›</span></div>
+            <div class="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+              <div class="flex items-center justify-between rounded-lg border border-border bg-card px-3 py-2"><span>Implementation · Sonnet 5.5</span><span class="font-mono text-subtle">36%</span></div>
+              <div class="flex items-center justify-between rounded-lg border border-border bg-card px-3 py-2"><span>Verification · GPT-5.6</span><span class="font-mono text-subtle">3%</span></div>
+            </div>
+          </div>
+          <div class="mt-2 inline-flex items-center gap-2 rounded-md px-1.5 py-1 font-mono text-[11px] text-subtle" id="turn-chip"></div>
+        </div>
+
+        <div id="compaction-row" class="hidden items-center justify-center gap-2 text-[11px] text-subtle">
+          <span class="h-px w-10 bg-border"></span>
+          <span>Context compacted by Claude · 912k → 118k</span>
+          <span class="h-px w-10 bg-border"></span>
+        </div>
+      </div>
+
+      <!-- composer -->
+      <div class="border-t border-border px-5 py-4 sm:px-8">
+        <div id="pressure-banner" class="mb-3 hidden items-center gap-2 rounded-xl border px-3 py-2 text-xs"></div>
+        <div class="rounded-2xl border border-border">
+          <div class="px-4 pt-3 pb-8 text-sm text-subtle">Message Bridge…</div>
+          <div class="flex items-center gap-1 border-t border-border px-2 py-1.5">
+            <button class="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] hover:bg-muted">Opus 5.5 <span class="text-subtle">▾</span></button>
+            <span class="ml-auto"></span>
+            <button id="ctx-ring" class="inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-mono text-[11px] hover:bg-muted" title="Open Context"></button>
+          </div>
+        </div>
+        <p class="mt-2 text-[11px] text-subtle">The ring takes the spot the usage dot had. Quota moved to the sidebar rail.</p>
+      </div>
+    </section>
+
+    <!-- Dock pane -->
+    <aside aria-label="Context pane" class="min-w-0 overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+      <div class="flex items-center gap-1 border-b border-border px-3 py-2 text-xs">
+        <span class="rounded-md px-2.5 py-1.5 text-subtle">Changes</span>
+        <span class="rounded-md px-2.5 py-1.5 text-subtle">Agents</span>
+        <span class="rounded-md bg-muted px-2.5 py-1.5 font-medium">Context</span>
+        <span class="rounded-md px-2.5 py-1.5 text-subtle">Terminal</span>
+      </div>
+      <div id="pane" class="p-4"></div>
+    </aside>
+
+    <aside aria-label="Sidebar rail" class="xl:col-start-2 rounded-2xl border border-border bg-card p-4 shadow-sm">
+      <p class="mb-2 text-[11px] font-semibold uppercase tracking-[0.13em] text-subtle">Left sidebar, bottom rail</p>
+      <div class="flex items-center gap-1 rounded-xl border border-border bg-background p-2">
+        <button class="flex h-8 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] text-subtle hover:bg-muted">&#9881; Settings</button>
+        <button class="grid size-8 place-items-center rounded-lg text-subtle hover:bg-muted" title="Gitplace">&#9095;</button>
+        <button class="grid size-8 place-items-center rounded-lg hover:bg-muted" title="Usage: tightest quota window"><svg width="16" height="16" viewBox="0 0 20 20" class="-rotate-90"><circle cx="10" cy="10" r="7.5" fill="none" stroke-width="3" class="ring-track"/><circle cx="10" cy="10" r="7.5" fill="none" stroke-width="3" stroke="#be3d3d" stroke-dasharray="47.1" stroke-dashoffset="2" stroke-linecap="round"/></svg></button>
+      </div>
+      <p class="mt-2 text-[11px] leading-relaxed text-subtle">Usage (account quota) lives here now, next to Settings and Gitplace. Same ring, same card. Context is what the chat shows.</p>
+    </aside>
+  </div>
+</main>
+
+<script>
+/* ---- data -------------------------------------------------------- */
+const LEVELS = {
+  healthy:  { pct: 14, used: '142k', win: '1M',   label: 'Healthy context',   cls: 'text-foreground', stroke: '#1f1f1d', note: 'Context use is below the 60% pressure threshold.', tint: '', turns: '~38 turns until Claude compacts' },
+  elevated: { pct: 64, used: '128k', win: '200k', label: 'Elevated pressure', cls: 'text-foreground', stroke: '#1f1f1d', note: 'At least 60% of the window is occupied; keep the next handoff concise.', tint: 'border-border bg-muted/60', turns: '~9 turns until Claude compacts' },
+  high:     { pct: 82, used: '164k', win: '200k', label: 'High pressure',     cls: 'text-warning',    stroke: '#8a6a2f', note: 'At least 75% occupied; degradation risk is increasing.', tint: 'border-warning/40 bg-warning/10', turns: '~3 turns until Claude compacts' },
+  critical: { pct: 94, used: '188k', win: '200k', label: 'Critical pressure', cls: 'text-danger',     stroke: '#be3d3d', note: 'At least 90% occupied; Claude is about to compact.', tint: 'border-danger/40 bg-danger/10', turns: '~1 turn until Claude compacts' },
+};
+const SEGS = [
+  ['Messages',          0.34, 'bg-foreground/80', 'Measured'],
+  ['Tool results',      0.24, 'bg-foreground/60', 'Measured'],
+  ['System tools',      0.10, 'bg-foreground/45', 'Measured'],
+  ['MCP tools',         0.07, 'bg-foreground/32', 'Measured'],
+  ['Skills + memory',   0.06, 'bg-foreground/22', 'Measured'],
+  ['Bridge sections',   0.05, 'bg-foreground/14', 'Estimated'],
+];
+const WORKERS = [
+  ['Implementation worker', 'Sonnet 5.5 · claude', 36, '72k / 200k', 'Measured'],
+  ['Verification worker',   'GPT-5.6 · codex',      3, '12k / 400k', 'Reported'],
+];
+let level = 'healthy', pane = 'windows';
+
+/* ---- helpers ----------------------------------------------------- */
+const ring = (pct, stroke, size = 16) => {
+  const c = 2 * Math.PI * 7.5, off = c * (1 - Math.min(100, pct) / 100);
+  return `<svg width="${size}" height="${size}" viewBox="0 0 20 20" class="-rotate-90 shrink-0"><circle cx="10" cy="10" r="7.5" fill="none" stroke-width="3" class="ring-track"/><circle cx="10" cy="10" r="7.5" fill="none" stroke-width="3" stroke="${stroke}" stroke-dasharray="${c}" stroke-dashoffset="${off}" stroke-linecap="round"/></svg>`;
+};
+const badge = s => `<span class="shrink-0 rounded-full border ${s === 'Estimated' ? 'border-dashed' : ''} border-border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-subtle">${s}</span>`;
+const bar = (pct, tall = false) => {
+  const filled = Math.max(pct, 1);
+  const known = SEGS.map(([, w, cls]) => `<span class="h-full ${cls}" style="width:${w * filled * 0.92}%"></span>`).join('');
+  const hatch = `<span class="hatch h-full" style="width:${filled * 0.08}%"></span>`;
+  return `<div class="flex ${tall ? 'h-3.5' : 'h-2'} overflow-hidden rounded-full border border-border bg-muted" role="img" aria-label="${pct}% of the window is occupied">${known}${hatch}</div>`;
+};
+
+/* ---- renderers --------------------------------------------------- */
+function renderChat() {
+  const L = LEVELS[level];
+  document.getElementById('ctx-ring').innerHTML = `${ring(L.pct, L.stroke)}<span class="${L.cls}">${L.pct}%</span>`;
+  document.getElementById('turn-chip').innerHTML = `${ring(L.pct, L.stroke, 14)}${L.pct}% · ${L.used} / ${L.win} · Opus 5.5`;
+  const b = document.getElementById('pressure-banner');
+  if (level === 'healthy') { b.className = 'mb-3 hidden'; }
+  else {
+    b.className = `mb-3 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-xs ${L.tint}`;
+    b.innerHTML = `${ring(L.pct, L.stroke, 14)}<b class="${L.cls}">${L.label}</b><span class="text-subtle">${L.turns}. Claude owns this window and compacts it itself.</span><button class="ml-auto font-medium">Details ↗</button>`;
+  }
+  const c = document.getElementById('compaction-row');
+  c.className = level === 'critical' ? 'flex items-center justify-center gap-2 text-[11px] text-subtle' : 'hidden';
+}
+
+function windowCard(name, sub, pct, usage, state, stroke, open = false) {
+  return `<button data-open="${name}" class="w-full rounded-xl border border-border bg-card p-3 text-left transition-colors hover:border-foreground/25">
+    <div class="flex items-center gap-2.5">
+      ${ring(pct, stroke, 20)}
+      <div class="min-w-0 flex-1"><p class="truncate text-[13px] font-medium">${name}</p><p class="truncate font-mono text-[11px] text-subtle">${sub}</p></div>
+      <div class="text-right"><p class="font-mono text-[13px] tabular-nums">${pct}%</p><p class="font-mono text-[11px] text-subtle">${usage}</p></div>
+    </div>
+    <div class="mt-2.5">${bar(pct)}</div>
+    <div class="mt-2 flex items-center justify-between">${badge(state)}<span class="text-[11px] text-subtle">${open ? 'this chat' : 'open ›'}</span></div>
+  </button>`;
+}
+
+function renderPane() {
+  const L = LEVELS[level];
+  const el = document.getElementById('pane');
+  if (pane === 'windows') {
+    el.innerHTML = `
+      <div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-semibold">Context windows</h2><span class="font-mono text-[11px] text-subtle">updated just now</span></div>
+      <div class="grid gap-2.5">
+        ${windowCard('Chat · Opus 5.5', 'claude · 1M window', L.pct, `${L.used} / ${L.win}`, 'Measured', L.stroke, true)}
+        ${WORKERS.map(w => windowCard(w[0], w[1], w[2], w[3], w[4], '#1f1f1d')).join('')}
+      </div>
+      <div class="mt-4 rounded-xl border border-dashed border-border p-3">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-subtle">Earlier in this chat</p>
+        <ul class="mt-2 space-y-1.5 text-xs">
+          <li class="flex justify-between"><span>Sonnet 5.5</span><span class="font-mono text-subtle">52k / 200k · ended at switch</span></li>
+          <li class="flex justify-between"><span>Haiku 4.5 (briefing)</span><span class="font-mono text-subtle">4k / 200k · ended</span></li>
+        </ul>
+      </div>
+      <p class="mt-4 text-[11px] leading-relaxed text-subtle">Each window is read from its own harness. Where a harness cannot report, the card says Unavailable and shows why. It is never drawn as 0%.</p>`;
+  } else {
+    el.innerHTML = `
+      <div class="mb-3 flex items-center gap-2"><button class="rounded-md px-1.5 py-1 text-xs text-subtle hover:bg-muted" data-back>‹ Windows</button><h2 class="text-sm font-semibold">Chat · Opus 5.5</h2></div>
+
+      <section class="rounded-xl border p-3 ${L.tint || 'border-border'}">
+        <div class="flex items-center gap-2">
+          ${ring(L.pct, L.stroke, 22)}
+          <b class="text-[13px] ${L.cls}">${L.label}</b>
+          <span class="font-mono text-[13px] tabular-nums">${L.pct}%</span>
+          <span class="ml-auto font-mono text-[11px] text-subtle">${L.used} / ${L.win}</span>
+        </div>
+        <p class="mt-1.5 text-[11px] leading-relaxed text-subtle">${L.note}</p>
+        <div class="mt-3">${bar(L.pct, true)}</div>
+        <div class="mt-1.5 flex justify-between font-mono text-[11px] text-subtle"><span>Reserve for compaction at ~${level === 'healthy' ? '950k' : '186k'}</span><span>${L.turns.replace('~', 'about ')}</span></div>
+      </section>
+
+      <p class="mt-4 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.13em] text-subtle">What fills it</p>
+      <div class="grid gap-1">
+        ${SEGS.map(([n, w, cls, s]) => `
+          <div class="flex items-center gap-2 rounded-lg border border-border px-2.5 py-2">
+            <span class="size-2 shrink-0 rounded-[3px] ${cls}"></span>
+            <span class="min-w-0 flex-1 truncate text-xs font-medium">${n}</span>
+            <span class="font-mono text-xs tabular-nums">${Math.round(w * parseInt(L.used) * (L.used.endsWith('k') ? 1 : 1))}k</span>
+            <span class="w-9 text-right font-mono text-[11px] text-subtle">${Math.round(w * L.pct)}%</span>
+            ${badge(s)}
+          </div>`).join('')}
+        <div class="flex items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-2">
+          <span class="hatch size-2 shrink-0 rounded-[3px]"></span>
+          <span class="min-w-0 flex-1 truncate text-xs font-medium">Unattributed</span>
+          <span class="font-mono text-xs tabular-nums">~${Math.round(0.08 * parseInt(L.used))}k</span>
+          <span class="w-9"></span>${badge('Estimated')}
+        </div>
+      </div>
+
+      <p class="mt-4 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.13em] text-subtle">Biggest consumers</p>
+      <ul class="space-y-1 text-xs">
+        <li class="flex justify-between rounded-md px-1.5 py-1 hover:bg-muted"><span>Bash results (34 calls)</span><span class="font-mono text-subtle">21k</span></li>
+        <li class="flex justify-between rounded-md px-1.5 py-1 hover:bg-muted"><span>Read results (18 files)</span><span class="font-mono text-subtle">14k</span></li>
+        <li class="flex justify-between rounded-md px-1.5 py-1 hover:bg-muted"><span>MCP · railway (47 tools)</span><span class="font-mono text-subtle">9k <span class="text-[11px]">every turn</span></span></li>
+      </ul>
+
+      <p class="mt-4 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.13em] text-subtle">What Bridge adds</p>
+      <div class="rounded-xl border border-border bg-background p-3 text-xs">
+        <div class="flex justify-between"><span>Stable prompt (cacheable)</span><span class="font-mono text-subtle">3.2k</span></div>
+        <div class="mt-1.5 flex justify-between"><span>Variable prompt + briefing</span><span class="font-mono text-subtle">1.8k</span></div>
+        <div class="mt-1.5 flex justify-between"><span>Restored from checkpoint</span><span class="font-mono text-subtle">6.1k</span></div>
+        <button class="mt-2.5 text-[11px] font-medium text-ring">Edit in Prompt Studio ↗</button>
+      </div>
+
+      <p class="mt-4 mb-1.5 text-[11px] font-semibold uppercase tracking-[0.13em] text-subtle">History</p>
+      <div class="rounded-xl border border-border p-3">
+        <svg viewBox="0 0 320 64" class="h-16 w-full" role="img" aria-label="Context used over the last turns">
+          <line x1="0" y1="14" x2="320" y2="14" stroke="#deded9" stroke-dasharray="3 4"/>
+          <text x="318" y="10" text-anchor="end" font-size="8" fill="#62625c" font-family="monospace">auto-compact</text>
+          <polyline fill="none" stroke="#1f1f1d" stroke-width="1.6" stroke-linejoin="round" points="0,58 40,52 80,47 110,44 135,30 136,52 175,48 215,42 255,35 290,${level === 'healthy' ? 30 : level === 'elevated' ? 26 : level === 'high' ? 20 : 16} 320,${level === 'healthy' ? 28 : level === 'elevated' ? 24 : level === 'high' ? 18 : 15}"/>
+          <line x1="135" y1="6" x2="135" y2="62" stroke="#3d6fa5" stroke-width="1"/>
+          <text x="139" y="62" font-size="8" fill="#3d6fa5" font-family="monospace">model switch</text>
+        </svg>
+        <p class="mt-1 text-[11px] text-subtle">Growth ≈ 11k per turn (estimated from the last 6 turns).</p>
+      </div>
+      <p class="mt-3 text-[11px] leading-relaxed text-subtle">Claude compacts its own window. A Bridge checkpoint is saved separately and does not shrink this bar.</p>`;
+  }
+  el.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => { pane = 'detail'; sync(); }));
+  el.querySelectorAll('[data-back]').forEach(b => b.addEventListener('click', () => { pane = 'windows'; sync(); }));
+}
+
+function renderTabs() {
+  document.querySelectorAll('[data-p]').forEach(b => { const on = b.dataset.p === level; b.className = `rounded-lg px-3 py-2 text-xs font-medium ${on ? 'bg-foreground text-white' : 'text-subtle'}`; });
+  document.querySelectorAll('[data-pane]').forEach(b => { const on = b.dataset.pane === pane; b.className = `rounded-lg px-3 py-2 text-xs font-medium ${on ? 'bg-foreground text-white' : 'text-subtle'}`; });
+}
+function sync() { renderTabs(); renderChat(); renderPane(); }
+document.querySelectorAll('[data-p]').forEach(b => b.addEventListener('click', () => { level = b.dataset.p; sync(); }));
+document.querySelectorAll('[data-pane]').forEach(b => b.addEventListener('click', () => { pane = b.dataset.pane; sync(); }));
+document.getElementById('ctx-ring').addEventListener('click', () => { pane = 'detail'; sync(); });
+sync();
+</script>
+</body>
+</html>
