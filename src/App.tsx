@@ -2831,7 +2831,7 @@ function AppContent() {
         activeSessionId={session?.id}
         onFocusSession={openSession}
         onStopWorker={stopWorker}
-        onNewChat={workspaceId => void (workspaceId ? startChatInWorkspace(workspaceId) : startChatInCurrentRepo())}
+        onNewChat={workspaceId => void startChatInWorkspace(workspaceId)}
       /></Suspense> : session ? <>
         <SessionToolbar
           title={chatName(session)}

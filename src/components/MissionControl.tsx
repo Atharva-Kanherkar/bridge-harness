@@ -3,6 +3,7 @@ import { ArrowUpRight, Hand, LayoutGrid, Maximize2, Minimize2, MessageSquarePlus
 import { bridgeApi } from "../api";
 import { useShowWorkerChatsInMissionControl } from "../missionControlSettings";
 import { cn } from "@/lib/utils";
+import { MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
 import type { AgentEvent, Project, Session, SessionForestSnapshot, Workspace, WorkerRuntimeRecord } from "../types";
 import type { ApprovalDecision, InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { formatElapsed, harnessLabel } from "../utils";
@@ -23,8 +24,7 @@ export type MissionControlProps = {
   activeSessionId?: string;
   onFocusSession: (sessionId: string) => void;
   onStopWorker?: (childSessionId: string) => Promise<void>;
-  /** Start a chat in `workspaceId`, or let the host pick a project when the board can't tell. */
-  onNewChat?: (workspaceId?: string) => void;
+  onNewChat?: (workspaceId: string) => void;
 };
 
 const ACTIVE_STATUSES = new Set<Session["status"]>(["working", "waiting", "starting", "resuming", "checkpointing"]);
@@ -273,6 +273,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
   const [hoveredProject, setHoveredProject] = useState<string | null>(null);
   const [heldProject, setHeldProject] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const newChatMenu = useMenuPanel<HTMLButtonElement>({ width: 220, height: 280 });
   const board = useRef<HTMLElement>(null);
   const lastFocusedTile = useRef<string | null>(null);
   const [jumpTarget, setJumpTarget] = useState<string | null>(null);
@@ -322,17 +323,6 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     return [...counts];
   }, [order, projectOf]);
   const highlightedProject = hoveredProject ?? (heldProject && legend.some(([name]) => name === heldProject) ? heldProject : null);
-
-  // Which project a new chat is for: the one being highlighted, else the active
-  // chat's, else the board's only project; when it is ambiguous the host decides.
-  function newChatWorkspaceId(): string | undefined {
-    const workspaceOf = (id: string) => sessionMap.get(id)?.workspaceId ?? undefined;
-    const highlighted = highlightedProject ? order.find(id => projectOf(id) === highlightedProject) : undefined;
-    if (highlighted) return workspaceOf(highlighted);
-    const active = activeSessionId && order.includes(activeSessionId) ? workspaceOf(activeSessionId) : undefined;
-    if (active) return active;
-    return legend.length === 1 ? workspaceOf(order.find(id => projectOf(id) === legend[0][0]) ?? "") : undefined;
-  }
 
   function dropChat(id: string, fromSidebar: boolean, target?: string, edge?: DropEdge) {
     setDropOnCanvas(false);
@@ -417,13 +407,23 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
           <span className="truncate font-medium">{name}</span><span className="font-mono text-[10px] text-muted-foreground">{count}</span>
         </button>)}
       </div>}
-      {onNewChat && <button type="button" onClick={() => onNewChat(newChatWorkspaceId())}
-        title={highlightedProject ? `Start a new chat in ${highlightedProject}` : "Start a new chat"}
-        className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
-        <MessageSquarePlus size={13} aria-hidden="true" />New chat
-      </button>}
+      {onNewChat && workspaces.length > 0 && <>
+        <button ref={newChatMenu.triggerRef} type="button" aria-haspopup="menu" aria-expanded={newChatMenu.open}
+          onClick={() => workspaces.length === 1 ? onNewChat(workspaces[0].id) : newChatMenu.toggle()} title="Start a new chat"
+          className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+          <MessageSquarePlus size={13} aria-hidden="true" />New chat
+        </button>
+        <MenuPanel controller={newChatMenu} label="Choose a project">
+          <p className="px-2 py-1 text-[11px] font-medium text-muted-foreground">New chat in…</p>
+          {workspaces.map(workspace => <button key={workspace.id} type="button" role="menuitem"
+            onClick={() => { newChatMenu.close(); onNewChat(workspace.id); }}
+            className="flex h-7 w-full items-center rounded-md px-2 text-left text-[13px] transition-colors hover:bg-accent">
+            <span className="min-w-0 flex-1 truncate">{projectLabel({} as Session, workspace, projects) ?? workspace.title}</span>
+          </button>)}
+        </MenuPanel>
+      </>}
       <button type="button" onClick={arrange} title="Group tiles by project into an even grid. Drag a header to move one tile; drag a chat in from the sidebar to add it."
-        className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring", !onNewChat && "ml-auto")}>
+        className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring", !(onNewChat && workspaces.length > 0) && "ml-auto")}>
         <LayoutGrid size={13} aria-hidden="true" />Arrange
       </button>
     </div>}
