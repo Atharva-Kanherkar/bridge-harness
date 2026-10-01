@@ -575,7 +575,7 @@ it("starts a new chat in the highlighted project, and leaves it to the host when
   await render({ sessions: [session("a", "working", { workspaceId: "ws" }), session("b", "working", { workspaceId: "k" })], workspaces: spaces, onNewChat });
   await act(async () => newChatButton()!.click());
   expect(onNewChat).toHaveBeenLastCalledWith(undefined);
-  const kairo = [...host.querySelectorAll("[aria-label='Projects on the board'] button")].find(button => button.textContent?.startsWith("kairo"))!;
+  const kairo = [...host.querySelectorAll<HTMLButtonElement>("[aria-label='Projects on the board'] button")].find(button => button.textContent?.startsWith("kairo"))!;
   await act(async () => kairo.click());
   await act(async () => newChatButton()!.click());
   expect(onNewChat).toHaveBeenLastCalledWith("k");
