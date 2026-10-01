@@ -36,6 +36,12 @@ import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
 import { SHORTCUTS } from "./keymap";
 
+// jsdom has no Web Animations API; Base UI's dialog asks for running
+// animations when it closes.
+if (typeof Element !== "undefined" && !Element.prototype.getAnimations) {
+  Element.prototype.getAnimations = () => [];
+}
+
 const adapters: AdapterDescriptor[] = [
   {
     id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
