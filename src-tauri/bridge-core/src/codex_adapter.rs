@@ -25,12 +25,17 @@ const MINIMUM_VERSION: (u64, u64, u64) = (0, 153, 4);
 
 pub mod account;
 
+/// `turn/start` ids live in their own band so a rejected start is recognisable
+/// from its response alone (see `agent::codex_turn_start_rejection`).
+pub const TURN_START_REQUEST_ID_BASE: i64 = 1 << 40;
+
 pub struct CodexRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
     pub child: Child,
     pub thread_id: String,
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicI64,
+    turn_start_id: AtomicI64,
     sandbox_policy: Option<Value>,
     context_inventory: Mutex<Vec<AdapterContextInventory>>,
     stopped: bool,
@@ -245,7 +250,7 @@ fn launch(
     let mut reader = BufReader::new(stdout);
     write_value(
         &writer,
-        &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false,"requestAttestation":false}}}),
+        &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true,"requestAttestation":false}}}),
     )?;
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Handshake);
@@ -294,6 +299,7 @@ fn launch(
             thread_id,
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
+            turn_start_id: AtomicI64::new(TURN_START_REQUEST_ID_BASE),
             sandbox_policy,
             context_inventory: Mutex::new(codex_context_inventory(lifecycle_phase)?),
             stopped: false,
@@ -499,7 +505,10 @@ impl CodexRuntime {
     fn start_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
         let mut params = turn_start_params(&self.thread_id, text, context, self.sandbox_policy.as_ref());
         append_images(&mut params, images);
-        self.request("turn/start", params)?;
+        // `additionalContext` is gated behind the experimental API: without the
+        // capability Codex answers `-32600` and the turn never starts.
+        let id = self.turn_start_id.fetch_add(1, Ordering::Relaxed);
+        write_value(&self.writer, &json!({"method":"turn/start","id":id,"params":params}))?;
         crate::context_inventory::record_runtime_inventory(
             &self.context_inventory,
             codex_context_inventory(ContextLifecyclePhase::PerTurn)?,
