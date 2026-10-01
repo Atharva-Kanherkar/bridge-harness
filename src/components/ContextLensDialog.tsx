@@ -3,7 +3,7 @@
 // what fills it and what Bridge adds. Numbers come only from what each harness
 // reports; a window that cannot report says why instead of showing a zero.
 import { useEffect, useState } from "react";
-import { Layers, TrendingUp } from "lucide-react";
+import { Layers, Minimize2, TrendingUp } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -216,7 +216,56 @@ function EarlierList({ earlier }: { earlier: EarlierContextWindow[] }) {
   </>;
 }
 
-function WindowDetail({ window, bridge, earlier }: { window: ContextWindow; bridge: ContextBridgeContribution | null | undefined; earlier: EarlierContextWindow[] }) {
+// Harnesses with their own compaction command. Anything else falls back to a
+// Bridge checkpoint, which summarises history for a later cold start without
+// freeing provider tokens (`docs/compaction-and-resume.md`).
+const NATIVE_COMPACT = new Set(["claude", "codex", "opencode"]);
+
+type CompactState = { phase: "idle" } | { phase: "sending" } | { phase: "sent" } | { phase: "failed"; message: string };
+
+function CompactAction({ window, owner, onCompact }: {
+  window: ContextWindow;
+  owner: ContextWindowReading["compactionOwner"] | null;
+  onCompact: (sessionId: string) => Promise<void>;
+}) {
+  const [state, setState] = useState<CompactState>({ phase: "idle" });
+  // A new reading means the compaction landed (or the window moved on), so
+  // the button is offered again.
+  useEffect(() => { setState({ phase: "idle" }); }, [window.sessionId, window.current?.observedAt]);
+  const harness = harnessLabel(window.harness);
+  const native = owner ? owner === "harness" : NATIVE_COMPACT.has(window.harness);
+  const how = native
+    ? `Runs ${harness}'s own /compact on this window.`
+    : `${harness} has no compact command, so Bridge saves a checkpoint instead. It does not shrink this window.`;
+  const compact = async () => {
+    setState({ phase: "sending" });
+    try {
+      await onCompact(window.sessionId);
+      setState({ phase: "sent" });
+    } catch (error) {
+      setState({ phase: "failed", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  const note = state.phase === "sent"
+    ? (native ? `${harness} is compacting. The reading updates after it finishes.` : "Checkpoint requested.")
+    : state.phase === "failed" ? state.message
+    : how;
+  return <div className="mt-3 flex items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5">
+    <p role={state.phase === "failed" ? "alert" : undefined} className={cn("min-w-0 flex-1 text-[12px] leading-relaxed", state.phase === "failed" ? "text-destructive" : "text-muted-foreground")}>{note}</p>
+    <button
+      type="button"
+      onClick={() => void compact()}
+      disabled={state.phase === "sending" || state.phase === "sent"}
+      aria-label={`Compact ${roleTitle(window)}`}
+      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-primary px-3.5 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+    >
+      {state.phase === "sending" ? <Spinner className="size-3.5" /> : <Minimize2 size={13} aria-hidden="true" />}
+      {state.phase === "sent" ? "Compacting" : native ? "Compact" : "Checkpoint"}
+    </button>
+  </div>;
+}
+
+function WindowDetail({ window, bridge, earlier, onCompact }: { window: ContextWindow; bridge: ContextBridgeContribution | null | undefined; earlier: EarlierContextWindow[]; onCompact?: (sessionId: string) => Promise<void> }) {
   const reading = window.current;
   const harness = harnessLabel(window.harness);
   const identity = <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -225,14 +274,16 @@ function WindowDetail({ window, bridge, earlier }: { window: ContextWindow; brid
   </span>;
 
   if (!reading) {
-    return <section aria-label="Context pressure" className="rounded-2xl border border-dashed border-border p-5">
+    return <div><section aria-label="Context pressure" className="rounded-2xl border border-dashed border-border p-5">
       <div className="flex items-center justify-between gap-3">
         <p className="min-w-0 text-[12px] text-muted-foreground">{identity}</p>
         <span className="inline-flex h-6 items-center rounded-full border border-dashed border-border px-2.5 text-[11px] font-medium text-muted-foreground">Unavailable</span>
       </div>
       <p className="mt-3 font-display text-[22px] font-semibold leading-none tracking-tight text-foreground">No reading yet</p>
       <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{window.unavailableReason}</p>
-    </section>;
+    </section>
+    {onCompact && <CompactAction window={window} owner={null} onCompact={onCompact} />}
+    </div>;
   }
 
   const pressure = contextPressure(reading.percent);
@@ -266,6 +317,8 @@ function WindowDetail({ window, bridge, earlier }: { window: ContextWindow; brid
       </p>
     </section>
 
+    {onCompact && <CompactAction window={window} owner={reading.compactionOwner} onCompact={onCompact} />}
+
     {reading.forecast && <p className="mt-3 flex flex-wrap items-center gap-2 px-0.5 text-[12px] text-muted-foreground">
       <TrendingUp size={13} className="shrink-0" aria-hidden="true" />
       <span>About <b className="font-medium text-foreground">{reading.forecast.turnsRemaining} turn{reading.forecast.turnsRemaining === 1 ? "" : "s"}</b> until {reading.autoCompactTokens != null ? "it compacts" : "the window is full"}, at ~{compactTokens(reading.forecast.growthPerTurn)} per turn.</span>
@@ -293,7 +346,7 @@ function WindowDetail({ window, bridge, earlier }: { window: ContextWindow; brid
   </div>;
 }
 
-export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey, onClose }: {
+export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey, onClose, onCompact }: {
   open: boolean;
   /** The chat whose windows are shown: itself first, then every worker under it. */
   sessionId: string;
@@ -302,6 +355,8 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
   /** Changes when the chat's context moved; triggers an immediate refetch. */
   refreshKey?: unknown;
   onClose: () => void;
+  /** Compact one window: the chat's own, an orchestrator's, or a worker's. */
+  onCompact?: (sessionId: string) => Promise<void>;
 }) {
   const { result, unavailable } = useContextWindows(sessionId, open, refreshKey);
   const [selected, setSelected] = useState<string | null>(null);
@@ -340,7 +395,7 @@ export function ContextLensDialog({ open, sessionId, focusSessionId, refreshKey,
               {windows.map(window => <WindowTab key={window.sessionId} window={window} selected={window.sessionId === detail?.sessionId} onSelect={() => setSelected(window.sessionId)} />)}
             </div>}
             {detail
-              ? <WindowDetail window={detail} bridge={result.bridge} earlier={result.earlier} />
+              ? <WindowDetail window={detail} bridge={result.bridge} earlier={result.earlier} onCompact={onCompact} />
               : <p className="rounded-2xl border border-dashed border-border px-4 py-10 text-center text-[12px] text-muted-foreground">No window is live in this chat yet.</p>}
           </>}
       </DialogPanel>

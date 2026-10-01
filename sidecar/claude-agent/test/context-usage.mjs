@@ -58,8 +58,25 @@ test("contextUsageFrame maps the SDK's /context data to Bridge's frame", () => {
 
 test("contextUsageFrame aggregates MCP tools by server, largest first", () => {
   assert.deepEqual(contextUsageFrame(response).mcpServers, [
-    { name: "railway", tokens: 9000, tools: 2 },
-    { name: "notion", tokens: 2000, tools: 1 },
+    { name: "railway", tokens: 9000, tools: 2, loaded: 2, deferredTokens: 0 },
+    { name: "notion", tokens: 2000, tools: 1, loaded: 1, deferredTokens: 0 },
+  ]);
+});
+
+test("contextUsageFrame counts only loaded MCP tools as a per-turn cost", () => {
+  // Tool search on: Notion's schemas are deferred until the model looks one up,
+  // so the 85k the SDK reports for them is not in the window.
+  const frame = contextUsageFrame({
+    ...response,
+    mcpTools: [
+      ...Array.from({ length: 44 }, (_, index) => ({ name: `n${index}`, serverName: "claude_ai_Notion", tokens: 1943, isLoaded: false })),
+      { name: "notion-search", serverName: "claude_ai_Notion", tokens: 1200, isLoaded: true },
+      { name: "deploy", serverName: "railway", tokens: 800, isLoaded: true },
+    ],
+  });
+  assert.deepEqual(frame.mcpServers, [
+    { name: "claude_ai_Notion", tokens: 1200, tools: 45, loaded: 1, deferredTokens: 85492 },
+    { name: "railway", tokens: 800, tools: 1, loaded: 1, deferredTokens: 0 },
   ]);
 });
 
