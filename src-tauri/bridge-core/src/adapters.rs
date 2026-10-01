@@ -853,6 +853,13 @@ impl AdapterRegistry {
         }
     }
 
+    /// One adapter's descriptor. Building a descriptor can run the harness's
+    /// `--version` or a Keychain lookup, so a caller that needs one harness
+    /// must not pay for all of them.
+    pub fn descriptor(&self, id: &str) -> Option<AdapterDescriptor> {
+        self.adapters.get(id).map(|adapter| adapter.descriptor())
+    }
+
     pub fn descriptors(&self) -> Vec<AdapterDescriptor> {
         let mut descriptors: Vec<_> = self
             .adapters

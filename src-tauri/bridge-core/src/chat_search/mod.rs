@@ -195,12 +195,24 @@ pub fn deep_gate(core: &Arc<BridgeCore>, settings: &wire::ChatSearchSettings) ->
     if !settings.deep_search {
         return DeepGate::Unavailable("Deeper search is off in Settings → Composer.".into());
     }
-    let claude = core
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .find(|descriptor| descriptor.id == live::HARNESS);
-    match claude {
+    claude_gate(core)
+}
+
+/// How long a Claude availability answer is reused. Search runs on every
+/// debounced keystroke and a descriptor spawns child processes (a version
+/// probe, a Keychain lookup); asking each time stalled typing and every other
+/// call queued behind it.
+const GATE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn claude_gate(core: &Arc<BridgeCore>) -> DeepGate {
+    static CACHE: Mutex<Option<(usize, Instant, DeepGate)>> = Mutex::new(None);
+    let owner = Arc::as_ptr(core) as usize;
+    if let Some((cached_owner, at, gate)) = CACHE.lock().unwrap().as_ref() {
+        if *cached_owner == owner && at.elapsed() < GATE_TTL {
+            return gate.clone();
+        }
+    }
+    let gate = match core.adapter_registry.descriptor(live::HARNESS) {
         Some(descriptor) if descriptor.available => DeepGate::Allowed,
         Some(descriptor) => DeepGate::Unavailable(format!(
             "Deeper search runs on Claude Code, which is unavailable: {}",
@@ -209,7 +221,9 @@ pub fn deep_gate(core: &Arc<BridgeCore>, settings: &wire::ChatSearchSettings) ->
         None => DeepGate::Unavailable(
             "Deeper search runs on Claude Code, the one harness that can answer without tools. Install it to search deeper.".into(),
         ),
-    }
+    };
+    *CACHE.lock().unwrap() = Some((owner, Instant::now(), gate.clone()));
+    gate
 }
 
 pub fn search(core: &Arc<BridgeCore>, params: &SearchChatsParams) -> Result<SearchChatsResult, BridgeError> {
