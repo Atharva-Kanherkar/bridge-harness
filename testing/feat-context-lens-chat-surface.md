@@ -16,9 +16,9 @@ In this PR:
   `sessions.context_percent` current.
 - One new wire method `sessions/get_context_windows`.
 - UI: context ring in the composer (replacing the usage dot), the usage dot moved
-  to the sidebar's bottom rail beside Settings and Gitplace, a `Context` dock
-  pane (all windows + window detail), and the model-switch divider showing the
-  window change and what was carried.
+  to the sidebar's bottom rail beside Settings and Gitplace, a Context lens
+  modal (one tab per window + the selected window's detail), and the
+  model-switch divider showing the window change and what was carried.
 
 Out of scope (follow-ups on #768): per-turn chips on older replies, one-click
 disabling of MCP servers / skills, remote hosts.
@@ -106,25 +106,38 @@ disabling of MCP servers / skills, remote hosts.
     `session.contextPercent` and the percent in mono. Null percent → empty ring,
     label "–", tooltip "No context reading yet". Colour: foreground ≤ 74%,
     `text-warning` 75–89%, `text-destructive` ≥ 90% (the `contextPressure`
-    thresholds). Click opens the dock on the `context` pane. Accessible name
+    thresholds). Click opens the Context lens modal. Accessible name
     "Context window: 38% used" / "Context window: no reading yet".
 14. **Usage dot moves.** `ChatUsageDot` is no longer in either composer slot. It
     renders in the sidebar's bottom rail, after Gitplace, with its card opening
     upward and not clipped. Card content unchanged.
-15. **Dock pane `context`.** Appended last to `DOCK_PANES` (no ⌥⌘N chord moves),
-    label "Context", always available. Shows:
-    - list view: one card per window (ring, label, `model · harness`, percent,
-      `used / window`, composition bar, state badge); unavailable windows show a
-      dashed card with the reason and no percent; an "Earlier in this chat"
-      list; a "What Bridge adds" block when `bridge` is present.
-    - detail view (click a card or the composer ring): pressure card using
-      `contextPressure()` copy, composition bar from segments with an honest
-      hatched "unattributed" remainder (`used − sum(used segments)`), ranked
-      segments, top consumers, forecast line labelled Estimated, and the
-      ownership note ("Claude compacts this window itself").
-    - polling: fetch on open, then every 5 s while visible and on
+15. **Context lens modal.** The composer ring opens a `Dialog` labelled
+    "Context lens" over the chat (portalled, scrim, Escape and the close
+    button dismiss it). The dock gains no pane and `DOCK_PANES` is unchanged.
+    Switching chats closes the lens. While it is open the Browser and Clone
+    webviews hide, like under every other modal. It shows:
+    - a tab strip (`role="tablist"`) with one tab per window: harness mark,
+      role, model, ring and percent; an unavailable window's tab is dashed and
+      shows "–", never a percent. The strip is omitted when the chat is the
+      only window.
+    - the selected window's detail: a pressure hero using `contextPressure()`
+      copy, washed and inked by level (healthy success, high warning, critical
+      destructive), a large ring with the percent inside, `used of window`,
+      free tokens, the reading time and the state badge; a composition bar
+      whose segments wear the `ctx-1…ctx-6` hues in rank order with an honest
+      hatched "Not attributed" remainder (`used − sum(used segments)`), an
+      auto-compact marker and a legend; a forecast line labelled Estimated;
+      "What fills it" and "Biggest consumers" rows with proportional bars;
+      "What Bridge adds" tiles and "Earlier in this chat" (chat and
+      orchestrator windows only); and the ownership note ("Claude compacts
+      this window itself").
+    - an unavailable window's detail is a dashed hero with the reason and no
+      percent.
+    - polling: fetch on open, then every 5 s while open and on
       `session.contextPercent` change; serial (no overlap); stop after 3
       consecutive failures or a missing-method error and show a quiet notice.
+    - colour: the segment hues are theme tokens (`--ctx-1…6`, both modes) in
+      `src/index.css`; no palette class and no hex literal in components.
 16. Never draws an unavailable reading as 0%. Estimated values carry the
     dashed Estimated badge.
 17. Tailwind v4 only. Inline `style` only for computed widths.
@@ -158,12 +171,15 @@ Rust (`bridge-core`):
 
 Frontend (Vitest):
 - `ContextRing.test.tsx`: percent, null, thresholds, accessible name, click.
-- `ContextWindowsPane.test.tsx`: list, unavailable card, earlier list, detail
-  view, unattributed remainder, forecast badge, polling stops after failures.
+- `ContextLensDialog.test.tsx`: modal mounts in a portal, one tab per window,
+  unavailable tab shows no percent, detail hero with pressure and coloured
+  composition, unattributed remainder, consumers, forecast, Bridge share,
+  earlier list, tab switching, focus request, single-window strip omission,
+  polling stops after a missing method, no fetch while closed, close button.
 - `AgentConversation` model-change row: new second line; old payload unchanged.
 - `BridgeSidebar` test: usage dot renders in the rail.
-- `dockLayout.test.ts`: `context` is last; existing chords unchanged.
-- `App.test.tsx`: composer no longer contains the usage dot.
+- `App.test.tsx`: composer no longer contains the usage dot; the ring opens
+  the Context lens modal and no Context dock tab exists.
 
 ## Integration / Functional Tests
 
@@ -185,8 +201,8 @@ N/A automated. Manual run below covers the user path.
 ## Manual Tests
 
 1. `bun run dev` (mock mode): composer shows the ring at the mock percent;
-   clicking opens the Context pane with three windows; Usage dot sits in the
-   sidebar rail and its card opens.
+   clicking opens the Context lens modal with a tab per window; Usage dot
+   sits in the sidebar rail and its card opens.
 2. Built app, fresh Claude chat, one message: within one turn the ring shows a
    real percent and the detail view shows categories. Then
    `sqlite3 -readonly <data>/bridge.db "select state,used_tokens,window_tokens from context_readings order by id desc limit 3"` shows a `measured` row and
