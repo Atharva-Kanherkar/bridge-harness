@@ -75,6 +75,9 @@ it("renders a non-message history page through the shared transcript with disabl
   await openRoot();
   expect(host.textContent).toContain("Historical approval");
   expect(host.textContent).toContain("Saved execution failed");
+  const activity = host.querySelector<HTMLButtonElement>("[data-activity-group] > button")!;
+  expect(activity.getAttribute("aria-expanded")).toBe("false");
+  await act(async () => { activity.click(); });
   expect(host.textContent).toContain("archiveFixed");
   expect(host.textContent).toContain("Archived worker");
   const thinking = host.querySelector<HTMLElement>('[data-thinking="completed"] summary');

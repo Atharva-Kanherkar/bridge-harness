@@ -17,7 +17,7 @@ import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motio
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
-import { useShowThinking } from "../transcriptSettings";
+import { useAutoExpandEditActivity, useShowThinking } from "../transcriptSettings";
 import { HarnessMark } from "./harnessMarks";
 import { useSmoothText } from "./smoothText";
 import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
@@ -487,10 +487,9 @@ function failedCall(item: ConversationItem): boolean {
 }
 
 /// A run short enough to take in at a glance opens itself when it carries a
-/// patch. What the model wrote is the most important thing on the screen, and a
-/// diff the reader has to dig for twice is not an inline diff. Past this the
-/// run is a flood, and a flood that opens itself is the defect this bound
-/// exists to prevent.
+/// patch when the reader enables automatic edit expansion. Past this the run
+/// is a flood, and a flood that opens itself is the defect this bound exists
+/// to prevent.
 const SELF_OPENING_STEPS = 3;
 
 /// A turn's tool work as one row: what it did, how many steps it took, and —
@@ -507,7 +506,7 @@ const SELF_OPENING_STEPS = 3;
 /// A settled run that failed opens on its failures: the reader clicking
 /// "needs the agent" wants the broken step, not the ninety-nine that were
 /// fine. "Show all" reveals the whole timeline from there.
-const ActivityGroup = memo(function ActivityGroup({ items, turnActive }: { items: ConversationItem[]; turnActive: boolean }) {
+const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpandEditActivity }: { items: ConversationItem[]; turnActive: boolean; autoExpandEditActivity: boolean }) {
   const tools = useMemo(() => items.filter(isToolItem), [items]);
   // Live is a claim about the *work*, not about the transcript. A thought left
   // streaming by a provider that never settles it must not keep a finished run
@@ -537,7 +536,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive }: { items
   // What the reader asked to see when they opened a failed run: the failures
   // alone, until "Show all" says otherwise.
   const [failuresOnly, setFailuresOnly] = useState(false);
-  const expanded = toggled ?? glance;
+  const expanded = toggled ?? (autoExpandEditActivity && glance);
   const failedItems = useMemo(() => items.filter(item => isToolItem(item) && failedCall(item)), [items]);
   // A live run is never failure-only: the reader opened it to watch the work.
   const focusFailures = failuresOnly && expanded && !live && needsAgent;
@@ -634,7 +633,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive }: { items
   // The reducer rebuilds every item on every fold, so reference equality would
   // never hold and a live turn would re-render all hundred rows on every 50ms
   // flush. The signature says which rows a frame actually touched.
-}, (previous, next) => previous.turnActive === next.turnActive && sameItems(previous.items, next.items));
+}, (previous, next) => previous.turnActive === next.turnActive && previous.autoExpandEditActivity === next.autoExpandEditActivity && sameItems(previous.items, next.items));
 
 /// Variants an `ActionRow` inherits from the group that reveals it. Declared
 /// once so the stagger and the row agree on what "hidden" means.
@@ -828,6 +827,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // The reader's thinking preference, read ahead of every derived list so one
   // subscription feeds every thought row through `ShowThinking`.
   const [showThinking] = useShowThinking();
+  const [autoExpandEditActivity] = useAutoExpandEditActivity();
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
   // A thought the reader has hidden leaves no row at all once it settles:
   // drawing the empty wrapper would leave its 20px gap behind in the turn.
@@ -940,7 +940,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           get their exit. */}
       <AnimatePresence initial={false} key={session?.id ?? "preview"}>
         {shownItems.map(entry => entry.kind === "group"
-          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} turnActive={turnActive}/></TranscriptRow>
+          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/></TranscriptRow>
           : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
           : <TranscriptRow
               key={entry.key}
@@ -949,7 +949,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} sessionId={session?.id} latest={entry.item.key === latestReplyKey} readOnly={readOnly} turnActive={turnActive} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
+              <ItemView item={entry.item} sessionId={session?.id} latest={entry.item.key === latestReplyKey} readOnly={readOnly} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -1396,7 +1396,7 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-function ItemView({ item, sessionId, latest, readOnly, turnActive, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; latest?: boolean; readOnly?: boolean; turnActive: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
+function ItemView({ item, sessionId, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
@@ -1419,7 +1419,7 @@ function ItemView({ item, sessionId, latest, readOnly, turnActive, onResolve, on
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
-  return <ActivityGroup items={[item]} turnActive={turnActive}/>;
+  return <ActivityGroup items={[item]} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/>;
 }
 
 /// A failure, stated plainly.

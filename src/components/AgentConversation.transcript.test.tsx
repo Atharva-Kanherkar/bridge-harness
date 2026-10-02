@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentConversation } from "./AgentConversation";
-import { SHOW_THINKING_STORAGE_KEY } from "../transcriptSettings";
+import { SHOW_THINKING_STORAGE_KEY, writeAutoExpandEditActivity } from "../transcriptSettings";
 import { asWireKind } from "../transcript/wire";
 import { durableEntriesFrom } from "../transcript/golden";
 import type { AgentEvent, Session, SessionEntry } from "../types";
@@ -56,6 +56,9 @@ function mount(events: AgentEvent[]) {
 
 const buttonWith = (text: string) =>
   [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes(text));
+
+const activityToggle = () => host.querySelector<HTMLButtonElement>("[data-activity-group] > button")!;
+const openActivity = () => act(() => activityToggle().click());
 
 beforeEach(() => {
   const store = new Map<string, string>();
@@ -136,14 +139,48 @@ describe("anonymous tool starts", () => {
 });
 
 describe("inline diffs", () => {
-  it("shows an edit's first hunk without anyone clicking anything", () => {
+  it("starts with the edit collapsed and reveals its first hunk on request", () => {
     mount([fileChange()]);
+    expect(activityToggle().getAttribute("aria-expanded")).toBe("false");
+    expect(host.textContent).not.toContain("lock_scoped");
+    openActivity();
     expect(host.textContent).toContain("lock_scoped");
     expect(host.querySelector(".stx")).not.toBeNull();
   });
 
+  it("opens short edits when enabled and preserves the reader's manual closure", async () => {
+    writeAutoExpandEditActivity(true);
+    mount([fileChange()]);
+    expect(activityToggle().getAttribute("aria-expanded")).toBe("true");
+    expect(host.textContent).toContain("lock_scoped");
+    await act(async () => { activityToggle().click(); });
+    mount([fileChange()]);
+    expect(activityToggle().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("updates a mounted transcript when the preference changes", async () => {
+    mount([fileChange()]);
+    expect(activityToggle().getAttribute("aria-expanded")).toBe("false");
+    await act(async () => { writeAutoExpandEditActivity(true); window.dispatchEvent(new Event("storage")); });
+    expect(activityToggle().getAttribute("aria-expanded")).toBe("true");
+    await act(async () => { writeAutoExpandEditActivity(false); window.dispatchEvent(new Event("storage")); });
+    expect(activityToggle().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps a long activity group collapsed even when edit expansion is enabled", () => {
+    writeAutoExpandEditActivity(true);
+    mount([
+      event(1, "tool.completed", { title: "Read a.rs", data: { type: "readFile", path: "a.rs" } }),
+      event(2, "tool.completed", { title: "Read b.rs", data: { type: "readFile", path: "b.rs" } }),
+      event(3, "tool.completed", { title: "Read c.rs", data: { type: "readFile", path: "c.rs" } }),
+      fileChange({ id: 4, sequence: 4, itemId: "i-4" }),
+    ]);
+    expect(activityToggle().getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("folds the remaining hunks behind a bar rather than truncating the patch", () => {
     mount([fileChange()]);
+    openActivity();
     expect(host.textContent).not.toContain("current_generation");
     const fold = buttonWith("more hunk");
     expect(fold?.textContent).toMatch(/1 more hunk\b.*expand/);
@@ -154,6 +191,7 @@ describe("inline diffs", () => {
 
   it("keeps the diffstat and full path discoverable on the summary row", () => {
     mount([fileChange()]);
+    openActivity();
     expect(host.textContent).toContain("+24");
     expect(host.textContent).toContain("−3");
     expect(host.querySelector('[title="src-tauri/src/lib.rs"]')?.textContent).toBe("src-tauri/src");
@@ -218,13 +256,14 @@ describe("three layers", () => {
       event(2, "tool.completed", { title: "grep", data: { name: "Grep", input: { pattern: "resume" } } }),
       fileChange({ id: 3, sequence: 3, itemId: "i-3" }),
     ]);
-    // The group is already open, because the edit carries a diff.
+    openActivity();
     expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
     expect(host.textContent).not.toContain("Explored");
   });
 
   it("puts each action in the shared activity section with the patch still visible", () => {
     mount([read(1, "src-tauri/src/lib.rs"), fileChange({ id: 2, sequence: 2, itemId: "i-2" })]);
+    openActivity();
     const activity = host.querySelector("[data-activity-group]");
     expect(activity?.querySelectorAll("[data-tool-row]")).toHaveLength(2);
     expect(buttonWith("Edited lib.rs")?.closest("[data-activity-group]")).toBe(activity);
@@ -240,6 +279,7 @@ describe("three layers", () => {
       fileChange({ id: 2, sequence: 2, itemId: "i-2" }),
       read(3, "b.rs"),
     ]);
+    openActivity();
     const text = host.textContent ?? "";
     expect(text.indexOf("Read a.rs")).toBeLessThan(text.indexOf("Edited lib.rs"));
     expect(text.indexOf("Edited lib.rs")).toBeLessThan(text.indexOf("Read b.rs"));
