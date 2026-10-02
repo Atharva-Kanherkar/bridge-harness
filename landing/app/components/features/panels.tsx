@@ -304,7 +304,7 @@ export function Browser() {
               {["Conversation", "Commits", "Checks"].map(tab => (
                 <span
                   key={tab}
-                  className={`-mb-px border-b-2 pb-1.5 ${(tab === "Checks") === onChecks ? "border-foreground text-foreground" : "border-transparent text-muted-foreground"}`}
+                  className={`-mb-px border-b-2 pb-1.5 ${tab === (onChecks ? "Checks" : "Conversation") ? "border-foreground text-foreground" : "border-transparent text-muted-foreground"}`}
                 >
                   {tab}
                 </span>

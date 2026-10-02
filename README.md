@@ -1,8 +1,8 @@
 <h1 align="center">Bridge</h1>
 
 <p align="center">
-  <strong>The control room for coding agents.</strong><br/>
-  Run Codex, Claude Code, OpenCode, Cursor, and Grok side by side — safely, on your Mac, with your own subscriptions.
+  <strong>The last coding agent you'll ever need.</strong><br/>
+  Claude Code, Codex, Cursor, OpenCode, and Grok, running as one team in one window, on your own subscriptions.
 </p>
 
 <p align="center">
@@ -29,95 +29,81 @@
 
 ---
 
-## What is Bridge?
+## Ship more, babysit less.
 
-Bridge is a native macOS app for working with AI coding agents on real projects. Point it at a Git repository, start a session with the agent you want, and get your work done — without living in the terminal and without worrying about an agent trampling your checkout.
+Bridge is a native desktop app for running AI coding agents on real projects. Point it at a Git repository, start the agents you want, and let them work in parallel while you review what lands. Your code and your credentials stay on your machine.
 
-Use your existing agent subscriptions. Your code and your credentials stay on your machine.
+### Every agent on its own branch
 
-## Why Bridge?
+Run as many agents as you like on one repo. Every chat gets its own Git worktree and branch, so they never step on each other's files. Mission Control shows them side by side and flags the one waiting on you.
 
-- **One place for every agent.** Start Codex, Claude Code, OpenCode, Cursor, or Grok sessions from the same window and switch between them freely.
+<p align="center">
+  <img src="docs/media/feature-parallel.webp" alt="Mission Control with six chats live, each on its own branch, moving from working to verifying to done" width="680" />
+</p>
+
+### Switch harness mid-chat
+
+Change model or provider inside one conversation, Codex to Claude Code to Cursor, without starting over. The provider session restarts; your history stays where it is. Nobody else lets you do this.
+
+<p align="center">
+  <img src="docs/media/feature-switch-harness.webp" alt="A Codex reply, then the model picker moving to Claude Opus, and Claude carrying on in the same thread" width="680" />
+</p>
+
+### A real browser, signed in as you
+
+When an agent needs a site you're logged into, it asks. Approve it and the agent drives a throwaway copy of your session: it can click through a deploy preview or a dashboard, and you can take over at any point. The copy is thrown away when the turn ends.
+
+<p align="center">
+  <img src="docs/media/feature-browser.webp" alt="An approval card, then the agent's cursor opening a pull request, clicking Checks, and waiting for them to pass" width="680" />
+</p>
+
+### Nothing gets lost
+
+Every message, plan, tool call, and delegation lands in a local log that only ever grows. When the context window fills, Bridge compacts the model's view and leaves the log alone, so a restart picks up from a verified checkpoint instead of a blank page.
+
+<p align="center">
+  <img src="docs/media/feature-history.webp" alt="Events streaming into the transcript, the context meter filling, compaction dropping it to 23k, and a resume from checkpoint" width="680" />
+</p>
+
+### No agent grades its own homework
+
+Tests run first. Then a reviewer from a different model family has to sign off, and a review from the family that wrote the code is thrown out. Claude's work gets checked by Codex, and the other way round.
+
+<p align="center">
+  <img src="docs/media/feature-verify.webp" alt="Tests streaming to a pass, a Claude review rejected as same family, and a Codex review approving before Ready to merge" width="680" />
+</p>
+
+### Tell it once
+
+Preferences, decisions, and constraints get saved as you work and come back in any later chat, whichever agent is running and whichever repo it's in. Every reply shows which memories it used.
+
+<p align="center">
+  <img src="docs/media/feature-memory.webp" alt="A preference saved in a Claude chat, then a Codex chat in another repo using it" width="680" />
+</p>
+
+### Spend less by delegating
+
+Narrow work goes to a cheap tier and only the hard parts reach an expensive one. Tokens, cost, and cache savings break out per harness and per model, so the routing pays for itself visibly.
+
+<p align="center">
+  <img src="docs/media/feature-cost.webp" alt="The usage screen with the daily cost chart drawing in and live totals per harness ticking up" width="680" />
+</p>
+
+### And the rest of the app
+
 - **Set up in one screen.** First launch finds the agents you already have, installs the ones you want, and runs each provider's own sign-in.
-- **Experiment without fear.** Each task gets its own isolated workspace, so agents can try things without touching your main branch.
-- **Nothing gets lost.** Conversations are saved automatically. Rewind, fork, or resume a session days later — right where you left off.
-- **You're always in charge.** Agents ask before running anything risky. You approve or decline in one click.
-- **Know what you're spending.** See usage, rate limits, and context health per provider before you hit a wall.
-- **It remembers how you work.** Save preferences and project knowledge once; Bridge surfaces the right bits in future sessions.
-
-## What you can do with it
-
-### Start with the agents you already have
-
-Open Bridge for the first time and it scans your machine before asking you for anything. Agents it finds are marked **Detected**; ones you're already signed in to are simply **Signed in** — no second login, no setup you've already done twice. Anything missing can be installed in place, and sign-in runs in a quiet pane with a direct link to the provider's own page rather than a raw terminal.
-
-### Work with any of your agents
-
-Chat in a clean native UI — messages, reasoning, plans, tool calls, diffs, and approvals rendered properly instead of crammed into a terminal.
-
-<p align="center">
-  <img src="docs/media/switch-harness.webp" alt="The model picker open inside a chat, listing Codex and Claude Code models together" width="900" />
-</p>
-
-<p align="center"><sub>Switch model or provider inside one conversation. The provider session restarts; your history stays.</sub></p>
-
-<p align="center">
-  <img src="docs/media/agent-fleet.webp" alt="Agent Fleet: a shell split into a grid alongside Claude Code, Codex, and OpenCode terminals" width="900" />
-</p>
-
-<p align="center"><sub>Agent Fleet runs the CLIs themselves, split into one terminal grid per checkout.</sub></p>
-
-### Keep tasks safely separated
-
-Spin up a task workspace per piece of work. Agents work in their own branch and folder; your main checkout stays clean. Run a second opinion in parallel when it matters.
-
-### Stay in control of risky actions
-
-Commands, file writes, and delegation requests outside the agreed scope pause for your approval. Review the exact diff before anything lands.
+- **You approve the risky parts.** Commands, writes outside the agreed scope, and delegation pause for one click.
+- **Review every diff where it happened**, ranked by blast radius, before anything lands.
+- **Agent Fleet** runs the CLIs themselves in a terminal grid per checkout.
+- **Stay connected to GitHub.** Browse issues and pull requests and keep the conversation tied to the code under review.
 
 <p align="center">
   <img src="docs/media/review-diffs.webp" alt="An inline diff in the transcript beside the changes dock listing four changed files with risk labels" width="900" />
 </p>
 
-<p align="center"><sub>Every change is reviewable where it happened, ranked by blast radius.</sub></p>
-
 <p align="center">
-  <img src="docs/media/verification.webp" alt="A verification record showing two checks passed, Claude scrutiny running, and Codex user testing pending, above Adopt and Discard" width="900" />
+  <img src="docs/media/agent-fleet.webp" alt="Agent Fleet: a shell split into a grid alongside Claude Code, Codex, and OpenCode terminals" width="900" />
 </p>
-
-<p align="center"><sub>A completion gate can demand a second harness family before you adopt anything.</sub></p>
-
-### Never lose a thread
-
-Every session is stored locally and stays inspectable. Go back to an earlier point, fork the conversation to try a different approach, or resume after a restart — without losing what the agent already figured out.
-
-<p align="center">
-  <img src="docs/media/session-forest.webp" alt="The transcript pane streaming message, plan, tool, and delegation events beside a conversation" width="900" />
-</p>
-
-<p align="center"><sub>An append-only ledger of what actually happened, filterable and forkable.</sub></p>
-
-### See costs and limits up front
-
-Per-provider usage, rate-limit status, and context pressure are visible in the app, so you can switch models or wrap up before quality degrades.
-
-<p align="center">
-  <img src="docs/media/usage.webp" alt="The usage screen with cost per harness, a daily cost chart, token totals, and cache savings" width="900" />
-</p>
-
-<p align="center"><sub>Cost per harness and per model, with what the cache saved you.</sub></p>
-
-### Read a page without leaving the app
-
-The dock's browser pane is a plain in-app browser — URL bar, back, forward, reload — for docs, a dashboard, or the PR you're discussing. Pages that refuse to be framed open in your system browser instead.
-
-### Keep project knowledge
-
-Store the preferences, conventions, and decisions agents should follow. Recall them in any session, on any workspace.
-
-### Stay connected to GitHub
-
-Browse issues and pull requests, open work from a task, and keep the conversation tied to the code under review.
 
 ## Works with your subscriptions
 
