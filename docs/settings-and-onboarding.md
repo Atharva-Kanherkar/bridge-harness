@@ -10,6 +10,10 @@ On first launch, choose one or more coding agents. Bridge shows which installati
 
 The next step handles installation and sign-in. Every selected agent must have a usable installation, be available, and report signed-in before the workspace opens. Closing a sign-in pane does not establish success; Bridge checks again. Unknown sign-in status stays unresolved. You can return to agent selection to remove an unfinished choice.
 
+For Cursor and Grok, Continue opens and closes a temporary session to check sign-in and read the models the agent actually reports. It sends no chat message, but the agent may start its configured tools. Bridge repeats this check before opening the workspace. Routine background discovery does not open sessions.
+
+If installation detection fails, you can retry or choose **Use detected agents**. Bridge still checks availability and sign-in. It labels installation ownership as unknown and offers no managed-install actions until detection recovers.
+
 Bridge checks local sign-in facts. It does not verify your subscription, credits, or access to every advertised model. Setup chooses model defaults from the selected agents' usable catalogs. A limited catalog can use the same actual model for several purposes; this does not give it additional capabilities. You can change model preferences later. Existing installations with saved Bridge data or completed setup retain their current onboarding state.
 
 ## Where settings live

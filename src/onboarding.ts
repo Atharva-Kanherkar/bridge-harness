@@ -14,13 +14,16 @@ export function canInstallManagedAgent(agent: ManagedAgentStatus): boolean {
   return !!agent.pinnedVersion;
 }
 
-export function onboardingChoices(agents: ManagedAgentStatus[], adapters: AdapterDescriptor[]): ManagedAgentStatus[] {
+export type OnboardingAgent = ManagedAgentStatus & { installationSourceUnknown?: boolean };
+
+export function onboardingChoices(agents: ManagedAgentStatus[], adapters: AdapterDescriptor[], installationListUnavailable = false): OnboardingAgent[] {
   return [...agents, ...adapters.filter(adapter => adapter.id !== "bridge" && !agents.some(agent => agent.agentId === adapter.id)).map(adapter => ({
     agentId: adapter.id, label: adapter.label,
     state: adapter.available ? "external" : "unavailable",
     backing: adapter.available || adapter.version ? "external" as const : "none" as const,
     removable: false, updateAvailable: false, consecutiveFailures: 0,
     version: adapter.version,
+    installationSourceUnknown: installationListUnavailable,
   }))];
 }
 

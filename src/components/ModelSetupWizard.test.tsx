@@ -33,6 +33,7 @@ describe("first-run choose and connect", () => {
     const health = await bridgeApi.health();
     vi.spyOn(bridgeApi, "listManagedAgents").mockImplementation(async () => ({ agents }));
     vi.spyOn(bridgeApi, "refreshModelCatalogs").mockImplementation(async () => ({ ...health, adapters }));
+    vi.spyOn(bridgeApi, "health").mockImplementation(async () => ({ ...health, adapters }));
     vi.spyOn(bridgeApi, "saveModelProfiles").mockImplementation(async profiles => ({ complete: true, activeVersion: 1, profiles: profiles.map(profile => ({ ...profile, version: 1, schemaVersion: 1, profileId: profile.purpose, canonicalRole: "implementation" as const, createdAt: "now" })) }));
     vi.spyOn(bridgeApi, "saveHarnessConfig");
     host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -139,5 +140,73 @@ describe("first-run choose and connect", () => {
     vi.mocked(bridgeApi.listManagedAgents).mockRejectedValueOnce(new Error("Detection failed"));
     await render(); expect(host.textContent).toContain("Detection failed"); expect(button("Continue").disabled).toBe(true);
     await click("Check again"); await select("Codex"); expect(button("Continue").disabled).toBe(false);
+  });
+  it.each(["cursor", "grok"])("completes %s-only setup from unknown auth and an empty discovery catalog", async id => {
+    const label = id === "cursor" ? "Cursor" : "Grok";
+    adapters = [{ ...codex, id, label, authState: "unknown", models: [] }];
+    agents = [{ ...installed, agentId: id, label }];
+    const prepare = vi.spyOn(bridgeApi, "prepareAgentSetup").mockImplementation(async () => {
+      adapters = [{ ...codex, id, label, models: [{ id: "real-model", label: "Real model", tier: "standard", defaultForTier: true }] }];
+      return adapters[0];
+    });
+    await render(); await select(label); await click("Continue");
+    expect(prepare).toHaveBeenCalledWith(id);
+    expect(button("Start using Bridge").disabled).toBe(false);
+    await click("Start using Bridge");
+    expect(prepare).toHaveBeenCalledTimes(2); // Final completion must recheck.
+    expect(complete).toHaveBeenCalledOnce();
+    expect(vi.mocked(bridgeApi.saveModelProfiles).mock.calls[0][0].every(profile => profile.provider === id && profile.model === "real-model")).toBe(true);
+  });
+  it("keeps a failed Cursor setup check unresolved and offers sign-in", async () => {
+    agents = [{ ...installed, agentId: "cursor", label: "Cursor" }];
+    adapters = [{ ...codex, id: "cursor", label: "Cursor", authState: "unknown", models: [] }];
+    vi.spyOn(bridgeApi, "prepareAgentSetup").mockImplementation(async () => {
+      adapters = [{ ...adapters[0], available: false, authState: "signed_out" }];
+      throw new Error("Cursor needs sign-in");
+    });
+    await render(); await select("Cursor"); await click("Continue");
+    expect(button("Start using Bridge").disabled).toBe(true);
+    expect(button("Sign in to Cursor")).toBeTruthy();
+    expect(host.textContent).toContain("Cursor needs sign-in");
+    expect(complete).not.toHaveBeenCalled();
+    expect(bridgeApi.saveModelProfiles).not.toHaveBeenCalled();
+  });
+  it("rechecks Cursor sign-in at final submission and clears stale readiness", async () => {
+    agents = [{ ...installed, agentId: "cursor", label: "Cursor" }];
+    adapters = [{ ...codex, id: "cursor", label: "Cursor", authState: "unknown", models: [] }];
+    vi.spyOn(bridgeApi, "prepareAgentSetup")
+      .mockImplementationOnce(async () => {
+        adapters = [{ ...codex, id: "cursor", label: "Cursor" }];
+        return adapters[0];
+      })
+      .mockImplementationOnce(async () => {
+        adapters = [{ ...adapters[0], available: false, authState: "signed_out", models: [] }];
+        throw new Error("Cursor needs sign-in");
+      });
+    await render(); await select("Cursor"); await click("Continue");
+    expect(button("Start using Bridge").disabled).toBe(false);
+    await click("Start using Bridge");
+    expect(button("Start using Bridge").disabled).toBe(true);
+    expect(button("Sign in to Cursor")).toBeTruthy();
+    expect(host.textContent).toContain("Cursor needs sign-in");
+    expect(complete).not.toHaveBeenCalled();
+    expect(bridgeApi.saveModelProfiles).not.toHaveBeenCalled();
+  });
+  it("can use health-verified agents when installation detection keeps failing", async () => {
+    vi.mocked(bridgeApi.listManagedAgents).mockRejectedValue(new Error("Detection failed"));
+    await render(); await select("Codex");
+    expect(button("Continue").disabled).toBe(true);
+    await click("Use detected agents"); await click("Continue");
+    expect(host.textContent).toContain("Installation found; source could not be checked");
+    expect(button("Install with Bridge")).toBeUndefined();
+    await click("Start using Bridge");
+    expect(complete).toHaveBeenCalledOnce();
+  });
+  it("health fallback cannot bypass unknown sign-in", async () => {
+    vi.mocked(bridgeApi.listManagedAgents).mockRejectedValue(new Error("Detection failed"));
+    adapters = [{ ...codex, authState: "unknown" }];
+    await render(); await select("Codex"); await click("Use detected agents"); await click("Continue");
+    expect(button("Start using Bridge").disabled).toBe(true);
+    expect(complete).not.toHaveBeenCalled();
   });
 });
