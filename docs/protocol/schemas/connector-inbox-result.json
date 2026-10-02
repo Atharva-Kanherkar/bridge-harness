@@ -259,6 +259,10 @@
     }
   },
   "properties": {
+    "includeReadMentions": {
+      "description": "Carried on the read the pane already makes, so the toggle can render its stored state without a second round-trip that could disagree with this one.",
+      "type": "boolean"
+    },
     "items": {
       "items": {
         "$ref": "#/definitions/ConnectorInboxItem"
@@ -278,6 +282,7 @@
     }
   },
   "required": [
+    "includeReadMentions",
     "items",
     "poll",
     "unreadCount"

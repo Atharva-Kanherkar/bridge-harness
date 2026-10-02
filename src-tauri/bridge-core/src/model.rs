@@ -510,6 +510,12 @@ pub struct Session {
     pub title: Option<String>,
     pub kind: String,
     pub cwd: Option<String>,
+    /// Conversation lineage, not agent lineage: the chat this one was forked
+    /// from, and the entry the fork was cut at. A fork is a top-level chat —
+    /// `parent_session_id` stays `None` and `depth` stays the source's — so
+    /// these are the only honest way to tell a fork from a delegated worker.
+    pub fork_parent_session_id: Option<String>,
+    pub fork_parent_entry_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -713,8 +719,8 @@ pub struct UsageLedgerRow {
     /// never an addend.
     #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub reasoning_tokens: Option<i64>,
-    /// The model that actually served the request when the provider said it
-    /// differed from `model` (Codex `model/rerouted`).
+    /// The provider-reported reroute destination (Codex `model/rerouted`).
+    /// Older ledger rows may still hold the requested model in `model`.
     pub serving_model: Option<String>,
     #[serde(serialize_with = "serialize_optional_js_safe_i64")]
     pub context_window_tokens: Option<i64>,

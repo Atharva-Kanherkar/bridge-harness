@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComposerPill, type ComposerPillProps } from "./ComposerPill";
 
 // The composer is the user's only steering wheel over a working agent, so the
-// coverage here is about what its controls *do*, not how they look: the `+`
-// performs the action its label names, and a draft is never collateral damage.
+// coverage here is about what its controls *do*, not how they look: attaching
+// is one control, and a draft is never collateral damage.
 
 let container: HTMLDivElement;
 let root: Root;
@@ -36,7 +36,7 @@ function render(overrides: Partial<ComposerPillProps> = {}) {
   act(() => root.render(<ComposerPill {...props(overrides)} />));
 }
 
-const plus = () => container.querySelector<HTMLButtonElement>('button[aria-label="Attach a file"]')!;
+const attach = () => container.querySelector<HTMLButtonElement>('button[aria-label="Attach images"]');
 const textarea = () => container.querySelector<HTMLTextAreaElement>("textarea")!;
 const stop = () => container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
 
@@ -55,59 +55,32 @@ describe("ComposerPill", () => {
     expect(input.value).toBe("");
   });
 
-  it("runs the named + action and leaves a non-empty draft alone", () => {
-    const onPlusClick = vi.fn();
-    const onChange = vi.fn();
-    render({ value: "keep this draft", onPlusClick, onChange });
-
-    act(() => plus().click());
-
-    expect(onPlusClick).toHaveBeenCalledTimes(1);
-    // A control labelled "New workspace" must not double as a draft eraser.
-    expect(onChange).not.toHaveBeenCalled();
-    expect(textarea().value).toBe("keep this draft");
-  });
-
-  it("keeps + reachable while the agent is working", () => {
-    const onPlusClick = vi.fn();
-    render({ value: "draft", working: true, onPlusClick, onStop: () => {} });
-
-    expect(plus().disabled).toBe(false);
-    act(() => plus().click());
-    expect(onPlusClick).toHaveBeenCalledTimes(1);
-  });
-
-  it("disables + only when the composer itself is disabled or has no handler", () => {
-    render({ onPlusClick: () => {}, disabled: true });
-    expect(plus().disabled).toBe(true);
+  // A second, generic attach control used to sit beside the paperclip: one
+  // surface showed two paperclips, the others a paperclip and a bare `+`. The
+  // attach affordance is singular now, and only present when the surface takes
+  // attachments at all.
+  it("offers exactly one attach control, and none without a handler", () => {
+    render({ onAttachFiles: () => {} });
+    expect(container.querySelectorAll('button[aria-label="Attach images"]').length).toBe(1);
 
     render({});
-    expect(plus().disabled).toBe(true);
+    expect(attach()).toBeNull();
   });
 
-  it("says what + does on this surface rather than assuming", () => {
-    render({ onPlusClick: () => {} });
-    // The default is the common case: adding context to a conversation.
-    expect(plus().title).toBe("Attach a file");
+  it("locks attaching only while the composer itself is locked", () => {
+    render({ onAttachFiles: () => {} });
+    expect(attach()!.disabled).toBe(false);
 
-    render({ onPlusClick: () => {}, plusLabel: "New workspace" });
-    const structural = container.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]')!;
-    expect(structural).not.toBeNull();
-    expect(structural.disabled).toBe(false);
+    render({ onAttachFiles: () => {}, disabled: true });
+    expect(attach()!.disabled).toBe(true);
   });
 
-  it("explains an unavailable + instead of leaving a dead control", () => {
-    render({ onPlusClick: () => {}, plusUnavailableReason: "Connect a folder to this chat to attach files from it" });
-    expect(plus().disabled).toBe(true);
-    expect(plus().title).toBe("Connect a folder to this chat to attach files from it");
-  });
-
-  it("renders a leading control beside +", () => {
+  it("renders a leading control beside the attach button", () => {
     render({
-      onPlusClick: () => {},
+      onAttachFiles: () => {},
       leading: <button type="button" aria-label="Open usage health details">ring</button>,
     });
-    expect(plus().nextElementSibling?.getAttribute("aria-label")).toBe("Open usage health details");
+    expect(attach()!.nextElementSibling?.getAttribute("aria-label")).toBe("Open usage health details");
   });
 
   it("stays editable while working, with Steer and Stop both reachable", () => {
@@ -125,6 +98,26 @@ describe("ComposerPill", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
     // Sending guidance must never read as cancelling the work.
     expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("keeps Stop beside a plain Send while agents run under an idle turn", () => {
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    render({ value: "what did the docs worker change?", working: false, agentsWorking: true, activeAction: "queue", onSubmit, onStop });
+
+    expect(stop()).not.toBeNull();
+    // The words go to the orchestrator now, so this is a send, never a queue.
+    expect(container.querySelector('button[aria-label="Queue"]')).toBeNull();
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    expect(send.disabled).toBe(false);
+    act(() => send.click());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("hides Stop once nothing is running", () => {
+    render({ value: "", working: false, agentsWorking: false, onStop: () => {} });
+    expect(stop()).toBeNull();
   });
 
   it("says Queue when the provider cannot take input mid-turn", () => {
@@ -310,5 +303,36 @@ describe("ComposerPill", () => {
 
       expect(onSubmit).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("browser context attachments", () => {
+  it("shows removable untrusted context while preserving the user's prompt", () => {
+    const onRemoveBrowserSelection = vi.fn();
+    const onChange = vi.fn();
+    render({ value: "Make this blue", onChange, onRemoveBrowserSelection, browserSelections: [{
+      id: "selected-1", sessionId: "task-1", tabId: "tab-1", navigationId: 2,
+      url: "http://localhost:3000/", title: "Preview", selector: "button", snippet: "<button>Save</button>",
+      bounds: { x: 0, y: 0, width: 100, height: 40 }, annotations: [],
+    }] });
+    expect(container.textContent).toContain("Page element");
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Remove browser selection"]')!.click());
+    expect(onRemoveBrowserSelection).toHaveBeenCalledWith("selected-1");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(textarea().value).toBe("Make this blue");
+  });
+  it("keeps Stop and Steer on the textarea's row in the inline layout", () => {
+    render({ layout: "inline", working: true, activeAction: "steer", onStop: () => {}, value: "go" });
+    const row = textarea().closest("div.flex.items-end");
+    expect(row).not.toBeNull();
+    expect(row!.contains(stop())).toBe(true);
+    expect(row!.contains(container.querySelector('button[type="submit"]'))).toBe(true);
+    expect(textarea().className).toContain("text-sm");
+  });
+
+  it("keeps the dock layout's controls below the textarea", () => {
+    render({ working: true, activeAction: "steer", onStop: () => {} });
+    expect(textarea().closest("div.flex.items-end")).toBeNull();
+    expect(textarea().className).toContain("text-[15px]");
   });
 });

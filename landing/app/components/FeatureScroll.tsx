@@ -65,9 +65,13 @@ export default function FeatureScroll() {
           so it is large enough to read instead of shrinking into half a column. */}
       <div className="mt-14 flex flex-col gap-14 pl-[max(1.5rem,calc((100vw-72rem)/2))] pr-6 lg:mt-20 lg:gap-0 lg:pr-0">
         {features.map((feature, i) => (
-          <article key={feature.id} className="grid items-start gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:gap-14">
-            <div className="lg:sticky lg:top-28 lg:self-start lg:py-28">
-              <span className="font-mono text-[11px] tabular-nums text-faint-2">{String(i + 1).padStart(2, "0")}</span>
+          <article
+            key={feature.id}
+            id={feature.id}
+            className="grid scroll-mt-24 items-start gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:gap-14"
+          >
+            <div className="lg:sticky lg:top-28 lg:self-start lg:py-16">
+              <span className="font-mono text-[11px] tabular-nums text-faint">{String(i + 1).padStart(2, "0")}</span>
               <h3 className="mt-3 font-display text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[2rem]">
                 {feature.name}
               </h3>

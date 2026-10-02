@@ -8,8 +8,8 @@
 
 import { useState } from "react";
 import {
-  RotateCcw as ArrowCounterClockwise, Code, Download as DownloadSimple, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
-  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive,
+  RotateCcw as ArrowCounterClockwise, Code, Download as DownloadSimple, RefreshCw, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
+  ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Ghost,
 } from "lucide-react";
 import { SECTION_LABELS, SECTION_ORDER, type Section } from "./sections";
 import { filterSettingsRows, type SearchableRow } from "./settingsSearch";
@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 const SECTION_ICONS: Record<Section, Icon> = {
   appearance: Sun,
   menuBar: SlidersHorizontal,
+  updates: RefreshCw,
   permissions: ShieldCheck,
   composer: Keyboard,
   agents: Robot,
@@ -28,6 +29,7 @@ const SECTION_ICONS: Record<Section, Icon> = {
   archives: Archive,
   workers: Robot,
   harnesses: Code,
+  clones: Ghost,
   work: Sparkle,
   import: DownloadSimple,
 };

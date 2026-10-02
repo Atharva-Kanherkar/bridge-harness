@@ -3,48 +3,66 @@ import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
-import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
+import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
-import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, Ghost, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
-import { openExternalUrl } from "./externalLinks";
+import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import { createLiveReplay } from "./liveReplay";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
-import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { isHiddenSession } from "./components/sidebarChats";
+import { chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { SimpleBrowser } from "./components/SimpleBrowser";
+import { CloneRequestInbox } from "./components/CloneRequestInbox";
+import { CloneSurface, type CloneSupervision } from "./components/CloneSurface";
+import { sanitizeBrowserSelection, serializeBrowserSelections, type BrowserSelectionContext } from "./browserSelection";
+import { validateBrowserSelectionPage } from "./browserRuntime";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
+import { ChatPullRequestCards, ChatPullRequestStrip, jumpToChatPullRequests, useChatPullRequests, useInView } from "./components/ChatPullRequests";
+import { GitplaceScreen } from "./components/GitplaceScreen";
+import { gitplaceJumpStep, type GitplaceJump } from "./gitplaceJump";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { AttentionToasts, type AttentionToast } from "./components/AttentionToasts";
 import { ConnectorPane } from "./components/ConnectorPane";
 import { ConnectorToasts } from "./components/ConnectorToasts";
 import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
 import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
+import { notifyAttention } from "./attention";
+import { attentionCopy, attentionToastKey } from "./attentionCopy";
+import { diffAttentionEvents } from "./attentionEvents";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
+import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
+import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { TerminalActivity } from "./components/TerminalPane";
-import { TasksPane } from "./components/TasksPane";
+import { TasksPane, activeAgentRows, type AgentFocus } from "./components/TasksPane";
+import { usePinnedAgents } from "./pinnedAgents";
+import { useAgentSpawns } from "./agentSpawns";
 import { workerStatus } from "./components/workerStatus";
 import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
@@ -56,39 +74,49 @@ const MissionControl = lazy(() => import("./components/MissionControl").then(mod
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { overviewUsage } from "./usageOverview";
-import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
+import { SteerComposer } from "./components/SteerComposer";
 import { ComposerPill } from "./components/ComposerPill";
+import { SessionModeToggle, sessionModeDescription } from "./components/SessionModeToggle";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
+import { ForkDialog } from "./components/ForkDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { ProviderLoginPane } from "./components/ProviderLoginPane";
+import { ChatUsageDot } from "./components/UsageDot";
+import { ContextRing } from "./components/ContextRing";
+import { ContextLensDialog } from "./components/ContextLensDialog";
 import type { MeterRegistry } from "./types";
-import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
+import { formatElapsed, harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
 import { parseSideChatCommand, quoteSelection } from "./sideChat";
+import { parseFindCommand } from "./chatSearch";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
-import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { installZoom, nudgeZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage, isThrottleKind } from "./errors";
+import { isCodexVersionError, isOlderCodexVersion, latestCodexVersion, withCodexRefreshDeadline } from "./codexUpdate";
+import { CodexUpdateDialog, type CodexUpdatePhase } from "./components/CodexUpdateDialog";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
 import { createCoalescedRefresh, startSerialPoll } from "./polling";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { TRANSIENT_ALERT_TTL_MS, TransientAlert } from "./components/TransientAlert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -107,6 +135,19 @@ const CodePanel = lazy(() => import("./components/CodePanel").then(module => ({ 
 // a static import here would drag it into the startup bundle for everyone,
 // including sessions that never open a diff.
 const InlineFileEditor = lazy(() => import("./components/editor/InlineFileEditor").then(module => ({ default: module.InlineFileEditor })));
+
+type HarnessShortcutOpenResult =
+  | { kind: "notShortcut" }
+  | { kind: "opened" }
+  | { kind: "unknownHarness"; requested: string; availableHarnessIds: string[]; suggestion?: string }
+  | { kind: "unavailableHarness"; message: string };
+
+function harnessShortcutError(result: Exclude<HarnessShortcutOpenResult, { kind: "notShortcut" | "opened" }>): string {
+  if (result.kind === "unavailableHarness") return result.message;
+  const available = result.availableHarnessIds.map(id => `$${id}`).join(", ");
+  const suggestion = result.suggestion ? ` Did you mean $${result.suggestion}?` : "";
+  return `Unknown harness $${result.requested}.${suggestion} Available harnesses: ${available || "none"}.`;
+}
 
 const emptyState: BridgeState = { projects: [], workspaces: [], sessions: [], events: [] };
 const statusCopy: Record<SessionStatus, string> = { idle: "IDLE", starting: "STARTING", working: "WORKING", waiting: "NEEDS YOU", warm: "WARM", checkpointing: "CHECKPOINTING", ready: "READY", stopped: "STOPPED", resuming: "RESUMING", restored: "RESTORED", failed: "FAILED", completed: "COMPLETED", cancelled: "CANCELLED" };
@@ -141,6 +182,8 @@ type NewChatDraft = {
   model: string | null;
   workspaceId: string | null;
   createWorktree: boolean;
+  /** Workspace drafts only: orchestrate (default) or chat with the harness directly. */
+  sessionKind?: WorkspaceSessionKind;
   carryFromSessionId?: string;
 };
 
@@ -186,6 +229,9 @@ function AppContent() {
   });
   const [workBriefingError, setWorkBriefingError] = useState<string>();
   const [navOpen, setNavOpen] = useState(false);
+  // `/find` hands its query to the sidebar search; the nonce repeats a
+  // request for the same words.
+  const [sidebarSearch, setSidebarSearch] = useState<{ query: string; nonce: number }>();
   // Two ways to look at the workspace: the classic single-session view, or the
   // Agent Fleet grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
@@ -198,7 +244,6 @@ function AppContent() {
   /// The worker whose full activity feed is open over the chat. Owned here, not
   /// in the conversation, because the overlay covers the whole session pane and
   /// has to survive the transcript re-rendering underneath it.
-  const [expandedWorkerId, setExpandedWorkerId] = useState<string>();
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
@@ -206,10 +251,11 @@ function AppContent() {
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
-  const [memoryDisclosureOpen, setMemoryDisclosureOpen] = useState(false);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
   const [composer, setComposer] = useState("");
+  const [referenceChips, setReferenceChips] = useState<ReferenceChipModel[]>([]);
+  const resolvedReferences = useRef(new Map<string, ResolveReferenceResult>());
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [asideSlashCommands, setAsideSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -220,17 +266,75 @@ function AppContent() {
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [harnessShortcutIndex, setHarnessShortcutIndex] = useState(0);
   const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
+  const [harnessShortcutFailure, setHarnessShortcutFailure] = useState<string>();
   const [agentShortcutIndex, setAgentShortcutIndex] = useState(0);
   const [agentShortcutDismissed, setAgentShortcutDismissed] = useState(false);
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
-  const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
+  const [pinnedAgents, togglePinnedAgent] = usePinnedAgents();
   const [recallOpen, setRecallOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
+  const codexVersion = health?.adapters.find(adapter => adapter.id === "codex")?.version ?? undefined;
+  const [latestCodex, setLatestCodex] = useState<string>();
+  const [codexUpdateNotice, setCodexUpdateNotice] = useState(false);
+  const [codexUpdatePrompt, setCodexUpdatePrompt] = useState(false);
+  const [codexUpdatePhase, setCodexUpdatePhase] = useState<CodexUpdatePhase>(null);
+  const [codexUpdateSuccess, setCodexUpdateSuccess] = useState(false);
+
+  useEffect(() => {
+    if (!codexVersion || !/\d+\.\d+\.\d+/.test(codexVersion)) return;
+    const controller = new AbortController();
+    void latestCodexVersion(controller.signal).then(latest => {
+      if (controller.signal.aborted) return;
+      setLatestCodex(latest);
+      setCodexUpdateNotice(Boolean(latest && isOlderCodexVersion(codexVersion, latest)));
+    });
+    return () => controller.abort();
+  }, [codexVersion]);
+
+  const startCodexUpdate = () => {
+    setError(undefined);
+    setCodexUpdateNotice(false);
+    setCodexUpdateSuccess(false);
+    setCodexUpdatePrompt(true);
+  };
+
+  const confirmCodexUpdate = async () => {
+    if (codexUpdatePhase) return;
+    setCodexUpdatePhase("installing");
+    try {
+      await bridgeApi.installCodexUpdate();
+    } catch (cause) {
+      const message = errorMessage(cause);
+      setError(message.startsWith("Codex update") ? message : `Codex update failed: ${message}`);
+      setCodexUpdatePrompt(false);
+      setCodexUpdatePhase(null);
+      return;
+    }
+    try {
+      setCodexUpdatePhase("refreshing");
+      const refreshed = await withCodexRefreshDeadline(bridgeApi.refreshModelCatalogs());
+      invalidateHealth();
+      const refreshedVersion = refreshed.adapters.find(adapter => adapter.id === "codex")?.version;
+      if (codexVersion && refreshedVersion === codexVersion) {
+        setError(`The Codex installer finished, but Bridge still uses ${codexVersion}. Restart Bridge or check the Codex runtime in Agent Fleet.`);
+      } else {
+        setCodexUpdateSuccess(true);
+      }
+    } catch (cause) {
+      setError(`The Codex installer finished, but Bridge could not refresh its runtime: ${errorMessage(cause)}. Restart Bridge to check the new version.`);
+    } finally {
+      setCodexUpdatePrompt(false);
+      setCodexUpdatePhase(null);
+    }
+  };
+  const [forkDraft, setForkDraft] = useState<{ sessionId: string; entryId: string } | null>(null);
+  const [forkBusy, setForkBusy] = useState(false);
+  const [forkError, setForkError] = useState<string | null>(null);
   const [loadedForest, setForest] = useState<SessionForestSnapshot>();
   // Completion blocks while a child's changes live only in its own worktree, so
   // the user must be able to see and resolve that here — otherwise the session
@@ -248,6 +352,23 @@ function AppContent() {
     if (setup) acceptModelSetup(setup);
   }, [acceptModelSetup]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // Draft context belongs to its task. It is intentionally not persisted: a
+  // reloaded page must be selected again instead of reusing stale DOM evidence.
+  const [browserSelections, setBrowserSelections] = useState<BrowserSelectionContext[]>([]);
+  const browserSelectionsRef = useRef(browserSelections);
+  browserSelectionsRef.current = browserSelections;
+  const selectedSessionIdRef = useRef(selectedSessionId);
+  selectedSessionIdRef.current = selectedSessionId;
+  const attachBrowserSelection = useCallback((context: BrowserSelectionContext) => {
+    if (context.sessionId !== selectedSessionIdRef.current) return;
+    const safe = sanitizeBrowserSelection(context, context);
+    if (!safe) return;
+    setBrowserSelections(current => [...current.filter(item => item.sessionId !== safe.sessionId || item.tabId !== safe.tabId), safe].slice(-4));
+    composerRef.current?.focus();
+  }, []);
+  const invalidateBrowserSelection = useCallback((sessionId: string, tabId: string, navigationId?: number) => {
+    setBrowserSelections(current => current.filter(item => item.sessionId !== sessionId || item.tabId !== tabId || (navigationId !== undefined && item.navigationId === navigationId)));
+  }, []);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
@@ -256,6 +377,55 @@ function AppContent() {
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
   const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
+  // Reference chips: `brio_…` aliases and `@session:` mentions in the draft are
+  // resolved before send and shown as chips above the composer. An unresolved
+  // token stays plain text — the chip is never a broken promise.
+  const refreshReferences = (text: string) => {
+    const tokens = findReferences(text);
+    const missing = tokens.filter(token => !resolvedReferences.current.has(token));
+    if (missing.length === 0) {
+      setReferenceChips(tokens.map(token => ({ token, alias: referenceAlias(token), resolved: resolvedReferences.current.get(token)! })));
+      return;
+    }
+    void Promise.all(missing.map(token => bridgeApi.resolveReference(token)))
+      .then(results => {
+        missing.forEach((token, index) => resolvedReferences.current.set(token, results[index]));
+        setReferenceChips(tokens.map(token => ({ token, alias: referenceAlias(token), resolved: resolvedReferences.current.get(token)! })));
+      })
+      .catch(() => { /* a failed resolve leaves the token as literal text */ });
+  };
+  // Chips are a preview, not an action: the backend attaches the referenced
+  // chat's history to the turn on send. The only thing to do here is remove
+  // the token again.
+  const removeReference = (chip: ReferenceChipModel) => {
+    resolvedReferences.current.delete(chip.token);
+    setReferenceChips(current => current.filter(candidate => candidate.token !== chip.token));
+    setComposer(current => removeReferenceToken(current, chip.token));
+  };
+  // Sidebar "Mention in current chat": drop the alias into the draft and
+  // resolve it right away so the chip appears before the person types more.
+  const mentionChat = (chat: Session) => {
+    setComposer(current => {
+      const next = insertMention(current, chat.id);
+      refreshReferences(next);
+      return next;
+    });
+  };
+  // Sidebar "Fork chat…": the dialog needs an entry to fork at, so resolve the
+  // chat's head first. A chat with no messages has nothing to fork.
+  const forkChatFromSidebar = async (chat: Session) => {
+    try {
+      const resolved = await bridgeApi.resolveReference(chat.id);
+      if (resolved.kind !== "session" || !resolved.activeEntryId) {
+        setError(`${chat.title?.trim() || chat.label} has no messages to fork yet.`);
+        return;
+      }
+      setForkDraft({ sessionId: chat.id, entryId: resolved.activeEntryId });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
   const suggestionGeneration = useRef(0);
   // Shown once per fallback episode, not on every debounce firing while the
@@ -288,6 +458,12 @@ function AppContent() {
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
   const forestCacheRef = useRef(new ForestCache());
+  // Durable frames the live channel dropped, put back from each session's
+  // cursor. The forest poll alone was too slow to be the only recovery.
+  const [liveReplay] = useState(() => createLiveReplay({
+    replay: (sessionId, afterSequence, limit) => bridgeApi.replaySessionEvents(sessionId, afterSequence, limit),
+    deliver: events => setAgentEvents(current => appendAgentEventBatch(current, events)),
+  }));
   const browserSessionRef = useRef<string>();
   const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
@@ -308,6 +484,7 @@ function AppContent() {
     void reload().catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
+    let offLagged: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
     let offAdapters: (() => void) | undefined;
     let offProviderLogin: (() => void) | undefined;
@@ -348,6 +525,7 @@ function AppContent() {
     });
     void bridgeApi.onAgentEvent(event => {
       display.push(event);
+      liveReplay.observe(event);
       const target = loginSessionRef.current;
       if (active && target?.id === event.sessionId) {
         const provider = providerSignInForEvent(target.harness, event);
@@ -356,6 +534,15 @@ function AppContent() {
     }).then(fn => {
       if (!active) { fn(); return; }
       offAgent = fn;
+    });
+    void bridgeApi.onStreamLagged(() => {
+      // Frames were dropped: refill them now, and make the next forest poll
+      // refetch instead of trusting a digest it may already have seen.
+      forestKeyRef.current = "";
+      liveReplay.lagged();
+    }).then(fn => {
+      if (!active) { fn(); return; }
+      offLagged = fn;
     });
     void bridgeApi.onAccountUsage(payload => {
       // Codex quota comes from the versioned shared overview. A legacy
@@ -388,10 +575,40 @@ function AppContent() {
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
-      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
+      offState?.(); offAgent?.(); offLagged?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
       display.dispose();
     };
-  }, [invalidateHealth, openMeter, refreshMeter, reload]);
+  }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
+  // Attention notifications: diff every `state.sessions` refresh for status
+  // transitions across visible sessions (hidden kinds filtered inside
+  // `diffAttentionEvents`), not just the open one, so a background chat that
+  // starts waiting on the human still surfaces a notification.
+  // In-app glass toasts always enqueue; `notifyAttention` still gates the OS
+  // banner on Bridge not being focused.
+  const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
+  const previousAttentionSessionsRef = useRef<Session[] | undefined>(undefined);
+  useEffect(() => {
+    const events = diffAttentionEvents(previousAttentionSessionsRef.current, state.sessions);
+    previousAttentionSessionsRef.current = state.sessions;
+    if (!events.length) return;
+    const nextToasts: AttentionToast[] = [];
+    for (const event of events) {
+      const copy = attentionCopy(event);
+      const key = attentionToastKey(event);
+      nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
+      void notifyAttention(copy.headline, copy.detail);
+    }
+    setAttentionToasts(current => {
+      // A chat can revisit the same key (waiting → working → waiting) before
+      // its first card's TTL elapses. Replace rather than skip so the card
+      // reflects the latest event and restarts its countdown.
+      let merged = current;
+      for (const toast of nextToasts) {
+        merged = [...merged.filter(item => item.key !== toast.key), toast];
+      }
+      return merged.slice(-3);
+    });
+  }, [state.sessions]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -403,6 +620,12 @@ function AppContent() {
   useEffect(() => {
     if (view !== "memory") setMemoryDraft(null);
   }, [view]);
+
+  // Re-applies the remembered zoom level and answers pinch gestures. The chords
+  // are in the command table below; the wheel listener is ours because turning
+  // off `zoomHotkeysEnabled` also removes the polyfill's own, and losing pinch
+  // to fix a pinch that overshoots would be a poor trade.
+  useEffect(() => installZoom(), []);
 
   useEffect(() => {
     const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
@@ -418,9 +641,6 @@ function AppContent() {
     setView(place.view);
     setSelectedSessionId(place.sessionId ?? undefined);
     setParadigm(place.paradigm);
-    if (place.view === "workspace") {
-      setExpandedWorkerId(undefined);
-    }
   }, []);
 
   const goBack = useCallback(() => {
@@ -442,6 +662,7 @@ function AppContent() {
   useEffect(() => {
     const previous = browserSessionRef.current;
     browserSessionRef.current = selectedSessionId;
+    if (previous !== selectedSessionId) setBrowserSelections([]);
     if (previous && previous !== selectedSessionId) void bridgeApi.browserBridgeState().then(browser => browser.lease ? bridgeApi.detachBrowser() : undefined).catch(() => undefined);
   }, [selectedSessionId]);
 
@@ -463,6 +684,9 @@ function AppContent() {
   // The new-thread hero names the project when it can, dotted-underlined.
   const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
   const hasRepo = !!workspace?.path;
+  // The workspace a GitHub link could be routed into, if any — the same
+  // condition that decides whether the pane is available at all.
+  const githubWorkspaceId = hasRepo ? workspace?.id : undefined;
   const isDirectChat = session?.kind === "direct";
   const importedSourceFingerprint = useMemo(() => {
     if (session?.kind !== "imported") return undefined;
@@ -494,21 +718,40 @@ function AppContent() {
     observer.observe(element);
     dockSectionObserver.current = observer;
   }, []);
+  // Counted from the same rows the pane lists, so the tab's number is the
+  // number of agents you will find behind it.
   const dockTaskBadge = useMemo(() => {
-    const statuses = (forest?.workerRuntimes ?? []).flatMap(runtime => {
-      const workerSession = visibleSessions.find(item => item.id === runtime.sessionId);
-      return workerSession ? [{ id: runtime.sessionId, status: workerStatus(workerSession, runtime) }] : [];
-    });
-    const running = statuses.filter(item => item.status.tone === "working").length + (terminalActivity?.running ?? 0);
-    const attention = statuses.some(item => (item.status.tone === "failed" || item.status.tone === "stalled") && !acknowledgedTasks.has(item.id));
+    const rows = session ? activeAgentRows(session.id, visibleSessions, forest?.workerRuntimes ?? [], new Set()) : [];
+    const tones = rows.map(row => workerStatus(row.session, row.runtime).tone);
+    const running = tones.filter(tone => tone === "working").length + (terminalActivity?.running ?? 0);
+    const attention = tones.includes("waiting");
     return { running, attention };
-  }, [forest?.workerRuntimes, visibleSessions, terminalActivity?.running, acknowledgedTasks]);
+  }, [session, forest?.workerRuntimes, visibleSessions, terminalActivity?.running]);
   // Connector inbox state, declared here because the dock descriptor below
   // reads its unread count. The rest of the glue is further down.
   const [connectorToasts, setConnectorToasts] = useState<ConnectorToast[]>([]);
   const [connectorUnread, setConnectorUnread] = useState(0);
   const [connectorFocus, setConnectorFocus] = useState<string>();
   const connectorAttention = connectorToasts.some(toast => !toast.settled);
+  // The clone surface reports whether it needs the person (waiting_for_you or a
+  // pending approval). Only a mounted surface is polling, so the mark is drawn
+  // only while the pane has been visited: an unmounted surface cannot vouch for
+  // a state it is no longer watching.
+  const [cloneAttention, setCloneAttention] = useState(false);
+  const reportCloneSupervision = useCallback((state: CloneSupervision) => setCloneAttention(state.attention), []);
+  useEffect(() => setCloneAttention(false), [selectedSessionId]);
+  const cloneAlert = cloneAttention;
+  const [cloneFocus, setCloneFocus] = useState<string>();
+  // The composer ring opens the Context lens over the chat it belongs to.
+  // Switching chats closes it, so a stale chat's windows are never shown.
+  const [contextLensFor, setContextLensFor] = useState<string | null>(null);
+  useEffect(() => setContextLensFor(null), [selectedSessionId]);
+  useEffect(() => {
+    if (cloneFocus && selectedSessionId === cloneFocus) {
+      dispatchDock({ type: "open-pane", pane: "clone" });
+      setCloneFocus(undefined);
+    }
+  }, [cloneFocus, selectedSessionId, dispatchDock]);
 
   const dockPanes: DockPaneDescriptor[] = [
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
@@ -516,11 +759,14 @@ function AppContent() {
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
     { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
-    { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
+    { id: "tasks", label: "Agents", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
     // Always available: an inbox is about an account, not a repository, so
     // gating it on a worktree would hide it exactly where a direct chat is.
     { id: "inbox", label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined },
+    // Last, so no existing ⌥⌘N chord moves. A clone is a private browser, not a
+    // tree, so like Browser it needs no repository.
+    { id: "clone", label: "Clone", icon: Ghost, available: true, alert: cloneAlert || undefined },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
@@ -562,22 +808,110 @@ function AppContent() {
     setCodeReveal({ path, line, nonce: revealNonce.current });
     dispatchDock({ type: "open-pane", pane: "code" });
   }
+  // An agent is watched in the Agents pane, with its chat open. The dock goes
+  // there on its own when the orchestrator starts one, and from the
+  // transcript's pointer row; closing the dock is how the person says no.
+  const [agentFocus, setAgentFocus] = useState<AgentFocus>();
+  const agentFocusNonce = useRef(0);
+  useEffect(() => {
+    setAgentFocus(undefined);
+  }, [session?.id]);
+  function showAgentInDock(sessionId: string) {
+    agentFocusNonce.current += 1;
+    setAgentFocus({ sessionId, nonce: agentFocusNonce.current });
+    dispatchDock({ type: "open-pane", pane: "tasks" });
+  }
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
-  // Deep links into the GitHub dock pane (sidebar rows, CI toasts), the
-  // CI-finished notification stack, and jump-to-diff from a review comment.
+  // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
+  // anywhere in the app), the CI-finished notification stack, and
+  // jump-to-diff from a review comment.
   const githubIntentNonce = useRef(0);
-  const [githubIntent, setGithubIntent] = useState<{ number: number; nonce: number }>();
+  const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
 
-  function openPullRequestPane(number: number) {
+  const openGithubPane = useCallback((view: GithubLinkView) => {
     githubIntentNonce.current += 1;
-    setGithubIntent({ number, nonce: githubIntentNonce.current });
+    setGithubIntent({ view, nonce: githubIntentNonce.current });
     setView("workspace");
     setParadigm("single");
     dispatchDock({ type: "open-pane", pane: "github" });
+  }, [dispatchDock]);
+
+  function openPullRequestPane(number: number) {
+    openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
+
+  // The PRs this chat opened (or had attached), kept live after the turn ends.
+  const chatPrs = useChatPullRequests(session?.id, workspace?.id);
+  const [chatPrAnchor, chatPrsInView] = useInView();
+
+  // Which repository a workspace is on is read when the link is clicked and
+  // again when the reader confirms the inline destination. The pane resolves
+  // the repository itself, server-side and at call time, from the workspace's
+  // remote — so an identity remembered across either pause could route the
+  // same number into a different repository and expose its write actions.
+  const githubWorkspaceIdRef = useRef(githubWorkspaceId);
+  githubWorkspaceIdRef.current = githubWorkspaceId;
+  const resolveGithubRepository = useCallback(async (id: string): Promise<GithubRepository | null> => {
+    try {
+      const status = await bridgeApi.githubStatus(id);
+      return status.availability.status === "available" ? status.repository ?? null : null;
+    } catch {
+      // No `gh`, signed out, no remote: nothing to route into.
+      return null;
+    }
+  }, []);
+
+  // A GitHub link the pane can render belongs in the pane, not in the OS
+  // browser. Anything else — another repository, a view the pane does not
+  // have, a chat with no worktree — is declined here and leaves the app
+  // exactly as it did before.
+  // A GitHub link the pane could render is a question, not a decision: the
+  // reader is asked where to open it. Only a link with somewhere to go inline
+  // is worth asking about — another repository, a view the pane does not have,
+  // a chat with no worktree — those have one destination, so they take it
+  // silently and leave, exactly as they did before any of this.
+  const [githubLinkChoice, setGithubLinkChoice] = useState<{ url: string; link: GithubLink; workspaceId: string }>();
+  const routeGithubLink = useCallback(async (url: string): Promise<boolean> => {
+    const link = parseGithubLink(url);
+    if (!link || !githubWorkspaceId) return false;
+    const repository = await resolveGithubRepository(githubWorkspaceId);
+    // Resolving can take a `gh` round-trip, and the reader may have moved on
+    // in the meantime; a pane intent aimed at the workspace they left would
+    // open the wrong repository's PR under the same number.
+    if (githubWorkspaceIdRef.current !== githubWorkspaceId) return false;
+    if (!githubLinkMatchesRepository(link, repository)) return false;
+    // Taken: the question is now on screen, so nothing may open behind it.
+    setGithubLinkChoice({ url, link, workspaceId: githubWorkspaceId });
+    return true;
+  }, [githubWorkspaceId, resolveGithubRepository]);
+
+  const confirmGithubLinkInline = useCallback(async (): Promise<void> => {
+    const choice = githubLinkChoice;
+    if (!choice) return;
+    setGithubLinkChoice(undefined);
+
+    const repository = githubWorkspaceIdRef.current === choice.workspaceId
+      ? await resolveGithubRepository(choice.workspaceId)
+      : null;
+    if (
+      githubWorkspaceIdRef.current !== choice.workspaceId
+      || !githubLinkMatchesRepository(choice.link, repository)
+    ) {
+      // The link no longer has an inline destination. Preserve the click by
+      // taking the same system-browser fallback as a route declined up front.
+      await openInSystemBrowser(choice.url);
+      return;
+    }
+    openGithubPane(choice.link.view);
+  }, [githubLinkChoice, openGithubPane, resolveGithubRepository]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeGithubLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeGithubLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));
@@ -654,8 +988,10 @@ function AppContent() {
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo>();
   useEffect(() => {
     let active = true;
-    void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); });
-    return () => { active = false; };
+    const check = () => { void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); }).catch(() => undefined); };
+    check();
+    const timer = window.setInterval(check, 6 * 60 * 60 * 1000);
+    return () => { active = false; window.clearInterval(timer); };
   }, []);
 
   // The fallback hint is a pointer, not a state — it fades on its own.
@@ -668,6 +1004,23 @@ function AppContent() {
   /** Jump-to-diff from a review comment: open the editor at the commented
    * file/line. When the PR head branch is not what this workspace has checked
    * out, the file still opens (read it, don't edit it) with a hint saying so. */
+  /** Gitplace has no chat of its own: open the newest chat in the comment's
+   * workspace and jump there, or start one when the workspace has none. */
+  function jumpFromGitplace(workspaceId: string, path: string, line: number | undefined, headBranch: string) {
+    const chat = topSessions
+      .filter(candidate => candidate.workspaceId === workspaceId)
+      .sort((a, b) => Date.parse(b.startedAt ?? "") - Date.parse(a.startedAt ?? ""))[0];
+    setPendingGitplaceJump({ workspaceId, path, line, headBranch });
+    if (chat) {
+      openSession(chat.id);
+      return;
+    }
+    // No chat yet: open a draft there. The jump waits for the first message
+    // to create the chat, then opens the file in it.
+    void startChatInWorkspace(workspaceId);
+    setGithubJumpHint(`Send a first message and ${path} opens in this chat.`);
+  }
+
   function jumpToReviewComment(path: string, line: number | undefined, headBranch: string) {
     openFileInDock(path, line);
     setGithubJumpHint(jumpFallbackHint(workspace?.branch ?? null, headBranch) ?? undefined);
@@ -688,17 +1041,6 @@ function AppContent() {
     && liveStatuses.includes(session?.status ?? "stopped");
   const sessionConnected = !!session && !session.endedAt && liveStatuses.includes(session.status);
   const sessionEvents = useMemo(() => agentEvents.filter(event => event.sessionId === session?.id), [agentEvents, session?.id]);
-  // A worker panel reads the worker's own session row, its runtime record, and
-  // its slice of the *global* live stream — the parent's slice would show none
-  // of the child's frames.
-  const workerPanelSource = useMemo(
-    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents, reasons: forest?.reasons ?? [] }),
-    [agentEvents, forest?.workerRuntimes, forest?.reasons, state.sessions],
-  );
-  const expandedWorker = useMemo(
-    () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
-    [expandedWorkerId, state.sessions],
-  );
   const asideSession = useMemo(() => {
     if (!asideLifecycle || asideLifecycle.sourceSessionId !== session?.id) return undefined;
     return state.sessions.find(candidate => candidate.id === asideLifecycle.sessionId);
@@ -724,12 +1066,29 @@ function AppContent() {
   // way. The middle one is what covers a provider that takes its time between
   // receiving a message and starting on it.
   const turnActive = !!session?.activeTurnId || session?.status === "working" || pendingForSession.length > 0;
+  // Agents still running under each chat. The sidebar reads the whole map; the
+  // composer reads this chat's slice to stay stoppable after the turn ends.
+  const liveAgents = useMemo(() => liveAgentSessions(state.sessions), [state.sessions]);
+  const chatAgents = useMemo(() => (session ? liveAgents.get(session.id) ?? [] : []), [liveAgents, session]);
+  useAgentSpawns(session?.id, chatAgents, showAgentInDock);
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  // A review-comment jump from Gitplace: the file lives in a worktree, so the
+  // jump waits until a chat in that workspace is the one on screen, through a
+  // draft's first message if it has to. Declared after the workspace-change
+  // reset of the code reveal, so it runs after it.
+  const [pendingGitplaceJump, setPendingGitplaceJump] = useState<GitplaceJump>();
+  useEffect(() => {
+    if (!pendingGitplaceJump) return;
+    const step = gitplaceJumpStep(pendingGitplaceJump, { view, sessionWorkspaceId: session?.workspaceId, draftWorkspaceId: newChatDraft?.workspaceId });
+    if (step === "wait") return;
+    if (step === "jump") jumpToReviewComment(pendingGitplaceJump.path, pendingGitplaceJump.line, pendingGitplaceJump.headBranch);
+    setPendingGitplaceJump(undefined);
+  }, [pendingGitplaceJump, view, session?.workspaceId, newChatDraft?.workspaceId]);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
@@ -899,7 +1258,7 @@ function AppContent() {
     fallbackNoticeShownRef.current = true;
     const reason = draftSuggestion.fallbackReason?.replace(/_/g, " ");
     setFallbackNotice(`Suggestions switched to a fallback model${reason ? ` (${reason})` : ""} while yours is unavailable.`);
-    const timer = window.setTimeout(() => setFallbackNotice(undefined), 6000);
+    const timer = window.setTimeout(() => setFallbackNotice(undefined), TRANSIENT_ALERT_TTL_MS);
     return () => window.clearTimeout(timer);
   }, [draftSuggestion]);
 
@@ -1018,10 +1377,11 @@ function AppContent() {
       forestKeyRef.current = digest ?? "";
       forestCacheRef.current.set(sessionId, value);
       setForest(current => mergeForestSnapshot(current, value));
+      liveReplay.seed(sessionId, value.entries.reduce((newest, entry) => Math.max(newest, entry.sequence), 0));
     };
     const stop = startSerialPoll(refresh, 3000);
     return () => { active = false; stop(); };
-  }, [session?.id]);
+  }, [liveReplay, session?.id]);
 
   // Keep git stats fresh for the selected chat's connected workspace.
   useEffect(() => {
@@ -1103,10 +1463,40 @@ function AppContent() {
     setParadigm("single");
     setNewChatDraft(null);
     setSelectedSessionId(id);
-    setExpandedWorkerId(undefined);
     setAsideLifecycle(current => current?.sourceSessionId === id ? current : undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
+  }
+
+  // Rewind a conversation head to an earlier entry. The confirmation lives
+  // at the call site (window.confirm in the hover affordance); this runs the
+  // rewind and refreshes the aggregate state.
+  async function rewindSessionEntry(sessionId: string, entryId: string) {
+    try {
+      await bridgeApi.activateSessionEntry(sessionId, entryId);
+      setState(await bridgeApi.state());
+      setForest(undefined);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  // Fork the active chat at a message. The backend guarantees the parent is
+  // untouched; the UI switches to the fork as soon as it exists.
+  async function runFork(title: string | null, worktree: "shared" | "new") {
+    if (!forkDraft) return;
+    setForkBusy(true);
+    setForkError(null);
+    try {
+      const result = await bridgeApi.forkSession(forkDraft.sessionId, forkDraft.entryId, title, null, null, worktree);
+      setForkDraft(null);
+      setState(result.state);
+      openSession(result.sessionId);
+    } catch (reason) {
+      setForkError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setForkBusy(false);
+    }
   }
 
   // Archiving a chat files the conversation away and reclaims the checkout it
@@ -1303,11 +1693,12 @@ function AppContent() {
       if (!text && initialAttachments.length === 0) return undefined;
       setBusy(true); setError(undefined);
       try {
-        // create_chat takes harness/model directly; create_workspace_session doesn't,
-        // so a workspace orchestrator is aligned to the draft's chosen model right
-        // after creation — the model picked on the draft is the model it starts with.
+        // Direct workspace chats start with their selected harness/model. An
+        // orchestrator can still be aligned after creation to the draft picker.
         let next = draft.workspaceId
-          ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
+          ? draft.sessionKind === "direct"
+            ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree, "direct", draft.harness, draft.model)
+            : await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
           : await bridgeApi.createChat(draft.harness, draft.model, null);
         let created = draft.workspaceId
           ? [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === draft.workspaceId)
@@ -1364,16 +1755,27 @@ function AppContent() {
   // session is open and starts a fresh direct chat pinned to that harness,
   // handing it the rest of the text as its first message — plus a projected
   // handoff brief of this conversation, so the question has its context.
-  // Returns whether the text was a shortcut at all, so the caller knows
-  // whether to fall back to its own normal send path.
-  async function openHarnessShortcut(text: string, alreadyLocked = false): Promise<boolean> {
+  // The discriminated result keeps a command-shaped typo distinct from normal
+  // chat text. Callers must consume unknown or unavailable harnesses without
+  // clearing the draft or falling through to a provider.
+  async function openHarnessShortcut(text: string, alreadyLocked = false): Promise<HarnessShortcutOpenResult> {
     const shortcut = parseHarnessShortcut(text);
-    if (!shortcut) return false;
+    if (!shortcut) return { kind: "notShortcut" };
     const adapter = adapters.find(item => item.id.toLowerCase() === shortcut.harnessId.toLowerCase());
-    if (!adapter) return false;
+    if (!adapter) {
+      const availableHarnessIds = adapters.filter(item => item.available).map(item => item.id);
+      return {
+        kind: "unknownHarness",
+        requested: shortcut.harnessId,
+        availableHarnessIds,
+        suggestion: closestHarnessShortcut(shortcut.harnessId, availableHarnessIds),
+      };
+    }
     if (!adapter.available) {
-      setError(`${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`);
-      return true;
+      return {
+        kind: "unavailableHarness",
+        message: `${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`,
+      };
     }
     // Inside a conversation the shortcut is a delegation the user makes, not a
     // navigation: the new agent opens as an aside floating over this chat, and
@@ -1381,10 +1783,10 @@ function AppContent() {
     // still becomes the new chat.
     if (session) {
       await openAside(adapter, shortcut.rest, session.id);
-      return true;
+      return { kind: "opened" };
     }
     await openNewChat(shortcut.rest, adapter, alreadyLocked);
-    return true;
+    return { kind: "opened" };
   }
 
   // Create the aside session, hand it the projected brief of the conversation
@@ -1492,7 +1894,13 @@ function AppContent() {
     if (newChatPendingRef.current) return false;
     newChatPendingRef.current = true;
     try {
-      if (text && initialAttachments.length === 0 && await openHarnessShortcut(text, true)) return false;
+      if (text && initialAttachments.length === 0) {
+        const shortcut = await openHarnessShortcut(text, true);
+        if (shortcut.kind !== "notShortcut") {
+          setHarnessShortcutFailure(shortcut.kind === "opened" ? undefined : harnessShortcutError(shortcut));
+          return false;
+        }
+      }
       // A bare repo URL or "owner/repo" typed into the welcome composer is a
       // project to open, not a chat message — resolve and land in it directly
       // instead of making the user go through a separate "add a project" flow.
@@ -1812,7 +2220,24 @@ function AppContent() {
   async function sendPrompt(forcedText?: string, forcedAttachments?: ComposerAttachment[]) {
     const submittedText = (forcedText ?? composer).trim();
     const sentAttachments = forcedAttachments ?? attachments;
+    const selectedBrowserContexts = forcedText === undefined && session
+      ? browserSelections.filter(context => context.sessionId === session.id) : [];
+    if (selectedBrowserContexts.length && /^(?:\/|\$[a-z]|#[a-z])/i.test(submittedText)) {
+      setError("Remove the browser selection before using a command or shortcut. Browser edits are sent to the current task.");
+      return;
+    }
     if (!submittedText && sentAttachments.length === 0) return;
+    // `/find` searches every chat from the sidebar. It is never a turn: the
+    // words go to the search field, which runs the deep stage, and nothing
+    // is written to the open chat.
+    const find = parseFindCommand(submittedText);
+    if (find !== null) {
+      setSidebarCollapsed(false);
+      setNavOpen(true);
+      setSidebarSearch(current => ({ query: find, nonce: (current?.nonce ?? 0) + 1 }));
+      setComposer("");
+      return;
+    }
     // `/btw` and `/side` are Bridge's side-chat commands, not turns for the
     // open chat: the question opens beside this conversation with its context,
     // and the chat underneath is untouched. Images on the composer ride along
@@ -1842,7 +2267,16 @@ function AppContent() {
     // session like any other message.
     if (submittedText && sentAttachments.length === 0) {
       try {
-        if (await openHarnessShortcut(submittedText)) { setComposer(""); return; }
+        const shortcut = await openHarnessShortcut(submittedText);
+        if (shortcut.kind !== "notShortcut") {
+          if (shortcut.kind === "opened") {
+            setHarnessShortcutFailure(undefined);
+            setComposer("");
+          } else {
+            setHarnessShortcutFailure(harnessShortcutError(shortcut));
+          }
+          return;
+        }
       } catch {
         // The aside lifecycle owns the inline recovery state. Keep the source
         // draft untouched so Enter is also a valid retry path.
@@ -1887,10 +2321,18 @@ function AppContent() {
     // reload replays it identically. If preparation rewrites the text, the
     // same row is updated in place rather than re-added.
     setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments[0]?.dataUri }]);
+    const validateSelectedPage = async () => {
+      const valid = await Promise.all(selectedBrowserContexts.map(context => validateBrowserSelectionPage(context.sessionId, context.tabId, context.navigationId)));
+      if (selectedSessionIdRef.current !== target.id || valid.some(result => !result)
+        || selectedBrowserContexts.some(context => !browserSelectionsRef.current.some(current => current.id === context.id))) {
+        throw new Error("The selected browser page changed before sending. Select the element again and retry.");
+      }
+    };
     try {
-      const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      if (selectedBrowserContexts.length) await validateSelectedPage();
+      const prepared = await bridgeApi.prepareTurn(target.id, serializeBrowserSelections(submittedText, selectedBrowserContexts, target.id));
       const text = prepared.text;
-      retryText = text;
+      retryText = selectedBrowserContexts.length ? submittedText : text;
       if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
@@ -1907,7 +2349,15 @@ function AppContent() {
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
-      const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments);
+      if (selectedBrowserContexts.length) await validateSelectedPage();
+      const stillSelected = selectedBrowserContexts.filter(context => browserSelectionsRef.current.some(current => current.id === context.id));
+      if (stillSelected.length !== selectedBrowserContexts.length) throw new Error("The selected browser page changed before sending. Select the element again and retry.");
+      const promptText = text;
+      const outcome = await bridgeApi.submitInput(target.id, promptText, sentAttachments);
+      if (stillSelected.length) {
+        setBrowserSelections(current => current.filter(context => !stillSelected.some(sent => sent.id === context.id)));
+        setPending(current => current.map(item => item.key === key ? { ...item, text: promptText } : item));
+      }
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
         setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
@@ -1918,8 +2368,10 @@ function AppContent() {
       }
     }
     catch (e) {
-      setComposer(retryText);
-      setAttachments(sentAttachments);
+      if (selectedSessionIdRef.current === target.id) {
+        setComposer(retryText);
+        setAttachments(sentAttachments);
+      }
       setPending(current => current.filter(item => item.key !== key));
       const message = errorMessage(e);
       const provider = needsProviderSignIn(target.harness, message);
@@ -1945,7 +2397,6 @@ function AppContent() {
   // received, re-read on every memory change.
   useEffect(() => {
     setPacketAudit(null);
-    setMemoryDisclosureOpen(false);
     const id = session?.id;
     if (!id) return;
     let active = true;
@@ -1987,6 +2438,13 @@ function AppContent() {
   const stopWorker = useCallback(async (childSessionId: string) => {
     setState(await bridgeApi.stopSession(childSessionId));
   }, []);
+  // Stop ends everything this chat has running: the orchestrator's turn if it
+  // has one, and every live agent under it. Sending is untouched, so a message
+  // typed while agents run still goes only to the orchestrator.
+  const stopChat = useCallback(() => {
+    if (turnActive) requestStop();
+    for (const id of chatAgents) void stopWorker(id).catch(value => setError(errorMessage(value)));
+  }, [turnActive, requestStop, chatAgents, stopWorker]);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -2052,25 +2510,6 @@ function AppContent() {
   // paths become `@path` mentions, which the backend reads as bounded,
   // secret-sanitized, untrusted context at submit time. The draft is never
   // touched, only added to.
-  async function attachFile() {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      // No system dialog outside the desktop shell; fall back to the workspace
-      // picker `@` drives rather than doing nothing.
-      setMentionDismissed(false);
-      setMentionIndex(0);
-      setComposer(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
-      composerRef.current?.focus();
-      return;
-    }
-    try {
-      const picked = await open({ multiple: true, title: "Attach files" });
-      if (picked == null) return;
-      const paths = (Array.isArray(picked) ? picked : [picked]).filter(path => typeof path === "string");
-      if (paths.length === 0) return;
-      setComposer(current => paths.reduce(appendFileMention, current));
-    } catch (e) { setError(errorMessage(e)); }
-    finally { composerRef.current?.focus(); }
-  }
   // Replace the @token being typed at the end of the composer with the picked
   // path, preserving any leading whitespace the mention started after.
   function applyFileMention(path: string) {
@@ -2187,6 +2626,15 @@ function AppContent() {
         if (pane) dispatchDock({ type: "open-pane", pane });
         return;
       }
+      case "zoom-in":
+        void nudgeZoom(1);
+        return;
+      case "zoom-out":
+        void nudgeZoom(-1);
+        return;
+      case "zoom-reset":
+        void resetZoom();
+        return;
       case "show-shortcuts":
         setShortcutsOpen(open => !open);
         return;
@@ -2195,13 +2643,20 @@ function AppContent() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || (event.target instanceof HTMLElement && event.target.closest("[data-terminal-workspace]"))) return;
+      if (event.defaultPrevented) return;
+      const inTerminal = event.target instanceof HTMLElement
+        && event.target.closest("[data-terminal-workspace]");
       const match = matchShortcut(event, isTypingTarget(event.target));
-      if (match) {
+      // The terminal pane suppresses commands so its own keys are not stolen,
+      // but zoom presents the window rather than acting on its contents, and the
+      // polyfill this replaces answered it from the terminal too. Reading wide
+      // output is a fair reason to want the window larger.
+      if (match && (!inTerminal || isWindowLevel(match.shortcut.id))) {
         event.preventDefault();
         commandRef.current(match.shortcut.id, match.index);
         return;
       }
+      if (inTerminal) return;
       if (event.key === "Escape") {
         // Topmost layer first. The meter is no longer one of these layers: it
         // is a separate menu-bar window with its own dismissal.
@@ -2248,6 +2703,19 @@ function AppContent() {
 
   const chromeFullscreen = fullscreen || flushWindow;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
+  const codexUpdateOverlays = <>
+    <CloneRequestInbox sessionLabels={Object.fromEntries(state.sessions.map(item => [item.id, item.label]))} onOpen={id => { openSession(id); setCloneFocus(id); }} onError={setError} />
+    {!error && codexUpdateSuccess && <TransientAlert title="Codex updated" message="Bridge refreshed the Codex runtime." variant="success" onDismiss={() => setCodexUpdateSuccess(false)} />}
+    {!error && !codexUpdateSuccess && codexUpdateNotice && latestCodex && codexVersion && <TransientAlert
+      title="Codex update available"
+      message={`Bridge uses ${codexVersion}. Latest stable release: ${latestCodex}.`}
+      variant="warning"
+      action={{ label: "Update Codex", onClick: startCodexUpdate }}
+      onDismiss={() => setCodexUpdateNotice(false)}
+    />}
+    <CodexUpdateDialog open={codexUpdatePrompt} phase={codexUpdatePhase}
+      onOpenChange={setCodexUpdatePrompt} onConfirm={() => void confirmCodexUpdate()} />
+  </>;
   if (!health || !modelSetup || !stateLoaded) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   const hasExistingBridgeData = state.projects.length > 0 || state.workspaces.length > 0 || state.sessions.length > 0;
   if (shouldShowAgentOnboarding(modelSetup, agentOnboardingComplete, hasExistingBridgeData)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard
@@ -2256,8 +2724,8 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onSkip={() => finishAgentOnboarding()}
     onError={setError}
-  />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
+  />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
+  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2274,6 +2742,16 @@ function AppContent() {
     }
   };
   const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
+  // Account quota lives in the sidebar rail, reading the same provider
+  // overviews the menu-bar meter does. The composer shows the model's own
+  // context window instead: the two are different things.
+  const usageDot = <ChatUsageDot rail adapters={health?.adapters} onOpenUsage={() => setView("usage")} onSignIn={provider => setLoginProvider(provider)} />;
+  const contextRing = session ? <ContextRing
+    percent={session.contextPercent}
+    model={session.model ? modelLabel(session.model) : null}
+    active={contextLensFor === session.id}
+    onOpen={() => setContextLensFor(session.id)}
+  /> : null;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2288,12 +2766,14 @@ function AppContent() {
       mobileOpen={navOpen}
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
+      liveAgents={liveAgents}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
       memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
+      gitplaceActive={view === "gitplace"}
       agentFleetActive={view === "agent-fleet"}
       missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
@@ -2309,9 +2789,16 @@ function AppContent() {
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
       onOpenUsage={() => setView("usage")}
+      onOpenGitplace={() => setView("gitplace")}
+      railTrailing={usageDot}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
+      searchRequest={sidebarSearch}
       onArchiveChat={archiveChat}
+      // Only while a chat is open: the Welcome screen owns its own draft, so
+      // a mention there would land in a composer nobody can see.
+      onMentionChat={session ? mentionChat : undefined}
+      onForkChat={chat => void forkChatFromSidebar(chat)}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
       showWindowNav
@@ -2376,20 +2863,28 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+        workspaces={state.workspaces}
+        projects={state.projects}
+        onJumpToFile={jumpFromGitplace}
+        onAddProject={() => setNewProjectOpen(true)}
+      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onUpdate={setAvailableUpdate} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
+        onError={setError}
       /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Mission Control…"/>}><MissionControl
         sessions={visibleSessions}
         workspaces={state.workspaces}
+        projects={state.projects}
         events={agentEvents}
         activeSessionId={session?.id}
         onFocusSession={openSession}
         onStopWorker={stopWorker}
+        onNewChat={workspaceId => void startChatInWorkspace(workspaceId)}
       /></Suspense> : session ? <>
         <SessionToolbar
-          title={session.title || session.label}
+          title={chatName(session)}
           projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
           leading={sidebarNav}
@@ -2433,22 +2928,6 @@ function AppContent() {
           busy={busy}
         />
         <section ref={dockSectionRef} className="flex-1 min-h-0 overflow-hidden flex relative">
-          {/* The chat's own panel, expanded. Rendered over the session pane
-              rather than navigating away, because the reason to look at a
-              worker's full feed is usually to decide something in the
-              conversation you are still in. */}
-          {expandedWorker && <div className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
-            <WorkerDetail
-              session={expandedWorker}
-              runtime={forest?.workerRuntimes.find(runtime => runtime.sessionId === expandedWorker.id)}
-              liveEvents={agentEvents}
-              onClose={() => setExpandedWorkerId(undefined)}
-              onFocusSession={openSession}
-              onSteer={steerWorker}
-              onStopWorker={stopWorker}
-              reasons={forest?.reasons ?? []}
-            />
-          </div>}
           {/* A user-made delegation floats over the chat it was asked from;
               the chat underneath never moves. See `openAside`. */}
           {asideSession && asideSession.id !== session.id && <AsideChat
@@ -2519,12 +2998,13 @@ function AppContent() {
                   }}
                 />
               )}
-              <div className="flex-1 min-h-0 relative">
+              {/* A mask, not a painted fade: the canvas can be translucent, and
+                  no opaque color matches it. */}
+              <div className="flex-1 min-h-0 relative mask-b-from-[calc(100%-2rem)]">
                 <AgentConversation
                   session={session}
                   projectName={projectName}
                   onOpenSession={openSession}
-                  workers={workerPanelSource}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   entryWindow={forest?.entryWindow}
@@ -2534,7 +3014,7 @@ function AppContent() {
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
-                  onStopWorker={stopWorker}
+                  onOpenAgent={showAgentInDock}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -2556,16 +3036,36 @@ function AppContent() {
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
+                  onForkSession={(snapshotSessionId, entryId) => {
+                    setForkError(null);
+                    setForkDraft({ sessionId: snapshotSessionId, entryId });
+                  }}
+                  onRewindEntry={(snapshotSessionId, entryId) => {
+                    // Naming the entry id here told the reader nothing — it is
+                    // a uuid. Describe the effect instead.
+                    if (window.confirm("Rewind to this message? Everything after it becomes inactive. Your history is kept and no files are changed.")) {
+                      void rewindSessionEntry(snapshotSessionId, entryId);
+                    }
+                  }}
+                  leafEntryIds={forest?.leaves.map(entry => entry.id)}
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
+                  trailing={<ChatPullRequestCards
+                    prs={chatPrs.prs}
+                    refreshing={chatPrs.refreshing}
+                    onRetry={() => void chatPrs.reload(true)}
+                    onAttach={chatPrs.attach}
+                    onOpenPane={hasRepo ? (number, tab) => openGithubPane({ kind: "pull", number, tab }) : undefined}
+                    anchorRef={chatPrAnchor}
+                  />}
                 />
               </div>
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
               <div className="relative z-10 flex-none safe-bottom">
+                <ChatPullRequestStrip prs={chatPrs.prs} hidden={chatPrsInView} onJump={jumpToChatPullRequests} />
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
-                <MemoryUsedChip audit={packetAudit} open={memoryDisclosureOpen} onToggle={() => setMemoryDisclosureOpen(current => !current)} />
+                <MemoryUsedChip audit={packetAudit} onOpenMemory={() => setView("memory")} />
                 {queuedFollowUpCount > 0 && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Clock3 size={12} aria-hidden="true" />
@@ -2588,7 +3088,7 @@ function AppContent() {
                     the orchestrator is told so it does not fight the change. */}
                 {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
-                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2"/>
+                  <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
@@ -2651,12 +3151,14 @@ function AppContent() {
                   <ComposerPill
                     layout="dock"
                     value={composer}
-                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
+                    onChange={value => { setComposer(value); setHarnessShortcutFailure(undefined); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); refreshReferences(value); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     onPaste={handleComposerPaste}
                     onAttachFiles={attachComposerFiles}
                     attachments={attachments}
+                    browserSelections={browserSelections.filter(context => context.sessionId === session.id)}
+                    onRemoveBrowserSelection={id => setBrowserSelections(current => current.filter(context => context.id !== id))}
                     onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
                     autocomplete={agentShortcutOpen ? {
                       controls: "agent-shortcut-listbox",
@@ -2667,14 +3169,17 @@ function AppContent() {
                     } : undefined}
                     suggestion={draftSuggestion?.suggestion}
                     onAcceptSuggestion={acceptSuggestion}
+                    references={referenceChips}
+                    onRemoveReference={removeReference}
                     placeholder={turnActive ? "Send a follow-up…" : "Message Bridge…"}
                     disabled={!session}
                     working={turnActive}
                     activeAction={activeAction}
                     stopping={stopping}
-                    onStop={session ? requestStop : undefined}
+                    agentsWorking={chatAgents.length > 0}
+                    onStop={session ? stopChat : undefined}
                     inputRef={composerRef}
-                    onPlusClick={() => void attachFile()}
+                    leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
@@ -2696,6 +3201,7 @@ function AppContent() {
                       onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
                     />}
                   />
+                  {harnessShortcutFailure && <p role="alert" className="mx-4 mt-2 text-[11px] text-destructive sm:mx-6">{harnessShortcutFailure}</p>}
                 </div>}
               </div>
             </>
@@ -2712,19 +3218,28 @@ function AppContent() {
             {pane => {
               if (pane === "tasks") return <TasksPane
                 key={session.id}
+                chatSessionId={session.id}
                 sessions={visibleSessions}
                 runtimes={forest?.workerRuntimes}
                 queue={forest?.workerQueue}
                 terminalActivity={terminalActivity}
-                acknowledged={acknowledgedTasks}
-                onAcknowledge={id => setAcknowledgedTasks(previous => new Set(previous).add(id))}
+                pinned={pinnedAgents}
+                onTogglePin={togglePinnedAgent}
+                focus={agentFocus}
+                liveEvents={agentEvents}
+                reasons={forest?.reasons ?? []}
                 onOpenSession={openSession}
-                onExpandWorker={setExpandedWorkerId}
-                onRetryWorker={id => void retryWorkerTask(id)}
-                onStopWorker={id => void stopWorker(id)}
+                onSteer={steerWorker}
+                onStopWorker={stopWorker}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
-              if (pane === "browser") return <SimpleBrowser />;
+              if (pane === "browser") return <SimpleBrowser
+                key={session.id}
+                sessionId={session.id}
+                visible={dock.open && dock.pane === "browser" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !contextLensFor && !githubLinkChoice && !recallOpen && !navOpen}
+                onAttachSelection={attachBrowserSelection}
+                onInvalidateSelection={(tabId, navigationId) => invalidateBrowserSelection(session.id, tabId, navigationId)}
+              />;
               if (pane === "transcript") return <TranscriptPane
                 key={session.id}
                 sessionId={session.id}
@@ -2745,6 +3260,13 @@ function AppContent() {
               // below this line it rendered nothing in exactly the direct-chat
               // case the always-available descriptor exists to support.
               if (pane === "inbox") return <ConnectorPane key="inbox" visible focusItemKey={connectorFocus} onUnreadChange={setConnectorUnread} onClose={() => dispatchDock({ type: "toggle" })} />;
+              // Also before the workspace guard: a clone needs no tree.
+              if (pane === "clone") return <CloneSurface
+                visible={dock.open && dock.pane === "clone" && !fullscreen && !modal && !loginProvider && !newProjectOpen && !forkDraft && !shortcutsOpen && !contextLensFor && !githubLinkChoice && !recallOpen && !navOpen}
+                sessionId={session?.id}
+                onSupervisionChange={reportCloneSupervision}
+                onError={setError}
+              />;
               if (!workspace) return null;
               /* Keyed on the workspace: these panes hold open buffers, shells,
                  and relative paths, and none of that survives a change of tree.
@@ -2781,6 +3303,11 @@ function AppContent() {
         workspace={welcomeWorkspace}
         projectName={welcomeWorkspace?.projectId ? state.projects.find(project => project.id === welcomeWorkspace.projectId)?.name : undefined}
         worktree={newChatDraft?.createWorktree ?? false}
+        sessionKind={newChatDraft?.sessionKind ?? "orchestrator"}
+        onSelectSessionKind={sessionKind => setNewChatDraft(current => ({
+          ...(current ?? { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
+          sessionKind,
+        }))}
         branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
         currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
         branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
@@ -2794,6 +3321,8 @@ function AppContent() {
           // held on the draft (#350), created on submit — not started immediately.
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
+        harnessShortcutFailure={harnessShortcutFailure}
+        onDraftChange={() => setHarnessShortcutFailure(undefined)}
         onNewWorkspace={() => void createWorkspaceFromFolder()}
         onHealthChange={invalidateHealth}
       />}
@@ -2804,16 +3333,35 @@ function AppContent() {
         provider: session ? harnessLabel(session.harness) : undefined,
         snapshot: session ? usageByProvider[session.harness as UsageProvider] : undefined,
       });
-      return (
-        <Alert variant={isThrottleKind(described.kind) ? "warning" : "error"} className="u-overlay fixed right-3 bottom-3 z-40 max-w-[min(32rem,calc(100vw-1.5rem))] rounded-xl sm:right-[18px] sm:bottom-[18px]">
-          <AlertTitle>{described.title}</AlertTitle>
-          <AlertDescription>{described.message}</AlertDescription>
-          <AlertAction>
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="Dismiss error" onClick={() => setError(undefined)}><X size={14} aria-hidden="true" /></Button>
-          </AlertAction>
-        </Alert>
-      );
+      return <TransientAlert
+        title={described.title}
+        message={described.message}
+        variant={isThrottleKind(described.kind) ? "warning" : "error"}
+        action={isCodexVersionError(error) || error.startsWith("Codex update failed:") ? { label: "Update Codex", onClick: startCodexUpdate } : undefined}
+        onDismiss={() => setError(undefined)}
+      />;
     })()}
+    {codexUpdateOverlays}
+    {githubLinkChoice && <GithubLinkDestinationDialog
+      subject={describeGithubLink(githubLinkChoice.link)}
+      repository={`${githubLinkChoice.link.owner}/${githubLinkChoice.link.name}`}
+      url={githubLinkChoice.url}
+      onOpenInline={() => void confirmGithubLinkInline()}
+      onOpenInBrowser={() => { void openInSystemBrowser(githubLinkChoice.url); setGithubLinkChoice(undefined); }}
+      onCancel={() => setGithubLinkChoice(undefined)}
+    />}
+
+    {/* One stack, top-right and below the chrome row. Bottom-right used to put
+        connector and CI toasts over the composer's send button. */}
+    <div className="pointer-events-none fixed right-3 top-12 z-30 flex max-h-[calc(100dvh-4rem)] flex-col items-end gap-2 overflow-hidden sm:right-[18px]">
+    <AttentionToasts
+      toasts={attentionToasts}
+      onOpen={toast => {
+        setAttentionToasts(current => current.filter(item => item.key !== toast.key));
+        openSession(toast.sessionId);
+      }}
+      onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
+    />
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
     <ConnectorToasts
       toasts={connectorToasts}
@@ -2829,6 +3377,7 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
+    </div>
     {availableUpdate && (
       <UpdateToast
         update={availableUpdate}
@@ -2862,7 +3411,18 @@ function AppContent() {
       onChooseFolder={() => { setNewProjectOpen(false); void createWorkspaceFromFolder(); }}
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
+    <ForkDialog
+      open={forkDraft !== null}
+      sessionLabel={state.sessions.find(candidate => candidate.id === forkDraft?.sessionId)?.label ?? "chat"}
+      sessionId={forkDraft?.sessionId ?? ""}
+      entryId={forkDraft?.entryId ?? ""}
+      busy={forkBusy}
+      error={forkError}
+      onFork={(title, worktree) => void runFork(title, worktree)}
+      onClose={() => { if (!forkBusy) { setForkDraft(null); setForkError(null); } }}
+    />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+    {session && <ContextLensDialog open={contextLensFor === session.id} sessionId={session.id} refreshKey={session.contextPercent} onClose={() => setContextLensFor(null)} onCompact={async id => { await bridgeApi.submitInput(id, "/compact"); }} />}
   </div>;
 }
 
@@ -2890,7 +3450,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2900,6 +3460,8 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   busy: boolean;
   canStartChat: boolean;
   onStartChat: (text?: string, attachments?: ComposerAttachment[]) => Promise<boolean>;
+  harnessShortcutFailure?: string;
+  onDraftChange: () => void;
   onNewWorkspace: () => void;
   onHealthChange: () => void;
   workspaces: Workspace[];
@@ -2908,6 +3470,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
    *  which can differ from the workspace's own title. */
   projectName?: string;
   worktree: boolean;
+  /** Only offered with a workspace; a chat without one is always direct. */
+  sessionKind: WorkspaceSessionKind;
+  onSelectSessionKind: (kind: WorkspaceSessionKind) => void;
   branches: string[];
   currentBranch: string | null;
   branchBusy: boolean;
@@ -2923,6 +3488,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   // Falls back to the workspace title only when it has no distinct project.
   const heroProject = projectName ?? workspace?.title;
   const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
+  const sessionModeHintId = useId();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
@@ -2972,7 +3538,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
     <ComposerPill
       layout="hero"
       value={draft}
-      onChange={setDraft}
+      onChange={value => { setDraft(value); onDraftChange(); }}
       onSubmit={submit}
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
       onPaste={handlePaste}
@@ -2986,15 +3552,11 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // check. Gating the whole composer on canStartChat would block adding
       // a project before any adapter is installed.
       disabled={busy}
-      // There is no conversation or folder here yet, so the structural `+`
-      // still creates a workspace. Clipboard images are first-turn content and
-      // use the paste path above instead of pretending to be repository files.
-      plusLabel="New workspace"
-      onPlusClick={onNewWorkspace}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
+      trailing={workspace ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}
@@ -3010,11 +3572,16 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
         onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
       /> : undefined}
     />
-    {composerError && <p className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError}</p>}
+    {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
-      <span>{greeting.hint}</span>
+      {workspace
+        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
+        : <span>{greeting.hint}</span>}
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
     </div>
+    {workspaces.length === 0 && <div className="mt-6 flex justify-center">
+      <button type="button" onClick={onNewWorkspace} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button>
+    </div>}
     {workspaces.length > 0 && <section aria-label="Choose a project" className="mt-9 border-t border-border pt-5">
       <div className="mb-3 flex items-center justify-between"><h2 className="text-[12px] font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
       <div className="grid gap-2 sm:grid-cols-2">{workspaces.slice(0, 4).map(item => <button key={item.id} type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={workspace?.id === item.id} className={cn("flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50", workspace?.id === item.id ? "border-ring/50 bg-selection" : "border-border bg-card hover:border-input")}>

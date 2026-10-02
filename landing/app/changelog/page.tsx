@@ -24,7 +24,7 @@ export default function Changelog() {
             <article key={release.version}>
               <div className="flex items-baseline gap-3">
                 <h2 className="font-display text-[1.75rem] font-semibold tracking-[-0.03em]">{release.version}</h2>
-                <span className="text-[13px] text-faint">{release.date}</span>
+                <span className="text-[13px] text-muted-foreground">{release.date}</span>
               </div>
               <h3 className="mt-3 text-base font-medium">{release.headline}</h3>
               <ul className="mt-4 flex flex-col gap-2">

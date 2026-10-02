@@ -159,7 +159,7 @@ pub fn refresh_base_divergence(core: &Arc<BridgeCore>) {
     for (workspace_id, _) in due {
         let path: Option<String> = {
             let operation = core.workspace_operation(&workspace_id);
-            let _operation = operation.lock().unwrap();
+            let _operation = crate::runtime::lock_operation(&operation);
             core.db
                 .lock()
                 .unwrap()

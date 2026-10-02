@@ -9,6 +9,27 @@ private final class FixtureCanvas: NSView {
     }
 }
 
+private func bodyInkPixels(_ bitmap: NSBitmapImageRep) -> Int {
+    var count = 0
+    for y in stride(from: bitmap.pixelsHigh / 5, to: bitmap.pixelsHigh * 9 / 10, by: 4) {
+        for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) {
+            guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+            if min(color.redComponent, color.greenComponent, color.blueComponent) < 0.65 { count += 1 }
+        }
+    }
+    return count
+}
+
+private func firstInkRow(_ bitmap: NSBitmapImageRep) -> Int {
+    for y in 0..<(bitmap.pixelsHigh / 3) {
+        for x in stride(from: 0, to: bitmap.pixelsWide, by: 2) {
+            guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+            if min(color.redComponent, color.greenComponent, color.blueComponent) < 0.65 { return y }
+        }
+    }
+    return bitmap.pixelsHigh
+}
+
 // Optional synthetic card renders, never screenshots of the user's desktop.
 // Adapted from CodexBar MenuLayoutScreenshotRenderTests.pngDataWithWindow at
 // 928166f. Copyright (c) 2026 Peter Steinberger; see the bundled MIT notice.
@@ -118,6 +139,22 @@ func renderMenuCardFixtures(_ fixture: Presentation) throws {
             let file = "menu-\(surface)-\(name)-\(sizeName).png"
             try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(file))
             manifest += "\(file): \(Int(canvas.frame.width))×\(Int(canvas.frame.height))pt, scroller=\(scroll.hasVerticalScroller)\n"
+            if surface == "claude" && name == "light" && sizeName == "full" {
+                state.presentation.refreshing = true
+                scroll.scheduleUpdateSize(maximumHeight: maximumHeight)
+                CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
+                canvas.setFrameSize(scroll.fittingSize)
+                window.setContentSize(canvas.frame.size)
+                canvas.layoutSubtreeIfNeeded()
+                let refreshedBitmap = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds)!
+                canvas.cacheDisplay(in: canvas.bounds, to: refreshedBitmap)
+                check(abs(firstInkRow(refreshedBitmap) - firstInkRow(bitmap)) < 20,
+                      "Refreshing an open menu must not insert a blank band above its header")
+                check(bodyInkPixels(refreshedBitmap) > bodyInkPixels(bitmap) / 2,
+                      "Refreshing an open menu must keep its quota rows painted below the header")
+                try refreshedBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("menu-claude-refreshing-light-full.png"))
+                manifest += "menu-claude-refreshing-light-full.png: retained quota snapshot during refresh\n"
+            }
             if hosting.frame.height > scroll.contentView.bounds.height {
                 let bottom = max(0, hosting.frame.height - scroll.contentView.bounds.height)
                 scroll.contentView.scroll(to: NSPoint(x: 0, y: hosting.isFlipped ? bottom : 0))

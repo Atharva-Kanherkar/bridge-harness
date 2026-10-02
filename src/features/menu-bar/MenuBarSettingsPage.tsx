@@ -10,7 +10,7 @@ const providers = [
   { id: "codex", name: "Codex", key: "codexEnabled", description: "Uses Codex sign-in. Manage the account in Harnesses." },
   { id: "claude", name: "Claude", key: "claudeEnabled", description: "Uses Claude Code sign-in for session and weekly limits." },
   { id: "cursor", name: "Cursor", key: "cursorEnabled", description: "Uses your Cursor desktop sign-in to read account usage, token/model history, and cost from cursor.com." },
-  { id: "opencode", name: "OpenCode", key: "opencodeEnabled", description: "Local tokens and costs. Connect a Zen workspace for account billing and limits." },
+  { id: "opencode", name: "OpenCode", key: "opencodeEnabled", description: "Local tokens and costs, plus five-hour, weekly, and monthly limits from your OpenCode Go account." },
 ] as const;
 
 export function MenuBarSettingsPage() {
@@ -20,6 +20,7 @@ export function MenuBarSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [connection, setConnection] = useState<string | null>(null);
+  const [openCodeKey, setOpenCodeKey] = useState("");
   const confirmedSettings = useRef<MenuBarSettings | null>(null);
   const saves = useRef<Promise<void>>(Promise.resolve());
   const pendingSaves = useRef(0);
@@ -72,6 +73,21 @@ export function MenuBarSettingsPage() {
     try { setUsage(await bridgeApi.refreshProviderUsageOverviews()); }
     catch (error) { setError(String(error)); }
     finally { setBusy(false); }
+  }
+
+  async function connectOpenCodeGo() {
+    if (!openCodeKey.trim() || busy) return;
+    const key = openCodeKey.trim();
+    setOpenCodeKey(""); setBusy(true); setError(null); setConnection(null);
+    try {
+      await bridgeApi.setOpenCodeProviderApiKey("opencode-go", key);
+      setConnection("OpenCode Go API key saved. Enable OpenCode usage and add it to favorites to show its limits in the menu.");
+      if (settings?.opencodeEnabled) setUsage(await bridgeApi.refreshProviderUsageOverviews());
+    } catch (error) {
+      setError(String(error).includes("OPENCODE_AUTH_CONTENT")
+        ? "OpenCode authentication is managed by OPENCODE_AUTH_CONTENT. Update that environment setting instead."
+        : "Could not save the OpenCode Go API key. Check that OpenCode is installed, then try again.");
+    } finally { setBusy(false); }
   }
 
   return <SettingsPage title="Menu Bar" description="Account limits, tokens, and spend at a glance."
@@ -138,13 +154,20 @@ export function MenuBarSettingsPage() {
             control={<Switch label={`Read ${provider.name} usage`} checked={settings[provider.key] ?? false} disabled={busy}
               onChange={value => void save({ [provider.key]: value })} />} />;
         })}
-        {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">For automatic Claude updates on macOS, click Refresh usage. If Keychain asks whether Bridge’s “bridged” helper can read “Claude Code-credentials,” choose Always Allow. If access is later revoked, use Refresh usage to authorize it again.</p>}
+        {settings.claudeEnabled && <p className="px-4 py-3 text-xs text-muted-foreground">Claude limits come from your Claude Code subscription sign-in. Claude Code handles authentication and renewal. If limits are unavailable, open Claude Code, check your account, then refresh usage.</p>}
         <SettingsRow label="Provider beside the icon" description={settings.separateProviderIcons ? "Each favorite with account usage enabled has its own icon and usage." : "Uses your first favorite, or the first enabled provider when no favorites are set."}
           control={<span className="text-sm text-muted-foreground" aria-label="Provider beside the icon">{settings.separateProviderIcons ? enabledFavorites.map(provider => provider.name).join(", ") || "None" : visible[0]?.name ?? enabled[0]?.name ?? "None"}</span>} />
-        <SettingsRow label="OpenCode Zen account" description="Sign in and open a workspace. Bridge saves that session in macOS Keychain."
+        <SettingsRow label="OpenCode Go account" description="Sign in using your default browser, then copy your API key below. Already connected through OpenCode? Enable usage and click Refresh usage."
           control={<button type="button" disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40"
-            onClick={() => { setConnection("Complete sign-in in the OpenCode window and open your workspace."); void bridgeApi.connectMenuBarOpenCode().catch(error => setError(String(error))); }}>Connect OpenCode</button>} />
-        <SettingsRow label="OpenCode workspace" description="Optional workspace ID (wrk_…). Leave blank to use the connected workspace."
+            onClick={() => { setConnection(null); void bridgeApi.connectMenuBarOpenCode().catch(() => setError("Could not open your default browser. Visit opencode.ai/auth to sign in.")); }}>Connect OpenCode</button>} />
+        <SettingsRow label="OpenCode Go API key" description="Saved by OpenCode in its own authentication store. Requires OpenCode to be installed."
+          control={<form className="flex flex-wrap items-center gap-2" onSubmit={event => { event.preventDefault(); void connectOpenCodeGo(); }}>
+            <input aria-label="OpenCode Go API key" type="password" autoComplete="off" spellCheck={false}
+              value={openCodeKey} onChange={event => setOpenCodeKey(event.currentTarget.value)} disabled={busy} maxLength={4096}
+              placeholder="Paste API key" className="w-44 rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground" />
+            <button type="submit" disabled={busy || !openCodeKey.trim()} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-40">Save key</button>
+          </form>} />
+        <SettingsRow label="OpenCode workspace" description="For previously connected Zen browser sessions only. OpenCode Go uses your API key and does not need a workspace ID."
           control={<input key={settings.opencodeWorkspace ?? "connected"} aria-label="OpenCode workspace" defaultValue={settings.opencodeWorkspace ?? ""}
             placeholder="Connected workspace" disabled={busy} maxLength={132}
             className="w-44 rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-foreground"

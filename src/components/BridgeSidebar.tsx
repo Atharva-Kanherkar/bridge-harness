@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -9,7 +9,11 @@ import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
+import { mentionToken, toPublicAlias } from "../referenceChip";
+import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
+import { ChatSearchResults } from "./ChatSearchResults";
+import { CHAT_SEARCH_MIN_CHARS, enterAction, useChatSearch } from "../chatSearch";
 import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 import {
   GROUP_ROW_CAP,
@@ -22,6 +26,7 @@ import {
   groupChats,
   readChatView,
   statusBucket,
+  type LiveAgents,
   writeChatView,
   type ChatView,
 } from "./sidebarChats";
@@ -40,11 +45,14 @@ function readWidth(): number {
 }
 
 // Working, waiting, and failure states pair a status dot with readable text.
-function rowStatus(status: SessionStatus): { label: string; dot: string } | null {
+function rowStatus(status: SessionStatus, liveAgents = 0): { label: string; dot: string } | null {
   const bucket = statusBucket(status);
   if (bucket === "active") return { label: "working", dot: "bg-success" };
   if (bucket === "waiting") return { label: "needs you", dot: "bg-warning" };
   if (bucket === "failed") return { label: "failed", dot: "bg-destructive" };
+  // The orchestrator's turn is over but the agents it started are not. A
+  // different dot, because the chat is busy without being the one working.
+  if (liveAgents > 0) return { label: `${liveAgents} ${liveAgents === 1 ? "agent" : "agents"} working`, dot: "bg-info" };
   return null;
 }
 
@@ -55,6 +63,11 @@ function ChatRow({
   time,
   onClick,
   onArchive,
+  onMention,
+  onFork,
+  forkLabel,
+  onJumpToParent,
+  liveAgents,
 }: {
   chat: Session;
   active: boolean;
@@ -62,10 +75,16 @@ function ChatRow({
   time: string | null;
   onClick: () => void;
   onArchive?: () => void;
+  onMention?: () => void;
+  onFork?: () => void;
+  forkLabel?: string;
+  onJumpToParent?: () => void;
+  /** Live agents under this chat, counted by the host from every session. */
+  liveAgents?: number;
 }) {
   const name = chatName(chat);
   const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
-  const status = rowStatus(chat.status);
+  const status = rowStatus(chat.status, liveAgents);
   return (
     <span className={cn(
       "group/row relative flex items-center rounded-[7px] transition-colors",
@@ -83,37 +102,122 @@ function ChatRow({
       aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
+        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] text-left font-sans transition-colors active:scale-[0.99]",
         indented ? "pl-7" : "pl-2",
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+        {/* The fork origin is extra context, not a replacement for the status
+            line: a fork still has to show whether it is working and when it
+            last moved, like any other chat. */}
         <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
           {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
           {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+          {forkLabel && <>
+            {(status || time) && <span aria-hidden="true">·</span>}
+            <GitFork size={9} strokeWidth={1.6} className="shrink-0 text-faint" aria-hidden="true" />
+            <span className="truncate">forked from {forkLabel}</span>
+          </>}
         </span>
       </span>
-      {/* Muted at rest: a column of full-tint marks is the loudest thing in the
-          rail and the chrome stays achromatic. The active row earns its tint. */}
-      <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground")} />
     </button>
-    {/* Revealed on hover or keyboard focus, never at rest: a column of archive
-        buttons down the rail would compete with the chat names for attention,
-        and this is a rarely-wanted action. Achromatic like the rest of the
-        chrome — it is not a warning, it is filing something away. */}
-    {onArchive && (
-      <button
-        type="button"
-        onClick={event => { event.stopPropagation(); onArchive(); }}
-        title={`Archive ${name}`}
-        aria-label={`Archive ${name}`}
-        className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
-      >
-        <Archive size={12} strokeWidth={1.7} aria-hidden="true" />
-      </button>
-    )}
+    {/* Revealed on hover or keyboard focus: one three-dot menu holding every
+        row action, so the row itself stays a single click target. The copy
+        action puts the public `brio_…` alias on the clipboard — the token the
+        composer recognizes — and the mention action drops the same alias
+        straight into the open chat's draft. Sibling of the row button, never
+        a descendant of it: a <button> inside a <button> is invalid HTML. */}
+    <ChatRowMenu
+      chat={chat}
+      name={name}
+      onMention={onMention}
+      onFork={onFork}
+      onArchive={onArchive}
+      forkLabel={forkLabel}
+      onJumpToParent={onJumpToParent}
+    />
+    <HarnessMark harness={chat.harness} size={13} className={cn("mr-2 shrink-0", !active && "text-muted-foreground")} />
     </span>
+  );
+}
+
+const ROW_MENU_WIDTH = 224;
+const ROW_MENU_HEIGHT_ESTIMATE = 200;
+
+function ChatRowMenu({
+  chat,
+  name,
+  onMention,
+  onFork,
+  onArchive,
+  forkLabel,
+  onJumpToParent,
+}: {
+  chat: Session;
+  name: string;
+  onMention?: () => void;
+  onFork?: () => void;
+  onArchive?: () => void;
+  forkLabel?: string;
+  onJumpToParent?: () => void;
+}) {
+  const menu = useMenuPanel<HTMLButtonElement>({ width: ROW_MENU_WIDTH, height: ROW_MENU_HEIGHT_ESTIMATE });
+  const alias = toPublicAlias(chat.id);
+  const item = "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors hover:bg-accent";
+  const run = (action: () => void) => () => { action(); menu.close(); };
+  return (
+    <>
+      <button
+        ref={menu.triggerRef}
+        type="button"
+        onClick={event => { event.stopPropagation(); menu.toggle(); }}
+        title={`Chat actions for ${name}`}
+        aria-label={`Chat actions for ${name}`}
+        aria-haspopup="menu"
+        aria-expanded={menu.open}
+        className={cn(
+          "mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100",
+          menu.open ? "opacity-100" : "opacity-0",
+        )}
+      >
+        <MoreHorizontal size={13} strokeWidth={1.7} aria-hidden="true" />
+      </button>
+      <MenuPanel controller={menu} label={`Chat actions for ${name}`}>
+        <button type="button" role="menuitem" className={item} onClick={run(() => { void navigator.clipboard?.writeText(alias); })}>
+          <Copy size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">Copy chat ID</span>
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{alias}</span>
+        </button>
+        {onMention && (
+          <button type="button" role="menuitem" className={item} onClick={run(onMention)}>
+            <AtSign size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Mention in current chat</span>
+          </button>
+        )}
+        {onFork && (
+          <button type="button" role="menuitem" className={item} onClick={run(onFork)}>
+            <GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Fork chat…</span>
+          </button>
+        )}
+        {onJumpToParent && forkLabel && (
+          <button type="button" role="menuitem" className={item} onClick={run(onJumpToParent)}>
+            <GitFork size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Open parent: {forkLabel}</span>
+          </button>
+        )}
+        {onArchive && (
+          <>
+            <MenuSeparator />
+            <button type="button" role="menuitem" aria-label={`Archive ${name}`} className={item} onClick={run(onArchive)}>
+              <Archive size={12} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">Archive</span>
+            </button>
+          </>
+        )}
+      </MenuPanel>
+    </>
   );
 }
 
@@ -260,6 +364,9 @@ export type BridgeSidebarProps = {
    * history from this one list, so a chat cannot be visible in one and missing
    * from the other. */
   chats: Session[];
+  /** Each chat's live descendant agents. Workers never reach `chats`, so the
+   * host counts them from every session and hands the answer in. */
+  liveAgents?: LiveAgents;
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
@@ -268,6 +375,7 @@ export type BridgeSidebarProps = {
   memoryActive?: boolean;
   marketplaceActive: boolean;
   usageActive?: boolean;
+  gitplaceActive?: boolean;
   agentFleetActive: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
@@ -290,10 +398,21 @@ export type BridgeSidebarProps = {
   onOpenMemory: () => void;
   /** Token and cost usage across harnesses. */
   onOpenUsage?: () => void;
+  /** Drawn at the end of the bottom rail, after Gitplace: the usage dot. */
+  railTrailing?: React.ReactNode;
+  /** GitHub for any repository, with no chat open. */
+  onOpenGitplace?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
+  /** Open the search field on `query` and search deeper, as `/find` does.
+   * A new `nonce` repeats the request for the same query. */
+  searchRequest?: { query: string; nonce: number };
   /** Absent when the host cannot archive — the row then shows no action. */
   onArchiveChat?: (chat: Session) => void;
+  /** Drop `@session:<alias>` for this chat into the open chat's draft. */
+  onMentionChat?: (chat: Session) => void;
+  /** Open the fork dialog at this chat's head. */
+  onForkChat?: (chat: Session) => void;
   /** Hidden, not shrunk: from `sm` up a collapsed rail gives back every pixel
    * and leaves nothing on screen. When set, the rail uses this state instead of
    * its own. */
@@ -309,12 +428,14 @@ export type BridgeSidebarProps = {
 
 export function BridgeSidebar({
   chats,
+  liveAgents,
   workspaces,
   activeSessionId,
   projectsActive,
   memoryActive = false,
   marketplaceActive,
   usageActive = false,
+  gitplaceActive = false,
   agentFleetActive,
   missionControlActive,
   settingsActive,
@@ -330,9 +451,14 @@ export function BridgeSidebar({
   onOpenMissionControl,
   onOpenMemory,
   onOpenUsage,
+  railTrailing,
+  onOpenGitplace,
   onOpenSettings,
   onOpenSession,
+  searchRequest,
   onArchiveChat,
+  onMentionChat,
+  onForkChat,
   collapsed: collapsedProp,
   onCollapsedChange,
   showWindowNav = true,
@@ -397,6 +523,38 @@ export function BridgeSidebar({
   // available beside it. Escape or an empty blur restores the main action.
   const openSearch = useCallback(() => setSearchOpen(true), []);
 
+  // Content search across every chat, beside the title filter. Only while
+  // the field is open: a closed field must not keep a deep search alive.
+  const chatSearch = useChatSearch(searchOpen ? query : "");
+  const { runDeep } = chatSearch;
+  const [pendingDeep, setPendingDeep] = useState<string | null>(null);
+  useEffect(() => {
+    if (!searchRequest) return;
+    setSearchOpen(true);
+    setQuery(searchRequest.query);
+    setPendingDeep(searchRequest.query.trim());
+  }, [searchRequest]);
+  // `/find` asks for the deep stage once the open field holds its query.
+  useEffect(() => {
+    if (pendingDeep === null || !searchOpen || pendingDeep !== query.trim()) return;
+    setPendingDeep(null);
+    runDeep();
+  }, [pendingDeep, searchOpen, query, runDeep]);
+
+  const onSearchEnter = useCallback(() => {
+    const trimmed = query.trim();
+    if (trimmed.length < CHAT_SEARCH_MIN_CHARS) return;
+    const current = chatSearch.result?.query === trimmed && !chatSearch.loading ? chatSearch.result : undefined;
+    // No fresh index answer yet: ask for the deep one, which the host skips
+    // the model for when the index turns out to be sure.
+    const action = current ? enterAction(current, chatSearch.deepRunning) : chatSearch.deepRunning ? "none" : "deep";
+    if (action === "deep") runDeep();
+    if (action === "open" && current?.hits[0]) {
+      onOpenSession(current.hits[0].sessionId);
+      closeSearch();
+    }
+  }, [query, chatSearch.result, chatSearch.loading, chatSearch.deepRunning, runDeep, onOpenSession, closeSearch]);
+
   const stopResize = useCallback((pointerId?: number) => {
     setResizing(false);
     document.body.style.cursor = "";
@@ -457,17 +615,18 @@ export function BridgeSidebar({
   }, []);
 
   const agents = useMemo(() => agentOptions(chats), [chats]);
+  const chatsById = useMemo(() => new Map(chats.map(chat => [chat.id, chat])), [chats]);
   const workspaceTitle = useMemo(() => {
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
   }, [workspaces]);
   const visible = useMemo(
-    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle }),
-    [chats, query, view.status, view.agent, workspaceTitle],
+    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle, liveAgents }),
+    [chats, query, view.status, view.agent, workspaceTitle, liveAgents],
   );
   const groups = useMemo(
-    () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),
-    [visible, view.groupBy, view.sortBy, workspaces, now],
+    () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now, liveAgents }),
+    [visible, view.groupBy, view.sortBy, workspaces, now, liveAgents],
   );
 
   // Collapsing takes the rail off the screen entirely; the panel controls move
@@ -562,8 +721,14 @@ export function BridgeSidebar({
                 value={query}
                 autoFocus
                 onChange={event => setQuery(event.target.value)}
-                onKeyDown={event => { if (event.key === "Escape") closeSearch(); }}
-                placeholder="Filter chats and projects…"
+                onKeyDown={event => {
+                  if (event.key === "Escape") closeSearch();
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    onSearchEnter();
+                  }
+                }}
+                placeholder="Search chats and what was said…"
                 aria-label="Filter chats and projects"
                 className="h-8 w-full rounded-[7px] border border-ring/50 bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
               />
@@ -602,13 +767,26 @@ export function BridgeSidebar({
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
-          <ActionRow icon={TerminalSquare} label="Agent Fleet" onClick={onOpenAgentFleet} active={agentFleetActive} />
+          {/* A terminal for every stream of work: named for what it is. */}
+          <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
+          {onOpenGitplace && <ActionRow icon={GitPullRequest} label="Gitplace" onClick={onOpenGitplace} active={gitplaceActive} />}
         </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
+          {searchOpen && query.trim().length >= CHAT_SEARCH_MIN_CHARS && (
+            <ChatSearchResults
+              result={chatSearch.result}
+              loading={chatSearch.loading}
+              deepRunning={chatSearch.deepRunning}
+              error={chatSearch.error}
+              activeSessionId={activeSessionId}
+              now={now}
+              onOpen={id => { onOpenSession(id); closeSearch(); }}
+            />
+          )}
           <SectionLabel action={
             <span className="flex items-center gap-0.5">
               <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping onChange={changeView} />
@@ -617,13 +795,13 @@ export function BridgeSidebar({
               </RailIconButton>
             </span>
           }>
-            Repositories
+            Projects
           </SectionLabel>
 
           {groups.map(group => {
-            // A search is already the short list, so capping it would hide the
-            // very rows the query asked for.
-            const capped = !searching && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            // Capped while searching too: a one-letter query matches nearly
+            // every chat, and mounting all of them froze the field.
+            const capped = !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
             // Folding needs a header to unfold from.
             const folded = !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
@@ -654,7 +832,12 @@ export function BridgeSidebar({
                     onToggle={() => toggleFold(group.key)}
                   />
                 )}
-                {rows.map(chat => (
+                {rows.map(chat => {
+                // `forkParentSessionId`, not `parentSessionId`: the latter
+                // names a delegated worker, and workers never reach this list.
+                const forkedFrom = chat.forkParentSessionId;
+                const source = forkedFrom ? chatsById.get(forkedFrom) : undefined;
+                return (
                   <ChatRow
                     key={chat.id}
                     chat={chat}
@@ -663,8 +846,14 @@ export function BridgeSidebar({
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
                     onArchive={onArchiveChat && (() => onArchiveChat(chat))}
+                    onMention={onMentionChat && (() => onMentionChat(chat))}
+                    onFork={onForkChat && chat.kind !== "worker" ? () => onForkChat(chat) : undefined}
+                    forkLabel={forkedFrom ? source?.label ?? "session" : undefined}
+                    onJumpToParent={forkedFrom ? () => onOpenSession(forkedFrom) : undefined}
+                    liveAgents={liveAgents?.get(chat.id)?.length}
                   />
-                ))}
+                );
+              })}
                 {capped && !folded && (
                   <button
                     type="button"
@@ -680,7 +869,7 @@ export function BridgeSidebar({
               </div>
             );
           })}
-          {!visible.length && (
+          {!visible.length && !(searching && chatSearch.result?.hits.length) && (
             <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
               {chats.length ? "No chat matches this filter." : "No chats yet. New Chat opens in the repo you were last in."}
             </p>
@@ -688,15 +877,15 @@ export function BridgeSidebar({
         </div>
 
         {/* A rail of achromatic icon buttons pinned to the bottom: settings
-            (the account's settings entry), source control, and usage. */}
+            (the account's settings entry) and Gitplace. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
           <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
-          <RailBottomButton label="Source control" onClick={onOpenProjects}>
-            <GitBranch size={16} strokeWidth={1.6} aria-hidden="true" />
-          </RailBottomButton>
-          <RailBottomButton label="Usage" active={usageActive} onClick={() => onOpenUsage?.()}>
-            <BarChart3 size={16} strokeWidth={1.6} aria-hidden="true" />
-          </RailBottomButton>
+          {/* Source control is Gitplace. The usage dot follows it: a quick
+              look at account quota, with the Usage row for the full screen. */}
+          {onOpenGitplace && <RailBottomButton label="Gitplace" active={gitplaceActive} onClick={onOpenGitplace}>
+            <GitPullRequest size={16} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>}
+          {railTrailing}
         </div>
       </div>
       </div>

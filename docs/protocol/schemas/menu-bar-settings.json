@@ -106,8 +106,7 @@
     "pinnedProviders": {
       "default": [
         "codex",
-        "claude",
-        "cursor"
+        "claude"
       ],
       "description": "Unique favorites in tab order. Pinning never enables account collection.",
       "items": {

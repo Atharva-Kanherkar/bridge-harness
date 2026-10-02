@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { normalizeAgentEvent } from "./codec";
-import { projectSessionConversation } from "../conversation";
+import { mergeConversationProjections, projectSessionConversation, reduceConversation } from "../conversation";
+import { alignTurns, groupItems } from "./grouping";
 import type { ConversationItem } from "./item";
-import { durableEntries, HARNESSES, harnessStream, reduceHarness, type GoldenHarness } from "./golden";
+import { durableEntries, durableEntriesFrom, HARNESSES, harnessStream, reduceHarness, type GoldenHarness } from "./golden";
 
 /**
  * One logical turn, four harnesses, one transcript.
@@ -182,5 +183,69 @@ describe("golden streams", () => {
     // replayed Cursor turn had no thoughts in it at all. The adapter closes the
     // run itself now, and the completion is what the forest keeps.
     expect(durableRows).toEqual(liveRows);
+  });
+});
+
+/**
+ * The same four turns, with the reasoning left unnamed, swept two ways.
+ *
+ * Every fixture happens to name its reasoning (`reasoning-msg-1`, `thought-2`,
+ * …), so all four reconcile the live row and its stored twin on identity alone
+ * and none of them can see a doubled thought. But a provider item id on a
+ * reasoning frame is a courtesy, not a guarantee: several harnesses send
+ * reasoning with none at all, and then the live row is keyed from the live event
+ * id and the stored row from the forest entry, two numbering spaces that can
+ * never agree, so the merge kept both and coalescing printed the same paragraph
+ * twice inside one Thinking card.
+ *
+ * So the names come off, and **both** axes are swept. The live window is a tail
+ * of the stream, not the whole turn, and the forest is a prefix that grows on
+ * its own 3 s poll, so every pair of cuts is a state the reader can be in.
+ * Sweeping only the forest, with the live window holding the entire turn, hides
+ * the defect completely: the live window then keeps only the turn's last thought
+ * while the forest holds each one separately, so no two rows ever say the same
+ * thing. The doubled card needs the live window to still be holding the thought
+ * the forest has just stored, which is exactly what a live tail is.
+ *
+ * The claim is the one this layer owns: **the forest never makes the reader read
+ * a thought twice.** The doubled body is one card holding `thought\nthought`, so
+ * the assertion is that no card ever holds the same line twice, at any pair of
+ * cuts.
+ *
+ * What a card *should* hold is deliberately not asserted here. An unnamed
+ * provider gets one thought per turn: `liveKey` hands an unnamed reasoning
+ * frame the turn's key on purpose. So a live window that has seen two thoughts
+ * keeps only the second while the forest still holds the first, and coalescing
+ * puts both in one card in reverse order. That is a real artifact of the unnamed
+ * path, but it is a different defect from a doubled thought, it is the codec's
+ * own documented decision, and fixing it would change what unnamed harnesses show
+ * rather than stop them showing it twice.
+ */
+describe("golden streams with unnamed reasoning", () => {
+  const unnamed = (harness: GoldenHarness) =>
+    harnessStream(harness).map(event => String(event.kind).startsWith("reasoning") ? { ...event, itemId: null } : event);
+
+  it.each(HARNESSES)("never shows a %s thought twice, at any live and durable cut", harness => {
+    const frames = unnamed(harness);
+    // Guard the guard: the stream has to differ from the named fixture, or this
+    // proves nothing about the path that needs covering.
+    expect(frames.some(event => String(event.kind).startsWith("reasoning") && event.itemId === null)).toBe(true);
+    const entries = durableEntriesFrom(harness, frames);
+    let thoughts = 0;
+    for (let liveCut = 1; liveCut <= frames.length; liveCut += 1) {
+      const live = reduceConversation(frames.slice(0, liveCut));
+      for (let cut = 0; cut <= entries.length; cut += 1) {
+        const forest = entries.slice(0, cut);
+        const merged = alignTurns(mergeConversationProjections(projectSessionConversation(forest, forest.at(-1)?.id ?? null), live));
+        for (const row of groupItems(merged)) {
+          if (row.kind !== "item" || row.item.type !== "reasoning") continue;
+          thoughts += 1;
+          const lines = row.item.text.split("\n");
+          expect(new Set(lines).size, `live ${liveCut}, forest ${cut}: ${JSON.stringify(row.item.text)}`).toBe(lines.length);
+        }
+      }
+    }
+    // A sweep that asserted nothing because it rendered nothing is not a pass.
+    expect(thoughts).toBeGreaterThan(0);
   });
 });

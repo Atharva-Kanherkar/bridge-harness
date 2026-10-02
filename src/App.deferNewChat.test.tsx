@@ -105,7 +105,7 @@ describe("deferred new-chat creation (#350)", () => {
 
     expect(totalCreates(creates)).toBe(0);
     // One draft surface, one composer — not two.
-    expect(container.querySelectorAll('button[aria-label="New workspace"]').length).toBe(1);
+    expect(Array.from(container.querySelectorAll("button")).filter(button => button.textContent?.trim() === "Add project").length).toBe(1);
   });
 
   it("the first submitted message creates exactly one session and leaves the draft", async () => {
@@ -121,9 +121,9 @@ describe("deferred new-chat creation (#350)", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
 
     expect(totalCreates(creates)).toBe(1);
-    // Left the welcome/draft surface — the welcome-only "New workspace" control is
+    // Left the welcome/draft surface — the welcome-only "Add project" control is
     // gone because we are now inside the created chat.
-    expect(container.querySelector('button[aria-label="New workspace"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Add project") ?? null).toBeNull();
   });
 
   it("an empty submit creates nothing and keeps the draft open", async () => {
@@ -218,5 +218,56 @@ describe("deferred new-chat creation (#350)", () => {
 
     expect(creates.workspace).toHaveBeenCalledTimes(1);
     expect(creates.workspace.mock.calls[0][1]).toBe(true); // createWorktree
+  });
+
+  const modeRadio = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="Chat mode"] [role="radio"]')]
+    .find(option => option.textContent === label);
+
+  it("a workspace draft starts as an orchestrator unless Direct is chosen", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+
+    const orchestrator = modeRadio("Orchestrator");
+    expect(orchestrator, "the draft composer offers the chat mode toggle").toBeTruthy();
+    expect(orchestrator!.getAttribute("aria-checked")).toBe("true");
+    const group = container.querySelector('[role="radiogroup"][aria-label="Chat mode"]')!;
+    const hint = document.getElementById(group.getAttribute("aria-describedby")!);
+    expect(hint?.textContent).toContain("delegates to workers");
+
+    const creates = spyCreates();
+    const composer = composerField();
+    await type(composer!, "plan it");
+    await act(async () => pressEnter(composer!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+
+    expect(creates.workspace).toHaveBeenCalledTimes(1);
+    expect(creates.workspace.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it("Direct mode creates a direct workspace chat that keeps the workspace", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+
+    const creates = spyCreates();
+    await act(async () => modeRadio("Direct")!.click());
+    expect(modeRadio("Direct")!.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("with no Bridge orchestration");
+    // Choosing a mode records the decision; it does not start a session.
+    expect(totalCreates(creates)).toBe(0);
+
+    const composer = composerField();
+    await type(composer!, "just answer me");
+    await act(async () => pressEnter(composer!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+
+    expect(creates.chat).not.toHaveBeenCalled();
+    expect(creates.workspace).toHaveBeenCalledTimes(1);
+    const [workspaceId, , kind] = creates.workspace.mock.calls[0];
+    expect(workspaceId).toBe("demo-1");
+    expect(kind).toBe("direct");
+    expect(creates.workspace.mock.calls[0][3]).toBe("codex");
+    const state = await creates.workspace.mock.results[0].value;
+    const created = [...state.sessions].reverse().find(s => s.workspaceId === "demo-1" && !s.parentSessionId);
+    expect(created?.kind).toBe("direct");
   });
 });

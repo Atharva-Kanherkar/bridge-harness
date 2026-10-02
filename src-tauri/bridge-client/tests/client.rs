@@ -70,26 +70,28 @@ fn create_chat(client: &DaemonClient) -> String {
     created["sessionId"].as_str().unwrap().to_owned()
 }
 
+fn persist_durable(daemon: &bridged::Daemon, session_id: &str, text: &str) -> bridge_core::model::AgentEvent {
+    let db = daemon.core.db.lock().unwrap();
+    bridge_core::store::session_event(
+        &db,
+        session_id,
+        &bridge_core::agent::NormalizedEvent {
+            kind: "message.completed".into(),
+            item_id: None,
+            role: Some("assistant".into()),
+            status: Some("completed".into()),
+            title: None,
+            text: Some(text.into()),
+            data: json!({}),
+        },
+        &json!({"adapter": "test"}),
+    )
+    .unwrap()
+}
+
 /// Persist a durable event and publish it on the bus, as a live mutation does.
 fn publish_durable(daemon: &bridged::Daemon, session_id: &str, text: &str) -> i64 {
-    let event = {
-        let db = daemon.core.db.lock().unwrap();
-        bridge_core::store::session_event(
-            &db,
-            session_id,
-            &bridge_core::agent::NormalizedEvent {
-                kind: "message.completed".into(),
-                item_id: None,
-                role: Some("assistant".into()),
-                status: Some("completed".into()),
-                title: None,
-                text: Some(text.into()),
-                data: json!({}),
-            },
-            &json!({"adapter": "test"}),
-        )
-        .unwrap()
-    };
+    let event = persist_durable(daemon, session_id, text);
     daemon
         .core
         .events
@@ -196,6 +198,90 @@ fn live_channel_lag_is_recovered_deterministically_with_no_gaps() {
         next_expected += 1;
     }
 
+    running.stop();
+}
+
+#[test]
+fn corrupt_history_remains_attachable_and_lag_recovery_advances_past_it() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+    let running = RunningDaemon::start(data_dir);
+    let client = connect(data_dir);
+    let session_id = create_chat(&client);
+
+    fn corrupt(daemon: &bridged::Daemon, session_id: &str, sequence: i64) {
+        let db = daemon.core.db.lock().unwrap();
+        // Simulate on-disk corruption: normal application updates are checked
+        // by the FTS trigger. Restore it before exercising daemon recovery.
+        let update_trigger: String = db.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='session_entries_au_fts'",
+            [], |row| row.get(0),
+        ).unwrap();
+        db.execute_batch("DROP TRIGGER session_entries_au_fts").unwrap();
+        db.execute(
+            "UPDATE session_entries SET payload='not-json-sensitive-payload' WHERE session_id=?1 AND sequence=?2",
+            rusqlite::params![session_id, sequence],
+        ).unwrap();
+        db.execute_batch(&update_trigger).unwrap();
+    }
+
+    for text in ["before", "damaged", "after"] {
+        persist_durable(&running.daemon, &session_id, text);
+    }
+    corrupt(&running.daemon, &session_id, 2);
+
+    let mut stream = SessionEventStream::new(&client, session_id.clone(), 0).unwrap();
+    assert_eq!(stream.cursor(), 0);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for (sequence, kind) in [(1, "assistant.message"), (2, "entry.invalid"), (3, "assistant.message")] {
+        let event = stream.next(deadline).unwrap().expect("attach returns every row");
+        assert_eq!(event.sequence, sequence);
+        assert_eq!(event.payload["kind"], kind);
+        assert_eq!(stream.cursor(), sequence, "only delivery advances the cursor");
+        if sequence == 2 {
+            assert_eq!(event.payload["data"]["sequence"], 2);
+            assert!(event.payload["data"]["reason"].as_str().unwrap().contains("JSON object"));
+            assert!(!event.payload.to_string().contains("sensitive-payload"));
+        }
+    }
+
+    // No live durable notification or sequence gap can recover these rows:
+    // only the stream-lagged path below can discover them.
+    for text in ["missed before", "missed damaged", "missed after"] {
+        persist_durable(&running.daemon, &session_id, text);
+    }
+    corrupt(&running.daemon, &session_id, 5);
+    let lag_probe = client.subscribe();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut saw_lag = false;
+    while Instant::now() < deadline {
+        // Both subscriptions remain undrained during each burst. The probe
+        // confirms a real daemon/client lag marker before recovery begins.
+        for _ in 0..4096 {
+            running.daemon.core.events.publish(bridge_core::events::CoreEvent::SessionOutput {
+                session_id: session_id.clone(), terminal_id: "lag-test".into(), data: "transient".into(),
+            });
+        }
+        if lag_probe.recv_timeout(Duration::from_millis(50)).is_ok_and(|event| event.method == "stream-lagged") {
+            saw_lag = true;
+            break;
+        }
+    }
+    assert!(saw_lag, "the real notification channel must report lag");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for (sequence, kind) in [(4, "assistant.message"), (5, "entry.invalid"), (6, "assistant.message")] {
+        let event = stream.next(deadline).unwrap().expect("lag recovery terminates");
+        assert_eq!(event.sequence, sequence, "recovery returns each sequence once");
+        assert_eq!(event.payload["kind"], kind);
+        assert_eq!(stream.cursor(), sequence);
+    }
+    publish_durable(&running.daemon, &session_id, "live after recovery");
+    let event = stream.next(deadline).unwrap().expect("live streaming continues");
+    assert_eq!(event.sequence, 7);
+    assert_eq!(stream.cursor(), 7);
+    assert!(stream.next(Instant::now() + Duration::from_millis(100)).unwrap().is_none());
+    assert!(client.replay_session_events(&session_id, stream.cursor()).unwrap().is_empty());
     running.stop();
 }
 

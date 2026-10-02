@@ -13,11 +13,11 @@ use crate::runtime::BridgeCore;
 use crate::sessions;
 use crate::switch_summary;
 use crate::{
-    adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
+    adapters, agent, agent_config, backend_binding, check_runner, compaction_controller, context_windows,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
     prompts, prompt_mutations, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
-    session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
+    session_prs, session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator, worktree_registry,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
@@ -140,6 +140,26 @@ fn worker_prompt_proposal_capability(db: &Connection, session_id: &str) -> bool 
     matches!(crate::prompt_mutation_policy::decide(db, session_id, "", session_id, true),
         Ok(crate::prompt_mutation_policy::PromptMutationDecision::RequireApproval(authority))
             if matches!(authority.target, prompts::PromptTarget::Worker(_)))
+}
+
+/// Only an orchestrator routes, so only an orchestrator is shown what it can
+/// route to. Read from the live registry at launch and delivered in the
+/// conversation tail with the rest of the capability contract, so a catalog
+/// change never rewrites the cached prompt prefix.
+fn with_routing_inventory(state: &Arc<BridgeCore>, summary: Option<String>) -> Option<String> {
+    // Disabled harnesses are left out entirely: advertising one invites a pin
+    // that can only fall back.
+    let descriptors = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| agent_config::is_harness_enabled(&state.db.lock().unwrap(), &descriptor.id))
+        .collect::<Vec<_>>();
+    let inventory = learning_router::routing_inventory(&descriptors);
+    Some(match summary.filter(|summary| !summary.trim().is_empty()) {
+        Some(summary) => format!("{summary}\n\n{inventory}"),
+        None => inventory,
+    })
 }
 
 fn configured_capability_summary(harness: &str, cwd: &str) -> Option<String> {
@@ -758,6 +778,57 @@ mod prompt_section_tests {
             .contains("All Bridge-stable orchestrator sections are deleted"));
     }
 
+    /// Provider launch has no fakeable persistence seam. Execute its actual
+    /// binding statements, so both root launch paths and direct-chat launch
+    /// retain the same atomic pressure reset without a duplicate test query.
+    #[test]
+    fn provider_launch_retires_pressure_only_when_thread_or_selection_changes() {
+        let statements = include_str!("live_turn.rs")
+            .split('"')
+            .filter(|literal| literal.starts_with("UPDATE sessions SET context_usage_after_id=CASE")
+                && literal.contains("WHERE id=?1"))
+            .collect::<Vec<_>>();
+        assert_eq!(statements.len(), 3, "cover every existing-session provider launch path");
+        for statement in statements {
+            for (thread, model, resets) in [
+                ("old-thread", "old-model", false),
+                ("new-thread", "old-model", true),
+                ("old-thread", "new-model", true),
+            ] {
+                let db = store::open(Path::new(":memory:")).unwrap();
+                db.execute(
+                    "INSERT INTO sessions(id,harness,model,label,status,provider_session_id,context_percent)
+                     VALUES('launch','codex','old-model','Launch','ready','old-thread',90)",
+                    [],
+                ).unwrap();
+                db.execute(
+                    "INSERT INTO usage_ledger(workspace_id,session_id,context_percent,source,created_at)
+                     VALUES('launch','launch',90,'provider.codex','same-instant')",
+                    [],
+                ).unwrap();
+                let last_usage_id = db.last_insert_rowid();
+                let parameters = if statement.contains("harness=?2,status") {
+                    vec!["launch", "codex", "same-instant", thread, model, "standard", "medium", "Launch", STARTED_IDLE_STATUS]
+                } else if statement.contains("harness=?6") {
+                    vec!["launch", "same-instant", thread, model, "/tmp/launch", "codex", "standard", "Launch", STARTED_IDLE_STATUS]
+                } else {
+                    vec!["launch", "same-instant", thread, model, "/tmp/launch", STARTED_IDLE_STATUS]
+                };
+                assert_eq!(db.execute(statement, rusqlite::params_from_iter(parameters)).unwrap(), 1);
+                let (watermark, gauge): (i64, Option<i64>) = db.query_row(
+                    "SELECT context_usage_after_id,context_percent FROM sessions WHERE id='launch'",
+                    [], |row| Ok((row.get(0)?, row.get(1)?)),
+                ).unwrap();
+                assert_eq!(watermark, if resets { last_usage_id } else { 0 });
+                assert_eq!(gauge, if resets { None } else { Some(90) });
+                assert_eq!(db.query_row(
+                    "SELECT context_percent FROM usage_ledger WHERE id=?1", params![last_usage_id],
+                    |row| row.get::<_, i64>(0),
+                ).unwrap(), 90, "provider launches preserve historical usage");
+            }
+        }
+    }
+
     #[test]
     fn invalidating_a_launch_prevents_its_reader_from_settling_a_replacement() {
         let scratch = tempfile::tempdir().unwrap();
@@ -983,7 +1054,7 @@ pub fn start_session(
     let state = core;
     state.workspace_path(&workspace_id)?;
     let workspace_operation = state.workspace_operation(&workspace_id);
-    let _workspace_operation = workspace_operation.lock().unwrap();
+    let _workspace_operation = crate::runtime::lock_operation(&workspace_operation);
     // An explicit chat choice wins. Without one, the persisted Standard
     // orchestrator profile remains the default.
     let selection = if let Some(harness) = harness {
@@ -1153,7 +1224,8 @@ pub fn start_session(
     // Past the hot return: this call is really going to start a process, so the
     // volatile pair is built now rather than for a hot process that is never
     // sent one.
-    let capability_summary = configured_capability_summary(adapter_id, &path);
+    let capability_summary =
+        with_routing_inventory(state, configured_capability_summary(adapter_id, &path));
     let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let orchestrator_prompt = hot_check_prompt;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
@@ -1310,7 +1382,7 @@ pub fn start_session(
     let db = state.db.lock().unwrap();
     if existing.is_some() {
         db.execute(
-            "UPDATE sessions SET harness=?2,status=?9,started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
+            "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?4 OR model IS NOT ?5 OR harness IS NOT ?2 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?4 OR model IS NOT ?5 OR harness IS NOT ?2 THEN NULL ELSE context_percent END,harness=?2,status=?9,started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
             params![
                 session_id,
                 adapter_id,
@@ -1498,7 +1570,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         .map(|workspace_id| state.workspace_operation(workspace_id));
     let _workspace_operation = workspace_operation
         .as_ref()
-        .map(|operation| operation.lock().unwrap());
+        .map(|operation| crate::runtime::lock_operation(operation));
     let is_orchestrator = kind == "orchestrator";
     let cwd = match cwd_col.filter(|value| !value.is_empty()) {
         Some(value) => value,
@@ -1724,7 +1796,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // Past the hot return, like start_session: a hot process is never sent a
     // frame, so it must not have a packet built — and an audit written — for
     // one.
-    let capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    let mut capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    if is_orchestrator {
+        capability_summary = with_routing_inventory(state, capability_summary);
+    }
     let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
@@ -1972,12 +2047,12 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         // session has no turn.
         if is_orchestrator {
             db.execute(
-                "UPDATE sessions SET status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
+                "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 OR harness IS NOT ?6 THEN NULL ELSE context_percent END,status=?9,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL, STARTED_IDLE_STATUS],
             )?;
         } else {
             db.execute(
-                "UPDATE sessions SET status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
+                "UPDATE sessions SET context_usage_after_id=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN COALESCE((SELECT MAX(id) FROM usage_ledger WHERE session_id=?1),0) ELSE context_usage_after_id END,context_percent=CASE WHEN provider_session_id IS NOT ?3 OR model IS NOT ?4 THEN NULL ELSE context_percent END,status=?6,started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
                 params![session_id, started_at, thread_id, chosen_model, cwd, STARTED_IDLE_STATUS],
             )?;
         }
@@ -2199,12 +2274,16 @@ fn cleanup_reader_state(
         core.adapter_registry
             .forget_session(adapter_id, provider_session_id);
     }
-    if tracks_worker && active_provider.is_none() {
-        core.worker_activity.lock().unwrap().remove(session_id);
-        core.worker_activity_persisted
-            .lock()
-            .unwrap()
-            .remove(session_id);
+    if active_provider.is_none() {
+        if tracks_worker {
+            core.worker_activity.lock().unwrap().remove(session_id);
+            core.worker_activity_persisted
+                .lock()
+                .unwrap()
+                .remove(session_id);
+        } else {
+            drop_chat_liveness(core, session_id);
+        }
     }
 }
 
@@ -2248,11 +2327,9 @@ fn spawn_reader_thread(
             .ok()
             .flatten()
             .is_some();
-        // Seed a heartbeat so a worker that never emits a single line still has
-        // a baseline the stall watchdog can measure from.
-        if tracks_worker {
-            record_worker_activity(&core, &session_id);
-        }
+        // Seed a heartbeat so a session that never emits a single line still
+        // has a baseline the stall watchdogs can measure from.
+        record_session_activity(&core, &session_id, tracks_worker);
         // Set once this launch is observed serving a detached model-switch
         // summary, so its exit skips live-session teardown even after the
         // detached entry has been cleaned up.
@@ -2270,12 +2347,19 @@ fn spawn_reader_thread(
                     if !launch_active {
                         break;
                     }
-                    // Every line proves liveness — refresh the heartbeat before
-                    // normalization so tool-run and reasoning frames all count.
-                    if tracks_worker {
-                        record_worker_activity(&core, &session_id);
-                    }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                        // A provider's server-level heartbeat proves the process
+                        // is alive and nothing more. It must not count as turn
+                        // progress — the chat watchdog exists precisely for a
+                        // turn that is wedged behind a healthy heartbeat — and
+                        // it has no conversation content to hand the handler.
+                        if agent::is_opencode_liveness_frame(&value) {
+                            continue;
+                        }
+                        // Every other line proves progress — refresh the
+                        // heartbeat before normalization so tool-run and
+                        // reasoning frames all count.
+                        record_session_activity(&core, &session_id, tracks_worker);
                         // A detached model-switch summary runtime shares this
                         // session id with the incoming model. Its frames drive
                         // only the checkpoint pipeline and must never reach the
@@ -2516,6 +2600,25 @@ fn handle_agent_value_timed(
     // them straight to the ambient usage channel without persisting.
     if let Some(rate_limits) = codex_rate_limits_from_frame(value) {
         core.clone().publish_account_usage("codex", rate_limits);
+        return;
+    }
+    // Claude's measured window, read by the sidecar after a turn. It is a
+    // gauge, not conversation: record it and refresh state, never the event
+    // log or the forest.
+    if let Some(reading) = context_windows::reading_from_claude_frame(value) {
+        let recorded = {
+            let db = core.db.lock().unwrap();
+            let current = expected_launch.is_none_or(|(started_at, provider_session_id)| {
+                reader_launch_is_current(&db, session_id, started_at, provider_session_id)
+            });
+            let turn_id = current_turn.lock().unwrap().clone();
+            current
+                && context_windows::record_reading(&db, session_id, turn_id.as_deref(), &reading)
+                    .unwrap_or(false)
+        };
+        if recorded {
+            core.events.publish(CoreEvent::StateChanged);
+        }
         return;
     }
     let state = core.clone();
@@ -2831,6 +2934,16 @@ fn handle_agent_value_timed(
                         &format!("provider.{adapter_id}"),
                         &event.data,
                     );
+                    if let Some(reading) =
+                        context_windows::reading_from_usage_event(&adapter_id, &event.data)
+                    {
+                        let _ = context_windows::record_reading(
+                            &db,
+                            session_id,
+                            observed_turn_id.as_deref(),
+                            &reading,
+                        );
+                    }
                 }
                 // An agent-protocol permission Bridge answered on the agent's
                 // behalf, which is the one settlement no card-driven path
@@ -3027,11 +3140,18 @@ fn handle_agent_value_timed(
             // *entire* message is the machine block. Recognised before anything
             // persists or publishes, so neither a valid checkpoint's JSON nor a
             // refusal to write one can land in the conversation as prose.
-            let pending_compaction =
+            // Only a checkpoint turn can carry a checkpoint reply, and
+            // `checkpoint_turn_active` is already true whenever a foreground
+            // request is pending — so an ordinary turn skips the lookup
+            // rather than re-walking the branch for every streamed event.
+            let pending_compaction = if checkpoint_turn_active {
                 compaction_controller::CompactionController::pending(&db, session_id)
                     .ok()
                     .flatten()
-                    .filter(|pending| !pending.background);
+                    .filter(|pending| !pending.background)
+            } else {
+                None
+            };
             let is_checkpoint_reply = checkpoint_turn_active
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
@@ -3331,6 +3451,12 @@ fn handle_agent_value_timed(
                     state.events.publish(CoreEvent::Agent(event));
                 }
             }
+            // A finished `gh pr create` links this chat to its PR. Detection
+            // only candidates; `session_prs::attach` verifies repository and
+            // head against the workspace before anything persists.
+            if normalized_event.kind == "command.completed" && !suppress_checkpoint_frame {
+                session_prs::detect_pull_request_creation(core, session_id, &normalized_event);
+            }
             if own_depth > 0 && !suppress_checkpoint_frame {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {
                     let _ = db.execute(
@@ -3476,6 +3602,12 @@ fn handle_agent_value_timed(
     }
 
     if turn_completed {
+        #[cfg(target_os = "macos")]
+        state.browser_clone_orchestrator.destroy(session_id);
+        // The turn is terminal: the chat watchdog must stop measuring this
+        // session until its reader serves the next turn. Workers never hold
+        // a chat entry, so this is a no-op for them.
+        drop_chat_liveness(&state, session_id);
         // Name the chat now rather than at creation: a session has nothing to be
         // named after until it has said something, and Claude writes its own title
         // a turn or two in.
@@ -3900,7 +4032,10 @@ pub fn begin_pressure_compaction(
 ) -> Result<Option<String>, BridgeError> {
     let context_percent = db
         .query_row(
-            "SELECT CAST(context_percent AS REAL) FROM usage_ledger WHERE session_id=?1 AND context_percent IS NOT NULL ORDER BY id DESC LIMIT 1",
+            "SELECT CAST(l.context_percent AS REAL) FROM usage_ledger l
+             JOIN sessions s ON s.id=l.session_id
+             WHERE l.session_id=?1 AND l.context_percent IS NOT NULL
+               AND l.id>s.context_usage_after_id ORDER BY l.id DESC LIMIT 1",
             params![session_id],
             |row| row.get::<_, f64>(0),
         )
@@ -5274,7 +5409,9 @@ pub fn launch_worker_outcome(
                         "Hot worker runtime disappeared before prompt delivery".into(),
                     )
                 })
-                .and_then(|runtime| runtime.send_turn(&instructions));
+                // The compatible live thread already owns the stable prefix.
+                // A new task adds only its objective, evidence and constraints.
+                .and_then(|runtime| runtime.send_turn(&compiled_prompt.variable_suffix));
             if let Err(error) = delivery {
                 if let Some(mut runtime) = state
                     .adapters
@@ -8282,7 +8419,7 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
         .prepare(
             "SELECT r.session_id,s.label,r.lifecycle_state,r.task_family,r.retry_count,
                     r.result_status,r.progress_summary,r.waiting_reason,r.waiting_since,r.last_activity_at,
-                    COALESCE(l.role,'unknown'),s.started_at
+                    COALESCE(l.role,'unknown'),s.started_at,s.harness,s.model
              FROM worker_runtime r
              JOIN sessions s ON s.id=r.session_id
              LEFT JOIN worker_leases l ON l.session_id=r.session_id
@@ -8315,6 +8452,11 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
                         "lastActivityAt": row.get::<_, Option<String>>(9)?,
                         "role": row.get::<_, String>(10)?,
                         "elapsedSeconds": elapsed_seconds,
+                        // So a pinned delegation's orchestrator can see whether
+                        // its pin was actually honored, without waiting for the
+                        // worker's typed result.
+                        "harness": row.get::<_, String>(12)?,
+                        "model": row.get::<_, Option<String>>(13)?,
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()
@@ -8844,6 +8986,33 @@ fn reset_worker_heartbeat(state: &BridgeCore, session_id: &str) {
         .insert(session_id.to_string(), std::time::Instant::now());
 }
 
+/// A progress frame arrived for `session_id`. Workers keep the heartbeat in
+/// `worker_activity` (mirrored into `worker_runtime` for the fleet UI);
+/// chats keep theirs in `chat_activity` so the per-second worker watchdog
+/// never scans a chat session or probes `worker_runtime` for it.
+fn record_session_activity(core: &Arc<BridgeCore>, session_id: &str, tracks_worker: bool) {
+    if tracks_worker {
+        record_worker_activity(core, session_id);
+    } else {
+        reset_chat_heartbeat(core, session_id);
+    }
+}
+
+/// Refresh a chat session's liveness heartbeat for the chat-turn watchdog.
+fn reset_chat_heartbeat(state: &BridgeCore, session_id: &str) {
+    state
+        .chat_activity
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), std::time::Instant::now());
+}
+
+/// A chat turn reached a terminal boundary: drop its liveness entry so the
+/// chat watchdog stops measuring a session with nothing in flight.
+fn drop_chat_liveness(state: &BridgeCore, session_id: &str) {
+    state.chat_activity.lock().unwrap().remove(session_id);
+}
+
 fn record_worker_activity(core: &Arc<BridgeCore>, session_id: &str) {
     let state = core.clone();
     reset_worker_heartbeat(&state, session_id);
@@ -8869,6 +9038,17 @@ fn record_worker_activity(core: &Arc<BridgeCore>, session_id: &str) {
 fn worker_silence_secs(state: &BridgeCore, session_id: &str) -> Option<u64> {
     state
         .worker_activity
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|seen| seen.elapsed().as_secs())
+}
+
+/// Seconds since a chat session last produced a progress frame, if its reader
+/// still has a turn in flight.
+fn chat_silence_secs(state: &BridgeCore, session_id: &str) -> Option<u64> {
+    state
+        .chat_activity
         .lock()
         .unwrap()
         .get(session_id)
@@ -9475,6 +9655,20 @@ fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
     };
 }
 
+/// How often terminal worker worktrees are collected. Reclaiming disk is
+/// not urgent; keeping the database lock free for live frames is.
+const WORKTREE_RELEASE_INTERVAL: Duration = Duration::from_secs(30);
+
+fn worktree_release_due() -> bool {
+    static LAST_RELEASE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST_RELEASE.lock().unwrap();
+    if last.is_some_and(|last| last.elapsed() < WORKTREE_RELEASE_INTERVAL) {
+        return false;
+    }
+    *last = Some(std::time::Instant::now());
+    true
+}
+
 fn maintain_worker_pool(core: &Arc<BridgeCore>) {
     let state = core.clone();
     let expired = worker_pool::WorkerPool::warm_workers_due(&state.db.lock().unwrap(), Utc::now())
@@ -9648,8 +9842,11 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
 
     // A worker that was warm when its output was adopted keeps its worktree, so
     // resuming it does not land in a deleted directory. Collect those once the
-    // worker can no longer be resumed.
-    {
+    // worker can no longer be resumed. The collector runs Git in each candidate
+    // worktree while holding the database, and a stopped worker with real
+    // changes stays a candidate forever — so it runs on its own slow cadence,
+    // not on every one-second tick, or live streams stall behind `git status`.
+    if worktree_release_due() {
         let db = state.db.lock().unwrap();
         let _ = worker_adoption::release_terminal_worktrees(&db);
     }
@@ -9723,8 +9920,214 @@ pub fn start_worker_maintenance(core: Arc<BridgeCore>) {
             thread::sleep(Duration::from_secs(1));
             idle.maintain(&core);
             maintain_worker_pool(&core);
+            maintain_chat_liveness(&core);
         }
     });
+}
+
+/// A user's own chat turn (depth 0, status `working`) whose provider has
+/// emitted no progress frame for this long is treated as wedged. Mirrors the
+/// worker watchdog's window; healthy providers stream far more often.
+pub const CHAT_STALL_TIMEOUT_SECONDS: u64 = 600;
+
+/// The same deadline while a tool, command or file change of the current turn
+/// is still open. A tool legitimately goes quiet far longer than reasoning
+/// does — a build or a test suite emits nothing until it ends — so a single
+/// deadline would fire on every long tool call.
+pub const CHAT_TOOL_STALL_TIMEOUT_SECONDS: u64 = 1800;
+
+const CHAT_STALLED_OBSERVED: &str = "chat.stalled_observed";
+
+/// Stall watchdog for non-worker sessions.
+///
+/// The worker watchdog is keyed off `worker_runtime` and settles a typed
+/// result to the parent; a chat has no parent to report to and no result to
+/// type, so a wedged turn used to spin forever — the TCP socket stays warm
+/// (OpenCode heartbeats every 10 s) so the EOF path never fires either. This
+/// pass resolves such a turn to one visible, recoverable error and hands the
+/// session back to the user with its adapter still alive.
+///
+/// Detection reads the chat-only heartbeat map first so the common case (no
+/// silent sessions) touches neither the adapter map nor the DB. `waiting`
+/// (approval pending) and `checkpointing` are deliberately idle and excluded;
+/// workers (depth > 0) keep their own path on `worker_activity`.
+fn maintain_chat_liveness(core: &Arc<BridgeCore>) {
+    let state = core.clone();
+    let silent_ids: Vec<(String, u64)> = {
+        let activity = state.chat_activity.lock().unwrap();
+        activity
+            .iter()
+            .map(|(session_id, seen)| (session_id.clone(), seen.elapsed().as_secs()))
+            .filter(|(_, silent)| *silent >= CHAT_STALL_TIMEOUT_SECONDS)
+            .collect()
+    };
+    if silent_ids.is_empty() {
+        return;
+    }
+    let alive: Vec<(String, u64)> = {
+        let adapters = state.adapters.lock().unwrap();
+        silent_ids
+            .into_iter()
+            .filter(|(session_id, _)| adapters.contains_key(session_id))
+            .collect()
+    };
+    for (session_id, silent) in alive {
+        let deadline = {
+            let db = state.db.lock().unwrap();
+            chat_stall_deadline(&db, &session_id)
+        };
+        if let Some(deadline) = deadline {
+            if silent >= deadline {
+                fail_stalled_chat_turn(core, &session_id, deadline);
+            }
+        }
+    }
+}
+
+/// The silence a working chat session may accumulate before it is stalled,
+/// or `None` when the session is not a candidate at all.
+fn chat_stall_deadline(db: &Connection, session_id: &str) -> Option<u64> {
+    let working: bool = db
+        .query_row(
+            "SELECT status='working' AND COALESCE(depth,0)=0 FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    if !working {
+        return None;
+    }
+    // A tool of the current turn that has started and not yet completed. The
+    // turn boundary is the last durable `turn.started`; open means no later
+    // `*.completed` for the same item (`provider_event_id` holds the item id).
+    // A started row with no item id can never be matched by a completion, so
+    // it must not pin the session to the long deadline — it is ignored here
+    // and the turn stalls on the normal ten-minute deadline instead.
+    let tool_open: bool = db
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM session_entries started
+                WHERE started.session_id=?1
+                  AND started.kind IN ('tool.started','command.started','file_change.started')
+                  AND started.provider_event_id IS NOT NULL
+                  AND started.sequence > COALESCE((SELECT MAX(sequence) FROM session_entries WHERE session_id=?1 AND kind='turn.started'), 0)
+                  AND NOT EXISTS(
+                    SELECT 1 FROM session_entries done
+                    WHERE done.session_id=?1
+                      AND done.provider_event_id IS NOT NULL
+                      AND done.provider_event_id=started.provider_event_id
+                      AND done.kind IN ('tool.completed','command.completed','file_change.completed')
+                      AND done.sequence > started.sequence))",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    Some(if tool_open {
+        CHAT_TOOL_STALL_TIMEOUT_SECONDS
+    } else {
+        CHAT_STALL_TIMEOUT_SECONDS
+    })
+}
+
+/// Resolve a wedged chat turn: interrupt the provider, record one error and
+/// a failed turn boundary, and return the session to `ready` with its adapter
+/// intact so the next message needs no restart.
+fn fail_stalled_chat_turn(core: &Arc<BridgeCore>, session_id: &str, deadline: u64) {
+    let state = core.clone();
+    // (1) Re-confirm silence under the lock — output that landed since the
+    // snapshot must win over a synthetic failure.
+    match chat_silence_secs(&state, session_id) {
+        Some(silent) if silent >= deadline => {}
+        _ => return,
+    }
+    // Reset first: a second tick must not stall the same turn twice while
+    // the provider takes its time reacting to the interrupt.
+    reset_chat_heartbeat(&state, session_id);
+    // (2) The interrupt makes the provider emit an aborted-turn error that
+    // looks like a crash. The stall card is the one the user should see, so
+    // let the existing stop path swallow the provoked one.
+    state
+        .user_stop_requested
+        .lock()
+        .unwrap()
+        .insert(session_id.to_owned());
+    let interrupted = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .map(|runtime| runtime.interrupt().is_ok())
+        .unwrap_or(false);
+    let (harness, workspace_id): (String, Option<String>) = {
+        let db = state.db.lock().unwrap();
+        match db.query_row(
+            "SELECT harness, workspace_id FROM sessions WHERE id=?1 AND status='working' AND COALESCE(depth,0)=0",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(row) => row,
+            // Settled by a real frame between the snapshot and now.
+            Err(_) => return,
+        }
+    };
+    let mut error = agent::NormalizedEvent::new("error");
+    error.status = Some("failed".into());
+    error.title = Some("Turn stalled".into());
+    error.text = Some(format!(
+        "The provider produced no output for {} minutes, so Bridge interrupted the turn. \
+         Send a message to continue; the session is still running.",
+        deadline / 60
+    ));
+    error.data = serde_json::json!({
+        "bridgeStall": true,
+        "deadlineSeconds": deadline,
+        "interrupted": interrupted,
+    });
+    let mut ended = agent::NormalizedEvent::new("turn.completed");
+    ended.status = Some("failed".into());
+    ended.data = serde_json::json!({ "bridgeStall": true });
+    let provider_meta = serde_json::json!({ "adapter": harness, "bridgeStall": true });
+    let stored: Vec<AgentEvent> = {
+        let db = state.db.lock().unwrap();
+        let mut stored = Vec::new();
+        for event in [&error, &ended] {
+            if let Ok(stored_event) = store::session_event(&db, session_id, event, &provider_meta) {
+                stored.push(stored_event);
+            }
+        }
+        // Spelled with IN so the boot-path guard (`no_provider_boot_path_claims_a_
+        // turn_it_does_not_have`) does not read this as a session claiming a turn:
+        // it releases one.
+        let _ = db.execute(
+            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1 AND status IN ('working')",
+            params![session_id],
+        );
+        if let Some(workspace_id) = &workspace_id {
+            let _ = db.execute(
+                "UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",
+                params![workspace_id],
+            );
+        }
+        // Bridge's own observation, kept apart from the conversation.
+        let _ = store::event(
+            &db,
+            "supervisor",
+            CHAT_STALLED_OBSERVED,
+            session_id,
+            &format!("no output for {deadline}s; interrupted={interrupted}"),
+        );
+        stored
+    };
+    if let Some(runtime) = state.adapters.lock().unwrap().get(session_id) {
+        *runtime.current_turn().lock().unwrap() = None;
+    }
+    // The turn is terminal: stop measuring this chat until its reader serves
+    // the next turn.
+    drop_chat_liveness(&state, session_id);
+    for event in stored {
+        state.events.publish(CoreEvent::Agent(event));
+    }
+    state.events.publish(CoreEvent::StateChanged);
 }
 
 /// How often the check runner looks for work. Deliberately unhurried: a planned
@@ -10081,6 +10484,29 @@ fn prepare_input(
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
+        slash::SlashDispatch::Find { query } => {
+            let text = if query.trim().is_empty() {
+                "Usage: /find <what you remember about the chat>. Searches every chat.".to_string()
+            } else {
+                let params = bridge_protocol::messages::SearchChatsParams {
+                    query: query.clone(),
+                    limit: None,
+                    deep: false,
+                };
+                // Index only: a slash reply lands in this chat's forest, and
+                // a model turn has no business being recorded there.
+                let result = crate::chat_search::search_with(
+                    &state.db,
+                    &params,
+                    chrono::Utc::now(),
+                    crate::chat_search::DeepGate::Unavailable(String::new()),
+                    || Err(String::new()),
+                )?;
+                crate::chat_search::format_reply(&result)
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
         slash::SlashDispatch::Pin { body } => {
             // The slash writes the same ledger the dialog reads, so it owes the
             // same hint. A refused save publishes nothing.
@@ -10218,6 +10644,8 @@ fn prepare_input(
         slash::SlashDispatch::Clear => {
             state.credential_broker.clear_session(session_id);
             state.browser_bridge.revoke_session(session_id);
+            #[cfg(target_os = "macos")]
+            state.browser_clone_orchestrator.destroy(session_id);
             // The conversation that held the frame is gone, so the claim that
             // it was delivered goes with it.
             state.session_context.lock().unwrap().forget(session_id);
@@ -10294,6 +10722,16 @@ fn prepare_input(
     let file_context =
         workspace_files::mention_context(workspace_root.as_deref(), &outbound);
     let provider_text = workspace_files::append_to_user_text(&outbound, file_context.as_deref());
+    // A pasted `brio_…` alias or `@session:` mention names another chat. Its
+    // stored history rides along the same way file contents do — trusted
+    // application context the provider sees and the transcript does not —
+    // so the agent can continue that chat instead of reading eight hex chars.
+    let reference_context = crate::session_reference::context_for(
+        &state.db.lock().unwrap(),
+        session_id,
+        &outbound,
+    )?;
+    let provider_text = crate::session_reference::append_to_user_text(&provider_text, reference_context.as_deref());
     // Prefer the original slash text for the transcript when we expanded a
     // skill/prompt.
     let display_text = if outbound != sanitized_input.text {
@@ -10361,10 +10799,31 @@ fn deliver_prepared_input(
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
     let browser_context = state.browser_bridge.capability_context(session_id, runtime.process_id());
-    let application_context = match (credential_context, browser_context) {
-        (Some(credentials), Some(browser)) => Some(format!("{credentials}\n\n{browser}")),
-        (credentials, browser) => credentials.or(browser),
+    // Two clone capabilities. The "ask for a clone" one is offered every turn so
+    // the agent can request a signed-in browser; the drive tool is added only
+    // once a clone exists (after the person approved), the same way the attached
+    // tab works.
+    #[cfg(target_os = "macos")]
+    let clone_context: Option<String> = {
+        let request = state
+            .browser_clone_orchestrator
+            .request_capability_context(session_id, runtime.process_id());
+        let drive = state
+            .browser_clone_orchestrator
+            .capability_context(session_id, runtime.process_id());
+        match (request, drive) {
+            (Some(request), Some(drive)) => Some(format!("{request}\n\n{drive}")),
+            (request, drive) => request.or(drive),
+        }
     };
+    #[cfg(not(target_os = "macos"))]
+    let clone_context: Option<String> = None;
+    let application_context = [credential_context, browser_context, clone_context]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let application_context =
+        (!application_context.is_empty()).then(|| application_context.join("\n\n"));
     let turn_context = adapters::TurnContext {
         session: session_frame.as_ref().map(session_context::SessionContext::text),
         credentials: application_context.as_deref(),
@@ -10569,6 +11028,15 @@ fn prepare_direct_agent_objective(
     let workspace_root = core.session_workspace_root(session_id);
     let file_context = workspace_files::mention_context(workspace_root.as_deref(), &sanitized.text);
     let worker_text = workspace_files::append_to_user_text(&sanitized.text, file_context.as_deref());
+    // A `#agent brio_…` objective hands the worker the referenced chat too.
+    let reference_context = crate::session_reference::context_for(
+        &core.db.lock().unwrap(),
+        session_id,
+        &sanitized.text,
+    )
+    .ok()
+    .flatten();
+    let worker_text = crate::session_reference::append_to_user_text(&worker_text, reference_context.as_deref());
     (sanitized.text, worker_text, sanitized.interceptions)
 }
 
@@ -11737,6 +12205,8 @@ pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
     };
     core.events.publish(CoreEvent::StateChanged);
     core.browser_bridge.revoke_session(session_id);
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
     if let Some(mut runtime) = runtime {
         // Calling interrupt first could wait ten seconds on an HTTP abort or
         // a blocked pipe. Process-group shutdown is the bounded hard guarantee.
@@ -11752,6 +12222,8 @@ pub fn stop_session(
     let state = core;
     void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
     state.browser_bridge.revoke_session(&session_id);
+    #[cfg(target_os = "macos")]
+    state.browser_clone_orchestrator.destroy(&session_id);
     let is_worker = state.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         params![session_id],
@@ -12445,6 +12917,8 @@ mod peek_digest_tests {
         assert_eq!(rows[0]["currentActivity"], "Running: cargo test");
         assert_eq!(rows[0]["lifecycle"], "working");
         assert_eq!(rows[0]["role"], "implementation");
+        assert_eq!(rows[0]["harness"], "claude");
+        assert!(rows[0]["model"].is_null());
         assert!(rows[0]["elapsedSeconds"].as_i64().is_some());
         // A reported worker is settled business, not fleet status.
         db.execute("UPDATE worker_runtime SET result_status='reported' WHERE session_id='child'", []).unwrap();
@@ -12809,11 +13283,14 @@ fn managed_root_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod submit_input_tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::api;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A live provider that records what it was told, and can be made to fail
     /// the write so the queue's release path is reachable.
     pub(super) struct FakeRuntime {
+        runtime_pid: u32,
         steering: bool,
         /// Whether this fake advertises image support. `false` keeps the
         /// trait default so the refusal path stays reachable in tests.
@@ -12860,16 +13337,16 @@ mod submit_input_tests {
 
     impl FakeRuntime {
         pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, false)
+            Self::build(steering, false, 0)
         }
 
         pub(super) fn new_with_images(
             steering: bool,
         ) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, true)
+            Self::build(steering, true, 0)
         }
 
-        fn build(steering: bool, images: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+        fn build(steering: bool, images: bool, runtime_pid: u32) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let contexts = Arc::new(Mutex::new(Vec::new()));
             let sent_images = Arc::new(Mutex::new(Vec::new()));
@@ -12880,6 +13357,7 @@ mod submit_input_tests {
             let interrupts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let refuse_interrupt = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
+                runtime_pid,
                 steering,
                 images,
                 sent: sent.clone(),
@@ -12911,7 +13389,7 @@ mod submit_input_tests {
 
     impl adapters::AdapterRuntime for FakeRuntime {
         fn process_id(&self) -> u32 {
-            0
+            self.runtime_pid
         }
         fn provider_session_id(&self) -> &str {
             "fake"
@@ -13064,6 +13542,26 @@ mod submit_input_tests {
     }
 
     #[test]
+    fn claude_context_usage_frame_records_a_reading_and_no_session_event() {
+        let (_dir, core, _guard) = core_with_chat("ready");
+        core.db.lock().unwrap().execute("UPDATE sessions SET model='claude-opus-5-5',provider_session_id='p1' WHERE id='chat'", []).unwrap();
+        let events_before: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat'", [], |r| r.get(0)).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &serde_json::json!({
+            "type":"context_usage","usedTokens":76_000,"windowTokens":200_000,"categories":[]
+        }));
+        let db = core.db.lock().unwrap();
+        let reading: (i64, i64, String, Option<String>, String) = db.query_row(
+            "SELECT used_tokens,window_tokens,state,turn_id,provider_session_id FROM context_readings WHERE session_id='chat'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).unwrap();
+        assert_eq!(reading, (76_000, 200_000, "measured".into(), Some("turn-1".into()), "p1".into()));
+        let percent: i64 = db.query_row("SELECT context_percent FROM sessions WHERE id='chat'", [], |r| r.get(0)).unwrap();
+        assert_eq!(percent, 38);
+        let events_after: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat'", [], |r| r.get(0)).unwrap();
+        assert_eq!(events_after, events_before, "a context gauge is not conversation");
+    }
+
+    #[test]
     fn composer_stop_settles_only_its_chat_without_waiting_for_provider_abort() {
         let (_dir, core, _guard) = core_with_chat("working");
         let handles = attach_handles(&core, false);
@@ -13092,6 +13590,73 @@ mod submit_input_tests {
         let (runtime, handles) = FakeRuntime::new(steering);
         core.adapters.lock().unwrap().insert("chat".into(), runtime);
         handles
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_application_request_approval_handoff_and_turn_cleanup_repeat() {
+        fn invoke(path: &std::path::Path, value: serde_json::Value) -> (bool, serde_json::Value) {
+            let output = std::process::Command::new(path).arg(value.to_string()).output().unwrap();
+            (output.status.success(), serde_json::from_slice(&output.stdout).unwrap())
+        }
+        let (_fixture, mut core, _managed_root) = core_with_chat("ready");
+        let browser = tempfile::tempdir_in("/tmp").unwrap();
+        let directory = browser.path().join("tool");
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(browser.path(), true);
+        let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), directory.clone()).unwrap();
+        let owner = Arc::get_mut(&mut core).unwrap();
+        owner.browser_clones = supervisor;
+        owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
+        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let extension = browser.path().join("extension");
+        std::fs::create_dir(&extension).unwrap();
+        std::fs::write(extension.join("manifest.json"), r#"{"manifest_version":3,"name":"Synthetic fixture","version":"1.0"}"#).unwrap();
+        for _ in 0..2 {
+            submit_input(&core, "chat".into(), "Test my local extension with a browser".into()).unwrap();
+            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text| text.contains("clone-request-chat")));
+            let request_tool = directory.join("clone-request-chat");
+            let (ok, asked) = invoke(&request_tool, serde_json::json!({"kind":"request","domain":"example.test","extensionPath":extension,"additionalDomains":["cdn.example.test"]}));
+            assert!(ok);
+            let id = asked["requestId"].as_str().unwrap();
+            assert_eq!(api::clone_requests(&core).len(), 1);
+            assert!(api::resolve_clone_request(&core, "chat", true, "stale", wire::CloneSignInPath::SignInInside, 10, None).is_err());
+            let snapshot = api::resolve_clone_request(&core, "chat", true, id, wire::CloneSignInPath::SignInInside, 10, None).unwrap().unwrap();
+            assert_eq!(snapshot.status, "waiting_for_you");
+            let guard = core.browser_clones.clone_guard(&snapshot.clone_id).unwrap();
+            let guard = guard.lock().unwrap();
+            assert!(guard.host_allowed("cdn.example.test"));
+            assert!(!guard.host_allowed("unapproved.test"));
+            drop(guard);
+            let (ok, approved) = invoke(&request_tool, serde_json::json!({"kind":"request_status","requestId":id}));
+            assert!(ok);
+            assert_eq!(approved["awaiting"], false);
+            assert!(approved["tool"].as_str().unwrap().contains("clone-browser-chat"));
+            let drive = directory.join("clone-browser-chat");
+            assert_eq!(invoke(&drive, serde_json::json!({"kind":"status"})).1, serde_json::json!({"ok":true,"paused":true}));
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0, "reads must pause during sign-in");
+            api::takeover_clone(&core, "chat").unwrap();
+            api::clone_input(&core, "chat", &wire::CloneInputEvent::Type { text: "123456".into() }).unwrap();
+            api::hand_back_clone(&core, "chat").unwrap();
+            let (ok, inspected) = invoke(&drive, serde_json::json!({"kind":"inspect"}));
+            assert!(ok);
+            assert!(!inspected.to_string().contains("123456"), "the person's typed secret leaked");
+            assert!(!invoke(&drive, serde_json::json!({"kind":"screenshot"})).0);
+            assert!(invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::takeover_clone(&core, "chat").unwrap();
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0);
+            assert!(!invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::hand_back_clone(&core, "chat").unwrap();
+            handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+            assert!(core.browser_clone_orchestrator.view("chat").is_none());
+            assert!(api::clone_requests(&core).is_empty());
+            assert!(!drive.exists());
+            assert!(!request_tool.exists());
+            assert_eq!(std::fs::read_dir(browser.path().join("mounts")).unwrap().count(), 0);
+        }
+        let commands = std::fs::read_to_string(browser.path().join("commands.jsonl")).unwrap();
+        assert_eq!(commands.lines().filter(|line| line.contains("Extensions.loadUnpacked")).count(), 2);
     }
 
     // -- session-context frame (#528) ---------------------------------------
@@ -13127,9 +13692,12 @@ mod submit_input_tests {
             "the user's words are untouched"
         );
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
+        // The session frame is delivered on the first turn and not re-sent.
+        // (Every turn also carries the always-offered clone-request capability,
+        // which is not the frame.)
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
         assert!(
-            contexts[1].is_empty(),
+            !contexts[1].iter().any(|c| c.as_str() == frame.text()),
             "the thread holds the frame now; re-sending it every turn is what the tail delivery avoids"
         );
     }
@@ -13159,8 +13727,8 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "after the switch".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
-        assert!(contexts[1].is_empty());
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
+        assert!(!contexts[1].iter().any(|c| c.as_str() == frame.text()), "the frame is not re-sent");
     }
 
     /// A frame Bridge could not hand over is still owed. Otherwise a provider
@@ -13186,7 +13754,10 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "retry".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts.last().unwrap(), &vec![frame.text().to_owned()]);
+        assert!(
+            contexts.last().unwrap().iter().any(|c| c.as_str() == frame.text()),
+            "the owed frame is re-delivered on the retry",
+        );
     }
 
     // -- stop / interrupt ----------------------------------------------------
@@ -16621,6 +17192,120 @@ mod permission_policy_tests {
 }
 
 #[cfg(test)]
+mod hot_worker_prompt_tests {
+    use super::*;
+
+    /// Discovery and launches are local fakes: this regression observes the
+    /// exact bytes sent through the production hot-worker delivery path.
+    struct HotHarness;
+
+    impl adapters::HarnessAdapter for HotHarness {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn descriptor(&self) -> crate::model::AdapterDescriptor {
+            crate::model::AdapterDescriptor {
+                id: "codex".into(), label: "Codex".into(), available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("test".into()), capabilities: vec!["messages".into()],
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                unavailable_reason: None, default_model: Some("test-model".into()),
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+                models: vec![crate::model::ModelOption {
+                    id: "test-model".into(), label: "Test model".into(),
+                    tier: crate::model::CapabilityTier::Standard,
+                    available: true, compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::CuratedFallback,
+                    supported_effort_levels: vec!["medium".into()], default_for_tier: true,
+                }],
+            }
+        }
+        fn start(&self, _: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("test must reuse the live worker".into()))
+        }
+        fn resume(&self, _: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("test must reuse the live worker".into()))
+        }
+        fn supports_native_resume(&self) -> bool { true }
+        fn normalize(&self, _: &serde_json::Value) -> Vec<agent::NormalizedEvent> { vec![] }
+    }
+
+    #[test]
+    fn compatible_hot_worker_receives_only_the_new_variable_suffix() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(fixture.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry.register(Box::new(HotHarness)).unwrap();
+        core.adapter_registry = Arc::new(registry);
+        let core = Arc::new(core);
+        let request = delegation::DelegationRequest {
+            schema_version: delegation::SCHEMA_VERSION,
+            role: delegation::WorkerRole::Research,
+            objective: "Inspect the next task".into(),
+            acceptance_criteria: vec!["Return evidence for the new objective".into()],
+            known_facts: vec!["The previous task is complete".into()],
+            decisions: vec![], evidence_ids: vec![], relevant_files: vec!["src/new.rs".into()],
+            owned_paths: vec![], write_mode: delegation::WriteMode::ReadOnly,
+            capability_tier: crate::model::CapabilityTier::Standard,
+            effort: delegation::Effort::Medium, network_access: false,
+            writable_output_paths: vec![], verification: vec![],
+            output_contract: delegation::OutputContract::ResearchResult,
+            harness: Some("codex".into()), model: Some("test-model".into()),
+        };
+        let compiled = {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute_batch(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind)
+                    VALUES('parent','w','codex','Parent','working','reported',0,'orchestrator');
+                 INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,model,provider_session_id)
+                    VALUES('worker','w','codex','Research','warm','reported','parent',1,'test-model','fake');
+                 INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at)
+                    VALUES('worker','w','research','standard','research','[]','readOnly','warm','now','now');
+                 INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,updated_at)
+                    VALUES('worker','parent','warm','research','key','reported','now');"
+            ).unwrap();
+            let stack = prompt_sections::resolve(&db, prompts::PromptTarget::Worker(request.role), 1).unwrap();
+            let configured = agent_config::prompt_suffix(&db, "codex", request.role.as_str());
+            let compiled = compile_worker_prompt(&stack, &request, "bridge/task", &[], &configured, None).unwrap();
+            persist_prompt_compilation(
+                &db, "worker", "codex", Some("test-model"), "worker:research", "research",
+                RestorationMode::Fresh, "not_applicable", &compiled,
+            ).unwrap();
+            compiled
+        };
+        assert!(compiled.instructions().contains("<bridge-stable-prompt"));
+        let (runtime, handles) = super::submit_input_tests::FakeRuntime::new(false);
+        core.adapters.lock().unwrap().insert("worker".into(), runtime);
+
+        let outcome = launch_worker_outcome(&core, "parent", "direct-agent-next", &request, false);
+
+        let launched = match outcome {
+            WorkerLaunchOutcome::Launched(id) => id,
+            _ => {
+                let reason: String = core.db.lock().unwrap().query_row(
+                    "SELECT COALESCE(group_concat(body, '; '),'no diagnostic') FROM events",
+                    [], |row| row.get(0),
+                ).unwrap();
+                panic!("compatible worker must launch through its existing runtime: {reason}");
+            }
+        };
+        assert_eq!(launched, "worker");
+        let sent = handles.sent.lock().unwrap();
+        assert_eq!(sent.as_slice(), [compiled.variable_suffix.as_str()]);
+        assert!(!sent[0].contains("<bridge-stable-prompt"));
+        assert!(sent[0].contains("Inspect the next task"));
+        assert!(sent[0].contains("Return evidence for the new objective"));
+        assert!(sent[0].contains("The previous task is complete"));
+        let db = core.db.lock().unwrap();
+        let record = store::latest_prompt_compilation(&db, "worker").unwrap().unwrap();
+        assert_eq!(record.restoration_mode, "hot");
+        assert_eq!(record.prefix_hash, compiled.metadata.prefix_hash);
+        assert_eq!(store::worker_runtime(&db, "worker").unwrap().unwrap().lifecycle_state, "working");
+    }
+}
+
+#[cfg(test)]
 mod retry_settlement_tests {
     use super::*;
     use crate::model::WorkerRuntimeRecord;
@@ -16662,6 +17347,282 @@ mod retry_settlement_tests {
         Arc<Mutex<Vec<String>>>,
         std::sync::MutexGuard<'static, ()>,
     );
+
+    /// A live chat adapter that only counts interrupts and stays registered.
+    struct ChatSpyRuntime {
+        interrupts: Arc<Mutex<u32>>,
+        current_turn: Arc<Mutex<Option<String>>>,
+    }
+
+    impl adapters::AdapterRuntime for ChatSpyRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "spy"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            self.current_turn.clone()
+        }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            *self.interrupts.lock().unwrap() += 1;
+            Ok(())
+        }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn stop(&mut self, _: adapters::ShutdownReason) {}
+    }
+
+    /// A depth-0 OpenCode chat mid-turn, with a live adapter and no worker row.
+    fn core_with_working_chat() -> (tempfile::TempDir, Arc<BridgeCore>, Arc<Mutex<u32>>, std::sync::MutexGuard<'static, ()>) {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind,active_turn_id) VALUES('chat','w','opencode','Chat','working','reported',0,'orchestrator','turn-1')", []).unwrap();
+        }
+        let interrupts = Arc::new(Mutex::new(0));
+        let core = Arc::new(core);
+        core.adapters.lock().unwrap().insert(
+            "chat".into(),
+            Box::new(ChatSpyRuntime { interrupts: interrupts.clone(), current_turn: Arc::new(Mutex::new(Some("turn-1".into()))) }),
+        );
+        (fixture, core, interrupts, managed_root)
+    }
+
+    fn chat_status(core: &BridgeCore) -> (String, Option<String>) {
+        core.db.lock().unwrap().query_row("SELECT status, active_turn_id FROM sessions WHERE id='chat'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+    }
+
+    fn chat_entry_kinds(core: &BridgeCore) -> Vec<(String, Option<String>)> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db.prepare("SELECT kind, json_extract(payload,'$.status') FROM session_entries WHERE session_id='chat' ORDER BY sequence").unwrap();
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    fn silent_for(core: &BridgeCore, session_id: &str, seconds: u64) {
+        core.chat_activity.lock().unwrap().insert(session_id.into(), std::time::Instant::now() - Duration::from_secs(seconds));
+    }
+
+    fn silent_worker_for(core: &BridgeCore, session_id: &str, seconds: u64) {
+        core.worker_activity.lock().unwrap().insert(session_id.into(), std::time::Instant::now() - Duration::from_secs(seconds));
+    }
+
+    #[test]
+    fn a_silent_chat_turn_is_resolved_to_a_recoverable_error() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS - 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0, "one second short of the deadline is not a stall");
+        assert_eq!(chat_status(&core).0, "working");
+
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1, "the provider was interrupted");
+        assert_eq!(chat_status(&core), ("ready".into(), None), "the session is handed back, not failed or stopped");
+        assert!(core.adapters.lock().unwrap().contains_key("chat"), "the adapter stays alive for the next message");
+        let kinds = chat_entry_kinds(&core);
+        assert_eq!(kinds, vec![("error".into(), Some("failed".into())), ("turn.completed".into(), Some("failed".into()))]);
+        let (title, stall): (String, bool) = core.db.lock().unwrap().query_row(
+            "SELECT json_extract(payload,'$.title'), json_extract(payload,'$.data.bridgeStall') FROM session_entries WHERE session_id='chat' AND kind='error'",
+            [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(title, "Turn stalled");
+        assert!(stall);
+        assert!(core.user_stop_requested.lock().unwrap().contains("chat"), "the error the interrupt provokes will be swallowed");
+        let observed: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM events WHERE kind=?1 AND entity_id='chat'", params![CHAT_STALLED_OBSERVED], |row| row.get(0)).unwrap();
+        assert_eq!(observed, 1);
+        // The heartbeat was reset, so the next tick does not stall it again.
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1);
+        assert_eq!(chat_entry_kinds(&core).len(), 2);
+    }
+
+    #[test]
+    fn a_running_tool_extends_the_chat_stall_deadline() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        {
+            let db = core.db.lock().unwrap();
+            let mut started = agent::NormalizedEvent::new("turn.started");
+            started.status = Some("working".into());
+            store::session_event(&db, "chat", &started, &serde_json::json!({})).unwrap();
+            let mut tool = agent::NormalizedEvent::new("command.started");
+            tool.item_id = Some("call-1".into());
+            tool.status = Some("inProgress".into());
+            store::session_event(&db, "chat", &tool, &serde_json::json!({})).unwrap();
+        }
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS + 100);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0, "a running command buys the longer window");
+        assert_eq!(chat_status(&core).0, "working");
+
+        // Once the command completes the short window applies again.
+        {
+            let db = core.db.lock().unwrap();
+            let mut done = agent::NormalizedEvent::new("command.completed");
+            done.item_id = Some("call-1".into());
+            done.status = Some("completed".into());
+            store::session_event(&db, "chat", &done, &serde_json::json!({})).unwrap();
+        }
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1);
+        assert_eq!(chat_status(&core).0, "ready");
+    }
+
+    #[test]
+    fn an_open_tool_still_stalls_past_the_long_deadline() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        {
+            let db = core.db.lock().unwrap();
+            let mut tool = agent::NormalizedEvent::new("tool.started");
+            tool.item_id = Some("call-1".into());
+            store::session_event(&db, "chat", &tool, &serde_json::json!({})).unwrap();
+        }
+        silent_for(&core, "chat", CHAT_TOOL_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1);
+        assert_eq!(chat_status(&core).0, "ready");
+    }
+
+    #[test]
+    fn a_null_item_id_does_not_extend_the_chat_stall_deadline() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        {
+            let db = core.db.lock().unwrap();
+            let mut started = agent::NormalizedEvent::new("turn.started");
+            started.status = Some("working".into());
+            store::session_event(&db, "chat", &started, &serde_json::json!({})).unwrap();
+            // A started tool with no item id can never be matched by a
+            // completion; it must not pin the session to the 30-minute window.
+            let tool = agent::NormalizedEvent::new("tool.started");
+            assert!(tool.item_id.is_none());
+            store::session_event(&db, "chat", &tool, &serde_json::json!({})).unwrap();
+        }
+        silent_for(&core, "chat", CHAT_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 1, "an unattributed start stalls on the short deadline");
+        assert_eq!(chat_status(&core).0, "ready");
+    }
+
+    #[test]
+    fn chat_liveness_is_not_scanned_by_the_worker_watchdog() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        // A chat progress frame lands in the chat map only.
+        record_session_activity(&core, "chat", false);
+        assert!(core.chat_activity.lock().unwrap().contains_key("chat"));
+        assert!(!core.worker_activity.lock().unwrap().contains_key("chat"));
+        // Age it past the worker watchdog's 60 s scan floor: the worker pass
+        // must still leave the chat alone — no worker_runtime row exists for
+        // it and no probe may settle or interrupt it.
+        silent_for(&core, "chat", 700);
+        assert!(!core.worker_activity.lock().unwrap().contains_key("chat"), "chats never enter the worker map");
+        maintain_worker_pool(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0);
+        assert_eq!(chat_status(&core).0, "working");
+        assert!(core.adapters.lock().unwrap().contains_key("chat"));
+    }
+
+    #[test]
+    fn waiting_and_worker_sessions_are_not_chat_stalled() {
+        let (_fixture, core, interrupts, _guard) = core_with_working_chat();
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='waiting' WHERE id='chat'", []).unwrap();
+        silent_for(&core, "chat", CHAT_TOOL_STALL_TIMEOUT_SECONDS + 1);
+        maintain_chat_liveness(&core);
+        assert_eq!(*interrupts.lock().unwrap(), 0, "an approval wait is deliberately idle");
+        assert_eq!(chat_status(&core).0, "waiting");
+        assert!(chat_entry_kinds(&core).is_empty());
+        drop(_guard);
+
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        silent_worker_for(&core, "child", CHAT_TOOL_STALL_TIMEOUT_SECONDS + 1);
+        // A worker heartbeat must never land in the chat map, so the chat
+        // watchdog leaves it alone even when deeply silent.
+        assert!(core.chat_activity.lock().unwrap().get("child").is_none());
+        maintain_chat_liveness(&core);
+        assert!(sent.lock().unwrap().is_empty(), "a worker belongs to the worker watchdog");
+        let status: String = core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='child'", [], |row| row.get(0)).unwrap();
+        assert_eq!(status, "working");
+    }
+
+    /// A `BufRead` fed line by line from a test, so the reader thread can be
+    /// observed between frames.
+    struct FedLines(std::sync::mpsc::Receiver<String>, Vec<u8>, usize);
+
+    impl std::io::Read for FedLines {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let available = self.fill_buf()?;
+            let count = available.len().min(out.len());
+            out[..count].copy_from_slice(&available[..count]);
+            self.consume(count);
+            Ok(count)
+        }
+    }
+
+    impl std::io::BufRead for FedLines {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if self.2 >= self.1.len() {
+                match self.0.recv() {
+                    Ok(line) => {
+                        self.1 = line.into_bytes();
+                        self.2 = 0;
+                    }
+                    Err(_) => {
+                        self.1.clear();
+                        self.2 = 0;
+                    }
+                }
+            }
+            Ok(&self.1[self.2..])
+        }
+        fn consume(&mut self, amount: usize) {
+            self.2 += amount;
+        }
+    }
+
+    fn silence_secs(core: &BridgeCore) -> f64 {
+        core.chat_activity.lock().unwrap().get("chat").map(|seen| seen.elapsed().as_secs_f64()).unwrap_or(f64::NAN)
+    }
+
+    #[test]
+    fn heartbeat_frames_do_not_refresh_progress() {
+        let (_fixture, core, _interrupts, _guard) = core_with_working_chat();
+        let (feed, lines) = std::sync::mpsc::channel::<String>();
+        spawn_reader_thread(
+            core.clone(),
+            "chat".into(),
+            "opencode".into(),
+            "now".into(),
+            "spy".into(),
+            0,
+            Arc::new(Mutex::new(Some("turn-1".into()))),
+            Box::new(FedLines(lines, Vec::new(), 0)),
+        );
+        // The launch seeds a baseline; age it so a refresh is observable.
+        thread::sleep(Duration::from_millis(50));
+        silent_for(&core, "chat", 300);
+        feed.send("{\"type\":\"server.heartbeat\",\"properties\":{}}\n".into()).unwrap();
+        feed.send("{\"type\":\"server.connected\",\"properties\":{}}\n".into()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        assert!(silence_secs(&core) > 299.0, "a heartbeat is liveness, not progress: {}", silence_secs(&core));
+        feed.send("{\"type\":\"session.status\",\"properties\":{\"sessionID\":\"spy\",\"status\":{\"type\":\"busy\"}}}\n".into()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while silence_secs(&core) > 1.0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(silence_secs(&core) < 1.0, "a real frame refreshes progress: {}", silence_secs(&core));
+        drop(feed);
+    }
 
     fn core_with_working_worker() -> WorkerFixture {
         let managed_root = managed_root_guard();
@@ -18178,5 +19139,66 @@ mod history_snapshot_maintenance_tests {
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sqlite"))
             .count();
         assert_eq!(databases, 2);
+    }
+}
+
+#[cfg(test)]
+mod chat_reference_turn_tests {
+    use super::*;
+    use crate::session_forest::{EntryKind, SessionForest};
+    use std::sync::Arc;
+
+    const OTHER: &str = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    fn seeded() -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','codex','Chat','idle','reported')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,title) VALUES(?1,'claude','Orchestrator','idle','reported','Refresh tokens')",
+                params![OTHER],
+            )
+            .unwrap();
+            let forest = SessionForest::new(&db);
+            forest
+                .append(OTHER, EntryKind::UserMessage, serde_json::json!({"text":"rotate refresh tokens"}))
+                .unwrap();
+            forest
+                .append(OTHER, EntryKind::AssistantMessage, serde_json::json!({"text":"done; old tokens invalid"}))
+                .unwrap();
+        }
+        (scratch, core)
+    }
+
+    #[test]
+    fn a_pasted_chat_alias_carries_that_chats_history_to_the_provider_but_not_the_transcript() {
+        let (_scratch, core) = seeded();
+        let InputPreparation::Ready(prepared) =
+            prepare_input(&core, "s", "continue brio_22222222 from where it stopped", true).unwrap()
+        else {
+            panic!("a plain message must be ready for delivery");
+        };
+        assert_eq!(prepared.display_text, "continue brio_22222222 from where it stopped");
+        assert!(prepared.provider_text.starts_with("continue brio_22222222 from where it stopped\n\n<bridge-chat-reference"), "{}", prepared.provider_text);
+        assert!(prepared.provider_text.contains("chat \"Refresh tokens\" (claude)"), "{}", prepared.provider_text);
+        assert!(prepared.provider_text.contains("user.message: rotate refresh tokens"), "{}", prepared.provider_text);
+        assert!(prepared.provider_text.contains("assistant.message: done; old tokens invalid"), "{}", prepared.provider_text);
+        // The credential broker keys off `outbound`, which stays the user's text.
+        assert_eq!(prepared.outbound, prepared.display_text);
+    }
+
+    #[test]
+    fn an_unknown_alias_leaves_the_provider_text_untouched() {
+        let (_scratch, core) = seeded();
+        let InputPreparation::Ready(prepared) = prepare_input(&core, "s", "look at brio_deadbeef", true).unwrap() else {
+            panic!("ready");
+        };
+        assert_eq!(prepared.provider_text, "look at brio_deadbeef");
     }
 }

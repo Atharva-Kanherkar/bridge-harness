@@ -1,0 +1,2420 @@
+{
+ "now": "2026-09-30T15:00:00Z",
+ "entriesPerChat": 100,
+ "filler": [
+  "let me check the logs first",
+  "running the tests now",
+  "that looks right to me",
+  "can you show the diff",
+  "i pushed the branch",
+  "the build is green",
+  "one more change before we merge",
+  "please explain the tradeoff",
+  "here is the error output",
+  "try it again with verbose logging",
+  "the change is small",
+  "good catch, fixing",
+  "what does this function return",
+  "we should add a test for that",
+  "done, take a look",
+  "the ci run passed",
+  "i will write the docs later",
+  "revert that last commit",
+  "rename the variable for clarity",
+  "that is out of scope for now"
+ ],
+ "chats": [
+  {
+   "id": "target-00",
+   "title": "Plugins catalog stall",
+   "harness": "codex",
+   "daysAgo": 1,
+   "keys": [
+    "the plugins catalog stalls when the marketplace opens",
+    "bounded the gh CLI call with a five second timeout",
+    "surface the load failure instead of spinning"
+   ]
+  },
+  {
+   "id": "target-01",
+   "title": "Refresh token rotation",
+   "harness": "claude",
+   "daysAgo": 24,
+   "keys": [
+    "rotate the refresh token on every use",
+    "old refresh tokens must be rejected after rotation",
+    "store the token family in sqlite"
+   ]
+  },
+  {
+   "id": "target-02",
+   "title": "Sidecar crash on EOF",
+   "harness": "opencode",
+   "daysAgo": 11,
+   "keys": [
+    "the claude sidecar exits with EOF right after start",
+    "node_modules were missing in the worktree",
+    "structured adapter session is not running"
+   ]
+  },
+  {
+   "id": "target-03",
+   "title": "Worktree reclaim sweep",
+   "harness": "codex",
+   "daysAgo": 25,
+   "keys": [
+    "the sweep reclaims worktrees of archived chats",
+    "never delete a dirty checkout",
+    "measure logical bytes per checkout"
+   ]
+  },
+  {
+   "id": "target-04",
+   "title": "Kanji flashcards app",
+   "harness": "claude",
+   "daysAgo": 3,
+   "keys": [
+    "build a spaced repetition deck for kanji",
+    "stroke order animations from svg",
+    "review queue sorted by due date"
+   ]
+  },
+  {
+   "id": "target-05",
+   "title": "Stripe webhook retries",
+   "harness": "opencode",
+   "daysAgo": 50,
+   "keys": [
+    "stripe webhooks retry with exponential backoff",
+    "verify the signature header before parsing",
+    "idempotency keys on the invoice handler"
+   ]
+  },
+  {
+   "id": "target-06",
+   "title": "Dark mode contrast audit",
+   "harness": "codex",
+   "daysAgo": 6,
+   "keys": [
+    "the muted foreground fails contrast in dark mode",
+    "raise the faint text to four point five to one",
+    "graphite palette tokens"
+   ]
+  },
+  {
+   "id": "target-07",
+   "title": "Postgres vacuum bloat",
+   "harness": "claude",
+   "daysAgo": 22,
+   "keys": [
+    "autovacuum cannot keep up with the events table",
+    "table bloat reached forty percent",
+    "tune the scale factor per table"
+   ]
+  },
+  {
+   "id": "target-08",
+   "title": "Rate limit on subagents",
+   "harness": "opencode",
+   "daysAgo": 5,
+   "keys": [
+    "fanning out fourteen subagents hit the account rate limit",
+    "forbid nested workers in the prompt",
+    "queue workers behind a concurrency cap"
+   ]
+  },
+  {
+   "id": "target-09",
+   "title": "CSV import encoding",
+   "harness": "codex",
+   "daysAgo": 42,
+   "keys": [
+    "the csv importer mangles utf16 files",
+    "detect the byte order mark",
+    "fall back to latin1 with a warning"
+   ]
+  },
+  {
+   "id": "target-10",
+   "title": "Tauri window focus",
+   "harness": "claude",
+   "daysAgo": 13,
+   "keys": [
+    "set_focus activates the whole app on macos",
+    "shell only calls go through events",
+    "the menu bar window steals focus"
+   ]
+  },
+  {
+   "id": "target-11",
+   "title": "Compaction failures",
+   "harness": "opencode",
+   "daysAgo": 2,
+   "keys": [
+    "compaction failed fifty two times out of ninety",
+    "the checkpoint boundary was never verified",
+    "retry with a smaller summary budget"
+   ]
+  },
+  {
+   "id": "target-12",
+   "title": "Kubernetes liveness probe",
+   "harness": "codex",
+   "daysAgo": 4,
+   "keys": [
+    "the liveness probe kills the pod during warmup",
+    "add a startup probe with a longer threshold",
+    "readiness should gate traffic not restarts"
+   ]
+  },
+  {
+   "id": "target-13",
+   "title": "Recipe scaler",
+   "harness": "claude",
+   "daysAgo": 16,
+   "keys": [
+    "scale a recipe from four servings to eleven",
+    "convert cups to grams by ingredient density",
+    "round eggs up to whole numbers"
+   ]
+  },
+  {
+   "id": "target-14",
+   "title": "GraphQL N plus one",
+   "harness": "opencode",
+   "daysAgo": 48,
+   "keys": [
+    "the resolver issues one query per author",
+    "batch loads with a dataloader",
+    "cache per request only"
+   ]
+  },
+  {
+   "id": "target-15",
+   "title": "Keychain ACL reset",
+   "harness": "codex",
+   "daysAgo": 8,
+   "keys": [
+    "re login resets the keychain acl for the security tool",
+    "sandboxed workers read the keychain through usr bin security",
+    "signing bridged does not fix it"
+   ]
+  },
+  {
+   "id": "target-16",
+   "title": "Sprite sheet packer",
+   "harness": "claude",
+   "daysAgo": 2,
+   "keys": [
+    "pack animation frames into a power of two atlas",
+    "trim transparent borders",
+    "emit a json frame map"
+   ]
+  },
+  {
+   "id": "target-17",
+   "title": "Invoice PDF rendering",
+   "harness": "opencode",
+   "daysAgo": 11,
+   "keys": [
+    "the invoice pdf cuts off the last line item",
+    "page break inside the totals table",
+    "embed the font subset"
+   ]
+  },
+  {
+   "id": "target-18",
+   "title": "Terraform state lock",
+   "harness": "codex",
+   "daysAgo": 45,
+   "keys": [
+    "terraform state lock stuck after a cancelled apply",
+    "force unlock with the lock id",
+    "move state to a remote backend with locking"
+   ]
+  },
+  {
+   "id": "target-19",
+   "title": "Mobile drawer scrim",
+   "harness": "claude",
+   "daysAgo": 53,
+   "keys": [
+    "the drawer scrim never fades out",
+    "animate presence for the unmounting overlay",
+    "inert the rail while hidden"
+   ]
+  },
+  {
+   "id": "target-20",
+   "title": "Audio latency on bluetooth",
+   "harness": "opencode",
+   "daysAgo": 14,
+   "keys": [
+    "bluetooth headphones add three hundred milliseconds",
+    "compensate playback offset per device",
+    "measure with a loopback click"
+   ]
+  },
+  {
+   "id": "target-21",
+   "title": "Feature flag cleanup",
+   "harness": "codex",
+   "daysAgo": 14,
+   "keys": [
+    "remove flags older than ninety days",
+    "a lint rule for dead flag checks",
+    "flag owners get a weekly report"
+   ]
+  },
+  {
+   "id": "target-22",
+   "title": "Chess engine move ordering",
+   "harness": "claude",
+   "daysAgo": 46,
+   "keys": [
+    "order captures by most valuable victim",
+    "killer moves and history heuristic",
+    "alpha beta cutoffs doubled"
+   ]
+  },
+  {
+   "id": "target-23",
+   "title": "Email bounce handling",
+   "harness": "opencode",
+   "daysAgo": 35,
+   "keys": [
+    "hard bounces suppress the address",
+    "soft bounces retry three times",
+    "parse the dsn status code"
+   ]
+  },
+  {
+   "id": "target-24",
+   "title": "Protocol wire casing",
+   "harness": "codex",
+   "daysAgo": 1,
+   "keys": [
+    "the enum struct variant fields stayed snake case",
+    "rename all fields camel case",
+    "the mock hid the runtime break"
+   ]
+  },
+  {
+   "id": "target-25",
+   "title": "Garden watering schedule",
+   "harness": "claude",
+   "daysAgo": 1,
+   "keys": [
+    "water tomatoes every other morning",
+    "soil moisture sensor on pin four",
+    "skip watering after rain forecast"
+   ]
+  },
+  {
+   "id": "target-26",
+   "title": "OAuth PKCE flow",
+   "harness": "opencode",
+   "daysAgo": 23,
+   "keys": [
+    "generate the code verifier and challenge",
+    "store the verifier in session storage",
+    "exchange the code at the token endpoint"
+   ]
+  },
+  {
+   "id": "target-27",
+   "title": "Flaky snapshot tests",
+   "harness": "codex",
+   "daysAgo": 23,
+   "keys": [
+    "snapshot tests fail on timezone differences",
+    "freeze the clock in the test setup",
+    "sort object keys before snapshot"
+   ]
+  },
+  {
+   "id": "target-28",
+   "title": "Budget spreadsheet formulas",
+   "harness": "claude",
+   "daysAgo": 6,
+   "keys": [
+    "sumif across the monthly tabs",
+    "categorize transactions by merchant",
+    "a chart of savings rate"
+   ]
+  },
+  {
+   "id": "target-29",
+   "title": "Video transcoding queue",
+   "harness": "opencode",
+   "daysAgo": 48,
+   "keys": [
+    "ffmpeg jobs pile up in the queue",
+    "hardware encoder on the gpu node",
+    "split long videos into segments"
+   ]
+  },
+  {
+   "id": "target-30",
+   "title": "Bridge promo film",
+   "harness": "codex",
+   "daysAgo": 8,
+   "keys": [
+    "sixteen chapters with provider marks",
+    "render the full mp4 at sixty fps",
+    "typography and layout pass"
+   ]
+  },
+  {
+   "id": "target-31",
+   "title": "Memory extraction proposals",
+   "harness": "claude",
+   "daysAgo": 59,
+   "keys": [
+    "extraction proposes pins after a finished turn",
+    "a pinned helper runs tool free",
+    "reviewed proposals land in account local"
+   ]
+  },
+  {
+   "id": "target-32",
+   "title": "Rust borrow checker lifetimes",
+   "harness": "opencode",
+   "daysAgo": 3,
+   "keys": [
+    "the iterator borrows the connection too long",
+    "collect before the lock drops",
+    "split the struct to satisfy the borrow checker"
+   ]
+  },
+  {
+   "id": "target-33",
+   "title": "Weather widget",
+   "harness": "codex",
+   "daysAgo": 27,
+   "keys": [
+    "fetch the hourly forecast",
+    "cache the response for ten minutes",
+    "icons for rain snow and sun"
+   ]
+  },
+  {
+   "id": "target-34",
+   "title": "Search ranking bm25",
+   "harness": "claude",
+   "daysAgo": 3,
+   "keys": [
+    "bm25 weights for title versus body",
+    "reciprocal rank fusion of two lists",
+    "rare terms dominate by idf"
+   ]
+  },
+  {
+   "id": "target-35",
+   "title": "Docker layer caching",
+   "harness": "opencode",
+   "daysAgo": 9,
+   "keys": [
+    "copy the lockfile before the source",
+    "cache mount for the cargo registry",
+    "multi stage build shrinks the image"
+   ]
+  },
+  {
+   "id": "target-36",
+   "title": "Accessibility focus trap",
+   "harness": "codex",
+   "daysAgo": 9,
+   "keys": [
+    "the dialog does not trap focus",
+    "return focus to the trigger on close",
+    "escape closes the dialog"
+   ]
+  },
+  {
+   "id": "target-37",
+   "title": "Wedding seating chart",
+   "harness": "claude",
+   "daysAgo": 30,
+   "keys": [
+    "seat the families on opposite sides",
+    "no more than eight per table",
+    "keep the kids table near the exit"
+   ]
+  },
+  {
+   "id": "target-38",
+   "title": "Log rotation disk full",
+   "harness": "opencode",
+   "daysAgo": 38,
+   "keys": [
+    "the disk filled with unrotated logs",
+    "logrotate daily with compression",
+    "cap journald at one gigabyte"
+   ]
+  },
+  {
+   "id": "target-39",
+   "title": "Model catalog live fetch",
+   "harness": "codex",
+   "daysAgo": 49,
+   "keys": [
+    "opencode and cursor catalogs are live",
+    "codex and claude are still hardcoded",
+    "a phantom model id in the picker"
+   ]
+  },
+  {
+   "id": "twin-00",
+   "title": "Plugins catalog stall (earlier attempt)",
+   "harness": "claude",
+   "daysAgo": 45,
+   "keys": [
+    "the plugins catalog stalls when the marketplace opens",
+    "bounded the gh CLI call with a five second timeout"
+   ]
+  },
+  {
+   "id": "twin-04",
+   "title": "Kanji flashcards app (earlier attempt)",
+   "harness": "opencode",
+   "daysAgo": 46,
+   "keys": [
+    "build a spaced repetition deck for kanji",
+    "stroke order animations from svg"
+   ]
+  },
+  {
+   "id": "twin-08",
+   "title": "Rate limit on subagents (earlier attempt)",
+   "harness": "codex",
+   "daysAgo": 47,
+   "keys": [
+    "fanning out fourteen subagents hit the account rate limit",
+    "forbid nested workers in the prompt"
+   ]
+  },
+  {
+   "id": "twin-12",
+   "title": "Kubernetes liveness probe (earlier attempt)",
+   "harness": "claude",
+   "daysAgo": 48,
+   "keys": [
+    "the liveness probe kills the pod during warmup",
+    "add a startup probe with a longer threshold"
+   ]
+  },
+  {
+   "id": "twin-16",
+   "title": "Sprite sheet packer (earlier attempt)",
+   "harness": "opencode",
+   "daysAgo": 49,
+   "keys": [
+    "pack animation frames into a power of two atlas",
+    "trim transparent borders"
+   ]
+  },
+  {
+   "id": "twin-20",
+   "title": "Audio latency on bluetooth (earlier attempt)",
+   "harness": "codex",
+   "daysAgo": 50,
+   "keys": [
+    "bluetooth headphones add three hundred milliseconds",
+    "compensate playback offset per device"
+   ]
+  },
+  {
+   "id": "twin-24",
+   "title": "Protocol wire casing (earlier attempt)",
+   "harness": "claude",
+   "daysAgo": 51,
+   "keys": [
+    "the enum struct variant fields stayed snake case",
+    "rename all fields camel case"
+   ]
+  },
+  {
+   "id": "twin-28",
+   "title": "Budget spreadsheet formulas (earlier attempt)",
+   "harness": "opencode",
+   "daysAgo": 52,
+   "keys": [
+    "sumif across the monthly tabs",
+    "categorize transactions by merchant"
+   ]
+  },
+  {
+   "id": "twin-32",
+   "title": "Rust borrow checker lifetimes (earlier attempt)",
+   "harness": "codex",
+   "daysAgo": 53,
+   "keys": [
+    "the iterator borrows the connection too long",
+    "collect before the lock drops"
+   ]
+  },
+  {
+   "id": "twin-36",
+   "title": "Accessibility focus trap (earlier attempt)",
+   "harness": "claude",
+   "daysAgo": 54,
+   "keys": [
+    "the dialog does not trap focus",
+    "return focus to the trigger on close"
+   ]
+  },
+  {
+   "id": "bg-000",
+   "title": "Refactor the login",
+   "harness": "codex",
+   "daysAgo": 86,
+   "keys": [
+    "refactor the login module",
+    "the login has a retry problem",
+    "queue and window in the login"
+   ]
+  },
+  {
+   "id": "bg-001",
+   "title": "Refactor the search",
+   "harness": "claude",
+   "daysAgo": 95,
+   "keys": [
+    "refactor the search module",
+    "the search has a catalog problem",
+    "token and latency in the search"
+   ]
+  },
+  {
+   "id": "bg-002",
+   "title": "Refactor the upload",
+   "harness": "opencode",
+   "daysAgo": 95,
+   "keys": [
+    "refactor the upload module",
+    "the upload has a latency problem",
+    "flag and crash in the upload"
+   ]
+  },
+  {
+   "id": "bg-003",
+   "title": "Refactor the billing",
+   "harness": "codex",
+   "daysAgo": 47,
+   "keys": [
+    "refactor the billing module",
+    "the billing has a timeout problem",
+    "database and deploy in the billing"
+   ]
+  },
+  {
+   "id": "bg-004",
+   "title": "Refactor the profile",
+   "harness": "claude",
+   "daysAgo": 68,
+   "keys": [
+    "refactor the profile module",
+    "the profile has a window problem",
+    "latency and schedule in the profile"
+   ]
+  },
+  {
+   "id": "bg-005",
+   "title": "Refactor the settings",
+   "harness": "opencode",
+   "daysAgo": 87,
+   "keys": [
+    "refactor the settings module",
+    "the settings has a render problem",
+    "migration and latency in the settings"
+   ]
+  },
+  {
+   "id": "bg-006",
+   "title": "Refactor the export",
+   "harness": "codex",
+   "daysAgo": 119,
+   "keys": [
+    "refactor the export module",
+    "the export has a deploy problem",
+    "lock and flag in the export"
+   ]
+  },
+  {
+   "id": "bg-007",
+   "title": "Refactor the dashboard",
+   "harness": "claude",
+   "daysAgo": 74,
+   "keys": [
+    "refactor the dashboard module",
+    "the dashboard has a migration problem",
+    "database and retry in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-008",
+   "title": "Refactor the calendar",
+   "harness": "opencode",
+   "daysAgo": 16,
+   "keys": [
+    "refactor the calendar module",
+    "the calendar has a lock problem",
+    "latency and migration in the calendar"
+   ]
+  },
+  {
+   "id": "bg-009",
+   "title": "Refactor the chat",
+   "harness": "codex",
+   "daysAgo": 116,
+   "keys": [
+    "refactor the chat module",
+    "the chat has a lock problem",
+    "timeout and migration in the chat"
+   ]
+  },
+  {
+   "id": "bg-010",
+   "title": "Refactor the report",
+   "harness": "claude",
+   "daysAgo": 9,
+   "keys": [
+    "refactor the report module",
+    "the report has a slow problem",
+    "encoding and crash in the report"
+   ]
+  },
+  {
+   "id": "bg-011",
+   "title": "Refactor the timeline",
+   "harness": "opencode",
+   "daysAgo": 96,
+   "keys": [
+    "refactor the timeline module",
+    "the timeline has a latency problem",
+    "window and queue in the timeline"
+   ]
+  },
+  {
+   "id": "bg-012",
+   "title": "Refactor the invite",
+   "harness": "codex",
+   "daysAgo": 62,
+   "keys": [
+    "refactor the invite module",
+    "the invite has a latency problem",
+    "flag and deploy in the invite"
+   ]
+  },
+  {
+   "id": "bg-013",
+   "title": "Refactor the cache",
+   "harness": "claude",
+   "daysAgo": 21,
+   "keys": [
+    "refactor the cache module",
+    "the cache has a tests problem",
+    "token and window in the cache"
+   ]
+  },
+  {
+   "id": "bg-014",
+   "title": "Refactor the queue",
+   "harness": "opencode",
+   "daysAgo": 26,
+   "keys": [
+    "refactor the queue module",
+    "the queue has a migration problem",
+    "schedule and focus in the queue"
+   ]
+  },
+  {
+   "id": "bg-015",
+   "title": "Refactor the config",
+   "harness": "codex",
+   "daysAgo": 83,
+   "keys": [
+    "refactor the config module",
+    "the config has a timeout problem",
+    "catalog and render in the config"
+   ]
+  },
+  {
+   "id": "bg-016",
+   "title": "Refactor the sidebar",
+   "harness": "claude",
+   "daysAgo": 119,
+   "keys": [
+    "refactor the sidebar module",
+    "the sidebar has a focus problem",
+    "slow and token in the sidebar"
+   ]
+  },
+  {
+   "id": "bg-017",
+   "title": "Refactor the editor",
+   "harness": "opencode",
+   "daysAgo": 5,
+   "keys": [
+    "refactor the editor module",
+    "the editor has a database problem",
+    "queue and migration in the editor"
+   ]
+  },
+  {
+   "id": "bg-018",
+   "title": "Refactor the palette",
+   "harness": "codex",
+   "daysAgo": 56,
+   "keys": [
+    "refactor the palette module",
+    "the palette has a encoding problem",
+    "slow and cache in the palette"
+   ]
+  },
+  {
+   "id": "bg-019",
+   "title": "Refactor the picker",
+   "harness": "claude",
+   "daysAgo": 20,
+   "keys": [
+    "refactor the picker module",
+    "the picker has a schedule problem",
+    "latency and focus in the picker"
+   ]
+  },
+  {
+   "id": "bg-020",
+   "title": "Fix the login",
+   "harness": "opencode",
+   "daysAgo": 10,
+   "keys": [
+    "fix the login module",
+    "the login has a lock problem",
+    "database and render in the login"
+   ]
+  },
+  {
+   "id": "bg-021",
+   "title": "Fix the search",
+   "harness": "codex",
+   "daysAgo": 86,
+   "keys": [
+    "fix the search module",
+    "the search has a tests problem",
+    "deploy and focus in the search"
+   ]
+  },
+  {
+   "id": "bg-022",
+   "title": "Fix the upload",
+   "harness": "claude",
+   "daysAgo": 77,
+   "keys": [
+    "fix the upload module",
+    "the upload has a flag problem",
+    "token and focus in the upload"
+   ]
+  },
+  {
+   "id": "bg-023",
+   "title": "Fix the billing",
+   "harness": "opencode",
+   "daysAgo": 30,
+   "keys": [
+    "fix the billing module",
+    "the billing has a token problem",
+    "latency and migration in the billing"
+   ]
+  },
+  {
+   "id": "bg-024",
+   "title": "Fix the profile",
+   "harness": "codex",
+   "daysAgo": 100,
+   "keys": [
+    "fix the profile module",
+    "the profile has a schedule problem",
+    "retry and lock in the profile"
+   ]
+  },
+  {
+   "id": "bg-025",
+   "title": "Fix the settings",
+   "harness": "claude",
+   "daysAgo": 76,
+   "keys": [
+    "fix the settings module",
+    "the settings has a catalog problem",
+    "schedule and slow in the settings"
+   ]
+  },
+  {
+   "id": "bg-026",
+   "title": "Fix the export",
+   "harness": "opencode",
+   "daysAgo": 120,
+   "keys": [
+    "fix the export module",
+    "the export has a encoding problem",
+    "latency and timeout in the export"
+   ]
+  },
+  {
+   "id": "bg-027",
+   "title": "Fix the dashboard",
+   "harness": "codex",
+   "daysAgo": 106,
+   "keys": [
+    "fix the dashboard module",
+    "the dashboard has a deploy problem",
+    "token and slow in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-028",
+   "title": "Fix the calendar",
+   "harness": "claude",
+   "daysAgo": 23,
+   "keys": [
+    "fix the calendar module",
+    "the calendar has a focus problem",
+    "crash and token in the calendar"
+   ]
+  },
+  {
+   "id": "bg-029",
+   "title": "Fix the chat",
+   "harness": "opencode",
+   "daysAgo": 59,
+   "keys": [
+    "fix the chat module",
+    "the chat has a window problem",
+    "render and latency in the chat"
+   ]
+  },
+  {
+   "id": "bg-030",
+   "title": "Fix the report",
+   "harness": "codex",
+   "daysAgo": 83,
+   "keys": [
+    "fix the report module",
+    "the report has a tests problem",
+    "flag and migration in the report"
+   ]
+  },
+  {
+   "id": "bg-031",
+   "title": "Fix the timeline",
+   "harness": "claude",
+   "daysAgo": 23,
+   "keys": [
+    "fix the timeline module",
+    "the timeline has a encoding problem",
+    "latency and database in the timeline"
+   ]
+  },
+  {
+   "id": "bg-032",
+   "title": "Fix the invite",
+   "harness": "opencode",
+   "daysAgo": 82,
+   "keys": [
+    "fix the invite module",
+    "the invite has a tests problem",
+    "flag and queue in the invite"
+   ]
+  },
+  {
+   "id": "bg-033",
+   "title": "Fix the cache",
+   "harness": "codex",
+   "daysAgo": 82,
+   "keys": [
+    "fix the cache module",
+    "the cache has a encoding problem",
+    "queue and flag in the cache"
+   ]
+  },
+  {
+   "id": "bg-034",
+   "title": "Fix the queue",
+   "harness": "claude",
+   "daysAgo": 82,
+   "keys": [
+    "fix the queue module",
+    "the queue has a token problem",
+    "lock and queue in the queue"
+   ]
+  },
+  {
+   "id": "bg-035",
+   "title": "Fix the config",
+   "harness": "opencode",
+   "daysAgo": 13,
+   "keys": [
+    "fix the config module",
+    "the config has a slow problem",
+    "render and tests in the config"
+   ]
+  },
+  {
+   "id": "bg-036",
+   "title": "Fix the sidebar",
+   "harness": "codex",
+   "daysAgo": 52,
+   "keys": [
+    "fix the sidebar module",
+    "the sidebar has a render problem",
+    "database and schedule in the sidebar"
+   ]
+  },
+  {
+   "id": "bg-037",
+   "title": "Fix the editor",
+   "harness": "claude",
+   "daysAgo": 2,
+   "keys": [
+    "fix the editor module",
+    "the editor has a queue problem",
+    "lock and window in the editor"
+   ]
+  },
+  {
+   "id": "bg-038",
+   "title": "Fix the palette",
+   "harness": "opencode",
+   "daysAgo": 71,
+   "keys": [
+    "fix the palette module",
+    "the palette has a schedule problem",
+    "catalog and tests in the palette"
+   ]
+  },
+  {
+   "id": "bg-039",
+   "title": "Fix the picker",
+   "harness": "codex",
+   "daysAgo": 30,
+   "keys": [
+    "fix the picker module",
+    "the picker has a deploy problem",
+    "latency and migration in the picker"
+   ]
+  },
+  {
+   "id": "bg-040",
+   "title": "Speed up the login",
+   "harness": "claude",
+   "daysAgo": 65,
+   "keys": [
+    "speed up the login module",
+    "the login has a crash problem",
+    "cache and flag in the login"
+   ]
+  },
+  {
+   "id": "bg-041",
+   "title": "Speed up the search",
+   "harness": "opencode",
+   "daysAgo": 25,
+   "keys": [
+    "speed up the search module",
+    "the search has a focus problem",
+    "slow and encoding in the search"
+   ]
+  },
+  {
+   "id": "bg-042",
+   "title": "Speed up the upload",
+   "harness": "codex",
+   "daysAgo": 44,
+   "keys": [
+    "speed up the upload module",
+    "the upload has a cache problem",
+    "schedule and deploy in the upload"
+   ]
+  },
+  {
+   "id": "bg-043",
+   "title": "Speed up the billing",
+   "harness": "claude",
+   "daysAgo": 11,
+   "keys": [
+    "speed up the billing module",
+    "the billing has a encoding problem",
+    "slow and cache in the billing"
+   ]
+  },
+  {
+   "id": "bg-044",
+   "title": "Speed up the profile",
+   "harness": "opencode",
+   "daysAgo": 96,
+   "keys": [
+    "speed up the profile module",
+    "the profile has a schedule problem",
+    "deploy and encoding in the profile"
+   ]
+  },
+  {
+   "id": "bg-045",
+   "title": "Speed up the settings",
+   "harness": "codex",
+   "daysAgo": 52,
+   "keys": [
+    "speed up the settings module",
+    "the settings has a schedule problem",
+    "migration and lock in the settings"
+   ]
+  },
+  {
+   "id": "bg-046",
+   "title": "Speed up the export",
+   "harness": "claude",
+   "daysAgo": 66,
+   "keys": [
+    "speed up the export module",
+    "the export has a focus problem",
+    "latency and catalog in the export"
+   ]
+  },
+  {
+   "id": "bg-047",
+   "title": "Speed up the dashboard",
+   "harness": "opencode",
+   "daysAgo": 6,
+   "keys": [
+    "speed up the dashboard module",
+    "the dashboard has a schedule problem",
+    "retry and cache in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-048",
+   "title": "Speed up the calendar",
+   "harness": "codex",
+   "daysAgo": 17,
+   "keys": [
+    "speed up the calendar module",
+    "the calendar has a migration problem",
+    "timeout and slow in the calendar"
+   ]
+  },
+  {
+   "id": "bg-049",
+   "title": "Speed up the chat",
+   "harness": "claude",
+   "daysAgo": 77,
+   "keys": [
+    "speed up the chat module",
+    "the chat has a queue problem",
+    "render and deploy in the chat"
+   ]
+  },
+  {
+   "id": "bg-050",
+   "title": "Speed up the report",
+   "harness": "opencode",
+   "daysAgo": 58,
+   "keys": [
+    "speed up the report module",
+    "the report has a window problem",
+    "tests and focus in the report"
+   ]
+  },
+  {
+   "id": "bg-051",
+   "title": "Speed up the timeline",
+   "harness": "codex",
+   "daysAgo": 39,
+   "keys": [
+    "speed up the timeline module",
+    "the timeline has a encoding problem",
+    "render and tests in the timeline"
+   ]
+  },
+  {
+   "id": "bg-052",
+   "title": "Speed up the invite",
+   "harness": "claude",
+   "daysAgo": 53,
+   "keys": [
+    "speed up the invite module",
+    "the invite has a slow problem",
+    "cache and focus in the invite"
+   ]
+  },
+  {
+   "id": "bg-053",
+   "title": "Speed up the cache",
+   "harness": "opencode",
+   "daysAgo": 85,
+   "keys": [
+    "speed up the cache module",
+    "the cache has a render problem",
+    "lock and flag in the cache"
+   ]
+  },
+  {
+   "id": "bg-054",
+   "title": "Speed up the queue",
+   "harness": "codex",
+   "daysAgo": 120,
+   "keys": [
+    "speed up the queue module",
+    "the queue has a flag problem",
+    "window and latency in the queue"
+   ]
+  },
+  {
+   "id": "bg-055",
+   "title": "Speed up the config",
+   "harness": "claude",
+   "daysAgo": 9,
+   "keys": [
+    "speed up the config module",
+    "the config has a timeout problem",
+    "schedule and encoding in the config"
+   ]
+  },
+  {
+   "id": "bg-056",
+   "title": "Speed up the sidebar",
+   "harness": "opencode",
+   "daysAgo": 94,
+   "keys": [
+    "speed up the sidebar module",
+    "the sidebar has a queue problem",
+    "deploy and lock in the sidebar"
+   ]
+  },
+  {
+   "id": "bg-057",
+   "title": "Speed up the editor",
+   "harness": "codex",
+   "daysAgo": 84,
+   "keys": [
+    "speed up the editor module",
+    "the editor has a lock problem",
+    "timeout and window in the editor"
+   ]
+  },
+  {
+   "id": "bg-058",
+   "title": "Speed up the palette",
+   "harness": "claude",
+   "daysAgo": 63,
+   "keys": [
+    "speed up the palette module",
+    "the palette has a catalog problem",
+    "focus and crash in the palette"
+   ]
+  },
+  {
+   "id": "bg-059",
+   "title": "Speed up the picker",
+   "harness": "opencode",
+   "daysAgo": 108,
+   "keys": [
+    "speed up the picker module",
+    "the picker has a window problem",
+    "slow and render in the picker"
+   ]
+  },
+  {
+   "id": "bg-060",
+   "title": "Document the login",
+   "harness": "codex",
+   "daysAgo": 65,
+   "keys": [
+    "document the login module",
+    "the login has a timeout problem",
+    "focus and encoding in the login"
+   ]
+  },
+  {
+   "id": "bg-061",
+   "title": "Document the search",
+   "harness": "claude",
+   "daysAgo": 111,
+   "keys": [
+    "document the search module",
+    "the search has a schedule problem",
+    "render and encoding in the search"
+   ]
+  },
+  {
+   "id": "bg-062",
+   "title": "Document the upload",
+   "harness": "opencode",
+   "daysAgo": 39,
+   "keys": [
+    "document the upload module",
+    "the upload has a latency problem",
+    "schedule and retry in the upload"
+   ]
+  },
+  {
+   "id": "bg-063",
+   "title": "Document the billing",
+   "harness": "codex",
+   "daysAgo": 43,
+   "keys": [
+    "document the billing module",
+    "the billing has a tests problem",
+    "catalog and deploy in the billing"
+   ]
+  },
+  {
+   "id": "bg-064",
+   "title": "Document the profile",
+   "harness": "claude",
+   "daysAgo": 118,
+   "keys": [
+    "document the profile module",
+    "the profile has a slow problem",
+    "token and retry in the profile"
+   ]
+  },
+  {
+   "id": "bg-065",
+   "title": "Document the settings",
+   "harness": "opencode",
+   "daysAgo": 91,
+   "keys": [
+    "document the settings module",
+    "the settings has a retry problem",
+    "latency and lock in the settings"
+   ]
+  },
+  {
+   "id": "bg-066",
+   "title": "Document the export",
+   "harness": "codex",
+   "daysAgo": 71,
+   "keys": [
+    "document the export module",
+    "the export has a lock problem",
+    "flag and catalog in the export"
+   ]
+  },
+  {
+   "id": "bg-067",
+   "title": "Document the dashboard",
+   "harness": "claude",
+   "daysAgo": 1,
+   "keys": [
+    "document the dashboard module",
+    "the dashboard has a window problem",
+    "timeout and migration in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-068",
+   "title": "Document the calendar",
+   "harness": "opencode",
+   "daysAgo": 9,
+   "keys": [
+    "document the calendar module",
+    "the calendar has a timeout problem",
+    "schedule and queue in the calendar"
+   ]
+  },
+  {
+   "id": "bg-069",
+   "title": "Document the chat",
+   "harness": "codex",
+   "daysAgo": 46,
+   "keys": [
+    "document the chat module",
+    "the chat has a cache problem",
+    "lock and latency in the chat"
+   ]
+  },
+  {
+   "id": "bg-070",
+   "title": "Document the report",
+   "harness": "claude",
+   "daysAgo": 103,
+   "keys": [
+    "document the report module",
+    "the report has a schedule problem",
+    "lock and token in the report"
+   ]
+  },
+  {
+   "id": "bg-071",
+   "title": "Document the timeline",
+   "harness": "opencode",
+   "daysAgo": 67,
+   "keys": [
+    "document the timeline module",
+    "the timeline has a latency problem",
+    "migration and lock in the timeline"
+   ]
+  },
+  {
+   "id": "bg-072",
+   "title": "Document the invite",
+   "harness": "codex",
+   "daysAgo": 25,
+   "keys": [
+    "document the invite module",
+    "the invite has a cache problem",
+    "migration and flag in the invite"
+   ]
+  },
+  {
+   "id": "bg-073",
+   "title": "Document the cache",
+   "harness": "claude",
+   "daysAgo": 67,
+   "keys": [
+    "document the cache module",
+    "the cache has a database problem",
+    "latency and crash in the cache"
+   ]
+  },
+  {
+   "id": "bg-074",
+   "title": "Document the queue",
+   "harness": "opencode",
+   "daysAgo": 72,
+   "keys": [
+    "document the queue module",
+    "the queue has a crash problem",
+    "cache and schedule in the queue"
+   ]
+  },
+  {
+   "id": "bg-075",
+   "title": "Document the config",
+   "harness": "codex",
+   "daysAgo": 15,
+   "keys": [
+    "document the config module",
+    "the config has a database problem",
+    "focus and timeout in the config"
+   ]
+  },
+  {
+   "id": "bg-076",
+   "title": "Document the sidebar",
+   "harness": "claude",
+   "daysAgo": 118,
+   "keys": [
+    "document the sidebar module",
+    "the sidebar has a timeout problem",
+    "render and database in the sidebar"
+   ]
+  },
+  {
+   "id": "bg-077",
+   "title": "Document the editor",
+   "harness": "opencode",
+   "daysAgo": 98,
+   "keys": [
+    "document the editor module",
+    "the editor has a retry problem",
+    "slow and token in the editor"
+   ]
+  },
+  {
+   "id": "bg-078",
+   "title": "Document the palette",
+   "harness": "codex",
+   "daysAgo": 47,
+   "keys": [
+    "document the palette module",
+    "the palette has a encoding problem",
+    "retry and crash in the palette"
+   ]
+  },
+  {
+   "id": "bg-079",
+   "title": "Document the picker",
+   "harness": "claude",
+   "daysAgo": 35,
+   "keys": [
+    "document the picker module",
+    "the picker has a token problem",
+    "schedule and queue in the picker"
+   ]
+  },
+  {
+   "id": "bg-080",
+   "title": "Test the login",
+   "harness": "opencode",
+   "daysAgo": 46,
+   "keys": [
+    "test the login module",
+    "the login has a latency problem",
+    "retry and encoding in the login"
+   ]
+  },
+  {
+   "id": "bg-081",
+   "title": "Test the search",
+   "harness": "codex",
+   "daysAgo": 61,
+   "keys": [
+    "test the search module",
+    "the search has a cache problem",
+    "focus and database in the search"
+   ]
+  },
+  {
+   "id": "bg-082",
+   "title": "Test the upload",
+   "harness": "claude",
+   "daysAgo": 38,
+   "keys": [
+    "test the upload module",
+    "the upload has a queue problem",
+    "latency and flag in the upload"
+   ]
+  },
+  {
+   "id": "bg-083",
+   "title": "Test the billing",
+   "harness": "opencode",
+   "daysAgo": 42,
+   "keys": [
+    "test the billing module",
+    "the billing has a timeout problem",
+    "slow and database in the billing"
+   ]
+  },
+  {
+   "id": "bg-084",
+   "title": "Test the profile",
+   "harness": "codex",
+   "daysAgo": 89,
+   "keys": [
+    "test the profile module",
+    "the profile has a flag problem",
+    "token and latency in the profile"
+   ]
+  },
+  {
+   "id": "bg-085",
+   "title": "Test the settings",
+   "harness": "claude",
+   "daysAgo": 37,
+   "keys": [
+    "test the settings module",
+    "the settings has a migration problem",
+    "token and queue in the settings"
+   ]
+  },
+  {
+   "id": "bg-086",
+   "title": "Test the export",
+   "harness": "opencode",
+   "daysAgo": 1,
+   "keys": [
+    "test the export module",
+    "the export has a cache problem",
+    "encoding and render in the export"
+   ]
+  },
+  {
+   "id": "bg-087",
+   "title": "Test the dashboard",
+   "harness": "codex",
+   "daysAgo": 119,
+   "keys": [
+    "test the dashboard module",
+    "the dashboard has a schedule problem",
+    "crash and cache in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-088",
+   "title": "Test the calendar",
+   "harness": "claude",
+   "daysAgo": 51,
+   "keys": [
+    "test the calendar module",
+    "the calendar has a migration problem",
+    "slow and encoding in the calendar"
+   ]
+  },
+  {
+   "id": "bg-089",
+   "title": "Test the chat",
+   "harness": "opencode",
+   "daysAgo": 65,
+   "keys": [
+    "test the chat module",
+    "the chat has a render problem",
+    "cache and catalog in the chat"
+   ]
+  },
+  {
+   "id": "bg-090",
+   "title": "Test the report",
+   "harness": "codex",
+   "daysAgo": 106,
+   "keys": [
+    "test the report module",
+    "the report has a window problem",
+    "schedule and render in the report"
+   ]
+  },
+  {
+   "id": "bg-091",
+   "title": "Test the timeline",
+   "harness": "claude",
+   "daysAgo": 54,
+   "keys": [
+    "test the timeline module",
+    "the timeline has a migration problem",
+    "deploy and tests in the timeline"
+   ]
+  },
+  {
+   "id": "bg-092",
+   "title": "Test the invite",
+   "harness": "opencode",
+   "daysAgo": 103,
+   "keys": [
+    "test the invite module",
+    "the invite has a encoding problem",
+    "focus and deploy in the invite"
+   ]
+  },
+  {
+   "id": "bg-093",
+   "title": "Test the cache",
+   "harness": "codex",
+   "daysAgo": 91,
+   "keys": [
+    "test the cache module",
+    "the cache has a focus problem",
+    "schedule and token in the cache"
+   ]
+  },
+  {
+   "id": "bg-094",
+   "title": "Test the queue",
+   "harness": "claude",
+   "daysAgo": 75,
+   "keys": [
+    "test the queue module",
+    "the queue has a crash problem",
+    "schedule and catalog in the queue"
+   ]
+  },
+  {
+   "id": "bg-095",
+   "title": "Test the config",
+   "harness": "opencode",
+   "daysAgo": 17,
+   "keys": [
+    "test the config module",
+    "the config has a retry problem",
+    "focus and cache in the config"
+   ]
+  },
+  {
+   "id": "bg-096",
+   "title": "Test the sidebar",
+   "harness": "codex",
+   "daysAgo": 28,
+   "keys": [
+    "test the sidebar module",
+    "the sidebar has a schedule problem",
+    "migration and window in the sidebar"
+   ]
+  },
+  {
+   "id": "bg-097",
+   "title": "Test the editor",
+   "harness": "claude",
+   "daysAgo": 78,
+   "keys": [
+    "test the editor module",
+    "the editor has a database problem",
+    "timeout and cache in the editor"
+   ]
+  },
+  {
+   "id": "bg-098",
+   "title": "Test the palette",
+   "harness": "opencode",
+   "daysAgo": 102,
+   "keys": [
+    "test the palette module",
+    "the palette has a timeout problem",
+    "flag and token in the palette"
+   ]
+  },
+  {
+   "id": "bg-099",
+   "title": "Test the picker",
+   "harness": "codex",
+   "daysAgo": 113,
+   "keys": [
+    "test the picker module",
+    "the picker has a token problem",
+    "migration and queue in the picker"
+   ]
+  },
+  {
+   "id": "bg-100",
+   "title": "Redesign the login",
+   "harness": "claude",
+   "daysAgo": 23,
+   "keys": [
+    "redesign the login module",
+    "the login has a slow problem",
+    "window and encoding in the login"
+   ]
+  },
+  {
+   "id": "bg-101",
+   "title": "Redesign the search",
+   "harness": "opencode",
+   "daysAgo": 35,
+   "keys": [
+    "redesign the search module",
+    "the search has a crash problem",
+    "focus and database in the search"
+   ]
+  },
+  {
+   "id": "bg-102",
+   "title": "Redesign the upload",
+   "harness": "codex",
+   "daysAgo": 85,
+   "keys": [
+    "redesign the upload module",
+    "the upload has a window problem",
+    "catalog and flag in the upload"
+   ]
+  },
+  {
+   "id": "bg-103",
+   "title": "Redesign the billing",
+   "harness": "claude",
+   "daysAgo": 30,
+   "keys": [
+    "redesign the billing module",
+    "the billing has a database problem",
+    "flag and retry in the billing"
+   ]
+  },
+  {
+   "id": "bg-104",
+   "title": "Redesign the profile",
+   "harness": "opencode",
+   "daysAgo": 23,
+   "keys": [
+    "redesign the profile module",
+    "the profile has a crash problem",
+    "tests and render in the profile"
+   ]
+  },
+  {
+   "id": "bg-105",
+   "title": "Redesign the settings",
+   "harness": "codex",
+   "daysAgo": 10,
+   "keys": [
+    "redesign the settings module",
+    "the settings has a slow problem",
+    "queue and timeout in the settings"
+   ]
+  },
+  {
+   "id": "bg-106",
+   "title": "Redesign the export",
+   "harness": "claude",
+   "daysAgo": 49,
+   "keys": [
+    "redesign the export module",
+    "the export has a lock problem",
+    "queue and cache in the export"
+   ]
+  },
+  {
+   "id": "bg-107",
+   "title": "Redesign the dashboard",
+   "harness": "opencode",
+   "daysAgo": 5,
+   "keys": [
+    "redesign the dashboard module",
+    "the dashboard has a encoding problem",
+    "schedule and render in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-108",
+   "title": "Redesign the calendar",
+   "harness": "codex",
+   "daysAgo": 10,
+   "keys": [
+    "redesign the calendar module",
+    "the calendar has a render problem",
+    "timeout and cache in the calendar"
+   ]
+  },
+  {
+   "id": "bg-109",
+   "title": "Redesign the chat",
+   "harness": "claude",
+   "daysAgo": 81,
+   "keys": [
+    "redesign the chat module",
+    "the chat has a migration problem",
+    "encoding and lock in the chat"
+   ]
+  },
+  {
+   "id": "bg-110",
+   "title": "Redesign the report",
+   "harness": "opencode",
+   "daysAgo": 42,
+   "keys": [
+    "redesign the report module",
+    "the report has a deploy problem",
+    "render and latency in the report"
+   ]
+  },
+  {
+   "id": "bg-111",
+   "title": "Redesign the timeline",
+   "harness": "codex",
+   "daysAgo": 24,
+   "keys": [
+    "redesign the timeline module",
+    "the timeline has a window problem",
+    "queue and encoding in the timeline"
+   ]
+  },
+  {
+   "id": "bg-112",
+   "title": "Redesign the invite",
+   "harness": "claude",
+   "daysAgo": 88,
+   "keys": [
+    "redesign the invite module",
+    "the invite has a migration problem",
+    "timeout and crash in the invite"
+   ]
+  },
+  {
+   "id": "bg-113",
+   "title": "Redesign the cache",
+   "harness": "opencode",
+   "daysAgo": 116,
+   "keys": [
+    "redesign the cache module",
+    "the cache has a queue problem",
+    "encoding and schedule in the cache"
+   ]
+  },
+  {
+   "id": "bg-114",
+   "title": "Redesign the queue",
+   "harness": "codex",
+   "daysAgo": 93,
+   "keys": [
+    "redesign the queue module",
+    "the queue has a window problem",
+    "crash and slow in the queue"
+   ]
+  },
+  {
+   "id": "bg-115",
+   "title": "Redesign the config",
+   "harness": "claude",
+   "daysAgo": 113,
+   "keys": [
+    "redesign the config module",
+    "the config has a queue problem",
+    "deploy and schedule in the config"
+   ]
+  },
+  {
+   "id": "bg-116",
+   "title": "Redesign the sidebar",
+   "harness": "opencode",
+   "daysAgo": 84,
+   "keys": [
+    "redesign the sidebar module",
+    "the sidebar has a token problem",
+    "timeout and deploy in the sidebar"
+   ]
+  },
+  {
+   "id": "bg-117",
+   "title": "Redesign the editor",
+   "harness": "codex",
+   "daysAgo": 99,
+   "keys": [
+    "redesign the editor module",
+    "the editor has a lock problem",
+    "catalog and queue in the editor"
+   ]
+  },
+  {
+   "id": "bg-118",
+   "title": "Redesign the palette",
+   "harness": "claude",
+   "daysAgo": 67,
+   "keys": [
+    "redesign the palette module",
+    "the palette has a latency problem",
+    "tests and retry in the palette"
+   ]
+  },
+  {
+   "id": "bg-119",
+   "title": "Redesign the picker",
+   "harness": "opencode",
+   "daysAgo": 85,
+   "keys": [
+    "redesign the picker module",
+    "the picker has a latency problem",
+    "token and crash in the picker"
+   ]
+  },
+  {
+   "id": "bg-120",
+   "title": "Migrate the login",
+   "harness": "codex",
+   "daysAgo": 103,
+   "keys": [
+    "migrate the login module",
+    "the login has a database problem",
+    "crash and focus in the login"
+   ]
+  },
+  {
+   "id": "bg-121",
+   "title": "Migrate the search",
+   "harness": "claude",
+   "daysAgo": 29,
+   "keys": [
+    "migrate the search module",
+    "the search has a slow problem",
+    "latency and focus in the search"
+   ]
+  },
+  {
+   "id": "bg-122",
+   "title": "Migrate the upload",
+   "harness": "opencode",
+   "daysAgo": 7,
+   "keys": [
+    "migrate the upload module",
+    "the upload has a render problem",
+    "catalog and crash in the upload"
+   ]
+  },
+  {
+   "id": "bg-123",
+   "title": "Migrate the billing",
+   "harness": "codex",
+   "daysAgo": 44,
+   "keys": [
+    "migrate the billing module",
+    "the billing has a render problem",
+    "window and timeout in the billing"
+   ]
+  },
+  {
+   "id": "bg-124",
+   "title": "Migrate the profile",
+   "harness": "claude",
+   "daysAgo": 69,
+   "keys": [
+    "migrate the profile module",
+    "the profile has a crash problem",
+    "window and queue in the profile"
+   ]
+  },
+  {
+   "id": "bg-125",
+   "title": "Migrate the settings",
+   "harness": "opencode",
+   "daysAgo": 5,
+   "keys": [
+    "migrate the settings module",
+    "the settings has a latency problem",
+    "token and cache in the settings"
+   ]
+  },
+  {
+   "id": "bg-126",
+   "title": "Migrate the export",
+   "harness": "codex",
+   "daysAgo": 84,
+   "keys": [
+    "migrate the export module",
+    "the export has a lock problem",
+    "catalog and schedule in the export"
+   ]
+  },
+  {
+   "id": "bg-127",
+   "title": "Migrate the dashboard",
+   "harness": "claude",
+   "daysAgo": 77,
+   "keys": [
+    "migrate the dashboard module",
+    "the dashboard has a window problem",
+    "schedule and slow in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-128",
+   "title": "Migrate the calendar",
+   "harness": "opencode",
+   "daysAgo": 50,
+   "keys": [
+    "migrate the calendar module",
+    "the calendar has a lock problem",
+    "encoding and timeout in the calendar"
+   ]
+  },
+  {
+   "id": "bg-129",
+   "title": "Migrate the chat",
+   "harness": "codex",
+   "daysAgo": 3,
+   "keys": [
+    "migrate the chat module",
+    "the chat has a catalog problem",
+    "encoding and timeout in the chat"
+   ]
+  },
+  {
+   "id": "bg-130",
+   "title": "Migrate the report",
+   "harness": "claude",
+   "daysAgo": 2,
+   "keys": [
+    "migrate the report module",
+    "the report has a schedule problem",
+    "focus and crash in the report"
+   ]
+  },
+  {
+   "id": "bg-131",
+   "title": "Migrate the timeline",
+   "harness": "opencode",
+   "daysAgo": 30,
+   "keys": [
+    "migrate the timeline module",
+    "the timeline has a queue problem",
+    "slow and crash in the timeline"
+   ]
+  },
+  {
+   "id": "bg-132",
+   "title": "Migrate the invite",
+   "harness": "codex",
+   "daysAgo": 90,
+   "keys": [
+    "migrate the invite module",
+    "the invite has a focus problem",
+    "migration and queue in the invite"
+   ]
+  },
+  {
+   "id": "bg-133",
+   "title": "Migrate the cache",
+   "harness": "claude",
+   "daysAgo": 55,
+   "keys": [
+    "migrate the cache module",
+    "the cache has a encoding problem",
+    "database and tests in the cache"
+   ]
+  },
+  {
+   "id": "bg-134",
+   "title": "Migrate the queue",
+   "harness": "opencode",
+   "daysAgo": 52,
+   "keys": [
+    "migrate the queue module",
+    "the queue has a queue problem",
+    "timeout and migration in the queue"
+   ]
+  },
+  {
+   "id": "bg-135",
+   "title": "Migrate the config",
+   "harness": "codex",
+   "daysAgo": 94,
+   "keys": [
+    "migrate the config module",
+    "the config has a lock problem",
+    "window and timeout in the config"
+   ]
+  },
+  {
+   "id": "bg-136",
+   "title": "Migrate the sidebar",
+   "harness": "claude",
+   "daysAgo": 35,
+   "keys": [
+    "migrate the sidebar module",
+    "the sidebar has a encoding problem",
+    "flag and token in the sidebar"
+   ]
+  },
+  {
+   "id": "bg-137",
+   "title": "Migrate the editor",
+   "harness": "opencode",
+   "daysAgo": 72,
+   "keys": [
+    "migrate the editor module",
+    "the editor has a slow problem",
+    "latency and tests in the editor"
+   ]
+  },
+  {
+   "id": "bg-138",
+   "title": "Migrate the palette",
+   "harness": "codex",
+   "daysAgo": 41,
+   "keys": [
+    "migrate the palette module",
+    "the palette has a render problem",
+    "tests and flag in the palette"
+   ]
+  },
+  {
+   "id": "bg-139",
+   "title": "Migrate the picker",
+   "harness": "claude",
+   "daysAgo": 60,
+   "keys": [
+    "migrate the picker module",
+    "the picker has a flag problem",
+    "migration and tests in the picker"
+   ]
+  },
+  {
+   "id": "bg-140",
+   "title": "Audit the login",
+   "harness": "opencode",
+   "daysAgo": 117,
+   "keys": [
+    "audit the login module",
+    "the login has a flag problem",
+    "latency and queue in the login"
+   ]
+  },
+  {
+   "id": "bg-141",
+   "title": "Audit the search",
+   "harness": "codex",
+   "daysAgo": 82,
+   "keys": [
+    "audit the search module",
+    "the search has a crash problem",
+    "encoding and cache in the search"
+   ]
+  },
+  {
+   "id": "bg-142",
+   "title": "Audit the upload",
+   "harness": "claude",
+   "daysAgo": 16,
+   "keys": [
+    "audit the upload module",
+    "the upload has a flag problem",
+    "migration and tests in the upload"
+   ]
+  },
+  {
+   "id": "bg-143",
+   "title": "Audit the billing",
+   "harness": "opencode",
+   "daysAgo": 69,
+   "keys": [
+    "audit the billing module",
+    "the billing has a flag problem",
+    "cache and deploy in the billing"
+   ]
+  },
+  {
+   "id": "bg-144",
+   "title": "Audit the profile",
+   "harness": "codex",
+   "daysAgo": 85,
+   "keys": [
+    "audit the profile module",
+    "the profile has a flag problem",
+    "render and token in the profile"
+   ]
+  },
+  {
+   "id": "bg-145",
+   "title": "Audit the settings",
+   "harness": "claude",
+   "daysAgo": 103,
+   "keys": [
+    "audit the settings module",
+    "the settings has a slow problem",
+    "latency and focus in the settings"
+   ]
+  },
+  {
+   "id": "bg-146",
+   "title": "Audit the export",
+   "harness": "opencode",
+   "daysAgo": 113,
+   "keys": [
+    "audit the export module",
+    "the export has a latency problem",
+    "token and window in the export"
+   ]
+  },
+  {
+   "id": "bg-147",
+   "title": "Audit the dashboard",
+   "harness": "codex",
+   "daysAgo": 99,
+   "keys": [
+    "audit the dashboard module",
+    "the dashboard has a focus problem",
+    "crash and lock in the dashboard"
+   ]
+  },
+  {
+   "id": "bg-148",
+   "title": "Audit the calendar",
+   "harness": "claude",
+   "daysAgo": 28,
+   "keys": [
+    "audit the calendar module",
+    "the calendar has a database problem",
+    "tests and deploy in the calendar"
+   ]
+  },
+  {
+   "id": "bg-149",
+   "title": "Audit the chat",
+   "harness": "opencode",
+   "daysAgo": 0,
+   "keys": [
+    "audit the chat module",
+    "the chat has a database problem",
+    "window and schedule in the chat"
+   ]
+  }
+ ],
+ "queries": [
+  {
+   "query": "plugins catalog stall",
+   "expect": "target-00",
+   "class": "exact"
+  },
+  {
+   "query": "refresh token rotation",
+   "expect": "target-01",
+   "class": "exact"
+  },
+  {
+   "query": "sidecar EOF crash",
+   "expect": "target-02",
+   "class": "exact"
+  },
+  {
+   "query": "worktree reclaim sweep",
+   "expect": "target-03",
+   "class": "exact"
+  },
+  {
+   "query": "kanji flashcards",
+   "expect": "target-04",
+   "class": "exact"
+  },
+  {
+   "query": "stripe webhook retries",
+   "expect": "target-05",
+   "class": "exact"
+  },
+  {
+   "query": "dark mode contrast",
+   "expect": "target-06",
+   "class": "exact"
+  },
+  {
+   "query": "postgres vacuum bloat",
+   "expect": "target-07",
+   "class": "exact"
+  },
+  {
+   "query": "subagent rate limit",
+   "expect": "target-08",
+   "class": "exact"
+  },
+  {
+   "query": "csv import encoding",
+   "expect": "target-09",
+   "class": "exact"
+  },
+  {
+   "query": "tauri window focus",
+   "expect": "target-10",
+   "class": "exact"
+  },
+  {
+   "query": "compaction failures",
+   "expect": "target-11",
+   "class": "exact"
+  },
+  {
+   "query": "liveness probe restart",
+   "expect": "target-12",
+   "class": "exact"
+  },
+  {
+   "query": "recipe scaler",
+   "expect": "target-13",
+   "class": "exact"
+  },
+  {
+   "query": "graphql dataloader",
+   "expect": "target-14",
+   "class": "exact"
+  },
+  {
+   "query": "password prompt every time",
+   "expect": "target-15",
+   "class": "vague"
+  },
+  {
+   "query": "game character animation images",
+   "expect": "target-16",
+   "class": "vague"
+  },
+  {
+   "query": "bill printout missing a row",
+   "expect": "target-17",
+   "class": "vague"
+  },
+  {
+   "query": "infrastructure deploy stuck",
+   "expect": "target-18",
+   "class": "vague"
+  },
+  {
+   "query": "sidebar overlay stays on phone",
+   "expect": "target-19",
+   "class": "vague"
+  },
+  {
+   "query": "sound delayed with headphones",
+   "expect": "target-20",
+   "class": "vague"
+  },
+  {
+   "query": "old toggles everywhere in code",
+   "expect": "target-21",
+   "class": "vague"
+  },
+  {
+   "query": "making the bot think faster",
+   "expect": "target-22",
+   "class": "vague"
+  },
+  {
+   "query": "messages not delivered to customers",
+   "expect": "target-23",
+   "class": "vague"
+  },
+  {
+   "query": "field names mismatch at runtime",
+   "expect": "target-24",
+   "class": "vague"
+  },
+  {
+   "query": "plants and the sensor thing",
+   "expect": "target-25",
+   "class": "vague"
+  },
+  {
+   "query": "login redirect for the desktop app",
+   "expect": "target-26",
+   "class": "vague"
+  },
+  {
+   "query": "tests failing randomly in ci",
+   "expect": "target-27",
+   "class": "vague"
+  },
+  {
+   "query": "money tracking sheet",
+   "expect": "target-28",
+   "class": "vague"
+  },
+  {
+   "query": "uploads taking forever to process",
+   "expect": "target-29",
+   "class": "vague"
+  },
+  {
+   "query": "plugins catalog stall yesterday",
+   "expect": "target-00",
+   "class": "time"
+  },
+  {
+   "query": "kanji flashcards 3 days ago",
+   "expect": "target-04",
+   "class": "time"
+  },
+  {
+   "query": "subagent rate limit last week",
+   "expect": "target-08",
+   "class": "time"
+  },
+  {
+   "query": "liveness probe restart a few days ago",
+   "expect": "target-12",
+   "class": "time"
+  },
+  {
+   "query": "sprite sheet atlas this week",
+   "expect": "target-16",
+   "class": "time"
+  },
+  {
+   "query": "bluetooth audio latency 2 weeks ago",
+   "expect": "target-20",
+   "class": "time"
+  },
+  {
+   "query": "wire casing snake case yesterday",
+   "expect": "target-24",
+   "class": "time"
+  },
+  {
+   "query": "budget spreadsheet sumif recently",
+   "expect": "target-28",
+   "class": "time"
+  },
+  {
+   "query": "borrow checker lifetime 3 days ago",
+   "expect": "target-32",
+   "class": "time"
+  },
+  {
+   "query": "focus trap dialog last week",
+   "expect": "target-36",
+   "class": "time"
+  }
+ ]
+}

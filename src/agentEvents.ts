@@ -58,11 +58,15 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
   const ids = new Set(current.map(durableKey).filter((key): key is string => key !== undefined));
   const next = [...current];
   const mergeIndexes = new Map<string, number>();
-  // Durable events are only pushed, never spliced, so this recovers the most
-  // recently arrived durable sequence even when transient merges move to tail.
-  let lastDurableSeq: number | undefined;
+  // A transient frame is anchored to the newest durable sequence of its own
+  // session. One shared "last durable" anchored a delta to whichever session
+  // spoke last, and a replayed batch of older frames would pull it backwards.
+  const newestDurable = new Map<string, number>();
+  const noteDurable = (event: AgentEvent) => {
+    if (event.sequence > 0) newestDurable.set(event.sessionId, Math.max(newestDurable.get(event.sessionId) ?? 0, event.sequence));
+  };
   next.forEach((event, index) => {
-    if (event.sequence > 0) lastDurableSeq = event.sequence;
+    noteDurable(event);
     const key = mergeKey(event);
     if (key) mergeIndexes.set(key, index);
     else clearItemMergeIndexes(mergeIndexes, event);
@@ -71,7 +75,8 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
     const id = durableKey(event);
     if (id && ids.has(id)) continue;
     if (id) ids.add(id);
-    if (event.sequence > 0) lastDurableSeq = event.sequence;
+    noteDurable(event);
+    const lastDurableSeq = newestDurable.get(event.sessionId);
     const key = mergeKey(event);
     const mergeIndex = key === undefined ? undefined : mergeIndexes.get(key);
     if (key !== undefined && mergeIndex !== undefined) {

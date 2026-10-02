@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
@@ -9,6 +9,7 @@ import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFi
 type Block =
   | { kind: "code"; lang: string; body: string }
   | { kind: "diagram"; spec: string }
+  | { kind: "mermaid"; code: string }
   | { kind: "math"; tex: string }
   | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
@@ -35,6 +36,7 @@ function isTableRow(line: string): boolean {
 function fencedBlock(lang: string, body: string): Block {
   const key = lang.trim().toLowerCase();
   if (key === "diagram") return { kind: "diagram", spec: body };
+  if (key === "mermaid") return { kind: "mermaid", code: body };
   if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
   if (key === "html") return { kind: "html", html: body };
   return { kind: "code", lang, body };
@@ -185,10 +187,17 @@ function TextRun({ text }: { text: string }) {
   })}</>;
 }
 
-// Inline tokens, in priority order: code span, \(math\), $math$, bold, italic, link.
+// Inline tokens, in priority order: code span, \(math\), $math$, bold, italic,
+// link, bare URL.
 // The $…$ pattern requires non-space just inside both delimiters and forbids a
 // trailing digit, so ordinary prose ("costs $5 and $10") is not misread as math.
-const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|~~[^~\n]+~~|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+// The bare URL is last and only wins where nothing else opens earlier: `split`
+// takes the leftmost match, and a code span or a `[text](url)` both begin
+// before the scheme does. Its tail excludes sentence punctuation, so
+// "see https://x.dev." links the address and leaves the full stop as prose.
+const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|~~[^~\n]+~~|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\)|https?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}])/g;
+/** One whole bare URL and nothing else — what a token has to be to become a link. */
+const BARE_URL_ONLY = /^https?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]$/;
 
 /** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
 export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
@@ -207,8 +216,8 @@ function InlineMath({ tex }: { tex: string }) {
 
 /**
  * The `dark` class on <html> is the single source of truth for the theme.
- * The sandboxed iframe renders outside our token scope, so it has to follow
- * it explicitly instead of inheriting CSS variables.
+ * Mermaid bakes theme colors into its SVG, while the sandboxed iframe cannot
+ * inherit our tokens. Both follow the document's active theme explicitly.
  */
 function useDarkTheme(): boolean {
   const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
@@ -222,16 +231,16 @@ function useDarkTheme(): boolean {
   return dark;
 }
 
-/** Shared copy-to-clipboard state for the code/math/mermaid copy affordances. */
-function useCopy(text: string) {
+/** Shared copy-to-clipboard state for rich blocks. */
+export function useCopy(text: string, resetMs = 1400) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
+    void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), resetMs); });
   };
   return { copied, copy };
 }
 
-function CopyButton({ text, className }: { text: string; className: string }) {
+export function CopyButton({ text, className }: { text: string; className: string }) {
   const { copied, copy } = useCopy(text);
   return (
     <button type="button" className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
@@ -254,25 +263,33 @@ function MathBlock({ tex }: { tex: string }) {
   );
 }
 
-function renderInline(text: string): React.ReactNode[] {
+function renderInline(text: string, allowLinks = true): React.ReactNode[] {
   return text.split(INLINE).filter(part => part !== "").map((part, index) => {
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <InlineCode key={index} text={part.slice(1, -1)} />;
     if (part.startsWith("\\(") && part.endsWith("\\)") && part.length > 4) return <InlineMath key={index} tex={part.slice(2, -2)} />;
     if (part.startsWith("$") && part.endsWith("$") && part.length > 2) return <InlineMath key={index} tex={part.slice(1, -1)} />;
-    if (part.startsWith("~~") && part.endsWith("~~") && part.length > 4) return <del key={index}>{renderInline(part.slice(2, -2))}</del>;
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2))}</strong>;
-    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
+    if (part.startsWith("~~") && part.endsWith("~~") && part.length > 4) return <del key={index}>{renderInline(part.slice(2, -2), allowLinks)}</del>;
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2), allowLinks)}</strong>;
+    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1), allowLinks)}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
     // A link only renders as an anchor when `externalLinks` would claim it.
     // Its click interceptor only hijacks `http(s)`/`mailto`; any other scheme
     // keeps the webview's default action, and the Tauri webview sets no CSP,
     // so a `javascript:` href in agent- or GitHub-authored markdown would run
     // in-app. Anything else keeps its label as text.
-    if (link) {
+    if (link && allowLinks) {
+      // Link labels may themselves be a URL (GitHub's normalizer emits this
+      // shape). Keep their inline formatting without creating a nested anchor.
       return isExternalUrl(link[2])
-        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1])}</a>
-        : <span key={index}>{renderInline(link[1])}</span>;
+        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1], false)}</a>
+        : <span key={index}>{renderInline(link[1], false)}</span>;
     }
+    // A URL an agent typed as prose is still a link the reader means to follow.
+    // It goes through the same click interceptor as a written-out one, so a
+    // GitHub address gets the same choice of where to open. The pattern admits
+    // only `http(s)`, so it is already inside the gate above rather than a way
+    // around it.
+    if (allowLinks && BARE_URL_ONLY.test(part)) return <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>;
     return <TextRun key={index} text={part} />;
   });
 }
@@ -334,6 +351,46 @@ function DiagramBlock({ spec }: { spec: string }) {
   );
 }
 
+let mermaidSequence = 0;
+
+function MermaidBlock({ code }: { code: string }) {
+  const dark = useDarkTheme();
+  const [rendered, setRendered] = useState<{ code: string; dark: boolean; svg: string } | null>(null);
+  const [failed, setFailed] = useState<{ code: string; dark: boolean } | null>(null);
+  const id = useRef("");
+  if (!id.current) id.current = `bridge-mermaid-${++mermaidSequence}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default;
+        mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+        await mermaid.parse(code);
+        const result = await mermaid.render(id.current, code);
+        if (!cancelled) setRendered({ code, dark, svg: result.svg });
+      } catch {
+        if (!cancelled) setFailed({ code, dark });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code, dark]);
+
+  if (failed?.code === code && failed.dark === dark) {
+    return <div className="my-[0.8em]">
+      <div className="mb-[0.35em] text-xs text-warning">Could not render this Mermaid diagram — showing its source.</div>
+      <CodeBlock lang="mermaid" body={code} />
+    </div>;
+  }
+  if (rendered?.code !== code || rendered.dark !== dark) {
+    return <div className="my-[0.9em] rounded-[0.9rem] border border-dashed border-border p-[0.9em_1em] text-xs text-muted-foreground">Rendering diagram…</div>;
+  }
+  return <div className="rich-block my-[0.9em]">
+    <CopyButton text={code} className="rich-block-copy" />
+    <div className="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: rendered.svg }} />
+  </div>;
+}
+
 // Agent-authored HTML is untrusted. Rendering happens inside a fully sandboxed
 // iframe: sandbox="" grants no capabilities (no scripts, no same-origin), which
 // is the sole isolation boundary because the Tauri webview sets no CSP.
@@ -389,12 +446,13 @@ function HtmlBlock({ html }: { html: string }) {
   );
 }
 
-export const Markdown = memo(function Markdown({ text, dim }: { text: string; dim?: boolean }) {
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
-    <div className={dim ? "md dim" : "md"}>
+    <div className="md">
       {splitBlocks(text).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
+        if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
         if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
         if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
         if (block.kind === "heading") {

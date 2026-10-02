@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DOCK_WIDTH,
+  DOCK_PANES,
   DOCK_SHEET_THRESHOLD,
   MAX_DOCK_WIDTH,
   MIN_CONVERSATION_WIDTH,
@@ -22,6 +23,12 @@ function memoryStorage(initial: Record<string, string> = {}) {
     setItem: (key: string, value: string) => void map.set(key, value),
   };
 }
+
+describe("DOCK_PANES", () => {
+  it("appends Context last so no existing chord moves", () => {
+    expect(DOCK_PANES).toEqual(["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox", "clone", "context"]);
+  });
+});
 
 describe("dockReducer", () => {
   it("starts collapsed with the documented defaults", () => {

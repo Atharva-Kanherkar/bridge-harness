@@ -211,3 +211,24 @@ icons, invalid signing and JIT entitlements, credential modes, rejected notary
 responses, stale SDK locks, failed staging installs, Release Please orchestration,
 and packaged-app lifecycle evidence. It does not need Apple credentials or
 contact the notary service.
+
+## Nightly pre-releases
+
+`.github/workflows/nightly-macos.yml` runs at 01:00 Asia/Kolkata (`30 19 * * *`
+UTC). It tags `nightly-YYYY-MM-DD` for the IST day that just ended and builds
+`main` as of that instant. The job publishes a GitHub pre-release only when at
+least one pull request merged into `main` during that IST day. Days with no
+merges, and days whose tag or release already exists, exit successfully without
+notarizing.
+
+The pre-release is not GitHub Latest and does not upload `latest.json`. The
+in-app updater keeps following stable `v*.*.*` tags from `release-macos.yml`.
+Nightly stamping updates the root app, Tauri, Cargo workspace, and Cargo lock
+entries together. The release manifest, extension manifests, sidecar, and Arch
+package retain the stable baseline; extension versions stay numeric. Build tests
+explicitly validate this nightly mode while stable production preflight keeps
+requiring one identical release version across all files.
+
+A nightly tag does not need to match `tauri.conf.json`. Dispatch the workflow
+with a `date` (`YYYY-MM-DD`) to backfill that IST day. Signing and notarization
+are the same `scripts/release-dmg.sh` path as a stable tag.

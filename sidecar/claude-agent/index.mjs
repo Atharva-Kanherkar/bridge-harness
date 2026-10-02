@@ -20,6 +20,7 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { buildOptions, catalogOptions } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
+import { probeUsage, readContextUsage } from "./usage.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -64,6 +65,12 @@ try {
 }
 
 const { sessionId } = config;
+
+if (config.usage === true) {
+  const frame = await probeUsage(query, config);
+  await writeFrame(frame);
+  process.exit(frame.type === "claude_usage" ? 0 : 1);
+}
 
 // Push-driven async iterable of SDKUserMessage: turns arrive on stdin over the
 // life of the process and are fed into the one streaming query.
@@ -139,10 +146,23 @@ rl.on("line", (line) => {
 });
 rl.on("close", () => input.close());
 
+// After each turn, report the live window as Claude Code measures it. One read
+// in flight at most, and never awaited by the pump: a slow or missing control
+// request must not hold up the next turn's frames.
+let contextRead = null;
+function reportContextUsage() {
+  if (contextRead) return;
+  contextRead = readContextUsage(run)
+    .then((frame) => (frame ? writeFrame(frame) : undefined))
+    .catch(() => {})
+    .finally(() => { contextRead = null; });
+}
+
 // Pump SDK messages straight to stdout as newline JSON.
 try {
   for await (const message of run) {
     await writeFrame(message);
+    if (message?.type === "result") reportContextUsage();
   }
 } catch (error) {
   await fail(`Claude Agent SDK error: ${error?.message ?? error}`);

@@ -10,8 +10,10 @@
 //!
 //! Params structs first contracted in protocol 0.5 refuse unknown fields. The
 //! 19 params schemas published before 0.5 stay open until the next major
-//! version: minor versions are additive, so a 0.5 server must continue to
-//! accept every document the 0.4 schemas allowed.
+//! version: minor payload-schema changes are additive, so a 0.5 server must
+//! continue to accept every document the 0.4 schemas allowed. Handshake
+//! acceptance can still declare a documented minimum-client boundary when an
+//! older client cannot safely represent new persisted behavior.
 //!
 //! Results are contracted wherever a wire DTO exists — including the
 //! aggregate `BridgeState` and `SessionForestSnapshot` trees. The remaining
@@ -24,6 +26,7 @@ mod approvals;
 mod auth;
 mod automations;
 mod browser;
+mod clones;
 mod common;
 mod completion;
 mod config;
@@ -54,6 +57,7 @@ pub use approvals::*;
 pub use auth::*;
 pub use automations::*;
 pub use browser::*;
+pub use clones::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
@@ -157,6 +161,7 @@ typed_methods![
     // health
     (Health, _, HealthResult),
     (RefreshModelCatalogs, _, HealthResult),
+    (InstallCodexUpdate, _, UnitResult),
     // state — the aggregate application snapshot
     (GetState, _, BridgeState),
     // projects
@@ -177,11 +182,15 @@ typed_methods![
     (GithubAct, GithubActParams, GithubActResult),
     (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
+    (GithubConnect, GithubConnectParams, GithubConnectResult),
+    (GithubSessionPrs, GithubSessionPrsParams, GithubSessionPrsResult),
+    (GithubAttachPr, GithubAttachPrParams, GithubAttachPrResult),
     // connectors — in-app surfaces over the harness's own MCP servers
     (ConnectorList, ConnectorListParams, ConnectorListResult),
     (ConnectorInbox, ConnectorInboxParams, ConnectorInboxResult),
     (ConnectorAct, ConnectorActParams, ConnectorActResult),
     (ConnectorDismiss, ConnectorDismissParams, ConnectorDismissResult),
+    (ConnectorSetSettings, ConnectorSetSettingsParams, ConnectorSetSettingsResult),
     (ConnectorRefresh, ConnectorRefreshParams, ConnectorRefreshResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),
@@ -207,11 +216,14 @@ typed_methods![
         GetContextBreakdownDigestParams,
         ContextBreakdownDigestResult
     ),
+    (GetContextWindows, GetContextWindowsParams, ContextWindowsResult),
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),
     (CreateChatId, CreateChatIdParams, CreateChatIdResult),
     (CreateAsideChat, CreateAsideChatParams, CreateAsideChatResult),
+    (ForkSession, ForkSessionParams, ForkSessionResult),
+    (ResolveReference, ResolveReferenceParams, ResolveReferenceResult),
     (CreateWorkspaceSession, CreateWorkspaceSessionParams, BridgeState),
     (StartSession, StartSessionParams, BridgeState),
     (StartChat, StartChatParams, BridgeState),
@@ -231,6 +243,7 @@ typed_methods![
     ),
     (CompactSession, CompactSessionParams, UnitResult),
     (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
+    (SearchChats, SearchChatsParams, SearchChatsResult),
     (ExportSessionTranscript, ExportSessionTranscriptParams, ExportSessionTranscriptResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),
     (RetryWorkerTask, RetryWorkerTaskParams, UnitResult),
@@ -293,6 +306,12 @@ typed_methods![
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
+    (GetReviewerSettings, _, ReviewerSettingsResult),
+    (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
+    (GetAttributionSettings, _, AttributionSettings),
+    (SaveAttributionSettings, SaveAttributionSettingsParams, AttributionSettings),
+    (GetChatSearchSettings, _, ChatSearchSettings),
+    (SaveChatSearchSettings, SaveChatSearchSettingsParams, ChatSearchSettings),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
     (UnarchiveChat, UnarchiveChatParams, UnitResult),
     // token and cost usage
@@ -310,6 +329,7 @@ typed_methods![
     (GetProviderUsageOverviews, _, ProviderUsageOverviews),
     (RefreshProviderUsageOverviews, _, ProviderUsageOverviews),
     (RefreshProviderUsageOverviewsInteractive, _, ProviderUsageOverviews),
+    (RedeemProviderUsageReset, RedeemProviderUsageResetParams, RedeemProviderUsageResetResult),
     (GetUsageOverview, _, UsageOverviewSnapshot),
     (RefreshUsageOverview, _, UsageOverviewSnapshot),
     (GetMenuBarSettings, _, MenuBarSettings),
@@ -369,6 +389,17 @@ typed_methods![
     (BrowserSkills, _, BrowserSkillsResult),
     (ConfigureRemoteBrowser, ConfigureRemoteBrowserParams, UnitResult),
     (StartRemoteBrowser, StartRemoteBrowserParams, _),
+    // browser clones
+    (RequestClone, RequestCloneParams, CloneStateResult),
+    (CloneState, CloneStateParams, CloneStateResult),
+    (TakeoverClone, TakeoverCloneParams, UnitResult),
+    (HandBackClone, HandBackCloneParams, UnitResult),
+    (DestroyClone, DestroyCloneParams, UnitResult),
+    (ResolveCloneRequest, ResolveCloneRequestParams, CloneStateResult),
+    (CloneInput, CloneInputParams, UnitResult),
+    (ReadCloneSettings, _, CloneSettingsSnapshot),
+    (WriteCloneSettings, WriteCloneSettingsParams, CloneSettingsSnapshot),
+    (CloneRequests, _, CloneRequestsResult),
     // marketplace
     // agents — whether an agent's runtime is installed at all
     (ListManagedAgents, _, ManagedAgentList),

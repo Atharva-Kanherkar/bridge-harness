@@ -117,7 +117,7 @@ test("sidecar staging invalidates changed locks and keeps the last complete tree
   cpSync(join(root, "scripts/prepare-claude-sidecar.sh"), script);
   const src = join(dir, "sidecar/claude-agent");
   mkdirSync(src, { recursive: true });
-  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs"]) writeFileSync(join(src, name), "export {};\n");
+  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs", "usage.mjs"]) writeFileSync(join(src, name), "export {};\n");
   writeFileSync(join(src, "options.mjs"), "import './read-only.mjs';\n");
   writeFileSync(join(src, "package.json"), '{"dependencies":{"@anthropic-ai/claude-agent-sdk":"1.0.0"}}');
   writeFileSync(join(src, "package-lock.json"), '{"fixtureLock":1}');

@@ -91,5 +91,8 @@ fn main() {
     for source in declared_resource_sources(config) {
         stage_placeholder_dir(&PathBuf::from(source));
     }
-    tauri_build::build()
+    tauri_build::try_build(tauri_build::Attributes::new().plugin(
+        "embedded-browser",
+        tauri_build::InlinedPlugin::new().commands(&["create", "close", "navigate", "action", "layout", "snapshot"]),
+    )).expect("could not prepare desktop capabilities")
 }

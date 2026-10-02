@@ -1,10 +1,14 @@
 import Link from "next/link";
 
 /*
- * After Uiverse.io by ParasSalunke, achromatic: a lit edge that sweeps brighter across the
- * middle, with the label and chevron sliding right. The ring is already lit at rest, so the
- * button reads as a control rather than waiting for a cursor to prove it exists; hover brings
- * it to full strength and adds the bloom behind it.
+ * After Uiverse.io by ParasSalunke, achromatic. Two variants share one shape and label:
+ *
+ * - `primary` is a solid block, `bg-foreground` on `text-background`, the same treatment as
+ *   the platform buttons on /download. It is the one call to action in a group, so it reads
+ *   first without depending on a hover state or a lit edge.
+ * - `outline` is the original: a lit edge that sweeps brighter across the middle, with the
+ *   label and chevron sliding right. The ring is already lit at rest, so the button reads as
+ *   a control rather than waiting for a cursor to prove it exists.
  *
  * The label wears Bridge's own pixel face, the one the wordmark is set in.
  */
@@ -15,23 +19,28 @@ const sizes = {
   md: { pad: "px-6 py-3", text: "text-[15px]", icon: "size-5", gap: "gap-2.5" },
 };
 
+export type ActionButtonVariant = "primary" | "outline";
+
 export default function ActionButton({
   href,
   label,
   size = "md",
+  variant = "outline",
   external = false,
 }: {
   href: string;
   label: string;
   size?: keyof typeof sizes;
+  variant?: ActionButtonVariant;
   external?: boolean;
 }) {
   const s = sizes[size];
+  const primary = variant === "primary";
   const inner = (
     <>
       <span aria-hidden="true" className={`absolute -inset-1 rounded-2xl ${EDGE} opacity-0 blur-lg transition-opacity duration-500 group-hover:opacity-25`} />
-      <span aria-hidden="true" className={`absolute inset-0 rounded-xl ${EDGE} opacity-55 transition-opacity duration-500 group-hover:opacity-100`} />
-      <span className={`relative z-10 block rounded-xl bg-background ${s.pad}`}>
+      {!primary && <span aria-hidden="true" className={`absolute inset-0 rounded-xl ${EDGE} opacity-55 transition-opacity duration-500 group-hover:opacity-100`} />}
+      <span className={`relative z-10 block rounded-xl ${primary ? "bg-foreground text-background group-hover:bg-foreground/90" : "bg-background"} ${s.pad}`}>
         <span className={`relative z-10 flex items-center ${s.gap}`}>
           <span className={`${s.text} font-pixel uppercase tracking-[0.1em] transition-transform duration-500 group-hover:translate-x-0.5`}>{label}</span>
           <svg

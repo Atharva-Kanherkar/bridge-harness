@@ -73,9 +73,9 @@ pub struct AgentDefinition {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PermissionPolicy {
-    /// Auto-accept every provider approval, for every agent. The two structural
-    /// gates — worker write scope and browser outward effects — are unaffected;
-    /// they are authorization, not convenience.
+    /// Full access: auto-accept every provider approval, for every agent, and
+    /// authorize the write scope a worker proposes. Browser outward effects and
+    /// prompt changes still ask.
     #[serde(alias = "bypassAll")]
     pub auto_approve_provider_permissions: bool,
     /// Roles allowed to propose additions to their own shared guidance.

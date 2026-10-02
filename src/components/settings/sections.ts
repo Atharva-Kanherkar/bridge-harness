@@ -9,12 +9,14 @@
 export type Section =
   | "appearance"
   | "menuBar"
+  | "updates"
   | "permissions"
   | "composer"
   | "agents"
   | "models"
   | "prompts"
   | "harnesses"
+  | "clones"
   | "work"
   | "import"
   | "archives"
@@ -26,12 +28,14 @@ export type RailGroup = "General" | "Agents" | "Runtimes" | "Data";
 export const SECTION_LABELS: Record<Section, string> = {
   appearance: "Appearance",
   menuBar: "Menu Bar",
+  updates: "Updates",
   permissions: "Permissions",
   composer: "Composer",
   agents: "Presets",
   models: "Models",
   prompts: "Prompts",
   harnesses: "Harnesses",
+  clones: "Clones",
   work: "Work briefing",
   import: "Import",
   storage: "Storage",
@@ -41,9 +45,9 @@ export const SECTION_LABELS: Record<Section, string> = {
 
 /** Rail order. The list is the contract: General, Agents, Runtimes, Data. */
 export const SECTION_ORDER: { group: RailGroup; sections: Section[] }[] = [
-  { group: "General", sections: ["appearance", "menuBar", "permissions", "composer"] },
+  { group: "General", sections: ["appearance", "menuBar", "updates", "permissions", "composer"] },
   { group: "Agents", sections: ["agents", "models", "workers", "prompts"] },
-  { group: "Runtimes", sections: ["harnesses"] },
+  { group: "Runtimes", sections: ["harnesses", "clones"] },
   { group: "Data", sections: ["work", "import", "storage", "archives"] },
 ];
 

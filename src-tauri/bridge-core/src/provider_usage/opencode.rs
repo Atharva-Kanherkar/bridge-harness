@@ -4,7 +4,13 @@ use regex::Regex;
 const SUBSCRIPTION: &str = "7abeebee372f304e050aaaf92be863f4a86490e382f8c79db68fd94040d691b4";
 const BILLING: &str = "c83b78a614689c38ebee981f9b39a8b377716db85c1fd7dbab604adc02d3313d";
 pub(super) fn read(workspace_override: Option<&str>) -> Result<AccountUsage, String> {
-    let session = credentials::opencode_session()?;
+    // A configured Go key is authoritative: never fall back to a different
+    // browser account when that key expires or its request fails.
+    if let Some(key) = opencode_go::api_key()? {
+        return opencode_go::read(&key);
+    }
+    let session = credentials::opencode_session().map_err(|_|
+        "Connect OpenCode Go in Menu Bar settings, or run opencode auth login and select OpenCode Go. Local usage is still available.".to_string())?;
     let workspace = workspace_override.unwrap_or(&session.workspace);
     if !credentials::valid_workspace(workspace) {
         return Err("Choose a valid OpenCode workspace in Menu Bar settings".into());

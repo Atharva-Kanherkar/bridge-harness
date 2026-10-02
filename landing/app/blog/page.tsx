@@ -22,7 +22,7 @@ export default function Blog() {
         <div className="mt-16 flex flex-col">
           {posts.map((post) => (
             <article key={post.slug} className="border-t border-border py-8 first:border-t-0 first:pt-0">
-              <time dateTime={post.iso} className="text-[13px] text-faint">
+              <time dateTime={post.iso} className="text-[13px] text-muted-foreground">
                 {post.date}
               </time>
               <h2 className="mt-2 font-display text-[1.75rem] font-semibold tracking-[-0.03em]">

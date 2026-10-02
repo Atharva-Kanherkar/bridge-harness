@@ -26,8 +26,9 @@ const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): A
 });
 
 const command = (overrides: Partial<AgentEvent> = {}) => event(1, "command.completed", {
-  title: "bun run test",
-  data: { type: "commandExecution", command: "bun run test", durationMs: 3000, aggregatedOutput: "92 pass\n0 fail" },
+  // A plain shell command: build and test runs draw as check rows instead.
+  title: "bun run migrate",
+  data: { type: "commandExecution", command: "bun run migrate", durationMs: 3000, aggregatedOutput: "92 rows\n0 skipped" },
   ...overrides,
 });
 
@@ -98,28 +99,28 @@ describe("tool row disclosure", () => {
 
   it("animates a tool row's output open and holds it mounted while it collapses", async () => {
     await openGroup();
-    const row = buttonWith("bun run test");
+    const row = buttonWith("bun run migrate");
     expect(row).toBeDefined();
 
     act(() => row!.click());
-    expect(host.textContent).toContain("92 pass");
+    expect(host.textContent).toContain("92 rows");
 
     act(() => row!.click());
     // Held for its height transition rather than snapping shut.
-    expect(host.textContent).toContain("92 pass");
+    expect(host.textContent).toContain("92 rows");
     await settle();
-    expect(host.textContent).not.toContain("92 pass");
+    expect(host.textContent).not.toContain("92 rows");
   });
 
   it("animates an activity group closed the same way", async () => {
     await openGroup();
-    expect(host.textContent).toContain("bun run test");
+    expect(host.textContent).toContain("bun run migrate");
 
     const summary = buttonWith("Ran 1 command");
     act(() => summary!.click());
-    expect(host.textContent).toContain("bun run test");
+    expect(host.textContent).toContain("bun run migrate");
     await settle();
-    expect(host.textContent).not.toContain("bun run test");
+    expect(host.textContent).not.toContain("bun run migrate");
   });
 
   it("shows exactly one status glyph, swapped when the run finishes", async () => {
@@ -129,14 +130,15 @@ describe("tool row disclosure", () => {
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(1);
 
-    // Opened by hand, the finished call wears the tick instead.
+    // Opened by hand, the finished call wears no glyph at all: only running
+    // and failed rows earn one.
     mount([command({ status: "completed" })]);
     await settle();
     const summary = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Ran 1 command"));
     await act(async () => summary!.click());
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(0);
-    expect(host.querySelectorAll(".text-success").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("[data-tool-row] .lucide-check")).toHaveLength(0);
   });
 });
 

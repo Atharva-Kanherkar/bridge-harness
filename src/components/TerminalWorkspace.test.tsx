@@ -14,7 +14,8 @@ const record = (id: string, overrides: Partial<TerminalRecord> = {}): TerminalRe
 let host: HTMLDivElement, root: Root;
 const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => (b.getAttribute("aria-label") ?? b.textContent ?? "").startsWith(label))!;
 const click = async (label: string) => { await act(async () => { button(label).click(); }); };
-const mount = async () => { await act(async () => { root.render(<TerminalWorkspace workspaceId="w" branch="main" />); }); };
+const onError = vi.fn<(message: string) => void>();
+const mount = async () => { await act(async () => { root.render(<TerminalWorkspace workspaceId="w" branch="main" onError={onError} />); }); };
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
@@ -71,6 +72,16 @@ it("starts an ended CLI only on explicit Restart", async () => {
 it("launches an installed agent CLI with a structured agent identity", async () => {
   await mount(); await click("New Agent"); await click("Claude Code");
   expect(api.createTerminal.mock.calls[0][0]).toMatchObject({ workspaceId: "w", agentId: "claude", restart: false });
+});
+it("shows a readable toast when an agent CLI is missing without adding an error row", async () => {
+  await mount();
+  api.createTerminal.mockRejectedValueOnce('{"code":1000,"kind":"invalid","message":"grok CLI is not installed on PATH. Install its interactive CLI, then try New Agent again."}');
+  await click("New Agent"); await click("Grok");
+  expect(onError).toHaveBeenCalledWith("grok CLI is not installed on PATH. Install its interactive CLI, then try New Agent again.");
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.querySelectorAll("[data-terminal]")).toHaveLength(1);
+  await click("New Agent"); await click("Grok");
+  expect(host.querySelectorAll("[data-terminal]")).toHaveLength(2);
 });
 it("flushes the complete split tree when navigating away", async () => {
   await mount(); await click("Split down");

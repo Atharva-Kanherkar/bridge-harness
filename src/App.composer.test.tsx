@@ -5,11 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { bridgeApi } from "./api";
 
-// The composer's `+` control, exercised through the real App against the api
-// layer's mock backend. The unit tests in ComposerPill.test.tsx cover what the
-// control does with a given handler; this covers which handler it actually gets,
-// which is the part that was wrong: a control labelled "New workspace" that only
-// erased the draft.
+// The welcome surface's "Add project" control, exercised through the real App
+// against the api layer's mock backend. It covers which handler the control
+// actually gets — the part that was wrong when this lived on the composer's
+// `+`: a control labelled "New workspace" that only erased the draft.
 
 let container: HTMLDivElement;
 let root: Root;
@@ -66,7 +65,7 @@ async function type(field: HTMLTextAreaElement, text: string) {
   });
 }
 
-describe("the composer's + control inside the app", () => {
+describe("the welcome surface's add-project control inside the app", () => {
   it("opens the folder-first project flow from the welcome surface and leaves the draft alone", async () => {
     const composer = composerField();
     expect(composer, "the app mounted with a composer").not.toBeNull();
@@ -78,9 +77,9 @@ describe("the composer's + control inside the app", () => {
     const connect = vi.spyOn(bridgeApi, "connectWorkspaceFolder");
     // The welcome surface has no conversation and no folder, so the control
     // creates a connected project rather than treating itself as an attachment.
-    const plus = container.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]');
-    expect(plus, "the + control is present").not.toBeNull();
-    await act(async () => plus!.click());
+    const add = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Add project");
+    expect(add, "the add-project control is present").not.toBeUndefined();
+    await act(async () => add!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 
     expect(create).toHaveBeenCalledWith("project");

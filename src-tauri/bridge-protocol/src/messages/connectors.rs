@@ -153,6 +153,24 @@ pub struct ConnectorInboxResult {
     pub items: Vec<ConnectorInboxItem>,
     pub unread_count: u32,
     pub poll: Vec<ConnectorPollStatus>,
+    /// Carried on the read the pane already makes, so the toggle can render its
+    /// stored state without a second round-trip that could disagree with this one.
+    pub include_read_mentions: bool,
+}
+
+/// The inbox's own preferences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectorSetSettingsParams {
+    /// Stop read state excluding an item, so a mention already opened in the
+    /// provider's own app still arrives here once.
+    pub include_read_mentions: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorSetSettingsResult {
+    pub include_read_mentions: bool,
 }
 
 /// The write the user is asking for.

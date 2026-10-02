@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { groupItems } from "./grouping";
+import { mergeConversationProjections, projectSessionConversation, reduceConversation } from "../conversation";
+import { durableEntriesFrom, HARNESSES, harnessStream } from "./golden";
+import { alignTurns, groupItems } from "./grouping";
 import type { ConversationItem, ConversationItemType } from "./item";
 
 /**
@@ -122,5 +124,30 @@ describe("groupItems", () => {
       item("model-change", { data: { modelChanged: true, freshProviderSession: false } }),
       item("activity"),
     ])).toEqual(["group", "model-change", "group"]);
+  });
+});
+
+describe("row keys", () => {
+  it("falls back to a unique key when two rows share an identity", () => {
+    const first = item("message", { role: "assistant", identity: "same" });
+    const second = item("message", { role: "assistant", identity: "same" });
+    const keys = groupItems([first, second]).map(entry => entry.key);
+    expect(keys[0]).toBe("row:same");
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it.each(HARNESSES)("keys each %s reply by its cross-projection identity at every forest lag", harness => {
+    const stream = harnessStream(harness);
+    const sessionId = stream[0].sessionId;
+    const durable = stream.filter(event => event.sequence > 0);
+    const replyKeys = (cut: number) => {
+      const entries = durableEntriesFrom(sessionId, durable.slice(0, cut));
+      const durableItems = entries.length ? projectSessionConversation(entries, entries[entries.length - 1].id) : [];
+      const items = alignTurns(mergeConversationProjections(durableItems, reduceConversation(stream)).filter(row => row.type !== "raw"));
+      return groupItems(items).flatMap(entry => entry.kind === "item" && entry.item.type === "message" && entry.item.role !== "user" ? [entry.key] : []);
+    };
+    const live = replyKeys(0);
+    expect(live).toHaveLength(1);
+    for (let cut = 1; cut <= durable.length; cut += 1) expect(replyKeys(cut)).toEqual(live);
   });
 });

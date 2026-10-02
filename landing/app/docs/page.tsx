@@ -22,7 +22,7 @@ export default function Docs() {
         <div className="mt-16 flex flex-col gap-12">
           {docGroups.map((group) => (
             <section key={group.title}>
-              <h2 className="text-[11px] uppercase tracking-wider text-faint">{group.title}</h2>
+              <h2 className="text-[11px] uppercase tracking-wider text-muted-foreground">{group.title}</h2>
               <div className="mt-4 flex flex-col">
                 {group.entries.map((entry) => (
                   <Link

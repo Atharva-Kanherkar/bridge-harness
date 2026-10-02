@@ -140,7 +140,10 @@ test("Release Please has one root app release and every authoritative version ta
   const manifest = JSON.parse(readFileSync(join(root, ".release-please-manifest.json")));
   const packageMetadata = JSON.parse(readFileSync(join(root, "package.json")));
   assert.deepEqual(Object.keys(config.packages), ["."]);
-  assert.deepEqual(manifest, { ".": packageMetadata.version });
+  assert.deepEqual(Object.keys(manifest), ["."]);
+  if (!/-nightly\.\d{8}$/.test(packageMetadata.version)) {
+    assert.equal(manifest["."], packageMetadata.version);
+  }
   assert.equal(config["include-component-in-tag"], false);
   assert.equal(config["include-v-in-tag"], true);
   assert.equal(config.draft, true);
@@ -173,7 +176,41 @@ test("Release Please has one root app release and every authoritative version ta
     ],
   );
   assert.ok(release["exclude-paths"].includes("landing"));
-  verifyReleaseVersions(root);
+  verifyReleaseVersions(root, { allowNightly: true });
+});
+
+test("nightly stamp synchronizes native locks while preserving stable extension and sidecar versions", (t) => {
+  const dir = fixture(t, "0.5.9");
+  const stableFiles = [
+    ".release-please-manifest.json",
+    "browser-extension/manifest.json",
+    "safari-extension/Resources/manifest.json",
+    "sidecar/claude-agent/package.json",
+    "sidecar/claude-agent/package-lock.json",
+    "bun.lock",
+    "packaging/arch/PKGBUILD",
+  ];
+  const before = stableFiles.map((path) => readFileSync(join(dir, path), "utf8"));
+  const result = spawnSync(process.execPath, [
+    join(root, "scripts/stamp-nightly-version.mjs"), "2026-09-28", "0.5.10",
+  ], { cwd: dir, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const state = verifyReleaseVersions(dir, { allowNightly: true });
+  assert.equal(state.packageVersion, "0.5.11-nightly.20260928");
+  assert.equal(state.tauriVersion, state.packageVersion);
+  assert.equal(state.cargoVersion, state.packageVersion);
+  assert.ok([...state.cargoLockVersions.values()].every((version) => version === state.packageVersion));
+  assert.throws(() => verifyReleaseVersions(dir), /does not match/);
+  assert.deepEqual(stableFiles.map((path) => readFileSync(join(dir, path), "utf8")), before);
+  assert.equal(state.browserExtensionVersion, "0.5.9");
+  assert.equal(state.safariExtensionVersion, "0.5.9");
+  assert.equal(state.claudePackageVersion, "0.5.9");
+  assert.equal(syncGeneratedLockVersions(dir, { allowNightly: true }), false);
+  const manifest = join(dir, "browser-extension/manifest.json");
+  const metadata = JSON.parse(readFileSync(manifest, "utf8"));
+  metadata.version = "0.5.8";
+  writeFileSync(manifest, JSON.stringify(metadata));
+  assert.throws(() => verifyReleaseVersions(dir, { allowNightly: true }), /browser-extension.*does not match/);
 });
 
 test("generated lock synchronization updates app versions and no dependency", (t) => {

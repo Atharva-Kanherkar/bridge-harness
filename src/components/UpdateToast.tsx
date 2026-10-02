@@ -33,7 +33,7 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
           className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-foreground px-2.5 py-1 text-[12px] font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-60"
         >
           {installing && <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />}
-          {installing ? "Installing…" : installError ? "Retry" : "Restart to update"}
+          {installing ? "Installing…" : installError ? "Retry" : "Install and restart"}
         </button>
       </div>
       <button type="button" onClick={onDismiss} aria-label="Dismiss update notification" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">

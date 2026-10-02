@@ -6,7 +6,7 @@ Router learning is scoped to `workspace:{id}`. Direct chats are out of the route
 
 Session recall is a different product: FTS5 over that chat's forest, keyed by session id, zero LLM. It is not the helper picker, not account memory, and not a workspace-wide index. See [session-forest.md](./session-forest.md#session-recall).
 
-Account memory is a third product: explicit pins in `memory_records` under `account:local`. See [memory-ledger.md](./memory-ledger.md). Pins never enter the learning router.
+Account memory is a third product: explicit pins and separately controlled extracted records in `memory_records` under `account:local`. See [memory-ledger.md](./memory-ledger.md). Memory records never enter the learning router.
 
 Online routing treats missing or stale quota/context as unknown (eligible). Only a live session in the same workspace can mark a harness `QuotaExhausted` or `ContextExhausted`. An old row at `usage_percent=100` does not block a later route.
 

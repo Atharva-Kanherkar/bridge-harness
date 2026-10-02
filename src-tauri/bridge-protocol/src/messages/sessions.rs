@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use super::common::{HarnessId, JsSafeU64};
+use super::forest::SessionForestSnapshot;
 use super::state::BridgeState;
 
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
@@ -175,6 +176,154 @@ pub struct ContextBreakdownResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetContextWindowsParams {
+    pub session_id: String,
+}
+
+/// How a window reading's numbers were obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextReadingState {
+    /// The provider stated used and window tokens.
+    Reported,
+    /// The harness counted its own window.
+    Measured,
+    /// At least one figure is Bridge's own (a catalog window size).
+    Estimated,
+}
+
+/// Where a window sits in the agent tree of the requested chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextWindowRole {
+    Chat,
+    Orchestrator,
+    Worker,
+}
+
+/// The classification Claude Code gives each `/context` row: `used` content
+/// occupies the window, `free` is headroom, `buffer` is the compaction
+/// reserve, `deferred` tool schemas sit outside the window until loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextSegmentKind {
+    Used,
+    Free,
+    Buffer,
+    Deferred,
+}
+
+/// Who shrinks this window when it fills: the harness (Claude, Codex and
+/// OpenCode compact their own live context) or Bridge (agent-protocol
+/// harnesses with no compaction of their own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextCompactionOwner {
+    Harness,
+    Bridge,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowSegment {
+    pub name: String,
+    pub tokens: i64,
+    pub kind: ContextSegmentKind,
+}
+
+/// One of the largest things in the window: a tool's results or an MCP
+/// server's tool schemas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowConsumer {
+    pub label: String,
+    pub tokens: i64,
+    pub detail: Option<String>,
+}
+
+/// Turns left before the window reaches its compaction point at the recent
+/// growth rate. Always an estimate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowForecast {
+    pub growth_per_turn: i64,
+    pub turns_remaining: i64,
+    pub samples: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowReading {
+    pub used_tokens: i64,
+    pub window_tokens: i64,
+    pub percent: i64,
+    pub state: ContextReadingState,
+    pub source: String,
+    pub observed_at: String,
+    pub turn_id: Option<String>,
+    /// Where the harness auto-compacts, when it says.
+    pub auto_compact_tokens: Option<i64>,
+    pub compaction_owner: ContextCompactionOwner,
+    /// Largest first; empty when the harness does not split its window.
+    pub segments: Vec<ContextWindowSegment>,
+    pub consumers: Vec<ContextWindowConsumer>,
+    pub forecast: Option<ContextWindowForecast>,
+}
+
+/// One live window in the chat's agent tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindow {
+    pub session_id: String,
+    pub label: String,
+    pub kind: String,
+    pub role: ContextWindowRole,
+    pub harness: String,
+    pub model: Option<String>,
+    pub status: String,
+    pub depth: i64,
+    /// The newest reading of the window as it is now; `null` when there is
+    /// none, with `unavailableReason` saying why. Never a zero.
+    pub current: Option<ContextWindowReading>,
+    pub unavailable_reason: Option<String>,
+}
+
+/// The last reading of a window this chat has since replaced (a model switch
+/// or a fresh provider thread).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EarlierContextWindow {
+    pub harness: String,
+    pub model: Option<String>,
+    pub used_tokens: i64,
+    pub window_tokens: i64,
+    pub percent: i64,
+    pub state: ContextReadingState,
+    pub observed_at: String,
+}
+
+/// What Bridge itself put in the window: its compiled prompt sections.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBridgeContribution {
+    pub stable_tokens: Option<i64>,
+    pub variable_tokens: Option<i64>,
+    pub method: Option<String>,
+}
+
+/// `sessions/get_context_windows`'s result: every live window in the chat's
+/// agent tree, the chat's replaced windows, and Bridge's own share.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextWindowsResult {
+    pub session_id: String,
+    pub windows: Vec<ContextWindow>,
+    pub earlier: Vec<EarlierContextWindow>,
+    pub bridge: Option<ContextBridgeContribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivateSessionEntryParams {
     pub session_id: String,
@@ -231,6 +380,100 @@ pub struct CreateAsideChatResult {
     pub fidelity: String,
 }
 
+/// `sessions/fork_session`'s request: branch a session's conversation at an
+/// entry into a new, independent session that begins with the parent's
+/// history up to that point. The parent is never modified.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForkSessionParams {
+    pub session_id: String,
+    pub entry_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Inherits the parent's harness when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    /// Inherits the parent's model when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `"shared"` — both sessions work the same repo path (default).
+    /// `"new"` — the fork gets its own Git worktree and branch.
+    pub worktree_policy: String,
+}
+
+/// `sessions/fork_session`'s result: app state (the sidebar can pick the fork
+/// up immediately), the exact committed fork id, and the fork's own forest
+/// snapshot so the UI can switch to it in one round trip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkSessionResult {
+    pub state: BridgeState,
+    pub session_id: String,
+    pub snapshot: SessionForestSnapshot,
+    pub fidelity: String,
+}
+
+/// `sessions/resolve_reference`'s request: turn a session id, a forest entry
+/// id, a `brio_…` public alias, or an `@session:…` mention into a typed
+/// descriptor the UI can render as a chip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveReferenceParams {
+    pub id: String,
+}
+
+/// The typed answer. `Unknown` is the single shape for both "this id belongs
+/// to nothing" and "this id exists but you may not see it" — resolution never
+/// leaks existence across the authorization boundary.
+/// `rename_all` on a tagged enum renames the *variants*, never the fields
+/// inside struct variants, and schemars 0.8 does not understand serde's
+/// `rename_all_fields`. So each multi-word field is renamed explicitly —
+/// otherwise this is the one snake_case shape on an all-camelCase wire, and
+/// the generated schema and the serialized payload disagree silently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolveReferenceResult {
+    Session {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        label: String,
+        harness: String,
+        #[serde(rename = "workspaceId")]
+        workspace_id: Option<String>,
+        #[serde(rename = "parentSessionId")]
+        parent_session_id: Option<String>,
+        depth: i64,
+        #[serde(rename = "restorationMode")]
+        restoration_mode: String,
+        #[serde(rename = "continuationFidelity")]
+        continuation_fidelity: String,
+        #[serde(rename = "activeEntryId")]
+        active_entry_id: Option<String>,
+        #[serde(rename = "latestCheckpointEntryId")]
+        latest_checkpoint_entry_id: Option<String>,
+        #[serde(rename = "updatedAt")]
+        updated_at: Option<String>,
+        authorized: bool,
+    },
+    Entry {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "entryId")]
+        entry_id: String,
+        #[serde(rename = "entryKind")]
+        entry_kind: String,
+        sequence: i64,
+        summary: String,
+        #[serde(rename = "createdAt")]
+        created_at: String,
+        authorized: bool,
+    },
+    Unknown {
+        authorized: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateWorkspaceSessionParams {
@@ -239,6 +482,24 @@ pub struct CreateWorkspaceSessionParams {
     /// repository).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub create_worktree: Option<bool>,
+    /// Omitted keeps the existing orchestrator behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<WorkspaceSessionKind>,
+    /// Selected provider for a direct workspace chat. Ignored for orchestrators.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessId>,
+    /// Selected model for a direct workspace chat. Ignored for orchestrators.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// The session kind chosen when a workspace chat is created. Fixed for the
+/// session's lifetime: every later turn reads it from the stored row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSessionKind {
+    Orchestrator,
+    Direct,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -279,6 +540,9 @@ pub struct ReplaySessionEventsParams {
     pub session_id: String,
     /// The last durable sequence the client has seen; events strictly after
     /// this cursor are returned in order, with no gaps and no duplicates.
+    /// An unreadable stored row returns an `entry.invalid` event at that row's
+    /// original sequence. Delivering it advances the cursor normally; its data
+    /// contains `entryId`, `originalKind`, `sequence`, and a safe `reason`.
     #[schemars(range(min = 0))]
     pub after_sequence: i64,
     /// Maximum number of events to return. Omitted requests use 500; the
@@ -590,6 +854,88 @@ pub struct SearchSessionEntriesResult {
     pub has_more: bool,
 }
 
+pub const DEFAULT_CHAT_SEARCH_LIMIT: u32 = 4;
+pub const MAX_CHAT_SEARCH_LIMIT: u32 = 8;
+
+/// Find a chat from a vague memory, across every top-level chat.
+///
+/// Unlike `sessions/search_session_entries` this is not scoped to one
+/// session: it is the one place Bridge searches across chats, and it only
+/// ever returns chats, never entry bodies. Without `deep` it never calls a
+/// model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchChatsParams {
+    pub query: String,
+    /// Omitted requests return 4; the server rejects values outside 1..=8.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 8))]
+    pub limit: Option<u32>,
+    /// Allow the model stage when the index alone is unsure. Omitted or false
+    /// requests are index-only and never spend a token.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deep: bool,
+}
+
+/// Which stage of the search funnel produced the result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatSearchStage {
+    /// The index alone: no model was asked.
+    Index,
+    /// The model re-ranked the index's candidates.
+    Model,
+    /// The model was asked but ran out of budget or failed, so these are the
+    /// index's candidates.
+    IndexFallback,
+}
+
+/// One chat the search thinks you meant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSearchHit {
+    pub session_id: String,
+    pub title: String,
+    pub harness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_title: Option<String>,
+    pub last_active_at: String,
+    /// Matching entries in this chat, from the bounded candidate set.
+    pub match_count: u32,
+    /// At most 160 characters around the best match.
+    pub snippet: String,
+    pub score: f64,
+    /// Why this chat was suggested: the model's reason, or the index's.
+    pub why: String,
+    pub archived: bool,
+    pub ended: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchChatsResult {
+    pub query: String,
+    pub hits: Vec<ChatSearchHit>,
+    pub stage: ChatSearchStage,
+    /// The index's own verdict: its top hit is clear enough that the model
+    /// stage would add nothing.
+    pub confident: bool,
+    /// Whether a deep request would run the model stage for this query: the
+    /// index is unsure, deep search is on, and a model is available.
+    pub deep_available: bool,
+    /// Why deep search is not available, or what stopped it early.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Terms the index actually searched, after parsing.
+    pub terms: Vec<String>,
+    pub elapsed_ms: u32,
+    /// Model tokens spent (input + output); zero for index-only results.
+    pub model_tokens: u32,
+    pub tool_calls: u32,
+}
+
 /// Mirrors `bridge_core::secret_interception::SecretInterception` — one
 /// secret replaced by a broker reference before the turn left the machine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -753,11 +1099,24 @@ mod tests {
         let session = CreateWorkspaceSessionParams {
             workspace_id: "w-1".into(),
             create_worktree: Some(true),
+            kind: None,
+            harness: None,
+            model: None,
         };
         assert_eq!(
             serde_json::to_value(&session).unwrap(),
             json!({"workspaceId": "w-1", "createWorktree": true})
         );
+        let direct = CreateWorkspaceSessionParams {
+            workspace_id: "w-1".into(),
+            create_worktree: None,
+            kind: Some(WorkspaceSessionKind::Direct),
+            harness: Some(HarnessId::parse("codex").unwrap()),
+            model: Some("gpt-5".into()),
+        };
+        assert_eq!(serde_json::to_value(&direct).unwrap(), json!({"workspaceId": "w-1", "kind": "direct", "harness": "codex", "model": "gpt-5"}));
+        assert_eq!(round_trip(&direct), direct);
+        assert!(serde_json::from_value::<CreateWorkspaceSessionParams>(json!({"workspaceId": "w-1", "kind": "worker"})).is_err());
         let activate =
             ActivateSessionEntryParams { session_id: "s-1".into(), entry_id: "e-9".into() };
         assert_eq!(round_trip(&activate), activate);

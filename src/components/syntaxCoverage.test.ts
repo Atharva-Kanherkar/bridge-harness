@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { highlightTree } from "@lezer/highlight";
 import type { Language } from "@codemirror/language";
 import { javascriptLanguage, tsxLanguage } from "@codemirror/lang-javascript";
@@ -64,6 +64,11 @@ function lezerClasses(code: string, language: Language): string[] {
 }
 
 describe("syntax bucket coverage", () => {
+  // Assert real grammar coverage independently of Shiki's wall-clock budget;
+  // highlight.test.ts exercises the budget with a deliberately advancing clock.
+  beforeEach(() => { vi.spyOn(Date, "now").mockReturnValue(0); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it("emits nothing outside the shared vocabulary", async () => {
     for (const [code, lang] of SHIKI_FIXTURES) {
       for (const name of shikiClasses(await colorizeCode(code, lang))) {

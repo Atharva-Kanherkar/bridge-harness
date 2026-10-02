@@ -2,7 +2,7 @@ import type { MenuBarProvider } from "../../protocol/generated/protocol";
 
 export const favoriteProviders: MenuBarProvider[] = ["codex", "claude", "cursor", "opencode"];
 
-export const defaultFavorites: MenuBarProvider[] = ["codex", "claude", "cursor"];
+export const defaultFavorites: MenuBarProvider[] = ["codex", "claude"];
 
 export function chooseFavorite(current: readonly MenuBarProvider[], position: number, provider: MenuBarProvider | ""): MenuBarProvider[] {
   if (position < 0 || position >= favoriteProviders.length) return [...current];

@@ -44,8 +44,8 @@ impl UsageProvider {
 /// always the exclusive figure.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UsageRecord {
-    /// The model this record is for when the provider names one; `None`
-    /// means the session's model of record applies.
+    /// The model this record is for when the provider names one. When neither
+    /// this nor `serving_model` is set, the requested model applies.
     pub model: Option<String>,
     /// The model that actually served the request when it differed.
     pub serving_model: Option<String>,
@@ -178,7 +178,8 @@ fn normalize_codex(data: &Value) -> Option<UsageRecord> {
         context_window_tokens: data
             .pointer("/tokenUsage/modelContextWindow")
             .and_then(Value::as_i64),
-        context_used_tokens: None,
+        // The last request's own size is what occupies the window.
+        context_used_tokens: integer(&usage, &["total_tokens"]),
         context_percent: None,
         runtime_ms: None,
         reported_cost_microusd: None,
@@ -405,6 +406,7 @@ mod tests {
         assert_eq!(record.tokens.exact_total_formula, ExactTotalFormula::InputIncludesCachePlusOutput);
         assert_eq!(record.tokens.exact_total(), Some(90));
         assert_eq!(record.context_window_tokens, Some(272_000));
+        assert_eq!(record.context_used_tokens, Some(90), "the last request, not the running total");
         assert_eq!(record.reported_cost_microusd, None);
 
         // Cached figures larger than the input never go negative.

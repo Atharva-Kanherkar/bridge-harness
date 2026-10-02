@@ -69,7 +69,12 @@ function stateTone(status: ManagedAgentStatus): PillTone {
 
 /** Source and version on one line, which is what a row has room for. */
 export function sourceLine(agent: ManagedAgentStatus): string {
-  return agent.version ? `${SOURCE_LABEL[agent.backing]} · ${agent.version}` : SOURCE_LABEL[agent.backing];
+  const source = agent.version ? `${SOURCE_LABEL[agent.backing]} · ${agent.version}` : SOURCE_LABEL[agent.backing];
+  // Naming the target version is the whole difference between "something is
+  // out of date" and a user knowing what pressing Update gets them.
+  return agent.updateAvailable && agent.pinnedVersion
+    ? `${source} · update to ${agent.pinnedVersion}`
+    : source;
 }
 
 export type ManagedAgents = {
@@ -79,6 +84,8 @@ export type ManagedAgents = {
   errors: Record<string, string>;
   reload: () => void;
   install: (agent: ManagedAgentStatus) => void;
+  /** Same RPC as install — the engine reinstalls whenever the pin moved. */
+  update: (agent: ManagedAgentStatus) => void;
   repair: (agent: ManagedAgentStatus) => void;
   requestRemove: (agent: ManagedAgentStatus) => void;
   /** Rendered wherever the caller wants; null when nothing is being confirmed. */
@@ -145,6 +152,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
     errors,
     reload: () => void load(),
     install: agent => void run(agent, "Installing", bridgeApi.installManagedAgent),
+    update: agent => void run(agent, "Updating", bridgeApi.installManagedAgent),
     repair: agent => void run(agent, "Repairing", bridgeApi.repairManagedAgent),
     requestRemove: agent => setConfirming(agent),
     confirmation: confirming
@@ -174,6 +182,18 @@ function needsRepair(agent: ManagedAgentStatus): boolean {
   return agent.state === "repairable" || agent.state === "broken";
 }
 
+/**
+ * Whether Bridge pins a newer payload than the one it installed.
+ *
+ * The API answers this; the UI never compares version strings itself. A managed
+ * payload stays receipt-valid forever, so without an Update action a runtime
+ * installed months ago keeps winning over the current pin — which is how a
+ * newly released provider model never shows up in the picker.
+ */
+function hasUpdate(agent: ManagedAgentStatus): boolean {
+  return agent.updateAvailable && !needsRepair(agent);
+}
+
 /** The action a runtime offers on a list row: Install, Repair, or nothing. */
 function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: ManagedAgents }) {
   const busy = state.busy[agent.agentId];
@@ -187,6 +207,7 @@ function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: Managed
   }
   if (isAbsent(agent)) return <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>;
   if (needsRepair(agent)) return <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>;
+  if (hasUpdate(agent)) return <GhostButton onClick={() => state.update(agent)}>Update</GhostButton>;
   return null;
 }
 
@@ -275,6 +296,7 @@ export function ManagedAgentDetail({ state, agentId }: { state: ManagedAgents; a
         : <>
             {isAbsent(agent) && <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>}
             {needsRepair(agent) && <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>}
+            {hasUpdate(agent) && <GhostButton onClick={() => state.update(agent)}>Update</GhostButton>}
             {/* Deliberately quiet: the agent already works, so a managed copy is
                 an opt-in, not a call to action. Making it the only button read
                 as "this needs installing" for an agent the user can already

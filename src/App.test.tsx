@@ -36,6 +36,12 @@ import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
 import { SHORTCUTS } from "./keymap";
 
+// jsdom has no Web Animations API; Base UI's dialog asks for running
+// animations when it closes.
+if (typeof Element !== "undefined" && !Element.prototype.getAnimations) {
+  Element.prototype.getAnimations = () => [];
+}
+
 const adapters: AdapterDescriptor[] = [
   {
     id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
@@ -492,9 +498,8 @@ describe("the dock in the session view", () => {
     await settle(2);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
     await click(dockToggle()!);
-    // The extension-based BrowserSurface is paused; the dock's "browser" pane
-    // now renders the plain iframe-based SimpleBrowser.
-    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "No page open");
+    // Browser page state and its engine host survive dock pane switches.
+    const surface = () => dockAside()!.querySelector("[data-browser-viewport]");
     const before = surface();
     expect(before).toBeTruthy();
 
@@ -512,7 +517,59 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
-    expect(dockAside()!.textContent).toContain("No page open");
+    expect(dockAside()!.textContent).toContain("New browser tab");
+    expect(dockAside()!.querySelector('[aria-label="Browser pages"]')).not.toBeNull();
+  });
+
+  // Contract: testing/feat-dock-clone.md §3.
+  it("opens the clone pane from the toolbar menu and keeps the surface across pane switches", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(container.querySelector('button[aria-label="Session actions"]')!);
+    const item = [...document.querySelectorAll('[role="menu"] [role="menuitemcheckbox"]')].find(node => node.textContent?.startsWith("Clone"))!;
+    await click(item);
+    await settle(2);
+
+    const cloneTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Clone")!;
+    expect(cloneTab.getAttribute("aria-selected")).toBe("true");
+    const surface = () => dockAside()!.querySelector("[data-clone-viewport]");
+    const before = surface();
+    expect(before).not.toBeNull();
+
+    await key({ ...chord, code: "Digit1", key: "1" });
+    expect(surface()).toBe(before);
+    expect(before!.closest(".hidden")).not.toBeNull();
+    await key({ ...chord, code: "Digit9", key: "9" });
+    expect(surface()).toBe(before);
+    expect(before!.closest(".hidden")).toBeNull();
+  });
+
+  it("gives direct chats a clone pane, not an excuse", async () => {
+    await mountApp();
+    await act(async () => {
+      await bridgeApi.createChat("codex", null, "Clone scratch");
+    });
+    await settle();
+    await click(chatRows().find(row => row.title.includes("Clone scratch"))!);
+    await key({ ...chord, code: "Digit9", key: "9" });
+    await settle(2);
+    expect(dockAside()!.textContent).not.toContain("needs a repository");
+    expect(dockAside()!.querySelector("[data-clone-viewport]")).not.toBeNull();
+  });
+
+  it("shows the attention dot on the Clone tab once it is opened, while another pane is active", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(dockToggle()!);
+    // A pane that was never opened is not polling, so it cannot claim attention.
+    expect(container.querySelector('[data-testid="dock-alert-clone"]')).toBeNull();
+
+    await key({ ...chord, code: "Digit9", key: "9" });
+    await settle(3);
+    await key({ ...chord, code: "Digit1", key: "1" });
+    // The mock clone starts on a login wall, i.e. waiting_for_you.
+    expect(container.querySelector('[data-testid="dock-alert-clone"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="dock-alert-overflow"]')).not.toBeNull();
   });
 
   // Contract: testing/feat-dock-terminal.md §4.
@@ -531,45 +588,75 @@ describe("the dock in the session view", () => {
   });
 
   // Contract: testing/feat-dock-tasks.md §4.
-  it("opens the tasks pane on the sixth chord with the live roster", async () => {
+  it("opens the agents pane on the sixth chord with only what is running", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
     const dock = dockAside()!;
+    expect(dock.textContent).toContain("Implementation · strong");
     expect(dock.textContent).toContain("WORKING");
-    expect(dock.textContent).toContain("implementation");
-    expect(dock.textContent).toContain("DONE");
+    // The finished verification worker is the chat's history, not a running agent.
+    expect(dock.textContent).not.toContain("Verification · strong");
     expect(dock.textContent).toContain("Update the auth serializer");
     expect(dock.textContent).toContain("owned_path_conflict");
   });
 
-  it("carries the running count on the tasks descriptor before the pane ever mounts", async () => {
+  it("carries the running count on the agents descriptor before the pane ever mounts", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
-    const tasksTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Tasks")!;
-    expect(tasksTab.textContent).toContain("1");
+    const agentsTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Agents")!;
+    expect(agentsTab.textContent).toContain("1");
   });
 
-  it("does not mount the retired usage widget in a worker composer", async () => {
+  it("mounts the context ring beside a worker's steer composer", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
-    const openWorker = dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open worker Implementation · strong"]')!;
-    await click(openWorker);
+    // A row opens the worker's chat in the pane; its own session is one more
+    // click from there.
+    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="View Implementation · strong"]')!);
+    expect(dockAside()!.querySelector('[role="region"][aria-label="Agent Implementation · strong"]')).not.toBeNull();
+    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Context window"]')).not.toBeNull();
   });
 
-  it("does not mount the retired usage widget in the title bar", async () => {
+  it("keeps the usage dot out of the title bar", async () => {
     await mountApp();
     expect(container.querySelector("header")).not.toBeNull();
-    expect(container.querySelector('[aria-label^="Open usage health details"]')).toBeNull();
+    expect(container.querySelector('header [aria-label^="Open usage"]')).toBeNull();
+  });
+
+  it("puts the context ring in the composer and the usage dot in the sidebar rail", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const ring = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]');
+    expect(ring).not.toBeNull();
+    expect(container.querySelector('[data-composer-frame] [aria-label^="Open usage"]')).toBeNull();
+    const dot = container.querySelector<HTMLButtonElement>('[aria-label^="Open usage"]');
+    expect(dot).not.toBeNull();
+    expect(dot!.getAttribute("aria-controls")).toBe("usage-dot-panel");
+    expect(dot!.closest("[data-composer-frame]")).toBeNull();
+  });
+
+  it("opens the Context lens as a modal from the composer ring, not in the dock", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]')!);
+    await settle(3);
+    const lens = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="Context lens"]');
+    expect(lens).not.toBeNull();
+    expect(lens!.querySelector('[aria-label="Context pressure"]')).not.toBeNull();
+    expect([...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Context")).toBeUndefined();
+    await click(lens!.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!);
+    await settle(3);
+    expect(document.body.querySelector('[role="dialog"][aria-label="Context lens"]')).toBeNull();
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
@@ -650,6 +737,32 @@ describe("the dock in the session view", () => {
     // The browser mock has no native title resolver. Keep its placeholder rather
     // than treating the full first message as an explicitly chosen chat name.
     expect(container.querySelector("h1")!.textContent).toBe("New aside");
+  });
+
+  it("rejects an unknown $harness inside a chat and preserves the draft", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    const createAside = vi.spyOn(bridgeApi, "createAsideChat");
+    const prepareTurn = vi.spyOn(bridgeApi, "prepareTurn");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "$hanress review this");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await settle(2);
+
+    expect(box.value).toBe("$hanress review this");
+    const alert = [...container.querySelectorAll('[role="alert"]')]
+      .find(element => element.textContent?.includes("Unknown harness $hanress"));
+    expect(alert?.textContent).toContain("Available harnesses:");
+    expect(createAside).not.toHaveBeenCalled();
+    expect(prepareTurn).not.toHaveBeenCalled();
+    createAside.mockRestore();
+    prepareTurn.mockRestore();
   });
 
   // Contract: testing/fix-side-chat-model.md. A side chat begins on a resolved
@@ -787,9 +900,20 @@ describe("the dock in the session view", () => {
   it("offers Ask aside on a transcript selection and quotes the excerpt", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    const transcriptRow = container.querySelector<HTMLElement>("[id^='forest-entry-']");
-    const selectable = transcriptRow
-      ?? [...container.querySelectorAll("h1, h2, p")].find(node => (node.textContent ?? "").trim().length > 3);
+    // Earlier cases leave this a new chat, whose transcript is only its
+    // greeting now that the session-start marker draws no card. Send one
+    // message so there is transcript prose to select.
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Explain the session supervisor");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    const transcript = container.querySelector<HTMLElement>("[data-conversation-content]");
+    const selectable = transcript?.querySelector<HTMLElement>("[id^='forest-entry-']")
+      ?? [...(transcript?.querySelectorAll<HTMLElement>("[class*='max-w-[85%]'], p") ?? [])].find(node => (node.textContent ?? "").trim().length > 3);
     expect(selectable).toBeTruthy();
     const range = document.createRange();
     range.selectNodeContents(selectable!);
@@ -865,6 +989,34 @@ describe("the dock in the session view", () => {
     expect(outside).toHaveLength(0);
   });
 
+  // A review-comment jump from Gitplace into a workspace with no chat: the
+  // draft's first message creates the chat, and the file still opens in it.
+  it("keeps a Gitplace file jump through a new chat's first message", async () => {
+    const real = await bridgeApi.state();
+    const lonely = real.workspaces.find(workspace => workspace.id === "demo-3")!;
+    vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
+    const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
+    await mountApp();
+    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Gitplace")!);
+    await settle(4);
+    await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
+    await settle(4);
+    const location = [...container.querySelectorAll<HTMLButtonElement>("section[aria-label='Review threads'] button")].find(button => button.textContent?.includes("src/api.ts"))!;
+    expect(location).toBeTruthy();
+    await click(location);
+    await settle(4);
+    expect(read).not.toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Address the review comment");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(10);
+    expect(read).toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
@@ -876,10 +1028,10 @@ describe("the dock in the session view", () => {
   // shell — rail, title bar, session chrome, or the keymap/menu table —
   // may offer a way into them. Sidebar-only tests would miss a later
   // title-bar, menu, or chord entry point.
-  it("exposes Agent Fleet while keeping the Work board out of navigation", async () => {
+  it("exposes Terminals while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Terminals"]')).not.toBeNull();
     const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
@@ -896,5 +1048,132 @@ describe("the dock in the session view", () => {
     // menu item for either screen has to land here first.
     expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
     expect(SHORTCUTS.some(shortcut => /Agent Fleet|Work board/i.test(shortcut.label))).toBe(false);
+  });
+
+  it("forks a message into a new session and switches to it; rewind asks first", async () => {
+    await mountApp();
+    // Open the demo orchestrator; its transcript carries entry-bearing
+    // messages, so the hover actions exist in the DOM even before a hover
+    // reveals them.
+    await openWorkspaceSession("4");
+    // The transcript projects from the fetched forest; let the effects land.
+    await settle(8);
+    // Earlier tests mutate the shared mock (extra orchestrators, fresh
+    // forests), so find the chat whose transcript carries entry-bearing
+    // messages instead of assuming demo-1 is the first open.
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    await click(forkButton!);
+    expect(container.textContent).toContain("New branch of Orchestrator from this message");
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    // The fork is created and the app switches to it: the conversation header
+    // belongs to the forked session now.
+    expect(container.textContent).toContain("Fork of Orchestrator");
+    const rewind = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Rewind to here")!;
+    expect(rewind).toBeTruthy();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await click(rewind);
+    expect(confirm).toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("renders a pasted session reference as a chip that says history attaches on send, and removes it on ×", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(6);
+    const textarea = composer()!;
+    await act(async () => {
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      nativeSet.call(textarea, "compare with @session:session-1");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle(8);
+    expect(container.textContent).toContain("Orchestrator");
+    expect(container.textContent).toContain("history attaches on send");
+    expect([...container.querySelectorAll("button")].some(button => button.getAttribute("aria-label")?.startsWith("Pull "))).toBe(false);
+    const remove = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Remove Orchestrator"));
+    expect(remove).toBeTruthy();
+    await click(remove!);
+    expect(composer()!.value).toBe("compare with");
+    expect(container.textContent).not.toContain("history attaches on send");
+  });
+
+  it("does not offer a mention on the Welcome screen, whose draft the sidebar cannot reach", async () => {
+    await mountApp();
+    await settle(4);
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for"));
+    expect(trigger).toBeTruthy();
+    await click(trigger!);
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].map(item => item.textContent ?? "");
+    expect(items.some(text => text.startsWith("Copy chat ID"))).toBe(true);
+    expect(items.some(text => text.startsWith("Mention in current chat"))).toBe(false);
+    await click(trigger!);
+  });
+
+  it("copies the alias and mentions a chat from the row's three-dot menu", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(6);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for New chat"));
+    expect(trigger).toBeTruthy();
+    await click(trigger!);
+    const menu = document.querySelector('[role="menu"]');
+    expect(menu).toBeTruthy();
+    const items = [...menu!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].map(item => item.textContent ?? "");
+    expect(items.some(text => text.startsWith("Copy chat ID"))).toBe(true);
+    expect(items.some(text => text.startsWith("Mention in current chat"))).toBe(true);
+    expect(items.some(text => text.startsWith("Fork chat"))).toBe(true);
+    expect(items.some(text => text.startsWith("Archive"))).toBe(true);
+    await click([...menu!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(item => item.textContent?.startsWith("Copy chat ID"))!);
+    // Mock ids are not uuids, so assert the alias shape the sidebar derives
+    // rather than a hex pattern.
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(String(writeText.mock.calls[0][0])).toMatch(/^brio_/);
+    await click(trigger!);
+    const mention = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')].find(item => item.textContent?.startsWith("Mention in current chat"))!;
+    await click(mention);
+    await settle(8);
+    expect(composer()!.value).toMatch(/^@session:brio_\S+ $/);
+    expect(container.textContent).toContain("history attaches on send");
+  });
+
+  // The regression that green per-component tests hid: the chat list drops
+  // every session with a `parentSessionId`, so a fork recorded as a worker
+  // opened once and then became unreachable — and the rail's own breadcrumb
+  // could never render. Drive it through the real App, not the component.
+  it("leaves a fork reachable in the rail, with a breadcrumb back to its source", async () => {
+    await mountApp();
+    await openWorkspaceSession("4");
+    await settle(8);
+    let forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    for (const row of chatRows()) {
+      if (forkButton) break;
+      await click(row);
+      await settle(4);
+      forkButton = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Fork from here");
+    }
+    expect(forkButton).toBeTruthy();
+    const before = chatRows().length;
+    await click(forkButton!);
+    await click([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create fork"))!);
+    await settle(8);
+    // The rail gained the fork, and it names where it came from.
+    const titles = chatRows().map(row => row.getAttribute("title") ?? "");
+    expect(chatRows().length).toBe(before + 1);
+    expect(titles.some(title => title.includes("Fork of"))).toBe(true);
+    expect(container.textContent).toContain("forked from");
+    // And it is still reachable after navigating away to another chat.
+    const other = chatRows().find(row => !(row.getAttribute("title") ?? "").includes("Fork of"))!;
+    await click(other);
+    await settle(4);
+    expect(chatRows().some(row => (row.getAttribute("title") ?? "").includes("Fork of"))).toBe(true);
   });
 });

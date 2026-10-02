@@ -1,4 +1,5 @@
 
+import { Minus, Plus } from "lucide-react";
 import SectionHeader from "./SectionHeader";
 
 const questions = [
@@ -55,8 +56,11 @@ export default function Faq() {
             <details key={item.q} className="group border-b border-border">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 text-[15px] font-medium marker:content-none transition-colors hover:text-foreground/80">
                 {item.q}
-                <span className="grid size-6 shrink-0 place-items-center rounded-full border border-border text-faint transition-transform duration-300 group-open:rotate-45" aria-hidden="true">
-                  +
+                {/* Plus when closed, minus when open: the state is drawn, not implied by a rotation.
+                    Muted grey clears 3:1 for the glyph (WCAG 1.4.11) where the old faint grey did not. */}
+                <span className="grid size-6 shrink-0 place-items-center rounded-full border border-border-card text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true">
+                  <Plus size={13} className="group-open:hidden" />
+                  <Minus size={13} className="hidden group-open:block" />
                 </span>
               </summary>
               <p className="pb-5 pr-8 text-[14px] leading-6 text-muted-foreground">{item.a}</p>

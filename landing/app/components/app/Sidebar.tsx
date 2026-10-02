@@ -86,7 +86,7 @@ export default function Sidebar({ activeNav }: { activeNav: "chats" | "mission" 
                   {repo.open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
                 <span className="min-w-0 truncate text-[12px] text-muted-foreground">{repo.name}</span>
-                <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/60">{repo.sessions.length}</span>
+                <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">{repo.sessions.length}</span>
               </div>
               {repo.open && repo.sessions.map(session => <Row key={session.title} session={session} />)}
             </div>

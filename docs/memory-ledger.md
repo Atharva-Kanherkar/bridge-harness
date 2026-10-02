@@ -1,6 +1,6 @@
 # Account memory ledger
 
-Explicit “about me” pins live in `memory_records` under the named scope `account:local`. That key is written by save; it is never SQL NULL, never inferred from a missing workspace, and never `legacy:global`.
+“About me” memory lives in `memory_records` under the named scope `account:local`. Records can be saved explicitly or extracted from a visible chat under the configured Memory mode. The scope key is written by the server; it is never SQL NULL, never inferred from a missing workspace, and never `legacy:global`.
 
 This is a different product from:
 
@@ -15,9 +15,17 @@ Provenance is `user_explicit` for a save or an edit, `model_proposal` for someth
 
 Status is `active`, `proposed`, `rejected`, `superseded`, `expired`, or `deleted`. Only `active` lists, searches, and reaches a packet.
 
-## How pins get in
+## How memory gets in
 
-Only an explicit save: protocol `memory/save_memory_record` or slash `/pin <text>`. Listing is `memory/list_memory_records` with a required `scopeKey`, or `/pins`. Forgetting is a tombstone (`status=deleted`) via `memory/delete_memory_record` or `/unpin <id>`. `/pin`, `/pins`, and `/unpin` are Bridge-handled and never auto-switch harness. They are not Claude’s `/memory`.
+An explicit save: protocol `memory/save_memory_record` or slash `/pin <text>`. Listing is `memory/list_memory_records` with a required `scopeKey`, or `/pins`. Forgetting is a tombstone (`status=deleted`) via `memory/delete_memory_record` or `/unpin <id>`. `/pin`, `/pins`, and `/unpin` are Bridge-handled and never auto-switch harness. They are not Claude’s `/memory`.
+
+Or an extracted candidate. After each finished turn of a visible chat, extraction replays a bounded digest through a hidden tool-free session on the chat's own harness and model — or on a helper pinned in Memory settings. The user controls one of three modes:
+
+- `remember` (**Manual only**) stops future extraction. Existing active extracted records remain active; new memory is saved only through explicit pins.
+- `propose` (**Review first**, the default) queues each validated candidate that fits the scope budget as `proposed`; it becomes active only after approval.
+- `auto_apply` (**Automatic**) first writes the same gated proposal, then promotes it through the normal `proposed -> active` transition only when it is at least 90% confident, cites a visible user message from the same chat, and is grounded beside an explicit durable cue in the same unquoted clause. Temporary or retracted wording, exact or likely matches to forgotten memory, and likely conflicts with active, pending, or same-batch memory stay out of automatic activation. Other validated candidates that fit the scope budget stay proposed for review. Invalid, unsafe, duplicate, and over-budget output is refused rather than queued.
+
+The extractor cannot supply its own status, scope, or provenance. Bridge snapshots the mode when it enqueues a run and checks the current mode again before promotion, so a setting change can only downgrade automatic promotion to review, never escalate a review run. See [`testing/feat-memory-extract.md`](../testing/feat-memory-extract.md).
 
 The server always writes `account:local`. The client cannot pass a scope on save. Empty, whitespace, and credential-shaped bodies are rejected.
 
@@ -37,7 +45,7 @@ An expired record leaves the FTS index through the same trigger every other stat
 
 ## Conflict groups
 
-Records that make competing claims about one subject share a `conflict_group`. At most one member is active at a time: activating a member closes whichever member was active, at exactly the instant the survivor continues from, and the loser is marked superseded by the survivor. A packet built from a scope containing a group carries at most one member of it, so two contradictory facts can never be injected together. A group with no active member — every member expired or rejected — is a legible state, not an error: the scope simply has no answer for that subject.
+Records that make competing claims about one subject share a `conflict_group`. At most one member is active at a time: activating a member closes whichever member was active, at exactly the instant the survivor continues from, and the loser is marked superseded by the survivor. A packet built from a scope containing a group carries at most one member of it, so two contradictory facts can never be injected together. Automatic extraction also applies a conservative lexical conflict guard before promotion; a possible conflict stays in review rather than bypassing this machinery. A group with no active member — every member expired or rejected — is a legible state, not an error: the scope simply has no answer for that subject.
 
 ## A bounded scope refuses rather than evicts
 

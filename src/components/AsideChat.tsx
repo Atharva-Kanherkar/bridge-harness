@@ -1,7 +1,6 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUpRight, FileText, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
 import { ComposerPill } from "./ComposerPill";
@@ -9,15 +8,14 @@ import { ChatModelControl } from "./ChatModelControl";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
 import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
-import { mergeForestSnapshot } from "../forest";
-import { startSerialPoll } from "../polling";
-import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
+import { usePolledSessionForest } from "../forest";
+import { applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
 import { scheduleSuggestion } from "../suggestionTypeahead";
 import { activeTurnAction } from "../sessionInput";
 import { SIDE_CHAT_COMMANDS } from "../sideChat";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
-import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot, SlashCommand } from "../types";
+import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
 import type { InteractionResolutionResult, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 
 // An aside: a standalone chat the user delegated to another agent from inside
@@ -60,7 +58,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState("");
-  const [forest, setForest] = useState<SessionForestSnapshot>();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -77,7 +74,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
-  const forestKeyRef = useRef("");
   const typeaheadOpenRef = useRef(false);
   const ownEvents = events.filter(event => event.sessionId === session.id);
 
@@ -160,34 +156,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
-  // never a live frame. Digest-gated the same way the main conversation polls
-  // its own forest: the live stream can grow every frame during a turn, and a
-  // full snapshot refetch on every frame is what used to hang the panel. Only
-  // the cheap digest is checked that often; the snapshot itself is only
-  // refetched when the digest actually moves.
-  useEffect(() => {
-    forestKeyRef.current = "";
-    setForest(undefined);
-    let active = true;
-    let pollsSinceFullFetch = 0;
-    const refresh = async () => {
-      const digest = await bridgeApi.sessionForestDigest(session.id).catch(() => undefined);
-      const force = pollsSinceFullFetch >= 9 || digest === undefined;
-      if (!active) return;
-      if (!force && digest === forestKeyRef.current) {
-        pollsSinceFullFetch += 1;
-        return;
-      }
-      const value = await bridgeApi.sessionForest(session.id).catch(() => undefined);
-      if (!active) return;
-      pollsSinceFullFetch = 0;
-      if (!value) return;
-      forestKeyRef.current = digest ?? "";
-      setForest(current => mergeForestSnapshot(current, value));
-    };
-    const stop = startSerialPoll(refresh, 3000);
-    return () => { active = false; stop(); };
-  }, [session.id]);
+  // never a live frame.
+  const forest = usePolledSessionForest(session.id);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -260,10 +230,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     inputRef.current?.focus();
   };
 
-  // The `+` control, mirroring the main composer's `attachFile`: the system
-  // file dialog inside the desktop shell, turning picks into `@path`
-  // mentions. Outside Tauri there is no dialog and the aside has no mention
-  // picker of its own, so it drops a bare `@` for the user to keep typing.
   function applySlash(command: SlashCommand) {
     setDraft(`/${command.name} `);
     setSlashIndex(0);
@@ -289,25 +255,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
       if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(index => Math.max(index - 1, 0)); return; }
       if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
       if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
-    }
-  }
-
-  async function attachFile() {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      setDraft(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
-      inputRef.current?.focus();
-      return;
-    }
-    try {
-      const picked = await open({ multiple: true, title: "Attach files" });
-      if (picked == null) return;
-      const paths = (Array.isArray(picked) ? picked : [picked]).filter((path): path is string => typeof path === "string");
-      if (paths.length === 0) return;
-      setDraft(current => paths.reduce(appendFileMention, current));
-    } catch (e) {
-      setComposerError(e instanceof Error ? e.message : String(e));
-    } finally {
-      inputRef.current?.focus();
     }
   }
 
@@ -449,7 +396,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               placeholder={`Ask ${harnessLabel(session.harness)}…`}
               working={working}
               activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
-              onPlusClick={() => void attachFile()}
               inputRef={inputRef}
             />
           </div>

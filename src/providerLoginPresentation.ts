@@ -25,3 +25,11 @@ export function providerLoginUrl(output: string): string | null {
   }
   return null;
 }
+
+// Device flows (gh, codex device auth) print a one-time code the user types
+// on the provider's page. It hides in the troubleshooting output otherwise.
+const DEVICE_CODE = /\bcode\b[^A-Z0-9\n]{0,24}([A-Z0-9]{4}-[A-Z0-9]{4,5})\b/i;
+
+export function providerLoginCode(output: string): string | null {
+  return plainProviderLoginOutput(output).match(DEVICE_CODE)?.[1] ?? null;
+}

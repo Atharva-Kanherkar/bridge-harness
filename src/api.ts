@@ -7,14 +7,16 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
+import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
+import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
-import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
-import type { TurnImage, ArchivedChatsResult, WorkerSettings } from "./protocol/generated/protocol";
+import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -50,6 +52,11 @@ import type {
   GithubActResult,
   GithubReviewResult,
   GithubCheckoutResult,
+  GithubConnectResult,
+  GithubAttachPrResult,
+  GithubSessionPrsResult,
+  SessionPullRequest,
+  SearchGithubReposResult,
   GithubChecksResult,
   GithubIssueResult,
   ConnectorActionRequest,
@@ -59,6 +66,7 @@ import type {
   ConnectorInboxResult,
   ConnectorListResult,
   ConnectorRefreshResult,
+  ConnectorSetSettingsResult,
   GithubIssuesResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
@@ -73,7 +81,7 @@ import type {
   SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
-import type { MenuBarSettings, UsageOverviewSnapshot, ProviderUsageOverviews } from "./protocol/generated/protocol";
+import type { MenuBarSettings, UsageOverviewSnapshot, ProviderUsageOverviews, RedeemProviderUsageResetParams, RedeemProviderUsageResetResult, UsageResetCredits } from "./protocol/generated/protocol";
 import type {
   ConnectorCardReadyPayload,
   ConnectorItemArrivedPayload,
@@ -86,6 +94,42 @@ let mockMenuBarSettings: MenuBarSettings = {
   schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: null, displayMode: "remaining", quotaWindow: "auto",
   showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300,
 };
+
+// Mock-mode provider overviews so the chat's usage dot has something to draw
+// under `bun run dev`: a Codex account with a quiet session window and a busy
+// weekly one, and a Claude read that failed. Fresh at call time by design.
+let mockResetsRedeemed = false;
+function mockResetCredits(now: number): UsageResetCredits | undefined {
+  const scenario = new URLSearchParams(window.location.search).get("resetMock") ?? "present";
+  if (scenario === "absent") return undefined;
+  if (scenario === "none" || mockResetsRedeemed) return { availableCount: 0, detailsKnown: true, credits: [], nextExpiresAt: null };
+  if (scenario === "count-only") return { availableCount: 2, detailsKnown: false, credits: [], nextExpiresAt: null };
+  const expiresAt = now + (scenario === "expiring" ? 12 * 3600 : 19 * 86400);
+  return { availableCount: 2, detailsKnown: true, nextExpiresAt: expiresAt, credits: [{
+    id: "mock-credit-1", title: "Banked reset", expiresAt, grantedAt: now - 86400,
+    clears: ["session", "weekly"], usableNow: true, requiresLimit: false, program: null,
+  }] };
+}
+function mockProviderUsageOverviews(): ProviderUsageOverviews {
+  const now = Math.floor(Date.now() / 1000);
+  const empty = { tokens: { status: "unavailable" as const }, costMicrousd: { status: "unavailable" as const }, models: [] };
+  return {
+    schemaVersion: 1,
+    generatedAt: now,
+    providers: [
+      {
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "dev@example.com", plan: "plus", observedAt: now - 30, coverage: "Mock data",
+        windows: [
+          { id: "session", label: "5-hour", usedPercent: { value: 4, source: "reported", status: "current" }, resetsAt: now + 4 * 3600, windowMinutes: 300 },
+          { id: "weekly", label: "Weekly", usedPercent: { value: mockResetsRedeemed ? 0 : 63, source: "reported", status: "current" }, resetsAt: now + 3 * 86400, windowMinutes: 10080 },
+        ],
+        resetCredits: mockResetCredits(now),
+        today: empty, month: empty, error: null,
+      },
+      { schemaVersion: 1, generatedAt: now, provider: "claude", observedAt: null, coverage: "Mock data", windows: [], today: empty, month: empty, error: "Claude Code usage SDK unavailable. Open Claude Code and check its sign-in." },
+    ],
+  };
+}
 
 // The typed protocol boundary. Every Tauri round-trip goes through these two
 // helpers, so params, results, and event names all come from the generated
@@ -127,6 +171,7 @@ const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
 type GithubChecksChangedPayload = { workspaceId: string; number: number };
 const githubCiListeners = new Set<(payload: GithubCiFinishedPayload) => void>();
+const sessionPrListeners = new Set<(payload: { sessionId: string }) => void>();
 // Browser-mode stand-in for the daemon's global `agent-event` fan-out. Every
 // surface that renders live turns (the aside panel above all — its optimistic
 // pending rows reconcile only against this stream) subscribes here outside
@@ -332,7 +377,7 @@ async function mockPromptPreview(target: PromptTargetChoice, depth?: number): Pr
     providerLayers,
   };
 }
-let nextEventId = 20;
+let nextEventId = 40;
 let mockBrowserBridge: BrowserBridgeSnapshot = {
   transportConnected: false, extensionId: "jocamgijenfmpopdfecjfnjdnohhoool", extensionPath: "/path/to/browser-extension",
   nativeHostInstalled: false, nativeHostManifestPath: null, tabs: [], lease: null, status: "not_attached",
@@ -341,6 +386,56 @@ let mockBrowserBridge: BrowserBridgeSnapshot = {
   tokenAccounting: { snapshots: 0, fullSnapshots: 0, deltaSnapshots: 0, serializedBytes: 0, estimatedInputTokens: 0, screenshotCount: 0 },
   promptInjectionSignals: [], pendingApproval: null, audit: [], debugEvents: [], siteMetrics: [], remoteProvider: null,
 };
+
+// ── Browser clones: MOCK ONLY ────────────────────────────────────────────────
+// No wire method exposes clones yet. The dock surface ships first, against this
+// in-memory fixture; the protocol method and live-turn capability injection are
+// a follow-up. Nothing here reaches Tauri: outside the desktop app the surface
+// runs on this fixture, and inside it every read says "no clone" and every
+// action refuses, so a shipped build never draws an invented clone. A wireframe
+// stands in for the live frame, so the mock carries no page content.
+const mockCloneFrame = (domain: string) => `data:image/svg+xml;utf8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"><rect width="640" height="400" fill="rgb(245,245,244)"/><rect x="200" y="70" width="240" height="250" rx="12" fill="rgb(255,255,255)" stroke="rgb(214,211,209)"/><text x="320" y="112" text-anchor="middle" font-family="sans-serif" font-size="16" fill="rgb(68,64,60)">Sign in to ${domain}</text><rect x="224" y="136" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="182" width="192" height="32" rx="6" fill="rgb(245,245,244)"/><rect x="224" y="240" width="192" height="32" rx="6" fill="rgb(68,64,60)"/></svg>`,
+)}`;
+const noClone = (status: BrowserCloneSnapshot["status"] = "none"): BrowserCloneSnapshot => ({
+  status, cloneId: null, domain: null, signInPath: null, pendingRequest: null, waitingReason: null, expiresAt: null,
+  screenshot: null, screenshotRedactedRegions: 0, pendingApproval: null,
+});
+const defaultCloneSettings = (): CloneSettings => ({ defaultSignInPath: "import", ttlMinutes: 30, agentVision: true });
+const cloneUnavailable = () => new Error("Browser clones are not connected to the runtime in this build yet.");
+// The runtime's CloneSnapshot carries no cookie value; map it to what the dock
+// surface renders. `null` (no clone for this session) becomes the empty state.
+const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnapshot => {
+  if (!wire) return noClone();
+  return {
+    status: wire.status as BrowserCloneStatus,
+    pendingRequest: wire.pendingRequest ?? null,
+    pendingRequestId: wire.pendingRequestId ?? null,
+    extensionPath: wire.extensionPath ?? null,
+    additionalDomains: wire.additionalDomains ?? null,
+    cloneId: wire.cloneId,
+    domain: wire.domain,
+    signInPath: wire.signInPath,
+    waitingReason: wire.status === "waiting_for_you"
+      ? "Sign in and finish two-factor, then hand the clone back."
+      : null,
+    expiresAt: new Date(Date.now() + wire.minutesLeft * 60_000).toISOString(),
+    screenshot: wire.screenshot ?? null,
+    screenshotRedactedRegions: wire.screenshotRedactedRegions,
+    pendingApproval: null,
+    agentVision: wire.agentVision ?? undefined,
+  };
+};
+// Starts on a login wall, the state a clone spends its interesting time in, so
+// the surface's whole supervision loop (take over, hand back, destroy) is
+// exercisable without the desktop app.
+let mockBrowserClone: BrowserCloneSnapshot = {
+  status: "waiting_for_you", cloneId: "mock-clone-1", domain: "example.com", signInPath: "sign_in_inside",
+  waitingReason: "Sign in and finish two-factor, then hand the clone back.",
+  expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+  screenshot: mockCloneFrame("example.com"), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
+};
+let mockCloneSettings: CloneSettings = defaultCloneSettings();
 
 let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   projects: [{ id: "demo-project", name: "Bridge", path: "/Users/you/Developer/bridge", createdAt: now }],
@@ -353,7 +448,8 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     { id: "session-1", workspaceId: "demo-1", harness: "codex", label: "Orchestrator", status: "working", startedAt: now, endedAt: null, contextPercent: 38, usagePercent: 24, metricSource: "reported", providerSessionId: "mock-thread-1", activeTurnId: "mock-turn-1", model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "hot", continuationFidelity: "native", kind: "orchestrator" },
     { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
     { id: "session-1w2", workspaceId: "demo-1", harness: "codex", label: "Verification · strong", status: "ready", startedAt: now, endedAt: null, contextPercent: 9, usagePercent: 6, metricSource: "reported", providerSessionId: "mock-codex-2", activeTurnId: null, model: "gpt-5.6-sol", requestedTier: "strong", effort: "xhigh", parentSessionId: "session-1", depth: 1, restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", kind: "worker" },
-    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" }
+    { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" },
+    { id: "session-2w", workspaceId: "demo-2", harness: "opencode", label: "Docs · fast", status: "working", startedAt: now, endedAt: null, contextPercent: 7, usagePercent: 3, metricSource: "reported", providerSessionId: "mock-opencode-2w", activeTurnId: "mock-turn-2w", model: "opencode/space-bunny-free", requestedTier: "fast", effort: null, parentSessionId: "session-2", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" }
   ],
   events: [
     { id: 2, source: "git", kind: "workspace.changed", entityId: "demo-1", body: "4 files changed · +284 −31", createdAt: now },
@@ -381,7 +477,14 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
     agentEvent(15, "session-1", "tool.completed", { itemId: "tool-2", title: "bun test src/auth", status: "failed", data: { type: "commandExecution", exitCode: 1, durationMs: 8421, aggregatedOutput: "(fail) rotation invalidates the old token\n  expected: null\n  received: Token { scope: 'session' }\n\n 41 pass\n 1 fail" } }),
     agentEvent(16, "session-1", "usage.updated", { status: "completed", data: { input_tokens: 18432, output_tokens: 611, cache_read_tokens: 16384, reasoning_tokens: 240, context_percent: 9 } }),
     agentEvent(17, "session-1", "message.completed", { itemId: "assistant-2", role: "assistant", status: "completed", text: "One test fails: the old token still verifies after a rotate. Looking at the store now." }),
-    agentEvent(18, "session-1", "turn.completed", { status: "completed" })
+    agentEvent(18, "session-1", "turn.completed", { status: "completed" }),
+    // A worker mid-edit, so the Agents pane has live steps in the browser mock.
+    agentEvent(19, "session-1w", "tool.completed", { itemId: "tool-1w-read", status: "completed", title: "Read store.rs", data: { type: "readFile", path: "src/auth/store.rs" } }),
+    agentEvent(20, "session-1w", "command.completed", { itemId: "tool-1w-rg", status: "completed", title: "rg family_id src/auth", data: { type: "commandExecution", command: "rg family_id src/auth", exitCode: 0, durationMs: 180 } }),
+    agentEvent(21, "session-1w", "file_change.completed", { itemId: "tool-1w-client", status: "completed", title: "client.ts", data: { path: "src/auth/client.ts", additions: 4, deletions: 1, durationMs: 300 } }),
+    agentEvent(22, "session-1w", "file_change.started", { itemId: "tool-1w-store", status: "inProgress", title: "store.rs", data: { path: "src/auth/store.rs", additions: 18, deletions: 6 } }),
+    agentEvent(23, "session-2w", "tool.completed", { itemId: "tool-2w-read", status: "completed", title: "Read shell.md", data: { type: "readFile", path: "docs/deck/shell.md" } }),
+    agentEvent(24, "session-2w", "file_change.started", { itemId: "tool-2w-edit", status: "inProgress", title: "shell.md", data: { path: "docs/deck/shell.md", additions: 12, deletions: 3 } })
   ]
 };
 
@@ -393,7 +496,7 @@ function forestEntry(id: string, sessionId: string, sequence: number, kind: stri
   return { id, sessionId, parentEntryId, sequence, semanticSchemaVersion: 2, kind, payload, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: now };
 }
 const demoEntries: SessionEntry[] = [
-  forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor." }, null),
+  forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor.", itemId: "user-1" }, null),
   forestEntry("entry-2", "session-1", 2, "checkpoint", { schemaVersion: 1, summary: "Policy and schema decisions are durable", decisions: ["SQLite is authoritative"] }, "entry-1"),
   forestEntry("entry-3", "session-1", 3, "assistant.message", { text: "Delegating implementation and verification." }, "entry-2"),
   forestEntry("entry-4a", "session-1", 4, "user.message", { text: "Try the direct implementation path." }, "entry-3"),
@@ -416,11 +519,15 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-11b", "session-1", 13, "tool.completed", { status: "completed", title: "Read tokenStore.ts", data: { type: "readFile", path: "src/auth/tokenStore.ts" } }, "entry-10b"),
   forestEntry("entry-12b", "session-1", 14, "file_change.completed", { status: "completed", title: "tokenStore.ts", data: { path: "src/auth/tokenStore.ts", additions: 9, deletions: 4, durationMs: 400, patch: MOCK_PATCH } }, "entry-11b"),
   forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
+  // Checks, so the dev mock shows the Verifying-style rows a build or test run
+  // draws: a passing cargo suite and a vite build.
+  forestEntry("entry-13c", "session-1", 16, "command.completed", { status: "completed", title: "cargo test -p bridge-core", data: { type: "commandExecution", command: "cargo test -p bridge-core", exitCode: 0, durationMs: 48200, aggregatedOutput: "running 216 tests\n...\ntest result: ok. 216 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.10s" } }, "entry-13b"),
+  forestEntry("entry-13d", "session-1", 17, "command.completed", { status: "completed", title: "bun run build", data: { type: "commandExecution", command: "bun run build", exitCode: 0, durationMs: 7100, aggregatedOutput: "vite v5.4.0 building for production...\n✓ 2143 modules transformed.\n✓ built in 6.76s" } }, "entry-13c"),
   // The harness's own boundary, beside Bridge's `compaction` above. Two
   // different facts on purpose: this one is the provider's context actually
   // shrinking, that one is Bridge saving a summary for a later cold start.
-  forestEntry("entry-14b", "session-1", 16, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "claude", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13b"),
-  forestEntry("entry-raw", "session-1", 17, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
+  forestEntry("entry-14b", "session-1", 18, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "codex", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13d"),
+  forestEntry("entry-raw", "session-1", 19, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
@@ -474,7 +581,7 @@ const mockConsolidationLog: MemoryConsolidationEntry[] = [
   { op: "group", detail: "3 records tied under conflict-group design-direction", day: 4 },
   { op: "retire", detail: "mem_d1c9 tombstoned", day: 2 },
 ];
-let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "remember" };
+let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
   "session-1": {
@@ -698,14 +805,140 @@ const mockWorktreeUsage: WorktreeUsage = {
   ],
 };
 
+/** A demo chat's live workers need runtime rows, or its Agents pane is empty. */
+function mockChildRuntimes(sessionId: string): SessionForestSnapshot["workerRuntimes"] {
+  return mockState.sessions
+    .filter(item => item.parentSessionId === sessionId && item.kind === "worker")
+    .map(item => ({ sessionId: item.id, parentSessionId: sessionId, lifecycleState: item.status === "working" ? "working" : "completed", taskFamily: "documentation", compatibilityKey: "demo", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: `/tmp/bridge/${item.id}`, worktreeBranch: `bridge/${item.id}`, lastResult: null, lastActivityAt: now, progressSummary: "editing docs/deck/shell.md", updatedAt: now }));
+}
 function mockForest(sessionId: string): SessionForestSnapshot {
   const existing = mockForests[sessionId];
   if (existing) return structuredClone(existing);
   const session = mockState.sessions.find(item => item.id === sessionId);
   const entry = forestEntry(`${sessionId}-root`, sessionId, 1, "branch.summary", { summary: "Session started" }, null);
-  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null, entryWindow: { returned: 1, total: 1, trimmedPayloads: 0 } };
+  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: mockChildRuntimes(sessionId), workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null, entryWindow: { returned: 1, total: 1, trimmedPayloads: 0 } };
   mockForests[sessionId] = created;
   return structuredClone(created);
+}
+let mockChatSearchSettings: ChatSearchSettings = { deepSearch: true, model: null };
+
+/**
+ * The mock funnel: every word must appear in a top-level demo chat's title,
+ * workspace, or messages. Good enough for `bun run dev` to exercise both the
+ * index-only card list and the "searching deeper" state.
+ */
+async function mockSearchChats(query: string, options: { limit?: number; deep?: boolean }): Promise<SearchChatsResult> {
+  const terms = query.toLowerCase().split(/[^a-z0-9]+/).filter(term => term.length > 1);
+  const limit = options.limit ?? 4;
+  const base = { query: query.trim(), terms, elapsedMs: 3, modelTokens: 0, toolCalls: 0 };
+  if (!terms.length) return { ...base, hits: [], stage: "index", confident: false, deepAvailable: false, detail: "Type what you remember about the chat." };
+  const scored: ChatSearchHit[] = [];
+  for (const session of mockState.sessions.filter(item => !item.parentSessionId)) {
+    const workspace = mockState.workspaces.find(item => item.id === session.workspaceId);
+    const topic = `${session.title ?? ""} ${session.label} ${workspace?.title ?? ""}`.toLowerCase();
+    const messages = mockState.agentEvents
+      .filter(event => event.sessionId === session.id && typeof event.text === "string")
+      .map(event => String(event.text));
+    const matching = messages.filter(text => terms.some(term => text.toLowerCase().includes(term)));
+    const corpus = `${topic} ${messages.join(" ")}`.toLowerCase();
+    if (!terms.every(term => corpus.includes(term))) continue;
+    const topicMatch = terms.some(term => topic.includes(term));
+    scored.push({
+      sessionId: session.id,
+      title: session.title ?? workspace?.title ?? session.label,
+      harness: session.harness,
+      workspaceId: session.workspaceId ?? undefined,
+      workspaceTitle: workspace?.title,
+      lastActiveAt: session.startedAt ?? now,
+      matchCount: matching.length + (topicMatch ? 1 : 0),
+      snippet: (matching[0] ?? topic).slice(0, 160),
+      score: matching.length + (topicMatch ? 2 : 0),
+      why: topicMatch ? "topic matches" : `${matching.length} messages match`,
+      archived: false,
+      ended: session.endedAt != null,
+    });
+  }
+  scored.sort((left, right) => right.score - left.score);
+  const [first, second] = scored;
+  const confident = scored.length === 1 || (!!first && !!second && first.score / second.score >= 1.5 && first.matchCount >= 2);
+  const deepAvailable = !confident && mockChatSearchSettings.deepSearch !== false;
+  const hits = scored.slice(0, limit);
+  if (!options.deep || !deepAvailable) {
+    return { ...base, hits, stage: "index", confident, deepAvailable, detail: !confident && mockChatSearchSettings.deepSearch === false ? "Deeper search is off in Settings → Composer." : undefined };
+  }
+  await new Promise(resolve => setTimeout(resolve, 600));
+  return {
+    ...base,
+    hits: hits.map(hit => ({ ...hit, why: `closest match for “${query.trim()}”` })),
+    stage: "model",
+    confident,
+    deepAvailable,
+    modelTokens: 1_200,
+    toolCalls: 1,
+  };
+}
+/** Mock windows derived from the mock agent tree, so the Context pane and
+ *  ring have something honest to draw outside Tauri. */
+function mockContextWindows(sessionId: string): ContextWindowsResult {
+  const tree: BridgeState["sessions"] = [];
+  const visit = (id: string, depth: number) => {
+    const session = mockState.sessions.find(candidate => candidate.id === id);
+    if (!session || depth > 8) return;
+    tree.push(session);
+    for (const child of mockState.sessions.filter(candidate => candidate.parentSessionId === id)) visit(child.id, depth + 1);
+  };
+  visit(sessionId, 0);
+  const now = new Date().toISOString();
+  const windows: ContextWindow[] = tree.map(session => {
+    const harness = String(session.harness);
+    const windowTokens = harness === "claude" ? 200_000 : harness === "codex" ? 400_000 : 262_144;
+    const percent = session.contextPercent ?? null;
+    const usedTokens = percent == null ? 0 : Math.round(windowTokens * percent / 100);
+    const claude = harness === "claude";
+    return {
+      sessionId: session.id,
+      label: session.label,
+      kind: session.kind ?? "direct",
+      role: (session.depth ?? 0) > 0 ? "worker" : session.kind === "orchestrator" ? "orchestrator" : "chat",
+      harness,
+      model: session.model ?? null,
+      status: String(session.status),
+      depth: session.depth ?? 0,
+      unavailableReason: percent == null ? "Starts reporting after its first reply." : null,
+      current: percent == null ? null : {
+        usedTokens,
+        windowTokens,
+        percent,
+        state: claude ? "measured" : harness === "opencode" ? "estimated" : "reported",
+        source: claude ? "claude.context_usage" : harness === "codex" ? "codex.token_usage" : "opencode.step_tokens",
+        observedAt: now,
+        turnId: session.activeTurnId ?? null,
+        autoCompactTokens: claude ? Math.round(windowTokens * 0.93) : null,
+        compactionOwner: "harness",
+        segments: claude ? [
+          { name: "Free space", tokens: windowTokens - usedTokens, kind: "free" },
+          { name: "Messages", tokens: Math.round(usedTokens * 0.42), kind: "used" },
+          { name: "Tool results", tokens: Math.round(usedTokens * 0.26), kind: "used" },
+          { name: "System tools", tokens: Math.round(usedTokens * 0.12), kind: "used" },
+          { name: "MCP tools", tokens: Math.round(usedTokens * 0.08), kind: "used" },
+          { name: "Autocompact buffer", tokens: Math.round(windowTokens * 0.07), kind: "buffer" },
+          { name: "Memory files", tokens: Math.round(usedTokens * 0.04), kind: "used" },
+        ] : [],
+        consumers: claude ? [
+          { label: "Bash calls and results", tokens: Math.round(usedTokens * 0.15), detail: null },
+          { label: "Read calls and results", tokens: Math.round(usedTokens * 0.1), detail: null },
+          { label: "MCP · railway", tokens: Math.round(usedTokens * 0.06), detail: "3 of 47 tools loaded · rest on demand" },
+        ] : [],
+        forecast: percent > 10 ? { growthPerTurn: Math.round(windowTokens * 0.03), turnsRemaining: Math.max(1, Math.round((93 - percent) / 3)), samples: 6 } : null,
+      },
+    };
+  });
+  return {
+    sessionId,
+    windows,
+    earlier: tree.length ? [{ harness: "claude", model: "claude-sonnet-5-5", usedTokens: 52_000, windowTokens: 200_000, percent: 26, state: "measured", observedAt: now }] : [],
+    bridge: { stableTokens: 3_200, variableTokens: 1_800, method: "chars/4" },
+  };
 }
 function mockContextBreakdown(sessionId: string): ContextBreakdownResult {
   const reason = "no prompt compilation recorded";
@@ -742,7 +975,7 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
 const mockHealth: Health = {
   ok: true, version: "0.1.0-demo", harnesses: { claude: true, codex: true, cursor: true, opencode: true, shell: true }, database: "demo", snapshot_directory: "demo-snapshots", snapshot_count: 3, snapshot_total_bytes: 12_288, telemetry_database: "demo-telemetry", warnings: [],
   adapters: [
-    { id: "codex", label: "Codex", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: true }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false }], defaultModel: "gpt-5.6-luna" },
+    { id: "codex", label: "Codex", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "gpt-5.6-luna", label: "GPT Luna", tier: "fast", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-terra", label: "GPT Terra", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", tier: "strong", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.6-sol", label: "GPT Sol", tier: "strong", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }, { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", tier: "standard", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }], defaultModel: "gpt-5.6-luna" },
     { id: "claude", label: "Claude Code", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "tools", "commands", "file_changes", "approvals", "usage", "interrupt", "steering"], unavailableReason: null, models: [{ id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true }, { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: false, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] }, { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true }, { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true }], defaultModel: "sonnet" },
     { id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "auto", label: "Auto", tier: "standard", defaultForTier: true }, { id: "composer-2.5", label: "Composer 2.5", tier: "fast", defaultForTier: true }, { id: "gpt-5.3-codex", label: "Codex 5.3", tier: "standard", defaultForTier: false }, { id: "claude-opus-5-thinking-high", label: "Claude Opus 5 1M Thinking", tier: "strong", defaultForTier: true }], defaultModel: "auto" },
     { id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "mock", capabilities: ["messages", "streaming", "reasoning", "plans", "tools", "commands", "file_changes", "approvals", "usage", "history", "interrupt"], unavailableReason: null, models: [{ id: "opencode/deepseek-v4-flash-free", label: "DeepSeek V4 Flash", tier: "fast", defaultForTier: true }, { id: "opencode/north-mini-code-free", label: "North Mini Code", tier: "standard", defaultForTier: true }, { id: "opencode/big-pickle", label: "Big Pickle", tier: "strong", defaultForTier: true }], defaultModel: "opencode/north-mini-code-free" }
@@ -1066,11 +1299,14 @@ function scheduleMockConnectorArrival(): void {
   }, 900);
 }
 
+let mockIncludeReadMentions = false;
+
 function mockConnectorInbox(): ConnectorInboxResult {
   const items = mockConnectorItems.filter(item => item.state !== "resolved");
   return {
     items,
     unreadCount: items.length,
+    includeReadMentions: mockIncludeReadMentions,
     poll: [
       {
         family: "slack",
@@ -1112,7 +1348,14 @@ function mockConnectorDismiss(itemKey: string): ConnectorDismissResult {
   return { dismissed: true };
 }
 
+/// The default reviewer instructions the mock reports; the real text lives in
+/// `bridge_core::reviewer_settings` and reaches the UI through the result.
+const MOCK_REVIEWER_PROMPT = "Review pull request #{number} in this repository and post a concise, constructive review as a comment. Do not approve, merge, request changes, or close the PR.";
+
 export const bridgeApi = {
+  installCodexUpdate: (): Promise<void> => isTauri()
+    ? unit(call("health/install_codex_update"))
+    : Promise.reject(new Error("Codex updates require the Bridge desktop app")),
   discoverExternalImport: (params: DiscoverExternalImportParams): Promise<ExternalImportDiscovery> => {
     if (isTauri()) return call("imports/discover_external_import", params);
     const discoveredAt = new Date().toISOString();
@@ -1202,6 +1445,10 @@ export const bridgeApi = {
     isTauri() ? call("connectors/connector_dismiss", { itemKey }) : Promise.resolve(mockConnectorDismiss(itemKey)),
   connectorRefresh: (family: string): Promise<ConnectorRefreshResult> =>
     isTauri() ? call("connectors/connector_refresh", { family }) : Promise.resolve({ announced: 0 }),
+  connectorSetSettings: (includeReadMentions: boolean): Promise<ConnectorSetSettingsResult> =>
+    isTauri()
+      ? call("connectors/connector_set_settings", { includeReadMentions })
+      : Promise.resolve(((mockIncludeReadMentions = includeReadMentions), { includeReadMentions })),
   githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
     isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
@@ -1224,6 +1471,18 @@ export const bridgeApi = {
     isTauri() ? call("github/github_review", { workspaceId, number, harness, sessionId }) : Promise.resolve(mockGithubReview(number, harness)),
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
     isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
+  githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>
+    isTauri() ? call("github/github_connect", { workspaceId, remoteUrl }) : Promise.resolve(mockGithubConnect(remoteUrl)),
+  /** The PRs attached to one chat, newest first. `refresh` bypasses the short
+   * server caches — a reopened chat or a manual retry. */
+  githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
+    isTauri() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
+  /** Attach a chat to a PR by URL or number; verified server-side against the
+   * chat's workspace repository. */
+  githubAttachPr: (sessionId: string, reference: string): Promise<GithubAttachPrResult> =>
+    isTauri() ? call("github/github_attach_pr", { sessionId, reference }) : mockGithubAttachPr(sessionId, reference),
+  searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>
+    isTauri() ? call("workspaces/search_github_repos", { query }) : Promise.resolve(mockSearchGithubRepos(query)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   browserFrame: (afterRevision: number): Promise<BrowserFrame | null> => isTauri()
     ? call("browser/browser_frame", { afterRevision })
@@ -1264,6 +1523,73 @@ export const bridgeApi = {
   browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? call("browser/browser_skills") : Promise.resolve([]),
   configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return unit(call("browser/configure_remote_browser", { config })); mockBrowserBridge.remoteProvider = config; },
   startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? call("browser/start_remote_browser", { initialUrl }) as Promise<Record<string, unknown>> : Promise.resolve({ id: "mock-remote", initialUrl }),
+  // Browser clones. In the desktop app these hit the real runtime through the
+  // `clones/*` wire methods; outside it (dev, tests) they drive the in-memory
+  // fixture above so the surface is exercisable without Tauri.
+  browserCloneState: async (sessionId?: string): Promise<BrowserCloneSnapshot> => {
+    if (isTauri() && sessionId) return cloneSnapshotFromWire(await call("clones/clone_state", { sessionId }));
+    return structuredClone(mockBrowserClone);
+  },
+  requestClone: async (
+    sessionId: string,
+    domain: string,
+    browser: CloneBrowserKind,
+    signInPath: CloneSignInPath,
+  ): Promise<BrowserCloneSnapshot> => {
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/request_clone", { sessionId, domain, browser, signInPath }));
+    mockBrowserClone = {
+      status: signInPath === "import" ? "acting" : "waiting_for_you",
+      cloneId: "mock-clone-1", domain, signInPath,
+      waitingReason: signInPath === "import" ? null : "Sign in and finish two-factor, then hand the clone back.",
+      expiresAt: new Date(Date.now() + mockCloneSettings.ttlMinutes * 60_000).toISOString(),
+      screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 2, pendingRequest: null, pendingApproval: null,
+    };
+    return structuredClone(mockBrowserClone);
+  },
+  // The person's input into a clone they have taken over (click, scroll, typing,
+  // a login key). Coordinates are a fraction of the viewport.
+  cloneInput: async (sessionId: string, input: CloneInputEvent): Promise<void> => {
+    if (isTauri()) { await call("clones/clone_input", { sessionId, input }); return; }
+  },
+  takeoverBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/takeover_clone", { sessionId }); return; }
+    if (mockBrowserClone.status === "acting" || mockBrowserClone.status === "waiting_for_you") mockBrowserClone = { ...mockBrowserClone, status: "taken_over", waitingReason: null };
+  },
+  handBackBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/hand_back_clone", { sessionId }); return; }
+    if (mockBrowserClone.status === "taken_over") mockBrowserClone = { ...mockBrowserClone, status: "acting" };
+  },
+  destroyBrowserClone: async (sessionId?: string): Promise<void> => {
+    if (isTauri() && sessionId) { await call("clones/destroy_clone", { sessionId }); return; }
+    if (mockBrowserClone.cloneId) mockBrowserClone = noClone("destroyed");
+  },
+  resolveBrowserCloneApproval: async (approvalId: string, allow: boolean): Promise<void> => {
+    if (isTauri()) throw cloneUnavailable();
+    if (mockBrowserClone.pendingApproval?.id === approvalId) mockBrowserClone = { ...mockBrowserClone, pendingApproval: null, status: allow ? "acting" : "waiting_for_you" };
+  },
+  cloneRequests: async (): Promise<import("./protocol/generated/protocol").CloneRequest[]> => isTauri() ? call("clones/clone_requests") : [],
+  readCloneSettings: async (): Promise<CloneSettingsSnapshot> => isTauri() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
+  writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
+    if (isTauri()) return call("clones/write_clone_settings", { settings });
+    mockCloneSettings = { ...settings };
+    return { connected: true, settings: { ...mockCloneSettings } };
+  },
+  // The person answers an agent's clone request. Allow builds the clone and lets
+  // the agent act; deny drops it.
+  resolveCloneRequest: async (sessionId: string, allow: boolean, requestId: string, settings: CloneSettings): Promise<BrowserCloneSnapshot> => {
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes, agentVision: settings.agentVision ?? true }));
+    if (allow) {
+      const domain = mockBrowserClone.pendingRequest ?? mockBrowserClone.domain ?? "example.com";
+      mockBrowserClone = {
+        status: settings.defaultSignInPath === "import" ? "acting" : "waiting_for_you", cloneId: "mock-clone-1", domain, signInPath: settings.defaultSignInPath, pendingRequest: null,
+        waitingReason: null, expiresAt: new Date(Date.now() + settings.ttlMinutes * 60_000).toISOString(),
+        screenshot: mockCloneFrame(domain), screenshotRedactedRegions: 0, pendingApproval: null, agentVision: settings.agentVision ?? true,
+      };
+    } else {
+      mockBrowserClone = noClone();
+    }
+    return structuredClone(mockBrowserClone);
+  },
   skillCatalog: (): Promise<SkillCatalog> => isTauri() ? call("skills/skill_catalog") as Promise<SkillCatalog> : Promise.resolve(structuredClone(mockSkills)),
   skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? call("skills/skill_suggestions", { query, provider }) as Promise<CapabilitySuggestion[]> : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
   previewSkillChange: async (skillId: string, action: SkillAction, targets: SkillProvider[]): Promise<SkillPreview> => {
@@ -1435,14 +1761,30 @@ export const bridgeApi = {
     return saved;
   },
   getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => isTauri()
-    ? call("usage/get_provider_usage_overviews") : Promise.resolve(null),
+    ? call("usage/get_provider_usage_overviews") : Promise.resolve(mockProviderUsageOverviews()),
   refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
-    if (!isTauri()) return null;
+    if (!isTauri()) return mockProviderUsageOverviews();
     const snapshot = await call("usage/refresh_provider_usage_overviews_interactive");
     const { emit } = await import("@tauri-apps/api/event");
     await emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined);
     await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
     return snapshot;
+  },
+  redeemProviderUsageReset: async (params: RedeemProviderUsageResetParams): Promise<RedeemProviderUsageResetResult> => {
+    if (!isTauri()) {
+      mockResetsRedeemed = true;
+      return { outcome: "reset", resetsLeft: 1, cleared: ["session", "weekly"], weeklyResetsAt: Math.floor(Date.now() / 1000) + 7 * 86400, cooldownUntil: null };
+    }
+    const result = await call("usage/redeem_provider_usage_reset", params);
+    if (result.outcome === "reset" || result.outcome === "unconfirmed") {
+      const snapshot = await call("usage/get_provider_usage_overviews");
+      const { emit } = await import("@tauri-apps/api/event");
+      await Promise.all([
+        emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined),
+        emit("bridge-menu-bar-settings-changed").catch(() => undefined),
+      ]);
+    }
+    return result;
   },
   onProviderUsageOverviews: (handler: (snapshot: ProviderUsageOverviews) => void): Promise<UnlistenFn> => isTauri()
     ? listen<ProviderUsageOverviews>("bridge-provider-usage-overviews", event => handler(event.payload)) : Promise.resolve(() => undefined),
@@ -1663,6 +2005,7 @@ export const bridgeApi = {
   contextBreakdown: (sessionId: string): Promise<ContextBreakdownResult> => isTauri() ? call("sessions/get_context_breakdown", { sessionId }) : Promise.resolve(mockContextBreakdown(sessionId)),
   // Same change-token contract as sessionForestDigest, scoped to breakdown
   // inputs: compilations, config revisions, adapter observations, branch.
+  contextWindows: (sessionId: string): Promise<ContextWindowsResult> => isTauri() ? call("sessions/get_context_windows", { sessionId }) : Promise.resolve(mockContextWindows(sessionId)),
   contextBreakdownDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
   /** Durable backfill of one session's event log — any session id, including a
    * worker child's. Cursor semantics: pass the last sequence already held. */
@@ -1812,6 +2155,32 @@ export const bridgeApi = {
     if (isTauri()) return call("config/save_worker_settings", { workspaceId, settings });
     return structuredClone(settings);
   },
+  reviewerSettings: async (): Promise<ReviewerSettingsResult> => {
+    if (isTauri()) return call("config/get_reviewer_settings");
+    return { settings: { harnesses: {}, systemPrompt: "" }, defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
+  },
+  saveReviewerSettings: async (settings: ReviewerSettings): Promise<ReviewerSettingsResult> => {
+    if (isTauri()) return call("config/save_reviewer_settings", { settings });
+    return { settings: structuredClone(settings), defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
+  },
+  attributionSettings: async (): Promise<AttributionSettings> => {
+    if (isTauri()) return call("config/get_attribution_settings");
+    return { hideAiAttribution: false };
+  },
+  saveAttributionSettings: async (settings: AttributionSettings): Promise<AttributionSettings> => {
+    if (isTauri()) return call("config/save_attribution_settings", { settings });
+    return structuredClone(settings);
+  },
+  chatSearchSettings: async (): Promise<ChatSearchSettings> => {
+    if (isTauri()) return call("config/get_chat_search_settings");
+    return structuredClone(mockChatSearchSettings);
+  },
+  saveChatSearchSettings: async (settings: ChatSearchSettings): Promise<ChatSearchSettings> => {
+    if (isTauri()) return call("config/save_chat_search_settings", { settings });
+    const model = settings.model?.trim() || null;
+    mockChatSearchSettings = { deepSearch: settings.deepSearch !== false, model };
+    return structuredClone(mockChatSearchSettings);
+  },
   unarchiveChat: async (sessionId: string): Promise<void> => {
     if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
     throw new Error("Unarchiving a chat needs the desktop app");
@@ -1878,6 +2247,102 @@ export const bridgeApi = {
     forest.reasons.unshift({ id: nextEventId++, source: "session-forest", kind: "session.head_moved", entityId: sessionId, body: `Conversation head moved to ${entryId}; files were not changed`, createdAt: new Date().toISOString() });
     emitState(); return structuredClone(forest);
   },
+  resolveReference: async (id: string): Promise<ResolveReferenceResult> => {
+    if (isTauri()) return call("sessions/resolve_reference", { id }) as Promise<ResolveReferenceResult>;
+    const bare = id.replace(/^@session:/, "").replace(/^brio_/, "");
+    const session = mockState.sessions.find(candidate => candidate.id === bare || (candidate.id.replace(/-/g, "").startsWith(bare) && bare.length === 8));
+    if (session) {
+      const head = mockForests[session.id]?.head ?? null;
+      return {
+        kind: "session",
+        sessionId: session.id,
+        label: session.label,
+        harness: session.harness,
+        workspaceId: session.workspaceId ?? null,
+        parentSessionId: session.parentSessionId ?? null,
+        depth: session.depth ?? 0,
+        restorationMode: session.restorationMode,
+        continuationFidelity: session.continuationFidelity,
+        activeEntryId: head?.activeEntryId ?? null,
+        latestCheckpointEntryId: head?.latestCheckpointEntryId ?? null,
+        updatedAt: session.startedAt ?? null,
+        authorized: true,
+      };
+    }
+    for (const forest of Object.values(mockForests)) {
+      const entry = forest.entries.find(candidate => candidate.id === bare);
+      if (entry) {
+        const summary = String(entry.payload?.text ?? entry.payload?.summary ?? entry.payload?.title ?? "") || "";
+        return {
+          kind: "entry",
+          sessionId: forest.sessionId,
+          entryId: entry.id,
+          entryKind: entry.kind,
+          sequence: Number(entry.sequence),
+          summary,
+          createdAt: entry.createdAt,
+          authorized: true,
+        };
+      }
+    }
+    return { kind: "unknown", authorized: false };
+  },
+  forkSession: async (sessionId: string, entryId: string, title?: string | null, harness?: string | null, model?: string | null, worktreePolicy?: string | null): Promise<ForkSessionResult> => {
+    if (isTauri()) return call("sessions/fork_session", { sessionId, entryId, title, harness, model, worktreePolicy: worktreePolicy ?? "shared" }) as Promise<ForkSessionResult>;
+    const source = mockState.sessions.find(session => session.id === sessionId);
+    if (!source) throw new Error("Session to fork does not exist");
+    if (source.kind === "worker") throw new Error("Worker sessions cannot be forked; fork an orchestrator or direct chat");
+    const forest = mockForest(sessionId);
+    const cutoff = forest.entries.findIndex(entry => entry.id === entryId);
+    if (cutoff < 0) throw new Error("Entry is not in this session");
+    const prefix = forest.entries.slice(0, cutoff + 1);
+    const forkId = `fork-${nextEventId++}`;
+    const entries = prefix.map((entry, index) => ({
+      ...entry,
+      sessionId: forkId,
+      parentEntryId: index === 0 ? null : prefix[index - 1].id,
+      sequence: index + 1,
+      providerEventId: null,
+      createdAt: new Date().toISOString(),
+    }));
+    const checkpoint = [...entries].reverse().find(entry => entry.kind === "checkpoint");
+    const head: SessionForestSnapshot["head"] = {
+      sessionId: forkId,
+      activeEntryId: entries.at(-1)!.id,
+      nativeProviderSessionId: null,
+      restorationMode: "checkpoint_restored",
+      resumeEligibility: "checkpoint_restored",
+      latestCheckpointEntryId: checkpoint?.id ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+    mockForests[forkId] = { ...forest, sessionId: forkId, entries, head, leaves: [entries.at(-1)!] };
+    mockState.sessions.push({
+      ...source,
+      id: forkId,
+      label: title?.trim() || `Fork of ${source.label}`,
+      title: title?.trim() || `Fork of ${source.label}`,
+      harness: harness ?? source.harness,
+      model: model ?? source.model,
+      status: "idle",
+      activeTurnId: null,
+      providerSessionId: null,
+      // A fork is a top-level conversation, not a delegated worker: the
+      // agent-tree fields stay as the source had them and the lineage goes in
+      // the fork fields. Mirrors `fork_session_records`.
+      parentSessionId: null,
+      depth: source.depth ?? 0,
+      forkParentSessionId: sessionId,
+      forkParentEntryId: entryId,
+      restorationMode: "checkpoint_restored",
+      continuationFidelity: "projected_at_boundary",
+    });
+    mockState.events.unshift(
+      { id: nextEventId, source: "session-forest", kind: "fork.created", entityId: forkId, body: `Forked from ${sessionId} at ${entryId}`, createdAt: new Date().toISOString() },
+    );
+    nextEventId += 1;
+    emitState();
+    return { state: structuredClone(mockState) as BridgeState, sessionId: forkId, snapshot: structuredClone(mockForests[forkId]), fidelity: "projected_at_boundary" };
+  },
   compactSession: async (sessionId: string): Promise<void> => {
     if (isTauri()) return unit(call("sessions/compact_session", { sessionId }));
     if (!mockForests[sessionId]) mockForest(sessionId);
@@ -1929,6 +2394,21 @@ export const bridgeApi = {
     const size = limit ?? 20;
     const start = offset ?? 0;
     return { sessionId, query, hits: hits.slice(start, start + size), offset: start, hasMore: hits.length > start + size };
+  },
+  /**
+   * Find a chat across every chat from what the user remembers. Index only
+   * unless `deep` is set; a deep call runs the model stage only when the
+   * index is unsure, and can take seconds.
+   */
+  searchChats: async (query: string, options: { limit?: number; deep?: boolean } = {}): Promise<SearchChatsResult> => {
+    if (isTauri()) {
+      return call("sessions/search_chats", {
+        query,
+        ...(options.limit != null ? { limit: options.limit } : {}),
+        ...(options.deep ? { deep: true } : {}),
+      });
+    }
+    return mockSearchChats(query, options);
   },
   /**
    * Write one session's durable record out as JSONL.
@@ -2052,9 +2532,10 @@ export const bridgeApi = {
         ...(model ? { model } : {}),
       });
     }
-    if (mode === "auto_apply") throw new Error("Auto-apply does not exist until a replay bench can justify it. Use remember or propose.");
-    if (mode !== "remember" && mode !== "propose") throw new Error(`Unknown extraction mode '${mode}'. Use remember or propose.`);
-    if (mode === "propose" && (!harness || !model)) throw new Error("Propose mode needs a pinned harness and model to run on.");
+    if (mode !== "remember" && mode !== "propose" && mode !== "auto_apply") {
+      throw new Error(`Unknown extraction mode '${mode}'. Use remember, propose, or auto_apply.`);
+    }
+    if (Boolean(harness) !== Boolean(model)) throw new Error("Pin both a helper and a model, or neither to run on each chat's own model.");
     mockExtractionSettings = { ...mockExtractionSettings, mode, harness: harness ?? undefined, model: model ?? undefined };
     return structuredClone(mockExtractionSettings);
   },
@@ -2161,13 +2642,13 @@ export const bridgeApi = {
       fidelity: "projected_at_boundary",
     };
   },
-  createWorkspaceSession: async (workspaceId: string, createWorktree = false): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree });
+  createWorkspaceSession: async (workspaceId: string, createWorktree = false, kind: WorkspaceSessionKind = "orchestrator", harness?: Harness, model?: string | null): Promise<BridgeState> => {
+    if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree, kind, harness, model });
     const id = crypto.randomUUID();
     const workspace = mockState.workspaces.find(item => item.id === workspaceId);
     if (createWorktree && !workspace?.projectId) throw new Error("Connect a Git repository before creating an isolated worktree");
     const cwd = createWorktree ? `/tmp/bridge/worktrees/${id}` : workspace?.path ?? null;
-    mockState.sessions.push({ id, workspaceId, harness: "codex", label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind: "orchestrator", cwd }); emitState(); return snapshot();
+    mockState.sessions.push({ id, workspaceId, harness: kind === "direct" ? harness ?? "codex" : "codex", label: kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: kind === "direct" ? model ?? null : null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind, cwd }); emitState(); return snapshot();
   },
   updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null): Promise<BridgeState> => {
     if (isTauri()) return call("sessions/update_chat_model", { sessionId, harness, model, effort });
@@ -2319,6 +2800,8 @@ export const bridgeApi = {
   renameTerminal: async (workspaceId: string, terminalId: string, title: string): Promise<TerminalRecord> => isTauri() ? call("terminal/rename_terminal", { workspaceId, terminalId, title }) : mockRenameTerminal(workspaceId, terminalId, title),
   onTerminalFrame: async (handler: (frame: TerminalFrame) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalFrame>("terminal-frame", handler) : () => undefined,
   onTerminalLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
+  /** The live channel dropped frames. Durable ones come back by cursor replay. */
+  onStreamLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
   openTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
   writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
@@ -2443,6 +2926,11 @@ export const bridgeApi = {
     if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
   },
+  onGithubSessionPrsChanged: async (handler: (payload: { sessionId: string }) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<{ sessionId: string }>("github/session_prs_changed", handler);
+    sessionPrListeners.add(handler);
+    return () => sessionPrListeners.delete(handler);
+  },
   onGithubCiFinished: async (handler: (payload: GithubCiFinishedPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<GithubCiFinishedPayload>("github/ci_finished", handler);
     githubCiListeners.add(handler);
@@ -2514,6 +3002,73 @@ const mockGithubPullRequests = (workspaceId: string): GithubPullRequestsResult =
 });
 
 const mockGithubStatus = (_workspaceId: string): GithubStatusResult => ({ availability: { status: "available" }, repository: { host: "github.com", owner: "Atharva-Kanherkar", name: "bridge-harness" } });
+const mockSearchGithubRepos = (query: string): SearchGithubReposResult => ({
+  repositories: ["Atharva-Kanherkar/bridge-harness", "Atharva-Kanherkar/animevocab", "rimo/rimo-frontend"]
+    .filter(nameWithOwner => nameWithOwner.toLowerCase().includes(query.trim().toLowerCase()))
+    .map(nameWithOwner => ({
+      nameWithOwner,
+      url: `https://github.com/${nameWithOwner}`,
+      sshUrl: `git@github.com:${nameWithOwner}.git`,
+      isPrivate: true,
+      pushedAt: new Date().toISOString(),
+    })),
+});
+const mockGithubConnect = (remoteUrl: string): GithubConnectResult => {
+  const [owner = "bridge", name = "harness"] = remoteUrl.replace(/\.git$/, "").replace(/\/$/, "").split(/[/:]/).slice(-2);
+  return { repository: { host: "github.com", owner, name }, initialized: false, replacedRemote: false };
+};
+// Browser-mode chat PRs. Each attached PR runs a simulated CI: checks start
+// queued, move through running, and settle a few seconds apart, so the card's
+// live states are visible in `bun run dev` without GitHub. Append
+// `?mockChatPrs` to the URL to seed every chat with a PR.
+const mockChatPrs = new Map<string, { pr: SessionPullRequest; startedAt: number; failing: boolean }[]>();
+const MOCK_CHECKS: ReadonlyArray<[string, string, number]> = [
+  ["typecheck", "CI", 2_000], ["lint", "CI", 3_500], ["unit tests", "CI", 9_000],
+  ["rust (macos)", "Rust", 14_000], ["bundle size", "Size", 6_000], ["e2e smoke", "E2E", 18_000],
+];
+function mockChatPrView(entry: { pr: SessionPullRequest; startedAt: number; failing: boolean }): SessionPullRequest {
+  const elapsed = Date.now() - entry.startedAt;
+  const checkDetails = MOCK_CHECKS.map(([name, workflow, finishesAt], index): SessionPullRequest["checkDetails"][number] => {
+    if (elapsed < 800 + index * 250) return { name, workflow, status: "queued", conclusion: null, logUrl: "" };
+    if (elapsed < finishesAt) return { name, workflow, status: "inProgress", conclusion: null, logUrl: "" };
+    const failed = entry.failing && name === "unit tests";
+    return { name, workflow, status: "completed", conclusion: failed ? "failure" : "success", logUrl: `${entry.pr.url}/checks` };
+  });
+  const checks = { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 };
+  for (const check of checkDetails) {
+    checks.total += 1;
+    if (check.status === "queued") checks.queued += 1;
+    else if (check.status === "inProgress") checks.inProgress += 1;
+    else if (check.conclusion === "failure") checks.failed += 1;
+    else checks.passed += 1;
+  }
+  return { ...entry.pr, checks, checkDetails, fetchedAt: new Date().toISOString() };
+}
+function mockGithubSessionPrs(sessionId: string): GithubSessionPrsResult {
+  if (!mockChatPrs.has(sessionId) && typeof location !== "undefined" && new URLSearchParams(location.search).has("mockChatPrs")) {
+    mockChatPrs.set(sessionId, [mockChatPrEntry(341, "Show live pull request status in the originating chat", false)]);
+  }
+  return { pullRequests: (mockChatPrs.get(sessionId) ?? []).map(mockChatPrView) };
+}
+function mockChatPrEntry(number: number, title: string, failing: boolean) {
+  const url = `https://github.com/Atharva-Kanherkar/bridge-harness/pull/${number}`;
+  const at = new Date().toISOString();
+  const pr: SessionPullRequest = {
+    number, title, url, state: "open", isDraft: false, headBranch: "feat/pr-status-in-chat", headSha: "e3ad782c0ffee",
+    checks: { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 },
+    checkDetails: [], attribution: "manual", attachedAt: at, fetchedAt: at, stale: false, error: null,
+  };
+  return { pr, startedAt: Date.now(), failing };
+}
+async function mockGithubAttachPr(sessionId: string, reference: string): Promise<GithubAttachPrResult> {
+  const match = reference.trim().match(/(?:\/pull\/|^#?)(\d+)\/?$/);
+  const number = match ? Number(match[1]) : 0;
+  if (!number) throw new Error("Paste a pull request URL like https://github.com/owner/repo/pull/123, or a PR number.");
+  const entry = mockChatPrEntry(number, `Mock pull request #${number}`, number % 2 === 0);
+  mockChatPrs.set(sessionId, [entry, ...(mockChatPrs.get(sessionId) ?? []).filter(existing => existing.pr.number !== number)]);
+  for (const listener of sessionPrListeners) listener({ sessionId });
+  return { attached: true, message: `Attached PR #${number}.`, pullRequest: mockChatPrView(entry) };
+}
 const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
 const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
   confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };
@@ -2699,19 +3254,21 @@ const mockManagedAgents: ManagedAgentList = {
     {
       agentId: "claude", label: "Claude Code", state: "ready", backing: "managed", removable: true,
       executable: "/managed-runtimes/agents/claude/installations/a1b2c3/payload/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
-      version: "0.3.209", consecutiveFailures: 0,
+      // Deliberately behind the pin: mock mode is where the Update action is
+      // developed and reviewed, so one runtime has to have an update waiting.
+      version: "0.3.209", pinnedVersion: "0.3.284", updateAvailable: true, consecutiveFailures: 0,
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,
-      executable: "/opt/homebrew/bin/codex", version: "0.147.0", consecutiveFailures: 0,
+      executable: "/opt/homebrew/bin/codex", version: "0.147.0", updateAvailable: false, consecutiveFailures: 0,
     },
     {
       agentId: "cursor", label: "Cursor", state: "external", backing: "external", removable: false,
-      executable: "/Users/demo/.local/bin/cursor-agent", consecutiveFailures: 0,
+      executable: "/Users/demo/.local/bin/cursor-agent", updateAvailable: false, consecutiveFailures: 0,
     },
     {
       agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false,
-      consecutiveFailures: 0,
+      updateAvailable: false, consecutiveFailures: 0,
     },
   ],
 };
@@ -2723,12 +3280,14 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
     if (!agent.removable) return Promise.reject(new Error(`${agent.label} is user-managed; Bridge will not remove it`));
     const status: ManagedAgentStatus = {
       ...structuredClone(agent), state: "not_installed", backing: "none", removable: false,
-      executable: undefined, version: undefined,
+      executable: undefined, version: undefined, updateAvailable: false,
     };
     return Promise.resolve({ agentId, kind, outcome: "removed", status });
   }
   const status: ManagedAgentStatus = {
-    ...structuredClone(agent), state: "ready", backing: "managed", removable: true, version: "0.0.0-mock",
+    // An install lands the pinned version, so the update it answered is gone.
+    ...structuredClone(agent), state: "ready", backing: "managed", removable: true,
+    version: agent.pinnedVersion ?? "0.0.0-mock", updateAvailable: false,
   };
   return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
 }

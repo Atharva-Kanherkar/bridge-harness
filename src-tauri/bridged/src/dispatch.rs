@@ -8,6 +8,7 @@
 //! and out-of-set enum values all fail here with `invalid_params` instead of
 //! deep inside the runtime.
 
+use bridge_core::model::Harness;
 use bridge_core::{api, learning_job, BridgeCore, BridgeError};
 use bridge_protocol::messages as wire;
 use bridge_protocol::{ErrorCode, MethodName, RpcError, TypedMethod};
@@ -34,6 +35,7 @@ pub fn dispatch(
     match method {
         MethodName::Health => reply(api::health(core)),
         MethodName::RefreshModelCatalogs => reply(api::refresh_model_catalogs(core)),
+        MethodName::InstallCodexUpdate => reply(api::install_codex_update()),
         MethodName::GetState => reply(api::get_state(core)),
 
         MethodName::GithubStatus => {
@@ -80,6 +82,10 @@ pub fn dispatch(
             let p: wire::ConnectorActParams = decode(method, params)?;
             reply(api::connector_act(core, &p.item_key, p.action, p.approved))
         }
+        MethodName::ConnectorSetSettings => {
+            let p: wire::ConnectorSetSettingsParams = decode(method, params)?;
+            reply(api::connector_set_settings(core, p.include_read_mentions))
+        }
         MethodName::ConnectorDismiss => {
             let p: wire::ConnectorDismissParams = decode(method, params)?;
             reply(api::connector_dismiss(core, &p.item_key))
@@ -99,6 +105,18 @@ pub fn dispatch(
         MethodName::GithubCheckout => {
             let p: wire::GithubCheckoutParams = decode(method, params)?;
             reply(api::github_checkout(core, &p.workspace_id, p.number))
+        }
+        MethodName::GithubConnect => {
+            let p: wire::GithubConnectParams = decode(method, params)?;
+            reply(api::github_connect(core, &p.workspace_id, &p.remote_url))
+        }
+        MethodName::GithubSessionPrs => {
+            let p: wire::GithubSessionPrsParams = decode(method, params)?;
+            reply(api::github_session_prs(core, &p.session_id, p.refresh))
+        }
+        MethodName::GithubAttachPr => {
+            let p: wire::GithubAttachPrParams = decode(method, params)?;
+            reply(api::github_attach_pr(core, &p.session_id, &p.reference))
         }
 
         MethodName::AddProject => {
@@ -198,6 +216,10 @@ pub fn dispatch(
             let p: wire::GetContextBreakdownParams = decode(method, params)?;
             reply(api::get_context_breakdown(core, &p.session_id))
         }
+        MethodName::GetContextWindows => {
+            let p: wire::GetContextWindowsParams = decode(method, params)?;
+            reply(api::get_context_windows(core, &p.session_id))
+        }
         MethodName::GetContextBreakdownDigest => {
             let p: wire::GetContextBreakdownDigestParams = decode(method, params)?;
             reply(api::get_context_breakdown_digest(core, &p.session_id))
@@ -230,10 +252,14 @@ pub fn dispatch(
         }
         MethodName::CreateWorkspaceSession => {
             let p: wire::CreateWorkspaceSessionParams = decode(method, params)?;
-            reply(api::create_workspace_session(
+            let direct_harness = p.harness.map(Into::into);
+            reply(api::create_workspace_session_with_model(
                 core,
                 &p.workspace_id,
                 p.create_worktree.unwrap_or(false),
+                p.kind.unwrap_or(wire::WorkspaceSessionKind::Orchestrator),
+                direct_harness.as_ref(),
+                p.model.as_deref(),
             ))
         }
         MethodName::StartSession => {
@@ -286,6 +312,10 @@ pub fn dispatch(
                 p.limit,
                 p.offset,
             ))
+        }
+        MethodName::SearchChats => {
+            let p: wire::SearchChatsParams = decode(method, params)?;
+            reply(api::search_chats(core, &p))
         }
         MethodName::ExportSessionTranscript => {
             let p: wire::ExportSessionTranscriptParams = decode(method, params)?;
@@ -533,6 +563,21 @@ pub fn dispatch(
             let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
             reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
         }
+        MethodName::GetReviewerSettings => reply(api::get_reviewer_settings(core)),
+        MethodName::SaveReviewerSettings => {
+            let p: wire::SaveReviewerSettingsParams = decode(method, params)?;
+            reply(api::save_reviewer_settings(core, &p.settings))
+        }
+        MethodName::GetChatSearchSettings => reply(api::get_chat_search_settings(core)),
+        MethodName::SaveChatSearchSettings => {
+            let p: wire::SaveChatSearchSettingsParams = decode(method, params)?;
+            reply(api::save_chat_search_settings(core, &p))
+        }
+        MethodName::GetAttributionSettings => reply(api::get_attribution_settings(core)),
+        MethodName::SaveAttributionSettings => {
+            let p: wire::SaveAttributionSettingsParams = decode(method, params)?;
+            reply(api::save_attribution_settings(core, &p))
+        }
         MethodName::UnarchiveChat => {
             let p: wire::UnarchiveChatParams = decode(method, params)?;
             reply(api::unarchive_chat(core, &p.session_id))
@@ -581,6 +626,10 @@ pub fn dispatch(
         MethodName::GetProviderUsageOverviews => reply(api::get_provider_usage_overviews(core)),
         MethodName::RefreshProviderUsageOverviews => reply(api::refresh_provider_usage_overviews(core)),
         MethodName::RefreshProviderUsageOverviewsInteractive => reply(api::refresh_provider_usage_overviews_interactive(core)),
+        MethodName::RedeemProviderUsageReset => {
+            let p: wire::RedeemProviderUsageResetParams = decode(method, params)?;
+            reply(api::redeem_provider_usage_reset(core, &p))
+        }
         MethodName::GetUsageOverview => reply(api::get_usage_overview(core)),
         MethodName::RefreshUsageOverview => reply(api::refresh_usage_overview(core)),
         MethodName::GetMenuBarSettings => reply(api::get_menu_bar_settings(core)),
@@ -810,6 +859,40 @@ pub fn dispatch(
             encode(api::route_browser(into_core(method, &p.request)?))
         }
         MethodName::BrowserSkills => encode(api::browser_skills()),
+        MethodName::RequestClone => {
+            let p: wire::RequestCloneParams = decode(method, params)?;
+            reply(api::request_clone(core, &p))
+        }
+        MethodName::CloneState => {
+            let p: wire::CloneStateParams = decode(method, params)?;
+            reply(api::clone_state(core, &p.session_id))
+        }
+        MethodName::TakeoverClone => {
+            let p: wire::TakeoverCloneParams = decode(method, params)?;
+            reply(api::takeover_clone(core, &p.session_id))
+        }
+        MethodName::HandBackClone => {
+            let p: wire::HandBackCloneParams = decode(method, params)?;
+            reply(api::hand_back_clone(core, &p.session_id))
+        }
+        MethodName::DestroyClone => {
+            let p: wire::DestroyCloneParams = decode(method, params)?;
+            reply(api::destroy_clone(core, &p.session_id))
+        }
+        MethodName::CloneInput => {
+            let p: wire::CloneInputParams = decode(method, params)?;
+            reply(api::clone_input(core, &p.session_id, &p.input))
+        }
+        MethodName::ResolveCloneRequest => {
+            let p: wire::ResolveCloneRequestParams = decode(method, params)?;
+            reply(api::resolve_clone_request(core, &p.session_id, p.allow, &p.request_id, p.sign_in_path, p.ttl_minutes, p.agent_vision))
+        }
+        MethodName::ReadCloneSettings => reply(api::read_clone_settings(core)),
+        MethodName::WriteCloneSettings => {
+            let p: wire::WriteCloneSettingsParams = decode(method, params)?;
+            reply(api::write_clone_settings(core, &p.settings))
+        }
+        MethodName::CloneRequests => encode(api::clone_requests(core)),
         MethodName::ConfigureRemoteBrowser => {
             let p: wire::ConfigureRemoteBrowserParams = decode(method, params)?;
             let config = match &p.config {
@@ -834,11 +917,11 @@ pub fn dispatch(
         }
         MethodName::InstallManagedAgent => {
             let p: wire::InstallManagedAgentParams = decode(method, params)?;
-            reply_managed(api::install_managed_agent(&p.agent_id))
+            reply_managed(api::install_managed_agent(core, &p.agent_id))
         }
         MethodName::RepairManagedAgent => {
             let p: wire::RepairManagedAgentParams = decode(method, params)?;
-            reply_managed(api::repair_managed_agent(&p.agent_id))
+            reply_managed(api::repair_managed_agent(core, &p.agent_id))
         }
         MethodName::UninstallManagedAgent => {
             let p: wire::UninstallManagedAgentParams = decode(method, params)?;
@@ -914,6 +997,22 @@ pub fn dispatch(
                 &p.schedule_expression,
                 p.recurring,
             ))
+        }
+        MethodName::ForkSession => {
+            let p: wire::ForkSessionParams = decode(method, params)?;
+            reply(api::fork_session(
+                core,
+                &p.session_id,
+                &p.entry_id,
+                p.title.as_deref(),
+                p.harness.clone().map(Harness::from).as_ref(),
+                p.model.as_deref(),
+                &p.worktree_policy,
+            ))
+        }
+        MethodName::ResolveReference => {
+            let p: wire::ResolveReferenceParams = decode(method, params)?;
+            reply(api::resolve_reference(core, &p.id))
         }
         MethodName::ExecuteAutomationAction => {
             let p: wire::ExecuteAutomationActionParams = decode(method, params)?;
@@ -1033,6 +1132,24 @@ mod tests {
         // rather than something quietly ignored.
         let error = dispatch(&core, MethodName::GetWorkBoard, Some(json!({})))
             .expect_err("params must be refused");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn context_windows_route_and_enforce_their_params() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        dispatch(&core, MethodName::GetContextWindows, Some(json!({"sessionId": "missing"})))
+            .expect_err("unknown sessions must error, not list nothing");
+        let error = dispatch(&core, MethodName::GetContextWindows, None)
+            .expect_err("params are required");
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        let error = dispatch(
+            &core,
+            MethodName::GetContextWindows,
+            Some(json!({"sessionId": "s", "extra": 1})),
+        )
+        .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
     }
 

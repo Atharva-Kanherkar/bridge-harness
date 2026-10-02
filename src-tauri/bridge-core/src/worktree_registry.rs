@@ -20,7 +20,7 @@
 //!    the mutex, do their filesystem and subprocess work without it, then write
 //!    outcomes back — the shape [`crate::worktree_coordinator`] already uses.
 
-use crate::{git, store, BridgeError};
+use crate::{diagnostics, git, store, BridgeError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -29,8 +29,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// An isolated chat's own checkout.
+/// An orchestrator's isolated checkout.
 pub const KIND_ORCHESTRATOR: &str = "orchestrator";
+/// A direct workspace chat's isolated checkout.
+pub const KIND_DIRECT: &str = "direct";
 /// A delegated worker's child checkout.
 pub const KIND_WORKER: &str = "worker";
 /// A pull request checked out for review.
@@ -57,13 +59,14 @@ pub const STATE_REMOVED: &str = "removed";
 /// root. Reconcile walks these and only these.
 const KIND_DIRECTORIES: &[(&str, &str)] = &[
     ("orchestrators", KIND_ORCHESTRATOR),
+    ("direct", KIND_DIRECT),
     ("workers", KIND_WORKER),
     ("github", KIND_GITHUB),
 ];
 
 /// How deep a kind's checkouts sit below the worktrees root.
 ///
-/// `orchestrators/<workspace>/<session>` and `workers/<task>/<session>` both
+/// `orchestrators/<workspace>/<session>`, `direct/<workspace>/<session>`, and `workers/<task>/<session>`
 /// nest twice; `github/pr-<n>-<branch>` sits directly under its directory.
 /// Walking the wrong depth finds the grouping directory instead of the checkout,
 /// which is neither a worktree nor recognisable as one.
@@ -78,7 +81,7 @@ fn kind_depth(kind: &str) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRecord {
     pub id: String,
-    /// [`KIND_ORCHESTRATOR`], [`KIND_WORKER`], or [`KIND_GITHUB`].
+    /// [`KIND_ORCHESTRATOR`], [`KIND_DIRECT`], [`KIND_WORKER`], or [`KIND_GITHUB`].
     pub kind: String,
     /// The main checkout this worktree is linked to — where `git worktree
     /// remove` and `git worktree prune` have to run.
@@ -1794,7 +1797,7 @@ pub fn run_maintenance_pass(
 ) {
     match reconcile(db, namespace_root) {
         Ok(outcome) if outcome.is_quiet() => {}
-        Ok(outcome) => eprintln!(
+        Ok(outcome) => diagnostics::record(&format!(
             "bridge: worktree reconcile pruned_registrations={} marked_removed={} \
              adopted_orphans={} unverifiable={} external={}",
             outcome.pruned_registrations,
@@ -1802,12 +1805,12 @@ pub fn run_maintenance_pass(
             outcome.adopted_orphans,
             outcome.unverifiable,
             outcome.external,
-        ),
-        Err(error) => eprintln!("bridge: worktree reconcile failed: {error}"),
+        )),
+        Err(error) => diagnostics::record(&format!("bridge: worktree reconcile failed: {error}")),
     }
     match sweep(db, namespace_root, retention) {
         Ok(outcome) if outcome.is_quiet() => {}
-        Ok(outcome) => eprintln!(
+        Ok(outcome) => diagnostics::record(&format!(
             "bridge: worktree sweep removed={} removed_bytes={} retained={} \
              retained_bytes={} over_budget_bytes={} skipped={} measurements_truncated={}",
             outcome.removed,
@@ -1817,8 +1820,8 @@ pub fn run_maintenance_pass(
             outcome.over_budget_bytes,
             outcome.skipped,
             outcome.measurements_truncated,
-        ),
-        Err(error) => eprintln!("bridge: worktree sweep failed: {error}"),
+        )),
+        Err(error) => diagnostics::record(&format!("bridge: worktree sweep failed: {error}")),
     }
 }
 

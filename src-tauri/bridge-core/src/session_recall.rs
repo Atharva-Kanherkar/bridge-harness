@@ -63,7 +63,7 @@ pub(crate) fn install_fts(transaction: &Transaction<'_>) -> Result<(), BridgeErr
     Ok(())
 }
 
-fn searchable_body_sql(payload_expr: &str) -> String {
+pub(crate) fn searchable_body_sql(payload_expr: &str) -> String {
     format!(
         "trim(coalesce(json_extract({payload_expr}, '$.text'), '') || ' ' || \
          coalesce(json_extract({payload_expr}, '$.title'), '') || ' ' || \

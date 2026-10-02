@@ -1,0 +1,81 @@
+name: Issue format
+
+# Enforces the two-audience issue format described in docs/issue-format.md.
+# A non-conforming issue is closed with a comment naming what is missing;
+# editing the body to add the sections reopens it automatically.
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: issue-format-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { checkIssueFormat, rejectionComment, acceptanceComment, EXEMPT_LABEL } =
+              await import(`${process.env.GITHUB_WORKSPACE}/scripts/issue-format.mjs`);
+
+            const issue = context.payload.issue;
+            const { owner, repo } = context.repo;
+            const number = issue.number;
+            const labels = (issue.labels ?? []).map((label) => label.name ?? label);
+            const NEEDS_FORMAT = 'needs-format';
+
+            const docsUrl =
+              `https://github.com/${owner}/${repo}/blob/${context.payload.repository.default_branch}/docs/issue-format.md`;
+            const result = checkIssueFormat(issue.body, { labels });
+            const wasFlagged = labels.some((label) => label.toLowerCase() === NEEDS_FORMAT);
+
+            core.summary.addHeading(`Issue #${number}: ${result.ok ? 'pass' : 'fail'}`, 3);
+
+            if (result.ok) {
+              core.summary.addRaw(result.exempt ? 'Exempt from the format gate.' : 'Both audience sections present.');
+              if (wasFlagged) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: NEEDS_FORMAT })
+                  .catch(() => {});
+                if (issue.state === 'closed') {
+                  await github.rest.issues.update({ owner, repo, issue_number: number, state: 'open' });
+                  await github.rest.issues.createComment({
+                    owner, repo, issue_number: number, body: acceptanceComment(),
+                  });
+                }
+              }
+              await core.summary.write();
+              return;
+            }
+
+            core.summary.addList(result.problems);
+            // Re-editing a still-broken issue should not spam it with the same
+            // comment, so the label doubles as "we have already said this".
+            if (!wasFlagged) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number, body: rejectionComment(result.problems, { docsUrl }),
+              });
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [NEEDS_FORMAT] });
+            if (issue.state === 'open') {
+              await github.rest.issues.update({
+                owner, repo, issue_number: number, state: 'closed', state_reason: 'not_planned',
+              });
+            }
+            core.notice(
+              `Issue #${number} closed: ${result.problems.join(' ')} Add the missing sections, or the ` +
+                `${EXEMPT_LABEL} label if it genuinely does not fit.`,
+            );
+            await core.summary.write();

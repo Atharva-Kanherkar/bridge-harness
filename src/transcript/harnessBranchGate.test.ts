@@ -40,8 +40,7 @@ const TRANSCRIPT_COMPONENTS = [
   "../components/DiffView.tsx",
   "../components/TranscriptPane.tsx",
   "../components/transcriptFacets.ts",
-  "../components/workerPanel.ts",
-  "../components/WorkerDetail.tsx",
+  "../components/AgentChat.tsx",
 ];
 
 /**
@@ -56,16 +55,14 @@ const TRANSCRIPT_COMPONENTS = [
 const IDENTITY_SITES = ["../components/harnessMarks.tsx", "../utils.ts"];
 
 /**
- * Surfaces that legitimately watch the raw stream: the raw event inspector,
- * the facet/problem classifier behind it, and the worker activity feed all
- * exist to show frames as frames. They are held to rule 1 but not rule 2, and
- * they must go through `readWireKind` — which is what makes them greppable,
- * and what this list is.
+ * Surfaces that legitimately watch the raw stream: the raw event inspector and
+ * the facet/problem classifier behind it exist to show frames as frames. They
+ * are held to rule 1 but not rule 2, and they must go through `readWireKind` —
+ * which is what makes them greppable, and what this list is.
  */
 const RAW_STREAM_SITES = [
   "../components/TranscriptPane.tsx",
   "../components/transcriptFacets.ts",
-  "../components/WorkerDetail.tsx",
 ];
 
 const HARNESS_BRANCH = /harness\s*[!=]==\s*["']/;
@@ -181,10 +178,10 @@ describe("harness branch gate", () => {
 
   it("keeps one component in charge of the thinking presentation", () => {
     const source = read("../components/AgentConversation.tsx");
-    // One mark, one call site for the class that animates it. Everything that
-    // means "there is more of this coming" goes through `ThinkingMark`.
-    const marks = source.split("\n").filter(line => line.includes("thinking-shimmer"));
-    expect(marks, "the thinking sweep belongs to ThinkingMark and to nothing else").toHaveLength(1);
+    // One row, one call site for the class that animates it. Everything that
+    // means "there is more of this coming" goes through `ThinkingRow`.
+    const marks = source.split("\n").filter(line => line.includes("thinking-word"));
+    expect(marks, "the thinking pulse belongs to ThinkingRow and to nothing else").toHaveLength(1);
     expect(marks[0]).toContain("cn(");
     // And it is not decided by anything but the item's own status.
     expect(source).toContain("function Reasoning({ item }: { item: ConversationItem })");

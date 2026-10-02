@@ -49,9 +49,10 @@ function item(overrides: Partial<ConnectorInboxItem> = {}): ConnectorInboxItem {
   };
 }
 
-function inbox(items: ConnectorInboxItem[], degraded: string | null = null): ConnectorInboxResult {
+function inbox(items: ConnectorInboxItem[], degraded: string | null = null, includeReadMentions = false): ConnectorInboxResult {
   return {
     items,
+    includeReadMentions,
     unreadCount: items.filter(entry => entry.state !== "resolved").length,
     poll: [{ family: "slack", lastAttemptAt: "2026-09-13T09:00:00Z", lastSuccessAt: degraded ? null : "2026-09-13T09:00:00Z", degraded }],
   };
@@ -255,6 +256,36 @@ describe("ConnectorPane", () => {
     const button = node.querySelector('button[aria-label="Check for new messages"]') as HTMLButtonElement;
     await act(async () => { button.click(); await flush(); });
     expect(refresh.mock.calls.map(call => call[0]).sort()).toEqual(["gmail", "slack"]);
+  });
+
+  it("renders the read-mentions toggle from stored state", async () => {
+    stub(inbox([item()], null, true));
+    const node = await mount(<ConnectorPane />);
+    const toggle = node.querySelector('button[aria-label="Include messages you have already read"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("persists the toggle and rechecks, so the effect is not a cadence away", async () => {
+    // The toggle exists to answer "is this connector working" on demand. Saving
+    // it and then waiting up to 30 seconds for the next cycle would not answer
+    // it, so the click has to force a check too.
+    const order: string[] = [];
+    const save = vi.spyOn(bridgeApi, "connectorSetSettings")
+      .mockImplementation(async () => { order.push("save"); return { includeReadMentions: true }; });
+    const refresh = vi.spyOn(bridgeApi, "connectorRefresh")
+      .mockImplementation(async () => { order.push("check"); return { announced: 0 }; });
+    stub(inbox([item()], null, false));
+    const node = await mount(<ConnectorPane />);
+
+    const toggle = node.querySelector('button[aria-label="Include messages you have already read"]') as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle.click(); await flush(); });
+
+    expect(save).toHaveBeenCalledWith(true);
+    expect(refresh).toHaveBeenCalled();
+    // Order is load-bearing: a check started before the setting landed would
+    // read the old value and answer the question the user just stopped asking.
+    expect(order).toEqual(["save", "check"]);
   });
 
   it("opens the item a toast deep-linked to", async () => {

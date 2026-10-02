@@ -56,7 +56,9 @@ check(moneyLabel(fixture.selectedUsage!.month.costMicrousd) == "Unavailable", "U
 check(fixture.selectedUsage?.today.models[0].totalTokens.current == 60, "Model token fields must agree")
 var available = fixture.selectedUsage!
 available.windows[1].usedPercent = Metric(value: 58, source: "reported", status: "current")
-check(available.menuWindow("auto", now: 100)?.id == "session", "Automatic prefers a current session")
+check(available.menuWindow("auto", now: 100)?.id == "weekly", "Automatic headlines the window closest to exhaustion, not the first slot")
+available.windows[0].usedPercent = Metric(value: 71, source: "reported", status: "current")
+check(available.menuWindow("auto", now: 100)?.id == "session", "Automatic follows the tightest window as usage moves")
 available.windows[0].usedPercent = .unavailable
 check(available.menuWindow("auto", now: 100)?.id == "weekly", "Automatic supports weekly-only accounts")
 check(available.menuWindow("session", now: 100)?.usedPercent.current == nil, "Explicit selection must not silently switch windows")
@@ -454,7 +456,7 @@ check(allProviders.normalizedPinnedProviders == ["cursor", "codex", "claude", "o
 check(allProviders.visibleProviders == ["cursor", "codex", "claude", "opencode"], "All selected favorites appear in order")
 var legacySettings = fixture.settings
 legacySettings.pinnedProviders = nil
-check(legacySettings.visibleProviders.prefix(3) == ["codex", "claude", "cursor"], "Old payloads show the default favorite three including Cursor")
+check(legacySettings.visibleProviders.prefix(2) == ["codex", "claude"], "Old payloads show the default Codex and Claude favorites")
 var emptyFavorites = fixture.settings
 emptyFavorites.pinnedProviders = []
 emptyFavorites.codexEnabled = false

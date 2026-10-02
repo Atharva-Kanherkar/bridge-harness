@@ -16,7 +16,7 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
 };
 
@@ -24,6 +24,18 @@ use std::{
 /// version for every crate precisely so this cannot drift from the application
 /// version a snapshot names.
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Take a workspace serialization guard, ignoring poison.
+///
+/// These locks guard `()`. They order operations on one workspace and protect
+/// no data, so a panic under one leaves nothing inconsistent behind. Poisoning
+/// them, though, makes every later caller panic for the life of the process: a
+/// single stray panic inside the lock would otherwise brick session starts,
+/// chat sends, refreshes, and terminal creation for that workspace until the
+/// app is restarted.
+pub(crate) fn lock_operation(operation: &Mutex<()>) -> MutexGuard<'_, ()> {
+    operation.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 pub struct RuntimeSession {
     pub writer: Box<dyn Write + Send>,
@@ -87,6 +99,16 @@ pub struct BridgeCore {
     /// See `session_context`.
     pub session_context: Mutex<crate::session_context::SessionContextLedger>,
     pub browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
+    /// Throwaway browser processes on RAM disks. Separate from the bridge above,
+    /// which attaches to the user's own browser; boot sweeps any clone a
+    /// previous core left running before this one serves.
+    #[cfg(target_os = "macos")]
+    pub browser_clones: Arc<crate::browser_clone::CloneSupervisor>,
+    /// Ties the clone process, guard, sign-in, and agent tool into the actual
+    /// flow. Its capability is injected into an agent turn whose session holds a
+    /// clone (see `live_turn`).
+    #[cfg(target_os = "macos")]
+    pub browser_clone_orchestrator: Arc<crate::clone_orchestrator::CloneOrchestrator>,
     /// Read-only `gh` CLI surface. It owns no credentials and is deliberately
     /// separate from model adapters and their sidecars.
     pub github_surface: crate::github_surface::GithubSurface,
@@ -96,6 +118,13 @@ pub struct BridgeCore {
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
     pub worker_activity: Mutex<HashMap<String, std::time::Instant>>,
+    /// Last progress frame per chat (depth-0) session, read by the chat-turn
+    /// stall watchdog. Separate from `worker_activity` so the per-second worker
+    /// watchdog never scans chats and never probes `worker_runtime` for them.
+    /// An entry exists only while a reader serves an active turn; it is
+    /// removed on every terminal boundary (`turn.completed`, approval wait,
+    /// reader teardown).
+    pub chat_activity: Mutex<HashMap<String, std::time::Instant>>,
     /// Sessions where the user clicked Stop and an interrupt is in flight.
     /// The provider's reaction to that interrupt (an aborted-turn error,
     /// a broken pipe, a non-zero exit) races the teardown in `stop_session`,
@@ -276,7 +305,7 @@ impl BridgeCore {
         Arc::clone(
             self.workspace_operations
                 .lock()
-                .unwrap()
+                .unwrap_or_else(PoisonError::into_inner)
                 .entry(workspace_id.to_owned())
                 .or_insert_with(|| Arc::new(Mutex::new(()))),
         )
@@ -286,6 +315,10 @@ impl BridgeCore {
     /// a dormant browser supervisor — for exercising domain methods in tests.
     #[cfg(test)]
     pub(crate) fn for_tests(scratch: &std::path::Path) -> BridgeCore {
+        #[cfg(target_os = "macos")]
+        let browser_clones = crate::browser_clone::CloneSupervisor::guarded(scratch.join("browser-clones.json"));
+        #[cfg(target_os = "macos")]
+        let browser_clone_orchestrator = build_clone_orchestrator(Arc::clone(&browser_clones)).unwrap();
         BridgeCore {
             db: Mutex::new(store::open(std::path::Path::new(":memory:")).unwrap()),
             telemetry_db: Mutex::new(
@@ -318,11 +351,16 @@ impl BridgeCore {
                 scratch.join("no-extension"),
                 scratch.join("browser-site-metrics.json"),
             ),
+            #[cfg(target_os = "macos")]
+            browser_clones,
+            #[cfg(target_os = "macos")]
+            browser_clone_orchestrator,
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
+            chat_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events: EventBus::new(),
@@ -411,6 +449,21 @@ impl BridgeCore {
         let catalog_registration =
             integrations.offer_catalog(&loaded.catalog, &mut backend_resolver);
 
+        // A core that died without shutting down leaves its browser clones
+        // running with their RAM disks mounted. Reap them before serving; a
+        // record that cannot be resolved stays for the next boot and must not
+        // abort this one.
+        #[cfg(target_os = "macos")]
+        let browser_clones = {
+            let clones = crate::browser_clone::CloneSupervisor::guarded(
+                config.data_dir.join("browser-clones.json"),
+            );
+            let _ = clones.sweep_orphans();
+            clones
+        };
+        #[cfg(target_os = "macos")]
+        let browser_clone_orchestrator =
+            build_clone_orchestrator(Arc::clone(&browser_clones))?;
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),
@@ -439,11 +492,16 @@ impl BridgeCore {
             skill_consents: Arc::new(Mutex::new(HashMap::new())),
             credential_broker,
             browser_bridge,
+            #[cfg(target_os = "macos")]
+            browser_clones,
+            #[cfg(target_os = "macos")]
+            browser_clone_orchestrator,
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
             connector_poller: crate::connector_runs_live::ConnectorPoller::default(),
             session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
+            chat_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events,
@@ -454,6 +512,33 @@ impl BridgeCore {
             usage_overview: crate::usage_overview::UsageOverviewService::default(),
         })
     }
+}
+
+/// Build the clone orchestrator using the same supervisor as crash recovery,
+/// and the agent tool on a short
+/// socket path. Kept out of the struct literal because the orchestrator needs
+/// its supervisor and tool as values.
+#[cfg(target_os = "macos")]
+fn build_clone_orchestrator(
+    supervisor: Arc<crate::browser_clone::CloneSupervisor>,
+) -> Result<Arc<crate::clone_orchestrator::CloneOrchestrator>, BridgeError> {
+    // A short base dir so the tool's unix socket clears SUN_LEN.
+    let tools_dir = std::env::temp_dir().join(format!("bc-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]));
+    let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), tools_dir)
+        .map_err(|error| BridgeError::Invalid(format!("Could not start browser clone tools: {error}")))?;
+    let orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(supervisor, tool);
+    // The lease is enforced here: every few seconds, destroy any clone whose
+    // time is up. The thread holds only a Weak, so it ends with the core.
+    let weak = Arc::downgrade(&orchestrator);
+    std::thread::Builder::new()
+        .name("bridge-clone-lease".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            let Some(orchestrator) = weak.upgrade() else { break };
+            orchestrator.sweep_expired();
+        })
+        .ok();
+    Ok(orchestrator)
 }
 
 #[cfg(test)]
@@ -489,6 +574,30 @@ mod tests {
         }
     }
 
+    /// A panic under a workspace serialization lock used to poison it for the
+    /// life of the process, so every later session start, chat send, or
+    /// refresh on that workspace panicked with `PoisonError` instead of doing
+    /// its work. The lock guards `()`, so there is nothing to protect.
+    #[test]
+    fn a_poisoned_workspace_lock_still_serializes_later_operations() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(fixture.path());
+        let operation = core.workspace_operation("workspace-1");
+
+        let poisoner = Arc::clone(&operation);
+        std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("a diagnostic write failed under the lock");
+        })
+        .join()
+        .unwrap_err();
+        assert!(operation.is_poisoned());
+
+        drop(lock_operation(&operation));
+        let reacquired = core.workspace_operation("workspace-1");
+        let _still_usable = lock_operation(&reacquired);
+    }
+
     #[test]
     fn boot_prepares_stores_and_derived_paths_under_the_data_dir() {
         let fixture = tempfile::tempdir().unwrap();
@@ -521,6 +630,49 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(sessions, 0);
+    }
+
+    /// A core that crashed leaves its browser clone running and its RAM disk
+    /// mounted. Boot must reap both before it returns, so nothing serves while
+    /// a stale clone still holds session data.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn boot_sweeps_orphaned_browser_clones_before_returning() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let mut id = uuid::Uuid::new_v4().simple().to_string();
+        id.truncate(12);
+        let mount = std::env::temp_dir().join("bridge-clones").join(&id);
+        std::fs::create_dir_all(&mount).unwrap();
+        std::fs::write(mount.join("session-data"), b"x").unwrap();
+
+        // A stand-in for the orphaned browser: same shape of command line, in
+        // its own process group like a real clone.
+        let mut orphan = std::process::Command::new("perl");
+        orphan
+            .args(["-e", "sleep 300", "--"])
+            .arg(format!("--user-data-dir={}", mount.display()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        adapters::configure_process_group(&mut orphan);
+        let mut orphan = orphan.spawn().unwrap();
+        let ledger = data_dir.join("browser-clones.json");
+        std::fs::write(
+            &ledger,
+            serde_json::to_vec(&serde_json::json!([{ "pid": orphan.id(), "mount": mount }]))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let _core = BridgeCore::boot(seeded_config(data_dir)).unwrap();
+
+        let killed = orphan.try_wait().unwrap().is_some();
+        let _ = orphan.kill();
+        let _ = orphan.wait();
+        assert!(killed, "boot left the orphaned browser running");
+        assert!(!mount.exists(), "boot left the orphaned mount behind");
+        assert!(!ledger.exists(), "boot left the ledger record behind");
     }
 
     #[test]

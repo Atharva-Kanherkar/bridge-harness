@@ -24,6 +24,13 @@ export const EVALUATION_SESSION_KIND = "outcome_evaluation";
  * `bridge_core::memory_consolidation::CONSOLIDATION_SESSION_KIND`. */
 export const CONSOLIDATION_SESSION_KIND = "consolidation";
 
+/** Mirrors `bridge_core::connector_runs_live::CONNECTOR_SESSION_KIND`. One is
+ * minted per connector poll, so these outnumber real chats by thousands. */
+export const CONNECTOR_SESSION_KIND = "connector";
+
+/** Mirrors `bridge_core::chat_search::CHAT_SEARCH_SESSION_KIND`. */
+export const CHAT_SEARCH_SESSION_KIND = "chat_search";
+
 /** Is this a session Bridge runs for itself, that a human should never meet in a list?
  *
  * A predicate rather than an ordering rule: a run that merely sorted last would
@@ -35,6 +42,8 @@ const HIDDEN_SESSION_KINDS = [
   EXTRACTION_SESSION_KIND,
   EVALUATION_SESSION_KIND,
   CONSOLIDATION_SESSION_KIND,
+  CONNECTOR_SESSION_KIND,
+  CHAT_SEARCH_SESSION_KIND,
 ];
 
 export function isHiddenSession(chat: Pick<Session, "kind">): boolean {
@@ -116,8 +125,51 @@ export function statusBucket(status: SessionStatus): StatusBucket {
   return "idle";
 }
 
-export function chatName(chat: Session): string {
-  return chat.title || chat.label;
+/** A child agent in one of these still has work in hand, or waits on you for it. */
+const LIVE_AGENT_STATUSES: readonly SessionStatus[] = [...STATUS_BUCKETS.active, ...STATUS_BUCKETS.waiting];
+
+/** Each chat's live descendant agents, keyed by the chat at the top of the tree. */
+export type LiveAgents = ReadonlyMap<string, readonly string[]>;
+
+/**
+ * Which agents are still running under each chat.
+ *
+ * A chat whose own turn has ended is still busy while a worker it started is
+ * running, and without this it reads as finished. Nested workers count toward
+ * the chat at the top of their tree, because that is the row a person sees.
+ */
+export function liveAgentSessions(sessions: readonly Session[]): LiveAgents {
+  const byId = new Map(sessions.map(session => [session.id, session]));
+  const live = new Map<string, string[]>();
+  for (const session of sessions) {
+    if (!session.parentSessionId || !LIVE_AGENT_STATUSES.includes(session.status)) continue;
+    let root = byId.get(session.parentSessionId);
+    const seen = new Set<string>();
+    while (root?.parentSessionId && byId.has(root.parentSessionId) && !seen.has(root.id)) {
+      seen.add(root.id);
+      root = byId.get(root.parentSessionId);
+    }
+    if (!root) continue;
+    live.set(root.id, [...(live.get(root.id) ?? []), session.id]);
+  }
+  return live;
+}
+
+/** A chat's bucket: its own status, or active while its agents run under an idle turn. */
+export function chatBucket(chat: Session, liveAgents?: LiveAgents): StatusBucket {
+  const own = statusBucket(chat.status);
+  return own === "idle" && (liveAgents?.get(chat.id)?.length ?? 0) > 0 ? "active" : own;
+}
+
+/** Labels a session is born with (mirrors `session_titles::PLACEHOLDER_TITLES`).
+ *  Until the backend titles a chat from its first message, these say nothing
+ *  about it, and three rows reading "Orchestrator" tell the user less than one
+ *  reading "New chat". */
+const PLACEHOLDER_LABELS = new Set(["orchestrator", "bridge orchestrator", "new chat"]);
+
+export function chatName(chat: Pick<Session, "title" | "label">): string {
+  if (chat.title) return chat.title;
+  return PLACEHOLDER_LABELS.has(chat.label.trim().toLowerCase()) ? "New chat" : chat.label;
 }
 
 /** Session carries no last-activity field, so the day a chat sorts under is when
@@ -180,10 +232,12 @@ export function filterChats(
     status = "all",
     agent = "all",
     workspaceTitle,
+    liveAgents,
   }: {
     query?: string;
     status?: ChatStatusFilter;
     agent?: string;
+    liveAgents?: LiveAgents;
     /** Resolves a chat's project name into the search haystack, so looking up a
      * project by name surfaces its chats instead of an empty project. */
     workspaceTitle?: (workspaceId: string | null | undefined) => string | undefined;
@@ -191,7 +245,7 @@ export function filterChats(
 ): Session[] {
   const needle = query.trim().toLowerCase();
   return chats.filter(chat => {
-    if (status !== "all" && statusBucket(chat.status) !== status) return false;
+    if (status !== "all" && chatBucket(chat, liveAgents) !== status) return false;
     if (agent !== "all" && chat.harness !== agent) return false;
     if (!needle) return true;
     const project = workspaceTitle?.(chat.workspaceId) ?? "";
@@ -243,7 +297,8 @@ export function groupChats(
     sortBy,
     workspaces = [],
     now,
-  }: { groupBy: ChatGroupBy; sortBy: ChatSortBy; workspaces?: Workspace[]; now: number },
+    liveAgents,
+  }: { groupBy: ChatGroupBy; sortBy: ChatSortBy; workspaces?: Workspace[]; now: number; liveAgents?: LiveAgents },
 ): ChatGroup[] {
   if (groupBy === "none") return [{ key: "all", label: "", chats: sortChats(chats, sortBy) }];
 
@@ -278,7 +333,7 @@ export function groupChats(
       .sort((a, b) => b.chats.length - a.chats.length || a.label.localeCompare(b.label));
   }
 
-  const buckets = bucketBy(chats, chat => statusBucket(chat.status));
+  const buckets = bucketBy(chats, chat => chatBucket(chat, liveAgents));
   return STATUS_BUCKET_ORDER.filter(bucket => buckets.has(bucket)).map(bucket => ({
     key: bucket,
     label: STATUS_BUCKET_LABELS[bucket],

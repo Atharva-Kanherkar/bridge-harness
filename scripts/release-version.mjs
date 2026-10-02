@@ -269,10 +269,18 @@ export function readReleaseVersionState(root = defaultRoot) {
   };
 }
 
-export function verifyReleaseVersions(root = defaultRoot, { checkLocks = true } = {}) {
+export function verifyReleaseVersions(
+  root = defaultRoot,
+  { checkLocks = true, allowNightly = false } = {},
+) {
   const state = readReleaseVersionState(root);
   if (!SEMVER.test(state.packageVersion)) {
     throw new Error(`package.json has invalid semantic version ${state.packageVersion}`);
+  }
+  const nightly = allowNightly && /^\d+\.\d+\.\d+-nightly\.\d{8}$/.test(state.packageVersion);
+  const baselineVersion = nightly ? state.manifestVersion : state.packageVersion;
+  if (nightly && !/^\d+\.\d+\.\d+$/.test(baselineVersion)) {
+    throw new Error("Nightly release manifest must retain a stable semantic version");
   }
   for (const [source, version] of [
     ["src-tauri/tauri.conf.json", state.tauriVersion],
@@ -283,8 +291,11 @@ export function verifyReleaseVersions(root = defaultRoot, { checkLocks = true } 
     [".release-please-manifest.json", state.manifestVersion],
     ["packaging/arch/PKGBUILD", state.archVersion],
   ]) {
-    if (version !== state.packageVersion) {
-      throw new Error(`${source} version ${version} does not match package.json ${state.packageVersion}`);
+    const expectedVersion = source === "src-tauri/tauri.conf.json" || source === "src-tauri/Cargo.toml"
+      ? state.packageVersion
+      : baselineVersion;
+    if (version !== expectedVersion) {
+      throw new Error(`${source} version ${version} does not match package.json ${expectedVersion}`);
     }
   }
   if (checkLocks) {
@@ -304,16 +315,16 @@ export function verifyReleaseVersions(root = defaultRoot, { checkLocks = true } 
       ],
       ['bun.lock workspaces["sidecar/claude-agent"]', state.claudeBunWorkspaceVersion],
     ]) {
-      if (version !== state.packageVersion) {
-        throw new Error(`${source} version ${version} does not match package.json ${state.packageVersion}`);
+      if (version !== state.claudePackageVersion) {
+        throw new Error(`${source} version ${version} does not match package.json ${state.claudePackageVersion}`);
       }
     }
   }
   return state;
 }
 
-export function syncGeneratedLockVersions(root = defaultRoot) {
-  const state = verifyReleaseVersions(root, { checkLocks: false });
+export function syncGeneratedLockVersions(root = defaultRoot, { allowNightly = false } = {}) {
+  const state = verifyReleaseVersions(root, { checkLocks: false, allowNightly });
   const updates = [
     {
       path: join(root, "src-tauri/Cargo.lock"),
@@ -323,7 +334,7 @@ export function syncGeneratedLockVersions(root = defaultRoot) {
     {
       path: join(root, "sidecar/claude-agent/package-lock.json"),
       update: (before) =>
-        updateNpmPackageLockVersions(before, state.claudePackageName, state.packageVersion),
+        updateNpmPackageLockVersions(before, state.claudePackageName, state.claudePackageVersion),
     },
     {
       path: join(root, "bun.lock"),
@@ -332,7 +343,7 @@ export function syncGeneratedLockVersions(root = defaultRoot) {
           before,
           "sidecar/claude-agent",
           state.claudePackageName,
-          state.packageVersion,
+          state.claudePackageVersion,
         ),
     },
   ].map(({ path, update }) => {
@@ -342,7 +353,7 @@ export function syncGeneratedLockVersions(root = defaultRoot) {
   for (const { path, before, after } of updates) {
     if (after !== before) writeFileSync(path, after);
   }
-  verifyReleaseVersions(root);
+  verifyReleaseVersions(root, { allowNightly });
   return updates.some(({ before, after }) => after !== before);
 }
 

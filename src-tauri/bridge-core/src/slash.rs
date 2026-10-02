@@ -36,6 +36,10 @@ pub enum SlashDispatch {
     Clear,
     /// Bridge-handled: FTS5 recall in this session only.
     Recall { query: String },
+    /// Bridge-handled: find a chat across every chat, index only. The
+    /// composer intercepts it to open the sidebar search, so this arm only
+    /// answers clients that submit it directly.
+    Find { query: String },
     /// Bridge-handled: save an about-me pin to `account:local`.
     Pin { body: String },
     /// Bridge-handled: list active `account:local` pins.
@@ -72,6 +76,12 @@ pub fn list_commands_for_project(
         SlashCommand {
             name: "recall".into(),
             description: "Search this chat's history (this session only)".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "find".into(),
+            description: "Find a past chat from what you remember about it".into(),
             harness: "bridge".into(),
             kind: "builtin".into(),
         },
@@ -235,6 +245,11 @@ pub fn dispatch_for_project(
                 query: args.unwrap_or("").to_string(),
             };
         }
+        "find" => {
+            return SlashDispatch::Find {
+                query: args.unwrap_or("").to_string(),
+            };
+        }
         "pin" => {
             return SlashDispatch::Pin {
                 body: args.unwrap_or("").to_string(),
@@ -329,6 +344,7 @@ pub fn is_bridge_local(name: &str) -> bool {
             | "new"
             | "reset"
             | "recall"
+            | "find"
             | "pin"
             | "pins"
             | "unpin"
@@ -788,6 +804,11 @@ mod tests {
             dispatch("/unpin abcdef12", "claude", &available),
             SlashDispatch::Unpin { selector } if selector == "abcdef12"
         ));
+        assert!(matches!(
+            dispatch("/find the plugins stall", "codex", &available),
+            SlashDispatch::Find { query } if query == "the plugins stall"
+        ));
+        assert!(is_bridge_local("find"));
         assert!(is_bridge_local("pin") && is_bridge_local("pins") && is_bridge_local("unpin"));
         let catalog = list_commands(&HashSet::new());
         assert!(catalog
@@ -796,6 +817,9 @@ mod tests {
         assert!(catalog
             .iter()
             .any(|command| command.name == "pin" && command.harness == "bridge"));
+        assert!(catalog
+            .iter()
+            .any(|command| command.name == "find" && command.harness == "bridge"));
     }
 
     #[test]

@@ -4,6 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileLinkContext, Markdown, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
+import * as highlight from "./highlight";
+
+const mermaidMock = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  parse: vi.fn().mockResolvedValue(true),
+  render: vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg"></svg>' }),
+}));
+vi.mock("mermaid", () => ({ default: mermaidMock }));
 
 describe("splitBlocks rich content detection", () => {
   it("detects a diagram fenced block", () => {
@@ -12,9 +20,9 @@ describe("splitBlocks rich content detection", () => {
     expect(blocks).toEqual([{ kind: "diagram", spec }]);
   });
 
-  it("classifies a legacy mermaid fence as plain code, not a diagram", () => {
+  it("detects a Mermaid fenced block", () => {
     expect(splitBlocks("```mermaid\ngraph TD; A-->B;\n```")).toEqual([
-      { kind: "code", lang: "mermaid", body: "graph TD; A-->B;" },
+      { kind: "mermaid", code: "graph TD; A-->B;" },
     ]);
   });
 
@@ -97,11 +105,56 @@ describe("DiagramBlock rendering", () => {
     expect(html).toContain("Could not render this diagram");
   });
 
-  it("no longer treats a legacy mermaid block as a failed diagram — just a plain code block", () => {
-    const html = renderToStaticMarkup(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />);
-    expect(html).toContain("code-block");
-    expect(html).toContain("mermaid");
-    expect(html).not.toContain("Could not render");
+});
+
+describe("Mermaid rendering", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mermaidMock.parse.mockResolvedValue(true);
+    mermaidMock.render.mockResolvedValue({ svg: '<svg data-testid="mermaid-svg"></svg>' });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    document.documentElement.classList.remove("dark");
+  });
+
+  it("renders a Mermaid fence as SVG and copies its source", async () => {
+    const code = "graph TD; A-->B;";
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    });
+    await act(async () => { root.render(<Markdown text={`\`\`\`mermaid\n${code}\n\`\`\``} />); });
+    expect(mermaidMock.parse).toHaveBeenCalledWith(code);
+    expect(mermaidMock.render).toHaveBeenCalledWith(expect.stringMatching(/^bridge-mermaid-/), code);
+    expect(container.querySelector('[data-testid="mermaid-svg"]')).toBeTruthy();
+    expect(container.querySelector(".code-block")).toBeNull();
+    expect(mermaidMock.initialize).toHaveBeenCalledWith(expect.objectContaining({ securityLevel: "strict" }));
+    await act(async () => { (container.querySelector(".rich-block-copy") as HTMLButtonElement).click(); await Promise.resolve(); });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(code);
+  });
+
+  it("shows source when Mermaid rejects invalid syntax", async () => {
+    mermaidMock.parse.mockRejectedValueOnce(new Error("bad syntax"));
+    await act(async () => { root.render(<Markdown text={"```mermaid\ninvalid\n```"} />); });
+    expect(container.textContent).toContain("Could not render this Mermaid diagram");
+    expect(container.querySelector(".code-block")?.textContent).toContain("invalid");
+  });
+
+  it("re-renders when the active theme changes", async () => {
+    await act(async () => { root.render(<Markdown text={"```mermaid\ngraph TD; A-->B;\n```"} />); });
+    document.documentElement.classList.add("dark");
+    await act(async () => { await Promise.resolve(); });
+    expect(mermaidMock.initialize).toHaveBeenLastCalledWith(expect.objectContaining({ theme: "dark" }));
+    expect(mermaidMock.render).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -231,8 +284,12 @@ describe("copy affordances (interactive)", () => {
 describe("CodeBlock async colorization", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let pending: Array<(html: string) => void>;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    pending = [];
+    vi.spyOn(highlight, "colorizeCode").mockImplementation(() => new Promise(resolve => { pending.push(resolve); }));
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -241,42 +298,65 @@ describe("CodeBlock async colorization", () => {
   afterEach(() => {
     act(() => { root.unmount(); });
     container.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
-  // Real dynamic-import + real Shiki tokenization, timed against the actual
-  // wall clock — under a full, concurrent test-suite run, a single
-  // `setTimeout(0)` tick isn't a reliable wait. Poll instead of guessing a
-  // fixed delay.
-  const waitFor = async (check: () => boolean, timeoutMs = 3000) => {
-    const start = Date.now();
-    while (!check()) {
-      if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for colorization");
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-    }
-  };
+  const startColorization = () => act(() => { vi.advanceTimersByTime(highlight.COLORIZE_DEBOUNCE_MS); });
+  const colored = (name: string) => `<span class="stx-keyword">const</span> ${name} = 1;`;
 
   it("renders plain escaped text immediately, then upgrades to .stx-* spans", async () => {
-    // A plain (non-async) act() flushes the effect's synchronous first half
-    // (the immediate `setHtml(escapeHtml(body))`) without waiting for the
-    // `colorizeCode` promise it also kicks off — the only way to observe the
-    // pre-colour frame deterministically, independent of how warm the
-    // shared Shiki module cache happens to be from earlier tests.
-    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    const body = 'const x = "<script>&";';
+    act(() => { root.render(<Markdown text={`\`\`\`ts\n${body}\n\`\`\``} />); });
     const code = container.querySelector("code.stx") as HTMLElement;
     expect(code).toBeTruthy();
-    expect(code.innerHTML).toBe("const x = 1;");
+    expect(code.innerHTML).toBe('const x = "&lt;script&gt;&amp;";');
+    expect(code.textContent).toBe(body);
+    expect(code.querySelector("script")).toBeNull();
+    expect(highlight.colorizeCode).not.toHaveBeenCalled();
 
-    await waitFor(() => code.innerHTML.includes("stx-keyword"));
+    startColorization();
+    expect(highlight.colorizeCode).toHaveBeenCalledTimes(1);
+    expect(highlight.colorizeCode).toHaveBeenCalledWith(body, "ts");
+    expect(code.querySelector(".stx-keyword")).toBeNull();
+    await act(async () => { pending[0]('<span class="stx-keyword">const</span> x = "&lt;script&gt;&amp;";'); });
+    expect(code.querySelector(".stx-keyword")?.textContent).toBe("const");
+    expect(code.textContent).toBe(body);
   });
 
   it("resets to plain text immediately when the code changes, instead of keeping stale colour", async () => {
-    await act(async () => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
     const code = container.querySelector("code.stx") as HTMLElement;
-    await waitFor(() => code.innerHTML.includes("stx-keyword"));
+    startColorization();
+    await act(async () => { pending[0](colored("x")); });
     expect(code.innerHTML).toContain("stx-keyword");
 
     act(() => { root.render(<Markdown text={"```ts\nconst y = 2;\n```"} />); });
     expect(code.innerHTML).toBe("const y = 2;");
+  });
+
+  it("ignores an old completion after the replacement code has been coloured", async () => {
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    startColorization();
+    act(() => { root.render(<Markdown text={"```ts\nconst y = 1;\n```"} />); });
+    startColorization();
+    await act(async () => { pending[1](colored("y")); });
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code.innerHTML).toBe(colored("y"));
+
+    await act(async () => { pending[0](colored("x")); });
+    expect(code.innerHTML).toBe(colored("y"));
+  });
+
+  it("keeps escaped text when colorization settles with a plain fallback", async () => {
+    const body = "<script>&</script>";
+    act(() => { root.render(<Markdown text={`\`\`\`ts\n${body}\n\`\`\``} />); });
+    startColorization();
+    await act(async () => { pending[0](highlight.escapeHtml(body)); });
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code.innerHTML).toBe("&lt;script&gt;&amp;&lt;/script&gt;");
+    expect(code.textContent).toBe(body);
+    expect(code.querySelector("script, .stx-keyword")).toBeNull();
   });
 });
 
@@ -371,5 +451,54 @@ describe("file links out of prose", () => {
     expect(container.querySelector("button")).toBeNull();
     expect(container.textContent).toContain("src/App.tsx:42");
     expect(container.textContent).toContain("@src/App.tsx");
+  });
+});
+
+describe("bare URLs in prose", () => {
+  const render = (text: string) => renderToStaticMarkup(<Markdown text={text} />);
+
+  it("links a URL an agent typed as prose", () => {
+    const html = render("take a look at https://github.com/o/r/pull/341 when you can");
+    expect(html).toContain('href="https://github.com/o/r/pull/341"');
+    expect(html).toMatch(/<a [^>]*>https:\/\/github\.com\/o\/r\/pull\/341<\/a>/);
+  });
+
+  it("links http as well as https", () => {
+    expect(render("see http://example.test/x")).toContain('href="http://example.test/x"');
+  });
+
+  it("leaves sentence punctuation outside the link", () => {
+    const html = render("shipped in https://example.test/a, then https://example.test/b.");
+    expect(html).toContain('href="https://example.test/a"');
+    expect(html).toContain('href="https://example.test/b"');
+    expect(html).not.toContain('href="https://example.test/a,"');
+    expect(html).not.toContain('href="https://example.test/b."');
+  });
+
+  it("does not touch a URL inside a code span", () => {
+    const html = render("run `curl https://example.test/x` first");
+    expect(html).toContain("<code>");
+    expect(html).not.toContain("<a ");
+  });
+
+  it("does not touch a URL inside a fenced code block", () => {
+    const html = render("```\ncurl https://example.test/x\n```");
+    expect(html).not.toContain("<a ");
+  });
+
+  it("leaves a written-out markdown link as the one link", () => {
+    const html = render("see [the PR](https://github.com/o/r/pull/341) please");
+    expect(html).toMatch(/<a [^>]*href="https:\/\/github\.com\/o\/r\/pull\/341"[^>]*>the PR<\/a>/);
+    // The address must not also appear as its own second anchor.
+    expect(html.match(/<a /g)?.length).toBe(1);
+  });
+
+  it("does not nest an autolink inside a markdown link whose label is the URL", () => {
+    const html = render("[https://example.test/x](https://example.test/x)");
+    expect(html.match(/<a /g)?.length).toBe(1);
+  });
+
+  it("does not link a scheme it would never open", () => {
+    expect(render("javascript:alert(1) and file:///etc/passwd")).not.toContain("<a ");
   });
 });
