@@ -3,6 +3,8 @@ const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in 
 export type UpdateChannel = "stable" | "beta";
 export type UpdateInfo = { version: string; currentVersion: string; body: string | null; channel: UpdateChannel };
 export class UpdateInstallUnavailableError extends Error {}
+export class UpdateCheckSupersededError extends Error {}
+let checkGeneration = 0;
 const CHANNEL_KEY = "bridge:update-channel";
 
 export function getUpdateChannel(): UpdateChannel {
@@ -15,16 +17,25 @@ export function setUpdateChannel(channel: UpdateChannel): void {
 }
 
 export async function checkForUpdate(channel = getUpdateChannel()): Promise<UpdateInfo | null> {
+  const generation = ++checkGeneration;
   if (!isTauri()) return null;
+  let result: UpdateInfo | null;
   if (channel === "beta") {
     const { invoke } = await import("@tauri-apps/api/core");
     const update = await invoke<Omit<UpdateInfo, "channel"> | null>("check_nightly_update");
-    return update ? { ...update, channel } : null;
+    result = update ? { ...update, channel } : null;
+  } else {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const update = await check();
+    try {
+      result = update ? { version: update.version, currentVersion: update.currentVersion, body: update.body ?? null, channel } : null;
+    } finally {
+      await update?.close();
+    }
   }
-  const { check } = await import("@tauri-apps/plugin-updater");
-  const update = await check();
-  if (!update) return null;
-  return { version: update.version, currentVersion: update.currentVersion, body: update.body ?? null, channel };
+  // A stale result must not look like "up to date" to callers that clear the toast.
+  if (generation !== checkGeneration) throw new UpdateCheckSupersededError();
+  return result;
 }
 
 export async function installUpdateAndRestart(update: UpdateInfo): Promise<void> {
@@ -40,8 +51,13 @@ export async function installUpdateAndRestart(update: UpdateInfo): Promise<void>
   } else {
     const { check } = await import("@tauri-apps/plugin-updater");
     const current = await check();
-    if (!current || current.version !== update.version) throw new Error("Update changed. Check again before installing.");
-    await current.downloadAndInstall();
+    try {
+      if (!current || current.version !== update.version) throw new Error("Update changed. Check again before installing.");
+      await current.downloadAndInstall();
+    } finally {
+      // Cleanup failure must not prevent relaunch after a successful install.
+      await current?.close().catch(() => undefined);
+    }
   }
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();

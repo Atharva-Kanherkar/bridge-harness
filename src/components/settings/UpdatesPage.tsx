@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { checkForUpdate, getUpdateChannel, setUpdateChannel, type UpdateInfo } from "../../updater";
+import { checkForUpdate, getUpdateChannel, setUpdateChannel, UpdateCheckSupersededError, type UpdateInfo } from "../../updater";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 
 export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: UpdateInfo; onUpdate: (update: UpdateInfo | undefined) => void }) {
@@ -8,6 +8,7 @@ export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: U
   const [message, setMessage] = useState<string>();
   const checkId = useRef(0);
 
+  useEffect(() => () => { ++checkId.current; }, []);
   useEffect(() => { if (availableUpdate) setMessage(undefined); }, [availableUpdate]);
 
   async function check(next = channel) {
@@ -21,7 +22,7 @@ export function UpdatesPage({ availableUpdate, onUpdate }: { availableUpdate?: U
       onUpdate(update ?? undefined);
       if (!update) setMessage("Bridge is up to date on this channel.");
     } catch (error) {
-      if (id === checkId.current && getUpdateChannel() === next) setMessage(`Could not check for updates: ${String(error)}`);
+      if (!(error instanceof UpdateCheckSupersededError) && id === checkId.current && getUpdateChannel() === next) setMessage(`Could not check for updates: ${String(error)}`);
     } finally { if (id === checkId.current) setChecking(false); }
   }
 

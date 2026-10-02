@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, setUpdateChannel, UpdateInstallUnavailableError } from "./updater";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, setUpdateChannel, UpdateInstallUnavailableError, UpdateCheckSupersededError } from "./updater";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 
 describe("update channels", () => {
-  beforeEach(() => { window.localStorage.clear(); vi.clearAllMocks(); });
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.resetAllMocks();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+  });
+  afterEach(() => { delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__; });
 
   it("defaults to stable and persists beta opt in", () => {
     expect(getUpdateChannel()).toBe("stable");
@@ -70,5 +75,93 @@ describe("update channels", () => {
       .rejects.toBeInstanceOf(UpdateInstallUnavailableError);
     expect(invoke).toHaveBeenCalledOnce();
     expect(relaunch).not.toHaveBeenCalled();
+  });
+});
+
+
+function stableUpdate(version = "0.5.11") {
+  return {
+    version, currentVersion: "0.5.10", body: "Release notes",
+    close: vi.fn().mockResolvedValue(undefined),
+    downloadAndInstall: vi.fn().mockResolvedValue(undefined),
+  } as unknown as import("@tauri-apps/plugin-updater").Update;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+describe("stable update lifetime and check ordering", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+  });
+  afterEach(() => { delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__; });
+
+  it("releases stable discovery resources after copying metadata", async () => {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const update = stableUpdate();
+    vi.mocked(check).mockResolvedValueOnce(update);
+    expect(await checkForUpdate("stable")).toEqual({
+      version: "0.5.11", currentVersion: "0.5.10", body: "Release notes", channel: "stable",
+    });
+    expect(update.close).toHaveBeenCalledOnce();
+    expect(update.downloadAndInstall).not.toHaveBeenCalled();
+  });
+
+  it.each([null, stableUpdate("0.5.10")])("rejects an older automatic result after a newer manual check (%s)", async oldResult => {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const pending = deferred<import("@tauri-apps/plugin-updater").Update | null>();
+    const latest = stableUpdate("0.5.12");
+    const started = deferred<void>();
+    vi.mocked(check).mockImplementationOnce(() => {
+      started.resolve();
+      return pending.promise;
+    }).mockResolvedValueOnce(latest);
+    const automatic = checkForUpdate("stable");
+    const outcome = automatic.catch(error => error);
+    await started.promise;
+    expect((await checkForUpdate("stable"))?.version).toBe("0.5.12");
+    pending.resolve(oldResult);
+    expect(await outcome).toBeInstanceOf(UpdateCheckSupersededError);
+    if (oldResult) expect(oldResult.close).toHaveBeenCalledOnce();
+    expect(latest.close).toHaveBeenCalledOnce();
+  });
+
+  it("releases a changed stable release without installing or restarting", async () => {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    const current = stableUpdate("0.5.12");
+    vi.mocked(check).mockResolvedValueOnce(current);
+    await expect(installUpdateAndRestart({ ...current, channel: "stable", version: "0.5.11", body: null }))
+      .rejects.toThrow("Update changed");
+    expect(current.close).toHaveBeenCalledOnce();
+    expect(current.downloadAndInstall).not.toHaveBeenCalled();
+    expect(relaunch).not.toHaveBeenCalled();
+  });
+
+  it("releases the stable resource when installation fails", async () => {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    const current = stableUpdate();
+    vi.mocked(check).mockResolvedValueOnce(current);
+    vi.mocked(current.downloadAndInstall).mockRejectedValueOnce(new Error("download failed"));
+    await expect(installUpdateAndRestart({ ...current, body: null, channel: "stable" })).rejects.toThrow("download failed");
+    expect(current.close).toHaveBeenCalledOnce();
+    expect(relaunch).not.toHaveBeenCalled();
+  });
+
+  it("restarts after a successful stable install even if resource cleanup fails", async () => {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    const current = stableUpdate();
+    vi.mocked(check).mockResolvedValueOnce(current);
+    vi.mocked(current.close).mockRejectedValueOnce(new Error("resource unavailable"));
+    await installUpdateAndRestart({ ...current, body: null, channel: "stable" });
+    expect(current.downloadAndInstall).toHaveBeenCalledOnce();
+    expect(current.close).toHaveBeenCalledOnce();
+    expect(relaunch).toHaveBeenCalledOnce();
   });
 });
