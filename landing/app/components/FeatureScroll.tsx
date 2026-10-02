@@ -1,13 +1,19 @@
-import { Agents, Automations, Checkpoints, SessionStorage, SwitchHarness, Usage } from "./features/panels";
+import { Browser, History, Memory, Parallel, SwitchHarness, Usage, Verify } from "./features/panels";
 import SectionHeader from "./SectionHeader";
 
 /*
- * Six features, each one the mechanism running beside copy that sticks while it scrolls
+ * Seven features, each one the mechanism running beside copy that sticks while it scrolls
  * past. The text column is `position: sticky` inside its own row, so the next feature pushes
  * the last one out the way a page naturally would; the panels animate on a scroll timeline,
  * so the visual plays as it arrives rather than sitting there as a picture.
  */
 const features = [
+  {
+    id: "parallel",
+    name: "Four agents, four branches, zero collisions",
+    text: "Every chat gets its own Git worktree and branch, so Claude Code, Codex, Cursor, and OpenCode can all work on the same repo at once without touching each other's files. Mission Control shows them side by side and flags the one waiting on you.",
+    panel: <Parallel />,
+  },
   {
     id: "switch-harness",
     name: "Switch harness mid-chat",
@@ -15,28 +21,28 @@ const features = [
     panel: <SwitchHarness />,
   },
   {
-    id: "session-storage",
-    name: "History that is never rewritten",
-    text: "Every message, plan, tool call, and delegation lands in a local ledger that only ever grows. Filter it, fork it, rewind it. What an agent actually did survives the restart.",
-    panel: <SessionStorage />,
+    id: "browser",
+    name: "A real browser, signed in as you",
+    text: "When an agent needs a site you're logged into, it asks. Approve it and the agent drives a throwaway copy of your session: it can click through a deploy preview or a dashboard, and you can take over at any point. The copy is thrown away when the turn ends.",
+    panel: <Browser />,
   },
   {
-    id: "checkpoints",
-    name: "Compaction that does not forget",
-    text: "When a context window fills, Bridge summarises and marks a verified boundary instead of quietly dropping the middle. The original events stay put, and a resumed session tells you whether context came back hot, native, from a checkpoint, or fresh.",
-    panel: <Checkpoints />,
+    id: "history",
+    name: "Nothing gets lost",
+    text: "Every message, plan, tool call, and delegation lands in a local log that only ever grows. When the context window fills, Bridge compacts the model's view and leaves the log alone, so a restart picks up from a verified checkpoint instead of a blank page.",
+    panel: <History />,
   },
   {
-    id: "agents",
-    name: "Bring or build your own agents",
-    text: "Install the coding agents you want, add plugins and skills, and define your own roles for the orchestrator to route to. The harness id space is open, so a new provider is an adapter, not a rewrite.",
-    panel: <Agents />,
+    id: "verify",
+    name: "No agent grades its own homework",
+    text: "Tests run first. Then a reviewer from a different model family has to sign off, and a review from the family that wrote the code is thrown out. Claude's work gets checked by Codex, and the other way round.",
+    panel: <Verify />,
   },
   {
-    id: "automations",
-    name: "Schedule the routine work",
-    text: "Triage, dependency bumps, stale worktree sweeps. Put them on a cron and each run opens its own worktree and reports back like any other task, with the same gates in front of it.",
-    panel: <Automations />,
+    id: "memory",
+    name: "Tell it once",
+    text: "Preferences, decisions, and constraints get saved as you work and come back in any later chat, whichever agent is running and whichever repo it's in. Every reply shows which memories it used.",
+    panel: <Memory />,
   },
   {
     id: "cost",
@@ -53,7 +59,7 @@ export default function FeatureScroll() {
         <SectionHeader
           title={
             <>
-              The work, <em className="not-italic text-muted-foreground">in one place.</em>
+              Ship more, <em className="not-italic text-muted-foreground">babysit less.</em>
             </>
           }
           align="center"
