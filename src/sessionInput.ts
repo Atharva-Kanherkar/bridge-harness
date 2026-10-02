@@ -26,15 +26,3 @@ export function queuedFollowUps(sessionId: string, events: BridgeEvent[]): strin
   }
   return [...waiting];
 }
-
-/**
- * What the submit affordance should say before the user presses it.
- *
- * Read from the harness's advertised capabilities, not guessed from the
- * provider's name: a provider that cannot take input mid-turn gets its
- * follow-up queued, and the button should say so rather than implying the agent
- * is about to read it.
- */
-export function activeTurnAction(capabilities: string[] | undefined): "steer" | "queue" {
-  return capabilities?.includes("steering") ? "steer" : "queue";
-}

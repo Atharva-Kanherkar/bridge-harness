@@ -2755,6 +2755,23 @@ fn handle_agent_value_timed(
                         && matches!(event.status.as_deref(), Some("failed") | Some("error")))
             });
         }
+        // A steer's interrupt provokes the same error frames, but here the
+        // turn's end is wanted: it is the boundary that delivers the steer. Keep
+        // `turn.completed`, as a cancellation rather than a failure.
+        if normalized.iter().any(|event| {
+            event.kind == "error"
+                || (event.kind == "turn.completed"
+                    && matches!(event.status.as_deref(), Some("failed") | Some("error")))
+        }) && state.steer_requested.lock().unwrap().contains(session_id)
+        {
+            normalized.retain(|event| event.kind != "error");
+            for event in &mut normalized {
+                if event.kind == "turn.completed" {
+                    event.status = Some("cancelled".into());
+                    event.title = Some("Redirected".into());
+                }
+            }
+        }
         // A maintenance turn uses the same provider process as the user chat,
         // but none of its content is conversation. `pending` covers the normal
         // path; the durable session status keeps the boundary alive after a
@@ -2801,6 +2818,7 @@ fn handle_agent_value_timed(
                     // a real failure in the new turn is never mistaken for
                     // fallout from a stop the user already got.
                     state.user_stop_requested.lock().unwrap().remove(session_id);
+                    state.steer_requested.lock().unwrap().remove(session_id);
                     let turn_id = event
                         .data
                         .pointer("/turn/id")
@@ -10918,14 +10936,21 @@ pub const STARTED_IDLE_STATUS: &str = "ready";
 /// message into a boundary that could never arrive (#261). Anything that marks a
 /// session `working` is asserting a turn exists.
 fn turn_is_active(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
+    turn_phase(core, session_id).map(|(active, _)| active)
+}
+
+/// `turn_is_active`, plus whether the activity is a checkpoint — the one kind of
+/// turn a new message must wait for rather than stop.
+fn turn_phase(core: &Arc<BridgeCore>, session_id: &str) -> Result<(bool, bool), BridgeError> {
     core.db
         .lock()
         .unwrap()
         .query_row(
-            "SELECT active_turn_id IS NOT NULL OR status IN ('working','checkpointing')
+            "SELECT active_turn_id IS NOT NULL OR status IN ('working','checkpointing'),
+                    status='checkpointing'
              FROM sessions WHERE id=?1",
             params![session_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| BridgeError::Invalid("Chat session does not exist".into()))
 }
@@ -10943,8 +10968,9 @@ pub fn send_turn(
 /// The typed active-turn input contract: one call the client makes whatever the
 /// session is doing, and an explicit disposition back saying what happened.
 ///
-/// Nothing here cancels anything. `interrupt_turn` stays a separate method
-/// precisely so sending guidance cannot be mistaken for stopping the work.
+/// Sending into a chat mid-turn stops that turn and runs the message instead;
+/// a worker's turn is steered or queued, never stopped. `interrupt_turn` stays
+/// the way to stop without saying anything new.
 pub fn submit_input(
     core: &Arc<BridgeCore>,
     session_id: String,
@@ -11538,19 +11564,34 @@ fn submit_input_internal(
         return Ok(result);
     }
 
+    let (turn_active, checkpointing) = turn_phase(core, &session_id)?;
+    let steering_capable = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .is_some_and(|runtime| runtime.supports_active_turn_steering());
+    // Sending into a chat mid-turn stops that turn and runs the message as the
+    // next one, on every provider: the text waits at the front of the queue and
+    // the interrupted turn's own boundary delivers it. Images cannot ride the
+    // queue, so a provider that can fold them into the live turn still does.
+    let stop_first =
+        session_input::interrupts_active_turn(worker.is_some(), turn_active, checkpointing)
+            && (attachments.is_empty() || !steering_capable);
     // The legacy `send_turn` entry point forces a new turn, which is the one
     // thing a worker cannot absorb: its turn is the objective, and a second
     // `turn/start` underneath it races the typed result. Workers always route.
-    let route = if force_new_turn && worker.is_none() {
+    let route = if stop_first {
+        session_input::InputRoute::Queue
+    } else if force_new_turn && worker.is_none() {
         session_input::InputRoute::NewTurn
     } else {
-        let steering_capable = state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(&session_id)
-            .is_some_and(|runtime| runtime.supports_active_turn_steering());
-        session_input::route(turn_is_active(core, &session_id)?, steering_capable)
+        session_input::route(turn_active, steering_capable)
+    };
+    let disposition = if stop_first {
+        wire::InputDisposition::SteeredActiveTurn
+    } else {
+        route.disposition()
     };
 
     let prepared = match prepare_input(
@@ -11620,7 +11661,12 @@ fn submit_input_internal(
             }
             let queued = {
                 let db = state.db.lock().unwrap();
-                let queued = session_input::enqueue(
+                let enqueue = if stop_first {
+                    session_input::enqueue_steer
+                } else {
+                    session_input::enqueue
+                };
+                let queued = enqueue(
                     &db,
                     &session_id,
                     &prepared.provider_text,
@@ -11640,21 +11686,26 @@ fn submit_input_internal(
                     &session_id,
                     &adapter_id,
                     &prepared.display_text,
-                    "queued",
+                    if stop_first { "steered" } else { "queued" },
                     &prepared.images,
                 )? {
                     core.events.publish(CoreEvent::Agent(event));
                 }
+                // A steer is not a follow-up waiting its turn, so it stays out
+                // of the client's queued fold.
                 let _ = store::event(
                     &db,
                     "session",
-                    "session.input.queued",
+                    if stop_first { "session.input.steered" } else { "session.input.queued" },
                     &session_id,
                     &queued.id,
                 );
                 queued
             };
             core.events.publish(CoreEvent::StateChanged);
+            if stop_first {
+                interrupt_for_steer(core, &session_id, &queued.id);
+            }
             queued_input_id = Some(queued.id);
         }
     }
@@ -11666,10 +11717,86 @@ fn submit_input_internal(
         notify_parent_worker_steered(core, &session_id, &prepared.display_text, route);
     }
     Ok(wire::SubmitInputResult {
-        disposition: route.disposition(),
+        disposition,
         queued_input_id,
         interceptions,
     })
+}
+
+/// How long a steered turn gets to settle after its in-band interrupt before
+/// Bridge stops it the hard way.
+const STEER_SETTLE_GRACE: Duration = Duration::from_secs(5);
+
+/// Stop a chat's running turn so the steer queued at the front runs next.
+///
+/// The in-band interrupt keeps the provider process warm, and the interrupted
+/// turn's own `turn.completed` is the boundary that delivers the steer. A
+/// provider that never settles after the interrupt is stopped like the Stop
+/// button does it and resumed, so the person's words always land.
+fn interrupt_for_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
+    core.steer_requested
+        .lock()
+        .unwrap()
+        .insert(session_id.to_owned());
+    // Tests drive the boundary themselves; a fallback that relaunches a real
+    // provider has no place in them.
+    if cfg!(test) {
+        interrupt_live_turn(core, session_id);
+        return;
+    }
+    // Off the caller's thread: an interrupt can be an HTTP round trip, and the
+    // person's send should not wait on it.
+    let core = Arc::clone(core);
+    let session_id = session_id.to_owned();
+    let queued_id = queued_id.to_owned();
+    thread::spawn(move || {
+        interrupt_live_turn(&core, &session_id);
+        thread::sleep(STEER_SETTLE_GRACE);
+        settle_unanswered_steer(&core, &session_id, &queued_id);
+    });
+}
+
+fn interrupt_live_turn(core: &Arc<BridgeCore>, session_id: &str) {
+    if let Some(runtime) = core.adapters.lock().unwrap().get(session_id) {
+        // A refusal (the turn already ended, say) is fine: the boundary or the
+        // fallback still delivers.
+        let _ = runtime.interrupt();
+    }
+}
+
+/// The fallback behind [`interrupt_for_steer`]: if the steer is still waiting
+/// and the turn it interrupted is still running, stop that turn hard, resume the
+/// chat, and deliver.
+fn settle_unanswered_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
+    let (waiting, busy) = {
+        let db = core.db.lock().unwrap();
+        let waiting = db
+            .query_row(
+                "SELECT state=?2 FROM queued_session_input WHERE id=?1",
+                params![queued_id, session_input::STATE_QUEUED],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        let busy = db
+            .query_row(
+                "SELECT active_turn_id IS NOT NULL OR status IN ('working','waiting')
+                 FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        (waiting, busy)
+    };
+    if !waiting {
+        return;
+    }
+    if busy {
+        if stop_turn(core, session_id, TurnStop::Steered).is_err() {
+            return;
+        }
+        let _ = resume_for_send(core, session_id);
+    }
+    drain_queued_input(core, session_id);
 }
 
 /// The wrapper a user's words wear on their way into a running worker.
@@ -12178,6 +12305,20 @@ pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
         [session_id], |row| row.get::<_, bool>(0),
     )?;
     if is_worker { return stop_worker_session(core, session_id, StopCause::User); }
+    stop_turn(core, session_id, TurnStop::User)
+}
+
+/// Why a chat's turn is being stopped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnStop {
+    /// The Stop button: the person is done, so waiting follow-ups go too.
+    User,
+    /// A steer whose in-band interrupt never settled. The steer itself is
+    /// queued and still has to be delivered.
+    Steered,
+}
+
+fn stop_turn(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     let _lifecycle = core.claim_session_lifecycle(session_id, "cancel turn")?;
     // The DB lock serializes this boundary with normalization/publication.
     // Once released, no buffered frame can reopen the stopped turn.
@@ -12185,20 +12326,27 @@ pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
         let db = core.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
         void_orphaned_questions(&transaction, session_id, "turn_cancelled");
-        transaction.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        if cause == TurnStop::User {
+            transaction.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        }
         transaction.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
         transaction.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status IN ('working','waiting','checkpointing')) THEN 'working' ELSE 'stopped' END WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)", [session_id])?;
         session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
         let mut event = agent::NormalizedEvent::new("turn.completed");
         event.status = Some("cancelled".into());
-        event.title = Some("Stopped".into());
-        event.data = serde_json::json!({"reason":"user_stopped"});
+        let (title, reason) = match cause {
+            TurnStop::User => ("Stopped", "user_stopped"),
+            TurnStop::Steered => ("Redirected", "user_steered"),
+        };
+        event.title = Some(title.into());
+        event.data = serde_json::json!({"reason":reason});
         let stored = store::session_event_in_transaction(&transaction, session_id, &event, &serde_json::Value::Null)?;
         transaction.commit()?;
         core.deactivate_reader_launch(session_id);
         // The reader gate suppresses shutdown frames. Do not leave a marker
         // that could swallow a genuine error during the next cold resume.
         core.user_stop_requested.lock().unwrap().remove(session_id);
+        core.steer_requested.lock().unwrap().remove(session_id);
         let runtime = { core.adapters.lock().unwrap().remove(session_id) };
         core.events.publish(CoreEvent::Agent(stored));
         runtime
@@ -14786,7 +14934,7 @@ mod submit_input_tests {
         );
         assert_eq!(
             outcome.disposition,
-            wire::InputDisposition::QueuedForPhaseBoundary
+            wire::InputDisposition::SteeredActiveTurn
         );
     }
 
@@ -14819,7 +14967,7 @@ mod submit_input_tests {
         );
         assert_eq!(
             outcome.disposition,
-            wire::InputDisposition::QueuedForPhaseBoundary,
+            wire::InputDisposition::SteeredActiveTurn,
             "the user's text must still be delivered, not lost with an error"
         );
         assert_eq!(
@@ -14904,31 +15052,119 @@ mod submit_input_tests {
         assert_eq!(session_status(&core), "working");
     }
 
+    /// Sending into a chat mid-turn means "stop and do this instead", on every
+    /// provider: the turn is interrupted and its own end delivers the message.
     #[test]
-    fn a_steering_capable_provider_takes_guidance_mid_turn() {
-        let (_fixture, core, _managed_root) = core_with_chat("working");
-        let sent = attach(&core, true);
+    fn a_chat_send_mid_turn_interrupts_the_turn_and_runs_next() {
+        for steering in [true, false] {
+            let (_fixture, core, _managed_root) = core_with_chat("working");
+            core.db
+                .lock()
+                .unwrap()
+                .execute("UPDATE sessions SET harness='codex',active_turn_id='turn-1' WHERE id='chat'", [])
+                .unwrap();
+            let handles = attach_handles(&core, steering);
 
-        let outcome = submit_input(&core, "chat".into(), "use the other API".into()).unwrap();
+            let outcome = submit_input(&core, "chat".into(), "use the other API".into()).unwrap();
 
+            assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+            assert!(outcome.queued_input_id.is_some());
+            assert_eq!(handles.interrupts.load(Ordering::SeqCst), 1, "the running turn is stopped");
+            assert!(
+                handles.sent.lock().unwrap().is_empty(),
+                "never a second turn against the one still running"
+            );
+            {
+                let db = core.db.lock().unwrap();
+                let delivery: String = db
+                    .query_row(
+                        "SELECT json_extract(payload,'$.data.delivery') FROM session_entries
+                         WHERE session_id='chat' AND kind='user.message'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(delivery, "steered");
+                let queued_rows: i64 = db
+                    .query_row(
+                        "SELECT COUNT(*) FROM events WHERE kind='session.input.queued'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(queued_rows, 0, "a steer is not shown as a waiting follow-up");
+            }
+
+            // The interrupt makes the provider end the turn as failed. That end
+            // is the boundary, and the error it carries is not the person's.
+            handle_agent_value(
+                &core,
+                "chat",
+                &Arc::new(Mutex::new(Some("turn-1".into()))),
+                &codex_turn_aborted(),
+            );
+
+            assert_eq!(
+                handles.sent.lock().unwrap().as_slice(),
+                ["use the other API".to_owned()],
+                "the steer runs as soon as the interrupted turn ends"
+            );
+            let db = core.db.lock().unwrap();
+            let errors: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='error'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(errors, 0, "the provoked abort is not rendered as a failure");
+            let ended: String = db
+                .query_row(
+                    "SELECT json_extract(payload,'$.status') FROM session_entries
+                     WHERE session_id='chat' AND kind='turn.completed'
+                     ORDER BY sequence DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(ended, "cancelled");
+            assert_eq!(session_input::pending_count(&db, "chat").unwrap(), 0);
+        }
+    }
+
+    /// A half-written compaction is worse than a short wait, so a checkpoint is
+    /// never cut short by a steer.
+    #[test]
+    fn a_steer_never_interrupts_a_checkpoint() {
+        let (_fixture, core, _managed_root) = core_with_chat("checkpointing");
+        let handles = attach_handles(&core, true);
+
+        let outcome = submit_input(&core, "chat".into(), "after that, the docs".into()).unwrap();
+
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
         assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
-        assert_eq!(outcome.queued_input_id, None);
-        assert_eq!(
-            sent.lock().unwrap().as_slice(),
-            ["use the other API".to_owned()],
-            "steering goes to the provider immediately"
-        );
-        let db = core.db.lock().unwrap();
-        assert_eq!(
-            session_input::pending_count(&db, "chat").unwrap(),
-            0,
-            "nothing was queued: the provider took it"
-        );
     }
 
     #[test]
-    fn a_provider_that_cannot_steer_gets_a_durable_queue_not_a_second_turn() {
+    fn a_steer_waits_ahead_of_follow_ups_already_queued() {
         let (_fixture, core, _managed_root) = core_with_chat("working");
+        let sent = attach(&core, false);
+        session_input::enqueue(&core.db.lock().unwrap(), "chat", "worker report", "worker report").unwrap();
+
+        submit_input(&core, "chat".into(), "stop, do this".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'", [])
+            .unwrap();
+        assert!(drain_queued_input(&core, "chat"));
+
+        assert_eq!(sent.lock().unwrap().as_slice(), ["stop, do this".to_owned()]);
+    }
+
+    #[test]
+    fn a_checkpointing_chat_gets_a_durable_queue_not_a_second_turn() {
+        let (_fixture, core, _managed_root) = core_with_chat("checkpointing");
         let sent = attach(&core, false);
 
         let outcome = submit_input(&core, "chat".into(), "also update the docs".into()).unwrap();
@@ -15289,8 +15525,9 @@ mod submit_input_tests {
         for (status, steering, expected) in [
             ("ready", false, wire::InputDisposition::StartedNewTurn),
             ("working", true, wire::InputDisposition::SteeredActiveTurn),
+            ("working", false, wire::InputDisposition::SteeredActiveTurn),
             (
-                "working",
+                "checkpointing",
                 false,
                 wire::InputDisposition::QueuedForPhaseBoundary,
             ),
@@ -15420,7 +15657,7 @@ mod submit_input_tests {
 
         assert_eq!(
             second.disposition,
-            wire::InputDisposition::QueuedForPhaseBoundary,
+            wire::InputDisposition::SteeredActiveTurn,
             "the acknowledgement window still counts as busy"
         );
         assert_eq!(

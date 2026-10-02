@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BridgeEvent } from "./types";
-import { activeTurnAction, queuedFollowUps } from "./sessionInput";
+import { queuedFollowUps } from "./sessionInput";
 
 let nextId = 100;
 const event = (kind: string, entityId: string, body: string): BridgeEvent => ({
@@ -40,16 +40,5 @@ describe("queuedFollowUps", () => {
   it("is empty for a session that never queued anything", () => {
     expect(queuedFollowUps("chat", [])).toEqual([]);
     expect(queuedFollowUps("chat", [event("session.started", "chat", "working")])).toEqual([]);
-  });
-});
-
-describe("activeTurnAction", () => {
-  it("offers Steer only where the provider advertises it", () => {
-    expect(activeTurnAction(["messages", "interrupt", "steering"])).toBe("steer");
-    expect(activeTurnAction(["messages", "interrupt"])).toBe("queue");
-    // An unknown provider is assumed unable to take input mid-turn: promising
-    // steering it cannot do is worse than promising a queue it will get.
-    expect(activeTurnAction(undefined)).toBe("queue");
-    expect(activeTurnAction([])).toBe("queue");
   });
 });

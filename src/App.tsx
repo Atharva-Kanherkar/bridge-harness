@@ -77,7 +77,7 @@ import { overviewUsage } from "./usageOverview";
 import { SteerComposer } from "./components/SteerComposer";
 import { ComposerPill } from "./components/ComposerPill";
 import { SessionModeToggle, sessionModeDescription } from "./components/SessionModeToggle";
-import { activeTurnAction, queuedFollowUps } from "./sessionInput";
+import { queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { ForkDialog } from "./components/ForkDialog";
@@ -1142,13 +1142,9 @@ function AppContent() {
     () => state.events.filter(event => event.kind === "approval.auto_allowed"),
     [state.events],
   );
-  // What the submit affordance does while this session is working. Read from the
-  // harness's advertised capabilities: a provider that cannot take input
-  // mid-turn gets its follow-up queued, and the button says Queue, not Steer.
-  const activeAction = useMemo(
-    () => activeTurnAction(adapters.find(adapter => adapter.id === session?.harness)?.capabilities),
-    [adapters, session?.harness],
-  );
+  // Sending mid-turn stops the turn and runs the message instead, on every
+  // harness, so the button always says Steer.
+  const activeAction = "steer" as const;
   // Folded from the durable event feed, so a reconnect reports the same waiting
   // follow-ups the composer showed before it.
   const queuedFollowUpCount = useMemo(

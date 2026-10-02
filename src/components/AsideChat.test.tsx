@@ -107,15 +107,9 @@ describe("AsideChat", () => {
     expect(pill.disabled).toBe(true);
   });
 
-  it("offers Steer mid-turn when the aside's harness advertises steering", async () => {
-    const steering = [{ ...adapters[0], capabilities: ["steering"] }];
-    await mount({ adapters: steering, working: true });
-    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Steer")).toBe(true);
-  });
-
-  it("keeps Queue mid-turn when the harness cannot steer", async () => {
+  it("offers Steer mid-turn on every harness", async () => {
     await mount({ working: true });
-    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Queue")).toBe(true);
+    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Steer")).toBe(true);
   });
 
   it("disables the model control while the aside is working", async () => {

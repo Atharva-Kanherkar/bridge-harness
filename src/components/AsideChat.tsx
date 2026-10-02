@@ -11,7 +11,6 @@ import { bridgeApi } from "../api";
 import { usePolledSessionForest } from "../forest";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
 import { scheduleSuggestion } from "../suggestionTypeahead";
-import { activeTurnAction } from "../sessionInput";
 import { SIDE_CHAT_COMMANDS } from "../sideChat";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
@@ -395,7 +394,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               }}
               placeholder={`Ask ${harnessLabel(session.harness)}…`}
               working={working}
-              activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
+              activeAction="steer"
               inputRef={inputRef}
             />
           </div>
