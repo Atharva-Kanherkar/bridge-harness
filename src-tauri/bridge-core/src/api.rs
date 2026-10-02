@@ -4356,12 +4356,6 @@ pub fn archive_chat(
     for id in family.iter().filter(|id| id.as_str() != session_id) {
         live_turn::stop_session_for_archive(core, id)?;
     }
-    // Worker cancellation can enqueue a notice on its parent. Abandon those
-    // follow-ups too, and re-settle a parent whose readiness was recomputed.
-    for id in &family {
-        live_turn::stop_session_for_archive(core, id)?;
-    }
-
     let owned = { worktree_registry::owned_by_session(&core.db.lock().unwrap(), session_id)? };
     let reclaim = match owned {
         Some(record) => Some(worktree_registry::reclaim(
@@ -4374,11 +4368,33 @@ pub fn archive_chat(
         None => None,
     };
 
-    core.db.lock().unwrap().execute(
-        "UPDATE sessions SET archived_at=?2,ended_at=COALESCE(ended_at,?2),active_turn_id=NULL
-          WHERE id=?1 AND archived_at IS NULL",
-        params![session_id, chrono::Utc::now().to_rfc3339()],
-    )?;
+    {
+        let db = core.db.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE sessions SET archived_at=?2,ended_at=COALESCE(ended_at,?2),active_turn_id=NULL
+              WHERE id=?1 AND archived_at IS NULL",
+            params![session_id, now],
+        )?;
+        // Settle delivery atomically with visibility. A sweep may have queued
+        // a result during shutdown, or may not run until after an immediate
+        // restore. Outbox ids reference the canonical parent result entries;
+        // keep those entries while retiring their model delivery obligations.
+        for id in &family {
+            tx.execute(
+                "UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",
+                [id],
+            )?;
+            tx.execute(
+                "UPDATE durable_outbox SET status='delivered',delivered_at=?2
+                 WHERE destination='parent' AND event_type='worker.result' AND status='pending'
+                   AND id IN (SELECT id FROM session_entries WHERE session_id=?1 AND kind='worker.result')",
+                params![id, now],
+            )?;
+        }
+        tx.commit()?;
+    }
     {
         let db = core.db.lock().unwrap();
         let freed = reclaim
@@ -5902,6 +5918,31 @@ mod tests {
         assert_eq!(remaining.sessions[0].id, "sibling");
         assert!(matches!(remaining.sessions[0].status, crate::model::SessionStatus::Working));
         assert!(fixture.core.adapters.lock().unwrap().contains_key("sibling"));
+        // Cancellation reports arrive through the durable outbox, after archive
+        // returns. They must not recreate input or replay when history returns.
+        crate::live_turn::prepare_pending_worker_results(&fixture.core);
+        assert_eq!(crate::session_input::pending_count(&fixture.core.db.lock().unwrap(), "chat").unwrap(), 0);
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        crate::live_turn::prepare_pending_worker_results(&fixture.core);
+        assert_eq!(crate::session_input::pending_count(&fixture.core.db.lock().unwrap(), "chat").unwrap(), 0);
+    }
+
+    #[test]
+    fn immediate_restore_does_not_replay_pending_archive_cancellation() {
+        let fixture = chat_fixture();
+        {
+            let db = fixture.core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('worker','w','codex','Worker','working','reported','chat','worker')", []).unwrap();
+            db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker','chat','working','research','key','now')", []).unwrap();
+        }
+        let stopped = attach_archive_runtime(&fixture.core, "worker");
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        let results: i64 = fixture.core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='worker.result'", [], |row| row.get(0)).unwrap();
+        assert_eq!(results, 1, "canonical cancellation evidence is preserved");
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        crate::live_turn::prepare_pending_worker_results(&fixture.core);
+        assert_eq!(crate::session_input::pending_count(&fixture.core.db.lock().unwrap(), "chat").unwrap(), 0);
     }
 
     #[test]

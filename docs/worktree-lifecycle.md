@@ -249,6 +249,9 @@ chat and every descendant it hides before reclaiming the checkout. This includes
 finishes within the archive operation without starting a checkpoint turn.
 Unrelated chats keep running. A conflicting lifecycle operation leaves the chat
 visible and returns an error; archived families cannot restart until restored.
+Pending worker result deliveries are retired atomically with archive visibility.
+Their canonical history remains, but delayed outbox sweeps cannot enqueue model
+input for hidden parents or replay cancellation notices after an immediate restore.
 
 The sidebar confirms automatic shutdown, removes the archived family as soon as
 the operation succeeds, and shows a “Chat archived” notification. If unsaved

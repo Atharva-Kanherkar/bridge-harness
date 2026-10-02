@@ -9421,7 +9421,7 @@ fn report_to_parent(
 
 // The result transaction leaves an outbox entry even if Bridge exits before
 // this sweep. Preparing metadata never requires the parent provider to exist.
-fn prepare_pending_worker_results(core: &Arc<BridgeCore>) {
+pub(crate) fn prepare_pending_worker_results(core: &Arc<BridgeCore>) {
     let pending = {
         let db = core.db.lock().unwrap();
         db.prepare("SELECT id,payload FROM durable_outbox WHERE destination='parent' AND event_type='worker.result' AND status='pending' AND next_attempt_at<=?1 ORDER BY created_at,id LIMIT 16")
@@ -9582,7 +9582,11 @@ fn prepare_worker_result_delivery(
                 params![report.evidence_id, Utc::now().to_rfc3339()],
             )?;
             if claimed == 0 { return Ok(()); }
-            let queued = if direct_dispatch { None } else {
+            // Consume the durable receipt even when its parent is hidden, but
+            // retain only the result history. Check ancestry in the enqueue
+            // transaction so archive cannot commit between check and delivery.
+            let archived = session_has_archived_ancestor(&transaction, &report.parent_session_id)?;
+            let queued = if direct_dispatch || archived { None } else {
                 Some(session_input::enqueue(&transaction, &report.parent_session_id, &routing_notice, &result.summary)?)
             };
             let result_event = agent::NormalizedEvent {
@@ -12415,18 +12419,21 @@ pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str)
 /// A hidden family cannot be resumed by a stale window or queued input. Check
 /// under the lifecycle claim so a start cannot slip in after archive commits.
 fn ensure_session_not_archived(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    let archived: bool = core.db.lock().unwrap().query_row(
+    if session_has_archived_ancestor(&core.db.lock().unwrap(), session_id)? {
+        return Err(BridgeError::Invalid("Restore this archived chat before starting it".into()));
+    }
+    Ok(())
+}
+
+fn session_has_archived_ancestor(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(db.query_row(
         "WITH RECURSIVE ancestors(id,parent_session_id,archived_at) AS (
             SELECT id,parent_session_id,archived_at FROM sessions WHERE id=?1
             UNION SELECT s.id,s.parent_session_id,s.archived_at FROM sessions s
                 JOIN ancestors a ON s.id=a.parent_session_id
          ) SELECT EXISTS(SELECT 1 FROM ancestors WHERE archived_at IS NOT NULL)",
         [session_id], |row| row.get(0),
-    )?;
-    if archived {
-        return Err(BridgeError::Invalid("Restore this archived chat before starting it".into()));
-    }
-    Ok(())
+    )?)
 }
 
 pub fn stop_session(
@@ -15969,6 +15976,32 @@ mod submit_input_tests {
         assert_eq!(notice["childSessionId"], "child");
         assert!(notice["evidenceId"].is_string());
         assert_eq!(notice["result"], serde_json::to_value(result).unwrap());
+    }
+
+    #[test]
+    fn worker_result_delivery_suppresses_inputs_for_archived_ancestry() {
+        for archived_id in ["parent", "ancestor"] {
+            let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+            let result = result_delivery_fixture(&core);
+            assert!(report_to_parent(&core, "child", &result));
+            {
+                let db = core.db.lock().unwrap();
+                db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) SELECT 'ancestor',workspace_id,harness,'Ancestor','idle',metric_source FROM sessions WHERE id='parent'", []).unwrap();
+                db.execute("UPDATE sessions SET parent_session_id='ancestor' WHERE id='parent'", []).unwrap();
+                db.execute("UPDATE sessions SET archived_at=?2 WHERE id=?1", params![archived_id, Utc::now().to_rfc3339()]).unwrap();
+            }
+            prepare_pending_worker_results(&core);
+            {
+                let db = core.db.lock().unwrap();
+                assert_eq!(session_input::pending_count(&db, "parent").unwrap(), 0);
+                let state: String = db.query_row("SELECT status FROM durable_outbox WHERE event_type='worker.result'", [], |row| row.get(0)).unwrap();
+                assert_eq!(state, "delivered");
+            }
+            assert!(parent_event_kinds(&core).contains(&"worker.result".to_owned()));
+            crate::api::unarchive_chat(&core, archived_id).unwrap();
+            prepare_pending_worker_results(&core);
+            assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 0);
+        }
     }
 
     #[test]
