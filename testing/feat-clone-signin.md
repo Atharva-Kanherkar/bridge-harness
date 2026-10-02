@@ -73,3 +73,11 @@ by its own tests; this part reuses that shape.
 Explicitly **not** changed: the clone process and lifecycle (part 1), the leak
 guard and egress proxy (part 2) — their tests still pass unchanged; the
 attached-tab bridge; the protocol.
+
+## Multi-domain sign-in regression contract
+
+The follow-up contract is `testing/fix-browser-clone-signin.md`, locked before
+implementation. It extends cookie selection to every explicitly approved host,
+keeps parent domains opt-in, registers secrets under their cookie host, displays
+the full cookie scope before approval, and verifies helper error bodies and
+replacement notices. The original single-domain guarantees still apply.
