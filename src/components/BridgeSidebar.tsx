@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {  Archive,
+import {  Archive, Clock, BookMarked,
  Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
@@ -386,6 +386,10 @@ export type BridgeSidebarProps = {
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
+  onOpenSavedSetups?: () => void;
+  onOpenArchives?: () => void;
+  onOpenAutomations?: () => void;
+  automationsActive?: boolean;
   /** Per-project "+" on a project group header, grouped-by-project only —
    * skips the picker step since the group already names the workspace. */
   onNewChatInProject?: (workspaceId: string) => void;
@@ -444,6 +448,10 @@ export function BridgeSidebar({
   mobileOpen = false,
   onCloseMobile,
   onOpenNewChat,
+  onOpenSavedSetups,
+  onOpenArchives,
+  onOpenAutomations,
+  automationsActive = false,
   onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
@@ -748,6 +756,7 @@ export function BridgeSidebar({
             <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
             {!searchOpen && <><span className="min-w-0 flex-1 truncate">New Chat</span><span aria-hidden="true" className="text-[11px] font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
           </button>
+          {!searchOpen && onOpenSavedSetups && <button type="button" onClick={onOpenSavedSetups} aria-label="Saved setups" title="Saved setups: reusable agent choices and instructions" className="inline-flex size-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground hover:bg-card hover:text-foreground"><BookMarked size={15} aria-hidden="true" /></button>}
           {!searchOpen && (
             <button
               type="button"
@@ -763,6 +772,7 @@ export function BridgeSidebar({
 
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
+          {onOpenAutomations && <ActionRow icon={Clock} label="Scheduled tasks" onClick={onOpenAutomations} active={automationsActive} />}
           {/* The work-board stays off the nav for now. Routing props remain on the
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
@@ -775,6 +785,7 @@ export function BridgeSidebar({
           {onOpenGitplace && <ActionRow icon={GitPullRequest} label="Gitplace" onClick={onOpenGitplace} active={gitplaceActive} />}
         </nav>
 
+        {onOpenArchives && <button type="button" onClick={onOpenArchives} className="mb-2 flex items-center gap-2 px-2 text-xs text-muted-foreground hover:text-foreground"><Archive size={12} aria-hidden="true" />Archived chats</button>}
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           {searchOpen && query.trim().length >= CHAT_SEARCH_MIN_CHARS && (
             <ChatSearchResults

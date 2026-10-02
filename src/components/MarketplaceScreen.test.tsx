@@ -52,13 +52,13 @@ async function render() {
     text: () => host.textContent ?? "",
     articles: () => [...host.querySelectorAll("article")],
     button: (label: string) => [...host.querySelectorAll("button")].find(item => item.textContent?.trim() === label) ?? null,
-    viewButton: (label: string) => [...host.querySelectorAll('[aria-label="Plugin views"] button')].find(item => item.textContent?.trim() === label) ?? null,
+    viewButton: (label: string) => [...host.querySelectorAll('[aria-label="App views"] button')].find(item => item.textContent?.trim() === label) ?? null,
     click: async (item: Element | null) => {
       expect(item, "control must exist to be clicked").not.toBeNull();
       await act(async () => { (item as HTMLButtonElement).click(); await Promise.resolve(); });
     },
     type: async (value: string) => {
-      const input = host.querySelector<HTMLInputElement>('input[aria-label="Search plugins"]');
+      const input = host.querySelector<HTMLInputElement>('input[aria-label="Search apps"]');
       expect(input, "search input must exist").not.toBeNull();
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
       await act(async () => {
@@ -78,7 +78,7 @@ async function openPlugins(catalogValue: MarketplaceCatalog, states: Marketplace
   vi.spyOn(bridgeApi, "marketplaceCatalog").mockResolvedValue(catalogValue);
   vi.spyOn(bridgeApi, "marketplaceAppAuthStates").mockResolvedValue(states);
   const view = await render();
-  await view.click(view.button("plugins"));
+  await view.click(view.button("Apps"));
   await view.flush();
   return view;
 }
@@ -101,14 +101,26 @@ const fallbackApp = (overrides: Partial<MarketplaceVariant> = {}): MarketplaceVa
 
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ""; });
 
-describe("Plugins catalog", () => {
+describe("Apps catalog", () => {
+  it("contains only Apps and Skills and does not load an agent installer or scheduled tasks", async () => {
+    const managed = vi.spyOn(bridgeApi, "listManagedAgents");
+    const schedules = vi.spyOn(bridgeApi, "automationCatalog");
+    vi.spyOn(bridgeApi, "marketplaceCatalog").mockResolvedValue(catalog([]));
+    vi.spyOn(bridgeApi, "marketplaceAppAuthStates").mockResolvedValue([]);
+    const view = await render();
+    expect([...view.host.querySelectorAll('[aria-label="Marketplace sections"] button')].map(item => item.textContent)).toEqual(["Apps", "Skills"]);
+    expect(managed).not.toHaveBeenCalled(); expect(schedules).not.toHaveBeenCalled();
+    await view.click(view.button("Skills"));
+    expect(view.text()).toContain("Add capabilities to your coding agents");
+    await view.unmount();
+  });
   it("shows a list skeleton while the catalog is in flight", async () => {
     vi.spyOn(bridgeApi, "listManagedAgents").mockResolvedValue({ agents: [agent()] } as Awaited<ReturnType<typeof bridgeApi.listManagedAgents>>);
     vi.spyOn(bridgeApi, "marketplaceCatalog").mockReturnValue(new Promise<MarketplaceCatalog>(() => {}));
     vi.spyOn(bridgeApi, "marketplaceAppAuthStates").mockResolvedValue([]);
 
     const view = await render();
-    await view.click(view.button("plugins"));
+    await view.click(view.button("Apps"));
 
     expect(view.host.querySelector('[data-testid="plugin-catalog-skeleton"]')).not.toBeNull();
     await view.unmount();
@@ -141,7 +153,7 @@ describe("Plugins catalog", () => {
     await view.type("remote");
     expect(view.text()).not.toContain("app-6a057d268ebc81919918d37eec718425");
     expect(view.articles()).toHaveLength(0);
-    expect(view.text()).toContain("No matching plugins");
+    expect(view.text()).toContain("No matching apps");
     await view.unmount();
   });
 
@@ -176,14 +188,14 @@ describe("Plugins catalog", () => {
       .mockResolvedValueOnce([codexAppState]);
 
     const view = await render();
-    await view.click(view.button("plugins"));
+    await view.click(view.button("Apps"));
     await view.flush();
 
     expect(view.text()).not.toContain("Remote Desktop Commander");
     expect(view.text()).not.toContain("app-6a057d268ebc81919918d37eec718425");
     expect(view.text()).toContain("Connector names could not be resolved");
 
-    await view.click(view.host.querySelector('button[aria-label="Refresh plugins"]'));
+    await view.click(view.host.querySelector('button[aria-label="Refresh apps"]'));
     await view.flush();
     expect(view.text()).toContain("Remote Desktop Commander");
     await view.unmount();
@@ -209,7 +221,7 @@ describe("Plugins catalog", () => {
     const variants = Array.from({ length: 30 }, (_, index) => variant(`plugin-${index}`, { name: `Plugin ${String(index + 1).padStart(2, "0")}` }));
     const view = await openPlugins(catalog(variants));
 
-    await view.click(view.button("Browse all 30 plugins"));
+    await view.click(view.button("Browse all 30 apps"));
     expect(view.articles()).toHaveLength(24);
 
     await view.click(view.host.querySelector('[data-testid="plugin-show-more"]'));

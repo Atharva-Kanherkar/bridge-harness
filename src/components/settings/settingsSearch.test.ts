@@ -34,7 +34,7 @@ describe("filterSettingsRows", () => {
   it("names the page each hit belongs to", () => {
     const groups = filterSettingsRows("install", rows);
     expect(groups).toHaveLength(1);
-    expect(groups[0].pageLabel).toBe("Harnesses");
+    expect(groups[0].pageLabel).toBe("Coding agents");
   });
 
   it("returns nothing rather than everything when nothing matches", () => {

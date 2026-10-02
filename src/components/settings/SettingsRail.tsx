@@ -11,12 +11,15 @@ import {
   RotateCcw as ArrowCounterClockwise, Code, Download as DownloadSimple, RefreshCw, type LucideIcon as Icon, Keyboard, Search as MagnifyingGlass, Bot as Robot,
   ScrollText as Scroll, ShieldCheck, SlidersHorizontal, Sparkles as Sparkle, Sun, HardDrive, Archive, Ghost,
 } from "lucide-react";
-import { SECTION_LABELS, SECTION_ORDER, type Section } from "./sections";
+import { SECTION_LABELS, SECTION_ORDER, primarySection, type Section } from "./sections";
 import { filterSettingsRows, type SearchableRow } from "./settingsSearch";
 import { GhostButton, Select, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
 
 const SECTION_ICONS: Record<Section, Icon> = {
+  general: Sun,
+  codingAgents: Robot,
+  data: HardDrive,
   appearance: Sun,
   menuBar: SlidersHorizontal,
   updates: RefreshCw,
@@ -49,7 +52,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
   return <nav aria-label="Settings" className="flex w-full shrink-0 flex-col border-b border-border bg-muted/30 md:w-44 md:border-r md:border-b-0 lg:w-52">
     <div className="shrink-0 px-3 pt-4">
       <h1 className="hidden px-1.5 text-[15px] font-semibold text-foreground md:block">Settings</h1>
-      <div className="md:hidden"><Select label="Settings section" value={section} options={SECTION_ORDER.flatMap(group => group.sections.map(id => ({ value: id, label: SECTION_LABELS[id] })))} onChange={value => onSelect(value as Section)} width="w-full" /></div>
+      <div className="md:hidden"><Select label="Settings section" value={primarySection(section)} options={SECTION_ORDER.flatMap(group => group.sections.map(id => ({ value: id, label: SECTION_LABELS[id] })))} onChange={value => onSelect(value as Section)} width="w-full" /></div>
       <div className="relative mt-3">
         <MagnifyingGlass size={12} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
         <input
@@ -67,10 +70,10 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
       {results
         ? <SearchResults results={results} onSelect={onSelect} />
         : SECTION_ORDER.map(group => <div key={group.group} className="mb-3 last:mb-0">
-            <p className="px-1.5 pb-1 text-[11px] font-medium text-muted-foreground">{group.group}</p>
+
             {group.sections.map(id => {
               const Icon = SECTION_ICONS[id];
-              const active = section === id;
+              const active = primarySection(section) === id;
               return <button
                 key={id}
                 type="button"
@@ -92,7 +95,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
       {confirming
         ? <div className="rounded-lg border border-border-card bg-card p-2.5">
             <p className="text-[11.5px] leading-relaxed text-muted-foreground">
-              This deletes every Bridge, Codex, Claude, and agent override, resets all role model profiles, and removes the agent presets you created. Built-in presets come back at their defaults.
+              This restores default agent settings, model choices, and instructions, and removes your saved setups. Chats and sign-in details are kept.
             </p>
             <div className="mt-2.5 flex items-center gap-2">
               <GhostButton onClick={() => setConfirming(false)}>Keep them</GhostButton>

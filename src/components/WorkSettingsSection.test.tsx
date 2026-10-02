@@ -166,9 +166,9 @@ describe("Work briefing", () => {
     await click(switchFor("Refresh on focus"));
     expect(writeWorkSettings.mock.calls.at(-1)![0].refreshOnFocus).toBe(true);
 
-    const cadence = host.querySelector<HTMLButtonElement>('button[aria-label="Cadence"]')!;
+    const cadence = host.querySelector<HTMLButtonElement>('button[aria-label="Refresh frequency"]')!;
     await click(cadence);
-    const hourly = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Cadence"] [role="option"]')]
+    const hourly = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Refresh frequency"] [role="option"]')]
       .find(option => option.textContent?.includes("Every hour"))!;
     await act(async () => {
       hourly.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));

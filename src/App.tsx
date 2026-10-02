@@ -125,6 +125,7 @@ import { createBridgeQueryClient } from "./queryClient";
 import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
 
+const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
@@ -1114,7 +1115,7 @@ function AppContent() {
   // Which settings section to open on. The badge is the one entry point that has
   // an opinion: sending someone hunting through Agents for the switch they just
   // clicked "click to change" on is the wrong end of the promise.
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("agents");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   useEffect(() => {
     let active = true;
     let off: (() => void) | undefined;
@@ -2721,10 +2722,9 @@ function AppContent() {
     adapters={health.adapters}
     onHealthChange={invalidateHealth}
     onComplete={finishAgentOnboarding}
-    onSkip={() => finishAgentOnboarding()}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Saved setups" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2780,6 +2780,10 @@ function AppContent() {
       accountName={localAccountName(health.database, workspace?.path)}
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
+      onOpenSavedSetups={() => setView("saved-setups")}
+      onOpenArchives={() => setView("archives")}
+      onOpenAutomations={() => setView("automations")}
+      automationsActive={view === "automations"}
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
@@ -2790,7 +2794,7 @@ function AppContent() {
       onOpenUsage={() => setView("usage")}
       onOpenGitplace={() => setView("gitplace")}
       railTrailing={usageDot}
-      onOpenSettings={() => setView("settings")}
+      onOpenSettings={() => { setSettingsSection("general"); setView("settings"); }}
       onOpenSession={openSession}
       searchRequest={sidebarSearch}
       onArchiveChat={archiveChat}
@@ -2842,7 +2846,7 @@ function AppContent() {
         onOpenEvidence={task => void openWorkTaskEvidence(task)}
         onOpenTask={openWorkTask}
         onRunBriefing={() => void runWorkBriefing("manual")}
-        onOpenSettings={() => { setSettingsSection("work"); setView("settings"); }}
+        onOpenSettings={() => setView("briefing-settings")}
       /></Suspense> : view === "projects" ? <ProjectsScreen
         workspaces={state.workspaces}
         chats={topSessions}
@@ -2862,12 +2866,12 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening scheduled tasks…"/>}><AutomationsPanel /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}

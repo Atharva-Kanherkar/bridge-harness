@@ -383,11 +383,11 @@ export function PromptStudio() {
   }
 
   return <SettingsPage
-    title="Prompts"
-    description="Bridge's own prompt text, per target. Prompts change behavior, never permissions."
+    title="Bridge instructions"
+    description="Advanced instructions for Bridge and its background agents. Change these only when you want to alter a built-in role. Permissions still apply."
     action={<>
       <Select
-        label="Prompt target"
+        label="Instructions for"
         value={target}
         width="w-44"
         options={TARGETS.map(item => ({

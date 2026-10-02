@@ -134,7 +134,7 @@ function repoName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-export function StoragePage({ onError }: { onError?: (message: string) => void }) {
+export function StoragePage({ onError, title = "Disk usage", extra }: { onError?: (message: string) => void; title?: string; extra?: import("react").ReactNode }) {
   const [usage, setUsage] = useState<WorktreeUsage | null>(null);
   const [entries, setEntries] = useState<WorktreeInventoryEntry[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -215,16 +215,17 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
   }).sort((a, b) => sort === "idle" ? b.idleSeconds - a.idleSeconds : sort === "name" ? (a.branch ?? a.path).localeCompare(b.branch ?? b.path) : (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1));
 
   return <SettingsPage
-    title="Storage"
-    description="See where your disk goes, what can be reclaimed, and what needs your attention. Chat history and checkout storage are separate."
+    title={title}
+    description="See how much disk space Bridge uses and remove unused project copies. Your chat history is stored separately."
     action={<GhostButton onClick={() => setConfirming("sweep")} disabled={busy !== null || loading} ariaLabel="Review safe cleanup">
-      {busy === "sweep" ? "Sweeping…" : "Sweep"}
+      {busy === "sweep" ? "Checking…" : "Check for cleanup"}
     </GhostButton>}
   >
+    {extra}
     {error && <p role="alert" className="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
     {loading && <p role="status" className="text-xs text-muted-foreground">Loading storage inventory...</p>}
     {usage && <SettingsGroup
-      label="Worktrees"
+      label="Project copies"
       note={`Automatic cleanup targets at most ${usage.maxPerRepo} Bridge-owned worktrees and ${bytes(usage.maxTotalBytes)} per repository. Over either limit it reclaims the least recently used checkouts it can prove are expendable, and reports the rest rather than forcing them.`}
     >
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 px-4 py-3">

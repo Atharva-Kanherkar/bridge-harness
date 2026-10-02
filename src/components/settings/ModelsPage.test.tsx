@@ -66,10 +66,10 @@ async function mount(props: Partial<Parameters<typeof ModelsPage>[0]> = {}) {
 describe("ModelsPage", () => {
   it("groups profiles by what they are for", async () => {
     const view = await mount();
-    expect(view.text()).toContain("Orchestration");
-    expect(view.text()).toContain("Workers");
+    expect(view.text()).toContain("Your chats");
+    expect(view.text()).toContain("Background tasks");
     expect(view.text()).toContain("Verification");
-    expect(view.text()).toContain("Catalog");
+    expect(view.text()).toContain("Available models");
     await view.unmount();
   });
 
@@ -107,7 +107,7 @@ describe("ModelsPage", () => {
     const view = await mount();
     expect(view.text()).not.toContain("Allow learning");
     await view.click(view.button("Implementer settings"));
-    for (const field of ["How Bridge chooses a model", "Provider and model", "Reasoning effort",
+    for (const field of ["How Bridge chooses a model", "Provider and model", "Thinking level",
                          "Fallback profile", "Budget preference", "Latency preference", "Allow learning"]) {
       expect(view.text(), field).toContain(field);
     }
@@ -180,7 +180,7 @@ describe("ModelsPage", () => {
     const view = await mount();
     expect([...view.container.querySelectorAll("button")].map(node => node.textContent?.trim()))
       .not.toContain("Save");
-    expect(view.text()).toContain("Version 7");
+    expect(view.text()).toContain("Saved preferences");
     await view.unmount();
   });
 

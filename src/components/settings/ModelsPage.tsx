@@ -25,15 +25,15 @@ import {
 const VERIFICATION: ProfilePurpose[] = ["reviewer", "evaluator"];
 
 const GROUPS: { label: string; note: string; includes: (purpose: ProfilePurpose) => boolean }[] = [
-  { label: "Orchestration", note: "The model you talk to", includes: isOrchestratorPurpose },
+  { label: "Your chats", note: "The model you talk to", includes: isOrchestratorPurpose },
   {
-    label: "Workers",
-    note: "Delegated agents, routed by capability tier",
+    label: "Background tasks",
+    note: "Bridge chooses an agent suited to each task",
     includes: purpose => !isOrchestratorPurpose(purpose) && !VERIFICATION.includes(purpose),
   },
   {
     label: "Verification",
-    note: "Roles with a specialized rubric",
+    note: "Models that check the work",
     includes: purpose => VERIFICATION.includes(purpose),
   },
 ];
@@ -67,9 +67,9 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
   };
 
   return <SettingsPage
-    title="Models"
-    description="Which model runs each Bridge role, and how hard it thinks."
-    action={<StatusPill>Version {version ?? "none"}</StatusPill>}
+    title="Model preferences"
+    description="Choose models for your chats and the tasks Bridge runs for you. These task choices take priority over an agent's defaults."
+    action={<StatusPill>{version ? "Saved preferences" : "Default preferences"}</StatusPill>}
   >
     {GROUPS.map(group => {
       const rows = profiles.filter(profile => group.includes(profile.purpose));
@@ -88,7 +88,7 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
       </SettingsGroup>;
     })}
 
-    <SettingsGroup label="Catalog" note="Where the model lists come from">
+    <SettingsGroup label="Available models" note="Model lists reported by your coding agents">
       {adapters.filter(adapter => adapter.available).map(adapter => {
         const catalog = adapter.modelCatalog;
         const isStale = catalog?.stale || catalog?.lastError;
@@ -224,7 +224,7 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               />}
             />
             <SettingsRow
-              label="Reasoning effort"
+              label="Thinking level"
               control={<Select
                 label={`${profileLabels[profile.purpose]} effort`}
                 value={profile.effort}

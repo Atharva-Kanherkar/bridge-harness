@@ -32,7 +32,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
   }, [onError]);
 
   if (!snapshot) {
-    return <SettingsPage title="Clones">
+    return <SettingsPage title="Browser copies">
       <SettingsGroup>
         <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
       </SettingsGroup>
@@ -56,8 +56,8 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
     .map(minutes => ({ value: String(minutes), label: ttlLabel(minutes) }));
 
   return <SettingsPage
-    title="Clones"
-    description="Throwaway copies of your browser an agent uses for work that needs a signed-in site. A clone never touches your own tabs."
+    title="Browser copies"
+    description="Agents can use a separate browser for signed-in work. You approve which sites it can access; your own tabs stay separate."
   >
     <SettingsGroup label="New clones" note={connected ? undefined : "Not connected"}>
       {!connected && <SettingsRow label="Browser clones are not connected to the runtime in this build yet." description="These settings apply once they are." />}
@@ -85,7 +85,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
         />}
       />
       <SettingsRow
-        label="Time to live"
+        label="Close after"
         description="A clone destroys itself, profile and cookies included, when this runs out."
         saved={isFlashed("ttl")}
         control={<Select

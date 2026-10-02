@@ -12,7 +12,7 @@
 // dragged along by a switch. The system prompt, the executable path, and the
 // advanced JSON are text, so they dirty the page and go through the save bar.
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { AdapterDescriptor, HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../ManagedAgentsPanel";
@@ -55,6 +55,7 @@ export function HarnessesPage(props: Shared & {
   detailId: string | null;
   onOpenDetail: (id: string) => void;
   onCloseDetail: () => void;
+  preferences?: ReactNode;
 }) {
   const { harnesses, managed, adapters, detailId, onOpenDetail, onCloseDetail, onAuthenticationChanged } = props;
   const detail = detailId ? harnesses.find(item => item.id === detailId) : undefined;
@@ -62,11 +63,12 @@ export function HarnessesPage(props: Shared & {
 
   const bridge = harnesses.find(item => item.id === "bridge");
   return <SettingsPage
-    title="Harnesses"
-    description="The runtimes Bridge can start. Defaults apply to new sessions; provider credentials stay in each harness's own store."
+    title="Coding agents"
+    description="Use coding agents already on your computer, or let Bridge install a separate copy. Open an agent to manage sign-in and defaults for new chats."
   >
     <ManagedAgentRows state={managed} adapters={adapters} onOpen={onOpenDetail} onAuthenticationChanged={onAuthenticationChanged} />
-    {bridge && <SettingsGroup label="Defaults" note="Bridge's own routing">
+    {props.preferences}
+    {bridge && <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced Bridge defaults</summary><div className="mt-3"><SettingsGroup label="Defaults" note="Bridge's own routing">
       <SettingsRow
         lead={<HarnessMark harness="bridge" size={14} />}
         label={bridge.label}
@@ -75,7 +77,7 @@ export function HarnessesPage(props: Shared & {
         onOpen={() => onOpenDetail("bridge")}
         control={<StatusPill tone="success">Always on</StatusPill>}
       />
-    </SettingsGroup>}
+    </SettingsGroup></div></details>}
     {managed.confirmation}
   </SettingsPage>;
 }
@@ -132,18 +134,18 @@ function HarnessDetail({
 
   return <SettingsPage
     title={harness.label}
-    breadcrumb={[{ label: "Harnesses", onClick: onBack }, { label: harness.label }]}
-    description={harness.isOverride ? "Customized" : "Bridge defaults"}
+    breadcrumb={[{ label: "Coding agents", onClick: onBack }, { label: harness.label }]}
+    description={`Defaults and instructions for new ${harness.label} chats. Chat-specific choices take priority.`}
     action={harness.isOverride
       ? <TextButton disabled={busy} onClick={() => void onResetHarness(harness.id)}>Reset to defaults</TextButton>
       : undefined}
   >
     {!isBridge && <ManagedAgentDetail state={managed} agentId={harness.id} />}
 
-    <SettingsGroup label="Sessions">
+    <SettingsGroup label="New chats">
       <SettingsRow
         label="Enabled"
-        description="New sessions may use this harness."
+        description="Allow Bridge to use this coding agent."
         saved={isFlashed("enabled")}
         control={<Switch
           label={`${harness.label} enabled`}
@@ -164,7 +166,7 @@ function HarnessDetail({
         />}
       />
       <SettingsRow
-        label="Default effort"
+        label="Thinking level"
         saved={isFlashed("effort")}
         control={<Select
           label={`${harness.label} default effort`}
@@ -177,7 +179,7 @@ function HarnessDetail({
       />
     </SettingsGroup>
 
-    <SettingsGroup label="System prompt" note="Appended after Bridge safety and routing policy">
+    <SettingsGroup label="Custom instructions" note="Used in new chats with this agent. Permissions still apply.">
       <SettingsBlockRow>
         <TextArea
           label={`${harness.label} system prompt`}
@@ -220,7 +222,7 @@ function HarnessDetail({
               onChange={value => onDraft(harness.id, { executablePath: value })}
             />}
           />
-        : <SettingsBlockRow label="Advanced JSON" description="Harness options Bridge has no row for yet.">
+        : <SettingsBlockRow label="Advanced configuration (JSON)" description="Agent-specific options. Edit only if you know which option your agent needs.">
             <TextArea
               label={`${harness.label} advanced JSON`}
               rows={5}
