@@ -161,6 +161,7 @@ typed_methods![
     // health
     (Health, _, HealthResult),
     (RefreshModelCatalogs, _, HealthResult),
+    (PrepareAgentSetup, PrepareAgentSetupParams, AdapterDescriptor),
     (InstallCodexUpdate, _, UnitResult),
     // state — the aggregate application snapshot
     (GetState, _, BridgeState),

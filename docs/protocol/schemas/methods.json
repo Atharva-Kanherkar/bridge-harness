@@ -16,6 +16,13 @@
       "resultSchema": "health-result.json"
     },
     {
+      "command": "prepare_agent_setup",
+      "domain": "health",
+      "method": "health/prepare_agent_setup",
+      "paramsSchema": "prepare-agent-setup-params.json",
+      "resultSchema": "adapter-descriptor.json"
+    },
+    {
       "command": "install_codex_update",
       "domain": "health",
       "method": "health/install_codex_update",
