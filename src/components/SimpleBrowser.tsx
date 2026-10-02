@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ExternalLink, Globe, MousePointer2, Plus, RotateCw, Square, Undo2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ExternalLink, Ghost, Globe, MousePointer2, Plus, RotateCw, Square, Undo2, X } from "lucide-react";
 import { openExternalUrl } from "../externalLinks";
 import { browserWorkspaceReducer, defaultBrowserWorkspace, normalizeBrowserUrl, readBrowserWorkspace, writeBrowserWorkspace } from "../browserWorkspace";
 import { sanitizeBrowserSelection, type BrowserSelectionContext } from "../browserSelection";
@@ -14,10 +14,12 @@ export type SimpleBrowserProps = {
   visible?: boolean;
   onAttachSelection?: (context: BrowserSelectionContext) => void;
   onInvalidateSelection?: (tabId: string, navigationId?: number) => void;
+  /** Offers a throwaway copy of a site, for the agent to use, from the toolbar. */
+  onStartThrowaway?: () => void;
 };
 const control = "grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
 
-export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible = true, onAttachSelection, onInvalidateSelection }: SimpleBrowserProps) {
+export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible = true, onAttachSelection, onInvalidateSelection, onStartThrowaway }: SimpleBrowserProps) {
   const [workspace, dispatch] = useReducer(browserWorkspaceReducer, undefined, () => initialUrl ? defaultBrowserWorkspace(initialUrl) : readBrowserWorkspace(sessionId));
   const [snapshots, setSnapshots] = useState<Record<string, BrowserPageSnapshot>>({});
   const [draft, setDraft] = useState("");
@@ -243,6 +245,7 @@ export function SimpleBrowser({ sessionId = "preview", initialUrl = "", visible 
       <button type="button" className={control} aria-label={live?.loading ? "Stop loading" : "Reload"} disabled={!active.url} onClick={() => act(live?.loading ? "stop" : "reload")}>{live?.loading ? <Square size={12} /> : <RotateCw size={12} />}</button>
       <input ref={address} value={draft} onChange={event => setDraft(event.target.value)} aria-label="Address" placeholder="Enter a URL or search" className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring" />
       <button type="button" className={cn(control, inspecting && "bg-selection text-selection-foreground")} aria-label="Select page element" aria-pressed={inspecting} disabled={!active.url || !!pageError} title="Select an element to edit" onClick={() => inspecting ? cancelSelection() : act("inspect")}><MousePointer2 size={14} /></button>
+      {onStartThrowaway && <button type="button" className={control} aria-label="Open a throwaway copy of a site" title="Throwaway copy of a site, for the agent" onClick={onStartThrowaway}><Ghost size={13} /></button>}
       <button type="button" className={control} aria-label="Open in system browser" disabled={!active.url} onClick={() => void run(() => openExternalUrl(live?.url || active.url))}><ExternalLink size={13} /></button>
     </form>
     {!hasNativeBrowser() && <p className="border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">Web preview: some pages cannot be embedded. Full navigation and element selection are available in the desktop app.</p>}

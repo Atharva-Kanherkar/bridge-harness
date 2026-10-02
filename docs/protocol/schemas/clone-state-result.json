@@ -10,6 +10,34 @@
     }
   ],
   "definitions": {
+    "CloneAgentPointer": {
+      "description": "The agent's pointer on the clone's viewport. `x` and `y` are fractions (0..1), `action` is what put it there (click, hover, drag, scroll), and `age_ms` is how long ago, so the dock can fade a stale cursor.",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "ageMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "x": {
+          "format": "double",
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "action",
+        "ageMs",
+        "x",
+        "y"
+      ],
+      "type": "object"
+    },
     "CloneSignInPath": {
       "description": "How the clone gets signed in.",
       "oneOf": [
@@ -40,6 +68,17 @@
             "array",
             "null"
           ]
+        },
+        "agentPointer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CloneAgentPointer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the agent's pointer last landed, for the dock's \"Claude\" cursor."
         },
         "agentVision": {
           "type": [

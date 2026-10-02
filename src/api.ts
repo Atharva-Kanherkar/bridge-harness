@@ -424,6 +424,7 @@ const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnap
     screenshotRedactedRegions: wire.screenshotRedactedRegions,
     pendingApproval: null,
     agentVision: wire.agentVision ?? undefined,
+    agentPointer: wire.agentPointer ? { x: wire.agentPointer.x, y: wire.agentPointer.y, action: wire.agentPointer.action, at: Date.now() - wire.agentPointer.ageMs } : null,
   };
 };
 // Starts on a login wall, the state a clone spends its interesting time in, so

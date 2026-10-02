@@ -71,7 +71,7 @@ const MENU_HEIGHT_ESTIMATE = 316;
 // Panes that live behind the overflow menu. Anything left off this list keeps
 // a button on the strip — GitHub does, because a review is a place a session
 // returns to rather than a panel it peeks at.
-const OVERFLOW_PANE_IDS: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "clone"];
+const OVERFLOW_PANE_IDS: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks"];
 
 function toolButtonClass(active: boolean) {
   return cn(
