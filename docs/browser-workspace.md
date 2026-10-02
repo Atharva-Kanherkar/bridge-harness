@@ -8,6 +8,29 @@ Bare localhost, IPv4 loopback, and bracketed IPv6 loopback addresses default to 
 
 A slow page stays alive. After a delay the chrome offers continued waiting, stopping, or external-open without claiming that a site forbids embedding. An unfinished native navigation that becomes idle is shown as a generic load failure with Retry and external-open. Native pages are not placed in iframes, so a site's framing policy does not itself prevent opening the page.
 
+## Agent browser sign-in
+
+The agent's throwaway Chrome copies cookies only after you approve its request.
+The approval lists the requested domain and every `additionalDomains` host;
+import includes those hosts and their subdomains. Blank mode copies no cookies.
+Parent domains are included only when explicitly listed.
+
+Google stores shared sign-in cookies on `.google.com`. A request for
+`docs.google.com` and `accounts.google.com` alone cannot copy those cookies.
+For Google Docs sign-in, explicitly include `google.com` in `additionalDomains`
+and review that scope before approving. For example:
+
+```json
+{"kind":"request","domain":"docs.google.com","additionalDomains":["google.com","gstatic.com"]}
+```
+
+Dependencies also form the network allowlist. The agent can inspect
+`status.blockedHosts` to identify another host the page needs, then request a
+fresh approval. A pending request's scope cannot change: resolve it first.
+The current browser stays alive while the next request awaits approval;
+approving the replacement destroys it, and `request_status` returns a
+replacement notice and fresh tool instructions.
+
 ## Select an element and request an edit
 
 1. Open the project preview in a browser tab and choose **Select page element**.

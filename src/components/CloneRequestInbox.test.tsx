@@ -78,3 +78,23 @@ it("continues polling when initially empty and removes a revoked request", async
   await act(async () => vi.advanceTimersByTimeAsync(1000));
   expect(host.textContent).toBe("");
 });
+
+it("discloses every cookie domain and its subdomains before allowing import", async () => {
+  vi.mocked(bridgeApi.readCloneSettings).mockResolvedValue({ connected: true, settings: { defaultSignInPath: "import", ttlMinutes: 30 } });
+  vi.mocked(bridgeApi.cloneRequests).mockResolvedValue([{ sessionId: "s", requestId: "google", domain: "docs.google.com", additionalDomains: ["accounts.google.com", "google.com", "docs.google.com"] }]);
+  await act(async () => root.render(<CloneRequestInbox sessionLabels={{}} onOpen={vi.fn()} onError={vi.fn()} />));
+  expect(host.textContent).toContain("Copies cookies from and connects to docs.google.com, accounts.google.com, google.com and their subdomains.");
+  expect(host.textContent).toContain("Parent domains are included only when listed.");
+  expect(bridgeApi.resolveCloneRequest).not.toHaveBeenCalled();
+  await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Blank")!.click());
+  expect(host.textContent).toContain("Connects to docs.google.com, accounts.google.com, google.com and their subdomains. No cookies are copied.");
+  expect(host.textContent).not.toContain("Copies cookies");
+});
+
+it("shows the single-domain cookie scope without implying parent-domain access", async () => {
+  vi.mocked(bridgeApi.readCloneSettings).mockResolvedValue({ connected: true, settings: { defaultSignInPath: "import", ttlMinutes: 30 } });
+  vi.mocked(bridgeApi.cloneRequests).mockResolvedValue([{ sessionId: "s", requestId: "google", domain: "docs.google.com" }]);
+  await act(async () => root.render(<CloneRequestInbox sessionLabels={{}} onOpen={vi.fn()} onError={vi.fn()} />));
+  expect(host.textContent).toContain("Copies cookies from and connects to docs.google.com and their subdomains.");
+  expect(host.textContent).toContain("Parent domains are included only when listed.");
+});

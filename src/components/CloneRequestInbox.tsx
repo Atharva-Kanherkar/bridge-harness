@@ -65,7 +65,11 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
     <p className="mt-3 text-[12px] leading-5 text-muted-foreground">
       The agent opens this site in a private Chrome{blank ? "" : ", signed in as you"}. It can see the page, click, and type. The browser is wiped when the turn ends.
     </p>
-    {!!request.additionalDomains?.length && <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground"><Waypoints size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">Also connects to <span className="font-mono text-foreground">{request.additionalDomains.join(", ")}</span></span></p>}
+    <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground"><Waypoints size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">
+      {blank ? "Connects to " : "Copies cookies from and connects to "}
+      <span className="font-mono text-foreground">{[...new Set([request.domain, ...(request.additionalDomains ?? [])])].join(", ")}</span>
+      {" and their subdomains. "}{blank ? "No cookies are copied." : "Parent domains are included only when listed."}
+    </span></p>
     {request.extensionPath && <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground"><Package size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">Loads extension <span className="font-mono text-foreground">{request.extensionPath}</span></span></p>}
     {settings && <div className="mt-3 divide-y divide-border rounded-lg border border-border bg-background/60">
       <OptionRow label="Sign-in"><SignInToggle value={settings.defaultSignInPath} disabled={busy} onChange={path => setSettings({ ...settings, defaultSignInPath: path })} /></OptionRow>
