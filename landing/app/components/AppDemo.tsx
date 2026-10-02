@@ -1,16 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ArrowUp, BadgeCheck, GitBranch, LayoutGrid, Paperclip, PanelRight, Search, ShieldCheck } from "lucide-react";
+import { ArrowLeftRight, ArrowUp, BadgeCheck, GitBranch, LayoutGrid, Paperclip, PanelRight, Search, ShieldCheck } from "lucide-react";
 import ChangesDock from "./app/ChangesDock";
-import MissionGrid from "./app/MissionGrid";
+import HarnessMark from "./app/HarnessMark";
+import MissionGrid, { missionTicks } from "./app/MissionGrid";
 import Sidebar from "./app/Sidebar";
-import TranscriptEntry from "./app/Transcript";
-import { scenes, type Entry, type Scene } from "../content/appScenes";
+import TranscriptEntry, { entryTicks } from "./app/Transcript";
+import { scenes, type Scene } from "../content/appScenes";
 
-const TYPE_MS = 1200;
-const STEP_MS = 900;
-const HOLD_MS = 3200;
+/** One tick of the player. Every scene is a pure function of how many ticks have passed. */
+const TICK_MS = 60;
+/** Ticks the finished scene holds before the strip moves on. */
+const HOLD = 55;
+/** Prompt characters typed per tick. */
+const TYPE_RATE = 2;
+/** A tick count past any scene's end, so a paused or server-rendered scene draws finished. */
+const FINISHED = Number.MAX_SAFE_INTEGER;
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 const REDUCED = "(prefers-reduced-motion: reduce)";
 
@@ -32,18 +38,34 @@ const sceneIcon: Record<string, typeof GitBranch> = {
   mission: LayoutGrid,
   policy: ShieldCheck,
   verify: BadgeCheck,
+  switch: ArrowLeftRight,
 };
 
-/** Steps a scene needs before it hands over: the prompt, then one per entry. */
-function stepCount(scene: Scene) {
-  if (scene.view === "mission") return (scene.tiles?.length ?? 0) + 3;
-  return (scene.entries?.length ?? 0) + (scene.prompt ? 1 : 0);
+type Timeline = { sent: number; starts: number[]; ticks: number[]; end: number; total: number };
+
+/** When the prompt sends and when each entry starts; entries play one after another. */
+function timeline(scene: Scene): Timeline {
+  if (scene.view === "mission") {
+    const end = missionTicks(scene.tiles ?? []);
+    return { sent: 0, starts: [], ticks: [], end, total: end + HOLD };
+  }
+  const entries = scene.entries ?? [];
+  const sent = scene.prompt ? Math.ceil(scene.prompt.length / TYPE_RATE) + 8 : 0;
+  let at = sent + (scene.prompt ? 6 : 4);
+  const starts: number[] = [];
+  const ticks: number[] = [];
+  for (const entry of entries) {
+    starts.push(at);
+    ticks.push(entryTicks(entry));
+    at += entryTicks(entry) + 5;
+  }
+  return { sent, starts, ticks, end: at, total: at + HOLD };
 }
 
 function usePlayback(scene: Scene, replay: number, paused: boolean, onDone: () => void) {
-  const [typed, setTyped] = useState("");
-  const [step, setStep] = useState(stepCount(scene));
+  const [t, setT] = useState(FINISHED);
   const [playing, setPlaying] = useState(false);
+  const plan = timeline(scene);
   const done = useRef(onDone);
   useEffect(() => { done.current = onDone; }, [onDone]);
 
@@ -55,44 +77,36 @@ function usePlayback(scene: Scene, replay: number, paused: boolean, onDone: () =
       setPlaying(false);
       return;
     }
-    setTyped("");
-    setStep(0);
+    setT(0);
     setPlaying(true);
   }, [scene.id, replay, paused]);
 
   useEffect(() => {
     if (!playing) return;
-    const timers: number[] = [];
-    const at = (delay: number, run: () => void) => timers.push(window.setTimeout(run, delay));
-    const prompt = scene.prompt ?? "";
-    const total = stepCount(scene);
-    let cursor = 320;
+    const id = window.setInterval(() => setT(value => value + 1), TICK_MS);
+    return () => window.clearInterval(id);
+  }, [playing, scene.id, replay]);
 
-    if (prompt) {
-      const per = Math.max(12, TYPE_MS / prompt.length);
-      for (let i = 1; i <= prompt.length; i += 1) at(cursor + i * per, () => setTyped(prompt.slice(0, i)));
-      cursor += prompt.length * per + 420;
-      at(cursor, () => { setTyped(""); setStep(1); });
-      cursor += STEP_MS;
-      for (let i = 2; i <= total; i += 1) { at(cursor, () => setStep(i)); cursor += STEP_MS; }
-    } else {
-      for (let i = 1; i <= total; i += 1) { at(cursor, () => setStep(i)); cursor += scene.view === "mission" ? 700 : STEP_MS; }
-    }
+  useEffect(() => {
+    if (playing && t === plan.total) done.current();
+  }, [playing, t, plan.total]);
 
-    at(cursor + HOLD_MS, () => done.current());
-    return () => timers.forEach(clearTimeout);
-  }, [scene, playing]);
-
-  return { typed, step: playing ? step : stepCount(scene), playing };
+  const now = playing ? t : FINISHED;
+  return { t: now, plan, progress: playing ? Math.min(1, t / plan.total) : 0 };
 }
 
-function ChatView({ scene, typed, step }: { scene: Scene; typed: string; step: number }) {
+function ChatView({ scene, t, plan }: { scene: Scene; t: number; plan: Timeline }) {
   // The sent prompt is the first thing that lands in the transcript, the way it does in the
   // app, so the pane is never a blank rectangle while the composer is still typing.
-  const entries: Entry[] = scene.prompt ? [{ kind: "user", text: scene.prompt }, ...(scene.entries ?? [])] : scene.entries ?? [];
-  const shown = entries.slice(0, step);
-  const progress = entries.length ? step / entries.length : 1;
+  const entries = scene.entries ?? [];
+  const typed = scene.prompt && t < plan.sent ? scene.prompt.slice(0, Math.min(scene.prompt.length, t * TYPE_RATE)) : "";
+  const first = plan.starts[0] ?? 0;
+  // The same floor the dock uses, so the toolbar count and the dock always agree.
+  const progress = Math.max(0.34, Math.min(1, Math.max(0, (t - first) / Math.max(1, plan.end - first))));
   const files = scene.dock ? Math.max(1, Math.ceil(scene.dock.files.length * progress)) : 0;
+  const played = entries.map((entry, i) => ({ entry, p: Math.min(1, (t - plan.starts[i]) / plan.ticks[i]), start: plan.starts[i] })).filter(item => t >= item.start);
+  const switched = [...played].reverse().find(item => item.entry.kind === "switch" && item.p >= 1)?.entry;
+  const model = switched?.kind === "switch" ? { harness: switched.to, label: switched.model } : scene.model ?? { harness: "codex" as const, label: "Codex · GPT Luna" };
 
   return (
     <section className="flex min-h-0 min-w-0 flex-col">
@@ -118,9 +132,19 @@ function ChatView({ scene, typed, step }: { scene: Scene; typed: string; step: n
 
       <div className="relative flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
         <div className="flex flex-col gap-4 px-4 py-4 sm:px-6">
-          {shown.map((entry, i) => (
-            <div key={i} className="animate-entry-in motion-reduce:animate-none">
+          {scene.history?.map((entry, i) => (
+            <div key={`history-${i}`}>
               <TranscriptEntry entry={entry} />
+            </div>
+          ))}
+          {scene.prompt && t >= plan.sent && (
+            <div className="animate-entry-in motion-reduce:animate-none">
+              <TranscriptEntry entry={{ kind: "user", text: scene.prompt }} />
+            </div>
+          )}
+          {played.map(({ entry, p }, i) => (
+            <div key={i} className="animate-entry-in motion-reduce:animate-none">
+              <TranscriptEntry entry={entry} p={p} />
             </div>
           ))}
         </div>
@@ -142,7 +166,10 @@ function ChatView({ scene, typed, step }: { scene: Scene; typed: string; step: n
             </span>
             <div className="flex min-h-8 items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                <span className="flex h-8 items-center rounded-md px-2">Codex · GPT Luna</span>
+                <span key={model.label} className="flex h-8 items-center gap-1.5 rounded-md px-2 animate-entry-in motion-reduce:animate-none">
+                  <HarnessMark harness={model.harness} size={12} />
+                  {model.label}
+                </span>
                 <span className="flex h-8 items-center rounded-md px-2 max-lg:hidden">User approval</span>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -198,7 +225,7 @@ export default function AppDemo() {
     else setActive(index => (index + 1) % scenes.length);
   }, []);
 
-  const { typed, step } = usePlayback(scene, replay, paused, onDone);
+  const { t, plan, progress } = usePlayback(scene, replay, paused, onDone);
 
   function select(index: number) {
     const next = (index + scenes.length) % scenes.length;
@@ -236,7 +263,12 @@ export default function AppDemo() {
             aria-hidden="true"
             className="absolute left-0 top-0 rounded-full bg-foreground/12 ring-1 ring-inset ring-foreground/20 transition-[transform,width,height] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
             style={slider ? { width: slider.width, height: slider.height, transform: `translate(${slider.left}px, ${slider.top}px)` } : { opacity: 0 }}
-          />
+          >
+            {/* How far the current scene has played, so the strip reads as a timeline. */}
+            <span className="absolute inset-0 overflow-hidden rounded-full">
+              <span className="absolute inset-y-0 left-0 bg-foreground/12" style={{ width: `${progress * 100}%` }} />
+            </span>
+          </span>
 
           {scenes.map((item, i) => {
             const selected = i === active;
@@ -283,8 +315,8 @@ export default function AppDemo() {
           } max-md:grid-cols-1`}
         >
           <Sidebar activeNav={scene.view === "mission" ? "mission" : "chats"} />
-          {scene.view === "mission" ? <MissionGrid tiles={scene.tiles ?? []} step={step} /> : <ChatView scene={scene} typed={typed} step={step} />}
-          {dock && <ChangesDock dock={scene.dock!} progress={Math.max(0.34, step / ((scene.entries?.length ?? 1) + 1))} />}
+          {scene.view === "mission" ? <MissionGrid tiles={scene.tiles ?? []} t={t} /> : <ChatView scene={scene} t={t} plan={plan} />}
+          {dock && <ChangesDock dock={scene.dock!} progress={Math.max(0.34, Math.min(1, Math.max(0, (t - (plan.starts[0] ?? 0)) / Math.max(1, plan.end - (plan.starts[0] ?? 0)))))} />}
         </div>
       </div>
     </div>
