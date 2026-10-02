@@ -200,4 +200,15 @@ describe("sidebar chat search", () => {
     expect(input().value).toBe("plugins stall");
     expect(search).toHaveBeenCalledWith("plugins stall", { deep: true });
   });
+
+  it("keeps the row cap while filtering, so a broad query cannot mount every chat", async () => {
+    vi.spyOn(bridgeApi, "searchChats").mockImplementation(async query => indexResult(query, { hits: [] }));
+    const chats = Array.from({ length: 40 }, (_, index) => session(`c${index}`, `Chat ${index}`));
+    mount({ chats });
+    act(() => { container.querySelector<HTMLButtonElement>('button[aria-label="Search"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    type("chat");
+    await settle();
+    expect(container.querySelectorAll('button[aria-label^="Chat actions for"]').length).toBeLessThan(chats.length);
+    expect(text()).toMatch(/Show \d+ more/);
+  });
 });

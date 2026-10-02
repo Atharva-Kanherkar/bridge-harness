@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { chatBucket, chatName, liveAgentSessions, BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
+import { chatBucket, chatName, liveAgentSessions, BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CONSOLIDATION_SESSION_KIND, CONNECTOR_SESSION_KIND, CHAT_SEARCH_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -268,6 +268,8 @@ describe("hidden sessions", () => {
     expect(isHiddenSession(chat("x", EXTRACTION_SESSION_KIND))).toBe(true);
     expect(isHiddenSession(chat("e", EVALUATION_SESSION_KIND))).toBe(true);
     expect(isHiddenSession(chat("c", CONSOLIDATION_SESSION_KIND))).toBe(true);
+    expect(isHiddenSession(chat("r", CONNECTOR_SESSION_KIND))).toBe(true);
+    expect(isHiddenSession(chat("q", CHAT_SEARCH_SESSION_KIND))).toBe(true);
     for (const kind of [null, "orchestrator", "chat", "worker", "direct"]) {
       expect(isHiddenSession(chat("b", kind))).toBe(false);
     }

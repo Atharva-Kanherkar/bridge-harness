@@ -180,6 +180,7 @@ pub fn is_hidden_session_kind(kind: Option<&str>) -> bool {
         || kind == Some(crate::routing_evaluation::EVALUATION_SESSION_KIND)
         || kind == Some(crate::memory_consolidation::CONSOLIDATION_SESSION_KIND)
         || kind == Some(crate::chat_search::CHAT_SEARCH_SESSION_KIND)
+        || kind == Some(crate::connector_runs_live::CONNECTOR_SESSION_KIND)
 }
 
 #[cfg(test)]
@@ -346,6 +347,9 @@ mod tests {
             crate::memory_consolidation::CONSOLIDATION_SESSION_KIND
         )));
         assert!(is_hidden_session_kind(Some(crate::chat_search::CHAT_SEARCH_SESSION_KIND)));
+        assert!(is_hidden_session_kind(Some(
+            crate::connector_runs_live::CONNECTOR_SESSION_KIND
+        )));
         for visible in [None, Some("orchestrator"), Some("direct"), Some("worker"), Some("")] {
             assert!(!is_hidden_session_kind(visible), "{visible:?} is a session a human may see");
         }

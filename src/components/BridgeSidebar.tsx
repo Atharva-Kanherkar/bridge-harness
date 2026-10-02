@@ -615,6 +615,7 @@ export function BridgeSidebar({
   }, []);
 
   const agents = useMemo(() => agentOptions(chats), [chats]);
+  const chatsById = useMemo(() => new Map(chats.map(chat => [chat.id, chat])), [chats]);
   const workspaceTitle = useMemo(() => {
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
@@ -798,9 +799,9 @@ export function BridgeSidebar({
           </SectionLabel>
 
           {groups.map(group => {
-            // A search is already the short list, so capping it would hide the
-            // very rows the query asked for.
-            const capped = !searching && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            // Capped while searching too: a one-letter query matches nearly
+            // every chat, and mounting all of them froze the field.
+            const capped = !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
             // Folding needs a header to unfold from.
             const folded = !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
@@ -835,7 +836,7 @@ export function BridgeSidebar({
                 // `forkParentSessionId`, not `parentSessionId`: the latter
                 // names a delegated worker, and workers never reach this list.
                 const forkedFrom = chat.forkParentSessionId;
-                const source = forkedFrom ? chats.find(candidate => candidate.id === forkedFrom) : undefined;
+                const source = forkedFrom ? chatsById.get(forkedFrom) : undefined;
                 return (
                   <ChatRow
                     key={chat.id}
