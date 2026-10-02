@@ -433,6 +433,8 @@ function AppContent() {
   // configured model stays in cooldown.
   const [fallbackNotice, setFallbackNotice] = useState<string>();
   const [agentDispatchNotice, setAgentDispatchNotice] = useState<string>();
+  const [archiveNotice, setArchiveNotice] = useState<{ message: string; retained: boolean }>();
+  const archivingChatIds = useRef(new Set<string>());
   const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   // These handlers must be initialized before the startup effects subscribe.
@@ -1499,22 +1501,43 @@ function AppContent() {
     }
   }
 
-  // Archiving a chat files the conversation away and reclaims the checkout it
-  // owns — not its workspace's, which belongs to every other chat in that
-  // project. History is kept either way, which is what makes this safe to offer
-  // on a hover button; the confirm exists because the worktree is not kept.
+  // The backend stops the hidden family before reclaiming its owned checkout.
+  // Keep the archive result visible even if the subsequent refresh fails.
   const archiveChat = useCallback(async (chat: Session) => {
+    if (archivingChatIds.current.has(chat.id)) return;
     const name = chat.title?.trim() || chat.label || "this chat";
-    if (!window.confirm(`Archive ${name}? Its history is kept, and its worktree is reclaimed if nothing is unsaved there.`)) return;
+    if (!window.confirm(`Archive ${name}? Any running session will stop automatically. Its history is kept, and its worktree is reclaimed if nothing is unsaved there.`)) return;
+    archivingChatIds.current.add(chat.id);
+    setArchiveNotice(undefined);
     try {
       const result = await bridgeApi.archiveChat(chat.id);
-      if (result.worktreeDetail) {
-        setError(`${name} was archived, but its worktree was kept: ${result.worktreeDetail}`);
-      }
+      // A root archive hides workers and asides as well as the root row.
+      setState(current => {
+        const hidden = new Set([chat.id]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const session of current.sessions) {
+            if (session.parentSessionId && hidden.has(session.parentSessionId) && !hidden.has(session.id)) {
+              hidden.add(session.id);
+              changed = true;
+            }
+          }
+        }
+        return { ...current, sessions: current.sessions.filter(session => !hidden.has(session.id)) };
+      });
       setSelectedSessionId(current => (current === chat.id ? undefined : current));
+      setArchiveNotice({
+        message: result.worktreeDetail
+          ? `${name} was archived. Its worktree was kept: ${result.worktreeDetail}`
+          : `${name} was archived. Its history is kept in Settings > Archived chats.`,
+        retained: !!result.worktreeDetail,
+      });
       await reload();
     } catch (value) {
       setError(errorMessage(value));
+    } finally {
+      archivingChatIds.current.delete(chat.id);
     }
   }, [reload]);
 
@@ -3340,6 +3363,12 @@ function AppContent() {
         onDismiss={() => setError(undefined)}
       />;
     })()}
+    {archiveNotice && <TransientAlert
+      title="Chat archived"
+      message={archiveNotice.message}
+      variant={archiveNotice.retained ? "warning" : "success"}
+      onDismiss={() => setArchiveNotice(undefined)}
+    />}
     {codexUpdateOverlays}
     {githubLinkChoice && <GithubLinkDestinationDialog
       subject={describeGithubLink(githubLinkChoice.link)}

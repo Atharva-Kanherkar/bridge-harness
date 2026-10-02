@@ -1127,6 +1127,7 @@ pub fn start_session(
     // Exclusive with model switches (and other starts) on this session for
     // the rest of the launch flow.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    ensure_session_not_archived(core, &session_id)?;
     // Which backend may serve this session, decided before anything is spawned
     // so a changed one is refused rather than silently substituted. `adapter_id`
     // stays the agent — it is what `sessions.harness` records — and `dispatch_id`
@@ -1534,6 +1535,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    ensure_session_not_archived(core, &session_id)?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode): (
         String,
         String,
@@ -9419,7 +9421,7 @@ fn report_to_parent(
 
 // The result transaction leaves an outbox entry even if Bridge exits before
 // this sweep. Preparing metadata never requires the parent provider to exist.
-fn prepare_pending_worker_results(core: &Arc<BridgeCore>) {
+pub(crate) fn prepare_pending_worker_results(core: &Arc<BridgeCore>) {
     let pending = {
         let db = core.db.lock().unwrap();
         db.prepare("SELECT id,payload FROM durable_outbox WHERE destination='parent' AND event_type='worker.result' AND status='pending' AND next_attempt_at<=?1 ORDER BY created_at,id LIMIT 16")
@@ -9580,7 +9582,11 @@ fn prepare_worker_result_delivery(
                 params![report.evidence_id, Utc::now().to_rfc3339()],
             )?;
             if claimed == 0 { return Ok(()); }
-            let queued = if direct_dispatch { None } else {
+            // Consume the durable receipt even when its parent is hidden, but
+            // retain only the result history. Check ancestry in the enqueue
+            // transaction so archive cannot commit between check and delivery.
+            let archived = session_has_archived_ancestor(&transaction, &report.parent_session_id)?;
+            let queued = if direct_dispatch || archived { None } else {
                 Some(session_input::enqueue(&transaction, &report.parent_session_id, &routing_notice, &result.summary)?)
             };
             let result_event = agent::NormalizedEvent {
@@ -11510,6 +11516,7 @@ fn submit_input_internal(
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     let _input_lease = core.input_activity.read().unwrap();
+    ensure_session_not_archived(core, &session_id)?;
     let state = core;
     // An image-only send is legitimate: the images are the message. Text alone
     // still may not be empty.
@@ -11839,6 +11846,9 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "queued input delivery") else {
         return false;
     };
+    if ensure_session_not_archived(core, session_id).is_err() {
+        return false;
+    }
     let state = core.clone();
     let queued = {
         let db = state.db.lock().unwrap();
@@ -12320,6 +12330,10 @@ enum TurnStop {
 
 fn stop_turn(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     let _lifecycle = core.claim_session_lifecycle(session_id, "cancel turn")?;
+    stop_turn_claimed(core, session_id, cause)
+}
+
+fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     // The DB lock serializes this boundary with normalization/publication.
     // Once released, no buffered frame can reopen the stopped turn.
     let runtime = {
@@ -12361,6 +12375,65 @@ fn stop_turn(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Resul
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }
     Ok(())
+}
+
+/// Archive already holds lifecycle claims for the whole family. End processes
+/// synchronously, without the optional before-shutdown checkpoint that can
+/// leave `stop_session` running a new model turn after it returns.
+pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let (live, worker): (bool, bool) = core.db.lock().unwrap().query_row(
+        "SELECT active_turn_id IS NOT NULL OR adapter_pid IS NOT NULL
+                OR status IN ('working','waiting','starting','resuming','checkpointing','ready','warm','restored'),
+                kind='worker' AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1)
+         FROM sessions WHERE id=?1",
+        [session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    // Waiting inputs must never revive an archived conversation, even when
+    // there is no live adapter left to retire.
+    core.db.lock().unwrap().execute(
+        "UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",
+        [session_id],
+    )?;
+    crate::switch_summary::stop_for_session(core, session_id, adapters::ShutdownReason::UserStopped);
+    core.deactivate_reader_launch(session_id);
+    core.browser_bridge.revoke_session(session_id);
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
+    let has_adapter = core.adapters.lock().unwrap().contains_key(session_id);
+    let has_pty = core.runtimes.lock().unwrap().contains_key(session_id);
+    if live || has_adapter || has_pty {
+        if worker {
+            stop_worker_session(core, session_id, StopCause::User)?;
+        } else {
+            stop_turn_claimed(core, session_id, TurnStop::User)?;
+        }
+        let runtime = { core.runtimes.lock().unwrap().remove(session_id) };
+        if let Some(mut runtime) = runtime {
+            runtime.child.kill().map_err(|error| BridgeError::Pty(error.to_string()))?;
+            let _ = runtime.child.wait();
+        }
+    }
+    Ok(())
+}
+
+/// A hidden family cannot be resumed by a stale window or queued input. Check
+/// under the lifecycle claim so a start cannot slip in after archive commits.
+fn ensure_session_not_archived(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    if session_has_archived_ancestor(&core.db.lock().unwrap(), session_id)? {
+        return Err(BridgeError::Invalid("Restore this archived chat before starting it".into()));
+    }
+    Ok(())
+}
+
+fn session_has_archived_ancestor(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(db.query_row(
+        "WITH RECURSIVE ancestors(id,parent_session_id,archived_at) AS (
+            SELECT id,parent_session_id,archived_at FROM sessions WHERE id=?1
+            UNION SELECT s.id,s.parent_session_id,s.archived_at FROM sessions s
+                JOIN ancestors a ON s.id=a.parent_session_id
+         ) SELECT EXISTS(SELECT 1 FROM ancestors WHERE archived_at IS NOT NULL)",
+        [session_id], |row| row.get(0),
+    )?)
 }
 
 pub fn stop_session(
@@ -15903,6 +15976,32 @@ mod submit_input_tests {
         assert_eq!(notice["childSessionId"], "child");
         assert!(notice["evidenceId"].is_string());
         assert_eq!(notice["result"], serde_json::to_value(result).unwrap());
+    }
+
+    #[test]
+    fn worker_result_delivery_suppresses_inputs_for_archived_ancestry() {
+        for archived_id in ["parent", "ancestor"] {
+            let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+            let result = result_delivery_fixture(&core);
+            assert!(report_to_parent(&core, "child", &result));
+            {
+                let db = core.db.lock().unwrap();
+                db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) SELECT 'ancestor',workspace_id,harness,'Ancestor','idle',metric_source FROM sessions WHERE id='parent'", []).unwrap();
+                db.execute("UPDATE sessions SET parent_session_id='ancestor' WHERE id='parent'", []).unwrap();
+                db.execute("UPDATE sessions SET archived_at=?2 WHERE id=?1", params![archived_id, Utc::now().to_rfc3339()]).unwrap();
+            }
+            prepare_pending_worker_results(&core);
+            {
+                let db = core.db.lock().unwrap();
+                assert_eq!(session_input::pending_count(&db, "parent").unwrap(), 0);
+                let state: String = db.query_row("SELECT status FROM durable_outbox WHERE event_type='worker.result'", [], |row| row.get(0)).unwrap();
+                assert_eq!(state, "delivered");
+            }
+            assert!(parent_event_kinds(&core).contains(&"worker.result".to_owned()));
+            crate::api::unarchive_chat(&core, archived_id).unwrap();
+            prepare_pending_worker_results(&core);
+            assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 0);
+        }
     }
 
     #[test]
