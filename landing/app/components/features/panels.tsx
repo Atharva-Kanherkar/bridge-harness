@@ -99,7 +99,7 @@ export function Parallel() {
                   </p>
                 )}
                 {step >= 1 && step < 4 && <Tool key="read" kind="read" label={`Read ${tile.file}`} running={step === 1} />}
-                {step >= 2 && <Tool key="edit" kind="edit" label={`Edited ${tile.file}`} running={step === 2} meta={<Diff add={add} del={del} />} />}
+                {step >= 2 && <Tool key="edit" kind="edit" label={`Edited ${tile.file}`} running={step === 2} />}
                 {step >= 3 && <Tool key="run" kind="run" label={tile.test} running={step === 3} />}
                 {step >= 4 && (
                   <div key="review" className={`flex items-center gap-1.5 text-[11.5px] text-muted-foreground ${appear}`}>
@@ -138,7 +138,7 @@ export function SwitchHarness() {
   const claude = ["Claude Sonnet", "Claude Opus", "Claude Haiku"];
 
   return (
-    <div ref={ref} className={`${frame} flex h-[420px] flex-col justify-end p-4 sm:h-[460px]`} aria-hidden="true">
+    <div ref={ref} className={`${frame} flex h-[380px] flex-col justify-end p-4 sm:h-[400px]`} aria-hidden="true">
       <div className="flex flex-col gap-3 overflow-hidden px-1 pb-4">
         <div>
           <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -518,7 +518,7 @@ export function Memory() {
   const recalled = t >= 96 && t < 106;
 
   return (
-    <div ref={ref} className={`${frame} flex h-[440px] flex-col gap-3 p-4 sm:h-[480px]`} aria-hidden="true">
+    <div ref={ref} className={`${frame} flex h-[400px] flex-col gap-3 p-4 sm:h-[420px]`} aria-hidden="true">
       <div className="rounded-lg border border-border-card bg-card p-3">
         <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
           <HarnessMark harness="claude" size={12} /> Claude Code · api/

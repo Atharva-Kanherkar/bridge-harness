@@ -67,14 +67,14 @@ export default function FeatureScroll() {
 
       </div>
 
-      {/* The left column lines up with the page gutter; the capture runs off the right edge,
-          so it is large enough to read instead of shrinking into half a column. */}
-      <div className="mt-14 flex flex-col gap-14 pl-[max(1.5rem,calc((100vw-72rem)/2))] pr-6 lg:mt-20 lg:gap-0 lg:pr-0">
+      {/* Both columns share the page container, and the panel is capped at roughly the width
+          of a real app pane, so the app's type scale reads at its true size on wide screens. */}
+      <div className="mx-auto mt-14 flex max-w-6xl flex-col gap-14 px-6 lg:mt-20 lg:gap-0">
         {features.map(feature => (
           <article
             key={feature.id}
             id={feature.id}
-            className="grid scroll-mt-24 items-start gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:gap-14"
+            className="grid scroll-mt-24 items-start gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:gap-16"
           >
             <div className="lg:sticky lg:top-28 lg:self-start lg:py-16">
               <h3 className="font-display text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[2rem]">
@@ -83,7 +83,7 @@ export default function FeatureScroll() {
               <p className="mt-4 max-w-md text-[14.5px] leading-7 text-muted-foreground">{feature.text}</p>
             </div>
 
-            <div className="lg:py-12">{feature.panel}</div>
+            <div className="w-full max-w-[680px] lg:justify-self-end lg:py-12">{feature.panel}</div>
           </article>
         ))}
       </div>
