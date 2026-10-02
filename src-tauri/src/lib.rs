@@ -802,7 +802,8 @@ async fn archive_chat(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::ArchiveChatResult, BridgeError> {
-    api::archive_chat(state.inner(), &session_id)
+    let core = state.inner().clone();
+    blocking("Archive chat", move || api::archive_chat(&core, &session_id)).await
 }
 
 #[tauri::command]

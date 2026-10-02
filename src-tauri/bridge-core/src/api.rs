@@ -4315,27 +4315,51 @@ pub fn archive_chat(
     core: &Arc<BridgeCore>,
     session_id: &str,
 ) -> Result<worktree_registry::ArchiveChatResult, BridgeError> {
-    let (status, active_turn, adapter_pid): (String, Option<String>, Option<i64>) =
-        core.db.lock().unwrap().query_row(
-            "SELECT status,active_turn_id,adapter_pid FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    // Hold every hidden session's lifecycle claim through shutdown and reclaim.
+    // Acquire all claims before changing anything, so a concurrent launch fails
+    // the archive without partially stopping the family.
+    let family = {
+        let db = core.db.lock().unwrap();
+        // Resolve the requested row first: a missing id must not report success.
+        db.query_row("SELECT id FROM sessions WHERE id=?1", [session_id], |row| row.get::<_, String>(0))?;
+        let mut statement = db.prepare(
+            "WITH RECURSIVE family(id) AS (
+                SELECT id FROM sessions WHERE id=?1
+                UNION SELECT s.id FROM sessions s JOIN family f ON s.parent_session_id=f.id
+             ) SELECT id FROM family ORDER BY id",
         )?;
-    // A `ready` chat has no turn in flight but still owns a live provider
-    // process. Hiding it would take away the only route to that process while
-    // it goes on holding memory, a port and a model session — and the worktree
-    // would be retained anyway, since the same claim marks it in use. Archiving
-    // has to mean the chat is really finished.
-    if active_turn.is_some()
-        || adapter_pid.is_some()
-        || matches!(
-            status.as_str(),
-            "working" | "waiting" | "starting" | "resuming" | "checkpointing" | "ready"
-        )
+        let ids = statement.query_map([session_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+    let _claims = family.iter()
+        .map(|id| core.claim_session_lifecycle(id, "archive chat"))
+        .collect::<Result<Vec<_>, _>>()?;
     {
-        return Err(BridgeError::Invalid(
-            "Stop this chat before archiving it".into(),
-        ));
+        let db = core.db.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
+        // A worker finishing shutdown frees a pool slot. Cancel this family's
+        // queued delegations before that slot can dispatch a hidden successor.
+        for id in &family {
+            tx.execute(
+                "UPDATE worker_queue SET queue_status='cancelled',blocked_at=NULL,
+                    last_error='parent chat archived',updated_at=?2
+                 WHERE parent_session_id=?1 AND queue_status IN ('queued','dispatching','blocked_on_human')",
+                params![id, chrono::Utc::now().to_rfc3339()],
+            )?;
+        }
+        tx.commit()?;
+    }
+    // Retire the parent first so a worker cancellation cannot start a new turn
+    // on it while the rest of the family is being shut down.
+    live_turn::stop_session_for_archive(core, session_id)?;
+    for id in family.iter().filter(|id| id.as_str() != session_id) {
+        live_turn::stop_session_for_archive(core, id)?;
+    }
+    // Worker cancellation can enqueue a notice on its parent. Abandon those
+    // follow-ups too, and re-settle a parent whose readiness was recomputed.
+    for id in &family {
+        live_turn::stop_session_for_archive(core, id)?;
     }
 
     let owned = { worktree_registry::owned_by_session(&core.db.lock().unwrap(), session_id)? };
@@ -5775,68 +5799,139 @@ mod tests {
         assert!(fixture.chat_worktree.is_dir());
     }
 
-    /// A `ready` chat has no turn in flight but still owns a live provider
-    /// process. Archiving it would hide the only route to that process while it
-    /// went on holding memory and a model session — and the worktree would be
-    /// retained anyway, since the same claim marks it in use.
-    #[test]
-    fn archiving_refuses_a_chat_whose_adapter_is_still_alive() {
-        let fixture = chat_fixture();
-        fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE sessions SET status='ready',adapter_pid=4242,
-                    adapter_process_identity='claude:4242' WHERE id='chat'",
-                [],
-            )
-            .unwrap();
-        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
-        assert!(error.to_string().contains("Stop this chat"), "{error:?}");
-        assert!(fixture.chat_worktree.is_dir());
-        let archived: Option<String> = fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .query_row("SELECT archived_at FROM sessions WHERE id='chat'", [], |row| row.get(0))
-            .unwrap();
-        assert!(archived.is_none(), "and it is not hidden");
+    struct ArchiveRuntime {
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
-    /// Boot recovery clears the claim for a process that is really gone, so a
-    /// `ready` row left by a crashed run must not block archiving forever.
-    #[test]
-    fn archiving_a_ready_chat_with_no_live_adapter_still_works() {
-        let fixture = chat_fixture();
-        fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .execute("UPDATE sessions SET status='idle',adapter_pid=NULL WHERE id='chat'", [])
-            .unwrap();
-        assert!(super::archive_chat(&fixture.core, "chat").unwrap().archived);
+    impl crate::adapters::AdapterRuntime for ArchiveRuntime {
+        fn process_id(&self) -> u32 { 4242 }
+        fn provider_session_id(&self) -> &str { "archive-test" }
+        fn current_turn(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+            std::sync::Arc::new(std::sync::Mutex::new(None))
+        }
+        fn send_turn(&self, _: &str) -> Result<(), crate::BridgeError> {
+            panic!("archiving must not start a shutdown checkpoint turn")
+        }
+        fn interrupt(&self) -> Result<(), crate::BridgeError> { Ok(()) }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), crate::BridgeError> { Ok(()) }
+        fn stop(&mut self, _: crate::adapters::ShutdownReason) {
+            self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn attach_archive_runtime(core: &crate::runtime::BridgeCore, id: &str) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        core.adapters.lock().unwrap().insert(id.into(), Box::new(ArchiveRuntime { stopped: stopped.clone() }));
+        stopped
     }
 
     #[test]
-    fn archiving_refuses_a_chat_that_is_still_running() {
+    fn archiving_stops_live_statuses_and_clears_process_and_turn_claims() {
+        for status in ["ready", "working", "waiting", "starting", "resuming", "checkpointing", "warm", "restored"] {
+            let fixture = chat_fixture();
+            fixture.core.db.lock().unwrap().execute(
+                "UPDATE sessions SET status=?1,active_turn_id=CASE WHEN ?1='ready' THEN NULL ELSE 'turn' END,adapter_pid=4242,
+                 adapter_process_identity='claude:4242' WHERE id='chat'", [status],
+            ).unwrap();
+            let stopped = attach_archive_runtime(&fixture.core, "chat");
+            let gate = std::sync::Arc::new(std::sync::Mutex::new(true));
+            fixture.core.reader_launches.lock().unwrap().insert("chat".into(), gate.clone());
+            // Meaningful history would trigger the optional stop_session checkpoint.
+            crate::session_forest::SessionForest::new(&fixture.core.db.lock().unwrap()).append(
+                "chat", crate::session_forest::EntryKind::UserMessage, serde_json::json!({"text":"Keep this history"}),
+            ).unwrap();
+
+            let result = super::archive_chat(&fixture.core, "chat").unwrap();
+            assert!(result.archived, "{status}");
+            assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "{status}");
+            assert!(!*gate.lock().unwrap());
+            assert!(!fixture.core.adapters.lock().unwrap().contains_key("chat"));
+            assert!(!fixture.chat_worktree.exists(), "stopped before reclaim: {status}");
+            let db = fixture.core.db.lock().unwrap();
+            let claims: (String, Option<String>, Option<i64>, Option<String>) = db.query_row(
+                "SELECT status,active_turn_id,adapter_pid,adapter_process_identity FROM sessions WHERE id='chat'", [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).unwrap();
+            assert_eq!(claims, ("stopped".into(), None, None, None));
+            assert!(crate::store::session_events_after(&db, "chat", 0, 200).unwrap().iter().any(|event| event.text.as_deref() == Some("Keep this history")));
+        }
+    }
+
+    #[test]
+    fn archiving_clears_stale_adapter_claims_and_also_handles_idle_chats() {
+        for status in ["idle", "ready"] {
+            let fixture = chat_fixture();
+            fixture.core.db.lock().unwrap().execute(
+                "UPDATE sessions SET status=?1,adapter_pid=4242,adapter_process_identity='stale' WHERE id='chat'", [status],
+            ).unwrap();
+            assert!(super::archive_chat(&fixture.core, "chat").unwrap().archived);
+            assert!(!fixture.chat_worktree.exists());
+        }
+    }
+
+    #[test]
+    fn archiving_stops_descendants_abandons_inputs_and_keeps_siblings_running() {
         let fixture = chat_fixture();
-        fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .execute("UPDATE sessions SET status='working' WHERE id='chat'", [])
-            .unwrap();
-        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
-        assert!(
-            error.to_string().contains("Stop this chat"),
-            "{error:?}",
-        );
-        assert!(fixture.chat_worktree.is_dir());
+        {
+            let db = fixture.core.db.lock().unwrap();
+            db.execute("UPDATE sessions SET status='working',active_turn_id='turn'", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('worker','w','codex','Worker','working','reported','chat','worker')", []).unwrap();
+            db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker','chat','working','research','key','now')", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('aside','w','codex','Aside','ready','reported','worker','aside')", []).unwrap();
+            for id in ["chat", "worker", "aside"] {
+                db.execute("INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,created_at,updated_at) VALUES(?1,?1,'w','turn','{}','codex','queued','now','now')", [id]).unwrap();
+            }
+            for id in ["chat", "worker", "aside", "sibling"] {
+                db.execute("INSERT INTO queued_session_input(id,session_id,provider_text,display_text,state,created_at) VALUES(?1,?1,'Next','Next','queued','now')", [id]).unwrap();
+            }
+        }
+        let stopped = ["chat", "worker", "aside", "sibling"].map(|id| attach_archive_runtime(&fixture.core, id));
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        for flag in &stopped[..3] { assert!(flag.load(std::sync::atomic::Ordering::SeqCst)); }
+        assert!(!stopped[3].load(std::sync::atomic::Ordering::SeqCst));
+        let db = fixture.core.db.lock().unwrap();
+        let queued: i64 = db.query_row("SELECT COUNT(*) FROM queued_session_input WHERE state='queued' AND session_id<>'sibling'", [], |r| r.get(0)).unwrap();
+        assert_eq!(queued, 0);
+        let cancelled: i64 = db.query_row("SELECT COUNT(*) FROM worker_queue WHERE queue_status='cancelled'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cancelled, 3);
+        let lifecycle: String = db.query_row("SELECT lifecycle_state FROM worker_runtime WHERE session_id='worker'", [], |r| r.get(0)).unwrap();
+        assert_eq!(lifecycle, "cancelled");
+        drop(db);
+        let remaining = crate::store::state(&fixture.core.db.lock().unwrap()).unwrap();
+        assert_eq!(remaining.sessions.len(), 1);
+        assert_eq!(remaining.sessions[0].id, "sibling");
+        assert!(matches!(remaining.sessions[0].status, crate::model::SessionStatus::Working));
+        assert!(fixture.core.adapters.lock().unwrap().contains_key("sibling"));
+    }
+
+    #[test]
+    fn archiving_lifecycle_conflicts_leave_the_entire_family_visible_and_alive() {
+        let fixture = chat_fixture();
+        fixture.core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('worker','w','codex','Worker','working','reported','chat','aside')", []).unwrap();
+        let stopped = attach_archive_runtime(&fixture.core, "chat");
+        let _held = fixture.core.claim_session_lifecycle("worker", "session start").unwrap();
+        assert!(super::archive_chat(&fixture.core, "chat").unwrap_err().to_string().contains("already in progress"));
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(session_count(&fixture.core), 3);
+        assert!(fixture.chat_worktree.exists());
+        // The claims acquired before the conflict have been released too.
+        assert!(fixture.core.claim_session_lifecycle("chat", "test").is_ok());
+    }
+
+    #[test]
+    fn archived_roots_and_descendants_cannot_restart_until_restored() {
+        let fixture = chat_fixture();
+        fixture.core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('aside','w','codex','Aside','idle','reported','chat','aside')", []).unwrap();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        for id in ["chat", "aside"] {
+            let error = super::start_chat(&fixture.core, id.into()).unwrap_err();
+            assert!(error.to_string().contains("Restore this archived chat"), "{error}");
+            let error = super::submit_input(&fixture.core, id.into(), "Resume work".into()).unwrap_err();
+            assert!(error.to_string().contains("Restore this archived chat"), "{error}");
+            assert!(!crate::live_turn::drain_queued_input(&fixture.core, id));
+        }
+        assert!(fixture.core.adapters.lock().unwrap().is_empty());
+        assert!(super::archive_chat(&fixture.core, "missing").is_err());
     }
 
     /// Replays the recorded approve/deny decision for every action kind through

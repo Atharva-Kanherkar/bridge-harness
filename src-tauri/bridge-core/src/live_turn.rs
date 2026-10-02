@@ -1127,6 +1127,7 @@ pub fn start_session(
     // Exclusive with model switches (and other starts) on this session for
     // the rest of the launch flow.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    ensure_session_not_archived(core, &session_id)?;
     // Which backend may serve this session, decided before anything is spawned
     // so a changed one is refused rather than silently substituted. `adapter_id`
     // stays the agent — it is what `sessions.harness` records — and `dispatch_id`
@@ -1534,6 +1535,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    ensure_session_not_archived(core, &session_id)?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode): (
         String,
         String,
@@ -11510,6 +11512,7 @@ fn submit_input_internal(
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     let _input_lease = core.input_activity.read().unwrap();
+    ensure_session_not_archived(core, &session_id)?;
     let state = core;
     // An image-only send is legitimate: the images are the message. Text alone
     // still may not be empty.
@@ -11839,6 +11842,9 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "queued input delivery") else {
         return false;
     };
+    if ensure_session_not_archived(core, session_id).is_err() {
+        return false;
+    }
     let state = core.clone();
     let queued = {
         let db = state.db.lock().unwrap();
@@ -12320,6 +12326,10 @@ enum TurnStop {
 
 fn stop_turn(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     let _lifecycle = core.claim_session_lifecycle(session_id, "cancel turn")?;
+    stop_turn_claimed(core, session_id, cause)
+}
+
+fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     // The DB lock serializes this boundary with normalization/publication.
     // Once released, no buffered frame can reopen the stopped turn.
     let runtime = {
@@ -12359,6 +12369,62 @@ fn stop_turn(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Resul
         // Calling interrupt first could wait ten seconds on an HTTP abort or
         // a blocked pipe. Process-group shutdown is the bounded hard guarantee.
         runtime.stop(adapters::ShutdownReason::UserStopped);
+    }
+    Ok(())
+}
+
+/// Archive already holds lifecycle claims for the whole family. End processes
+/// synchronously, without the optional before-shutdown checkpoint that can
+/// leave `stop_session` running a new model turn after it returns.
+pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let (live, worker): (bool, bool) = core.db.lock().unwrap().query_row(
+        "SELECT active_turn_id IS NOT NULL OR adapter_pid IS NOT NULL
+                OR status IN ('working','waiting','starting','resuming','checkpointing','ready','warm','restored'),
+                kind='worker' AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1)
+         FROM sessions WHERE id=?1",
+        [session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    // Waiting inputs must never revive an archived conversation, even when
+    // there is no live adapter left to retire.
+    core.db.lock().unwrap().execute(
+        "UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",
+        [session_id],
+    )?;
+    crate::switch_summary::stop_for_session(core, session_id, adapters::ShutdownReason::UserStopped);
+    core.deactivate_reader_launch(session_id);
+    core.browser_bridge.revoke_session(session_id);
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
+    let has_adapter = core.adapters.lock().unwrap().contains_key(session_id);
+    let has_pty = core.runtimes.lock().unwrap().contains_key(session_id);
+    if live || has_adapter || has_pty {
+        if worker {
+            stop_worker_session(core, session_id, StopCause::User)?;
+        } else {
+            stop_turn_claimed(core, session_id, TurnStop::User)?;
+        }
+        let runtime = { core.runtimes.lock().unwrap().remove(session_id) };
+        if let Some(mut runtime) = runtime {
+            runtime.child.kill().map_err(|error| BridgeError::Pty(error.to_string()))?;
+            let _ = runtime.child.wait();
+        }
+    }
+    Ok(())
+}
+
+/// A hidden family cannot be resumed by a stale window or queued input. Check
+/// under the lifecycle claim so a start cannot slip in after archive commits.
+fn ensure_session_not_archived(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let archived: bool = core.db.lock().unwrap().query_row(
+        "WITH RECURSIVE ancestors(id,parent_session_id,archived_at) AS (
+            SELECT id,parent_session_id,archived_at FROM sessions WHERE id=?1
+            UNION SELECT s.id,s.parent_session_id,s.archived_at FROM sessions s
+                JOIN ancestors a ON s.id=a.parent_session_id
+         ) SELECT EXISTS(SELECT 1 FROM ancestors WHERE archived_at IS NOT NULL)",
+        [session_id], |row| row.get(0),
+    )?;
+    if archived {
+        return Err(BridgeError::Invalid("Restore this archived chat before starting it".into()));
     }
     Ok(())
 }

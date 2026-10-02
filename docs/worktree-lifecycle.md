@@ -243,10 +243,16 @@ History is kept — the session row, its forest entries and its evidence all
 survive, and the projection simply stops listing the chat and its descendants. A
 checkout that cannot be proven expendable is kept rather than blocking the
 archive, and the reason is reported: putting a conversation away should not
-require first resolving its uncommitted work. A chat is refused while it is
-running *or* while it still holds a live adapter process: a `ready` chat has no
-turn in flight but its provider is up, and hiding it would take away the only
-route to a process that goes on holding memory and a model session.
+require first resolving its uncommitted work. Archiving automatically stops the
+chat and every descendant it hides before reclaiming the checkout. This includes
+`ready` chats with a live provider, active turns, and waiting follow-ups. Shutdown
+finishes within the archive operation without starting a checkpoint turn.
+Unrelated chats keep running. A conflicting lifecycle operation leaves the chat
+visible and returns an error; archived families cannot restart until restored.
+
+The sidebar confirms automatic shutdown, removes the archived family as soon as
+the operation succeeds, and shows a “Chat archived” notification. If unsaved
+work keeps the checkout, the notification explains why.
 
 This is the affordance whose absence caused the accumulation in the first place.
 
