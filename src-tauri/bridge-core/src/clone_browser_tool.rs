@@ -144,10 +144,10 @@ impl CloneBrowserTool {
             quote(&self.socket.to_string_lossy()), quote(&format!("Authorization: Bearer {token}")), quote(&format!("X-Bridge-Session: {session}")));
         fs::write(&path, script).ok()?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
-        Some(format!(r#"Bridge browser tool: {tool}. A real Chrome, signed in as the person on {domain}. Call it with one JSON argument, e.g. {tool} '{{"kind":"screenshot"}}'.
+        Some(format!(r#"Bridge browser tool: {tool}. A real Chrome for {domain}. Approved cookies may be imported, but the site can still require the person to sign in. Call it with one JSON argument, e.g. {tool} '{{"kind":"screenshot"}}'.
 See: screenshot (saves a PNG and returns its path; open it with your image viewer), read_page (every element with a ref like r12 and its x,y; filter=interactive for controls only), get_text.
 Act: click/double_click/right_click/hover (ref, or x,y in screenshot pixels), drag (x,y to toX,toY), type (text into the focused field), key (e.g. "Enter", "cmd+a", "shift+Tab"), form_input (ref, value), scroll (deltaY, or ref to scroll it into view), navigate (url, or back/forward/reload), focus (ref), evaluate (expression: page JavaScript), wait (ms).
-Work in a loop: look (screenshot or read_page), act, look again. status tells you if the person has taken over (all calls pause until they hand it back). Sites allowed: {domain} and its approved dependencies. The browser is destroyed when your turn ends."#, tool = path.display()))
+Work in a loop: look (screenshot or read_page), act, look again. status stays available while the person controls the browser; other calls pause until they choose Hand back. Explain any waitingForUser/message to the person and poll status while paused. If Google rejects sign-in, ask the person to sign in in normal Chrome, then approve a fresh browser request explicitly including google.com. Sites allowed: {domain} and its approved dependencies. The browser is destroyed when your turn ends."#, tool = path.display()))
     }
 
     /// The unix socket the tool script talks to. The orchestrator's end-to-end
@@ -435,7 +435,8 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
         drop(caps);
         if kind == "status" {
             let paused = self.paused.lock().map_err(|_| "clone unavailable")?.contains(session);
-            if paused { return Ok(json!({"ok":true,"paused":true})); }
+            // A paused status must not read the page or disclose user activity.
+            if paused { return Ok(json!({"ok":true,"paused":true,"waitingForUser":true,"message":PAUSED_MESSAGE})); }
             let blocked = self.supervisor.clone_guard(&clone_id).map(|guard| {
                 let guard = guard.lock().unwrap_or_else(|p| p.into_inner());
                 let mut hosts: Vec<String> = guard.blocked().iter().map(|request| request.host.clone()).collect();
@@ -444,10 +445,12 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
                 guard.scrub_response(&mut blocked);
                 blocked
             }).unwrap_or_else(|| json!([]));
-            return Ok(json!({"ok":true,"paused":paused,"blockedHosts":blocked}));
+            let mut status = json!({"ok":true,"paused":false,"blockedHosts":blocked});
+            self.add_sign_in_help(&clone_id, &mut status);
+            return Ok(status);
         }
         if self.paused.lock().map_err(|_| "clone unavailable")?.contains(session) {
-            return Err("the person controls the browser; all agent access is paused".into());
+            return Err(PAUSED_MESSAGE.into());
         }
         let guard = self
             .supervisor
@@ -468,7 +471,10 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
                 .lock()
                 .map_err(|_| "clone guard unavailable")?
                 .scrub_response(&mut value);
-            return Ok(json!({"ok":true,"result":value}));
+            drop(results);
+            let mut response = json!({"ok":true,"result":value});
+            self.add_sign_in_help(&clone_id, &mut response);
+            return Ok(response);
         }
         let kind = canonical_kind(kind).ok_or("unknown kind; see the tool instructions for the list")?;
         let approved = self.mutable.lock().map(|set| set.contains(session)).unwrap_or(false);
@@ -480,6 +486,7 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
                 return Err("the person turned off screenshots for this clone; use read_page".into());
             }
             let mut shot = self.screenshot(session, &clone_id)?;
+            self.add_sign_in_help(&clone_id, &mut shot);
             guard.lock().map_err(|_| "clone guard unavailable")?.scrub_response(&mut shot);
             return Ok(shot);
         }
@@ -518,8 +525,30 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
         if results.values().filter(|(owner, _, _)| owner == session).count() >= 128 {
             results.retain(|_, (owner, _, _)| owner != session);
         }
-        results.insert(id.clone(), (session.to_owned(), clone_id, result.clone()));
-        Ok(json!({"ok":true,"commandId":id,"result":result}))
+        results.insert(id.clone(), (session.to_owned(), clone_id.clone(), result.clone()));
+        drop(results);
+        let mut response = json!({"ok":true,"commandId":id,"result":result});
+        self.add_sign_in_help(&clone_id, &mut response);
+        Ok(response)
+    }
+
+    fn add_sign_in_help(&self, clone_id: &str, response: &mut Value) {
+        if let Some(message) = self.sign_in_help(clone_id) {
+            response["waitingForUser"] = json!(true);
+            response["signInRequired"] = json!(true);
+            response["message"] = json!(message);
+        }
+    }
+
+    /// Fixed recovery text only. The page's text, URL, and account details never
+    /// leave the renderer through this diagnostic. UI callers may use it while
+    /// the person holds the browser; agent callers must pass the pause gate first.
+    pub(crate) fn sign_in_help(&self, clone_id: &str) -> Option<&'static str> {
+        let expression = format!("/* bridge-google-signin */ location.hostname === 'accounts.google.com' && ({GOOGLE_SIGNIN_REJECTED_JS})(location.hostname, document.body?.innerText || '')");
+        let reply = self.page(clone_id, "Runtime.evaluate", json!({
+            "expression": expression, "returnByValue": true,
+        })).ok()?;
+        (reply.pointer("/result/value")? == true).then_some(GOOGLE_SIGNIN_MESSAGE)
     }
 
     fn page(&self, clone_id: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -893,6 +922,10 @@ const READ_PAGE_JS: &str = r#"({filter}) => {
 
 const GET_TEXT_JS: &str = r#"(() => { const t = (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n'); return { url: location.href, title: document.title, text: t.length > 50000 ? t.slice(0, 50000) + '\n… truncated' : t }; })()"#;
 
+const PAUSED_MESSAGE: &str = "The person controls the browser; all agent page access is paused. Ask them to finish signing in or their browser work, then choose Hand back in Bridge. Poll status until paused is false.";
+pub(crate) const GOOGLE_SIGNIN_MESSAGE: &str = "Google rejected this browser for sign-in. Use Take over to sign in, then choose Hand back. If Google still refuses, sign in in normal Chrome and approve a fresh browser request with google.com explicitly included.";
+pub(crate) const GOOGLE_SIGNIN_REJECTED_JS: &str = r#"(host, text) => host === 'accounts.google.com' && /this browser or app may not be secure/i.test(text.replace(/\s+/g, ' '))"#;
+
 /// Scroll a ref into view and return its centre, or null when it is gone.
 const REF_POINT_JS: &str = r#"(ref) => {
   const el = document.querySelector(`[data-bridge-ref="${CSS.escape(ref)}"]`);
@@ -972,6 +1005,34 @@ fn descendant_of(mut pid: u32, ancestor: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_rejection_matches_only_google_in_real_chrome() {
+        use crate::browser_clone::CloneConfig;
+        if std::env::var("BRIDGE_CLONE_LIVE").as_deref() != Ok("1") { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = CloneSupervisor::with_ram_disk(
+            dir.path().join("ledger.json"), dir.path().join("mounts"),
+            CloneConfig { guarded: true, ..CloneConfig::from_env() },
+        );
+        let info = supervisor.spawn_clone().expect("real Chrome starts");
+        for (host, text, rejected) in [
+            ("accounts.google.com", "This browser or app may not be secure", true),
+            ("accounts.google.com", "THIS browser\n or app may\t not be secure", true),
+            ("accounts.google.com", "Sign in to Google", false),
+            ("accounts.google.com.evil.test", "This browser or app may not be secure", false),
+            ("docs.google.com", "This browser or app may not be secure", false),
+        ] {
+            let expression = format!("({GOOGLE_SIGNIN_REJECTED_JS})({}, {})", json!(host), json!(text));
+            let reply = supervisor.page_call(&info.id, "Runtime.evaluate", json!({
+                "expression": expression, "returnByValue": true,
+            })).unwrap();
+            assert_eq!(reply["result"]["value"], rejected, "host={host}");
+        }
+        supervisor.destroy(&info.id).unwrap();
+        assert!(!info.mount.exists());
+    }
+
     #[test]
     fn generated_helper_preserves_conflict_and_superseded_error_bodies() {
         let dir = tempfile::tempdir_in("/tmp").unwrap();

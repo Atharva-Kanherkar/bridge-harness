@@ -91,6 +91,9 @@ pub struct CloneSnapshot {
     pub pending_request_id: Option<String>,
     pub extension_path: Option<String>,
     pub additional_domains: Option<Vec<String>>,
+    /// Fixed recovery guidance when the site rejects sign-in. No page content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_vision: Option<bool>,
     /// Where the agent's pointer last landed, for the dock's "Claude" cursor.

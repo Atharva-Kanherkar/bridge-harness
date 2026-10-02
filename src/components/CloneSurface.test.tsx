@@ -258,6 +258,20 @@ describe("CloneSurface as a dock tenant", () => {
     expect(button("Take over")).toBeDefined();
   });
 
+  it.each(["acting", "taken_over"] as const)("shows Google recovery guidance while %s", async status => {
+    const waitingReason = "Google rejected this browser for sign-in. Use Take over to sign in, then choose Hand back. If Google still refuses, sign in in normal Chrome and approve a fresh browser request with google.com explicitly included.";
+    state.mockResolvedValue(clone({ status, waitingReason }));
+    const seen: CloneSupervision[] = [];
+    await render({ onSupervisionChange: supervision => seen.push(supervision) });
+    expect(container.textContent).toContain(waitingReason);
+    expect(button(status === "acting" ? "Take over" : "Hand back")).toBeDefined();
+    expect(seen.at(-1)).toEqual({ status, attention: status === "acting" });
+    state.mockResolvedValue(clone({ status }));
+    await tick(CLONE_POLL_VISIBLE_MS);
+    expect(container.textContent).not.toContain("Google rejected");
+    expect(seen.at(-1)).toEqual({ status, attention: false });
+  });
+
   it("walks take over, hand back, and destroy through their states", async () => {
     let current = clone({ status: "waiting_for_you", waitingReason: "Sign in" });
     state.mockImplementation(async () => structuredClone(current));

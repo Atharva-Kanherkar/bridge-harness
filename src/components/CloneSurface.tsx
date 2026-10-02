@@ -100,7 +100,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   };
   const send = (input: CloneInputEvent) => { void bridgeApi.cloneInput(sessionId ?? "", input).catch(error => onError(message(error))); };
 
-  const attention = status === "requested" || status === "waiting_for_you" || !!snapshot?.pendingApproval;
+  const attention = status === "requested" || status === "waiting_for_you" || (status === "acting" && !!snapshot?.waitingReason) || !!snapshot?.pendingApproval;
   const supervisionRef = useRef<string>();
   useEffect(() => {
     const signature = `${status}:${attention}`;
@@ -156,6 +156,10 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
         {status === "waiting_for_you" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-[12px] leading-4 text-foreground">
           <Hand size={14} className="shrink-0 text-warning" aria-hidden="true" />
           <span className="min-w-0 flex-1"><b className="font-medium">The clone is waiting for you.</b> <span className="text-muted-foreground">{snapshot.waitingReason ?? "Take over to sign in, then hand it back."}</span></span>
+        </div>}
+        {snapshot.waitingReason && status !== "waiting_for_you" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-[12px] leading-4 text-foreground">
+          <AlertTriangle size={14} className="shrink-0 text-warning" aria-hidden="true" />
+          <span className="min-w-0 flex-1">{snapshot.waitingReason}</span>
         </div>}
         {status === "taken_over" && <div role="status" className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-3 py-2 text-[12px] leading-4 text-foreground">
           <Hand size={14} className="shrink-0 text-info" aria-hidden="true" />

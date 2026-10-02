@@ -416,9 +416,9 @@ const cloneSnapshotFromWire = (wire: WireCloneSnapshot | null): BrowserCloneSnap
     cloneId: wire.cloneId,
     domain: wire.domain,
     signInPath: wire.signInPath,
-    waitingReason: wire.status === "waiting_for_you"
+    waitingReason: wire.waitingReason ?? (wire.status === "waiting_for_you"
       ? "Sign in and finish two-factor, then hand the clone back."
-      : null,
+      : null),
     expiresAt: new Date(Date.now() + wire.minutesLeft * 60_000).toISOString(),
     screenshot: wire.screenshot ?? null,
     screenshotRedactedRegions: wire.screenshotRedactedRegions,

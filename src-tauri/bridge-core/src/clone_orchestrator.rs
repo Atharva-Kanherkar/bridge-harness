@@ -390,6 +390,15 @@ impl CloneOrchestrator {
         Some(view_of(session_id, entry, entry.expires_at.saturating_duration_since(Instant::now())))
     }
 
+    /// A fixed sign-in recovery notice for the person's Browser pane.
+    pub fn sign_in_help(&self, session_id: &str) -> Option<&'static str> {
+        let operation = self.tool.session_operation(session_id);
+        let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
+        let clone_id = self.active.lock().unwrap_or_else(|p| p.into_inner())
+            .get(session_id)?.clone_id.clone();
+        self.tool.sign_in_help(&clone_id)
+    }
+
     /// The person takes control (to sign in, finish 2FA). The agent is paused:
     /// its page actions are refused until the clone is handed back.
     pub fn take_over(&self, session_id: &str) {
@@ -638,6 +647,86 @@ mod tests {
         let output = std::process::Command::new(tool.socket_path().parent().unwrap().join(format!("clone-request-{session}")))
             .arg(request.to_string()).output().unwrap();
         serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn browser_via_helper(tool: &CloneBrowserTool, session: &str, request: Value) -> Value {
+        let output = std::process::Command::new(tool.socket_path().parent().unwrap().join(format!("clone-browser-{session}")))
+            .arg(request.to_string()).output().unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    #[test]
+    fn paused_helpers_explain_hand_back_without_reading_the_page() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), Arc::clone(&tool));
+        orchestrator.start_approved_clone("chat", "accounts.google.com", CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id(), true).unwrap();
+        orchestrator.hand_back("chat");
+        let saved = browser_via_helper(&tool, "chat", json!({"kind":"evaluate","expression":"'before takeover'"}));
+        assert_eq!(saved["ok"], true);
+        orchestrator.take_over("chat");
+        std::fs::write(dir.path().join("google-rejected"), "synthetic").unwrap();
+        let calls = || std::fs::read(dir.path().join("commands.jsonl")).unwrap();
+        let before = calls();
+        let status = browser_via_helper(&tool, "chat", json!({"kind":"status"}));
+        assert_eq!(status["paused"], true);
+        assert_eq!(status["waitingForUser"], true);
+        assert!(status["message"].as_str().unwrap().contains("Hand back"));
+        assert!(status["message"].as_str().unwrap().contains("Poll status"));
+        assert!(status.get("signInRequired").is_none(), "paused status inspected the page");
+        for request in [
+            json!({"kind":"screenshot"}), json!({"kind":"get_text"}), json!({"kind":"read_page"}),
+            json!({"kind":"evaluate","expression":"document.body.innerText"}),
+            json!({"kind":"type","text":"person-only"}),
+            json!({"kind":"result","commandId":saved["commandId"]}),
+        ] {
+            let reply = browser_via_helper(&tool, "chat", request);
+            assert_eq!(reply["ok"], false);
+            assert!(reply["error"].as_str().unwrap().contains("Hand back"));
+        }
+        assert_eq!(calls(), before, "a paused agent read or changed the page");
+        std::fs::remove_file(dir.path().join("google-rejected")).unwrap();
+        orchestrator.hand_back("chat");
+        let status = browser_via_helper(&tool, "chat", json!({"kind":"status"}));
+        assert_eq!(status["paused"], false);
+        assert!(status.get("message").is_none());
+        let stale = browser_via_helper(&tool, "chat", json!({"kind":"result","commandId":saved["commandId"]}));
+        assert_eq!(stale["ok"], false, "takeover left the cached page accessible");
+        assert_eq!(browser_via_helper(&tool, "chat", json!({"kind":"key","key":"Tab"}))["ok"], true);
+    }
+
+    #[test]
+    fn google_rejection_recovery_reaches_helpers_and_the_native_snapshot_source() {
+        use crate::clone_browser_tool::GOOGLE_SIGNIN_MESSAGE;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(supervisor, Arc::clone(&tool));
+        orchestrator.start_approved_clone("chat", "accounts.google.com", CloneBrowser::Chrome, SignInPath::SignInInside, None, std::process::id(), true).unwrap();
+        let context = orchestrator.capability_context("chat", std::process::id()).unwrap();
+        assert!(context.contains("can still require the person to sign in"));
+        assert!(!context.contains("signed in as the person"));
+        orchestrator.hand_back("chat");
+        assert!(orchestrator.sign_in_help("chat").is_none());
+        std::fs::write(dir.path().join("google-rejected"), "synthetic").unwrap();
+        assert_eq!(orchestrator.sign_in_help("chat"), Some(GOOGLE_SIGNIN_MESSAGE));
+        for kind in ["status", "get_text", "read_page"] {
+            let reply = browser_via_helper(&tool, "chat", json!({"kind":kind}));
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["waitingForUser"], true);
+            assert_eq!(reply["signInRequired"], true);
+            assert_eq!(reply["message"], GOOGLE_SIGNIN_MESSAGE);
+        }
+        assert_eq!(orchestrator.view("chat").unwrap().status, CloneStatus::Acting);
+        orchestrator.take_over("chat");
+        assert_eq!(orchestrator.sign_in_help("chat"), Some(GOOGLE_SIGNIN_MESSAGE));
+        std::fs::remove_file(dir.path().join("google-rejected")).unwrap();
+        orchestrator.hand_back("chat");
+        let reply = browser_via_helper(&tool, "chat", json!({"kind":"status"}));
+        assert_eq!(reply["paused"], false);
+        assert!(reply.get("signInRequired").is_none());
+        assert!(orchestrator.sign_in_help("chat").is_none());
     }
 
     #[test]

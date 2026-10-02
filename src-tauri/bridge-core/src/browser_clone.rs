@@ -1593,6 +1593,8 @@ while (defined(my $raw = <$in>)) {
         $result = { nodes => [{ nodeId => '1', role => { value => 'textField' }, value => { value => $typed } }, { nodeId => '2', role => { value => 'StaticText' }, name => { value => "echo:$typed" } }] };
     } elsif ($method eq 'Input.insertText') {
         $typed = $message->{params}{text};
+    } elsif ($method eq 'Runtime.evaluate' && index($message->{params}{expression} // '', '/* bridge-google-signin */') >= 0) {
+        $result = { result => { value => (-e "$here/google-rejected" ? JSON::PP::true() : JSON::PP::false()) } };
     } elsif ($method eq 'Storage.setCookies') {
         push @cookies, @{ $message->{params}{cookies} // [] };
     } elsif ($method eq 'Storage.getCookies') {
