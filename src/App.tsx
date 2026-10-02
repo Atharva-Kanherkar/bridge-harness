@@ -51,7 +51,7 @@ import { ConnectorPane } from "./components/ConnectorPane";
 import { ConnectorToasts } from "./components/ConnectorToasts";
 import { reduceToasts, type ConnectorToast } from "./connectorSurface";
 import { UpdateToast } from "./components/UpdateToast";
-import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
+import { checkForUpdate, getUpdateChannel, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { notifyAttention } from "./attention";
 import { attentionCopy, attentionToastKey } from "./attentionCopy";
 import { diffAttentionEvents } from "./attentionEvents";
@@ -988,7 +988,12 @@ function AppContent() {
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo>();
   useEffect(() => {
     let active = true;
-    const check = () => { void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); }).catch(() => undefined); };
+    const check = () => {
+      const channel = getUpdateChannel();
+      void checkForUpdate(channel).then(update => {
+        if (active && getUpdateChannel() === channel) setAvailableUpdate(update ?? undefined);
+      }).catch(() => undefined);
+    };
     check();
     const timer = window.setInterval(check, 6 * 60 * 60 * 1000);
     return () => { active = false; window.clearInterval(timer); };
@@ -2864,7 +2869,7 @@ function AppContent() {
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} onUpdate={setAvailableUpdate} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
@@ -3376,6 +3381,7 @@ function AppContent() {
     </div>
     {availableUpdate && (
       <UpdateToast
+        key={`${availableUpdate.channel}:${availableUpdate.version}`}
         update={availableUpdate}
         onInstall={installUpdateAndRestart}
         onDismiss={() => setAvailableUpdate(undefined)}

@@ -1,22 +1,25 @@
 import { useState } from "react";
 import { Download, LoaderCircle, X } from "lucide-react";
-import type { UpdateInfo } from "../updater";
+import { UpdateInstallUnavailableError, type UpdateInfo } from "../updater";
 
 export function UpdateToast({ update, onInstall, onDismiss }: {
   update: UpdateInfo;
-  onInstall: () => Promise<void>;
+  onInstall: (update: UpdateInfo) => Promise<void>;
   onDismiss: () => void;
 }) {
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string>();
+  const developmentBuild = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
   async function install() {
     setInstallError(undefined);
     setInstalling(true);
     try {
-      await onInstall();
-    } catch {
+      await onInstall(update);
+    } catch (error) {
       setInstalling(false);
-      setInstallError("Update failed. Check your connection and try again.");
+      setInstallError(error instanceof UpdateInstallUnavailableError
+        ? error.message
+        : "Update failed. Check your connection and try again.");
     }
   }
   return <div className="pointer-events-none fixed bottom-3 left-3 z-30 sm:bottom-[18px] sm:left-[18px]">
@@ -26,7 +29,7 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
         <span className="block text-[13px] font-medium leading-snug text-foreground">Bridge {update.version} is available</span>
         <span className="mt-0.5 block text-[12px] text-muted-foreground">You're on {update.currentVersion}. Update now to restart with the latest build.</span>
         {installError && <span className="mt-1 block text-[12px] text-destructive">{installError}</span>}
-        <button
+        {developmentBuild ? <span className="mt-2 block text-[12px] text-muted-foreground">Install updates from a packaged Bridge app.</span> : <button
           type="button"
           disabled={installing}
           onClick={() => void install()}
@@ -34,7 +37,7 @@ export function UpdateToast({ update, onInstall, onDismiss }: {
         >
           {installing && <LoaderCircle size={12} aria-hidden="true" className="animate-spin" />}
           {installing ? "Installing…" : installError ? "Retry" : "Install and restart"}
-        </button>
+        </button>}
       </div>
       <button type="button" onClick={onDismiss} aria-label="Dismiss update notification" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
         <X size={13} aria-hidden="true" />

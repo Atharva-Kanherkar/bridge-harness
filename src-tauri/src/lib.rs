@@ -3026,7 +3026,7 @@ pub fn run() -> i32 {
                 invoke.resolver.reject("Browser pages cannot invoke Bridge commands");
                 return true;
             }
-            if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update") {
+            if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update" | "ensure_update_installable") {
                 return nightly_updater::commands(invoke);
             }
             match host.get() {
