@@ -2727,13 +2727,15 @@ export const bridgeApi = {
     }));
     if (isTauri()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined });
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
-    const steered = !!session.activeTurnId;
-    if (steered) {
-      appendAgent(sessionId, "turn.completed", { status: "cancelled", title: "Redirected", data: { reason: "user_steered" } });
-      session.status = "ready"; session.activeTurnId = null; emitState();
+    if (session.activeTurnId) {
+      // The mock has no turn to stop; it records the steer the way the real
+      // backend persists it and leaves the running turn to finish.
+      appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text, data: { delivery: "steered", ...(images.length > 0 ? { attachments: images.map(image => ({ mediaType: image.mediaType, dataUri: `data:${image.mediaType};base64,${image.base64Data}` })) } : {}) } });
+      emitState();
+      return { disposition: "steeredActiveTurn", interceptions: [] };
     }
     await bridgeApi.sendTurn(sessionId, text);
-    return { disposition: steered ? "steeredActiveTurn" : "startedNewTurn", interceptions: [] };
+    return { disposition: "startedNewTurn", interceptions: [] };
   },
   dispatchAgentShortcut: async (sessionId: string, token: string, objective: string): Promise<DispatchAgentShortcutResult> => {
     if (isTauri()) return call("sessions/dispatch_agent_shortcut", { sessionId, token, objective });
