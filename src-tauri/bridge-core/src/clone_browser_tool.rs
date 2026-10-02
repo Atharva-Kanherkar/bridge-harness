@@ -177,7 +177,7 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
             quote(&self.socket.to_string_lossy()), quote(&format!("Authorization: Bearer {token}")), quote(&format!("X-Bridge-Session: {session}")));
         fs::write(&path, script).ok()?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
-        Some(format!(r#"When a task needs a real browser (a signed-in site, a web app to check or use, a UI to test), ask for one; the person approves it: {tool} '{{"kind":"request","domain":"example.com"}}'. It opens signed in as the person, and you can see and drive it. The result includes requestId. Poll the same tool with {{"kind":"request_status","requestId":...}} every two seconds until awaiting=false (approval can take minutes; do not end your turn); it returns the browser tool's instructions. Optional additionalDomains lists CDN or sign-in hosts the site needs; optional extensionPath is an absolute directory of an extension under test. The browser is destroyed when your turn ends."#, tool = path.display()))
+        Some(format!(r#"When a task needs a real browser (a signed-in site, a web app to check or use, a UI to test), ask for one; the person approves it: {tool} '{{"kind":"request","domain":"example.com"}}'. It copies cookies for the explicitly approved domains, and you can see and drive it. The result includes requestId. Poll the same tool with {{"kind":"request_status","requestId":...}} every two seconds until awaiting=false (approval can take minutes; do not end your turn); it returns the browser tool's instructions. Optional additionalDomains lists hosts the site needs: each entry permits connections and imports cookies for that host and its subdomains. Parent-domain cookies require explicitly listing their parent (for Google Docs sign-in, include google.com to copy Google's shared session cookies); the approval card shows this full scope. Nothing is widened automatically. Resolve a pending request before changing its scope. Approving a new request destroys the previous browser; use the fresh tool instructions returned by request_status. Optional extensionPath is an absolute directory of an extension under test. The browser is destroyed when your turn ends."#, tool = path.display()))
     }
 
     /// The domain a session's agent has asked for, awaiting the person's answer.
@@ -385,12 +385,12 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
             if kind == "request_status" {
                 let id = request.get("requestId").and_then(Value::as_str).ok_or("missing requestId")?;
                 if let Some(pending) = self.pending_details(session) {
-                    if pending.id != id { return Err("request changed".into()); }
+                    if pending.id != id { return Err("browser request superseded; poll the current requestId".into()); }
                     return Ok(json!({"ok":true,"awaiting":true,"requestId":id}));
                 }
                 let answers = self.answers.lock().map_err(|_| "answer unavailable")?;
                 let (answer_id, answer) = answers.get(session).ok_or("request no longer available")?;
-                if answer_id != id { return Err("request changed".into()); }
+                if answer_id != id { return Err("browser request superseded; poll the current requestId and use its fresh browser tool instructions".into()); }
                 return Ok(answer.clone());
             }
             let domain = request.get("domain").and_then(Value::as_str)
@@ -412,7 +412,7 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
             let mut pending = self.pending.lock().map_err(|_| "request unavailable")?;
             if let Some(existing) = pending.get(session) {
                 if existing.domain != domain || existing.extension_path != extension_path || existing.additional_domains != additional_domains || existing.runtime_pid != cap.runtime_pid {
-                    return Err("a different browser request is already awaiting approval".into());
+                    return Err("a different browser request is already awaiting approval; resolve it before requesting a different domain or cookie scope. The pending request and current browser are unchanged".into());
                 }
                 return Ok(json!({"ok":true,"requested":domain,"awaiting":true,"requestId":existing.id}));
             }
@@ -428,7 +428,7 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
             .map_err(|_| "capability unavailable")?;
         let cap = caps.get(session).ok_or("capability unavailable")?;
         if cap.token != token || !peer.is_some_and(|pid| descendant_of(pid, cap.runtime_pid)) {
-            return Err("capability invalid".into());
+            return Err("browser capability invalid or superseded; use the fresh tool instructions from the latest approved request_status".into());
         }
         let clone_id = cap.clone_id.clone();
         let domain = cap.domain.clone();
@@ -972,6 +972,41 @@ fn descendant_of(mut pid: u32, ancestor: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generated_helper_preserves_conflict_and_superseded_error_bodies() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = CloneSupervisor::guarded(dir.path().join("ledger.json"));
+        let tool = CloneBrowserTool::new(supervisor, dir.path().to_owned()).unwrap();
+        let context = tool.request_capability_context("chat", std::process::id()).unwrap();
+        assert!(context.contains("google.com"));
+        assert!(context.contains("Parent-domain cookies require explicitly listing their parent"));
+        let call = |request: Value| {
+            let output = std::process::Command::new(dir.path().join("clone-request-chat"))
+                .arg(request.to_string()).output().unwrap();
+            (output.status.code().unwrap(), serde_json::from_slice::<Value>(&output.stdout).unwrap())
+        };
+        let (status, asked) = call(json!({"kind":"request","domain":"docs.google.com","additionalDomains":["accounts.google.com"]}));
+        assert_eq!(status, 0);
+        let id = asked["requestId"].as_str().unwrap();
+        let (status, conflict) = call(json!({"kind":"request","domain":"docs.google.com","additionalDomains":["google.com"]}));
+        assert_eq!(status, 22);
+        assert!(conflict["error"].as_str().unwrap().contains("already awaiting approval"));
+        assert!(conflict["error"].as_str().unwrap().contains("unchanged"));
+        assert_eq!(tool.pending_details("chat").unwrap().additional_domains, ["accounts.google.com"]);
+        let (_, repeated) = call(json!({"kind":"request","domain":"docs.google.com","additionalDomains":["accounts.google.com"]}));
+        assert_eq!(repeated["requestId"], id);
+        tool.clear_pending_request("chat");
+        let (_, next) = call(json!({"kind":"request","domain":"docs.google.com","additionalDomains":["google.com"]}));
+        let (status, stale) = call(json!({"kind":"request_status","requestId":id}));
+        assert_eq!(status, 22);
+        assert!(stale["error"].as_str().unwrap().contains("superseded"));
+        tool.answer_request("chat", next["requestId"].as_str().unwrap(), json!({"ok":true,"awaiting":false}));
+        tool.pending.lock().unwrap().remove("chat");
+        let (status, stale) = call(json!({"kind":"request_status","requestId":id}));
+        assert_eq!(status, 22);
+        assert!(stale["error"].as_str().unwrap().contains("fresh browser tool instructions"));
+    }
+
     #[test]
     fn consent_is_immutable_and_stale_answers_fail_closed() {
         let dir = tempfile::tempdir_in("/tmp").unwrap();

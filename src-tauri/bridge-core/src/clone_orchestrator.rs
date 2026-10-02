@@ -121,6 +121,7 @@ pub struct CloneOrchestrator {
     tool: Arc<CloneBrowserTool>,
     active: Mutex<HashMap<String, Active>>,
     default_ttl: Duration,
+    cookie_importer: fn(Browser, &str, &[String]) -> Result<Vec<CookieSpec>, ImportError>,
 }
 
 // A startup error must clean up even before the clone reaches the active map.
@@ -144,6 +145,7 @@ impl CloneOrchestrator {
             tool,
             active: Mutex::new(HashMap::new()),
             default_ttl: Duration::from_secs(30 * 60),
+            cookie_importer: import_cookies,
         })
     }
 
@@ -182,6 +184,13 @@ impl CloneOrchestrator {
     ) -> Result<CloneView, CloneError> {
         let domain = normalize_domain(domain)
             .ok_or_else(|| CloneError::Launch("invalid approved domain".into()))?;
+        let mut domains = vec![domain.clone()];
+        for host in additional_domains {
+            domains.push(normalize_domain(host)
+                .ok_or_else(|| CloneError::Launch("invalid approved domain".into()))?);
+        }
+        domains.sort();
+        domains.dedup();
         self.destroy_browser_locked(session_id);
 
         let info = self.supervisor.spawn_clone()?;
@@ -194,18 +203,17 @@ impl CloneOrchestrator {
         // The clone may reach the approved site; nothing else.
         {
             let mut guard = guard.lock().unwrap_or_else(|p| p.into_inner());
-            guard.allow_host(&domain);
-            for host in additional_domains { guard.allow_host(host); }
+            for host in &domains { guard.allow_host(host); }
         }
 
-        // Sign in. Import copies the approved domain's cookies from the user's
+        // Sign in. Import copies all explicitly approved domains' cookies from the user's
         // browser; sign-in-inside reads nothing and the person logs in later.
         if path == SignInPath::Import {
-            let cookies = import_cookies(browser.signin(), "Default", &domain).map_err(map_import)?;
+            let cookies = (self.cookie_importer)(browser.signin(), "Default", &domains).map_err(map_import)?;
             {
                 let mut guard = guard.lock().unwrap_or_else(|p| p.into_inner());
                 for cookie in &cookies {
-                    guard.add_secret(&domain, &cookie.value);
+                    guard.add_secret(&cookie.domain, &cookie.value);
                 }
             }
             if let Err(error) = self.load_session(&info.id, cookies) {
@@ -320,18 +328,19 @@ impl CloneOrchestrator {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let request = self.tool.take_pending_request(session_id, request_id, runtime_pid).map_err(CloneError::Launch)?;
+        let replaces_browser = self.view(session_id).is_some();
         let started = self.request_clone_locked(session_id, &request.domain, CloneBrowser::Chrome, path, ttl, runtime_pid, &request.additional_domains);
         let view = match started {
             Ok(view) => view,
             Err(error) => {
-                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"browser startup failed"}));
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":startup_error_message(&error),"previousBrowserDestroyed":replaces_browser}));
                 return Err(error);
             }
         };
         if let Some(extension) = request.extension_path {
             if let Err(error) = self.load_extension(session_id, &extension) {
                 self.destroy_browser_locked(session_id);
-                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"extension loading failed"}));
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"extension loading failed","previousBrowserDestroyed":replaces_browser}));
                 return Err(error);
             }
         }
@@ -345,11 +354,11 @@ impl CloneOrchestrator {
             Some(context) => context,
             None => {
                 self.destroy_browser_locked(session_id);
-                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"browser tool unavailable"}));
+                self.tool.answer_request(session_id, request_id, json!({"ok":false,"awaiting":false,"error":"browser tool unavailable","previousBrowserDestroyed":replaces_browser}));
                 return Err(CloneError::Launch("browser tool unavailable".into()));
             }
         };
-        self.tool.answer_request(session_id, request_id, json!({"ok":true,"awaiting":false,"tool":context,"waitingForUser":path == SignInPath::SignInInside}));
+        self.tool.answer_request(session_id, request_id, json!({"ok":true,"awaiting":false,"tool":context,"waitingForUser":path == SignInPath::SignInInside,"previousBrowserDestroyed":replaces_browser,"message":if replaces_browser { "The previous browser was destroyed. Use these fresh browser tool instructions." } else { "Browser ready. Use these browser tool instructions." }}));
         Ok(view)
     }
 
@@ -597,6 +606,18 @@ fn normalize_domain(domain: &str) -> Option<String> {
     })).then_some(domain)
 }
 
+// Startup can fail after CDP has seen cookie values. Only forward known,
+// value-free import causes; raw browser error messages must stay off the tool.
+fn startup_error_message(error: &CloneError) -> String {
+    if let CloneError::Launch(message) = error {
+        for cause in [ImportError::Domain, ImportError::Store, ImportError::Keychain, ImportError::Decrypt] {
+            let safe = format!("sign-in import: {cause}");
+            if message == &safe { return safe; }
+        }
+    }
+    "browser startup failed".into()
+}
+
 fn map_import(error: ImportError) -> CloneError {
     CloneError::Launch(format!("sign-in import: {error}"))
 }
@@ -604,6 +625,119 @@ fn map_import(error: ImportError) -> CloneError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_errors_never_forward_raw_browser_or_cookie_details() {
+        let error = CloneError::Cdp { method: "Storage.setCookies".into(), message: "synthetic-cookie-value".into() };
+        assert_eq!(startup_error_message(&error), "browser startup failed");
+        let error = CloneError::Launch("sign-in import: untrusted-value".into());
+        assert_eq!(startup_error_message(&error), "browser startup failed");
+    }
+
+    fn request_via_helper(tool: &CloneBrowserTool, session: &str, request: Value) -> Value {
+        let output = std::process::Command::new(tool.socket_path().parent().unwrap().join(format!("clone-request-{session}")))
+            .arg(request.to_string()).output().unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    #[test]
+    fn approved_replacement_reports_teardown_and_fresh_instructions() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), Arc::clone(&tool));
+        let pid = std::process::id();
+        orchestrator.request_capability_context("s1", pid).unwrap();
+        let request = request_via_helper(&tool, "s1", json!({"kind":"request","domain":"first.test"}));
+        let id = request["requestId"].as_str().unwrap();
+        let first = orchestrator.approve_request("s1", id, pid, SignInPath::SignInInside, None, true).unwrap();
+        let answer = request_via_helper(&tool, "s1", json!({"kind":"request_status","requestId":id}));
+        assert_eq!(answer["previousBrowserDestroyed"], false);
+        let request = request_via_helper(&tool, "s1", json!({"kind":"request","domain":"second.test"}));
+        let next_id = request["requestId"].as_str().unwrap();
+        // Asking alone does not kill the existing browser.
+        assert_eq!(orchestrator.view("s1").unwrap().clone_id, first.clone_id);
+        let second = orchestrator.approve_request("s1", next_id, pid, SignInPath::SignInInside, None, true).unwrap();
+        assert_ne!(first.clone_id, second.clone_id);
+        assert!(supervisor.clone_guard(&first.clone_id).is_none());
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 1);
+        let answer = request_via_helper(&tool, "s1", json!({"kind":"request_status","requestId":next_id}));
+        assert_eq!(answer["previousBrowserDestroyed"], true);
+        assert!(answer["message"].as_str().unwrap().contains("previous browser was destroyed"));
+        assert!(answer["tool"].as_str().unwrap().contains("second.test"));
+        let stale = request_via_helper(&tool, "s1", json!({"kind":"request_status","requestId":id}));
+        assert!(stale["error"].as_str().unwrap().contains("superseded"));
+    }
+
+    #[test]
+    fn import_failure_reaches_the_requesting_agent_with_a_value_free_cause() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let mut orchestrator = CloneOrchestrator::new(supervisor, Arc::clone(&tool));
+        Arc::get_mut(&mut orchestrator).unwrap().cookie_importer = |_, _, _| Err(ImportError::Keychain);
+        let pid = std::process::id();
+        orchestrator.request_capability_context("s1", pid).unwrap();
+        let request = request_via_helper(&tool, "s1", json!({"kind":"request","domain":"docs.google.com"}));
+        let id = request["requestId"].as_str().unwrap();
+        assert!(orchestrator.approve_request("s1", id, pid, SignInPath::Import, None, true).is_err());
+        let answer = request_via_helper(&tool, "s1", json!({"kind":"request_status","requestId":id}));
+        assert_eq!(answer["ok"], false);
+        assert_eq!(answer["awaiting"], false);
+        assert!(answer["error"].as_str().unwrap().contains("Safe Storage permission was denied or unavailable"));
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+    }
+
+    fn fixture_importer(_: Browser, profile: &str, domains: &[String]) -> Result<Vec<CookieSpec>, ImportError> {
+        assert_eq!(profile, "Default");
+        assert_eq!(domains, ["accounts.google.com", "docs.google.com"]);
+        Ok(domains.iter().map(|domain| CookieSpec {
+            name: "sid".into(), value: format!("synthetic-session-{domain}"),
+            domain: format!(".login.{domain}"), path: "/".into(),
+            secure: true, http_only: true, same_site: None,
+        }).collect())
+    }
+
+    #[test]
+    fn approved_dependencies_reach_the_cookie_jar_and_keep_their_actual_owner() {
+        use crate::browser_clone_guard::{request_verdict, Verdict};
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let mut orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), tool);
+        Arc::get_mut(&mut orchestrator).unwrap().cookie_importer = fixture_importer;
+        let view = orchestrator.request_clone_locked("s1", "docs.google.com", CloneBrowser::Chrome, SignInPath::Import, None, std::process::id(), &["accounts.google.com".into()]).unwrap();
+        let jar = supervisor.tool_call(&view.clone_id, "Storage.getCookies", json!({})).unwrap();
+        let cookies = jar["cookies"].as_array().unwrap();
+        assert_eq!(cookies.len(), 2);
+        let guard = supervisor.clone_guard(&view.clone_id).unwrap();
+        let guard = guard.lock().unwrap();
+        for cookie in cookies {
+            let owner = cookie["domain"].as_str().unwrap().trim_start_matches('.');
+            let secret = cookie["value"].as_str().unwrap();
+            assert_eq!(request_verdict(&guard, &format!("https://{owner}/"), secret), Verdict::Allow);
+            assert!(matches!(request_verdict(&guard, "https://accounts.google.com/", secret), Verdict::Block(_)));
+            assert!(matches!(request_verdict(&guard, "https://docs.google.com/", secret), Verdict::Block(_)));
+            let mut reply = json!({"text": secret});
+            guard.scrub_response(&mut reply);
+            assert_eq!(reply["text"], "[redacted]");
+        }
+        assert!(!guard.allows_host("google.com"));
+        assert!(!guard.allows_host("drive.google.com"));
+    }
+
+    #[test]
+    fn failed_dependency_import_destroys_the_child_and_profile() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let mut orchestrator = CloneOrchestrator::new(supervisor, tool);
+        Arc::get_mut(&mut orchestrator).unwrap().cookie_importer = |_, _, _| Err(ImportError::Decrypt);
+        let error = orchestrator.request_clone_locked("s1", "docs.google.com", CloneBrowser::Chrome, SignInPath::Import, None, std::process::id(), &["accounts.google.com".into()]).unwrap_err();
+        assert!(error.to_string().contains("browser cookie could not be decrypted"));
+        assert!(orchestrator.view("s1").is_none());
+        assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 0);
+    }
 
     #[test]
     fn overlapping_starts_in_one_chat_leave_only_one_managed_profile() {
@@ -816,6 +950,60 @@ mod tests {
             let tool = CloneBrowserTool::new(Arc::clone(&supervisor), tool_dir).unwrap();
             let orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), Arc::clone(&tool));
             (dir, supervisor, tool, orchestrator)
+        }
+
+        /// Real Chrome accepts both approved sessions and sends the primary
+        /// session through the guard. All cookies are synthetic; no Keychain
+        /// or user profile is read.
+        #[test]
+        fn approved_multi_host_sessions_work_in_a_real_browser() {
+            if browser().is_none() { return }
+            let (_dir, supervisor, tool, mut orchestrator) = build();
+            Arc::get_mut(&mut orchestrator).unwrap().cookie_importer = |_, _, domains| {
+                assert_eq!(domains, ["127.0.0.1", "auth.example.test"]);
+                Ok(domains.iter().map(|domain| CookieSpec {
+                    name: "sid".into(), value: "synthetic-shared-session".into(),
+                    domain: domain.clone(), path: "/".into(), secure: false,
+                    http_only: true, same_site: None,
+                }).collect())
+            };
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut stream = stream;
+                    let mut buffer = [0u8; 8192];
+                    let read = stream.read(&mut buffer).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buffer[..read]);
+                    let body = if request.contains("sid=synthetic-shared-session") {
+                        "<html><body>Signed in fixture</body></html>"
+                    } else { "<html><body>Signed out fixture</body></html>" };
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                }
+            });
+            let session = "multi-host";
+            let pid = std::process::id();
+            orchestrator.request_capability_context(session, pid).unwrap();
+            let (status, body) = call_script(&tool, session, "clone-request-multi-host", r#"{"kind":"request","domain":"127.0.0.1","additionalDomains":["auth.example.test"]}"#);
+            assert!(status.contains("200"));
+            let request: Value = serde_json::from_str(&body).unwrap();
+            let view = orchestrator.approve_request(session, request["requestId"].as_str().unwrap(), pid, SignInPath::Import, None, true).unwrap();
+            let jar = supervisor.tool_call(&view.clone_id, "Storage.getCookies", json!({})).unwrap();
+            for domain in ["127.0.0.1", "auth.example.test"] {
+                assert!(jar["cookies"].as_array().unwrap().iter().any(|cookie| cookie["domain"] == domain && cookie["session"] == true));
+            }
+            let (status, body) = tool_call(&tool, session, &json!({"kind":"navigate","url":format!("http://127.0.0.1:{port}/")}).to_string());
+            assert!(status.contains("200"), "{status} {body}");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let (status, body) = tool_call(&tool, session, r#"{"kind":"get_text"}"#);
+                assert!(status.contains("200"), "{status} {body}");
+                if body.contains("Signed in fixture") { break; }
+                assert!(Instant::now() < deadline, "the imported primary session did not sign in: {body}");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            orchestrator.destroy(session);
+            assert!(supervisor.clone_guard(&view.clone_id).is_none());
         }
 
         /// The whole agent-driven lifecycle: the agent asks Bridge for a clone,

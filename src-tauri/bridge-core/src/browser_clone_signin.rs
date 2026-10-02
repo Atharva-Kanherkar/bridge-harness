@@ -1,12 +1,12 @@
-//! Explicit, one-domain cookie import from a user's Chrome or Brave profile.
+//! Explicit, approved-domain cookie import from a user's Chrome or Brave profile.
 //! The caller must obtain approval before invoking this short-lived operation.
 
 use crate::browser_clone::{CookieSpec, SameSite};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{params_from_iter, Connection, OpenFlags};
 use security_framework::passwords::{generic_password, PasswordOptions};
 use sha2::{Digest, Sha256};
 use std::{env, ffi::c_void, path::PathBuf};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Browser {
@@ -67,14 +67,29 @@ fn matches_domain(host_key: &str, approved: &str) -> bool {
     host == approved || host.ends_with(&format!(".{approved}"))
 }
 
-/// Reads only cookie rows for the approved domain and its subdomains. `profile`
-/// is a Chrome profile directory name (for example, `Default`), never a path.
+fn approved_domains(domains: &[String]) -> Result<Vec<String>, ImportError> {
+    if domains.is_empty() {
+        return Err(ImportError::Domain);
+    }
+    let mut domains = domains
+        .iter()
+        .map(|domain| approved_domain(domain))
+        .collect::<Result<Vec<_>, _>>()?;
+    domains.sort();
+    domains.dedup();
+    Ok(domains)
+}
+
+/// Reads only cookie rows for the explicitly approved domains and their
+/// subdomains. Parent domains require their own approval. `profile` is a Chrome
+/// profile directory name (for example, `Default`), never a path.
 pub fn import_cookies(
     browser: Browser,
     profile: &str,
-    registrable_domain: &str,
+    domains: &[String],
 ) -> Result<Vec<CookieSpec>, ImportError> {
-    let domain = approved_domain(registrable_domain)?;
+    // Validate the entire scope before opening the store or touching Keychain.
+    let domains = approved_domains(domains)?;
     if profile.is_empty()
         || profile == "."
         || profile == ".."
@@ -105,67 +120,74 @@ pub fn import_cookies(
             .query
             .retain(|(key, _)| *key != CFString::wrap_under_get_rule(kSecAttrAccount));
     }
-    let mut password = generic_password(options)
-        .map_err(|_| ImportError::Keychain)?
-        .to_vec();
-    let mut key = pbkdf2_sha1(&password, b"saltysalt", 1003, 16)?;
-    password.zeroize();
-    let result = (|| {
-        let mut statement = conn.prepare("SELECT host_key, name, value, encrypted_value, path, is_secure, is_httponly, samesite FROM cookies WHERE host_key = ?1 OR host_key = ?2 OR host_key LIKE ?3 ESCAPE '\\' OR host_key LIKE ?4 ESCAPE '\\'")
-            .map_err(|_| ImportError::Store)?;
-        let exact = domain.clone();
-        let dotted = format!(".{domain}");
-        let escaped = domain
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let suffix = format!("%.{escaped}");
-        let dotted_suffix = format!(".%.{escaped}");
-        let rows = statement
-            .query_map([exact, dotted, suffix, dotted_suffix], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, bool>(5)?,
-                    row.get::<_, bool>(6)?,
-                    row.get::<_, i64>(7)?,
-                ))
-            })
-            .map_err(|_| ImportError::Store)?;
-        let mut cookies = Vec::new();
-        for row in rows {
-            let (host, name, plain, encrypted, path, secure, http_only, same_site) =
-                row.map_err(|_| ImportError::Store)?;
-            if !matches_domain(&host, &domain) {
-                continue;
-            }
-            let value = if encrypted.is_empty() {
-                plain
-            } else {
-                decrypt_cookie(&encrypted, &key, &host)?
-            };
-            cookies.push(CookieSpec {
-                name,
-                value,
-                domain: host,
-                path,
-                secure,
-                http_only,
-                same_site: match same_site {
-                    0 => Some(SameSite::None),
-                    1 => Some(SameSite::Lax),
-                    2 => Some(SameSite::Strict),
-                    _ => None,
-                },
-            });
+    let password = Zeroizing::new(
+        generic_password(options)
+            .map_err(|_| ImportError::Keychain)?
+            .to_vec(),
+    );
+    let key = Zeroizing::new(pbkdf2_sha1(&password, b"saltysalt", 1003, 16)?);
+    read_cookies(&conn, &domains, &key)
+}
+
+fn read_cookies(
+    conn: &Connection,
+    domains: &[String],
+    key: &[u8],
+) -> Result<Vec<CookieSpec>, ImportError> {
+    let domains = approved_domains(domains)?;
+    // One query selects overlapping scopes only once. Values outside the
+    // approved scope never reach row decoding or decryption.
+    let conditions =
+        vec!["(host_key = ? OR host_key = ? OR host_key LIKE ? ESCAPE '\\')"; domains.len()]
+            .join(" OR ");
+    let sql = format!("SELECT host_key, name, value, encrypted_value, path, is_secure, is_httponly, samesite FROM cookies WHERE {conditions}");
+    let mut params = Vec::new();
+    for domain in &domains {
+        params.extend([domain.clone(), format!(".{domain}"), format!("%.{domain}")]);
+    }
+    let mut statement = conn.prepare(&sql).map_err(|_| ImportError::Store)?;
+    let rows = statement
+        .query_map(params_from_iter(params), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })
+        .map_err(|_| ImportError::Store)?;
+    let mut cookies = Vec::new();
+    for row in rows {
+        let (host, name, plain, encrypted, path, secure, http_only, same_site) =
+            row.map_err(|_| ImportError::Store)?;
+        if !domains.iter().any(|domain| matches_domain(&host, domain)) {
+            continue;
         }
-        Ok(cookies)
-    })();
-    key.zeroize();
-    result
+        let value = if encrypted.is_empty() {
+            plain
+        } else {
+            decrypt_cookie(&encrypted, key, &host)?
+        };
+        cookies.push(CookieSpec {
+            name,
+            value,
+            domain: host,
+            path,
+            secure,
+            http_only,
+            same_site: match same_site {
+                0 => Some(SameSite::None),
+                1 => Some(SameSite::Lax),
+                2 => Some(SameSite::Strict),
+                _ => None,
+            },
+        });
+    }
+    Ok(cookies)
 }
 
 extern "C" {
@@ -282,6 +304,108 @@ mod tests {
             "-bad.com",
         ] {
             assert!(approved_domain(bad).is_err(), "accepted {bad:?}");
+        }
+    }
+
+    fn cookie_store() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT, is_secure INTEGER, is_httponly INTEGER, samesite INTEGER)").unwrap();
+        conn
+    }
+
+    fn insert_cookie(conn: &Connection, host: &str, encrypted: &[u8]) {
+        conn.execute(
+            "INSERT INTO cookies VALUES (?1, 'sid', '', ?2, '/', 1, 1, 1)",
+            rusqlite::params![host, encrypted],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn multi_domain_selection_never_reads_unapproved_or_parent_values() {
+        let conn = cookie_store();
+        let key = pbkdf2_sha1(b"fixture", b"saltysalt", 1003, 16).unwrap();
+        for host in [
+            "docs.google.com",
+            ".accounts.google.com",
+            "login.accounts.google.com",
+        ] {
+            insert_cookie(&conn, host, &seal_v10(b"synthetic-session", &key));
+        }
+        for host in [
+            ".google.com",
+            "drive.google.com",
+            "docs.google.com.evil.test",
+            "unrelated.test",
+        ] {
+            // Even decoding these values would fail. They must not be read.
+            conn.execute(
+                "INSERT INTO cookies VALUES (?1, 'poison', 123, 'not-a-blob', '/', 1, 1, 1)",
+                [host],
+            )
+            .unwrap();
+        }
+        let cookies = read_cookies(
+            &conn,
+            &["docs.google.com".into(), "accounts.google.com".into()],
+            &key,
+        )
+        .unwrap();
+        let mut hosts: Vec<_> = cookies
+            .iter()
+            .map(|cookie| cookie.domain.as_str())
+            .collect();
+        hosts.sort();
+        assert_eq!(
+            hosts,
+            [
+                ".accounts.google.com",
+                "docs.google.com",
+                "login.accounts.google.com"
+            ]
+        );
+        assert!(cookies
+            .iter()
+            .all(|cookie| cookie.value == "synthetic-session"
+                && cookie.secure
+                && cookie.http_only
+                && cookie.same_site == Some(SameSite::Lax)));
+    }
+
+    #[test]
+    fn parent_cookies_require_explicit_consent_and_overlap_is_selected_once() {
+        let conn = cookie_store();
+        let key = pbkdf2_sha1(b"fixture", b"saltysalt", 1003, 16).unwrap();
+        for host in [".google.com", "docs.google.com", ".accounts.google.com"] {
+            insert_cookie(&conn, host, &seal_v10(b"synthetic-session", &key));
+        }
+        let narrow = read_cookies(&conn, &["docs.google.com".into()], &key).unwrap();
+        assert_eq!(narrow.len(), 1);
+        assert_eq!(narrow[0].domain, "docs.google.com");
+        let cookies = read_cookies(
+            &conn,
+            &[
+                "google.com".into(),
+                "docs.google.com".into(),
+                " GOOGLE.COM ".into(),
+            ],
+            &key,
+        )
+        .unwrap();
+        assert_eq!(cookies.len(), 3);
+        assert!(cookies.iter().any(|cookie| cookie.domain == ".google.com"));
+    }
+
+    #[test]
+    fn invalid_scope_is_refused_before_the_cookie_store_is_opened() {
+        for domains in [
+            vec![],
+            vec!["docs.google.com".into(), "invalid/path.test".into()],
+        ] {
+            assert!(matches!(
+                import_cookies(Browser::Chrome, "Default", &domains),
+                Err(ImportError::Domain)
+            ));
         }
     }
 
