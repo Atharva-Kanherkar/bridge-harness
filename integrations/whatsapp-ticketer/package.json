@@ -1,0 +1,19 @@
+{
+  "name": "bridge-whatsapp-ticketer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Explicit WhatsApp group feedback to validated Bridge GitHub issues.",
+  "engines": { "node": ">=20.19.0" },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test test/*.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.280",
+    "@whiskeysockets/baileys": "6.7.23",
+    "pino": "9.14.0",
+    "qrcode-terminal": "0.12.0",
+    "sql.js": "1.14.2"
+  }
+}
