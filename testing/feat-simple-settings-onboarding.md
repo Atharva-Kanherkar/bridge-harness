@@ -11,6 +11,8 @@
 - Only supported managed agents offer installation. Unsupported installation/sign-in paths give concrete manual guidance, never a fake working button.
 - Selected missing agents can be installed, repaired, or deselected. Unselected agents do not block setup or receive model profiles.
 - Every selected agent must be installed, available, and report signed-in before setup can finish. Unknown sign-in status is explicitly unresolved. No skip/continue-without-agent path bypasses readiness.
+- Cursor and Grok must be usable without entering a workspace first: an explicit setup check opens and closes a temporary ACP session without sending a prompt, and uses its real sign-in result and model catalog. Ordinary discovery stays initialize-only and retains same-build session facts after a successful refresh; failed discovery or setup clears them. Final submission repeats the setup check.
+- If installation detection fails, users may explicitly use agents verified by adapter health. Show that installation ownership could not be checked, offer no managed operations for those rows, and retain the readiness gate. Failed health/setup checks remain retryable.
 - Closing or cancelling login does not imply success. Refresh availability after install/login and recheck readiness at final submission. Errors remain visible and retryable.
 - Setup uses recommended models from selected, ready agents and persists their enabled state. Model customization is available later, not required during first run.
 
@@ -24,6 +26,9 @@
 - Settings navigation and search open the correct contextual pages; drafts survive navigation; reset retains its confirmation.
 - Marketplace defaults to Apps, includes Skills, and does not mount a second agent installer or scheduled-task UI.
 - Onboarding tests cover existing external and managed installations, installing a missing agent, login cancellation, unknown authentication, selection changes, detection/save failure, and successful completion.
+- Cursor-only and Grok-only setup begins with available/unknown/no-model descriptors and completes only after real setup-check results report signed-in and actual models. Signed-out/failed checks do not complete setup.
+- Rust fixture tests verify prompt-free ACP setup and cache retention after discovery refresh, and clearing on failure or a changed build.
+- Persistent installation-list failure can complete through explicit health fallback with a verified ready agent; detection ownership remains unknown.
 - Fresh App does not render the workspace until onboarding completes.
 
 ## Smoke Tests
@@ -40,3 +45,6 @@
 - Cancel sign-in, simulate unknown sign-in status, or fail an installation. Confirm setup stays open with actionable guidance; deselecting the unfinished agent allows another ready selection to proceed.
 - Enter Bridge and confirm only selected agents are enabled and model profiles use them. Restart and confirm onboarding stays completed.
 - Check General, Coding agents, Permissions, and Data & storage; follow old usage/permissions/menu-bar links; find scheduled tasks and archived chats from the sidebar and saved setups near new chat.
+
+- Select only Cursor or only Grok on a fresh Tauri profile. Continue must check the selected agent by opening a temporary session, report its actual models and sign-in, then allow completion. A sign-in-required response must instead prompt login; no chat prompt is sent during checking.
+- Simulate a persistent installation-list error, choose Use detected agents, and complete with a health-verified signed-in agent. Confirm ownership remains labeled unknown and no managed installer/removal is offered.
