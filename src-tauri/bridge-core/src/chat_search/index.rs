@@ -27,8 +27,10 @@ const SUMMARY_KINDS: &str = "'compaction','checkpoint','branch.summary'";
 
 /// Session kinds nobody sees in a list, as a SQL list. Mirrors
 /// `work_briefing_config::is_hidden_session_kind`; a test holds them equal.
+/// The digest triggers bake this list in when migration 63 runs, so a kind
+/// added later is still filtered at query time but may keep stale digests.
 pub const HIDDEN_KINDS_SQL: &str =
-    "'briefing','suggestion','extraction','outcome_evaluation','consolidation','chat_search'";
+    "'briefing','suggestion','extraction','outcome_evaluation','consolidation','chat_search','connector'";
 
 /// Upsert the digest for the session whose id is the SQL expression `id`.
 fn rebuild_sql(id: &str) -> String {
@@ -236,6 +238,7 @@ mod tests {
             crate::routing_evaluation::EVALUATION_SESSION_KIND,
             crate::memory_consolidation::CONSOLIDATION_SESSION_KIND,
             super::super::CHAT_SEARCH_SESSION_KIND,
+            crate::connector_runs_live::CONNECTOR_SESSION_KIND,
         ] {
             assert!(HIDDEN_KINDS_SQL.contains(&format!("'{kind}'")), "{kind} missing from the SQL list");
         }
