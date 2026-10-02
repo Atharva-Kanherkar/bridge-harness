@@ -404,24 +404,3 @@
   }
 }
 
-@layer components {
-  /* Staged panel parts. A descendant selector is the point: one observer on the panel drives
-   * every part inside it, so this is a deliberate exception to utilities-first styling, the
-   * same one `.doc-prose` takes. Without JavaScript no `data-play` is written and the parts
-   * render plainly. */
-  [data-play] .stage {
-    opacity: 0;
-  }
-
-  [data-play="true"] .stage {
-    animation: var(--ill, rise) 640ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
-    animation-delay: calc(var(--i, 0) * 110ms);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    [data-play] .stage {
-      animation: none;
-      opacity: 1;
-    }
-  }
-}

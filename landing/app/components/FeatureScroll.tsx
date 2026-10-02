@@ -4,14 +4,14 @@ import SectionHeader from "./SectionHeader";
 /*
  * Seven features, each one the mechanism running beside copy that sticks while it scrolls
  * past. The text column is `position: sticky` inside its own row, so the next feature pushes
- * the last one out the way a page naturally would; the panels animate on a scroll timeline,
- * so the visual plays as it arrives rather than sitting there as a picture.
+ * the last one out the way a page naturally would; each panel loops a
+ * short scene of the app at work while it is on screen.
  */
 const features = [
   {
     id: "parallel",
-    name: "Four agents, four branches, zero collisions",
-    text: "Every chat gets its own Git worktree and branch, so Claude Code, Codex, Cursor, and OpenCode can all work on the same repo at once without touching each other's files. Mission Control shows them side by side and flags the one waiting on you.",
+    name: "Every agent on its own branch",
+    text: "Run as many agents as you like on one repo. Every chat gets its own Git worktree and branch, so they never step on each other's files. Mission Control shows them side by side and flags the one waiting on you.",
     panel: <Parallel />,
   },
   {
@@ -70,15 +70,14 @@ export default function FeatureScroll() {
       {/* The left column lines up with the page gutter; the capture runs off the right edge,
           so it is large enough to read instead of shrinking into half a column. */}
       <div className="mt-14 flex flex-col gap-14 pl-[max(1.5rem,calc((100vw-72rem)/2))] pr-6 lg:mt-20 lg:gap-0 lg:pr-0">
-        {features.map((feature, i) => (
+        {features.map(feature => (
           <article
             key={feature.id}
             id={feature.id}
             className="grid scroll-mt-24 items-start gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:gap-14"
           >
             <div className="lg:sticky lg:top-28 lg:self-start lg:py-16">
-              <span className="font-mono text-[11px] tabular-nums text-faint">{String(i + 1).padStart(2, "0")}</span>
-              <h3 className="mt-3 font-display text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[2rem]">
+              <h3 className="font-display text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-foreground sm:text-[2rem]">
                 {feature.name}
               </h3>
               <p className="mt-4 max-w-md text-[14.5px] leading-7 text-muted-foreground">{feature.text}</p>
