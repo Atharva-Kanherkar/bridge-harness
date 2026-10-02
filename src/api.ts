@@ -3262,14 +3262,14 @@ const mockManagedAgents: ManagedAgentList = {
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,
-      executable: "/opt/homebrew/bin/codex", version: "0.147.0", updateAvailable: false, consecutiveFailures: 0,
+      executable: "/opt/homebrew/bin/codex", version: "0.147.0", pinnedVersion: "0.147.0", updateAvailable: false, consecutiveFailures: 0,
     },
     {
       agentId: "cursor", label: "Cursor", state: "external", backing: "external", removable: false,
-      executable: "/Users/demo/.local/bin/cursor-agent", updateAvailable: false, consecutiveFailures: 0,
+      executable: "/Users/demo/.local/bin/cursor-agent", pinnedVersion: "mock", updateAvailable: false, consecutiveFailures: 0,
     },
     {
-      agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false,
+      agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false, pinnedVersion: "mock",
       updateAvailable: false, consecutiveFailures: 0,
     },
   ],
@@ -3284,6 +3284,7 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
       ...structuredClone(agent), state: "not_installed", backing: "none", removable: false,
       executable: undefined, version: undefined, updateAvailable: false,
     };
+    Object.assign(agent, status);
     return Promise.resolve({ agentId, kind, outcome: "removed", status });
   }
   const status: ManagedAgentStatus = {
@@ -3291,5 +3292,6 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
     ...structuredClone(agent), state: "ready", backing: "managed", removable: true,
     version: agent.pinnedVersion ?? "0.0.0-mock", updateAvailable: false,
   };
+  Object.assign(agent, status);
   return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
 }

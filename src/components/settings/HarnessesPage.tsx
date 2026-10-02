@@ -83,7 +83,7 @@ export function HarnessesPage(props: Shared & {
 }
 
 function HarnessDetail({
-  harness, modelOptions, managed, busy, openCodeCatalog, openCodeDiscoveryError,
+  harness, adapters, onAuthenticationChanged, modelOptions, managed, busy, openCodeCatalog, openCodeDiscoveryError,
   drafts, onDraft, onDiscard, onSaveHarness, onResetHarness, onCatalog, onError, onBack,
 }: Shared & { harness: HarnessConfig; onBack: () => void }) {
   const [isFlashed, flash] = useSavedFlash();
@@ -140,7 +140,7 @@ function HarnessDetail({
       ? <TextButton disabled={busy} onClick={() => void onResetHarness(harness.id)}>Reset to defaults</TextButton>
       : undefined}
   >
-    {!isBridge && <ManagedAgentDetail state={managed} agentId={harness.id} />}
+    {!isBridge && <ManagedAgentDetail state={managed} agentId={harness.id} adapters={adapters} onAuthenticationChanged={onAuthenticationChanged} />}
 
     <SettingsGroup label="New chats">
       <SettingsRow

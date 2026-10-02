@@ -1,4 +1,28 @@
-import type { ModelSetupState } from "./types";
+import type { AdapterDescriptor, ModelSetupState } from "./types";
+import type { ManagedAgentStatus } from "./protocol/generated/protocol";
+
+/** Installation and authentication are separate facts. Unknown never means ready. */
+export function onboardingAgentReady(agent: ManagedAgentStatus | undefined, adapter: AdapterDescriptor | undefined): boolean {
+  return !!agent && agent.backing !== "none"
+    && !["not_installed", "broken", "repairable", "unavailable"].includes(agent.state)
+    && adapter?.available === true && adapter.authState === "signed_in";
+}
+
+export function canInstallManagedAgent(agent: ManagedAgentStatus): boolean {
+  // The native runtime reports a pin only when it has an installation recipe
+  // for this agent on this platform. Do not invent support for another CLI.
+  return !!agent.pinnedVersion;
+}
+
+export function onboardingChoices(agents: ManagedAgentStatus[], adapters: AdapterDescriptor[]): ManagedAgentStatus[] {
+  return [...agents, ...adapters.filter(adapter => adapter.id !== "bridge" && !agents.some(agent => agent.agentId === adapter.id)).map(adapter => ({
+    agentId: adapter.id, label: adapter.label,
+    state: adapter.available ? "external" : "unavailable",
+    backing: adapter.available || adapter.version ? "external" as const : "none" as const,
+    removable: false, updateAvailable: false, consecutiveFailures: 0,
+    version: adapter.version,
+  }))];
+}
 
 export const AGENT_ONBOARDING_KEY = "bridge.agent-onboarding.v1";
 

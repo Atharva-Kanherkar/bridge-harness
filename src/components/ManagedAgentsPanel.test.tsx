@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { ManagedAgentStatus } from "../protocol/generated/protocol";
 import type { AdapterDescriptor } from "../types";
-import { ManagedAgentDetail, ManagedAgentsPanel, useManagedAgents } from "./ManagedAgentsPanel";
+import { ManagedAgentDetail, ManagedAgentRows, ManagedAgentsPanel, useManagedAgents } from "./ManagedAgentsPanel";
 
 function agent(overrides: Partial<ManagedAgentStatus> = {}): ManagedAgentStatus {
   return {
@@ -18,6 +18,7 @@ function agent(overrides: Partial<ManagedAgentStatus> = {}): ManagedAgentStatus 
     removable: true,
     executable: "/managed-runtimes/agents/codex/installations/abc123/payload/bin/codex",
     version: "0.147.0",
+    pinnedVersion: "0.147.0",
     consecutiveFailures: 0,
     ...overrides,
   } as ManagedAgentStatus;
@@ -31,10 +32,10 @@ function adapter(authState: AdapterDescriptor["authState"] = "signed_in"): Adapt
 }
 
 /** The runtime block of a harness detail page, over one fixed agent list. */
-function Detail({ agents, agentId }: { agents: ManagedAgentStatus[]; agentId: string }) {
+function Detail({ agents, agentId, adapters }: { agents: ManagedAgentStatus[]; agentId: string; adapters?: AdapterDescriptor[] }) {
   const state = useManagedAgents(agents);
   return <>
-    <ManagedAgentDetail state={state} agentId={agentId} />
+    <ManagedAgentDetail state={state} agentId={agentId} adapters={adapters} />
     {state.confirmation}
   </>;
 }
@@ -72,11 +73,11 @@ async function render(
 }
 
 /** One agent's detail block, which is where the destructive actions live. */
-async function renderDetail(agents: ManagedAgentStatus[], agentId = agents[0].agentId) {
+async function renderDetail(agents: ManagedAgentStatus[], agentId = agents[0].agentId, adapters?: AdapterDescriptor[]) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
-  await act(async () => { root.render(<Detail agents={agents} agentId={agentId} />); });
+  await act(async () => { root.render(<Detail agents={agents} agentId={agentId} adapters={adapters} />); });
   return view(host, root);
 }
 
@@ -87,6 +88,51 @@ async function renderDetail(agents: ManagedAgentStatus[], agentId = agents[0].ag
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ""; });
 
 describe("the runtime list", () => {
+  it("does not let a pre-install refresh overwrite a completed installation", async () => {
+    const absent = agent({ state: "not_installed", backing: "none", removable: false });
+    let release!: (list: { agents: ManagedAgentStatus[] }) => void;
+    vi.spyOn(bridgeApi, "listManagedAgents").mockResolvedValueOnce({ agents: [absent] }).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    vi.spyOn(bridgeApi, "installManagedAgent").mockResolvedValue({ agentId: "codex", kind: "install", outcome: "installed", status: agent() });
+    function Refreshable() {
+      const state = useManagedAgents();
+      return <><button onClick={state.reload}>Refresh</button><ManagedAgentRows state={state} /></>;
+    }
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    await act(async () => { root.render(<Refreshable />); });
+    const rendered = view(host, root);
+    await rendered.click(rendered.button("Refresh"));
+    await rendered.click(rendered.button("Install"));
+    await act(async () => release({ agents: [absent] }));
+    expect(rendered.text()).toContain("Bridge-managed");
+    expect(rendered.button("Install")).toBeNull();
+    await rendered.unmount();
+  });
+  it("does not offer an unsupported managed installation", async () => {
+    const rendered = await render([agent({ state: "not_installed", backing: "none", pinnedVersion: null })]);
+    expect(rendered.button("Install")).toBeNull();
+    expect(rendered.text()).toContain("Manual install needed");
+    await rendered.unmount();
+  });
+  it("gives manual guidance when no supported repair is available", async () => {
+    const broken = agent({ state: "broken", pinnedVersion: null });
+    const list = await render([broken]);
+    expect(list.button("Repair")).toBeNull();
+    expect(list.text()).toContain("Manual repair needed");
+    await list.unmount();
+    const detail = await renderDetail([broken]);
+    expect(detail.button("Repair")).toBeNull();
+    expect(detail.text()).toContain("vendor's instructions");
+    await detail.unmount();
+  });
+  it("offers sign-in from agent details when local authentication is unknown", async () => {
+    const start = vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: "codex" });
+    const detail = await renderDetail([agent()], "codex", [adapter("unknown")]);
+    expect(detail.text()).toContain("Bridge cannot confirm sign-in yet");
+    await detail.click(detail.button("Sign in"));
+    expect(start).toHaveBeenCalledWith("codex");
+    expect(detail.host.querySelector('[aria-label="Codex sign-in"]')).not.toBeNull();
+    await detail.unmount();
+  });
   it("renders_one_row_per_built_in_agent", async () => {
     const view = await render([
       agent({ agentId: "claude", label: "Claude Code" }),
@@ -184,7 +230,7 @@ describe("the runtime list", () => {
 
     const unknown = await render([agent()], undefined, [adapter("unknown")]);
     expect(unknown.text()).toContain("Sign-in status unknown");
-    expect(unknown.button("Sign in")).toBeNull();
+    expect(unknown.button("Sign in")).not.toBeNull();
     await unknown.unmount();
   });
 
