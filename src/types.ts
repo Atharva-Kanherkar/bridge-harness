@@ -448,6 +448,8 @@ export interface BrowserCloneSnapshot {
   pendingApproval: BrowserApproval | null;
   /** The agent also sees screenshots of this clone. */
   agentVision?: boolean;
+  /** Where the agent's pointer last landed (viewport fractions); `at` is when. */
+  agentPointer?: { x: number; y: number; action: string; at: number } | null;
 }
 
 export interface CloneSettings {

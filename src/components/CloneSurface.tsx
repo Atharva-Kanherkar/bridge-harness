@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
-import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, LoaderCircle, Lock, Timer, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand, LoaderCircle, Lock, MousePointer2, Timer, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
 import type { BrowserCloneSnapshot, BrowserCloneStatus, CloneSignInPath } from "../types";
@@ -40,13 +40,18 @@ function StatusDot({ status }: { status: BrowserCloneStatus }) {
       : status === "taken_over" ? "bg-info" : "bg-muted-foreground/40")} />;
 }
 
-export function CloneSurface({ visible = true, sessionId, onClose, onError, onSupervisionChange }: {
+export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude", onCancelStart, onClose, onError, onSupervisionChange }: {
   /** False while another dock pane is showing. The surface stays mounted, so
    *  the clone keeps running, but polling backs off or stops. */
   visible?: boolean;
   /** The session this pane belongs to. Its clone (if any) is what shows here;
    *  without it, only the mock fixture is exercisable (dev and tests). */
   sessionId?: string;
+  /** Names the agent's pointer on the page. */
+  agentLabel?: string;
+  /** Set when a host shows this surface only while a clone is wanted: the
+   *  start form then offers a way back. */
+  onCancelStart?: () => void;
   onClose?: () => void;
   onError: (message: string) => void;
   onSupervisionChange?: (state: CloneSupervision) => void;
@@ -134,6 +139,7 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
                 className="h-full min-w-0 flex-1 bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground" />
               <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}>Start clone<ArrowRight size={12} /></Button>
             </form>
+            {onCancelStart && <Button type="button" variant="ghost" size="xs" className="mt-2 text-muted-foreground" onClick={onCancelStart}>Back to browser</Button>}
             <div className="mt-3 flex items-center justify-between gap-3">
               <span className="text-[11px] text-muted-foreground">Opens</span>
               <SignInToggle value={startPath} onChange={setStartPath} disabled={busy} />
@@ -157,7 +163,7 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
         </div>}
 
         <div className="min-h-0 flex-1 overflow-auto bg-muted/30 p-3">
-          <LiveView snapshot={snapshot} takenOver={status === "taken_over"} onInput={send} />
+          <LiveView snapshot={snapshot} takenOver={status === "taken_over"} agentLabel={agentLabel} onInput={send} />
         </div>
 
         <footer className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2.5 py-2">
@@ -198,8 +204,10 @@ export function CloneSurface({ visible = true, sessionId, onClose, onError, onSu
 const FORWARDED_KEYS = new Set(["Enter", "Tab", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
 /** Typed characters are sent in bursts, so a password arrives as one value. */
 const TYPE_FLUSH_MS = 350;
+/** How long the agent's cursor stays on the page after its last action. */
+const POINTER_VISIBLE_MS = 6000;
 
-function LiveView({ snapshot, takenOver, onInput }: { snapshot: BrowserCloneSnapshot; takenOver: boolean; onInput: (input: CloneInputEvent) => void }) {
+function LiveView({ snapshot, takenOver, agentLabel, onInput }: { snapshot: BrowserCloneSnapshot; takenOver: boolean; agentLabel: string; onInput: (input: CloneInputEvent) => void }) {
   const pending = useRef("");
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const flush = () => {
@@ -244,11 +252,27 @@ function LiveView({ snapshot, takenOver, onInput }: { snapshot: BrowserCloneSnap
   };
 
   if (!snapshot.screenshot) return <div className="grid min-h-full place-items-center p-6 text-center"><div><LoaderCircle size={18} className="mx-auto animate-spin text-muted-foreground" /><p className="mt-2 max-w-sm text-[11px] leading-5 text-muted-foreground">{snapshot.status === "starting" ? "Starting the clone…" : "Waiting for the first frame…"}</p></div></div>;
+  const pointer = snapshot.agentPointer;
+  // The cursor lingers where the agent last acted, then fades, so a quiet page
+  // does not look like it is still being driven.
+  const pointerShown = !!pointer && !takenOver && Date.now() - pointer.at < POINTER_VISIBLE_MS;
   return <div data-clone-viewport tabIndex={takenOver ? 0 : undefined} aria-label={takenOver ? "Clone page. Click and type to control it" : undefined}
     onKeyDown={forwardKey} onWheel={forwardWheel} onPaste={event => { if (!takenOver) return; event.preventDefault(); pending.current += event.clipboardData.getData("text"); flush(); }}
     className={cn("overflow-hidden rounded-lg border border-border bg-background shadow-sm outline-none transition-shadow",
       takenOver && "ring-2 ring-info/60 focus-visible:ring-info")}>
-    <img src={snapshot.screenshot} alt="Live view of the browser clone" draggable={false} onClick={forwardClick} onMouseDown={event => { if (takenOver) event.currentTarget.parentElement?.focus(); }}
-      className={cn("block h-auto w-full select-none", takenOver && "cursor-pointer")} />
+    <div aria-hidden="true" className="flex h-8 items-center gap-2.5 border-b border-border bg-muted/40 px-3">
+      <span className="flex gap-1.5"><i className="size-2 rounded-full bg-muted-foreground/30" /><i className="size-2 rounded-full bg-muted-foreground/30" /><i className="size-2 rounded-full bg-muted-foreground/30" /></span>
+      <span className="min-w-0 flex-1 truncate rounded-md bg-background/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{snapshot.domain}</span>
+      <span className="shrink-0 text-[11px] text-muted-foreground">throwaway clone</span>
+    </div>
+    <div className="relative">
+      <img src={snapshot.screenshot} alt="Live view of the browser clone" draggable={false} onClick={forwardClick} onMouseDown={event => { if (takenOver) event.currentTarget.parentElement?.parentElement?.focus(); }}
+        className={cn("block h-auto w-full select-none", takenOver && "cursor-pointer")} />
+      {pointer && <div aria-hidden="true" data-agent-pointer data-shown={pointerShown} style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }}
+        className={cn("pointer-events-none absolute z-10 transition-[left,top,opacity] duration-500 ease-out", pointerShown ? "opacity-100" : "opacity-0")}>
+        <MousePointer2 size={16} className="fill-foreground text-background drop-shadow-sm" />
+        <span className="ml-3.5 -mt-0.5 block w-fit rounded-md bg-foreground px-1.5 py-0.5 text-[11px] font-medium leading-4 text-background shadow-sm">{agentLabel}</span>
+      </div>}
+    </div>
   </div>;
 }

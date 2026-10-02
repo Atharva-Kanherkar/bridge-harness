@@ -368,6 +368,9 @@ impl CloneOrchestrator {
     /// Whether the session's agent can see screenshots of its clone.
     pub fn agent_vision(&self, session_id: &str) -> bool { self.tool.vision(session_id) }
 
+    /// Where the agent's pointer last landed, as viewport fractions.
+    pub fn agent_pointer(&self, session_id: &str) -> Option<(f64, f64, &'static str, u64)> { self.tool.pointer(session_id) }
+
     pub fn pending_details(&self, session_id: &str) -> Option<crate::clone_browser_tool::PendingRequest> {
         self.tool.pending_details(session_id)
     }
@@ -981,10 +984,21 @@ mod tests {
             assert_eq!(state["result"]["agree"], true);
             assert!(state["result"]["keys"].as_str().unwrap().contains("Enter"), "{state}");
 
+            // The person's dock can draw where the agent last acted.
+            let (px, py, action, age_ms) = orchestrator.agent_pointer(session).expect("a click leaves a pointer");
+            assert_eq!(action, "click");
+            assert!((0.0..=1.0).contains(&px) && (0.0..=1.0).contains(&py), "pointer outside the viewport: {px},{py}");
+            assert!(age_ms < 10_000);
+            call(r#"{"kind":"hover","x":0,"y":0}"#);
+            let (hx, hy, action, _) = orchestrator.agent_pointer(session).unwrap();
+            assert_eq!((hx, hy, action), (0.0, 0.0, "hover"));
+
             // Vision off withholds screenshots only.
             tool.set_vision(session, false);
             assert!(tool_call(&tool, session, r#"{"kind":"screenshot"}"#).0.contains("403"), "a blind clone returned a screenshot");
             call(r#"{"kind":"read_page","filter":"interactive"}"#);
+            orchestrator.take_over(session);
+            assert!(orchestrator.agent_pointer(session).is_none(), "the pointer outlived the hand-off");
             orchestrator.destroy(session);
             assert!(!std::path::Path::new(shot["path"].as_str().unwrap()).exists(), "the screenshot outlived its clone");
         }

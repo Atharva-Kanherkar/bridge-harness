@@ -68,6 +68,9 @@ pub struct CloneBrowserTool {
     mutable: Mutex<HashSet<String>>,
     /// Sessions whose person turned screenshots off. Vision is on otherwise.
     blind: Mutex<HashSet<String>>,
+    /// Where the agent's pointer last landed, per session, so the dock can
+    /// draw it on the live view.
+    pointers: Mutex<HashMap<String, (f64, f64, &'static str, std::time::Instant)>>,
     operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -93,6 +96,7 @@ impl CloneBrowserTool {
             paused: Mutex::new(HashSet::new()),
             mutable: Mutex::new(HashSet::new()),
             blind: Mutex::new(HashSet::new()),
+            pointers: Mutex::new(HashMap::new()),
             operations: Mutex::new(HashMap::new()),
         });
         // The accept loop must not own the tool: otherwise dropping the core
@@ -235,6 +239,7 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
         self.paused.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
         self.results.lock().unwrap_or_else(|p| p.into_inner()).retain(|_, (owner, _, _)| owner != session);
         self.blind.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
+        self.pointers.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
         let safe = safe_session(session);
         let _ = fs::remove_file(self.directory.join(format!("clone-browser-{safe}")));
         if let Ok(entries) = fs::read_dir(self.directory.join("shots")) {
@@ -268,6 +273,25 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
         if let Ok(mut set) = self.mutable.lock() {
             set.remove(session);
         }
+        self.pointers.lock().unwrap_or_else(|p| p.into_inner()).remove(session);
+    }
+
+    /// The agent's last pointer position as fractions of the viewport (0..1),
+    /// the action that put it there, and how long ago.
+    pub fn pointer(&self, session: &str) -> Option<(f64, f64, &'static str, u64)> {
+        let pointers = self.pointers.lock().unwrap_or_else(|p| p.into_inner());
+        let (x, y, action, at) = pointers.get(session)?;
+        Some((*x, *y, *action, u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)))
+    }
+
+    /// Remember where a pointer action ended, as viewport fractions.
+    fn record_pointer(&self, session: &str, clone_id: &str, kind: &'static str, point: Option<(f64, f64)>) {
+        let Ok(view) = self.evaluate(clone_id, "({w:innerWidth,h:innerHeight})") else { return };
+        let dim = |key: &str| view.get(key).and_then(Value::as_f64).filter(|n| *n > 0.0);
+        let (Some(w), Some(h)) = (dim("w"), dim("h")) else { return };
+        let (x, y) = point.unwrap_or((w / 2.0, h / 2.0));
+        self.pointers.lock().unwrap_or_else(|p| p.into_inner())
+            .insert(session.to_owned(), ((x / w).clamp(0.0, 1.0), (y / h).clamp(0.0, 1.0), kind, std::time::Instant::now()));
     }
 
     pub fn revoke_session(&self, session: &str) {
@@ -468,6 +492,23 @@ Work in a loop: look (screenshot or read_page), act, look again. status tells yo
             }
         }
         let mut result = self.perform(&clone_id, kind, &request)?;
+        let at = |x: &str, y: &str| match (result.get(x).and_then(Value::as_f64), result.get(y).and_then(Value::as_f64)) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        };
+        match kind {
+            "click" | "double_click" | "triple_click" | "right_click" => self.record_pointer(session, &clone_id, "click", at("x", "y")),
+            "hover" => self.record_pointer(session, &clone_id, "hover", at("x", "y")),
+            "drag" => {
+                let to = result.get("to").and_then(Value::as_array).and_then(|to| Some((to.first()?.as_f64()?, to.get(1)?.as_f64()?)));
+                self.record_pointer(session, &clone_id, "drag", to);
+            }
+            "scroll" if request.get("ref").is_none() => {
+                let given = |key: &str| request.get(key).and_then(Value::as_f64);
+                self.record_pointer(session, &clone_id, "scroll", given("x").zip(given("y")));
+            }
+            _ => {}
+        }
         guard
             .lock()
             .map_err(|_| "clone guard unavailable")?

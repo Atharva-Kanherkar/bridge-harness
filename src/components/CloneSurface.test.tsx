@@ -324,4 +324,37 @@ describe("CloneSurface as a dock tenant", () => {
     expect(onError).toHaveBeenCalledWith("clone is gone");
     expect(container.textContent).toContain("Acting");
   });
+
+  // Contract: testing/feat-unify-browser-pane.md §3.
+  describe("the agent's pointer", () => {
+    const pointer = (ageMs: number) => ({ x: 0.25, y: 0.5, action: "click", at: Date.now() - ageMs });
+    const cursor = () => container.querySelector<HTMLElement>("[data-agent-pointer]");
+
+    it("sits where the agent last acted, named for the agent", async () => {
+      state.mockResolvedValue(clone({ agentPointer: pointer(500) }));
+      await render({ agentLabel: "Codex" });
+      expect(cursor()?.dataset.shown).toBe("true");
+      expect(cursor()?.style.left).toBe("25%");
+      expect(cursor()?.style.top).toBe("50%");
+      expect(cursor()?.textContent).toBe("Codex");
+    });
+
+    it("defaults to Claude and fades once the agent has been quiet", async () => {
+      state.mockResolvedValue(clone({ agentPointer: pointer(500) }));
+      await render();
+      expect(cursor()?.textContent).toBe("Claude");
+      state.mockResolvedValue(clone({ agentPointer: pointer(20_000) }));
+      await tick(CLONE_POLL_VISIBLE_MS);
+      expect(cursor()?.dataset.shown).toBe("false");
+    });
+
+    it("is absent before the agent has touched the page and while you hold it", async () => {
+      state.mockResolvedValue(clone());
+      await render();
+      expect(cursor()).toBeNull();
+      state.mockResolvedValue(clone({ status: "taken_over", agentPointer: pointer(100) }));
+      await tick(CLONE_POLL_VISIBLE_MS);
+      expect(cursor()?.dataset.shown).toBe("false");
+    });
+  });
 });

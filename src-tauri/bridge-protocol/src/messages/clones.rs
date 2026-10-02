@@ -93,6 +93,21 @@ pub struct CloneSnapshot {
     pub additional_domains: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_vision: Option<bool>,
+    /// Where the agent's pointer last landed, for the dock's "Claude" cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pointer: Option<CloneAgentPointer>,
+}
+
+/// The agent's pointer on the clone's viewport. `x` and `y` are fractions
+/// (0..1), `action` is what put it there (click, hover, drag, scroll), and
+/// `age_ms` is how long ago, so the dock can fade a stale cursor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneAgentPointer {
+    pub x: f64,
+    pub y: f64,
+    pub action: String,
+    pub age_ms: u64,
 }
 
 /// The session's clone, or `None` when it has no clone (or off macOS).
