@@ -1221,6 +1221,7 @@ export interface CloneSnapshot {
   sessionId: string;
   signInPath: CloneSignInPath;
   status: string;
+  waitingReason?: string | null;
 }
 
 export interface CompletionSummary {

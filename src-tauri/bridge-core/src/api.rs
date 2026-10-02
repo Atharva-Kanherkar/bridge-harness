@@ -5242,6 +5242,7 @@ fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnaps
                 pending_request_id: Some(request.id),
                 extension_path: request.extension_path,
                 additional_domains: Some(request.additional_domains),
+                waiting_reason: None,
                 agent_vision: None,
                 agent_pointer: None,
             });
@@ -5275,6 +5276,7 @@ fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnaps
         pending_request_id: None,
         extension_path: None,
         additional_domains: None,
+        waiting_reason: core.browser_clone_orchestrator.sign_in_help(session_id).map(str::to_owned),
         agent_vision: Some(core.browser_clone_orchestrator.agent_vision(session_id)),
         agent_pointer: core.browser_clone_orchestrator.agent_pointer(session_id).map(|(x, y, action, age_ms)| {
             bridge_protocol::messages::CloneAgentPointer { x, y, action: action.to_owned(), age_ms }

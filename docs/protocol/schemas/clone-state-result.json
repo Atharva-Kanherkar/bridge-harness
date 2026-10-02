@@ -135,6 +135,13 @@
         },
         "status": {
           "type": "string"
+        },
+        "waitingReason": {
+          "description": "Fixed recovery guidance when the site rejects sign-in. No page content.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
