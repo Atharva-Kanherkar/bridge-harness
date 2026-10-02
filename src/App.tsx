@@ -77,7 +77,8 @@ import { overviewUsage } from "./usageOverview";
 import { SteerComposer } from "./components/SteerComposer";
 import { ComposerPill } from "./components/ComposerPill";
 import { SessionModeToggle, sessionModeDescription } from "./components/SessionModeToggle";
-import { queuedFollowUps } from "./sessionInput";
+import { useActiveTurnInput } from "./activeTurnSettings";
+import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { ForkDialog } from "./components/ForkDialog";
@@ -1148,9 +1149,8 @@ function AppContent() {
     () => state.events.filter(event => event.kind === "approval.auto_allowed"),
     [state.events],
   );
-  // Sending mid-turn stops the turn and runs the message instead, on every
-  // harness, so the button always says Steer.
-  const activeAction = "steer" as const;
+  const activeTurnInput = useActiveTurnInput();
+  const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session?.harness)?.capabilities, activeTurnInput);
   // Folded from the durable event feed, so a reconnect reports the same waiting
   // follow-ups the composer showed before it.
   const queuedFollowUpCount = useMemo(
@@ -2230,7 +2230,7 @@ function AppContent() {
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
-      const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments);
+      const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments, activeTurnInput);
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
         setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
@@ -2376,7 +2376,7 @@ function AppContent() {
       const stillSelected = selectedBrowserContexts.filter(context => browserSelectionsRef.current.some(current => current.id === context.id));
       if (stillSelected.length !== selectedBrowserContexts.length) throw new Error("The selected browser page changed before sending. Select the element again and retry.");
       const promptText = text;
-      const outcome = await bridgeApi.submitInput(target.id, promptText, sentAttachments);
+      const outcome = await bridgeApi.submitInput(target.id, promptText, sentAttachments, activeTurnInput);
       if (stillSelected.length) {
         setBrowserSelections(current => current.filter(context => !stillSelected.some(sent => sent.id === context.id)));
         setPending(current => current.map(item => item.key === key ? { ...item, text: promptText } : item));
@@ -2804,7 +2804,6 @@ function AppContent() {
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
       onOpenSavedSetups={() => setView("saved-setups")}
-      onOpenArchives={() => setView("archives")}
       onOpenAutomations={() => setView("automations")}
       automationsActive={view === "automations"}
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
@@ -2961,6 +2960,7 @@ function AppContent() {
             adapters={adapters}
             events={agentEvents}
             pendingMessages={asidePending}
+            queuedFollowUpCount={queuedFollowUps(asideSession.id, state.events).length}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
             workspaceFiles={hasRepo ? workspaceFiles : []}
             slashCommands={asideSlashCommands}
@@ -3201,6 +3201,7 @@ function AppContent() {
                     disabled={!session}
                     working={turnActive}
                     activeAction={activeAction}
+                    activeActionNote={activeTurnInput === "steer" && activeAction === "queue" ? "This provider cannot steer a live turn. Held until the current step finishes." : undefined}
                     stopping={stopping}
                     agentsWorking={chatAgents.length > 0}
                     onStop={session ? stopChat : undefined}

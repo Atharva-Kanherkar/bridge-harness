@@ -1850,11 +1850,12 @@ async fn submit_input(
     session_id: String,
     text: String,
     attachments: Option<Vec<bridge_protocol::messages::TurnImage>>,
+    active_turn_input: Option<bridge_protocol::messages::ActiveTurnInput>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::SubmitInputResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Input submission", move || {
-        api::submit_input_with_attachments(&core, session_id, text, attachments.unwrap_or_default())
+        api::submit_input_with_preference(&core, session_id, text, attachments.unwrap_or_default(), active_turn_input)
     })
     .await
 }

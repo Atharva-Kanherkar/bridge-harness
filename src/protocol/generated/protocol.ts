@@ -1013,6 +1013,8 @@ export interface BridgeMethodResults {
   "automations/execute_automation_action": unknown;
 }
 
+export type ActiveTurnInput = "steer" | "queue";
+
 export interface AdapterDescriptor {
   authState: AuthState;
   available: boolean;
@@ -3366,6 +3368,7 @@ export interface SendTurnParams {
 }
 
 export interface SubmitInputParams {
+  activeTurnInput?: ActiveTurnInput | null;
   attachments?: TurnImage[] | null;
   sessionId: string;
   text: string;

@@ -638,6 +638,10 @@ pub struct TurnImage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitInputParams {
+    /// Absent preserves legacy interrupt behavior. Explicit Steer uses native
+    /// steering with queue fallback; Queue waits for the phase boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_turn_input: Option<ActiveTurnInput>,
     pub session_id: String,
     pub text: String,
     /// Image attachments pasted or otherwise added in the composer. Absent
@@ -645,6 +649,10 @@ pub struct SubmitInputParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<TurnImage>>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ActiveTurnInput { Steer, Queue }
 
 /// What Bridge did with submitted user input. These three modes are the whole
 /// contract: a client that receives anything else is talking to a server it
@@ -1133,6 +1141,7 @@ mod tests {
             json!({"workspaceId": "w-1", "harness": "claude"})
         );
         let submit = SubmitInputParams {
+            active_turn_input: None,
             session_id: "s-1".into(),
             text: "steer left".into(),
             attachments: None,
@@ -1143,7 +1152,15 @@ mod tests {
             "empty attachments stay off the wire"
         );
         assert_eq!(round_trip(&submit), submit);
+        for preference in [ActiveTurnInput::Steer, ActiveTurnInput::Queue] {
+            let preferred = SubmitInputParams { active_turn_input: Some(preference), ..submit.clone() };
+            assert_eq!(round_trip(&preferred), preferred);
+        }
+        assert!(serde_json::from_value::<SubmitInputParams>(json!({
+            "sessionId": "s-1", "text": "hi", "activeTurnInput": "invalid"
+        })).is_err());
         let with_image = SubmitInputParams {
+            active_turn_input: None,
             session_id: "s-1".into(),
             text: "what is this?".into(),
             attachments: Some(vec![TurnImage { media_type: "image/png".into(), base64_data: "iVBORw0".into() }]),

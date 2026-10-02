@@ -3,6 +3,8 @@ import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, FileText, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
+import { useActiveTurnInput } from "../activeTurnSettings";
+import { activeTurnAction } from "../sessionInput";
 import { ComposerPill } from "./ComposerPill";
 import { ChatModelControl } from "./ChatModelControl";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
@@ -25,7 +27,7 @@ import type { InteractionResolutionResult, QuestionAction, SuggestCompletionResu
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -33,6 +35,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   events: AgentEvent[];
   pendingMessages: string[];
   working: boolean;
+  queuedFollowUpCount?: number;
   /** Workspace paths for the same `@` mention typeahead the main composer uses. */
   workspaceFiles?: string[];
   /** Slash commands already loaded by the host; the aside does not refetch them. */
@@ -56,6 +59,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   onPromote: () => void;
   onClose: () => void;
 }) {
+  const activeTurnInput = useActiveTurnInput();
+  const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
@@ -335,6 +340,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
           </p>}
           {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
           {sending && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Sending…</p>}
+          {queuedFollowUpCount > 0 && <p className="mb-2 px-1 text-[11px] text-muted-foreground" role="status">{queuedFollowUpCount} follow-up{queuedFollowUpCount === 1 ? "" : "s"} queued; sent when this step finishes</p>}
           {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-[11px] text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
           {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{lifecycle.error} You can retry below.</p>}
           {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
@@ -394,7 +400,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               }}
               placeholder={`Ask ${harnessLabel(session.harness)}…`}
               working={working}
-              activeAction="steer"
+              activeAction={activeAction}
+              activeActionNote={activeTurnInput === "steer" && activeAction === "queue" ? "This provider cannot steer a live turn. Held until the current step finishes." : undefined}
               inputRef={inputRef}
             />
           </div>

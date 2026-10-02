@@ -292,7 +292,7 @@ pub fn dispatch(
         }
         MethodName::SubmitInput => {
             let p: wire::SubmitInputParams = decode(method, params)?;
-            reply(api::submit_input_with_attachments(core, p.session_id, p.text, p.attachments.unwrap_or_default()))
+            reply(api::submit_input_with_preference(core, p.session_id, p.text, p.attachments.unwrap_or_default(), p.active_turn_input))
         }
         MethodName::DispatchAgentShortcut => {
             let p: wire::DispatchAgentShortcutParams = decode(method, params)?;

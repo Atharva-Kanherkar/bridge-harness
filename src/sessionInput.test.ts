@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BridgeEvent } from "./types";
-import { queuedFollowUps } from "./sessionInput";
+import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 
 let nextId = 100;
 const event = (kind: string, entityId: string, body: string): BridgeEvent => ({
@@ -40,5 +40,19 @@ describe("queuedFollowUps", () => {
   it("is empty for a session that never queued anything", () => {
     expect(queuedFollowUps("chat", [])).toEqual([]);
     expect(queuedFollowUps("chat", [event("session.started", "chat", "working")])).toEqual([]);
+  });
+});
+
+
+describe("activeTurnAction", () => {
+  it.each([
+    ["steer", ["steering"], "steer"],
+    ["steer", [], "queue"],
+    ["steer", undefined, "queue"],
+    ["queue", ["steering"], "queue"],
+    ["queue", [], "queue"],
+    ["queue", undefined, "queue"],
+  ] as const)("%s with %j resolves to %s", (preference, capabilities, expected) => {
+    expect(activeTurnAction(capabilities ? [...capabilities] : undefined, preference)).toBe(expected);
   });
 });

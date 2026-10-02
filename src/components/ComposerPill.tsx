@@ -30,6 +30,7 @@ export type ComposerPillProps = {
   /// delivered at its next phase boundary. Omitted keeps the composer read-only
   /// during a turn, for surfaces that genuinely cannot be steered.
   activeAction?: "steer" | "queue";
+  activeActionNote?: string;
   onStop?: () => void;
   /// Agents this chat started are still running while its own turn is idle.
   /// Stop stays offered, but Send is a plain send: words go to the
@@ -92,6 +93,7 @@ export function ComposerPill({
   disabled,
   working,
   activeAction,
+  activeActionNote,
   onStop,
   agentsWorking = false,
   stopping = false,
@@ -346,7 +348,7 @@ export function ComposerPill({
                       : "bg-accent text-muted-foreground/70",
                   )}
                   aria-label={submitLabel}
-                  title={activeAction === "queue" && working ? "Held until the current step finishes" : undefined}
+                  title={working ? activeActionNote ?? (activeAction === "queue" ? "Held until the current step finishes" : "Send guidance into the live turn") : undefined}
                 >
                   {steerable && <span>{submitLabel}</span>}
                   <ArrowUp className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />

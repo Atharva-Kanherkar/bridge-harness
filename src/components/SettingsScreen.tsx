@@ -12,6 +12,7 @@ import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsGroup, SettingsRow, TextButton } from "./settings/kit";
 import { SettingsRail } from "./settings/SettingsRail";
+import { ActiveTurnInputSetting } from "./settings/ActiveTurnInputSetting";
 import { AppearancePage } from "./settings/AppearancePage";
 import { UpdatesPage } from "./settings/UpdatesPage";
 import type { UpdateInfo } from "../updater";
@@ -250,7 +251,8 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     <SettingsRow label="Menu bar" description="Show account usage and spend in the macOS menu bar." onOpen={() => navigate("menuBar")} />
     <SettingsRow label="Updates" description={availableUpdate ? `Bridge ${availableUpdate.version} is available.` : "Check for new versions of Bridge."} onOpen={() => navigate("updates")} />
   </SettingsGroup>;
-  const dataLinks = <SettingsGroup label="Bring your history">
+  const dataLinks = <SettingsGroup label="Chat history">
+    <SettingsRow label="Archived chats" description="Search, read and unarchive conversations." onOpen={() => navigate("archives")} />
     <SettingsRow label="Import history" description="Bring supported chat history and configuration from another coding agent." onOpen={() => navigate("import")} />
   </SettingsGroup>;
   return <div className="flex h-full min-h-0 flex-col md:flex-row">
@@ -270,7 +272,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
 
       {!contextual && section !== primarySection(section) && section !== "harnesses" && <div className="mx-auto w-full max-w-page px-5 pt-4 sm:px-8"><TextButton onClick={() => navigate(primarySection(section))}>Back to {SECTION_LABELS[primarySection(section)]}</TextButton></div>}
-      {section === "general" && <AppearancePage title="General" extra={generalLinks} />}
+      {section === "general" && <AppearancePage title="General" extra={<><ActiveTurnInputSetting onError={onError} />{generalLinks}</>} />}
       {section === "data" && <StoragePage title="Data & storage" extra={dataLinks} onError={onError} />}
       {section === "appearance" && <AppearancePage />}
       {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}
