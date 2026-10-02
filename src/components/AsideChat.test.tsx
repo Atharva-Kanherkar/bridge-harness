@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeActiveTurnInput } from "../activeTurnSettings";
 import { AsideChat } from "./AsideChat";
 import { asWireKind } from "../transcript/wire";
 import { bridgeApi } from "../api";
@@ -43,6 +44,7 @@ async function mount(overrides: Partial<Parameters<typeof AsideChat>[0]> = {}) {
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  localStorage.clear();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -107,9 +109,15 @@ describe("AsideChat", () => {
     expect(pill.disabled).toBe(true);
   });
 
-  it("offers Steer mid-turn on every harness", async () => {
+  it("uses the global preference and shows fallback and durable queue count", async () => {
+    await mount({ working: true, adapters: adapters.map(adapter => ({ ...adapter, capabilities: ["steering"] })), queuedFollowUpCount: 2 });
+    expect(document.body.querySelector('button[aria-label="Steer"]')).not.toBeNull();
+    await act(async () => writeActiveTurnInput("queue"));
+    expect(document.body.querySelector('button[aria-label="Queue"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("2 follow-ups queued");
+    await act(async () => writeActiveTurnInput("steer"));
     await mount({ working: true });
-    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Steer")).toBe(true);
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!.title).toContain("cannot steer");
   });
 
   it("disables the model control while the aside is working", async () => {

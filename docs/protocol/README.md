@@ -355,3 +355,14 @@ forest consumers still reject invalid entries.
 It exports the envelope and handshake interfaces, the `BridgeMethod` string
 union, the `BRIDGE_METHODS` table, `ERROR_CODES`, and `PROTOCOL_VERSION`. The
 frontend migrates onto these types as the compatibility adapter lands.
+
+## Active-turn input preference
+
+`sessions/submit_input` accepts optional `activeTurnInput`: `steer` sends
+guidance into a capable provider's live turn and otherwise queues it; `queue`
+always waits for the next phase boundary. Neither explicit choice interrupts
+the running turn. Idle sessions start a normal turn in either mode. Omitting
+the field preserves the legacy interrupt behavior for existing clients.
+The desktop stores its global choice locally and sends it on every chat input.
+Queued images are refused explicitly, and pending question replies still take
+priority over ordinary input routing.

@@ -1704,6 +1704,13 @@ pub fn submit_input_with_attachments(
     live_turn::submit_input_with_attachments(core, session_id, text, attachments)
 }
 
+pub fn submit_input_with_preference(
+    core: &Arc<BridgeCore>, session_id: String, text: String,
+    attachments: Vec<wire::TurnImage>, preference: Option<wire::ActiveTurnInput>,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    live_turn::submit_input_with_preference(core, session_id, text, attachments, preference)
+}
+
 /// Resolve and dispatch a leading `#agent` directive without starting or
 /// steering the parent provider. The live-turn layer owns the lifecycle path.
 pub fn dispatch_agent_shortcut(

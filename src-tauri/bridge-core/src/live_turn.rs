@@ -10968,7 +10968,7 @@ pub fn send_turn(
 ) -> Result<(), BridgeError> {
     // The legacy entry point: always deliver now. Clients that want Bridge to
     // decide between starting, steering, and queueing call `submit_input`.
-    submit_input_internal(core, session_id, text, true, Vec::new()).map(|_| ())
+    submit_input_internal(core, session_id, text, true, Vec::new(), None).map(|_| ())
 }
 
 /// The typed active-turn input contract: one call the client makes whatever the
@@ -10982,7 +10982,7 @@ pub fn submit_input(
     session_id: String,
     text: String,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
-    submit_input_internal(core, session_id, text, false, Vec::new())
+    submit_input_internal(core, session_id, text, false, Vec::new(), None)
 }
 
 /// The same contract for a turn that carries pasted image attachments. Every
@@ -10994,7 +10994,14 @@ pub fn submit_input_with_attachments(
     text: String,
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
-    submit_input_internal(core, session_id, text, false, attachments)
+    submit_input_internal(core, session_id, text, false, attachments, None)
+}
+
+pub fn submit_input_with_preference(
+    core: &Arc<BridgeCore>, session_id: String, text: String,
+    attachments: Vec<wire::TurnImage>, preference: Option<wire::ActiveTurnInput>,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    submit_input_internal(core, session_id, text, false, attachments, preference)
 }
 
 fn configured_worker_request(
@@ -11514,6 +11521,7 @@ fn submit_input_internal(
     text: String,
     force_new_turn: bool,
     attachments: Vec<wire::TurnImage>,
+    preference: Option<wire::ActiveTurnInput>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     let _input_lease = core.input_activity.read().unwrap();
     ensure_session_not_archived(core, &session_id)?;
@@ -11578,12 +11586,12 @@ fn submit_input_internal(
         .unwrap()
         .get(&session_id)
         .is_some_and(|runtime| runtime.supports_active_turn_steering());
-    // Sending into a chat mid-turn stops that turn and runs the message as the
+    // Legacy callers without a preference stop the turn and run the message as the
     // next one, on every provider: the text waits at the front of the queue and
     // the interrupted turn's own boundary delivers it. Images cannot ride the
     // queue, so a provider that can fold them into the live turn still does.
-    let stop_first =
-        session_input::interrupts_active_turn(worker.is_some(), turn_active, checkpointing)
+    let stop_first = preference.is_none()
+        && session_input::interrupts_active_turn(worker.is_some(), turn_active, checkpointing)
             && (attachments.is_empty() || !steering_capable);
     // The legacy `send_turn` entry point forces a new turn, which is the one
     // thing a worker cannot absorb: its turn is the objective, and a second
@@ -11593,7 +11601,7 @@ fn submit_input_internal(
     } else if force_new_turn && worker.is_none() {
         session_input::InputRoute::NewTurn
     } else {
-        session_input::route(turn_active, steering_capable)
+        session_input::route(turn_active, steering_capable && preference != Some(wire::ActiveTurnInput::Queue))
     };
     let disposition = if stop_first {
         wire::InputDisposition::SteeredActiveTurn
@@ -15110,6 +15118,38 @@ mod submit_input_tests {
 
         assert_eq!(session_status(&core), "working");
         assert_eq!(resolved_decision(&core), "rejected");
+    }
+
+    #[test]
+    fn explicit_active_turn_preferences_control_delivery_without_interrupting() {
+        for preference in [wire::ActiveTurnInput::Steer, wire::ActiveTurnInput::Queue] {
+            for steering in [true, false] {
+                for active in [true, false] {
+                    let (_fixture, core, _managed_root) = core_with_chat(if active { "working" } else { "ready" });
+                    if active {
+                        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-1' WHERE id='chat'", []).unwrap();
+                    }
+                    let handles = attach_handles(&core, steering);
+                    let outcome = submit_input_with_preference(&core, "chat".into(), "follow up".into(), Vec::new(), Some(preference)).unwrap();
+                    let queued = active && (preference == wire::ActiveTurnInput::Queue || !steering);
+                    let expected = if !active { wire::InputDisposition::StartedNewTurn }
+                        else if queued { wire::InputDisposition::QueuedForPhaseBoundary }
+                        else { wire::InputDisposition::SteeredActiveTurn };
+                    assert_eq!(outcome.disposition, expected);
+                    assert_eq!(outcome.queued_input_id.is_some(), queued);
+                    assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
+                    assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), if queued { 1 } else { 0 });
+                    assert_eq!(handles.sent.lock().unwrap().len(), if queued { 0 } else { 1 });
+                    if queued {
+                        assert!(!drain_queued_input(&core, "chat"));
+                        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'", []).unwrap();
+                        assert!(drain_queued_input(&core, "chat"));
+                        assert_eq!(handles.sent.lock().unwrap().as_slice(), ["follow up".to_owned()]);
+                        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 0);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -85,6 +85,14 @@ describe("SettingsScreen", () => {
       });
     };
 
+    it("opens archived chats inside Settings from Data & storage", async () => {
+      await render({ initialSection: "data" });
+      await open("Archived chats");
+      expect(container.textContent).toContain("Back to Data & storage");
+      expect(container.textContent).toContain("Archived chats");
+      expect(container.textContent).toContain("General");
+    });
+
     it("stamps the chosen skin on the document from the Appearance tiles", async () => {
       await render({ initialSection: "appearance" });
       expect(container.textContent).toContain("Window background");

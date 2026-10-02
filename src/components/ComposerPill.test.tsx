@@ -129,6 +129,11 @@ describe("ComposerPill", () => {
     expect(container.querySelector('button[aria-label="Steer"]')).toBeNull();
   });
 
+  it("explains unsupported steering in the Queue tooltip", () => {
+    render({ value: "next", working: true, activeAction: "queue", activeActionNote: "This provider cannot steer a live turn.", onStop: () => {} });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!.title).toBe("This provider cannot steer a live turn.");
+  });
+
   it("submits on Enter during an active turn", () => {
     const onSubmit = vi.fn();
     render({ value: "steer me", working: true, activeAction: "steer", onSubmit, onStop: () => {} });

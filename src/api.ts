@@ -2722,17 +2722,25 @@ export const bridgeApi = {
     session.status = "ready"; session.activeTurnId = null; emitState();
   },
   // The active-turn input contract. Unlike sendTurn this is safe to call while
-  // the agent is working: a chat's running turn is stopped and the message runs
-  // as a new one, and the result says which happened. Attachments ride beside
+  // the agent is working: the preference chooses native steering or queueing,
+  // and the result says which happened. Attachments ride beside
   // the text; a provider that cannot take them refuses explicitly, which is how
   // the composer surfaces "not supported" instead of dropping bytes.
-  submitInput: async (sessionId: string, text: string, attachments?: readonly ComposerAttachment[]): Promise<SubmitInputResult> => {
+  submitInput: async (sessionId: string, text: string, attachments?: readonly ComposerAttachment[], activeTurnInput?: "steer" | "queue"): Promise<SubmitInputResult> => {
     const images: TurnImage[] = (attachments ?? []).map(attachment => ({
       mediaType: attachment.mediaType,
       base64Data: attachment.dataUri.split(",")[1] ?? "",
     }));
-    if (isTauri()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined });
+    if (isTauri()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined, activeTurnInput });
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
+    if (session.activeTurnId && (activeTurnInput === "queue" || (activeTurnInput === "steer" && !mockHealth.adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering")))) {
+      if (images.length) throw new Error("Images cannot be held in the queue; wait for the current step to finish.");
+      const queuedInputId = `mock-queued-${nextEventId}`;
+      appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text, data: { delivery: "queued" } });
+      mockState.events.unshift({ id: nextEventId++, source: "session", kind: "session.input.queued", entityId: sessionId, body: queuedInputId, createdAt: new Date().toISOString() });
+      emitState();
+      return { disposition: "queuedForPhaseBoundary", queuedInputId, interceptions: [] };
+    }
     if (session.activeTurnId) {
       // The mock has no turn to stop; it records the steer the way the real
       // backend persists it and leaves the running turn to finish.

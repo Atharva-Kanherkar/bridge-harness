@@ -387,7 +387,6 @@ export type BridgeSidebarProps = {
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
   onOpenSavedSetups?: () => void;
-  onOpenArchives?: () => void;
   onOpenAutomations?: () => void;
   automationsActive?: boolean;
   /** Per-project "+" on a project group header, grouped-by-project only —
@@ -449,7 +448,6 @@ export function BridgeSidebar({
   onCloseMobile,
   onOpenNewChat,
   onOpenSavedSetups,
-  onOpenArchives,
   onOpenAutomations,
   automationsActive = false,
   onNewChatInProject,
@@ -785,7 +783,6 @@ export function BridgeSidebar({
           {onOpenGitplace && <ActionRow icon={GitPullRequest} label="Gitplace" onClick={onOpenGitplace} active={gitplaceActive} />}
         </nav>
 
-        {onOpenArchives && <button type="button" onClick={onOpenArchives} className="mb-2 flex items-center gap-2 px-2 text-xs text-muted-foreground hover:text-foreground"><Archive size={12} aria-hidden="true" />Archived chats</button>}
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           {searchOpen && query.trim().length >= CHAT_SEARCH_MIN_CHARS && (
             <ChatSearchResults
