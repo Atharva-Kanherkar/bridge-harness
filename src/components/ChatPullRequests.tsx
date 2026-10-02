@@ -53,7 +53,7 @@ export function useChatPullRequests(sessionId: string | undefined, workspaceId: 
   const [state, setState] = useState<ChatPrState>({ prs: [], loaded: false, refreshing: false });
   const prsRef = useRef<SessionPullRequest[]>([]);
   const inflight = useRef(false);
-  const queued = useRef(false);
+  const queued = useRef<boolean | null>(null);
   const sessionRef = useRef(sessionId);
   sessionRef.current = sessionId;
 
@@ -62,7 +62,7 @@ export function useChatPullRequests(sessionId: string | undefined, workspaceId: 
   const load = useCallback(async (refresh: boolean) => {
     const target = sessionRef.current;
     if (!target) return;
-    if (inflight.current) { queued.current = true; return; }
+    if (inflight.current) { queued.current = (queued.current ?? false) || refresh; return; }
     inflight.current = true;
     if (refresh) setState(current => ({ ...current, refreshing: true }));
     try {
@@ -76,7 +76,7 @@ export function useChatPullRequests(sessionId: string | undefined, workspaceId: 
       setState(current => ({ ...current, loaded: true, refreshing: false, error: value instanceof Error ? value.message : String(value) }));
     } finally {
       inflight.current = false;
-      if (queued.current) { queued.current = false; void load(false); }
+      if (queued.current !== null) { const refreshNext = queued.current; queued.current = null; void load(refreshNext); }
     }
   }, []);
 
@@ -99,7 +99,7 @@ export function useChatPullRequests(sessionId: string | undefined, workspaceId: 
         if (payload.workspaceId === workspaceId && eventTouches(prsRef.current, payload.number)) void load(false);
       }),
     ];
-    const onFocus = () => { if (document.visibilityState === "visible" && prsRef.current.length > 0) void load(false); };
+    const onFocus = () => { if (document.visibilityState === "visible") void load(true); };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     return () => {
