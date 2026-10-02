@@ -1,4 +1,4 @@
-# feat/simple-settings-onboarding — Test Contract
+# feat/simple-settings-onboarding - Test Contract
 
 ## Functional Behavior
 - Settings has four primary destinations: General, Coding agents, Permissions, and Data & storage. Existing deep links continue to reach their controls under the correct destination.
@@ -17,7 +17,7 @@
 ## Unit Tests
 - Settings section mapping preserves all legacy deep links and exposes exactly four rail destinations.
 - Onboarding readiness covers signed-in, signed-out, unknown, missing, broken, and unavailable agents.
-- Selection filters model recommendations and blocks empty selection.
+- Selection filters model recommendations and blocks empty selection. A selected agent with only one usable model can finish setup: missing model tiers use that actual model as an explicit choice, without inventing additional capabilities.
 - Onboarding completion persistence retains the existing-user migration behavior.
 
 ## Integration / Functional Tests
