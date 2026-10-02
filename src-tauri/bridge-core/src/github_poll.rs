@@ -81,10 +81,8 @@ impl GithubPoller {
         for pull_request in pull_requests {
             if pull_request.checks.queued > 0 || pull_request.checks.in_progress > 0 {
                 let checks = previous.remove(&pull_request.number).flatten();
-                watched.insert(
-                    (workspace_id.into(), pull_request.number),
-                    WatchedPullRequest::listed(path.clone(), pull_request, checks),
-                );
+                watched.entry((workspace_id.into(), pull_request.number))
+                    .or_insert_with(|| WatchedPullRequest::listed(path.clone(), pull_request, checks));
             }
         }
     }
@@ -167,7 +165,7 @@ impl GithubPoller {
         // A transient `gh` failure keeps every last-known value; the card
         // shows its stored snapshot labelled stale and the next cycle retries.
         let Ok(brief) = core.github_surface.pr_brief(&watched.path, number) else { return };
-        let checks = core.github_surface.pr_checks(&watched.path, number).unwrap_or_default();
+        let Ok(checks) = core.github_surface.pr_checks(&watched.path, number) else { return };
         let checks_active = checks.iter().any(|check| check.status != CheckStatus::Completed);
         let state_terminal = matches!(brief.state, PullRequestState::Closed | PullRequestState::Merged);
         let complete = all_checks_complete(&checks);
@@ -496,6 +494,62 @@ mod tests {
             entry.next_poll.is_none(),
             "a failed cycle leaves the entry due immediately so the next cycle retries",
         );
+    }
+
+    #[test]
+    fn listing_a_pending_attached_pr_keeps_its_attachment_and_all_baselines() {
+        use crate::github_surface::{CheckRollup, Mergeability, ReviewDecision};
+        let poller = GithubPoller::default();
+        poller.watch_attached("ws", PathBuf::from("/tmp/repo"), 9, "feat/pr", "PR");
+        {
+            let mut watched = poller.watched.lock().unwrap();
+            let entry = watched.get_mut(&("ws".into(), 9)).unwrap();
+            entry.checks = Some(vec![check(CheckStatus::InProgress)]);
+            entry.state = Some(PullRequestState::Open);
+            entry.head_sha = Some("abc".into());
+        }
+        poller.watch("ws", PathBuf::from("/tmp/repo"), &[PullRequestSummary {
+            number: 9, title: "PR".into(), state: PullRequestState::Open, is_draft: false,
+            author: None, head_branch: "feat/pr".into(), review_decision: ReviewDecision::None,
+            mergeability: Mergeability::Mergeable, merge_state_status: String::new(),
+            checks: CheckRollup { in_progress: 1, total: 1, ..Default::default() }, url: String::new(),
+        }]);
+        let watched = poller.watched.lock().unwrap();
+        let entry = watched.get(&("ws".into(), 9)).unwrap();
+        assert!(entry.attached);
+        assert_eq!(entry.checks, Some(vec![check(CheckStatus::InProgress)]));
+        assert_eq!(entry.state, Some(PullRequestState::Open));
+        assert_eq!(entry.head_sha.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn a_checks_only_poll_failure_preserves_baselines_and_retries() {
+        let (scratch, core, repo) = crate::session_prs::tests::fixture();
+        let poller = GithubPoller::default();
+        poller.watch_attached("w", repo, 12, "feat/pr", "PR");
+        let baseline = vec![check(CheckStatus::InProgress)];
+        {
+            let mut watched = poller.watched.lock().unwrap();
+            let entry = watched.get_mut(&("w".into(), 12)).unwrap();
+            entry.checks = Some(baseline.clone());
+            entry.state = Some(PullRequestState::Open);
+            entry.head_sha = Some("old".into());
+        }
+        std::fs::write(scratch.path().join("offline"), "").unwrap();
+        let mut events = core.events.subscribe();
+        poller.poll_once(&core);
+        {
+            let watched = poller.watched.lock().unwrap();
+            let entry = watched.get(&("w".into(), 12)).unwrap();
+            assert_eq!(entry.checks, Some(baseline));
+            assert_eq!(entry.head_sha.as_deref(), Some("old"));
+            assert!(entry.next_poll.is_none());
+        }
+        assert!(events.try_recv().is_err(), "no invented transition on an outage");
+        std::fs::remove_file(scratch.path().join("offline")).unwrap();
+        poller.poll_once(&core);
+        assert!(matches!(events.try_recv(), Ok(CoreEvent::GithubChecksChanged { number: 12, .. })));
+        assert_eq!(poller.watched.lock().unwrap().get(&("w".into(), 12)).unwrap().checks.as_ref().unwrap()[0].status, CheckStatus::Completed);
     }
 
     #[test]

@@ -110,6 +110,37 @@ describe("useChatPullRequests", () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it("retains forced refresh when it queues behind an in-flight read", async () => {
+    let resolveFirst!: (value: { pullRequests: SessionPullRequest[] }) => void;
+    const read = vi.spyOn(bridgeApi, "githubSessionPrs")
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
+      .mockResolvedValue({ pullRequests: [pr()] });
+    let reload!: (refresh: boolean) => Promise<void>;
+    function Holder() {
+      const state = useChatPullRequests("a", "w1");
+      reload = state.reload;
+      return <p>{state.prs.length}</p>;
+    }
+    act(() => root.render(<Holder />));
+    await act(async () => { await reload(true); await reload(false); });
+    await act(async () => { resolveFirst({ pullRequests: [] }); });
+    await flush();
+    expect(read.mock.calls).toEqual([["a", true], ["a", true]]);
+    expect(host.textContent).toBe("1");
+  });
+
+  it("forces discovery on focus even when the initial list was empty", async () => {
+    const read = vi.spyOn(bridgeApi, "githubSessionPrs")
+      .mockResolvedValueOnce({ pullRequests: [] })
+      .mockResolvedValue({ pullRequests: [pr()] });
+    act(() => root.render(<Probe sessionId="a" />));
+    await flush();
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await flush();
+    expect(read.mock.calls).toEqual([["a", true], ["a", true]]);
+    expect(host.textContent).toBe("12");
+  });
+
   it("keeps the last cards through a failed read", async () => {
     vi.spyOn(bridgeApi, "githubSessionPrs").mockResolvedValueOnce({ pullRequests: [pr()] }).mockRejectedValue(new Error("offline"));
     let reload: ((refresh: boolean) => Promise<void>) | undefined;

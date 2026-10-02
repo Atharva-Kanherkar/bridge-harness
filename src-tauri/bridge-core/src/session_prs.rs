@@ -141,7 +141,29 @@ pub fn parse_pull_request_url(raw: &str) -> Option<PullRequestUrl> {
 
 /// Whether the command line invokes `gh pr create` in a command position.
 pub fn detect_pr_create(command: &str) -> bool {
+    // Codex reports the process invocation, including the login-shell wrapper.
+    // Decode only a known shell's -c argument; never execute it or treat an
+    // arbitrary quoted argument (e.g. echo "gh pr create") as a command.
+    if let Ok(words) = shell_words::split(command) {
+        if words.len() == 3
+            && matches!(std::path::Path::new(&words[0]).file_name().and_then(|name| name.to_str()), Some("sh" | "bash" | "zsh"))
+            && matches!(words[1].as_str(), "-c" | "-lc" | "-cl")
+        {
+            return PR_CREATE.is_match(&words[2]);
+        }
+    }
     PR_CREATE.is_match(command)
+}
+
+/// Command completion proves creation; Git's own linked-checkout inventory
+/// proves the head belongs to this repository even when the agent used a
+/// worktree rather than the workspace root.
+fn checkout_matches_head(path: &std::path::Path, branch: &str, sha: &str) -> bool {
+    crate::git::list_worktrees(path).is_ok_and(|entries| entries.into_iter().any(|entry| {
+        !entry.bare && !entry.detached && !entry.prunable && entry.path.is_dir()
+            && entry.branch.as_deref() == Some(branch)
+            && entry.head.as_deref() == Some(sha)
+    }))
 }
 
 /// The first PR URL in a command's output, when one is present.
@@ -210,8 +232,8 @@ pub fn parse_attach_reference(raw: &str) -> Result<AttachReference, BridgeError>
 /// Attach a chat to a verified pull request. Verification is the whole point:
 /// the workspace's own Git configuration names the repository, a URL must
 /// agree with it, and a tool-completion attach additionally requires the PR
-/// head to be exactly what this workspace has checked out — the session that
-/// ran `gh pr create` proves ownership; prose never does.
+/// head to match a checkout in this workspace's Git worktree inventory. The
+/// session that ran `gh pr create` proves ownership; prose never does.
 pub fn attach(
     core: &Arc<BridgeCore>,
     session_id: &str,
@@ -255,11 +277,7 @@ pub fn attach(
         .pr_brief(&path, number)
         .map_err(|error| BridgeError::Invalid(format!("Could not read PR #{number}: {error}")))?;
     if attribution == ATTRIBUTION_TOOL_COMPLETION {
-        let branch = crate::git::current_branch(&path);
-        let head = crate::git::head_commit(&path);
-        if branch.as_deref() != Some(brief.head_branch.as_str())
-            || head.as_deref() != Some(brief.head_sha.as_str())
-        {
+        if !checkout_matches_head(&path, &brief.head_branch, &brief.head_sha) {
             return Err(BridgeError::Invalid(
                 "The PR head does not match this workspace's checkout.".into(),
             ));
@@ -282,8 +300,11 @@ pub fn attach(
         &brief.head_branch,
         &brief.title,
     );
-    let checks = read_checks(core, &path, number).unwrap_or_default();
-    Ok(build_view(&brief, checks, attribution, &Utc::now().to_rfc3339()))
+    let row = list(&core.db.lock().unwrap(), session_id)?.into_iter()
+        .find(|row| row.number == number && row.repo_host == brief.repository.host
+            && row.repo_owner == brief.repository.owner && row.repo_name == brief.repository.name)
+        .ok_or_else(|| BridgeError::Invalid("The attached pull request could not be read.".into()))?;
+    Ok(read_view(core, &path, &row, &brief))
 }
 
 fn build_view(
@@ -439,7 +460,6 @@ pub fn session_pull_requests(
         }
         match core.github_surface.pr_brief(&path, row.number) {
             Ok(brief) => {
-                let checks = read_checks(core, &path, row.number).unwrap_or_default();
                 core.github_poller.watch_attached(
                     &row.workspace_id,
                     path.clone(),
@@ -447,8 +467,7 @@ pub fn session_pull_requests(
                     &brief.head_branch,
                     &brief.title,
                 );
-                let view = build_view(&brief, checks, &row.attribution, &row.created_at);
-                let _ = record_snapshot(&core.db.lock().unwrap(), session_id, &row, &view);
+                let view = read_view(core, &path, &row, &brief);
                 views.push(view);
             }
             Err(error) => {
@@ -457,6 +476,29 @@ pub fn session_pull_requests(
         }
     }
     Ok(views)
+}
+
+/// Both attachment and refresh preserve the last successful full snapshot.
+/// On the first read there is no check history, but the verified brief still
+/// supplies the real PR state and draft flag instead of guessing "open".
+fn read_view(core: &Arc<BridgeCore>, path: &std::path::Path, row: &SessionPullRequestRow, brief: &PullRequestBrief) -> SessionPrView {
+    match read_checks(core, path, row.number) {
+        Ok(checks) => {
+            let view = build_view(brief, checks, &row.attribution, &row.created_at);
+            let _ = record_snapshot(&core.db.lock().unwrap(), &row.session_id, row, &view);
+            view
+        }
+        Err(error) => {
+            if row.snapshot.is_some() {
+                return stale_view(row, &error.to_string());
+            }
+            let mut view = build_view(brief, Vec::new(), &row.attribution, &row.created_at);
+            view.stale = true;
+            view.error = Some(error.to_string());
+            view.fetched_at = None;
+            view
+        }
+    }
 }
 
 fn stale_view(row: &SessionPullRequestRow, error: &str) -> SessionPrView {
@@ -497,36 +539,7 @@ pub fn detect_pull_request_creation(
     session_id: &str,
     event: &NormalizedEvent,
 ) {
-    if event.status.as_deref().is_some_and(|status| status != "completed") {
-        return;
-    }
-    let command = event
-        .data
-        .get("command")
-        .or_else(|| event.data.pointer("/state/input/command"))
-        .and_then(serde_json::Value::as_str);
-    let Some(command) = command else { return };
-    if !detect_pr_create(command) {
-        return;
-    }
-    let output = [
-        event.data.get("aggregatedOutput"),
-        event.data.get("output"),
-        event.data.pointer("/state/output").map(|value| value),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(serde_json::Value::as_str)
-    .collect::<Vec<_>>()
-    .join("\n");
-    let output = if output.is_empty() {
-        event.text.clone().unwrap_or_default()
-    } else {
-        output
-    };
-    let Some(candidate) = extract_pull_request_url(&output) else {
-        return;
-    };
+    let Some(candidate) = creation_candidate(event) else { return };
     let core = Arc::clone(core);
     let session_id = session_id.to_owned();
     std::thread::spawn(move || {
@@ -542,10 +555,168 @@ pub fn detect_pull_request_creation(
     });
 }
 
+fn creation_candidate(event: &NormalizedEvent) -> Option<PullRequestUrl> {
+    if event.kind != "command.completed" || event.status.as_deref().is_some_and(|status| status != "completed") {
+        return None;
+    }
+    let command = event
+        .data
+        .get("command")
+        .or_else(|| event.data.pointer("/state/input/command"))
+        .and_then(serde_json::Value::as_str);
+    let Some(command) = command else { return None };
+    if !detect_pr_create(command) {
+        return None;
+    }
+    let output = [
+        event.data.get("aggregatedOutput"),
+        event.data.get("output"),
+        event.data.pointer("/state/output"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(serde_json::Value::as_str)
+    .collect::<Vec<_>>()
+    .join("\n");
+    let output = if output.is_empty() {
+        event.text.clone().unwrap_or_default()
+    } else {
+        output
+    };
+    extract_pull_request_url(&output)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::github_surface::{CheckConclusion, CheckStatus};
+
+    fn git(path: &std::path::Path, args: &[&str]) {
+        let result = std::process::Command::new("git").current_dir(path).args(args)
+            .env("GIT_AUTHOR_NAME", "Test").env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test").env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    }
+
+    // A real Git checkout plus a deterministic gh process. The marker lets a
+    // successful brief read coexist with a transient checks-only outage.
+    pub(crate) fn fixture() -> (tempfile::TempDir, Arc<BridgeCore>, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = tempfile::tempdir().unwrap();
+        let repo = scratch.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "fixture"]);
+        git(&repo, &["remote", "add", "origin", "https://github.com/o/r.git"]);
+        let linked = scratch.path().join("linked");
+        git(&repo, &["worktree", "add", "-b", "feat/pr", linked.to_str().unwrap()]);
+        git(&linked, &["commit", "--allow-empty", "-m", "worktree change"]);
+        let sha = crate::git::head_commit(&linked).unwrap();
+        let brief = serde_json::json!({"number":12,"title":"PR","state":"OPEN","headRefName":"feat/pr","headRefOid":sha,"url":"https://github.com/o/r/pull/12"});
+        std::fs::write(scratch.path().join("brief.json"), brief.to_string()).unwrap();
+        std::fs::write(scratch.path().join("checks.json"), r#"[{"name":"test","state":"SUCCESS","bucket":"pass","link":"","workflow":"CI"}]"#).unwrap();
+        let binary = scratch.path().join("gh");
+        std::fs::write(&binary, r#"#!/bin/sh
+root=$(dirname "$0")
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "pr view") cat "$root/brief.json" ;;
+  "pr checks")
+    if [ -f "$root/offline" ]; then echo offline >&2; exit 1; fi
+    cat "$root/checks.json" ;;
+  *) exit 1 ;;
+esac
+"#).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        core.github_surface = crate::github_surface::GithubSurface::discover_on_path(scratch.path());
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','P',?1,'now')", params![repo.to_str().unwrap()]).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','W','main',?1,'idle','now')", params![repo.to_str().unwrap()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('s','w','codex','S','idle')", []).unwrap();
+        }
+        (scratch, Arc::new(core), repo)
+    }
+
+    #[test]
+    fn tool_completion_attaches_a_verified_linked_worktree_head() {
+        let (_scratch, core, repo) = fixture();
+        let linked_head = crate::git::head_commit(&repo.parent().unwrap().join("linked")).unwrap();
+        assert_ne!(crate::git::head_commit(&repo).unwrap(), linked_head);
+        assert!(checkout_matches_head(&repo, "feat/pr", &linked_head));
+        assert!(!checkout_matches_head(&repo, "feat/pr", "wrong-sha"));
+        assert!(!checkout_matches_head(&repo, "unrelated", &linked_head));
+        let view = attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).unwrap();
+        assert_eq!(view.number, 12);
+        assert!(!view.stale);
+        assert_eq!(view.checks.passed, 1);
+        assert_eq!(list(&core.db.lock().unwrap(), "s").unwrap().len(), 1);
+        assert!(attach(&core, "s", &AttachReference::Url(PullRequestUrl { host: "github.com".into(), owner: "other".into(), name: "r".into(), number: 12 }), ATTRIBUTION_TOOL_COMPLETION).is_err());
+    }
+
+    #[test]
+    fn tool_completion_rejects_an_unverified_sha_without_persisting_a_card() {
+        let (scratch, core, _) = fixture();
+        let path = scratch.path().join("brief.json");
+        let mut brief: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        brief["headRefOid"] = serde_json::json!("unrelated-sha");
+        std::fs::write(path, brief.to_string()).unwrap();
+        assert!(attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).is_err());
+        assert!(list(&core.db.lock().unwrap(), "s").unwrap().is_empty());
+    }
+
+    #[test]
+    fn checks_only_outage_keeps_the_good_snapshot_until_recovery() {
+        let (scratch, core, _) = fixture();
+        let original = attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).unwrap();
+        std::fs::write(scratch.path().join("offline"), "").unwrap();
+        let stale = session_pull_requests(&core, "s", true).unwrap().remove(0);
+        assert!(stale.stale);
+        assert_eq!(stale.check_details, original.check_details);
+        assert_eq!(stale.fetched_at, original.fetched_at);
+        assert!(stale.error.unwrap().contains("offline"));
+        std::fs::remove_file(scratch.path().join("offline")).unwrap();
+        assert!(!session_pull_requests(&core, "s", true).unwrap()[0].stale);
+    }
+
+    #[test]
+    fn first_attach_with_a_checks_outage_is_stale_and_durable() {
+        let (scratch, core, _) = fixture();
+        std::fs::write(scratch.path().join("offline"), "").unwrap();
+        let view = attach(&core, "s", &AttachReference::Number(12), ATTRIBUTION_TOOL_COMPLETION).unwrap();
+        assert!(view.stale);
+        assert!(view.fetched_at.is_none());
+        assert_eq!(list(&core.db.lock().unwrap(), "s").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn completed_provider_events_pair_creation_commands_with_output_only() {
+        let mut codex = NormalizedEvent::new("command.completed");
+        codex.status = Some("completed".into());
+        codex.data = serde_json::json!({"command":"/bin/zsh -lc 'gh pr create --fill'", "aggregatedOutput":"https://github.com/o/r/pull/12"});
+        assert_eq!(creation_candidate(&codex).unwrap().number, 12);
+        let mut opencode = codex.clone();
+        opencode.data = serde_json::json!({"state":{"input":{"command":"gh pr create --fill"},"output":"https://github.com/o/r/pull/12"}});
+        assert_eq!(creation_candidate(&opencode).unwrap().number, 12);
+        let mut claude = codex.clone();
+        claude.data = serde_json::json!({"command":"gh pr create --fill"});
+        claude.text = Some("https://github.com/o/r/pull/12".into());
+        assert_eq!(creation_candidate(&claude).unwrap().number, 12);
+        codex.status = Some("failed".into());
+        assert!(creation_candidate(&codex).is_none());
+        claude.kind = "assistant.message".into();
+        assert!(creation_candidate(&claude).is_none());
+    }
+
+    #[test]
+    fn shell_wrapped_creation_is_detected_without_matching_echo() {
+        assert!(detect_pr_create("/bin/zsh -lc 'gh pr create --fill'"));
+        assert!(detect_pr_create("/bin/bash -c \"cd repo && gh pr create --fill\""));
+        assert!(!detect_pr_create("/bin/zsh -lc 'echo gh pr create'"));
+        assert!(!detect_pr_create("echo \"gh pr create\""));
+    }
 
     #[test]
     fn the_migration_installs_the_link_table() {
