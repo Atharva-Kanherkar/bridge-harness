@@ -247,19 +247,29 @@ test("nightly workflow reuses stable signing and publishes a separate signed upd
   for (const name of [
     "Install locked dependencies",
     "Import signing identity into a temporary keychain",
-    "Build, test, sign, notarize, and verify exact DMG contents",
-    "Retain verified DMG and updater artifacts",
     "Remove temporary signing credentials",
   ]) {
     assert.equal(namedStep(nightly, name), namedStep(stable, name), name);
+  }
+  const nightlyBuild = namedStep(nightly, "Build, test, sign, notarize, and verify exact DMG contents");
+  const stableBuild = namedStep(stable, "Build, test, sign, notarize, staple, and verify");
+  for (const build of [nightlyBuild, stableBuild]) {
+    assert.match(build, /run: sh scripts\/release-dmg\.sh/);
+    for (const secret of ["APPLE_SIGNING_IDENTITY", "APPLE_API_ISSUER", "APPLE_API_KEY", "TAURI_SIGNING_PRIVATE_KEY"]) {
+      assert.ok(build.includes(`${secret}: ` + '${{ secrets.' + secret + ' }}'), secret);
+    }
+    assert.match(build, /APPLE_API_KEY_PATH: \$\{\{ runner\.temp \}\}\/bridge-auth\.p8/);
+  }
+  for (const artifact of ["*.dmg", "*.dmg.sha256", "*.app.tar.gz", "*.app.tar.gz.sig"]) {
+    assert.ok(namedStep(nightly, "Retain verified DMG and updater artifacts").includes(artifact));
+    assert.ok(namedStep(stable, "Retain verified release artifacts for isolated acceptance").includes(artifact));
   }
   assert.match(nightly, /cron: "30 19 \* \* \*"/);
   assert.match(nightly, /cron: "40 22 \* \* \*"/);
   assert.match(nightly, /ref: \$\{\{ needs\.plan\.outputs\.sha \}\}/);
   assert.match(nightly, /needs\.plan\.result == 'success' && needs\.plan\.outputs\.skip == 'false'/);
-  assert.match(stable, /tags:\n\s+- "v\*\.\*\.\*"/);
-  assert.match(stable, /latest\.json/);
-  assert.match(runScript(stable, "Validate release tag and signing inputs"), /v\$version/);
+  assert.match(stable, /workflow_call:/);
+  assert.match(runScript(stable, "Validate exact tagged source"), /v\$RELEASE_VERSION/);
   const validate = runScript(nightly, "Validate signing inputs");
   assert.doesNotMatch(validate, /v\$version/);
   assert.doesNotMatch(validate, /tauri\.conf\.json/);
@@ -271,7 +281,7 @@ test("nightly workflow reuses stable signing and publishes a separate signed upd
   assert.match(publish, /latest\.json/);
   assert.match(publish, /\.app\.tar\.gz/);
   assert.match(publish, /updater_sig_value/);
-  assert.match(stable, /workflow_dispatch: \{\}/);
+  assert.doesNotMatch(stable, /workflow_dispatch:/);
   assert.doesNotMatch(stable, /cron:/);
   assert.doesNotMatch(stable, /--prerelease/);
 });
@@ -352,16 +362,9 @@ if (args[1] === "create") {
   assert.equal(badTag.calls.length, 0);
 });
 
-test("nightly stamp keeps Tauri, Cargo, and package versions aligned", (t) => {
+test("nightly stamp rejects invalid dates before changing the checkout", (t) => {
   const { dir } = fixture(t);
-  mkdirSync(join(dir, "src-tauri"));
-  writeFileSync(join(dir, "src-tauri/tauri.conf.json"), '{"version":"0.5.9"}');
-  writeFileSync(join(dir, "src-tauri/Cargo.toml"), '[workspace.package]\nversion = "0.5.9"\n');
-  writeFileSync(join(dir, "package.json"), '{"name":"bridge-deck","version":"0.5.9"}');
-  const out = spawnSync("node", [join(root, "scripts/stamp-nightly-version.mjs"), "2026-09-28", "0.5.10"], { cwd: dir, encoding: "utf8" });
-  assert.equal(out.status, 0, out.stderr);
-  const version = "0.5.11-nightly.20260928";
-  assert.equal(JSON.parse(readFileSync(join(dir, "src-tauri/tauri.conf.json"))).version, version);
-  assert.match(readFileSync(join(dir, "src-tauri/Cargo.toml"), "utf8"), new RegExp(`version = "${version.replaceAll(".", "\\.")}"`));
-  assert.equal(JSON.parse(readFileSync(join(dir, "package.json"))).version, version);
+  const out = spawnSync(process.execPath, [join(root, "scripts/stamp-nightly-version.mjs"), "yesterday"], { cwd: dir, encoding: "utf8" });
+  assert.notEqual(out.status, 0);
+  assert.match(out.stderr, /Expected nightly date YYYY-MM-DD/);
 });

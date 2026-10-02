@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Stamp the build before release-dmg.sh so Cargo and Tauri embed the same version.
 import { readFileSync, writeFileSync } from "node:fs";
+import { syncGeneratedLockVersions } from "./release-version.mjs";
 
 const date = process.argv[2];
 if (!/^20\d{2}-[01]\d-[0-3]\d$/.test(date ?? "")) throw new Error("Expected nightly date YYYY-MM-DD");
@@ -24,4 +25,5 @@ const packagePath = "package.json";
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
 packageJson.version = version;
 writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+syncGeneratedLockVersions(process.cwd(), { allowNightly: true });
 console.log(version);
