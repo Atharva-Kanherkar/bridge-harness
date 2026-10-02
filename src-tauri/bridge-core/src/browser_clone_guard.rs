@@ -174,7 +174,12 @@ fn carries_secret(haystack: &str, secret: &str) -> bool {
 pub fn request_verdict(state: &GuardState, url: &str, blob: &str) -> Verdict {
     let host = host_of(url);
     for (owner, secret) in &state.secrets {
-        if carries_secret(blob, secret) && !GuardState::host_covers(&host, owner) {
+        // Sites can legitimately store the same cookie value under multiple
+        // approved hosts. Any registered owner may receive that exact value;
+        // a different value in the same request still needs its own owner.
+        if carries_secret(blob, secret) && !state.secrets.iter().any(|(registered_owner, value)| {
+            value == secret && GuardState::host_covers(&host, registered_owner)
+        }) {
             return Verdict::Block(format!("carries a {owner} session value to {host}"));
         }
     }
@@ -518,6 +523,26 @@ mod tests {
             "cookie: sid=S3cret",
         );
         assert_eq!(v, Verdict::Allow);
+    }
+
+    #[test]
+    fn a_shared_cookie_value_can_reach_each_registered_owner_only() {
+        let mut state = GuardState::new();
+        for host in ["app.example.test", "auth.example.test", "cdn.example.test"] {
+            state.allow_host(host);
+        }
+        let secret = "synthetic-shared-session";
+        state.add_secret("app.example.test", secret);
+        state.add_secret("auth.example.test", secret);
+        for host in ["app.example.test", "auth.example.test", "login.auth.example.test"] {
+            assert_eq!(request_verdict(&state, &format!("https://{host}/"), secret), Verdict::Allow);
+        }
+        assert!(matches!(request_verdict(&state, "https://cdn.example.test/", secret), Verdict::Block(_)));
+        state.add_secret("auth.example.test", "different-private-session");
+        assert!(matches!(request_verdict(&state, "https://app.example.test/", "synthetic-shared-session different-private-session"), Verdict::Block(_)));
+        let mut reply = json!({"text": secret});
+        state.scrub_response(&mut reply);
+        assert_eq!(reply["text"], "[redacted]");
     }
 
     #[test]
