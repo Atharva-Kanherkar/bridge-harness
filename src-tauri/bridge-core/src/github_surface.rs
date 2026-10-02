@@ -1624,7 +1624,7 @@ impl GithubSurface {
     }
 
     #[cfg(test)]
-    fn discover_on_path(path: &Path) -> Self {
+    pub(crate) fn discover_on_path(path: &Path) -> Self {
         let binary = which::which_in("gh", Some(std::ffi::OsString::from(path)), ".").ok();
         Self::from_binary(binary, DEFAULT_CACHE_TTL)
     }
