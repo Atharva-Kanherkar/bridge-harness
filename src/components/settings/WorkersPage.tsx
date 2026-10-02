@@ -36,14 +36,14 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
   const change = (patch: Partial<WorkerSettings>) => { setSaved(false); setSettings(current => current ? { ...current, ...patch } : current); };
   return <SettingsPage title="Background tasks" description="Control how many tasks Bridge can run at once in this workspace, and what happens when an agent stops responding.">
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    <SettingsGroup><SettingsRow label="Workspace" control={<Select label="Worker settings workspace" disabled={busy} value={workspace} onChange={setWorkspace} options={workspaces.map(item => ({ value: item.id, label: item.title }))} />} /></SettingsGroup>
-    {!workspace && <p className="text-sm text-muted-foreground">Connect a workspace to configure delegated workers. Direct chats do not delegate.</p>}
-    {workspace && !settings && !error && <p role="status" className="text-sm text-muted-foreground">Loading worker settings...</p>}
+    <SettingsGroup><SettingsRow label="Workspace" control={<Select label="Background tasks workspace" disabled={busy} value={workspace} onChange={setWorkspace} options={workspaces.map(item => ({ value: item.id, label: item.title }))} />} /></SettingsGroup>
+    {!workspace && <p className="text-sm text-muted-foreground">Connect a workspace to configure background tasks. These controls do not apply to direct chats with a coding agent.</p>}
+    {workspace && !settings && !error && <p role="status" className="text-sm text-muted-foreground">Loading task settings...</p>}
     {settings && <form onSubmit={event => { event.preventDefault(); void save(); }} className="space-y-5">
-      <SettingsGroup label="Routing" note="Model preferences and choices for a specific task override this default. Advanced settings can exclude an agent from background tasks while keeping it available for chats.">
+      <SettingsGroup label="Agent choices" note="Model preferences and choices for a specific task override this default. Advanced settings can exclude an agent from background tasks while keeping it available for chats.">
         <SettingsRow label="Preferred coding agent" control={<Select label="Preferred coding agent" disabled={busy} value={settings.defaultHarness ?? ""} onChange={value => change({ defaultHarness: value || null })} options={[{ value: "", label: "Automatic" }, ...adapters.filter(item => ["codex", "claude", "opencode"].includes(item.id)).map(item => ({ value: item.id, label: `${item.label}${item.available ? "" : " (unavailable)"}` }))]} />} />
         <SettingsRow label="Try another agent at a usage limit" description="When an agent reaches a provider limit, try an available alternative once. Retries share this one-attempt limit." control={<Switch label="Try another agent at a usage limit" checked={settings.providerFailover} disabled={busy} onChange={value => change({ providerFailover: value })} />} />
-        <SettingsRow label="Automatic retry" description="Retry a transient failure once on a live process. Never retry a stall or unreadable result." control={<Switch label="Automatic retry" checked={settings.automaticRetry} disabled={busy} onChange={value => change({ automaticRetry: value })} />} />
+        <SettingsRow label="Automatic retry" description="Retry a temporary error once while the agent is still running. Do not retry when it stops responding or returns an unreadable result." control={<Switch label="Automatic retry" checked={settings.automaticRetry} disabled={busy} onChange={value => change({ automaticRetry: value })} />} />
       </SettingsGroup>
       <SettingsGroup label="Task limits" note="Changes apply to new tasks. Lowering the limit does not stop tasks already running.">
         {([

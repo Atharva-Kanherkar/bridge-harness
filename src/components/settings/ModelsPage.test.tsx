@@ -103,12 +103,12 @@ describe("ModelsPage", () => {
     await view.unmount();
   });
 
-  it("reveals the six fields and Allow learning only when a worker row is expanded", async () => {
+  it("reveals the six fields and Use past task results only when a worker row is expanded", async () => {
     const view = await mount();
-    expect(view.text()).not.toContain("Allow learning");
+    expect(view.text()).not.toContain("Use past task results");
     await view.click(view.button("Implementer settings"));
-    for (const field of ["How Bridge chooses a model", "Provider and model", "Thinking level",
-                         "Fallback profile", "Budget preference", "Latency preference", "Allow learning"]) {
+    for (const field of ["How Bridge chooses a model", "Coding agent and model", "Thinking level",
+                         "Backup choice", "Cost preference", "Response speed", "Use past task results"]) {
       expect(view.text(), field).toContain(field);
     }
     await view.unmount();
@@ -127,7 +127,7 @@ describe("ModelsPage", () => {
   it("persists on change, sending the whole profile set with one row altered", async () => {
     const view = await mount();
     await view.click(view.button("Implementer settings"));
-    await view.click(view.button("Implementer allow learning"));
+    await view.click(view.button("Implementer use past task results"));
     expect(view.onSave).toHaveBeenCalledOnce();
     const sent = view.onSave.mock.calls[0][0];
     expect(sent).toHaveLength(3);
@@ -188,8 +188,8 @@ describe("ModelsPage", () => {
     const view = await mount({
       adapters: [adapter({ modelCatalog: { stale: true, source: "last_known_good", lastError: null } } as Partial<AdapterDescriptor>)],
     });
-    expect(view.text()).toContain("Stale");
-    expect(view.text()).toContain("Using last-known-good models");
+    expect(view.text()).toContain("Needs refresh");
+    expect(view.text()).toContain("Using the last successful model list");
     await view.click(view.button("Retry"));
     expect(view.onRefreshCatalogs).toHaveBeenCalledOnce();
     await view.unmount();
