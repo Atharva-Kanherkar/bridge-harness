@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
-import { ALL_SECTIONS, SECTION_LABELS } from "./settings/sections";
+import { ALL_SECTIONS, PRIMARY_SECTIONS, SECTION_LABELS } from "./settings/sections";
 
 async function flush() {
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -19,7 +19,7 @@ function type(input: HTMLInputElement, value: string) {
 
 function button(container: HTMLElement, label: string): HTMLButtonElement {
   const match = [...container.querySelectorAll("button")].find(candidate =>
-    candidate.getAttribute("aria-label") === label || candidate.textContent?.includes(label));
+    candidate.getAttribute("aria-label") === label || (candidate.getAttribute("aria-label") !== "Settings section" && candidate.textContent?.includes(label)));
   if (!match) throw new Error(`Button ${label} was not rendered`);
   return match;
 }
@@ -32,10 +32,10 @@ const props = {
 };
 
 describe("SettingsScreen", () => {
-  it("names the four rail groups and all nine pages before data loads", () => {
+  it("shows exactly four primary settings destinations", () => {
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
-    for (const group of ["General", "Agents", "Runtimes", "Data"]) expect(html).toContain(group);
-    for (const section of ALL_SECTIONS) expect(html).toContain(SECTION_LABELS[section]);
+    for (const section of PRIMARY_SECTIONS) expect(html).toContain(SECTION_LABELS[section].replace("&", "&amp;"));
+    for (const label of ["Presets", "Harnesses", "Clones", "Runtimes"]) expect(html).not.toContain(`>${label}<`);
   });
 
   // The header bar and the shield note are both gone: one described a Settings
@@ -50,7 +50,7 @@ describe("SettingsScreen", () => {
   it("puts Reset all in the rail footer, behind a confirmation that names what it deletes", async () => {
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
     expect(html).toContain("Reset all settings");
-    expect(html).not.toContain("removes the agent presets you created");
+    expect(html).not.toContain("removes your saved setups");
   });
 
   describe("mounted", () => {
@@ -86,9 +86,8 @@ describe("SettingsScreen", () => {
     };
 
     it("stamps the chosen skin on the document from the Appearance tiles", async () => {
-      await render();
-      await open("Appearance");
-      expect(container.textContent).toContain("Shell");
+      await render({ initialSection: "appearance" });
+      expect(container.textContent).toContain("Window background");
 
       await act(async () => { button(container, "Vibrancy").click(); await flush(); });
       expect(document.documentElement.dataset.skin).toBe("vibrancy");
@@ -110,8 +109,7 @@ describe("SettingsScreen", () => {
         },
       });
       try {
-        await render();
-        await open("Appearance");
+        await render({ initialSection: "appearance" });
         expect(container.textContent).toContain("Thinking control");
         const group = container.querySelector('[role="radiogroup"][aria-label="Thinking control"]')!;
         expect(group.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toContain("Slider");
@@ -144,7 +142,7 @@ describe("SettingsScreen", () => {
         await flush();
       });
       const results = container.querySelector('[aria-label="Search results"]')!;
-      expect(results.textContent).toContain("Composer");
+      expect(results.textContent).toContain("Typing & search");
       expect(results.textContent).toContain("Suggestion model");
       // A search hit navigates to the page that owns the row.
       await act(async () => {
@@ -152,6 +150,13 @@ describe("SettingsScreen", () => {
         await flush();
       });
       expect(container.textContent).toContain("Inline suggestions");
+    });
+
+    it("follows a changed contextual link while settings is already open", async () => {
+      await render({ initialSection: "general" });
+      await render({ initialSection: "permissions" });
+      expect(container.textContent).toContain("How much Bridge asks before an agent acts.");
+      expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("Permissions");
     });
 
     it("says so, rather than showing everything, when nothing matches the search", async () => {
@@ -173,9 +178,9 @@ describe("SettingsScreen", () => {
 
       await open("Configure Claude Code");
       const crumbs = container.querySelector('[aria-label="Breadcrumb"]')!;
-      expect(crumbs.textContent).toContain("Harnesses");
-      expect(container.textContent).toContain("System prompt");
-      expect(container.textContent).toContain("Sessions");
+      expect(crumbs.textContent).toContain("Coding agents");
+      expect(container.textContent).toContain("Custom instructions");
+      expect(container.textContent).toContain("New chats");
 
       await act(async () => {
         crumbs.querySelector<HTMLButtonElement>("button")!.click();
@@ -186,15 +191,17 @@ describe("SettingsScreen", () => {
 
     it("opens a preset detail page from the list, with no third sidebar", async () => {
       await render({ initialSection: "agents" });
+      expect(container.textContent).not.toContain("Bridge orchestrator");
+      await open("Advanced: edit built-in roles");
       expect(container.textContent).toContain("Bridge orchestrator");
       // The list is rows in the one column; the old build drew its own sidebar
       // here and started content 440px in.
-      expect(container.querySelectorAll("nav")).toHaveLength(1);
+      expect(container.querySelector('[aria-label="Settings"]')).toBeTruthy();
 
       await open("Edit Bridge orchestrator");
-      expect(container.textContent).toContain("Identity");
-      expect(container.textContent).toContain("Runtime");
-      expect(container.textContent).toContain("System prompt");
+      expect(container.textContent).toContain("Setup");
+      expect(container.textContent).toContain("Coding agent & model");
+      expect(container.textContent).toContain("Custom instructions");
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeTruthy();
     });
 
@@ -204,26 +211,28 @@ describe("SettingsScreen", () => {
     // it. The draft still survives, which is what the contract asks for.
     it("returns to the list when the rail item is clicked again, keeping the draft", async () => {
       await render({ initialSection: "agents" });
+      await open("Advanced: edit built-in roles");
       await open("Edit Bridge orchestrator");
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeTruthy();
 
-      const name = container.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!;
+      const name = container.querySelector<HTMLInputElement>('input[aria-label="Setup name"]')!;
       type(name, "Renamed orchestrator");
       await act(async () => flush());
 
-      await open("Harnesses");
-      await open("Presets");
+      await open("Coding agents");
+      await open("Saved setups");
+      await open("Advanced: edit built-in roles");
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeNull();
 
       await open("Edit Bridge orchestrator");
-      expect(container.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!.value)
+      expect(container.querySelector<HTMLInputElement>('input[aria-label="Setup name"]')!.value)
         .toBe("Renamed orchestrator");
     });
 
     it("shows Models with a version pill and no Save button", async () => {
       await render({ initialSection: "models" });
-      expect(container.textContent).toContain("Which model runs each Bridge role");
-      expect(container.textContent).toContain("Catalog");
+      expect(container.textContent).toContain("Choose models for your chats");
+      expect(container.textContent).toContain("Available models");
       expect([...container.querySelectorAll("button")].map(node => node.textContent))
         .not.toContain("Save profiles");
     });
@@ -262,10 +271,10 @@ describe("SettingsScreen", () => {
     it("names what Reset all deletes before it deletes it", async () => {
       await render();
       await open("Reset all settings");
-      expect(container.textContent).toContain("removes the agent presets you created");
+      expect(container.textContent).toContain("removes your saved setups");
       expect(container.textContent).toContain("Keep them");
       await open("Keep them");
-      expect(container.textContent).not.toContain("removes the agent presets you created");
+      expect(container.textContent).not.toContain("removes your saved setups");
     });
   });
 });

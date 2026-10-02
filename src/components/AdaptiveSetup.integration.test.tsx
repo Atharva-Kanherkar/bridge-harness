@@ -3,8 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import type { AdapterDescriptor, ModelSetupState } from "../types";
-import { ModelSetupWizard } from "./ModelSetupWizard";
+import type { AdapterDescriptor } from "../types";
 import { RouterSettingsDialog } from "./RouterSettingsDialog";
 
 const adapters: AdapterDescriptor[] = [{
@@ -45,77 +44,6 @@ describe("adaptive setup journeys", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
-  });
-
-  it("detects agents before completing first-run setup with recommended defaults", async () => {
-    let completed: ModelSetupState | undefined;
-    await act(async () => {
-      root.render(<ModelSetupWizard adapters={adapters} onComplete={value => { completed = value; }} onError={error => { throw new Error(error); }} />);
-      await flush();
-    });
-    await act(async () => {
-      button("Continue").click();
-      await flush();
-    });
-    await act(async () => {
-      button("Use recommended defaults").click();
-      await flush();
-    });
-    expect(completed).toMatchObject({ complete: true, activeVersion: 1 });
-    expect(completed?.profiles).toHaveLength(9);
-  });
-
-  it("reveals every advanced profile without unavailable models", async () => {
-    await act(async () => {
-      root.render(<ModelSetupWizard adapters={adapters} onComplete={() => undefined} onError={error => { throw new Error(error); }} />);
-      await flush();
-    });
-    await act(async () => { button("Continue").click(); await flush(); });
-    await act(async () => button("Customize role profiles").click());
-    expect(document.body.textContent).toContain("Advanced role profiles");
-    expect(document.body.textContent).toContain("Model evaluator");
-    expect(document.body.textContent).not.toContain("Unsupported");
-  });
-
-  it("offers every supported agent and lets a person continue without installing one", async () => {
-    const skipped = vi.fn();
-    const recommendations = vi.spyOn(bridgeApi, "recommendedModelProfiles");
-    await act(async () => {
-      root.render(<ModelSetupWizard adapters={[]} onComplete={() => undefined} onSkip={skipped} onError={error => { throw new Error(error); }} />);
-      await flush();
-    });
-    for (const label of ["Claude Code", "Codex", "Cursor", "OpenCode"])
-      expect(document.body.textContent).toContain(label);
-    expect(document.body.textContent).toContain("Bring your agents with you");
-    await act(async () => button("Continue without an agent").click());
-    expect(skipped).toHaveBeenCalledTimes(1);
-    expect(recommendations).not.toHaveBeenCalled();
-  });
-
-  // Regression: "Skip for now" passed React's click event straight through as
-  // the optional model-setup argument, which was then cached as setup state and
-  // crashed the next new-chat flow on `setup.profiles.map`.
-  it("skips without handing the click event back as model setup", async () => {
-    const skipped = vi.fn();
-    await act(async () => {
-      root.render(<ModelSetupWizard adapters={[]} onComplete={() => undefined} onSkip={skipped} onError={error => { throw new Error(error); }} />);
-      await flush();
-    });
-    await act(async () => button("Skip for now").click());
-    expect(skipped).toHaveBeenCalledTimes(1);
-    expect(skipped.mock.calls[0]).toHaveLength(0);
-  });
-
-  it("marks an existing signed-in Codex as detected without asking for sign-in", async () => {
-    const codex = adapters[0];
-    await act(async () => {
-      root.render(<ModelSetupWizard adapters={[{ ...codex, id: "codex", label: "Codex" }]} onComplete={() => undefined} onError={error => { throw new Error(error); }} />);
-      await flush();
-    });
-    const card = document.body.querySelector('[data-testid="onboarding-agent-codex"]');
-    expect(card?.textContent).toContain("Detected");
-    expect(card?.textContent).toContain("Signed in");
-    expect([...card!.querySelectorAll("button")].some(candidate => candidate.textContent?.includes("Sign in"))).toBe(false);
   });
 
   it("runs manual learning and renders its explicit no-op report", async () => {

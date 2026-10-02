@@ -673,6 +673,12 @@ pub trait HarnessAdapter: Send + Sync + Any {
     /// notify when it lands — because the recorded answer can be changed by
     /// things Bridge does not observe, a sign-in above all.
     fn refresh_availability(&self) {}
+
+    /// Explicit first-run check for agents whose auth/catalog require session/new.
+    /// Discovery remains passive; this check must not send a prompt.
+    fn prepare_setup(&self) -> Result<(), BridgeError> {
+        Ok(())
+    }
 }
 
 pub struct AdapterRegistry {
@@ -851,6 +857,15 @@ impl AdapterRegistry {
         for adapter in self.adapters.values() {
             adapter.refresh_availability();
         }
+    }
+
+    pub fn prepare_agent_setup(&self, id: &str) -> Result<AdapterDescriptor, BridgeError> {
+        let adapter = self
+            .adapters
+            .get(id)
+            .ok_or_else(|| BridgeError::Invalid(format!("Unknown coding agent: {id}")))?;
+        adapter.prepare_setup()?;
+        Ok(adapter.descriptor())
     }
 
     /// One adapter's descriptor. Building a descriptor can run the harness's

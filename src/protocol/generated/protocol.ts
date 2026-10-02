@@ -9,6 +9,7 @@ export const CANCEL_METHOD = "$/cancel" as const;
 export type BridgeMethod =
   | "health/health"
   | "health/refresh_model_catalogs"
+  | "health/prepare_agent_setup"
   | "health/install_codex_update"
   | "state/get_state"
   | "projects/add_project"
@@ -241,6 +242,7 @@ export type BridgeMethod =
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
   { method: "health/refresh_model_catalogs", domain: "health", command: "refresh_model_catalogs" },
+  { method: "health/prepare_agent_setup", domain: "health", command: "prepare_agent_setup" },
   { method: "health/install_codex_update", domain: "health", command: "install_codex_update" },
   { method: "state/get_state", domain: "state", command: "get_state" },
   { method: "projects/add_project", domain: "projects", command: "add_project" },
@@ -545,6 +547,7 @@ export const ERROR_CODES = {
 export interface BridgeMethodParams {
   "health/health": undefined;
   "health/refresh_model_catalogs": undefined;
+  "health/prepare_agent_setup": PrepareAgentSetupParams;
   "health/install_codex_update": undefined;
   "state/get_state": undefined;
   "projects/add_project": AddProjectParams;
@@ -779,6 +782,7 @@ export interface BridgeMethodParams {
 export interface BridgeMethodResults {
   "health/health": HealthResult;
   "health/refresh_model_catalogs": HealthResult;
+  "health/prepare_agent_setup": AdapterDescriptor;
   "health/install_codex_update": UnitResult;
   "state/get_state": BridgeState;
   "projects/add_project": BridgeState;
@@ -2840,6 +2844,10 @@ export interface HealthResult {
   telemetry_database: string;
   version: string;
   warnings?: HealthWarning[];
+}
+
+export interface PrepareAgentSetupParams {
+  agentId: string;
 }
 
 export type UnitResult = null;

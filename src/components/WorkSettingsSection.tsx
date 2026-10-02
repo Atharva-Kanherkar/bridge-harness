@@ -126,16 +126,16 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
         />}
       />
 
-      {supported.length === 0 && <SettingsRow label="No installed harness has passed the briefing conformance gate yet." />}
+      {supported.length === 0 && <SettingsRow label="None of your installed agents supports daily briefings yet." />}
 
       {briefingOn && draft.briefing && !chosen && <SettingsRow
-        label={`${draft.briefing.harness} is no longer certified`}
+        label={`${draft.briefing.harness} no longer supports briefings`}
         description="Runs are skipped until you pick another harness or turn the briefing off. Your other settings still save."
       />}
 
       {briefingOn && draft.briefing && <>
         <SettingsRow
-          label="Harness"
+          label="Coding agent"
           saved={isFlashed("harness")}
           control={<Select
             label="Briefing harness"
@@ -178,7 +178,7 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
           />}
         />
         <SettingsRow
-          label="Effort"
+          label="Thinking level"
           saved={isFlashed("effort")}
           control={<Select
             label="Briefing effort"
@@ -257,11 +257,11 @@ export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (messag
       note={`${draft.cooldownMinutes} minute cooldown`}
     >
       <SettingsRow
-        label="Cadence"
+        label="Refresh frequency"
         description="Racing triggers start at most one run. A manual refresh always works."
         saved={isFlashed("cadence")}
         control={<Select
-          label="Cadence"
+          label="Refresh frequency"
           value={draft.refreshIntervalMinutes === null ? "" : String(draft.refreshIntervalMinutes)}
           disabled={busy}
           options={CADENCES}

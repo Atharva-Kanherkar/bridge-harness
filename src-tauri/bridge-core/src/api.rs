@@ -91,6 +91,13 @@ pub fn refresh_model_catalogs(core: &Arc<BridgeCore>) -> Result<Health, BridgeEr
     health(core)
 }
 
+pub fn prepare_agent_setup(
+    core: &Arc<BridgeCore>,
+    agent_id: &str,
+) -> Result<AdapterDescriptor, BridgeError> {
+    core.adapter_registry.prepare_agent_setup(agent_id)
+}
+
 /// The only command the Codex update confirmation may execute. There are no
 /// renderer-supplied URLs or shell arguments at this boundary.
 pub fn install_codex_update() -> Result<(), BridgeError> {

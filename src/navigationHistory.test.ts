@@ -36,14 +36,11 @@ describe("placesEqual", () => {
     expect(placesEqual(workspace("a"), { view: "work", sessionId: "a", paradigm: "single" })).toBe(false);
   });
 
-  it("keeps Marketplace as the single catalog and automations destination", () => {
-    // Catalog and Automations are sections of one screen, so history holds one
-    // entry for both. Re-adding an "automations" view breaks this exhaustive
-    // record at compile time, which is the point of writing it out.
-    const views: Record<AppView, true> = { workspace: true, "agent-fleet": true, "mission-control": true, work: true, projects: true, memory: true, marketplace: true, usage: true, gitplace: true, settings: true };
-    expect(Object.keys(views).sort()).toEqual(["agent-fleet", "gitplace", "marketplace", "memory", "mission-control", "projects", "settings", "usage", "work", "workspace"]);
-
+  it("keeps scheduled tasks and contextual tools separate from the marketplace", () => {
+    const views: Record<AppView, true> = { workspace: true, "agent-fleet": true, "mission-control": true, work: true, projects: true, memory: true, marketplace: true, usage: true, gitplace: true, settings: true, automations: true, archives: true, "saved-setups": true, "briefing-settings": true };
+    expect(Object.keys(views)).toContain("automations");
     const marketplace: AppPlace = { view: "marketplace", sessionId: null, paradigm: "single" };
-    expect(recordPlace([marketplace], 0, marketplace)).toEqual({ stack: [marketplace], index: 0 });
+    const scheduled: AppPlace = { ...marketplace, view: "automations" };
+    expect(recordPlace([marketplace], 0, scheduled).stack).toEqual([marketplace, scheduled]);
   });
 });

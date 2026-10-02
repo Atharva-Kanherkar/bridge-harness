@@ -104,4 +104,31 @@ describe("ProviderLoginPane lifecycle", () => {
     await act(async () => { emitExit?.({ sessionId: "provider-login", terminalId: "codex" }); });
     expect(container.querySelector('[aria-label="Codex sign-in output"]')).toBeNull();
   });
+  it("exposes interactive OpenCode prompts without promising a browser page", async () => {
+    await act(async () => root.render(<ProviderLoginPane provider="opencode" label="OpenCode" onClose={() => undefined} />));
+    expect(container.textContent).not.toContain("Finish in your browser");
+    expect(container.querySelector("details")?.open).toBe(true);
+    const write = vi.spyOn(bridgeApi, "writeTerminal").mockResolvedValue();
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Next option")!.click());
+    expect(write).toHaveBeenCalledWith("provider-login", "opencode", "\u001b[B");
+  });
+  it("cancels a live login when its owning surface unmounts", async () => {
+    const cancel = vi.spyOn(bridgeApi, "cancelProviderLogin").mockResolvedValue();
+    await act(async () => root.render(<LoginHarness />));
+    await act(async () => root.render(null));
+    expect(cancel).toHaveBeenCalledWith("codex");
+  });
+  it("reports a failed interactive response without an unhandled rejection", async () => {
+    await act(async () => root.render(<ProviderLoginPane provider="opencode" label="OpenCode" onClose={() => undefined} />));
+    vi.spyOn(bridgeApi, "writeTerminal").mockRejectedValue(new Error("closed"));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Choose option")!.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not send your response");
+  });
+  it("reports subscription failure without launching a sign-in it cannot observe", async () => {
+    vi.spyOn(bridgeApi, "onTerminal").mockRejectedValue(new Error("unavailable"));
+    const start = vi.spyOn(bridgeApi, "startProviderLogin");
+    await act(async () => root.render(<LoginHarness />));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not listen");
+    expect(start).not.toHaveBeenCalled();
+  });
 });

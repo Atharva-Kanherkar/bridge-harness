@@ -4,6 +4,7 @@
 // is a security control, so showing it on because a request was sent would be a
 // lie the moment the request failed.
 
+import type { ReactNode } from "react";
 import { Lock as LockSimple } from "lucide-react";
 import type { BridgeEvent, PermissionPolicy } from "../../types";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
@@ -16,18 +17,19 @@ import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 /// here: Full access authorizes it like any other approval.
 const SURVIVING_GATES = [
   {
-    title: "Browser outward effects",
+    title: "Sending or publishing from a browser",
     copy: "Send, submit, purchase, publish, and credential steps in the browser still ask, every time.",
   },
   {
-    title: "Agent prompt changes",
+    title: "Changes to shared agent instructions",
     copy: "Every proposed change to a shared role prompt needs your review of the exact before and after text.",
   },
 ];
 
 const WORKER_ROLES = ["research", "implementation", "verification", "planning", "documentation"] as const;
 
-export function PermissionsSection({ policy, autoApprovals, busy, saved, onChange }: {
+export function PermissionsSection({ policy, autoApprovals, busy, saved, onChange, extra }: {
+  extra?: ReactNode;
   policy: PermissionPolicy;
   autoApprovals: BridgeEvent[];
   busy: boolean;
@@ -37,13 +39,13 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
   const on = policy.autoApproveProviderPermissions === true;
   const proposalRoles = policy.workerPromptProposalRoles ?? [];
   return <SettingsPage title="Permissions" description="How much Bridge asks before an agent acts.">
-    <SettingsGroup label="Provider prompts">
+    <SettingsGroup label="Agent actions">
       <SettingsRow
-        label="Auto-approve provider permissions"
-        description="Permission requests from Claude, Codex, OpenCode, and Cursor are accepted automatically when the provider offers an allow option, and workers start without a write-scope card. Questions and macOS prompts still wait for you."
+        label="Let agents act without asking"
+        description="Automatically accept supported requests from coding agents and let background tasks write to their assigned files. Agents can run commands and change files without asking. Questions and macOS permissions still need your response."
         saved={saved}
         control={<Switch
-          label="Auto-approve provider permissions"
+          label="Let agents act without asking"
           checked={on}
           disabled={busy}
           onChange={next => onChange({ ...policy, autoApproveProviderPermissions: next })}
@@ -51,9 +53,9 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
       />
     </SettingsGroup>
 
-    <SettingsGroup label="Worker prompt proposals" note="Off by default; each change still asks">
-      <SettingsRow label="Allow a worker to propose guidance for its own role"
-        description="These switches allow proposals only. You review every change before it is saved to the shared role default. Approved guidance applies at the next start or relaunch." />
+    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced: suggested instruction changes</summary><div className="mt-3"><SettingsGroup label="Suggested instruction changes" note="Off by default; each change still asks">
+      <SettingsRow label="Let background agents suggest improvements to their instructions"
+        description="Each agent may suggest changes to its instructions. You review the exact change before it is saved. It applies the next time that role starts." />
       {WORKER_ROLES.map(role => <SettingsRow
         key={role}
         label={<span className="capitalize">{role}</span>}
@@ -66,7 +68,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
             : proposalRoles.filter(item => item !== role) })}
         />}
       />)}
-    </SettingsGroup>
+    </SettingsGroup></div></details>
 
     <SettingsGroup label="Always asks" note="These keep asking either way">
       {SURVIVING_GATES.map(gate => <SettingsRow
@@ -88,5 +90,6 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
             </time>}
           />)}
     </SettingsGroup>
+    {extra}
   </SettingsPage>;
 }

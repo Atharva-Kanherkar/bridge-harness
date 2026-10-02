@@ -83,6 +83,9 @@ answered=0
 pending_new=""
 
 while IFS= read -r line; do
+    if [ -r "${0}.fixture-config" ]; then
+        printf '%s\n' "$line" >> "${0}.requests"
+    fi
     id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)","method".*/\1/p')
     case "$line" in
         *'"method":"initialize"'*)

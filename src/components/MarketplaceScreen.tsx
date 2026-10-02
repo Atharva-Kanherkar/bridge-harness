@@ -7,8 +7,6 @@ import type { MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthStat
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { AgentMarketplace } from "./AgentMarketplace";
-import { AutomationsPanel } from "./AutomationsPanel";
 import { SkillMarketplace } from "./SkillMarketplace";
 
 type InstallTarget = MarketplaceProvider | "both";
@@ -203,7 +201,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
 }
 
 function PluginListSkeleton() {
-  return <div data-testid="plugin-catalog-skeleton" aria-label="Loading plugins" className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+  return <div data-testid="plugin-catalog-skeleton" aria-label="Loading apps" className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
     {Array.from({ length: 6 }, (_, index) => <div key={index} className="flex min-h-18 items-center gap-3.5 px-4 py-3.5">
       <span className="h-9 w-9 shrink-0 animate-pulse rounded-lg bg-muted" />
       <span className="min-w-0 flex-1">
@@ -356,8 +354,8 @@ function PluginMarketplace() {
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh plugins" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
-      <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search plugins" placeholder="Search plugins" className="h-8 rounded-lg pl-10 text-[13px]" /></div>
+      <ScreenHeading title="Apps" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => { void refresh(); void refreshAuth(); }} disabled={loading} aria-label="Refresh apps" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
+      <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search apps" placeholder="Search apps" className="h-8 rounded-lg pl-10 text-[13px]" /></div>
 
       {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
       {resolvingNames && <p role="status" className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground"><LoaderCircle className="animate-spin" size={12} aria-hidden="true" />Resolving connector names…</p>}
@@ -367,7 +365,7 @@ function PluginMarketplace() {
 
       {!!resolved && <>
         <div className="mt-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-          <div className="u-segmented" role="group" aria-label="Plugin views">{PLUGIN_VIEWS.map(value => <button key={value} type="button" data-active={view === value} aria-pressed={view === value} onClick={() => setView(value)} className="u-segmented-item">{pluginViewLabel(value)}</button>)}</div>
+          <div className="u-segmented" role="group" aria-label="App views">{PLUGIN_VIEWS.map(value => <button key={value} type="button" data-active={view === value} aria-pressed={view === value} onClick={() => setView(value)} className="u-segmented-item">{pluginViewLabel(value)}</button>)}</div>
           <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
             <div className="u-segmented">{(["public", "personal"] as CatalogScope[]).map(value => <button key={value} type="button" data-active={scope === value} aria-pressed={scope === value} onClick={() => setScope(value)} className="u-segmented-item capitalize">{value}</button>)}</div>
             <SlidersHorizontal size={12} aria-hidden="true" />
@@ -382,28 +380,28 @@ function PluginMarketplace() {
           </div>}
           <section className="mt-5" aria-labelledby="catalog-heading">
             <div className="flex items-center justify-between gap-3">
-              <h2 id="catalog-heading" className="text-ui font-medium text-muted-foreground">{searching ? "Search results" : category === "all" ? "All plugins" : category === "" ? "Other" : categoryLabel(category)}</h2>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{visible.length} plugins</span>
+              <h2 id="catalog-heading" className="text-ui font-medium text-muted-foreground">{searching ? "Search results" : category === "all" ? "All apps" : category === "" ? "Other" : categoryLabel(category)}</h2>
+              <span className="shrink-0 text-[11px] text-muted-foreground">{visible.length} apps</span>
             </div>
-            {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No matching plugins" detail="Try another search, scope, or provider." />}
+            {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No matching apps" detail="Try another search, scope, or provider." />}
             {remaining > 0 && <ShowMore remaining={remaining} onClick={() => setPageLimit(limit => limit + PAGE_SIZE)} />}
           </section>
         </> : view === "installed" ? <section className="mt-5" aria-labelledby="installed-heading">
-          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-ui font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} plugins</span></div>
-          {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No plugins installed yet" detail="Switch scope or browse the catalog to add one." />}
+          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-ui font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} apps</span></div>
+          {paged.length ? <ServiceList services={paged} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <PluginEmptyState title="No apps installed yet" detail="Switch scope or browse the catalog to add one." />}
           {remaining > 0 && <ShowMore remaining={remaining} onClick={() => setPageLimit(limit => limit + PAGE_SIZE)} />}
         </section> : <>
           <section className="mt-5" aria-labelledby="installed-heading">
-            <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-[12px] font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} plugins</span></div>
-            {featuredInstalled.length ? <ServiceList services={featuredInstalled} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">No plugins installed yet.</p>}
-            {installed.length > featuredInstalled.length && <button type="button" onClick={() => setView("installed")} className="mt-3 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">{installed.length - featuredInstalled.length} more installed plugins</button>}
+            <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-[12px] font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} apps</span></div>
+            {featuredInstalled.length ? <ServiceList services={featuredInstalled} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">No apps installed yet.</p>}
+            {installed.length > featuredInstalled.length && <button type="button" onClick={() => setView("installed")} className="mt-3 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">{installed.length - featuredInstalled.length} more installed apps</button>}
           </section>
           <section className="mt-6" aria-labelledby="popular-heading">
             <h2 id="popular-heading" className="text-[12px] font-medium text-muted-foreground">Popular</h2>
-            {popular.length ? <ServiceList services={popular} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">Popular plugins appear as providers report install counts.</p>}
+            {popular.length ? <ServiceList services={popular} busyKey={busyKey} onOpen={service => setSelectedId(service.id)} onInstall={service => void install(service)} /> : <p className="mt-3 text-[11px] text-muted-foreground">Popular apps appear as providers report install counts.</p>}
           </section>
           <button type="button" onClick={() => setView("all")} className="u-surface mt-6 flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-left transition-colors hover:bg-accent">
-            <span className="text-[13px] font-medium text-foreground">Browse all {services.length} {services.length === 1 ? "plugin" : "plugins"}</span>
+            <span className="text-[13px] font-medium text-foreground">Browse all {services.length} {services.length === 1 ? "app" : "apps"}</span>
             <ChevronRight size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
           </button>
         </>}
@@ -412,22 +410,13 @@ function PluginMarketplace() {
   </div>;
 }
 
-const CATALOG_RESOURCES = ["agents", "plugins", "skills"] as const;
-type CatalogResource = (typeof CATALOG_RESOURCES)[number];
-type MarketplaceSection = "catalog" | "automations";
-
 export function MarketplaceScreen() {
-  const [section, setSection] = useState<MarketplaceSection>("catalog");
-  // Agents remain the catalog default: plugins and skills run inside them.
-  const [resource, setResource] = useState<CatalogResource>("agents");
+  const [resource, setResource] = useState<"apps" | "skills">("apps");
   return <div className="flex h-full min-h-0 flex-col">
-    <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-5 py-2 sm:px-8"><nav className="flex items-center gap-4" aria-label="Marketplace sections" data-tauri-drag-region="deep">
-      <div className="u-segmented">
-        {(["catalog", "automations"] as MarketplaceSection[]).map(value => <button key={value} type="button" data-active={section === value} aria-pressed={section === value} onClick={() => setSection(value)} className="u-segmented-item capitalize">{value}</button>)}
-      </div>
+    <nav className="flex shrink-0 items-center gap-4 border-b border-border px-5 py-2 sm:px-8" aria-label="Marketplace sections">
+      <div className="u-segmented">{(["apps", "skills"] as const).map(value => <button key={value} type="button" data-active={resource === value} aria-pressed={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value === "apps" ? "Apps" : "Skills"}</button>)}</div>
+      <p className="text-xs text-muted-foreground">{resource === "apps" ? "Connect tools such as GitHub or Slack." : "Add workflows such as reviewing code or creating documents."}</p>
     </nav>
-    {section === "catalog" && <nav className="flex items-center border-l border-border pl-4" aria-label="Catalog sections"><div className="u-segmented">{CATALOG_RESOURCES.map(value => <button key={value} type="button" data-active={resource === value} aria-pressed={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}</div></nav>}
-    </div>
-    <div className="min-h-0 flex-1">{section === "automations" ? <AutomationsPanel/> : <>{resource === "agents" && <AgentMarketplace/>}{resource === "plugins" && <PluginMarketplace/>}{resource === "skills" && <SkillMarketplace/>}</>}</div>
+    <div className="min-h-0 flex-1">{resource === "apps" ? <PluginMarketplace/> : <SkillMarketplace/>}</div>
   </div>;
 }

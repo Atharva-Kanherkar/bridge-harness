@@ -35,6 +35,10 @@ pub fn dispatch(
     match method {
         MethodName::Health => reply(api::health(core)),
         MethodName::RefreshModelCatalogs => reply(api::refresh_model_catalogs(core)),
+        MethodName::PrepareAgentSetup => {
+            let p: wire::PrepareAgentSetupParams = decode(method, params)?;
+            reply(api::prepare_agent_setup(core, &p.agent_id))
+        }
         MethodName::InstallCodexUpdate => reply(api::install_codex_update()),
         MethodName::GetState => reply(api::get_state(core)),
 

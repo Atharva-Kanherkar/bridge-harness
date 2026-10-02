@@ -1621,6 +1621,18 @@ async fn refresh_model_catalogs(state: State<'_, Arc<BridgeCore>>) -> Result<api
 }
 
 #[tauri::command]
+async fn prepare_agent_setup(
+    state: State<'_, Arc<BridgeCore>>,
+    agent_id: String,
+) -> Result<AdapterDescriptor, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Agent setup check", move || {
+        api::prepare_agent_setup(&core, &agent_id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn install_codex_update() -> Result<(), BridgeError> {
     blocking("Codex update", api::install_codex_update).await
 }
@@ -2890,6 +2902,7 @@ pub fn run() -> i32 {
             locate_workspace_folders,
             update_chat_model,
             refresh_model_catalogs,
+            prepare_agent_setup,
             install_codex_update,
             carry_session_handoff,
             list_slash_commands,

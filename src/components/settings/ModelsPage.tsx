@@ -25,15 +25,15 @@ import {
 const VERIFICATION: ProfilePurpose[] = ["reviewer", "evaluator"];
 
 const GROUPS: { label: string; note: string; includes: (purpose: ProfilePurpose) => boolean }[] = [
-  { label: "Orchestration", note: "The model you talk to", includes: isOrchestratorPurpose },
+  { label: "Your chats", note: "The model you talk to", includes: isOrchestratorPurpose },
   {
-    label: "Workers",
-    note: "Delegated agents, routed by capability tier",
+    label: "Background tasks",
+    note: "Bridge chooses an agent suited to each task",
     includes: purpose => !isOrchestratorPurpose(purpose) && !VERIFICATION.includes(purpose),
   },
   {
     label: "Verification",
-    note: "Roles with a specialized rubric",
+    note: "Models that check the work",
     includes: purpose => VERIFICATION.includes(purpose),
   },
 ];
@@ -67,9 +67,9 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
   };
 
   return <SettingsPage
-    title="Models"
-    description="Which model runs each Bridge role, and how hard it thinks."
-    action={<StatusPill>Version {version ?? "none"}</StatusPill>}
+    title="Model preferences"
+    description="Choose models for your chats and the tasks Bridge runs for you. These task choices take priority over an agent's defaults."
+    action={<StatusPill>{version ? "Saved preferences" : "Default preferences"}</StatusPill>}
   >
     {GROUPS.map(group => {
       const rows = profiles.filter(profile => group.includes(profile.purpose));
@@ -88,7 +88,7 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
       </SettingsGroup>;
     })}
 
-    <SettingsGroup label="Catalog" note="Where the model lists come from">
+    <SettingsGroup label="Available models" note="Model lists reported by your coding agents">
       {adapters.filter(adapter => adapter.available).map(adapter => {
         const catalog = adapter.modelCatalog;
         const isStale = catalog?.stale || catalog?.lastError;
@@ -97,18 +97,18 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
           lead={<HarnessMark harness={adapter.id} size={14} />}
           label={adapter.label}
           description={catalog?.lastError
-            ?? (catalog?.source === "last_known_good" ? "Using last-known-good models" : `${adapter.models.length} models`)}
+            ?? (catalog?.source === "last_known_good" ? "Using the last successful model list" : `${adapter.models.length} models`)}
           control={isStale
             ? <>
-                <StatusPill tone="warning">Stale</StatusPill>
+                <StatusPill tone="warning">Needs refresh</StatusPill>
                 <GhostButton disabled={refreshing} onClick={() => void refresh()}>
                   <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" className={refreshing ? "animate-spin" : undefined} />Retry
                 </GhostButton>
               </>
-            : <StatusPill tone="success">Fresh</StatusPill>}
+            : <StatusPill tone="success">Up to date</StatusPill>}
         />;
       })}
-      {stale.length === 0 && adapters.every(adapter => !adapter.available) && <SettingsRow label="No provider is available yet." />}
+      {stale.length === 0 && adapters.every(adapter => !adapter.available) && <SettingsRow label="No coding agent is available yet." />}
     </SettingsGroup>
   </SettingsPage>;
 }
@@ -152,7 +152,7 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
         ? <>
             <SettingsRow
               label="Model"
-              description="Any model your providers expose. Workers below are still routed by tier."
+              description="Choose a model reported by your coding agents. Background tasks keep their own model choices."
               control={<Select
                 label={`${profileLabels[profile.purpose]} model`}
                 value={`${profile.provider}:${profile.model}`}
@@ -188,8 +188,8 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
             <SettingsRow
               label="How Bridge chooses a model"
               description={selectionMode === "pinned"
-                ? "Uses the provider and model selected below. If unavailable, Bridge uses the fallback profile."
-                : "Bridge chooses an available model suited to this worker and may change it over time."}
+                ? "Uses the coding agent and model selected below. If unavailable, Bridge tries the backup choice."
+                : "Bridge chooses an available model suited to this task and may change it over time."}
               control={<Select
                 label={`${profileLabels[profile.purpose]} model choice`}
                 value={selectionMode}
@@ -207,8 +207,8 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               />}
             />
             <SettingsRow
-              label="Provider and model"
-              description="Choosing a model switches this worker to Use a specific model."
+              label="Coding agent and model"
+              description="Choosing a model switches this task to Use a specific model."
               control={<Select
                 label={`${profileLabels[profile.purpose]} model`}
                 value={`${profile.provider}:${profile.model}`}
@@ -224,7 +224,7 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               />}
             />
             <SettingsRow
-              label="Reasoning effort"
+              label="Thinking level"
               control={<Select
                 label={`${profileLabels[profile.purpose]} effort`}
                 value={profile.effort}
@@ -235,53 +235,53 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               />}
             />
             <SettingsRow
-              label="Fallback profile"
+              label="Backup choice"
               control={<Select
                 label={`${profileLabels[profile.purpose]} fallback`}
                 value={profile.fallbackPurpose ?? ""}
                 disabled={busy}
                 options={[
-                  { value: "", label: "Catalog default" },
+                  { value: "", label: "Default model" },
                   ...profilePurposes.filter(purpose => purpose !== profile.purpose).map(purpose => ({ value: purpose, label: profileLabels[purpose] })),
                 ]}
                 onChange={value => onUpdate({ fallbackPurpose: (value || null) as ProfilePurpose | null })}
               />}
             />
             <SettingsRow
-              label="Budget preference"
+              label="Cost preference"
               control={<Select
-                label={`${profileLabels[profile.purpose]} budget preference`}
+                label={`${profileLabels[profile.purpose]} cost preference`}
                 value={profile.budgetPreference ?? ""}
                 disabled={busy}
                 width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
-                  { value: "economy", label: "Economy" },
+                  { value: "economy", label: "Lower cost" },
                   { value: "quality", label: "Quality first" },
                 ]}
                 onChange={value => onUpdate({ budgetPreference: value || null })}
               />}
             />
             <SettingsRow
-              label="Latency preference"
+              label="Response speed"
               control={<Select
-                label={`${profileLabels[profile.purpose]} latency preference`}
+                label={`${profileLabels[profile.purpose]} response speed`}
                 value={profile.latencyPreference ?? ""}
                 disabled={busy}
                 width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
-                  { value: "fast", label: "Low latency" },
-                  { value: "patient", label: "Patient" },
+                  { value: "fast", label: "Faster responses" },
+                  { value: "patient", label: "Willing to wait" },
                 ]}
                 onChange={value => onUpdate({ latencyPreference: value || null })}
               />}
             />
             <SettingsRow
-              label="Allow learning"
-              description="Bridge may rank eligible models for this role. It can never widen a scope or skip an approval."
+              label="Use past task results"
+              description="Bridge can use past task results to compare suitable models for this task. File access and approvals stay the same."
               control={<Switch
-                label={`${profileLabels[profile.purpose]} allow learning`}
+                label={`${profileLabels[profile.purpose]} use past task results`}
                 checked={profile.learningEnabled}
                 disabled={busy || selectionMode === "pinned"}
                 onChange={next => onUpdate({ learningEnabled: next })}

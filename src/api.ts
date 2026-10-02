@@ -7,7 +7,7 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
+import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
@@ -1682,6 +1682,11 @@ export const bridgeApi = {
 
   health: (): Promise<Health> => isTauri() ? call("health/health") : Promise.resolve(structuredClone(mockHealth)),
   refreshModelCatalogs: (): Promise<Health> => isTauri() ? call("health/refresh_model_catalogs") : Promise.resolve(structuredClone(mockHealth)),
+  prepareAgentSetup: (agentId: string): Promise<AdapterDescriptor> => {
+    if (isTauri()) return call("health/prepare_agent_setup", { agentId });
+    const adapter = mockHealth.adapters.find(item => item.id === agentId);
+    return adapter ? Promise.resolve(structuredClone(adapter)) : Promise.reject(new Error(`Unknown coding agent: ${agentId}`));
+  },
   state: (): Promise<BridgeState> => isTauri() ? call("state/get_state") : Promise.resolve(snapshot()),
   modelSetup: (): Promise<ModelSetupState> => isTauri() ? call("models/get_model_setup") as Promise<ModelSetupState> : Promise.resolve(structuredClone(mockModelSetup)),
   recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
@@ -3262,14 +3267,14 @@ const mockManagedAgents: ManagedAgentList = {
     },
     {
       agentId: "codex", label: "Codex", state: "external", backing: "external", removable: false,
-      executable: "/opt/homebrew/bin/codex", version: "0.147.0", updateAvailable: false, consecutiveFailures: 0,
+      executable: "/opt/homebrew/bin/codex", version: "0.147.0", pinnedVersion: "0.147.0", updateAvailable: false, consecutiveFailures: 0,
     },
     {
       agentId: "cursor", label: "Cursor", state: "external", backing: "external", removable: false,
-      executable: "/Users/demo/.local/bin/cursor-agent", updateAvailable: false, consecutiveFailures: 0,
+      executable: "/Users/demo/.local/bin/cursor-agent", pinnedVersion: "mock", updateAvailable: false, consecutiveFailures: 0,
     },
     {
-      agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false,
+      agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false, pinnedVersion: "mock",
       updateAvailable: false, consecutiveFailures: 0,
     },
   ],
@@ -3284,6 +3289,7 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
       ...structuredClone(agent), state: "not_installed", backing: "none", removable: false,
       executable: undefined, version: undefined, updateAvailable: false,
     };
+    Object.assign(agent, status);
     return Promise.resolve({ agentId, kind, outcome: "removed", status });
   }
   const status: ManagedAgentStatus = {
@@ -3291,5 +3297,6 @@ function mockManagedOperation(agentId: string, kind: ManagedAgentOperationKind):
     ...structuredClone(agent), state: "ready", backing: "managed", removable: true,
     version: agent.pinnedVersion ?? "0.0.0-mock", updateAvailable: false,
   };
+  Object.assign(agent, status);
   return Promise.resolve({ agentId, kind, outcome: kind === "repair" ? "repaired" : "installed", status });
 }

@@ -71,6 +71,9 @@ answered=0
 pending_new=""
 
 while IFS= read -r line; do
+    if [ -n "${BRIDGE_GROK_FAKE_TRACE:-}" ]; then
+        printf '%s\n' "$line" >> "$BRIDGE_GROK_FAKE_TRACE"
+    fi
     id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)","method".*/\1/p')
     case "$line" in
         *'"method":"initialize"'*)

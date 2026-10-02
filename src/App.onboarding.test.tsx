@@ -37,7 +37,7 @@ describe("fresh-install agent onboarding", () => {
       await new Promise(resolve => setTimeout(resolve, 30));
     });
 
-    expect(container.textContent).toContain("Bring your agents with you");
+    expect(container.textContent).toContain("Which coding agents do you want to use?");
     expect(container.textContent).toContain("Codex");
     expect(container.textContent).not.toContain("Your workspace, ready");
   });

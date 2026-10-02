@@ -94,11 +94,11 @@ it("says plainly when a sweep could reclaim nothing", async () => {
   await render();
   // The one reclaimable row goes first, so the second sweep has nothing left.
   await act(async () => {
-    button("Sweep")?.click();
+    button("Check for cleanup")?.click();
   });
   await act(async () => { button("Confirm cleanup")?.click(); });
   await act(async () => {
-    button("Sweep")?.click();
+    button("Check for cleanup")?.click();
   });
   await act(async () => { button("Confirm cleanup")?.click(); });
   expect(host.textContent).toContain("Nothing could be reclaimed safely");

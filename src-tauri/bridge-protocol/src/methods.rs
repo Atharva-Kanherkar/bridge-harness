@@ -40,6 +40,7 @@ methods![
     // health
     (Health, "health", "health"),
     (RefreshModelCatalogs, "health", "refresh_model_catalogs"),
+    (PrepareAgentSetup, "health", "prepare_agent_setup"),
     (InstallCodexUpdate, "health", "install_codex_update"),
     // state — the aggregate application snapshot
     (GetState, "state", "get_state"),

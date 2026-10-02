@@ -106,7 +106,7 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Automations" description="View and manage schedules saved by your coding agents." action={<>
+      <ScreenHeading title="Scheduled tasks" description="Run recurring work using schedules supported by your coding agents." action={<>
         {canCreateClaude && <Button size="xs" disabled={busy} onClick={openCreate}><Plus size={13}/>New Claude automation</Button>}
         <Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={13}/>Refresh</Button>
       </>} />

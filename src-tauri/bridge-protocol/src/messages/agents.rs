@@ -40,6 +40,7 @@ macro_rules! agent_ref_params {
 }
 
 agent_ref_params![
+    PrepareAgentSetupParams,
     InspectManagedAgentParams,
     InstallManagedAgentParams,
     RepairManagedAgentParams,
@@ -241,6 +242,9 @@ mod tests {
 
     #[test]
     fn agents_dtos_round_trip() {
+        round_trip(&PrepareAgentSetupParams {
+            agent_id: "cursor".into(),
+        });
         round_trip(&InspectManagedAgentParams {
             agent_id: "claude".into(),
         });
@@ -289,6 +293,7 @@ mod tests {
             })* };
         }
         assert_strict!(
+            PrepareAgentSetupParams,
             InspectManagedAgentParams,
             InstallManagedAgentParams,
             RepairManagedAgentParams,

@@ -72,9 +72,9 @@ async function clickOption(option: HTMLElement) {
 
 /** Pick a prompt target from the header select. */
 async function chooseTarget(container: HTMLElement, label: string) {
-  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Prompt target"]')!;
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Instructions for"]')!;
   await act(async () => { trigger.click(); await flush(); });
-  const option = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Prompt target"] [role="option"]')]
+  const option = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Instructions for"] [role="option"]')]
     .find(node => node.textContent?.startsWith(label))!;
   await clickOption(option);
 }
@@ -407,7 +407,7 @@ describe("PromptStudio", () => {
     await flush();
     await flush();
 
-    expect(container.querySelector('button[aria-label="Prompt target"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Instructions for"]')).not.toBeNull();
     expect(container.querySelector('input[aria-label="Import prompt overrides"]')).not.toBeNull();
     expect(buttonWithText(container, "Export overrides")).toBeDefined();
     expect(container.textContent).toContain("Compiled preview");
@@ -428,9 +428,9 @@ describe("PromptStudio", () => {
     // now the whole list, so this pins it.
     const { container, unmount } = await mount(<PromptStudio />);
     await flush();
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Prompt target"]')!;
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Instructions for"]')!;
     await act(async () => { trigger.click(); await flush(); });
-    const labels = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Prompt target"] [role="option"]')]
+    const labels = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Instructions for"] [role="option"]')]
       .map(node => node.textContent?.replace("Has overrides", "").trim());
     expect(labels).toEqual(["Orchestrator", "Research", "Implementation", "Verification", "Planning", "Documentation", "Direct session"]);
     await unmount();
@@ -441,10 +441,10 @@ describe("PromptStudio", () => {
     await flush();
     await flush();
 
-    const optionFor = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Prompt target"] [role="option"]')]
+    const optionFor = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Instructions for"] [role="option"]')]
       .find(node => node.textContent?.startsWith(label));
     const openTargets = async () => {
-      const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Prompt target"]')!;
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Instructions for"]')!;
       await act(async () => { trigger.click(); await flush(); });
     };
 

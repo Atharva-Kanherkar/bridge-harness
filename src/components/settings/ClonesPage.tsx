@@ -10,8 +10,8 @@ import { Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash
 // support disables the controls.
 
 const SIGN_IN_OPTIONS: SelectOption[] = [
-  { value: "import", label: "Signed in as you", description: "Copy the approved site's sign-in from Chrome into the clone" },
-  { value: "sign_in_inside", label: "Blank browser", description: "Copy nothing; sign in inside the clone yourself" },
+  { value: "import", label: "Signed in as you", description: "Copy the approved site's sign-in from Chrome into the browser copy" },
+  { value: "sign_in_inside", label: "Blank browser", description: "Start without copied sign-in; sign in to the browser copy yourself" },
 ];
 
 /** Lifetime choices. A stored value outside the list is shown, not dropped. */
@@ -32,7 +32,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
   }, [onError]);
 
   if (!snapshot) {
-    return <SettingsPage title="Clones">
+    return <SettingsPage title="Browser copies">
       <SettingsGroup>
         <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
       </SettingsGroup>
@@ -56,17 +56,17 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
     .map(minutes => ({ value: String(minutes), label: ttlLabel(minutes) }));
 
   return <SettingsPage
-    title="Clones"
-    description="Throwaway copies of your browser an agent uses for work that needs a signed-in site. A clone never touches your own tabs."
+    title="Browser copies"
+    description="Agents can use a separate browser for signed-in work. You approve which sites it can access; your own tabs stay separate."
   >
-    <SettingsGroup label="New clones" note={connected ? undefined : "Not connected"}>
-      {!connected && <SettingsRow label="Browser clones are not connected to the runtime in this build yet." description="These settings apply once they are." />}
+    <SettingsGroup label="New browser copies" note={connected ? undefined : "Unavailable in this build"}>
+      {!connected && <SettingsRow label="Browser copies are unavailable in this build." description="Bridge cannot create a browser copy in this build. These controls become available when browser copies are supported." />}
       <SettingsRow
-        label="Default sign-in path"
-        description="How a new clone gets signed in."
+        label="How to sign in"
+        description="Choose whether to copy an approved site's sign-in or sign in yourself."
         saved={isFlashed("signIn")}
         control={<Select
-          label="Default sign-in path"
+          label="How to sign in"
           value={settings.defaultSignInPath}
           disabled={busy || !connected}
           options={SIGN_IN_OPTIONS}
@@ -85,11 +85,11 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
         />}
       />
       <SettingsRow
-        label="Time to live"
-        description="A clone destroys itself, profile and cookies included, when this runs out."
+        label="Close after"
+        description="The browser copy closes and deletes its temporary profile and cookies after this time."
         saved={isFlashed("ttl")}
         control={<Select
-          label="Clone time to live"
+          label="Close browser copy after"
           value={String(settings.ttlMinutes)}
           disabled={busy || !connected}
           width="w-40"
