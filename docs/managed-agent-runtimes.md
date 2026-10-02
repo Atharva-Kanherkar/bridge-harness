@@ -56,7 +56,7 @@ Removal additionally refuses while a provider process is alive for that agent, c
 
 ## The desktop surface
 
-Settings → Harnesses → Agent runtimes. One card per integration, above harness configuration, because whether an agent is installed at all comes before how it behaves once it runs.
+Settings → Coding agents. One row per integration shows its installation source and version. Open the row for installation, sign-in, and defaults for new chats. The [settings and onboarding guide](settings-and-onboarding.md) explains the first-run flow and the difference between coding agents, apps, skills, and Bridge's internal roles.
 
 Removal is offered if and only if `status.removable` is true — the API's own answer to "is this Bridge's to remove". The UI never derives removability from a state string, so a future state it has never heard of cannot open the destructive path. A working user install reads as settled: it says it works, names itself as the user's own, and offers letting Bridge manage its own copy as a quiet opt-in rather than an instruction. Presenting that option as the card's only button made an agent the user could already chat with look like it needed installing.
 
@@ -64,7 +64,7 @@ Removing asks first, and the confirmation names the exact payload — label, ver
 
 ## Authentication boundary
 
-Nothing here owns a credential. There is no API-key form, OAuth client, credential vault, login dashboard, or logout action, and no field in the agents wire surface concerns authentication. A vendor that needs a login surfaces its own message verbatim under the vendor-prerequisite code, and the agent stays `installed` rather than being recast as `broken` — nothing is broken, the user simply has not authenticated with the vendor.
+The installation lifecycle owns no credential, and no field in the agents wire surface concerns authentication. The desktop reads authentication separately from adapter health and can open supported vendor CLI sign-in flows. It waits for fresh health results after login closes; a closed pane is not proof of sign-in. A vendor that needs a login surfaces its own message under the vendor-prerequisite code. Installation and account readiness remain separate facts.
 
 ## What is deliberately not done yet
 
