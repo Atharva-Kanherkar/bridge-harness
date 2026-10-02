@@ -2716,10 +2716,10 @@ export const bridgeApi = {
     session.status = "ready"; session.activeTurnId = null; emitState();
   },
   // The active-turn input contract. Unlike sendTurn this is safe to call while
-  // the agent is working: the backend decides between starting a turn, steering
-  // the live one, and durably queueing, and says which it did. Attachments ride
-  // beside the text; a provider that cannot take them refuses explicitly, which
-  // is how the composer surfaces "not supported" instead of dropping bytes.
+  // the agent is working: a chat's running turn is stopped and the message runs
+  // as a new one, and the result says which happened. Attachments ride beside
+  // the text; a provider that cannot take them refuses explicitly, which is how
+  // the composer surfaces "not supported" instead of dropping bytes.
   submitInput: async (sessionId: string, text: string, attachments?: readonly ComposerAttachment[]): Promise<SubmitInputResult> => {
     const images: TurnImage[] = (attachments ?? []).map(attachment => ({
       mediaType: attachment.mediaType,
@@ -2727,14 +2727,13 @@ export const bridgeApi = {
     }));
     if (isTauri()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined });
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
-    if (session.activeTurnId) {
-      const steering = mockHealth.adapters.some(adapter => adapter.id === session.harness && adapter.capabilities.includes("steering"));
-      appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text, data: { delivery: steering ? "steered" : "queued", ...(images.length > 0 ? { attachments: images.map(image => ({ mediaType: image.mediaType, dataUri: `data:${image.mediaType};base64,${image.base64Data}` })) } : {}) } });
-      emitState();
-      return { disposition: steering ? "steeredActiveTurn" : "queuedForPhaseBoundary", queuedInputId: steering ? undefined : `mock-queue-${nextEventId}`, interceptions: [] };
+    const steered = !!session.activeTurnId;
+    if (steered) {
+      appendAgent(sessionId, "turn.completed", { status: "cancelled", title: "Redirected", data: { reason: "user_steered" } });
+      session.status = "ready"; session.activeTurnId = null; emitState();
     }
     await bridgeApi.sendTurn(sessionId, text);
-    return { disposition: "startedNewTurn", interceptions: [] };
+    return { disposition: steered ? "steeredActiveTurn" : "startedNewTurn", interceptions: [] };
   },
   dispatchAgentShortcut: async (sessionId: string, token: string, objective: string): Promise<DispatchAgentShortcutResult> => {
     if (isTauri()) return call("sessions/dispatch_agent_shortcut", { sessionId, token, objective });
