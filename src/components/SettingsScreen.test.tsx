@@ -215,7 +215,7 @@ describe("SettingsScreen", () => {
       await open("Edit Bridge orchestrator");
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeTruthy();
 
-      const name = container.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!;
+      const name = container.querySelector<HTMLInputElement>('input[aria-label="Setup name"]')!;
       type(name, "Renamed orchestrator");
       await act(async () => flush());
 
@@ -225,7 +225,7 @@ describe("SettingsScreen", () => {
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeNull();
 
       await open("Edit Bridge orchestrator");
-      expect(container.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!.value)
+      expect(container.querySelector<HTMLInputElement>('input[aria-label="Setup name"]')!.value)
         .toBe("Renamed orchestrator");
     });
 

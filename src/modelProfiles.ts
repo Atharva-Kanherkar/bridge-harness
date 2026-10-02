@@ -90,24 +90,28 @@ export function availableModelOptions(adapters: AdapterDescriptor[]) {
       .map(model => ({ adapter, model, value: `${adapter.id}:${model.id}` })));
 }
 
-export function recommendedProfileDrafts(adapters: AdapterDescriptor[]): ModelProfileDraft[] {
+export function recommendedProfileDrafts(adapters: AdapterDescriptor[], { allowAvailableFallback = false }: { allowAvailableFallback?: boolean } = {}): ModelProfileDraft[] {
   const options = availableModelOptions(adapters);
+  if (allowAvailableFallback && options.length === 0) throw new Error("Your selected agents have not reported any usable models yet. Finish their model setup or check again.");
   return profilePurposes.map(purpose => {
     const tier = purposeTier[purpose];
     const selected = options.find(option => option.model.tier === tier && option.model.defaultForTier)
-      ?? options.find(option => option.model.tier === tier);
+      ?? options.find(option => option.model.tier === tier)
+      ?? (allowAvailableFallback ? options.find(option => option.model.id === option.adapter.defaultModel)
+        ?? options.find(option => option.model.tier === "standard") ?? options[0] : undefined);
     if (!selected) throw new Error(`No available ${tier} model for ${profileLabels[purpose]}`);
     const orchestrator = isOrchestratorPurpose(purpose);
+    const specificModel = orchestrator || selected.model.tier !== tier;
     return {
       purpose,
       provider: selected.adapter.id,
       model: selected.model.id,
-      effort: purposeEffort[purpose],
+      effort: allowAvailableFallback ? normalizedEffort(purposeEffort[purpose], selected.model) : purposeEffort[purpose],
       fallbackPurpose: purposeFallback[purpose],
       // The orchestrator is a direct, pinned user choice; workers track their tier.
-      selectionMode: orchestrator ? "pinned" : "track_standard",
-      pinned: orchestrator,
-      learningEnabled: !orchestrator,
+      selectionMode: specificModel ? "pinned" : "track_standard",
+      pinned: specificModel,
+      learningEnabled: !specificModel,
       budgetPreference: null,
       latencyPreference: null,
     };

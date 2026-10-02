@@ -46,7 +46,7 @@ function learningState(run: Partial<LearningRun> = {}): LearningState {
 describe("adaptive setup surfaces", () => {
   it("puts agent discovery before model choices", () => {
     const html = renderToStaticMarkup(<ModelSetupWizard adapters={adapters} onComplete={() => undefined} onError={() => undefined} />);
-    expect(html).toContain("Bring your agents with you");
+    expect(html).toContain("Which coding agents do you want to use?");
     expect(html).toContain("Continue");
     expect(html).not.toContain("Use recommended defaults");
     expect(html).not.toContain("Customize role profiles");

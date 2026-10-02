@@ -152,8 +152,8 @@ function PresetDetail({
     title={isNew ? "New setup" : draft.name}
     breadcrumb={[{ label: "Saved setups", onClick: onBack }, { label: isNew ? "New setup" : draft.name }]}
     description={isNew
-      ? "Custom preset, safe to delete at any time"
-      : draft.isBuiltIn ? "Built-in preset, reset restores Bridge defaults" : "Custom preset, safe to delete at any time"}
+      ? "Your saved setup. You can delete it at any time."
+      : draft.isBuiltIn ? "Built-in Bridge role. Reset restores its original instructions and choices." : "Your saved setup. You can delete it at any time."}
     action={!isNew && <>
       {draft.role === "orchestrator" && !draft.isDefault && <TextButton
         disabled={busy || !draft.enabled}
@@ -169,7 +169,7 @@ function PresetDetail({
         label="Enabled"
         saved={isFlashed("enabled")}
         control={<Switch
-          label="Preset enabled"
+          label="Setup enabled"
           checked={draft.enabled}
           disabled={busy}
           onChange={next => set({ enabled: next }, "enabled")}
@@ -177,17 +177,17 @@ function PresetDetail({
       />
       <SettingsRow
         label="Name"
-        control={<Field label="Preset name" value={draft.name} disabled={busy} onChange={value => onDraft({ ...draft, name: value })} />}
+        control={<Field label="Setup name" value={draft.name} disabled={busy} onChange={value => onDraft({ ...draft, name: value })} />}
       />
       <SettingsRow
         label="Description"
-        control={<Field label="Preset description" value={draft.description ?? ""} disabled={busy} onChange={value => onDraft({ ...draft, description: value })} />}
+        control={<Field label="Setup description" value={draft.description ?? ""} disabled={busy} onChange={value => onDraft({ ...draft, description: value })} />}
       />
       <SettingsRow
         label="What it does"
         saved={isFlashed("role")}
         control={<Select
-          label="Preset role"
+          label="What this setup does"
           value={draft.role}
           disabled={busy}
           width="w-44"
@@ -209,7 +209,7 @@ function PresetDetail({
         label="Coding agent"
         saved={isFlashed("harness")}
         control={<Select
-          label="Preset harness"
+          label="Coding agent for this setup"
           value={draft.harness}
           disabled={busy}
           options={harnessOptions}
@@ -220,7 +220,7 @@ function PresetDetail({
         label="Model"
         saved={isFlashed("model")}
         control={<Select
-          label="Preset model"
+          label="Model for this setup"
           value={draft.model ?? ""}
           disabled={busy || draft.harness === "bridge"}
           options={[{ value: "", label: "Provider default" }, ...models]}
@@ -231,7 +231,7 @@ function PresetDetail({
         label="Thinking level"
         saved={isFlashed("effort")}
         control={<Select
-          label="Preset effort"
+          label="Thinking level for this setup"
           value={draft.effort}
           disabled={busy}
           width="w-40"
@@ -244,7 +244,7 @@ function PresetDetail({
     <SettingsGroup label="Custom instructions" note="Used with this setup. Permissions still apply.">
       <SettingsBlockRow>
         <TextArea
-          label="Preset system prompt"
+          label="Instructions for this setup"
           value={draft.systemPrompt ?? ""}
           placeholder="Describe how you want this agent to work…"
           onChange={value => onDraft({ ...draft, systemPrompt: value })}
