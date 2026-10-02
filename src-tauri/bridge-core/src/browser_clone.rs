@@ -361,6 +361,11 @@ fn launch_args(profile: &Path, headless: bool) -> Vec<String> {
     let mut args = vec![
         format!("--user-data-dir={}", profile.display()),
         PIPE_FLAG.to_owned(),
+        // Chromium enables AutomationControlled for the debugging pipe even
+        // in headed Chrome without --enable-automation (content/child/runtime_features.cc).
+        // Keep the native navigator behavior of normal Chrome without opening
+        // a TCP debugger or installing a JavaScript navigator override.
+        "--disable-blink-features=AutomationControlled".to_owned(),
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
         // A clone must not read or write the user's Keychain: the profile is
@@ -388,6 +393,13 @@ fn launch_args(profile: &Path, headless: bool) -> Vec<String> {
 /// The launch invariants, checked immediately before every spawn so a future
 /// edit to [`launch_args`] cannot quietly open a network debugging surface.
 fn validate_launch_args(args: &[String]) -> Result<(), CloneError> {
+    if args.iter().any(|arg| {
+        matches!(arg.split('=').next(), Some("--enable-automation" | "--test-type"))
+    }) {
+        return Err(CloneError::Launch(
+            "refusing browser automation switches".into(),
+        ));
+    }
     if args.iter().any(|arg| {
         arg.starts_with("--remote-debugging-port") || arg.starts_with("--remote-debugging-address")
     }) {
@@ -1833,6 +1845,27 @@ while (defined(my $raw = <$in>)) {
         let headless = launch_args(Path::new("/tmp/p"), true);
         assert!(!headed.iter().any(|arg| arg.starts_with("--headless")));
         assert!(headless.contains(&"--headless=new".to_owned()));
+        assert!(!CloneConfig::default().headless);
+    }
+
+    #[test]
+    fn launch_args_keep_normal_chrome_navigator_behavior() {
+        for headless in [false, true] {
+            let args = launch_args(Path::new("/tmp/p"), headless);
+            assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_owned()));
+            assert!(!args.iter().any(|arg| {
+                matches!(arg.split('=').next(), Some("--enable-automation" | "--test-type" | "--user-agent"))
+            }));
+        }
+    }
+
+    #[test]
+    fn automation_switches_are_refused_before_launch() {
+        for flag in ["--enable-automation", "--enable-automation=true", "--test-type", "--test-type=webdriver"] {
+            let mut args = launch_args(Path::new("/tmp/p"), false);
+            args.push(flag.to_owned());
+            assert!(matches!(validate_launch_args(&args), Err(CloneError::Launch(_))), "{flag}");
+        }
     }
 
     #[test]
@@ -2405,6 +2438,46 @@ while (defined(my $raw = <$in>)) {
                     found.extend(fs::read(&path).unwrap_or_default());
                 }
             }
+        }
+
+        #[test]
+        fn a_headed_clone_keeps_normal_browser_identity_after_navigation() {
+            let Some(browser) = live_browser() else { return };
+            let dir = tempfile::tempdir().unwrap();
+            let supervisor = CloneSupervisor::with_parts(
+                dir.path().join("ledger.json"), dir.path().join("mounts"), Box::new(RamDisk),
+                CloneConfig { browser: Some(browser), guarded: true, ..CloneConfig::default() },
+            );
+            let info = supervisor.spawn_clone().expect("headed Chrome starts");
+            eprintln!("headed live clone: {}", info.product);
+            let command = command_line(info.pid);
+            assert!(command.contains("--remote-debugging-pipe"), "{command}");
+            for flag in ["--enable-automation", "--test-type", "--headless", "--remote-debugging-port"] {
+                assert!(!command.contains(flag), "{command}");
+            }
+            let identity = || {
+                let reply = supervisor.page_call(&info.id, "Runtime.evaluate", json!({
+                    "expression": "({webdriver:navigator.webdriver,ua:navigator.userAgent})",
+                    "returnByValue": true,
+                })).unwrap();
+                let value = &reply["result"]["value"];
+                assert_eq!(value["webdriver"], false, "{value}");
+                assert!(!value["ua"].as_str().unwrap().contains("HeadlessChrome"), "{value}");
+            };
+            identity();
+            supervisor.clone_guard(&info.id).unwrap().lock().unwrap().allow_host("localhost");
+            let port = serve_blank_page();
+            let reply = supervisor.page_call(&info.id, "Page.navigate", json!({"url": format!("http://localhost:{port}")})).unwrap();
+            assert!(reply.get("errorText").is_none(), "{reply}");
+            assert!(wait_until(5000, || {
+                supervisor.page_call(&info.id, "Runtime.evaluate", json!({
+                    "expression": "document.body?.innerText === 'ok'", "returnByValue": true,
+                })).ok().is_some_and(|reply| reply["result"]["value"] == true)
+            }), "the guarded page did not load");
+            identity();
+            supervisor.destroy(&info.id).unwrap();
+            assert!(!info.mount.exists());
+            assert!(!pid_alive(info.pid));
         }
 
         #[test]
