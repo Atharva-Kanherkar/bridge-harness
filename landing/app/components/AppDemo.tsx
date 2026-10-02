@@ -211,9 +211,9 @@ export default function AppDemo() {
       const tab = tabRefs.current[active];
       const list = listRef.current;
       if (!tab || !list) return;
-      const a = tab.getBoundingClientRect();
-      const b = list.getBoundingClientRect();
-      setSlider({ left: a.left - b.left, top: a.top - b.top, width: a.width, height: a.height });
+      // Layout offsets, not bounding rects: the tabs mount mid entrance animation, and a
+      // rect would measure them where the transform has them, not where they land.
+      setSlider({ left: tab.offsetLeft, top: tab.offsetTop, width: tab.offsetWidth, height: tab.offsetHeight });
     };
     measure();
     window.addEventListener("resize", measure);
