@@ -87,7 +87,7 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("1/2");
 
     await click(buttonByText("Safe GitHub surface"));
-    expect(host!.textContent).toContain("REVIEW THREADS");
+    expect(host!.textContent).toContain("Review threads");
     expect(host!.textContent).toContain("Main conversation comment");
     expect(host!.textContent).toContain("feat/safe → main");
     expect(host!.querySelector("script")).toBeNull();
@@ -405,7 +405,7 @@ describe("GitHubPane", () => {
     mockReads();
     await mount({ workspaceBranch: "feat/safe" });
     await click(buttonByText("Safe GitHub surface"));
-    expect(host!.textContent).toContain("checked out here");
+    expect(host!.textContent).toContain("Checked out here");
     expect(buttonByText("Check out")).toBeUndefined();
   });
 
@@ -564,7 +564,7 @@ describe("GitHubPane", () => {
 
     const checks = host!.querySelector('[aria-label="Checks"]')!;
     expect(checks.textContent).toContain("CI");
-    expect(checks.textContent).toContain("SIZE");
+    expect(checks.textContent).toContain("Size");
     expect(checks.textContent).toContain("1/2 passed");
     // The old surface spun a loader on every unfinished row; the live hint is
     // now a breathe, and rotation is reserved for the explicit refresh.
