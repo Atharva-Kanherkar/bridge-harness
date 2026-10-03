@@ -52,6 +52,11 @@ describe("withoutResentText", () => {
     expect(withoutResentText(mergeFailedText("next", "prev"), "prev")).toBe("next");
   });
 
+  it("finds the restored copy whatever whitespace surrounded the failed words", () => {
+    expect(withoutResentText(mergeFailedText("next", "  prev \n"), "prev")).toBe("next");
+    expect(withoutResentText(mergeFailedText("next", "prev"), " prev ")).toBe("next");
+  });
+
   it("leaves unrelated typing alone", () => {
     expect(withoutResentText("something else", "prev")).toBe("something else");
     expect(withoutResentText("previous thoughts", "prev")).toBe("previous thoughts");

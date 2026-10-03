@@ -25,7 +25,7 @@ const RESTORE_SEPARATOR = "\n\n";
 export function mergeFailedText(current: string, failed: string): string {
   if (!current.trim()) return failed;
   if (!failed.trim()) return current;
-  return `${failed}${RESTORE_SEPARATOR}${current}`;
+  return `${failed.trim()}${RESTORE_SEPARATOR}${current}`;
 }
 
 /** A failed send's images go back first; one already there is not added twice. */
@@ -48,7 +48,7 @@ export function mergeFailedSend(current: ComposerDraft, failed: ComposerDraft): 
 export function withoutResentText(current: string, resent: string): string {
   if (!resent.trim()) return current;
   if (current.trim() === resent.trim()) return "";
-  const prefix = `${resent}${RESTORE_SEPARATOR}`;
+  const prefix = `${resent.trim()}${RESTORE_SEPARATOR}`;
   return current.startsWith(prefix) ? current.slice(prefix.length) : current;
 }
 
