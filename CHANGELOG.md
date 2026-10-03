@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.7.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.6.0...v0.7.0) (2026-10-03)
+
+
+### Features
+
+* add Steer/Queue settings and move archived chats into Settings ([#790](https://github.com/Atharva-Kanherkar/bridge-harness/issues/790)) ([7e65af7](https://github.com/Atharva-Kanherkar/bridge-harness/commit/7e65af7237f703b8703874314de3c12d06d4ca03))
+* **browser:** one Browser pane for your pages and the agent's throwaway clone ([#782](https://github.com/Atharva-Kanherkar/bridge-harness/issues/782)) ([6a3b050](https://github.com/Atharva-Kanherkar/bridge-harness/commit/6a3b0502d95a72624cb8da5788d941d1cd379d62))
+* **gitplace:** revamp the GitHub surface's layout and colour ([#796](https://github.com/Atharva-Kanherkar/bridge-harness/issues/796)) ([6ca694b](https://github.com/Atharva-Kanherkar/bridge-harness/commit/6ca694bdb1c591aa925f72f82d91856a4ac56f35))
+* **landing:** lead the feature scroll with what only Bridge does ([#779](https://github.com/Atharva-Kanherkar/bridge-harness/issues/779)) ([9775d2e](https://github.com/Atharva-Kanherkar/bridge-harness/commit/9775d2e334cc67a6cb7229b66bd59d9687d6eb3f))
+* simplify settings and first-run agent setup ([#788](https://github.com/Atharva-Kanherkar/bridge-harness/issues/788)) ([6fafd8b](https://github.com/Atharva-Kanherkar/bridge-harness/commit/6fafd8bc195ce423c0af5b079c05ddf6ffaeae2e))
+* **transcript:** pulse the worker status placeholders ([#798](https://github.com/Atharva-Kanherkar/bridge-harness/issues/798)) ([1026e87](https://github.com/Atharva-Kanherkar/bridge-harness/commit/1026e87612e6ac139e0b63fd0a9839b1b5985cc8))
+* **usage:** drop Classic layout, layout picker is a dropdown ([#801](https://github.com/Atharva-Kanherkar/bridge-harness/issues/801)) ([3ade29c](https://github.com/Atharva-Kanherkar/bridge-harness/commit/3ade29c7edb46b4a29090089d243de32f1908fb6))
+
+
+### Bug Fixes
+
+* **auth:** confirm provider sign-in and offer the retry ([#793](https://github.com/Atharva-Kanherkar/bridge-harness/issues/793)) ([66322a6](https://github.com/Atharva-Kanherkar/bridge-harness/commit/66322a61acc55893e0777cbfa994264dfe3a1d68))
+* **browser:** correct Chrome automation flags and sign-in recovery ([#792](https://github.com/Atharva-Kanherkar/bridge-harness/issues/792)) ([0b4d9f1](https://github.com/Atharva-Kanherkar/bridge-harness/commit/0b4d9f1879cdef02644b1fc478f093ad0cb8813f))
+* **browser:** preserve signed-in sessions across approved domains ([#784](https://github.com/Atharva-Kanherkar/bridge-harness/issues/784)) ([2a9b050](https://github.com/Atharva-Kanherkar/bridge-harness/commit/2a9b050dc4e73ffca958e1a54f9bcdfe3ea95a5f))
+* **chat:** per-chat drafts, safe send recovery, repeat bubbles, and old memory pins ([#800](https://github.com/Atharva-Kanherkar/bridge-harness/issues/800)) ([22b4c79](https://github.com/Atharva-Kanherkar/bridge-harness/commit/22b4c79bffd614bc16b4aa137190a39aa10d2ba0))
+* **chat:** say when the harness is compacting its context ([#797](https://github.com/Atharva-Kanherkar/bridge-harness/issues/797)) ([b0099b1](https://github.com/Atharva-Kanherkar/bridge-harness/commit/b0099b133d1aa4cc532fdc4f9bfbf66e454c4a78))
+* prevent dev update installs from replacing Cargo builds ([#745](https://github.com/Atharva-Kanherkar/bridge-harness/issues/745)) ([a4718ea](https://github.com/Atharva-Kanherkar/bridge-harness/commit/a4718ea8ebef7bcdda8135fbbc721045e4b7d457))
+* restore automatic chat PR cards and live check updates ([#777](https://github.com/Atharva-Kanherkar/bridge-harness/issues/777)) ([8aedcb7](https://github.com/Atharva-Kanherkar/bridge-harness/commit/8aedcb71f2c468b5f9302dea978fcdbe33188730))
+* restore composer skill discovery and AI suggestions ([#794](https://github.com/Atharva-Kanherkar/bridge-harness/issues/794)) ([fb5bb73](https://github.com/Atharva-Kanherkar/bridge-harness/commit/fb5bb73b3d5538667f5645fa0a5f47d61742739c))
+* **sessions:** steering a chat stops the running turn and runs the message next ([#778](https://github.com/Atharva-Kanherkar/bridge-harness/issues/778)) ([ecca02d](https://github.com/Atharva-Kanherkar/bridge-harness/commit/ecca02db3e11926dfa0cf4713f2ec7e078046ec0))
+* stop sessions automatically when archiving chats ([#789](https://github.com/Atharva-Kanherkar/bridge-harness/issues/789)) ([86f235a](https://github.com/Atharva-Kanherkar/bridge-harness/commit/86f235aed30038e93988bd60970b9f2f967279ad))
+
 ## [0.6.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.5.10...v0.6.0) (2026-10-02)
 
 
