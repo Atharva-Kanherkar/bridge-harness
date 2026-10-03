@@ -3128,6 +3128,7 @@ function AppContent() {
                   working={turnActive}
                   modelSwitch={modelSwitch?.sessionId === session?.id ? modelSwitch : null}
                    pendingMessages={pendingForSession}
+                   queuedFollowUps={queuedFollowUpCount}
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
                    onAskAside={quoted => {

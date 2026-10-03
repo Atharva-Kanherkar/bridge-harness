@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appendAgentEventBatch } from "./agentEvents";
-import { answeredPending, attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, userTurnWatermark, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, mergeConversationProjections, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
+import { answeredPending, attachmentUris, compactionReasonLabel, delegationChildSessionId, deliveryNotes, undeliveredPending, userTurnWatermark, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, mergeConversationProjections, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 import { asWireKind } from "./transcript/wire";
 
@@ -1022,6 +1022,40 @@ describe("userTurnWatermark", () => {
     const rows = [turn(1, "yes", "2026-10-03T10:00:00.000Z", "assistant"), turn(2, "yes", "now"), turn(3, "yess", "2026-10-03T10:00:00.000Z")];
     expect(userTurnWatermark("yes", rows)).toBeUndefined();
     expect(userTurnWatermark("yes")).toBeUndefined();
+  });
+});
+
+describe("deliveryNotes", () => {
+  const user = (id: number, text: string, delivery?: string) =>
+    event(id, "message.completed", { itemId: `u${id}`, role: "user", text, ...(delivery ? { data: { delivery } } : {}) });
+  const reply = (id: number, text: string, status = "completed") =>
+    event(id, "message.completed", { itemId: `a${id}`, role: "assistant", text, status });
+  const notes = (events: AgentEvent[], waiting: number, active: boolean) =>
+    [...deliveryNotes(reduceConversation(events), waiting, active)].map(([key, note]) => `${key}:${note}`);
+
+  it("labels the newest queued rows while their follow-ups still wait", () => {
+    const events = [user(1, "start"), user(2, "then lint", "queued"), user(3, "then test", "queued")];
+    expect(notes(events, 2, true)).toEqual(["u2:queued", "u3:queued"]);
+    // The queue drains oldest first: one delivered, the older label goes.
+    expect(notes(events, 1, true)).toEqual(["u3:queued"]);
+    expect(notes(events, 0, true)).toEqual([]);
+  });
+
+  it("never labels more queued rows than there are", () => {
+    expect(notes([user(1, "then lint", "queued")], 5, false)).toEqual(["u1:queued"]);
+  });
+
+  it("labels a steer only while the step runs and nothing has answered after it", () => {
+    const steered = [user(1, "start"), reply(2, "working"), user(3, "use the old store", "steered")];
+    expect(notes(steered, 0, true)).toEqual(["u3:steered"]);
+    expect(notes(steered, 0, false)).toEqual([]);
+    expect(notes([...steered, reply(4, "switching to the old store")], 0, true)).toEqual([]);
+    // A reply still streaming has not answered yet.
+    expect(notes([...steered, event(4, "message.delta", { itemId: "a4", role: "assistant", text: "swit" })], 0, true)).toEqual(["u3:steered"]);
+  });
+
+  it("leaves ordinary turns alone", () => {
+    expect(notes([user(1, "hello"), reply(2, "hi")], 3, true)).toEqual([]);
   });
 });
 

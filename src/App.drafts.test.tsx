@@ -209,6 +209,24 @@ describe("a send that finishes later takes only what it sent", () => {
   });
 });
 
+describe("a follow-up sent while the chat works", () => {
+  it("keeps one bubble that says it is queued once the backend acknowledges it", async () => {
+    // The working demo chat queues follow-ups; its row is published before
+    // submitInput even returns, so the optimistic bubble hands over at once.
+    const working = chatRows().findIndex(row => row.textContent?.includes("working"));
+    expect(working, "the demo has a working chat").toBeGreaterThanOrEqual(0);
+    await open(working);
+    expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Queue"), "the chat is mid-turn").toBe(true);
+    await type("then run the linter");
+    await pressEnter();
+    await settle(6);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+    const transcript = container.querySelector("[data-conversation-content]")!;
+    expect(transcript.textContent!.split("then run the linter").length - 1, "one bubble").toBe(1);
+    expect(transcript.textContent).toContain("Queued — sent when this step finishes");
+  });
+});
+
 describe("a failed send never overwrites or loses the user's words", () => {
   it("puts the failed words ahead of what was typed while it failed", async () => {
     await open(chatA);

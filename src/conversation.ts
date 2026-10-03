@@ -88,7 +88,7 @@ export interface PendingSend {
 /** An optimistic bubble: the send, how the backend took it, and its images. */
 export interface PendingMessage extends PendingSend {
   /** Set when the send arrived during a running turn; absent for a new turn. */
-  delivery?: "steered" | "queued";
+  delivery?: DeliveryNote;
   /** Data URIs of every image sent with it. */
   attachments?: readonly string[];
 }
@@ -151,6 +151,34 @@ export function answeredPending(pending: readonly PendingSend[], rows: readonly 
     answered.add(index);
   });
   return answered;
+}
+
+/** How a message sent while a turn was running was taken, while that still matters. */
+export type DeliveryNote = "steered" | "queued";
+
+/**
+ * Which acknowledged user turns still say how they were delivered, by row key.
+ *
+ * The backend persists a mid-turn message with `data.delivery` before it even
+ * answers the send, so the optimistic bubble hands over to the real row almost
+ * at once and the note has to live on the real row. A queued follow-up is
+ * still waiting while the session's queue holds it; the queue drains oldest
+ * first, so the newest `waitingFollowUps` queued rows are the waiting ones. A
+ * steer joins the running step at once, so it says so only while that step is
+ * still running and nothing has answered after it.
+ */
+export function deliveryNotes(items: readonly ConversationItem[], waitingFollowUps: number, turnActive: boolean): Map<string, DeliveryNote> {
+  const notes = new Map<string, DeliveryNote>();
+  const queued = items.filter(item => isUserTurn(item) && item.data.delivery === "queued");
+  for (const item of queued.slice(Math.max(0, queued.length - waitingFollowUps))) notes.set(item.key, "queued");
+  if (!turnActive) return notes;
+  let answeredAfter = false;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.type === "message" && item.role === "assistant" && item.status !== "streaming") answeredAfter = true;
+    else if (!answeredAfter && isUserTurn(item) && item.data.delivery === "steered") notes.set(item.key, "steered");
+  }
+  return notes;
 }
 
 /**

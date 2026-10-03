@@ -214,6 +214,27 @@ describe("pending bubbles", () => {
     expect(labels).toHaveLength(2);
   });
 
+  it("keeps the queued label once the real row replaces the optimistic one", async () => {
+    const acknowledged = event(1, "message.completed", { role: "user", text: "then run lint", data: { delivery: "queued" } });
+    mount([acknowledged], { working: true, queuedFollowUps: 1, pendingMessages: [{ text: "then run lint", delivery: "queued" }] });
+    await settle();
+    expect(bubblesWith("then run lint")).toHaveLength(1);
+    expect([...host.querySelectorAll("p")].filter(node => node.textContent === "Queued — sent when this step finishes")).toHaveLength(1);
+
+    // Delivered: the queue let it go, so the note goes too.
+    mount([acknowledged], { working: true, queuedFollowUps: 0 });
+    expect(host.textContent).not.toContain("Queued — sent when this step finishes");
+  });
+
+  it("says Steering on an acknowledged steer until the step answers", () => {
+    const steer = event(1, "message.completed", { role: "user", text: "use the old store", data: { delivery: "steered" } });
+    mount([steer], { working: true });
+    expect(bubblesWith("use the old store")).toHaveLength(1);
+    expect(host.textContent).toContain("Steering");
+    mount([steer, event(2, "message.completed", { role: "assistant", text: "Switching to the old store." })], { working: true });
+    expect(host.textContent).not.toContain("Steering");
+  });
+
   it("draws every image of a send in that send's own bubble", () => {
     mount([], {
       working: true,

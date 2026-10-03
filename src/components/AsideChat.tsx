@@ -311,6 +311,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             activeLeafId={forest?.head?.activeEntryId ?? null}
             working={working}
             pendingMessages={pendingMessages}
+            queuedFollowUps={queuedFollowUpCount}
             modelSwitch={modelSwitch}
             onResolve={onResolve}
             onAnswerQuestion={onAnswerQuestion}
