@@ -85,7 +85,6 @@ async function mount() {
 
 describe("UsageScreen", () => {
   it("renders the cost summary with provenance, coverage, and de-duplication notes", async () => {
-    prefer("classic");
     await mount();
     expect(summarySpy).toHaveBeenCalledTimes(2);
     expect(summarySpy.mock.calls[0][0]).toMatchObject({ resolution: "day", includeImported: true, includeDashboard: true });
@@ -99,18 +98,15 @@ describe("UsageScreen", () => {
     const details = container.querySelector<HTMLDetailsElement>('[aria-label="History sources"] details');
     expect(details?.open).toBe(false);
     expect(details?.textContent).toContain("~/.codex/sessions");
-    expect(container.querySelector('svg[role="img"]')?.getAttribute("aria-label")).toBe("Daily cost by harness");
   });
 
   it("switches the metric without refetching and persists the choice", async () => {
-    prefer("classic");
     await mount();
     click(buttonByText("Tokens"));
     await flush();
     expect(summarySpy).toHaveBeenCalledTimes(2);
     expect(scanSpy).toHaveBeenCalledTimes(1);
     expect(text()).toContain("1.5M");
-    expect(container.querySelector('svg[role="img"]')?.getAttribute("aria-label")).toBe("Daily processed tokens by harness");
     expect(JSON.parse(stored.get(USAGE_PREFERENCES_KEY)!)).toMatchObject({ metric: "tokens" });
   });
 
@@ -175,7 +171,6 @@ describe("UsageScreen", () => {
   });
 
   it("refetches at hour resolution for the 24h window", async () => {
-    prefer("classic");
     await mount();
     click(buttonByText("24h"));
     await flush();
@@ -183,7 +178,7 @@ describe("UsageScreen", () => {
     expect(summarySpy.mock.calls[2][0]).toMatchObject({ resolution: "hour" });
     expect(summarySpy.mock.calls[2][0].sinceTime).toBeTruthy();
     expect(scanSpy).toHaveBeenCalledTimes(1);
-    expect(text()).toContain("Hourly cost");
+    expect(text()).toContain("Last 24 hours");
   });
 
   it("scans history and then refetches the summary", async () => {
@@ -335,17 +330,6 @@ describe("UsageScreen", () => {
     expect(details?.textContent).toContain("ai-tracking/ai-code-tracking.db");
   });
 
-  it("keeps the activity calendar behind a disclosure, closed by default", async () => {
-    prefer("classic");
-    await mount();
-    expect(container.querySelector('[role="grid"]')).toBeNull();
-    const toggle = container.querySelector<HTMLButtonElement>('[aria-controls="usage-activity"]')!;
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector('[role="grid"]')).not.toBeNull();
-  });
-
   it("ignores an old summary response after the window changes", async () => {
     stored.set(USAGE_PREFERENCES_KEY, JSON.stringify({ metric: "cost", windowDays: 30, includeImported: false }));
     const pending = deferred<UsageSummaryResult>();
@@ -363,13 +347,18 @@ describe("UsageScreen", () => {
 });
 
 describe("UsageScreen layouts", () => {
-  const radio = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Layout"] [role="radio"]')].find(button => button.textContent === label)!;
+  const layoutSelect = () => container.querySelector<HTMLSelectElement>('select[aria-label="Layout"]')!;
+  const pick = (value: string) => act(() => {
+    const select = layoutSelect();
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   const section = (label: string) => container.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
 
-  it.each(USAGE_LAYOUT_OPTIONS.filter(layout => layout !== "classic"))("keeps every honesty note in the %s layout", async layout => {
+  it.each(USAGE_LAYOUT_OPTIONS)("keeps every honesty note in the %s layout", async layout => {
     prefer(layout);
     await mount();
-    expect(radio(layout[0].toUpperCase() + layout.slice(1)).getAttribute("aria-checked")).toBe("true");
+    expect(layoutSelect().value).toBe(layout);
     expect(text()).toContain("$4.50~");
     expect(text()).toContain("API estimate · Partly unpriced");
     expect(text()).toContain("Partial total · History incomplete");
@@ -382,19 +371,24 @@ describe("UsageScreen layouts", () => {
 
   it("defaults to Ledger, switches layout without refetching, and persists it", async () => {
     await mount();
-    expect(radio("Ledger").getAttribute("aria-checked")).toBe("true");
+    expect(layoutSelect().value).toBe("ledger");
     expect(text()).toContain("Itemised by model");
-    click(radio("Strips"));
+    pick("strips");
     await flush();
     expect(summarySpy).toHaveBeenCalledTimes(2);
     expect(section("Strip scale")).not.toBeNull();
     expect(JSON.parse(stored.get(USAGE_PREFERENCES_KEY)!)).toMatchObject({ layout: "strips", metric: "cost", windowDays: 30 });
   });
 
+  it("offers no Classic layout", async () => {
+    await mount();
+    expect([...layoutSelect().options].map(option => option.value)).toEqual(["ledger", "strips", "flow", "mosaic", "calendar"]);
+  });
+
   it("falls back to Ledger for a stored layout it does not know", async () => {
     prefer("radar", "tokens");
     await mount();
-    expect(radio("Ledger").getAttribute("aria-checked")).toBe("true");
+    expect(layoutSelect().value).toBe("ledger");
     expect(buttonByText("Tokens").getAttribute("aria-checked")).toBe("true");
   });
 
