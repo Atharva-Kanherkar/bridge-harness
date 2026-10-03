@@ -1334,8 +1334,15 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
   </div>;
 }
 
+/// The host writes these as italic stand-ins when a turn is only a worker
+/// directive. They are status, not prose, so they go through ThinkingRow.
+const WORKER_STATUS = /^_(Delegating to a worker|Checking on workers|Steering a worker|Stopping a worker)…_$/;
+
 function StreamedProse({ text, streaming }: { text: string; streaming: boolean }) {
-  return <Markdown text={useSmoothText(text, streaming)} />;
+  const smooth = useSmoothText(text, streaming);
+  const status = WORKER_STATUS.exec(text.trim())?.[1];
+  if (status) return <ThinkingRow label={`${status}…`}/>;
+  return <Markdown text={smooth} />;
 }
 
 /// Prose, from either side of the conversation.
