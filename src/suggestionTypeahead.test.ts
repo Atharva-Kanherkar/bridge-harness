@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { scheduleSuggestion } from "./suggestionTypeahead";
+import { createSuggestionQueue, scheduleSuggestion } from "./suggestionTypeahead";
 import type { SuggestCompletionResult } from "./protocol/generated/protocol";
 
 const result = (suggestion: string): SuggestCompletionResult => ({ suggestion, usedFallback: false, fallbackReason: null });
@@ -124,5 +124,42 @@ describe("scheduleSuggestion", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(onResult).not.toHaveBeenCalled();
+  });
+});
+
+describe("suggestion request queue", () => {
+  it("skips obsolete pending drafts and sends only the newest after an active request", async () => {
+    const queue = createSuggestionQueue();
+    const generation = { current: 0 };
+    let finish!: (value: SuggestCompletionResult) => void;
+    const request = vi.fn().mockImplementationOnce(() => new Promise<SuggestCompletionResult>(resolve => { finish = resolve; })).mockResolvedValue(result(" fresh"));
+    const onResult = vi.fn();
+    const schedule = (text: string) => scheduleSuggestion({ text, enabled: true, request, onResult, generation, queue });
+    schedule("first");
+    await vi.advanceTimersByTimeAsync(400);
+    schedule("obsolete");
+    await vi.advanceTimersByTimeAsync(400);
+    schedule("latest");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(request).toHaveBeenCalledTimes(1);
+    finish(result(" stale"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request.mock.calls.map(call => call[0])).toEqual(["first", "latest"]);
+    expect(onResult).not.toHaveBeenCalledWith(result(" stale"));
+    expect(onResult).toHaveBeenLastCalledWith(result(" fresh"));
+  });
+  it("reports a current failure, ignores stale errors and recovers", async () => {
+    const queue = createSuggestionQueue();
+    const generation = { current: 0 };
+    const onError = vi.fn();
+    const onResult = vi.fn();
+    const error = new Error("provider failed");
+    scheduleSuggestion({ text: "first", enabled: true, request: vi.fn().mockRejectedValue(error), generation, onError, onResult, queue });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(onError).toHaveBeenLastCalledWith(error);
+    scheduleSuggestion({ text: "retry", enabled: true, request: vi.fn().mockResolvedValue(result(" works")), generation, onError, onResult, queue });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(onError).toHaveBeenLastCalledWith(undefined);
+    expect(onResult).toHaveBeenLastCalledWith(result(" works"));
   });
 });

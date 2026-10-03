@@ -10,6 +10,7 @@ export type ComposerPillProps = {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  onSelectionChange?: (start: number, end: number) => void;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   /// Intercepts the paste before the textarea's default text insertion. The
   /// handler decides whether the paste stays text or becomes attachments —
@@ -83,6 +84,7 @@ export function ComposerPill({
   onChange,
   onSubmit,
   onKeyDown,
+  onSelectionChange,
   onPaste,
   attachments,
   browserSelections = [],
@@ -124,7 +126,11 @@ export function ComposerPill({
   };
   const [, setCaretEpoch] = useState(0);
   const showSuggestion = !!suggestion && caretAtEnd();
-  const noteCaret = () => setCaretEpoch(n => n + 1);
+  const noteCaret = () => {
+    setCaretEpoch(n => n + 1);
+    const node = textareaRef.current;
+    if (node) onSelectionChange?.(node.selectionStart, node.selectionEnd);
+  };
   const syncOverlayScroll = () => {
     const overlay = overlayRef.current;
     const textarea = textareaRef.current;
@@ -266,7 +272,7 @@ export function ComposerPill({
               aria-expanded={autocomplete ? true : undefined}
               aria-controls={autocomplete?.controls}
               aria-activedescendant={autocomplete?.activeDescendant}
-              onChange={event => onChange(event.target.value)}
+              onChange={event => { onChange(event.target.value); noteCaret(); }}
               onSelect={noteCaret}
               onClick={noteCaret}
               onKeyUp={noteCaret}
@@ -281,7 +287,7 @@ export function ComposerPill({
                 if (event.defaultPrevented) return;
                 // Read the caret live: `showSuggestion` can lag a click that has
                 // not yet flushed through `onSelect`.
-                if (event.key === "Tab" && suggestion && caretAtEnd() && onAcceptSuggestion) {
+                if (event.key === "Tab" && !event.shiftKey && !event.nativeEvent.isComposing && suggestion && caretAtEnd() && onAcceptSuggestion) {
                   event.preventDefault();
                   onAcceptSuggestion();
                   return;

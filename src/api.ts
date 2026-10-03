@@ -2669,7 +2669,15 @@ export const bridgeApi = {
   },
   listSlashCommands: async (sessionId?: string): Promise<SlashCommand[]> => {
     if (isTauri()) return call("slash/list_slash_commands", { sessionId: sessionId ?? null });
-    return [];
+    const harness = mockState.sessions.find(session => session.id === sessionId)?.harness;
+    const commands: SlashCommand[] = [
+      { name: "clear", description: "Start fresh in this chat", harness: "bridge", kind: "builtin" },
+      { name: "compact", description: "Compact this chat's context", harness: "bridge", kind: "builtin" },
+      { name: "btw", description: "Open a side chat", harness: "bridge", kind: "builtin" },
+      ...mockSkills.personal.flatMap(skill => skill.providers.map(provider => ({ name: skill.name, description: skill.description, harness: provider, kind: "skill" }))),
+      ...mockSkills.community.flatMap(skill => skill.providerStates.filter(state => state.installed).map(state => ({ name: skill.slug, description: skill.description, harness: state.provider, kind: "skill" }))),
+    ];
+    return commands.filter(command => !harness || command.harness === "bridge" || command.harness === harness);
   },
   resolveSlashCommand: async (sessionId: string, text: string): Promise<SlashCommandResolve | null> => {
     if (isTauri()) return call("slash/resolve_slash_command", { sessionId, text });

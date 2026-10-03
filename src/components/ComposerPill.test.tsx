@@ -173,6 +173,16 @@ describe("ComposerPill", () => {
   });
 
   describe("inline suggestions", () => {
+    it("preserves backwards focus navigation with Shift+Tab", () => {
+      const onAcceptSuggestion = vi.fn();
+      render({ value: "draft", suggestion: " continues", onAcceptSuggestion });
+      textarea().setSelectionRange(5, 5);
+      const event = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+      act(() => textarea().dispatchEvent(event));
+      expect(onAcceptSuggestion).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    });
+
     const putCaretAtEnd = (value: string) => {
       act(() => {
         textarea().setSelectionRange(value.length, value.length);

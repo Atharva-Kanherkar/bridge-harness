@@ -63,6 +63,39 @@ const makeEvent = (sequence: number): AgentEvent => ({
 });
 
 describe("AsideChat", () => {
+  it("inserts an embedded skill at the cursor without sending or losing the suffix", async () => {
+    const onSend = vi.fn();
+    await mount({ onSend, initialDraft: "Please use /rev on this change", slashCommands: [
+      { name: "review", description: "Review changes", kind: "skill", harness: "claude" },
+      { name: "clear", description: "Clear context", kind: "builtin", harness: "bridge" },
+    ] });
+    const box = dialog().querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => { box.focus(); box.setSelectionRange(15, 15); box.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(dialog().querySelector("#aside-slash-listbox")!.textContent).toContain("/review");
+    expect(dialog().querySelector("#aside-slash-listbox")!.textContent).not.toContain("/clear");
+    await act(async () => box.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(box.value).toBe("Please use /review on this change");
+    expect(box.selectionStart).toBe("Please use /review ".length);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("uses updated composer settings and accepts inline completion with Tab", async () => {
+    const suggest = vi.spyOn(bridgeApi, "suggestCompletion").mockResolvedValue({ suggestion: " failure modes", usedFallback: false, fallbackReason: null });
+    const onSend = vi.fn();
+    await mount({ onSend, initialDraft: "Explain the" });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
+    expect(suggest).not.toHaveBeenCalled();
+    await mount({ onSend, suggestionSettings: { configured: true, settings: { enabled: true, provider: "claude", model: "sonnet" } } });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
+    expect(suggest).toHaveBeenCalledWith("Explain the");
+    const box = dialog().querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => { box.focus(); box.setSelectionRange(box.value.length, box.value.length); box.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await act(async () => box.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    expect(box.value).toBe("Explain the failure modes");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("wears the harness's tinted mark and names the delegation", async () => {
     await mount();
     expect(dialog().getAttribute("aria-label")).toBe("Aside with Claude");

@@ -885,6 +885,8 @@ describe("the dock in the session view", () => {
       setter.call(box, "/btw");
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    // Discovery owns the first Enter. Dismiss it to submit the bare command.
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await settle(4);
     expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();

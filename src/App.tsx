@@ -18,14 +18,14 @@ import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./e
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
 import { createLiveReplay } from "./liveReplay";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, WorkerRepositoryBinding, Workspace, WorkspaceSessionKind } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
-import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { GithubRepository, QuestionAction, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { chatName, isHiddenSession, liveAgentSessions } from "./components/sidebarChats";
@@ -92,7 +92,10 @@ import { ContextRing } from "./components/ContextRing";
 import { ContextLensDialog } from "./components/ContextLensDialog";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
-import { scheduleSuggestion } from "./suggestionTypeahead";
+import { useComposerSuggestion } from "./useComposerSuggestion";
+import { ComposerSlashMenu } from "./components/ComposerSlashMenu";
+import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus";
+import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "./composerSlash";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
@@ -260,6 +263,7 @@ function AppContent() {
   const resolvedReferences = useRef(new Map<string, ResolveReferenceResult>());
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [asideSlashCommands, setAsideSlashCommands] = useState<import("./types").SlashCommand[]>([]);
+  const [composerSelection, setComposerSelection] = useState<[number, number]>();
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
@@ -272,7 +276,6 @@ function AppContent() {
   const [agentShortcutIndex, setAgentShortcutIndex] = useState(0);
   const [agentShortcutDismissed, setAgentShortcutDismissed] = useState(false);
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
-  const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [pinnedAgents, togglePinnedAgent] = usePinnedAgents();
@@ -428,8 +431,6 @@ function AppContent() {
     }
   };
 
-  const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
-  const suggestionGeneration = useRef(0);
   // Shown once per fallback episode, not on every debounce firing while the
   // configured model stays in cooldown.
   const [fallbackNotice, setFallbackNotice] = useState<string>();
@@ -1157,21 +1158,9 @@ function AppContent() {
     () => (session ? queuedFollowUps(session.id, state.events).length : 0),
     [session, state.events],
   );
-  const slashQuery = /^\/([^\s]*)$/.exec(composer)?.[1];
-  const slashMatches = useMemo(() => {
-    if (slashQuery == null) return [];
-    const query = slashQuery.toLowerCase();
-    return slashCommandsForHarness(slashCommands, session?.harness)
-      .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
-      .sort((a, b) => {
-        const aName = a.name.toLowerCase();
-        const bName = b.name.toLowerCase();
-        const aPrefix = query ? Number(aName.startsWith(query)) : 0;
-        const bPrefix = query ? Number(bName.startsWith(query)) : 0;
-        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        return aName.localeCompare(bName);
-      });
-  }, [slashQuery, slashCommands, session?.harness]);
+  const slashToken = composerSlashToken(composer, composerSelection?.[0] ?? composer.length, composerSelection?.[1] ?? composer.length);
+  const slashQuery = slashToken?.query;
+  const slashMatches = composerSlashMatches(slashCommandsForHarness(slashCommands, session?.harness), slashToken);
   const slashOpen = slashQuery != null && slashMatches.length > 0 && !slashDismissed;
   const slashListRef = useRef<HTMLDivElement>(null);
   // @file mention: match a token being typed at the end of the composer, at the
@@ -1195,7 +1184,7 @@ function AppContent() {
       .slice(0, 50)
       .map(file => file.path);
   }, [mentionQuery, workspaceFileOptions]);
-  const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
+  const mentionOpen = !slashToken && mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
   // #agent shortcut: leading-only, and only while the target token is being
   // typed. The host resolves the selected token again from persisted config;
@@ -1225,33 +1214,16 @@ function AppContent() {
   const harnessShortcutOpen = harnessShortcutQueryValue != null && harnessShortcutMatches.length > 0 && !harnessShortcutDismissed;
   const harnessShortcutListRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const query = composer.trim();
-    if (!session || !(["codex", "claude", "opencode"] as Harness[]).includes(session.harness) || query.length < 8 || query.startsWith("/")) { setSkillSuggestions([]); return; }
-    const provider = session.harness as SkillProvider;
-    let active = true;
-    const timer = window.setTimeout(() => { void bridgeApi.skillSuggestions(query, provider).then(items => { if (active) setSkillSuggestions(items.slice(0, 3)); }).catch(() => { if (active) setSkillSuggestions([]); }); }, 300);
-    return () => { active = false; window.clearTimeout(timer); };
-  }, [composer, session]);
-
   // The inline typeahead's own settings — loaded once; Settings' save path
   // keeps this fresh via `onSuggestionSettingsChange`.
-  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(() => undefined); }, []);
+  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(value => setError(`Could not load composer settings: ${errorMessage(value)}`)); }, []);
 
   // A new configured model/provider earns its own one-time fallback notice.
   useEffect(() => { fallbackNoticeShownRef.current = false; }, [suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
 
-  // Debounced draft completion: 400ms after the last keystroke, with a
-  // generation counter so a stale response from an earlier draft can never
-  // overwrite a newer one. No request fires with the toggle off, no session,
-  // or an empty draft.
-  useEffect(() => scheduleSuggestion({
-    text: composer,
-    enabled: !!suggestionSettings?.settings.enabled && !!session,
-    request: bridgeApi.suggestCompletion,
-    onResult: setDraftSuggestion,
-    generation: suggestionGeneration,
-  }), [composer, session, suggestionSettings?.settings.enabled, suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+  const completion = useComposerSuggestion(composer, suggestionSettings, session?.id,
+    slashToken !== undefined || mentionQuery != null || agentShortcutQueryValue != null || harnessShortcutQueryValue != null);
+  const draftSuggestion = completion.result;
 
   // The fallback chip: shown once per episode, not re-shown on every debounce
   // firing while the configured model stays in its cooldown window.
@@ -1267,8 +1239,8 @@ function AppContent() {
   const acceptSuggestion = useCallback(() => {
     if (!draftSuggestion?.suggestion) return;
     setComposer(current => current + draftSuggestion.suggestion);
-    setDraftSuggestion(undefined);
-  }, [draftSuggestion]);
+    completion.clear();
+  }, [draftSuggestion, completion.clear]);
 
   useEffect(() => {
     if (!slashOpen) return;
@@ -2519,14 +2491,21 @@ function AppContent() {
     setForest(next);
   }, [session]);
   async function applySlash(command: import("./types").SlashCommand) {
-    if (session?.kind === "direct" && command.harness !== session.harness) {
+    if (session?.kind === "direct" && command.harness !== "bridge" && command.harness !== session.harness) {
       const adapter = adapters.find(item => item.id === command.harness);
       try { setState(await bridgeApi.updateChatModel(session.id, command.harness as Harness, adapter?.defaultModel ?? null)); }
       catch (e) { setError(errorMessage(e)); return; }
     }
-    setComposer(`/${command.name} `);
+    if (!slashToken) return;
+    const inserted = insertComposerSlash(composer, slashToken, command.name);
+    setComposer(inserted.text);
+    setComposerSelection([inserted.caret, inserted.caret]);
     setSlashIndex(0);
     setSlashDismissed(true);
+    window.setTimeout(() => {
+      const input = composerRef.current;
+      if (input?.value === inserted.text) { input.focus(); input.setSelectionRange(inserted.caret, inserted.caret); }
+    }, 0);
   }
   // The `+` control: the system file dialog, so any file on the machine can be
   // attached to any chat — including one with no folder connected. The chosen
@@ -2561,25 +2540,25 @@ function AppContent() {
       if (e.key === "ArrowDown") { e.preventDefault(); setAgentShortcutIndex(index => Math.min(index + 1, agentShortcutMatches.length - 1)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setAgentShortcutIndex(index => Math.max(index - 1, 0)); return; }
       if (e.key === "Escape") { e.preventDefault(); setAgentShortcutDismissed(true); return; }
-      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyAgentShortcut(agentShortcutMatches[Math.min(agentShortcutIndex, agentShortcutMatches.length - 1)]); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); applyAgentShortcut(agentShortcutMatches[Math.min(agentShortcutIndex, agentShortcutMatches.length - 1)]); return; }
     }
     if (mentionOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setMentionIndex(index => Math.min(index + 1, fileMatches.length - 1)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
       if (e.key === "Escape") { e.preventDefault(); setMentionDismissed(true); return; }
-      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyFileMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); applyFileMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
     }
     if (harnessShortcutOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setHarnessShortcutIndex(index => Math.min(index + 1, harnessShortcutMatches.length - 1)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setHarnessShortcutIndex(index => Math.max(index - 1, 0)); return; }
       if (e.key === "Escape") { e.preventDefault(); setHarnessShortcutDismissed(true); return; }
-      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyHarnessShortcut(harnessShortcutMatches[Math.min(harnessShortcutIndex, harnessShortcutMatches.length - 1)]); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); applyHarnessShortcut(harnessShortcutMatches[Math.min(harnessShortcutIndex, harnessShortcutMatches.length - 1)]); return; }
     }
     if (slashOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setSlashIndex(index => Math.max(index - 1, 0)); return; }
       if (e.key === "Escape") { e.preventDefault(); setSlashDismissed(true); return; }
-      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); void applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); void applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void sendPrompt(); }
   }
@@ -2964,6 +2943,7 @@ function AppContent() {
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
             workspaceFiles={hasRepo ? workspaceFiles : []}
             slashCommands={asideSlashCommands}
+            suggestionSettings={suggestionSettings}
             modelSwitch={modelSwitch?.sessionId === asideSession.id ? modelSwitch : null}
             lifecycle={asideLifecycle}
             initialDraft={asideLifecycle?.recoveryDraft}
@@ -3116,7 +3096,6 @@ function AppContent() {
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={contextRing}/>
                 </div> : <div className="relative mx-auto max-w-conversation-frame">
-                  {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Dispatch a specialist</span>
@@ -3149,13 +3128,13 @@ function AppContent() {
                       </button>; })}
                     </div>
                   </div>}
-                  {slashOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                  {slashOpen && <div id="slash-listbox" role="listbox" aria-label="Commands and skills" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Commands & skills</span>
                       <span className="normal-case tracking-normal text-muted-foreground/50">{slashMatches.length}</span>
                     </div>
                     <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
-                      {slashMatches.map((command, index) => <button key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                      {slashMatches.map((command, index) => <button id={`slash-option-${index}`} role="option" aria-selected={index === slashIndex} key={`${command.harness}:${command.kind}:${command.name}`} type="button" data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); void applySlash(command); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
                         <span className="font-mono text-[12px] text-foreground whitespace-nowrap">/{command.name}</span>
                         <span className="flex-1 min-w-0 text-[11px] text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{command.description}</span>
                         <span title={command.harness === "bridge" ? "Runs locally in Bridge" : "Provider-owned command"} className="shrink-0 text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground border border-border rounded px-1 py-[1px]">{slashOwnershipBadge(command.harness)}</span>
@@ -3178,6 +3157,7 @@ function AppContent() {
                     layout="dock"
                     value={composer}
                     onChange={value => { setComposer(value); setHarnessShortcutFailure(undefined); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); refreshReferences(value); }}
+                    onSelectionChange={(start, end) => setComposerSelection([start, end])}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     onPaste={handleComposerPaste}
@@ -3186,7 +3166,9 @@ function AppContent() {
                     browserSelections={browserSelections.filter(context => context.sessionId === session.id)}
                     onRemoveBrowserSelection={id => setBrowserSelections(current => current.filter(context => context.id !== id))}
                     onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
-                    autocomplete={agentShortcutOpen ? {
+                    autocomplete={slashOpen ? {
+                      controls: "slash-listbox", activeDescendant: `slash-option-${Math.min(slashIndex, slashMatches.length - 1)}`,
+                    } : agentShortcutOpen ? {
                       controls: "agent-shortcut-listbox",
                       activeDescendant: `agent-shortcut-option-${agentShortcutIndex}`,
                     } : mentionOpen ? {
@@ -3197,7 +3179,7 @@ function AppContent() {
                     onAcceptSuggestion={acceptSuggestion}
                     references={referenceChips}
                     onRemoveReference={removeReference}
-                    placeholder={turnActive ? "Send a follow-up…" : "Message Bridge…"}
+                    placeholder={`${turnActive ? "Send a follow-up…" : "Message Bridge…"} / skills & commands · $ provider · @ files · # agents`}
                     disabled={!session}
                     working={turnActive}
                     activeAction={activeAction}
@@ -3228,6 +3210,7 @@ function AppContent() {
                       onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
                     />}
                   />
+                  <div className="mx-4 sm:mx-6"><ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} /></div>
                   {harnessShortcutFailure && <p role="alert" className="mx-4 mt-2 text-[11px] text-destructive sm:mx-6">{harnessShortcutFailure}</p>}
                 </div>}
               </div>
@@ -3320,6 +3303,8 @@ function AppContent() {
           // together; a level the new model also offers survives the switch.
           effort: carryEffort(supportedEffortLevelsOf(adapters, harness, model), current?.effort),
         }))}
+        slashCommands={slashCommands}
+        suggestionSettings={suggestionSettings}
         canStartChat={adaptersReady}
         busy={busy}
         workspaces={state.workspaces}
@@ -3480,7 +3465,9 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+  slashCommands: import("./types").SlashCommand[];
+  suggestionSettings?: SuggestionSettingsSnapshot;
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -3520,6 +3507,25 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
   const sessionModeHintId = useId();
   const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [selection, setSelection] = useState<[number, number]>();
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const slashToken = composerSlashToken(draft, selection?.[0] ?? draft.length, selection?.[1] ?? draft.length);
+  const slashMatches = composerSlashMatches(slashCommandsForHarness(slashCommands, harness), slashToken);
+  const slashOpen = !!slashToken && slashMatches.length > 0 && !slashDismissed;
+  const completion = useComposerSuggestion(draft, suggestionSettings, `welcome:${harness}`, slashToken !== undefined || /^\s*[$#@]/.test(draft));
+  const applySlash = (command: import("./types").SlashCommand) => {
+    if (!slashToken) return;
+    const inserted = insertComposerSlash(draft, slashToken, command.name);
+    setDraft(inserted.text);
+    setSelection([inserted.caret, inserted.caret]);
+    setSlashDismissed(true);
+    window.setTimeout(() => {
+      const input = inputRef.current;
+      if (input?.value === inserted.text) { input.focus(); input.setSelectionRange(inserted.caret, inserted.caret); }
+    }, 0);
+  };
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const submit = () => {
@@ -3565,17 +3571,33 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
         : greeting.headline}
     </h1>
     <p className="mb-7 max-w-xl text-[13px] leading-relaxed text-muted-foreground">Ask a question, explore an idea, or pick a project and get to work.</p>
+    <div className="relative">
+    {slashOpen && <ComposerSlashMenu id="welcome-slash-listbox" commands={slashMatches} index={Math.min(slashIndex, slashMatches.length - 1)} onIndex={setSlashIndex} onSelect={applySlash} />}
     <ComposerPill
       layout="hero"
       value={draft}
-      onChange={value => { setDraft(value); onDraftChange(); }}
+      inputRef={inputRef}
+      onChange={value => { setDraft(value); setSlashDismissed(false); setSlashIndex(0); onDraftChange(); }}
+      onSelectionChange={(start, end) => setSelection([start, end])}
+      autocomplete={slashOpen ? { controls: "welcome-slash-listbox", activeDescendant: `welcome-slash-listbox-option-${Math.min(slashIndex, slashMatches.length - 1)}` } : undefined}
+      suggestion={completion.result?.suggestion}
+      onAcceptSuggestion={() => { if (completion.result?.suggestion) setDraft(current => current + completion.result!.suggestion); completion.clear(); }}
       onSubmit={submit}
-      onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
+      onKeyDown={event => {
+        if (event.nativeEvent.isComposing) return;
+        if (slashOpen) {
+          if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
+          if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(index => Math.max(index - 1, 0)); return; }
+          if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
+          if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) { event.preventDefault(); applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
+        }
+        if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
+      }}
       onPaste={handlePaste}
       onAttachFiles={attachFiles}
       attachments={attachments}
       onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
-      placeholder={canStartChat ? "Ask Bridge, or paste a repo to open it…" : "Paste a repo to open it, or install a model adapter to chat…"}
+      placeholder={canStartChat ? "Ask Bridge… / skills & commands · $ provider · paste a repo to open it" : "Paste a repo to open it, or install a model adapter to chat…"}
       // Opening a project (typing a bare repo URL, or the folder `+` below)
       // needs no adapter — only starting an actual chat turn does, and
       // submitNewChatDraft already guards that with its own adaptersReady
@@ -3602,6 +3624,8 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
         onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
       /> : undefined}
     />
+    <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
+    </div>
     {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
       {workspace
