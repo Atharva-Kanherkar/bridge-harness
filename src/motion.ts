@@ -48,3 +48,13 @@ export function useMotionStagger(duration: number = MOTION_DURATION.reveal): Tra
     ? { duration: 0 }
     : { duration, ease: BRIDGE_EASE, staggerChildren: MOTION_STAGGER };
 }
+
+/**
+ * How a scroll driven from JavaScript should move: smoothly, unless the user
+ * asked for less motion. The stylesheet's reduced-motion rule cannot reach an
+ * explicit `behavior: "smooth"`, so every such call asks here instead.
+ */
+export function scrollBehavior(): ScrollBehavior {
+  const reduce = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)") : undefined;
+  return reduce?.matches ? "auto" : "smooth";
+}

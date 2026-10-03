@@ -13,6 +13,7 @@ import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } fr
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
+import { scrollBehavior } from "./motion";
 import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutResentAttachments, withoutResentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -867,7 +868,7 @@ function AppContent() {
     if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
     setHighlightEntryId(entryId);
     requestAnimationFrame(() => {
-      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     });
     // The highlight is a pointer, not a state: it fades once it has done its
     // job, instead of marking the entry until the next navigation.
@@ -3097,7 +3098,7 @@ function AppContent() {
                   onJump={entryId => {
                     setHighlightEntryId(entryId);
                     requestAnimationFrame(() => {
-                      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
                     });
                   }}
                 />
