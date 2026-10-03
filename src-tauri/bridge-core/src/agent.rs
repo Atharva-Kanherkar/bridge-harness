@@ -1156,10 +1156,16 @@ fn normalize_item(
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     if item_type == "contextCompaction" {
-        // The boundary is a completed fact. Its opening half carries nothing a
-        // reader can act on, and recording both halves would put two rows in
-        // history for one compaction.
-        if method == "item/started" || compaction_already_recorded(state, params) {
+        // The boundary is a completed fact, and recording both halves would put
+        // two rows in history for one compaction. The opening half is still
+        // worth saying while it is true, as a live-only event the store keeps
+        // no row for (see `NATIVE_COMPACTING_KIND`).
+        if method == "item/started" {
+            let mut event = native_compacting("codex");
+            event.item_id = item.get("id").and_then(Value::as_str).map(str::to_owned);
+            return vec![event];
+        }
+        if compaction_already_recorded(state, params) {
             return vec![];
         }
         let mut event = native_compaction("codex", json!({}));
@@ -1661,6 +1667,12 @@ fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
                 .unwrap_or("unknown");
             let mut event = with_data("session.status", message, message.clone());
             event.status = Some(status.into());
+            // Claude Code says when it starts compacting, for its own
+            // threshold and for a forwarded `/compact` alike. The boundary
+            // that ends it arrives as `compact_boundary` below.
+            if status == "compacting" {
+                return vec![event, native_compacting("claude")];
+            }
             if status == "requesting" {
                 let mut turn = with_data(
                     "turn.started",
@@ -2490,6 +2502,15 @@ fn with_data(kind: &str, params: &Value, data: Value) -> NormalizedEvent {
 /// See `docs/compaction-and-resume.md`.
 pub const NATIVE_COMPACTION_KIND: &str = "context.compacted";
 
+/// The kind a harness's own compaction normalizes to while it is still running.
+///
+/// The boundary above is a completed fact and is stored. This is the opposite:
+/// a statement about right now, which is worth nothing once the boundary lands
+/// or the turn ends, so the store writes no row for it and a replay never sees
+/// it. It exists so the transcript can say the model is compacting, because a
+/// compaction can take long enough that a silent chat reads as hung.
+pub const NATIVE_COMPACTING_KIND: &str = "context.compacting";
+
 /// One native compaction boundary, in the shape the transcript reads.
 ///
 /// `facts` carries whatever the provider actually reported. Null members are
@@ -2512,6 +2533,18 @@ fn compaction_already_recorded(state: &mut CodexStreamState, params: &Value) -> 
     }
     state.compacted_turn = Some(turn);
     false
+}
+
+/// A harness's own compaction, announced as it starts.
+///
+/// Carries only which harness is compacting: the figures arrive with the
+/// boundary, and the live row has nothing else to say.
+pub fn native_compacting(harness: &str) -> NormalizedEvent {
+    let mut event = NormalizedEvent::new(NATIVE_COMPACTING_KIND);
+    event.data = json!({"harness": harness});
+    event.status = Some("inProgress".into());
+    event.title = Some("Compacting context".into());
+    event
 }
 
 fn native_compaction(harness: &str, facts: Value) -> NormalizedEvent {
@@ -2639,6 +2672,41 @@ mod tests {
         assert_eq!(events[1].text.as_deref(), Some("Model hit rate limit or context overload"));
     }
     #[test]
+    fn claude_compacting_status_announces_the_compaction_as_it_starts() {
+        let events = normalize_claude_message(&json!({
+            "type":"system",
+            "subtype":"status",
+            "status":"compacting",
+            "session_id":"s1",
+            "uuid":"u1"
+        }));
+        let compacting: Vec<_> = events
+            .iter()
+            .filter(|event| event.kind == NATIVE_COMPACTING_KIND)
+            .collect();
+        assert_eq!(compacting.len(), 1);
+        assert_eq!(compacting[0].status.as_deref(), Some("inProgress"));
+        assert_eq!(compacting[0].data["harness"], "claude");
+        // The status frame itself is still reported, and does not open a turn:
+        // only `requesting` does.
+        assert!(events.iter().any(|event| event.kind == "session.status"));
+        assert!(!events.iter().any(|event| event.kind == "turn.started"));
+    }
+
+    #[test]
+    fn claude_statuses_other_than_compacting_announce_nothing() {
+        for status in [json!("requesting"), json!(null)] {
+            let events = normalize_claude_message(&json!({
+                "type":"system","subtype":"status","status":status,"session_id":"s1","uuid":"u1"
+            }));
+            assert!(
+                !events.iter().any(|event| event.kind == NATIVE_COMPACTING_KIND),
+                "{status} is not a compaction"
+            );
+        }
+    }
+
+    #[test]
     fn claude_compact_boundary_becomes_a_durable_context_compaction() {
         let events = normalize_claude_message(&json!({
             "type":"system",
@@ -2689,9 +2757,14 @@ mod tests {
                     "item":{"id":"i1","type":"contextCompaction"}}}),
             &mut state,
         );
-        assert!(
-            started.is_empty(),
-            "the opening half of a boundary carries nothing to record"
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].kind, NATIVE_COMPACTING_KIND);
+        assert_eq!(started[0].status.as_deref(), Some("inProgress"));
+        assert_eq!(started[0].data["harness"], "codex");
+        assert_eq!(
+            started[0].item_id.as_deref(),
+            Some("i1"),
+            "the item id is what ties the opening half to the boundary"
         );
         let completed = normalize_codex_message_with_state(
             &json!({"method":"item/completed","params":{"threadId":"t1","turnId":"turn-1",

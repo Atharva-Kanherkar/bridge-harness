@@ -258,6 +258,20 @@ export interface ContextCompacted extends Framed {
   status?: string;
 }
 
+/**
+ * The harness is compacting its own context window right now.
+ *
+ * Live only: the store writes no row for it, so it never appears in a replay.
+ * It draws no row of its own either. It is the evidence behind the status row
+ * that says "Compacting context", and the boundary that ends it
+ * (`ContextCompacted`) is what the transcript keeps. See
+ * `compactionInFlight` in `compaction.ts`.
+ */
+export interface ContextCompacting extends Framed {
+  type: "context.compacting";
+  harness?: string;
+}
+
 export interface BranchSummary extends Framed {
   type: "branch.summary";
   title: string;
@@ -365,6 +379,7 @@ export type TranscriptEvent =
   | CheckpointRecorded
   | CompactionReported
   | ContextCompacted
+  | ContextCompacting
   | BranchSummary
   | TranscriptError
   | TranscriptNotice

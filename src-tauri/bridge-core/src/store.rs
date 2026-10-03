@@ -4266,12 +4266,17 @@ pub(crate) fn session_event_in_transaction(
     } else if final_kind.ends_with(".delta")
         || final_kind.ends_with(".progress")
         || final_kind == "question.settled"
+        || final_kind == crate::agent::NATIVE_COMPACTING_KIND
     {
-        // Streaming frames and one control signal are the only events that
+        // Streaming frames and two control signals are the only events that
         // leave no trace. A delta is worthless once its terminal event lands
         // carrying the whole content, and `question.settled` merely tells
         // `live_turn.rs` to resolve an existing `approval.requested` row; it
-        // is not itself a durable conversation item.
+        // is not itself a durable conversation item. A harness announcing it
+        // is compacting is the same shape: true for a moment, then replaced
+        // by the boundary (`context.compacted`) that is the durable record,
+        // and a stored "compacting" row would be a claim history can never
+        // retract if the boundary never arrives.
         return Ok(AgentEvent {
             id: 0,
             session_id: session_id.into(),
@@ -4495,6 +4500,24 @@ mod tests {
         assert_eq!(replayed[0].provider_meta, live.provider_meta);
         let second = session_event(&db, "s", &event, &json!({"adapter":"codex"})).unwrap();
         assert_ne!(second.provider_meta["bridgeEntryId"], live.provider_meta["bridgeEntryId"]);
+    }
+
+    #[test]
+    fn a_compaction_in_progress_leaves_no_row() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','working','reported')",
+            [],
+        )
+        .unwrap();
+        let live = session_event(&db, "s", &crate::agent::native_compacting("claude"), &json!({})).unwrap();
+        assert_eq!(live.kind, crate::agent::NATIVE_COMPACTING_KIND);
+        assert_eq!(live.sequence, 0, "a transient event returns sequence 0");
+        assert_eq!(live.status.as_deref(), Some("inProgress"));
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='s'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "nothing the forest could replay as a stale compaction");
     }
 
     #[test]

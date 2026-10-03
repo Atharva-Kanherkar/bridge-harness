@@ -125,6 +125,14 @@ function invalidEntryEvent(envelope: TranscriptEnvelope, payload: Record<string,
  */
 const NATIVE_COMPACTION_KIND = "context.compacted";
 
+/**
+ * The same compaction while it is still running.
+ *
+ * Mirrors `NATIVE_COMPACTING_KIND` in `bridge-core/src/agent.rs`. Live only:
+ * the store keeps no row for it.
+ */
+export const NATIVE_COMPACTING_KIND = "context.compacting";
+
 /** Families the Rust side owns. A new member of one of these is not unknown. */
 const KNOWN_PREFIXES = [
   "message.", "reasoning.", "tool.", "command.", "file_change.", "diff.",
@@ -310,6 +318,9 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   if (kind === NATIVE_COMPACTION_KIND) {
     return contextCompactedEvent(envelope, data, status);
   }
+  if (kind === NATIVE_COMPACTING_KIND) {
+    return { type: "context.compacting", envelope, harness: stringValue(data.harness) };
+  }
   if (kind === "compaction" || kind.startsWith("compaction.")) {
     return compactionEvent(kind, envelope, { ...data, text, status }, text, status);
   }
@@ -360,6 +371,49 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   }
   reportUnknown(kind, "live");
   return { type: "unknown", envelope, wireKind: kind, raw: { ...data } };
+}
+
+/** A compaction the harness is running, as far as the live window can tell. */
+export interface CompactionInFlight {
+  /** When the first announcement of it arrived, in epoch milliseconds. */
+  since: number;
+  harness?: string;
+}
+
+/**
+ * Whether the harness is compacting right now, read from the live window.
+ *
+ * It is in flight from the first `context.compacting` frame after the last
+ * frame that closes it: the boundary it ends in, or the end of the turn. A
+ * forwarded `/compact` is announced twice, once by Bridge when it forwards the
+ * command and once by the harness when it begins, so the earliest unsettled
+ * frame is the one that says when it started. A turn marker that opens a turn
+ * closes nothing: Claude and Codex both open a turn around a compaction they
+ * were asked for.
+ *
+ * The announcement is live only, so a window loaded after the fact holds none
+ * and reads as not compacting. That is the honest answer from a window that no
+ * longer holds the evidence.
+ */
+export function compactionInFlight(events: readonly AgentEvent[]): CompactionInFlight | null {
+  let opened: AgentEvent | undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const kind = readWireKind(events[index].kind);
+    if (kind === NATIVE_COMPACTING_KIND) {
+      opened = events[index];
+      continue;
+    }
+    const closes = kind === NATIVE_COMPACTION_KIND
+      || kind === "session.idle"
+      || (kind.startsWith("turn.") && kind !== "turn.started");
+    if (closes) break;
+  }
+  if (!opened) return null;
+  const since = Date.parse(opened.createdAt);
+  return {
+    since: Number.isNaN(since) ? Date.now() : since,
+    harness: stringValue(opened.data.harness),
+  };
 }
 
 /**

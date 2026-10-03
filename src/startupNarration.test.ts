@@ -5,6 +5,7 @@ const base: NarrationInput = {
   hasPendingWork: true,
   streaming: false,
   switchingToLabel: null,
+  compactingSince: null,
   latestPhase: null,
   startedAt: 0,
   streamStartedAt: null,
@@ -61,6 +62,36 @@ describe("computeNarration", () => {
     const at = computeNarration({ ...base, switchingToLabel: "Opus", startedAt: 0, now: 10_400 });
     expect(at.showElapsed).toBe(true);
     expect(at.elapsedSeconds).toBe(10);
+  });
+
+  // A compaction is the harness's own work. Nothing is being thought or
+  // streamed while it runs, so the row must stop saying "Thinking".
+  it("narrates a compaction as the one thing happening, not as thinking", () => {
+    const view = computeNarration({ ...base, compactingSince: 0, latestPhase: "session_open" });
+    expect(view.mounted).toBe(true);
+    expect(view.collapsed).toBe(false);
+    expect(view.label).toBe("Compacting context…");
+  });
+
+  it("keeps the compaction row up past the first-token handoff", () => {
+    const view = computeNarration({ ...base, compactingSince: 0, streaming: true, streamStartedAt: 0, now: 60_000 });
+    expect(view.mounted).toBe(true);
+    expect(view.label).toBe("Compacting context…");
+  });
+
+  it("lets a model switch outrank a compaction", () => {
+    const view = computeNarration({ ...base, compactingSince: 0, switchingToLabel: "Opus" });
+    expect(view.label).toBe("Switching to Opus…");
+  });
+
+  it("counts a compaction from its own start, not the turn's", () => {
+    // The turn began at 0, the compaction at 100s: an automatic one starts
+    // mid-turn, and must not open claiming it has run for 100s.
+    const early = computeNarration({ ...base, compactingSince: 100_000, startedAt: 0, now: 105_000 });
+    expect(early.showElapsed).toBe(false);
+    const late = computeNarration({ ...base, compactingSince: 100_000, startedAt: 0, now: 112_400 });
+    expect(late.showElapsed).toBe(true);
+    expect(late.elapsedSeconds).toBe(12);
   });
 
   it("unmounts as soon as the switch clears with nothing pending", () => {

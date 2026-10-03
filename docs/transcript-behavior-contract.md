@@ -168,6 +168,7 @@ what settles it, per item type:
 | `error` | `failed` | the turn hit something it could not continue past | nothing; an error is terminal |
 | `delegation` | the worker's status | the worker's own lifecycle | the worker's result |
 | `checkpoint`, `compaction`, `branch-summary` | the operation's status | durable history events | their own completion or failure |
+| `context.compacting` (live only) | `inProgress` | the harness is compacting its context | the boundary, or the end of the turn; it draws no row of its own, only the status row's label |
 | `model-change` | the switch's status (normally `ready`) | the model/harness switch milestone divider | nothing; a switch is terminal history |
 | `raw` | none | a frame kept for inspection | nothing |
 
