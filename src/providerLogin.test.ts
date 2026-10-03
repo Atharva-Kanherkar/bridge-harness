@@ -1,6 +1,7 @@
 import { asWireKind } from "./transcript/wire";
 import { describe, expect, it } from "vitest";
-import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
+import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload } from "./providerLogin";
+import type { ConversationItem } from "./conversation";
 
 describe("provider login recovery", () => {
   it("recovers a live auth error but does not act on conversation text", () => {
@@ -26,5 +27,29 @@ describe("provider login recovery", () => {
     for (const message of ["403 forbidden", "429 rate limit", "connection refused", "write scope rejected"])
       expect(needsProviderSignIn("codex", message)).toBeNull();
     expect(needsProviderSignIn("external", "authentication required")).toBeNull();
+  });
+});
+
+describe("sign-in retry payload", () => {
+  const image = "data:image/png;base64,AAAA";
+  const userTurn = (text: string, attachments: unknown[] = []) =>
+    ({ key: text, type: "message", role: "user", text, data: { attachments }, eventId: 1, sequence: 1, turn: 1 }) as ConversationItem;
+
+  it("resends an image-only failed send instead of an older text turn", () => {
+    const attachment = { id: "a1", mediaType: "image/png", dataUri: image };
+    const payload = signInRetryPayload({ sessionId: "s1", payload: { text: "", attachments: [attachment] } }, "s1", [userTurn("older message")]);
+    expect(payload).toEqual({ text: "", attachments: [attachment] });
+  });
+
+  it("keeps the images of a failed turn read from the transcript", () => {
+    const payload = signInRetryPayload({ sessionId: "s1" }, "s1", [userTurn("first"), userTurn("look at this", [{ mediaType: "image/png", dataUri: image }])]);
+    expect(payload?.text).toBe("look at this");
+    expect(payload?.attachments).toEqual([expect.objectContaining({ mediaType: "image/png", dataUri: image })]);
+  });
+
+  it("offers nothing in another chat or when there is nothing to resend", () => {
+    expect(signInRetryPayload({ sessionId: "s1" }, "s2", [userTurn("hi")])).toBeUndefined();
+    expect(signInRetryPayload({ sessionId: "s1" }, "s1", [])).toBeUndefined();
+    expect(signInRetryPayload(null, "s1", [userTurn("hi")])).toBeUndefined();
   });
 });

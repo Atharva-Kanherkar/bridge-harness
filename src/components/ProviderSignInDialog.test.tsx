@@ -113,6 +113,26 @@ describe("provider sign-in dialog", () => {
     expect(document.body.textContent).toContain("Sign in to Claude Code");
   });
 
+  it("does not claim success when the sign-in status cannot be read", async () => {
+    const health = vi.spyOn(bridgeApi, "health").mockRejectedValue(new Error("daemon unavailable"));
+    await open({ onRetry: vi.fn() });
+    await finish();
+    expect(document.body.textContent).toContain("Couldn't confirm sign-in");
+    expect(document.body.textContent).not.toContain("Signed in to Claude Code");
+    expect(buttonByText("Retry message")).toBeUndefined();
+    health.mockResolvedValue(healthWith("signed_in"));
+    act(() => buttonByText("Check again")!.click());
+    await flush();
+    expect(document.body.textContent).toContain("Signed in to Claude Code");
+  });
+
+  it("does not claim success when health never mentions the provider", async () => {
+    vi.spyOn(bridgeApi, "health").mockResolvedValue({ adapters: [] } as unknown as Health);
+    await open();
+    await finish();
+    expect(document.body.textContent).toContain("Couldn't confirm sign-in");
+  });
+
   it("cancels the vendor process when the user cancels", async () => {
     const onClose = vi.fn(() => {
       root.render(<ProviderSignInDialog provider={null} label="" onAuthChanged={() => undefined} onClose={() => undefined} />);

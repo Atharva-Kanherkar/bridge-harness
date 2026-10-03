@@ -1,4 +1,4 @@
-import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
+import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
@@ -346,9 +346,10 @@ function AppContent() {
   // Cleared on success, restored on failure — a refused send must not eat the
   // user's clipboard work.
   const [loginProvider, setLoginProvider] = useState<UsageProvider | null>(null);
-  // Where the turn that needed sign-in came from: a failed send leaves its
-  // text in the composer, a failed turn leaves it in the transcript.
-  const [loginRetry, setLoginRetry] = useState<{ sessionId: string; source: "composer" | "transcript" } | null>(null);
+  // What to resend once sign-in succeeds. A failed send knows its exact
+  // payload. A failed turn's prompt is read from the transcript at retry time,
+  // when the forest has caught up with it.
+  const [loginRetry, setLoginRetry] = useState<SignInRetry | null>(null);
   const [agentOnboardingComplete, setAgentOnboardingComplete] = useState(readAgentOnboardingComplete);
   const finishAgentOnboarding = useCallback((setup?: ModelSetupState) => {
     writeAgentOnboardingComplete();
@@ -537,7 +538,7 @@ function AppContent() {
         const provider = providerSignInForEvent(target.harness, event);
         if (provider) {
           setLoginProvider(current => current ?? provider);
-          setLoginRetry(current => current ?? { sessionId: target.id, source: "transcript" });
+          setLoginRetry(current => current ?? { sessionId: target.id });
         }
       }
     }).then(fn => {
@@ -2405,23 +2406,18 @@ function AppContent() {
       const provider = needsProviderSignIn(target.harness, message);
       if (provider) {
         setLoginProvider(provider);
-        setLoginRetry({ sessionId: target.id, source: "composer" });
+        setLoginRetry({ sessionId: target.id, payload: { text: retryText, attachments: sentAttachments } });
       }
       setError(message);
     }
   }
-  // Only offered while the chat that hit the sign-in wall is still open, so a
-  // retry can never land in a different conversation.
-  const lastUserText = useMemo(() => {
-    const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
-    const last = durable.filter(item => item.type === "message" && item.role === "user").at(-1);
-    return last?.type === "message" ? last.text.trim() : "";
-  }, [forest]);
-  const retryAfterSignIn = loginRetry && loginRetry.sessionId === session?.id
-    ? loginRetry.source === "composer" && composer.trim()
-      ? () => { void sendPrompt(); }
-      : lastUserText ? () => { void sendPrompt(lastUserText, []); } : undefined
-    : undefined;
+  // The transcript is projected only when a failed turn is waiting on it.
+  const retryPayload = useMemo(() => signInRetryPayload(
+    loginRetry,
+    session?.id,
+    loginRetry && !loginRetry.payload && forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [],
+  ), [forest, loginRetry, session?.id]);
+  const retryAfterSignIn = retryPayload ? () => { void sendPrompt(retryPayload.text, retryPayload.attachments); } : undefined;
   // Rethrow without also raising the global corner alert: the approval/question
   // card renders the failure itself.
   const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision, optionId?: string) => {
