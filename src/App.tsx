@@ -2,7 +2,7 @@ import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, type S
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
-import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
@@ -13,6 +13,8 @@ import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } fr
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
+import { scrollBehavior } from "./motion";
+import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
@@ -98,7 +100,7 @@ import { useComposerSuggestion } from "./useComposerSuggestion";
 import { ComposerSlashMenu } from "./components/ComposerSlashMenu";
 import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus";
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "./composerSlash";
-import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
+import { projectSessionConversation, reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
 import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
@@ -347,7 +349,7 @@ function AppContent() {
   // the user must be able to see and resolve that here — otherwise the session
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
-  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued"; attachment?: string }[]>([]);
+  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; after?: number; delivery?: "steered" | "queued"; attachments: string[] }[]>([]);
   // Image attachments pasted into the composer, waiting to ride the next send.
   // Cleared on success, restored on failure — a refused send must not eat the
   // user's clipboard work.
@@ -370,6 +372,61 @@ function AppContent() {
   browserSelectionsRef.current = browserSelections;
   const selectedSessionIdRef = useRef(selectedSessionId);
   selectedSessionIdRef.current = selectedSessionId;
+  // Drafts belong to their chat. The composer's state is the draft of the chat
+  // that owns it (`draftOwnerRef`); every other chat's draft waits in `drafts`
+  // until that chat is opened again. One composer shared by every chat used to
+  // carry half-written text and pasted images into whichever chat was opened
+  // next, and Enter sent them there.
+  //
+  // A layout effect, so the swap lands before paint: the chat never shows
+  // another chat's draft, even for a frame.
+  const drafts = useRef(new ComposerDrafts()).current;
+  const draftOwnerRef = useRef(selectedSessionId);
+  const liveDraftRef = useRef<ComposerDraft>(EMPTY_DRAFT);
+  liveDraftRef.current = { text: composer, attachments };
+  useLayoutEffect(() => {
+    const previous = draftOwnerRef.current;
+    if (previous === selectedSessionId) return;
+    draftOwnerRef.current = selectedSessionId;
+    if (previous) drafts.put(previous, liveDraftRef.current);
+    const next = selectedSessionId ? drafts.take(selectedSessionId) : EMPTY_DRAFT;
+    setComposer(next.text);
+    setAttachments(next.attachments);
+    setComposerSelection(undefined);
+    refreshReferences(next.text);
+  }, [selectedSessionId]);
+  // A draft is only worth holding while its chat exists.
+  useEffect(() => {
+    if (stateLoaded && drafts.size) drafts.retain(new Set(state.sessions.map(item => item.id)));
+  }, [drafts, state.sessions, stateLoaded]);
+  /** Give a chat its draft, wherever that draft lives right now. */
+  const seedDraft = (sessionId: string, text: string) => {
+    if (draftOwnerRef.current === sessionId) {
+      setComposer(text);
+      setAttachments([]);
+      refreshReferences(text);
+    } else {
+      drafts.put(sessionId, { text, attachments: [] });
+    }
+  };
+  /** Take what a send used out of the chat's draft, keeping anything added since. */
+  const consumeDraft = (sessionId: string | undefined, sent: ComposerDraft) => {
+    if (draftOwnerRef.current === sessionId) {
+      setComposer(current => withoutSentText(current, sent.text));
+      setAttachments(current => withoutSentAttachments(current, sent.attachments));
+    } else if (sessionId) {
+      drafts.put(sessionId, withoutSent(drafts.peek(sessionId), sent));
+    }
+  };
+  /** Hand a failed send back to the chat it came from, ahead of anything typed since. */
+  const restoreFailedSend = (sessionId: string | undefined, failed: ComposerDraft) => {
+    if (draftOwnerRef.current === sessionId) {
+      setComposer(current => mergeFailedText(current, failed.text));
+      setAttachments(current => mergeFailedAttachments(current, failed.attachments));
+    } else if (sessionId) {
+      drafts.put(sessionId, mergeFailedSend(drafts.peek(sessionId), failed));
+    }
+  };
   const attachBrowserSelection = useCallback((context: BrowserSelectionContext) => {
     if (context.sessionId !== selectedSessionIdRef.current) return;
     const safe = sanitizeBrowserSelection(context, context);
@@ -811,7 +868,7 @@ function AppContent() {
     if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
     setHighlightEntryId(entryId);
     requestAnimationFrame(() => {
-      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
     });
     // The highlight is a pointer, not a state: it fades once it has done its
     // job, instead of marking the entry until the next navigation.
@@ -1067,14 +1124,10 @@ function AppContent() {
     return state.sessions.find(candidate => candidate.id === asideLifecycle.sessionId);
   }, [asideLifecycle, session?.id, state.sessions]);
   const asidePending = useMemo(
-    () => pending.filter(item => item.sessionId === asideLifecycle?.sessionId).map(item => item.text),
+    () => pending.filter(item => item.sessionId === asideLifecycle?.sessionId),
     [pending, asideLifecycle?.sessionId],
   );
-  const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
-  const pendingForSessionAttachments = useMemo(
-    () => pending.filter(p => p.sessionId === session?.id && p.attachment).map(p => p.attachment as string),
-    [pending, session?.id],
-  );
+  const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
@@ -1408,9 +1461,9 @@ function AppContent() {
   // counted forever under an already-answered reply.
   useEffect(() => {
     setPending(current => {
-      const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
-      const durableUserTexts = new Set(durable.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
-      return undeliveredPending(current, agentEvents, { sessionId: session?.id, durableUserTexts });
+      if (!current.length) return current;
+      const durableRows = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+      return undeliveredPending(current, agentEvents, { sessionId: session?.id, durableRows });
     });
   }, [agentEvents, forest, session?.id]);
 
@@ -1547,7 +1600,7 @@ function AppContent() {
         // Open the session with the draft in the composer. Nothing is sent: the user edits
         // and presses Send, which is the whole point of preparing rather than starting.
         setState(await bridgeApi.state());
-        setComposer(prepared.draft);
+        seedDraft(prepared.sessionId, prepared.draft);
         openSession(prepared.sessionId);
         return { ok: true };
       }
@@ -2194,6 +2247,16 @@ function AppContent() {
     composerRef.current?.focus();
   };
 
+  /// The newest user turn with `text` this chat already has, from what the app
+  /// holds for it: the live stream always, and the forest when it is the open
+  /// chat's. The pending bubble for a new send waits for a turn newer than
+  /// this, so repeating an earlier message ("yes", "continue") still shows it.
+  function sendWatermark(sessionId: string, text: string): number | undefined {
+    const live = reduceConversation(agentEvents.filter(event => event.sessionId === sessionId));
+    const durable: ConversationItem[] = forest?.sessionId === sessionId && forest.entries?.length
+      ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    return userTurnWatermark(text, live, durable);
+  }
   /// The delivery core both composers share: prepare, cold-start if needed,
   /// submit, with optimistic pending bookkeeping. Slash-command handling stays
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
@@ -2203,11 +2266,11 @@ function AppContent() {
     // should see their words the instant they press Send, and the daemon may
     // take a while to prepare the turn. If preparation rewrites the text, the
     // same row is updated in place.
-    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments?.[0]?.dataUri }]);
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, after: sendWatermark(target.id, submittedText), attachments: (sentAttachments ?? []).map(item => item.dataUri) }]);
     try {
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
       const text = prepared.text;
-      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
       if (!liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -2228,6 +2291,10 @@ function AppContent() {
   async function sendPrompt(forcedText?: string, forcedAttachments?: ComposerAttachment[]) {
     const submittedText = (forcedText ?? composer).trim();
     const sentAttachments = forcedAttachments ?? attachments;
+    // The chat whose composer this came from. Every await below can end with
+    // another chat on screen, so whatever the send does to a draft afterwards
+    // (empty it, or hand words back) is done to this chat's.
+    const origin = draftOwnerRef.current;
     const selectedBrowserContexts = forcedText === undefined && session
       ? browserSelections.filter(context => context.sessionId === session.id) : [];
     if (selectedBrowserContexts.length && /^(?:\/|\$[a-z]|#[a-z])/i.test(submittedText)) {
@@ -2259,10 +2326,7 @@ function AppContent() {
         // Only a genuinely opened side chat spends the composer. A refused
         // ask (no question, unavailable harness, create in flight) keeps both
         // the draft and its attachments so the user can complete and retry.
-        if (await openSideChat(sideChat.query, session.id, sentAttachments)) {
-          setComposer("");
-          setAttachments([]);
-        }
+        if (await openSideChat(sideChat.query, session.id, sentAttachments)) consumeDraft(origin, { text: submittedText, attachments: sentAttachments });
       } catch {
         // The aside lifecycle owns the inline recovery state. Keep the source
         // draft and its attachments so Enter is also a valid retry path.
@@ -2279,7 +2343,8 @@ function AppContent() {
         if (shortcut.kind !== "notShortcut") {
           if (shortcut.kind === "opened") {
             setHarnessShortcutFailure(undefined);
-            setComposer("");
+            // The new chat is on screen by now; the words were typed here.
+            consumeDraft(origin, { text: submittedText, attachments: [] });
           } else {
             setHarnessShortcutFailure(harnessShortcutError(shortcut));
           }
@@ -2310,25 +2375,36 @@ function AppContent() {
             ? "is queued for the next worker slot"
             : "was launched";
         setAgentDispatchNotice(`${outcome.agentName} (${outcome.role}) ${action}.`);
-        await reload();
       } catch (e) {
-        setComposer(submittedText);
+        restoreFailedSend(origin, { text: submittedText, attachments: [] });
         setError(errorMessage(e));
+        return;
       }
+      // Dispatched. A refresh that fails now is an error to show, not a reason
+      // to hand the words back for a second dispatch.
+      await reload().catch(value => setError(errorMessage(value)));
       return;
     }
     const key = crypto.randomUUID();
     let target = session;
     let retryText = submittedText;
-    setComposer("");
+    if (forcedText === undefined && forcedAttachments === undefined) {
+      setComposer("");
+      setAttachments([]);
+    } else {
+      // A retry resends a payload its failure already put back in the
+      // composer. Take that copy out, and leave anything typed since.
+      setComposer(current => withoutSentText(current, submittedText));
+      setAttachments(current => withoutSentAttachments(current, sentAttachments));
+    }
     setSlashIndex(0);
-    setAttachments([]);
     // The optimistic row lands synchronously, before the first round-trip: the
     // user sees their bubble (and the image) the instant they press Send. The
     // durable row the backend persists carries the same attachment data, so a
     // reload replays it identically. If preparation rewrites the text, the
     // same row is updated in place rather than re-added.
-    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments[0]?.dataUri }]);
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, after: sendWatermark(target.id, submittedText), attachments: sentAttachments.map(item => item.dataUri) }]);
+    let localOnly = false;
     const validateSelectedPage = async () => {
       const valid = await Promise.all(selectedBrowserContexts.map(context => validateBrowserSelectionPage(context.sessionId, context.tabId, context.navigationId)));
       if (selectedSessionIdRef.current !== target.id || valid.some(result => !result)
@@ -2341,7 +2417,7 @@ function AppContent() {
       const prepared = await bridgeApi.prepareTurn(target.id, serializeBrowserSelections(submittedText, selectedBrowserContexts, target.id));
       const text = prepared.text;
       retryText = selectedBrowserContexts.length ? submittedText : text;
-      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
@@ -2349,7 +2425,7 @@ function AppContent() {
         setState(next);
         target = next.sessions.find(item => item.id === target.id) ?? target;
       }
-      const localOnly = /^\/(usage|cost|stats|clear|new|reset|compact|recall|pins|unpin|pin)(\s|$)/i.test(text);
+      localOnly = /^\/(usage|cost|stats|clear|new|reset|compact|recall|pins|unpin|pin)(\s|$)/i.test(text);
       if (!localOnly && !liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -2370,16 +2446,12 @@ function AppContent() {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
         setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
       }
-      if (localOnly) {
-        setPending(current => current.filter(item => item.key !== key));
-        await reload();
-      }
+      if (localOnly) setPending(current => current.filter(item => item.key !== key));
     }
     catch (e) {
-      if (selectedSessionIdRef.current === target.id) {
-        setComposer(retryText);
-        setAttachments(sentAttachments);
-      }
+      // Back where it was typed, never over what was typed since, and never
+      // dropped because another chat is on screen now.
+      restoreFailedSend(origin ?? target.id, { text: retryText, attachments: sentAttachments });
       setPending(current => current.filter(item => item.key !== key));
       const message = errorMessage(e);
       const provider = needsProviderSignIn(target.harness, message);
@@ -2388,7 +2460,11 @@ function AppContent() {
         setLoginRetry({ sessionId: target.id, payload: { text: retryText, attachments: sentAttachments } });
       }
       setError(message);
+      return;
     }
+    // A local command has run once it is submitted. Its refresh failing is an
+    // error to show, not a reason to hand the command back for a second run.
+    if (localOnly) await reload().catch(value => setError(errorMessage(value)));
   }
   // The transcript is projected only when a failed turn is waiting on it.
   const retryPayload = useMemo(() => signInRetryPayload(
@@ -3022,7 +3098,7 @@ function AppContent() {
                   onJump={entryId => {
                     setHighlightEntryId(entryId);
                     requestAnimationFrame(() => {
-                      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
                     });
                   }}
                 />
@@ -3052,7 +3128,7 @@ function AppContent() {
                   working={turnActive}
                   modelSwitch={modelSwitch?.sessionId === session?.id ? modelSwitch : null}
                    pendingMessages={pendingForSession}
-                   pendingAttachments={pendingForSessionAttachments}
+                   queuedFollowUps={queuedFollowUpCount}
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
                    onAskAside={quoted => {

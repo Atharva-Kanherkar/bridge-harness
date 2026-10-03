@@ -178,4 +178,28 @@ describe("sending a message reacts before the daemon answers", () => {
     expect(stopButton()).toBeNull();
     expect(container.textContent).toContain("long task please");
   });
+
+  // "yes" and "continue" are said again and again. Matching the pending bubble
+  // on text alone counted the earlier turn as this send's delivery, so the
+  // composer cleared and nothing appeared until the daemon answered.
+  it("shows a repeated message's bubble before the daemon answers", async () => {
+    const occurrences = () => container.querySelector("[data-conversation-content]")!.textContent!.split("continue please").length - 1;
+    await send("continue please");
+    await settle(4);
+    await waitForEvents();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+    expect(occurrences(), "the first send landed").toBe(1);
+
+    const held = deferred<{ text: string; interceptions: [] }>();
+    vi.spyOn(bridgeApi, "prepareTurn").mockReturnValue(held.promise);
+    await send("continue please");
+    expect(composer()!.value).toBe("");
+    expect(occurrences(), "the repeat shows its bubble at once").toBe(2);
+
+    held.resolve({ text: "continue please", interceptions: [] });
+    await settle(4);
+    await waitForEvents();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 600)); });
+    expect(occurrences(), "one row per send once both landed").toBe(2);
+  });
 });

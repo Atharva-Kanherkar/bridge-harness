@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
+import { scrollBehavior } from "../motion";
 import type { SessionPullRequest } from "../protocol/generated/protocol";
 import {
   announcement,
@@ -514,7 +515,7 @@ export function useInView() {
 }
 
 export function jumpToChatPullRequests() {
-  document.getElementById("chat-pull-requests")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  document.getElementById("chat-pull-requests")?.scrollIntoView({ behavior: scrollBehavior(), block: "center" });
 }
 
 // ── small hooks ─────────────────────────────────────────────────────────────

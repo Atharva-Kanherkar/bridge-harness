@@ -67,6 +67,121 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
 }
 
 /**
+ * A message the user has sent that has not come back as a user turn yet.
+ *
+ * Text alone cannot say whether it has come back: "yes" or "continue" is often
+ * already in the transcript from an earlier turn, and matching on text hid the
+ * new bubble until the server answered. So a send also remembers `after`, the
+ * stamp of the newest identical turn the chat already had when it was sent,
+ * and only a turn stamped later answers it.
+ */
+export interface PendingSend {
+  text: string;
+  /**
+   * Epoch milliseconds of the newest user turn with this text that already
+   * existed at send time. Absent when there was none: then any turn with this
+   * text answers it.
+   */
+  after?: number;
+}
+
+/** An optimistic bubble: the send, how the backend took it, and its images. */
+export interface PendingMessage extends PendingSend {
+  /** Set when the send arrived during a running turn; absent for a new turn. */
+  delivery?: DeliveryNote;
+  /** Data URIs of every image sent with it. */
+  attachments?: readonly string[];
+}
+
+function stampOf(item: ConversationItem): number {
+  return Date.parse(item.createdAt ?? "");
+}
+
+function isUserTurn(item: ConversationItem): boolean {
+  return item.type === "message" && item.role === "user";
+}
+
+/**
+ * The stamp a new send of `text` has to beat: the newest user turn with that
+ * text in any of these projections, or undefined when none has one.
+ *
+ * Both stamps come from the backend's clock, so the comparison never depends on
+ * the client's. Turns without a readable stamp are skipped here and, in
+ * `answeredPending`, answer anything: no worse than matching on text.
+ */
+export function userTurnWatermark(text: string, ...projections: readonly (readonly ConversationItem[])[]): number | undefined {
+  const wanted = text.trim();
+  let newest: number | undefined;
+  for (const rows of projections) {
+    for (const item of rows) {
+      if (!isUserTurn(item) || item.text.trim() !== wanted) continue;
+      const at = stampOf(item);
+      if (!Number.isNaN(at) && (newest === undefined || at > newest)) newest = at;
+    }
+  }
+  return newest;
+}
+
+/**
+ * Which pending sends these rows answer, as indexes into `pending`.
+ *
+ * A row answers a send with the same trimmed text that it is newer than. Each
+ * row answers one send at most, and sends claim rows in the order they were
+ * sent, so two identical sends need two turns.
+ *
+ * One known limit: once the first of two identical sends in flight lands and
+ * is dropped from `pending`, its row can answer the second, whose bubble then
+ * goes a moment early. Nothing is left stranded either way.
+ */
+export function answeredPending(pending: readonly PendingSend[], rows: readonly ConversationItem[]): Set<number> {
+  const answered = new Set<number>();
+  if (!pending.length) return answered;
+  const turns = rows.filter(isUserTurn);
+  const claimed = new Set<ConversationItem>();
+  pending.forEach((send, index) => {
+    const text = send.text.trim();
+    const row = turns.find(item => {
+      if (claimed.has(item) || item.text.trim() !== text) return false;
+      if (send.after === undefined) return true;
+      const at = stampOf(item);
+      return Number.isNaN(at) || at > send.after;
+    });
+    if (!row) return;
+    claimed.add(row);
+    answered.add(index);
+  });
+  return answered;
+}
+
+/** How a message sent while a turn was running was taken, while that still matters. */
+export type DeliveryNote = "steered" | "queued";
+
+/**
+ * Which acknowledged user turns still say how they were delivered, by row key.
+ *
+ * The backend persists a mid-turn message with `data.delivery` before it even
+ * answers the send, so the optimistic bubble hands over to the real row almost
+ * at once and the note has to live on the real row. A queued follow-up is
+ * still waiting while the session's queue holds it; the queue drains oldest
+ * first, so the newest `waitingFollowUps` queued rows are the waiting ones. A
+ * steer joins the running step at once, so it says so only while that step is
+ * still running and nothing has answered after it.
+ */
+export function deliveryNotes(items: readonly ConversationItem[], waitingFollowUps: number, turnActive: boolean): Map<string, DeliveryNote> {
+  const notes = new Map<string, DeliveryNote>();
+  const queued = items.filter(item => isUserTurn(item) && item.data.delivery === "queued");
+  for (const item of queued.slice(Math.max(0, queued.length - waitingFollowUps))) notes.set(item.key, "queued");
+  if (!turnActive) return notes;
+  let answeredAfter = false;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.type === "message" && item.role === "assistant" && item.status !== "streaming") answeredAfter = true;
+    else if (!answeredAfter && isUserTurn(item) && item.data.delivery === "steered") notes.set(item.key, "steered");
+  }
+  return notes;
+}
+
+/**
  * The optimistic pending rows that have not yet come back as real user turns.
  *
  * Delivery is judged per row, in the row's **own** session: a pending message
@@ -79,28 +194,26 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
  * Returns the same array reference when nothing was delivered, so callers can
  * keep referential equality for render stability.
  */
-export function undeliveredPending<T extends { sessionId: string; text: string }>(
+export function undeliveredPending<T extends PendingSend & { sessionId: string }>(
   pending: readonly T[],
   liveEvents: AgentEvent[],
-  selected: { sessionId?: string; durableUserTexts: ReadonlySet<string> },
+  selected: { sessionId?: string; durableRows: readonly ConversationItem[] },
 ): T[] {
   if (!pending.length) return pending as T[];
-  const liveTexts = new Map<string, Set<string>>();
-  const deliveredIn = (sessionId: string, text: string): boolean => {
-    let texts = liveTexts.get(sessionId);
-    if (!texts) {
-      texts = new Set(
-        reduceConversation(liveEvents.filter(event => event.sessionId === sessionId))
-          .filter(item => item.type === "message" && item.role === "user")
-          .map(item => item.text.trim()),
-      );
-      liveTexts.set(sessionId, texts);
-    }
-    if (texts.has(text)) return true;
-    return sessionId === selected.sessionId && selected.durableUserTexts.has(text);
-  };
-  const next = pending.filter(item => !deliveredIn(item.sessionId, item.text.trim()));
-  return next.length === pending.length ? (pending as T[]) : next;
+  const bySession = new Map<string, T[]>();
+  for (const item of pending) {
+    const sends = bySession.get(item.sessionId);
+    if (sends) sends.push(item);
+    else bySession.set(item.sessionId, [item]);
+  }
+  const delivered = new Set<T>();
+  for (const [sessionId, sends] of bySession) {
+    const live = reduceConversation(liveEvents.filter(event => event.sessionId === sessionId));
+    for (const index of answeredPending(sends, live)) delivered.add(sends[index]);
+    if (sessionId !== selected.sessionId) continue;
+    for (const index of answeredPending(sends, selected.durableRows)) delivered.add(sends[index]);
+  }
+  return delivered.size ? pending.filter(item => !delivered.has(item)) : (pending as T[]);
 }
 
 /**
