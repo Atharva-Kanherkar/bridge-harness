@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { normalizeAgentEvent, normalizeSessionEntry } from "./codec";
+import { compactionInFlight, normalizeAgentEvent, normalizeSessionEntry } from "./codec";
 import { asWireKind } from "./wire";
 import type { AgentEvent, SessionEntry } from "../types";
 
@@ -66,6 +66,7 @@ const VOCABULARY: [kind: string, type: string][] = [
   ["compaction.requested", "compaction"],
   ["compaction.failed", "compaction"],
   ["context.compacted", "context.compacted"],
+  ["context.compacting", "context.compacting"],
   ["branch.summary", "branch.summary"],
   ["handoff.brief", "notice"],
   ["error", "error"],
@@ -296,5 +297,53 @@ describe("normalizeSessionEntry", () => {
   it("fails closed on an unsupported future semantic event schema", () => {
     expect(() => normalizeSessionEntry(durable("assistant.message", { text: "x" }, { semanticSchemaVersion: 3 })))
       .toThrow("Unsupported semantic event schema version 3");
+  });
+});
+
+describe("a compaction in flight", () => {
+  const compacting = (id: number, overrides: Partial<AgentEvent> = {}) =>
+    live("context.compacting", { id: 0, sequence: 0, status: "inProgress", data: { harness: "claude" }, createdAt: new Date(id * 1000).toISOString(), ...overrides });
+  const closing = (kind: string, id: number) => live(kind, { id, sequence: id });
+
+  it("reads the harness off the announcement", () => {
+    expect(normalizeAgentEvent(compacting(1))).toMatchObject({ type: "context.compacting", harness: "claude" });
+  });
+
+  it("is in flight from the announcement until something closes it", () => {
+    expect(compactionInFlight([])).toBeNull();
+    expect(compactionInFlight([closing("message.delta", 1)])).toBeNull();
+    expect(compactionInFlight([closing("message.delta", 1), compacting(2)])).toEqual({ since: 2000, harness: "claude" });
+  });
+
+  it("is closed by the boundary it ends in", () => {
+    expect(compactionInFlight([compacting(1), closing("context.compacted", 2)])).toBeNull();
+  });
+
+  it("is closed by the end of the turn, which is how a failed one clears", () => {
+    expect(compactionInFlight([compacting(1), closing("turn.completed", 2)])).toBeNull();
+    expect(compactionInFlight([compacting(1), closing("turn.failed", 2)])).toBeNull();
+    expect(compactionInFlight([compacting(1), closing("session.idle", 2)])).toBeNull();
+  });
+
+  it("is not closed by a turn opening around it", () => {
+    // Claude and Codex both open a turn for a `/compact` they were asked for,
+    // after Bridge has already announced it.
+    expect(compactionInFlight([compacting(1), closing("turn.started", 2)])).toMatchObject({ since: 1000 });
+  });
+
+  it("dates itself from the first announcement, since the harness repeats it", () => {
+    const events = [compacting(1), closing("turn.started", 2), compacting(5)];
+    expect(compactionInFlight(events)).toEqual({ since: 1000, harness: "claude" });
+  });
+
+  it("starts over when a later compaction follows a settled one", () => {
+    const events = [compacting(1), closing("context.compacted", 2), closing("turn.completed", 3), compacting(9, { data: { harness: "codex" } })];
+    expect(compactionInFlight(events)).toEqual({ since: 9000, harness: "codex" });
+  });
+
+  it("falls back to now when the announcement carries no usable time", () => {
+    const found = compactionInFlight([compacting(1, { createdAt: "now" })]);
+    expect(found).not.toBeNull();
+    expect(Number.isFinite(found!.since)).toBe(true);
   });
 });

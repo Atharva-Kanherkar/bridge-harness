@@ -278,6 +278,17 @@ describe("reduceTranscript", () => {
     expect(items[1]).toMatchObject({ title: "Compaction requested" });
     expect(items[2]).toMatchObject({ title: "Checkpoint saved" });
   });
+
+  it("draws nothing for a compaction in flight; the status row and the boundary carry it", () => {
+    // Two announcements, because Bridge and the harness each make one. Neither
+    // may leave a row behind: the transcript keeps the boundary, not the wait.
+    const items = reduce([
+      live(0, "context.compacting", { sequence: 0, status: "inProgress", data: { harness: "claude" } }),
+      live(0, "context.compacting", { sequence: 0, status: "inProgress", data: { harness: "claude" } }),
+      live(3, "context.compacted", { status: "completed", data: { harness: "claude" } }),
+    ]);
+    expect(items.map(item => item.type)).toEqual(["context-compacted"]);
+  });
 });
 
 

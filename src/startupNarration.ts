@@ -21,6 +21,11 @@ export interface NarrationInput {
    *  over every other label, and mounts the row even with no pending work —
    *  the switch is Bridge's own activity, not the agent's. */
   switchingToLabel: string | null;
+  /** The harness is compacting its context: when that began, or `null`. Wins
+   *  over every phase label and over the first-token handoff, because during a
+   *  compaction nothing is being thought or streamed, and "Thinking" would be
+   *  the one word that is wrong. A switch still outranks it. */
+  compactingSince: number | null;
   /** The furthest cold-start phase observed so far, or `null` if none has. */
   latestPhase: SessionStartupPhase | null;
   /** When `hasPendingWork` first became true, or `null` before that. */
@@ -64,7 +69,7 @@ function phaseLabel(phase: SessionStartupPhase | null): string {
 }
 
 export function computeNarration(input: NarrationInput): NarrationView {
-  const { hasPendingWork, streaming, switchingToLabel, latestPhase, startedAt, streamStartedAt, now, reducedMotion } = input;
+  const { hasPendingWork, streaming, switchingToLabel, compactingSince, latestPhase, startedAt, streamStartedAt, now, reducedMotion } = input;
   // A switch in flight owns the row outright: it mounts without pending work,
   // never collapses (there is no stream to hand off to), and outranks the
   // phase labels — whatever the old provider is doing behind the scenes, the
@@ -76,6 +81,20 @@ export function computeNarration(input: NarrationInput): NarrationView {
       mounted: true,
       collapsed: false,
       label: `Switching to ${switchingToLabel}…`,
+      showElapsed: elapsedMs >= ELAPSED_VISIBLE_AFTER_MS,
+      elapsedSeconds: Math.floor(elapsedMs / 1000),
+      reducedMotion,
+    };
+  }
+  // Counted from the compaction's own start, not the turn's: an automatic one
+  // begins mid-turn, and a counter reading the whole turn's age would claim a
+  // compaction that just started has been running for minutes.
+  if (compactingSince !== null) {
+    const elapsedMs = Math.max(0, now - compactingSince);
+    return {
+      mounted: true,
+      collapsed: false,
+      label: "Compacting context…",
       showElapsed: elapsedMs >= ELAPSED_VISIBLE_AFTER_MS,
       elapsedSeconds: Math.floor(elapsedMs / 1000),
       reducedMotion,

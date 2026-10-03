@@ -4252,6 +4252,7 @@ fn survives_checkpoint_turn(kind: &str) -> bool {
             | "usage.updated"
             | "error"
             | agent::NATIVE_COMPACTION_KIND
+            | agent::NATIVE_COMPACTING_KIND
     )
 }
 
@@ -4395,6 +4396,10 @@ mod checkpoint_turn_visibility_tests {
             survives_checkpoint_turn(agent::NATIVE_COMPACTION_KIND),
             "a harness compacting during Bridge's checkpoint turn is the one \
              moment the evidence matters most, and it must not be dropped"
+        );
+        assert!(
+            survives_checkpoint_turn(agent::NATIVE_COMPACTING_KIND),
+            "the announcement is half of the same fact"
         );
     }
 }
@@ -10658,6 +10663,10 @@ fn prepare_input(
                         ),
                     )?;
                 }
+                // The harness says when it starts compacting too, but not all
+                // of them do (OpenCode reports only the boundary), and a click
+                // that shows nothing until then reads as ignored.
+                emit_native_compacting(core, session_id, &session_harness)?;
                 core.events.publish(CoreEvent::StateChanged);
                 return Ok(InputPreparation::Handled { interceptions });
             }
@@ -12040,6 +12049,27 @@ fn emit_local_assistant(
             text: Some(text.into()),
             data: serde_json::json!({ "bridgeLocal": true }),
         },
+        &serde_json::json!({ "adapter": adapter_id }),
+    )?;
+    core.events.publish(CoreEvent::Agent(event));
+    Ok(())
+}
+
+/// Tell the transcript a forwarded `/compact` is running.
+///
+/// Live only: the store keeps no row for it (see
+/// [`agent::NATIVE_COMPACTING_KIND`]), and the harness's boundary is what
+/// settles it.
+fn emit_native_compacting(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    adapter_id: &str,
+) -> Result<(), BridgeError> {
+    let db = core.db.lock().unwrap();
+    let event = store::session_event(
+        &db,
+        session_id,
+        &agent::native_compacting(adapter_id),
         &serde_json::json!({ "adapter": adapter_id }),
     )?;
     core.events.publish(CoreEvent::Agent(event));

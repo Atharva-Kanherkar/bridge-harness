@@ -2,7 +2,7 @@ import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, attachmentUris, compactionInFlight, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
@@ -650,9 +650,10 @@ const ROW_VARIANTS = {
 /// Ties the pure narration computation in `startupNarration.ts` to the live
 /// `session-startup` subscription and a tick clock. Resets whenever the
 /// session id changes, so switching chats never carries over a stale phase.
-function useStartupNarration({ sessionId, switchingToLabel, hasPendingWork, streaming }: {
+function useStartupNarration({ sessionId, switchingToLabel, compactingSince, hasPendingWork, streaming }: {
   sessionId?: string;
   switchingToLabel: string | null;
+  compactingSince: number | null;
   hasPendingWork: boolean;
   streaming: boolean;
 }): NarrationView {
@@ -696,16 +697,18 @@ function useStartupNarration({ sessionId, switchingToLabel, hasPendingWork, stre
 
   // The only reason to keep re-rendering while idle: the elapsed counter and
   // the collapse-after-first-token timer both read the clock.
+  const compacting = compactingSince !== null;
   useEffect(() => {
-    if (!hasPendingWork && !switchingToLabel) return;
+    if (!hasPendingWork && !switchingToLabel && !compacting) return;
     const id = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(id);
-  }, [hasPendingWork, switchingToLabel]);
+  }, [hasPendingWork, switchingToLabel, compacting]);
 
   return computeNarration({
     hasPendingWork,
     streaming,
     switchingToLabel,
+    compactingSince,
     latestPhase: phase,
     startedAt,
     streamStartedAt,
@@ -849,12 +852,16 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // The turn is the gate for every liveness claim below. `working` is the
   // surface's answer when it has one; otherwise the session's own status is.
   const turnActive = working ?? ACTIVE_SESSION_STATUSES.has(session?.status ?? "");
+  // Only while the session still has a turn: a window that kept the
+  // announcement of a compaction the turn never closed must not claim one.
+  const compaction = useMemo(() => turnActive ? compactionInFlight(events) : null, [turnActive, events]);
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.
   const startupNarration = useStartupNarration({
     sessionId: session?.id,
     switchingToLabel: modelSwitch?.label ?? null,
+    compactingSince: compaction?.since ?? null,
     hasPendingWork: !!working || pendingMessages.length > 0,
     streaming,
   });
@@ -957,7 +964,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
             {bubble.attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Image you attached, still sending ${index + 1}`} className="max-h-40 rounded-xl"/>)}
           </div>}
         </div></TranscriptRow>)}
-        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? session?.harness}/></div></TranscriptRow>}
+        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}/></div></TranscriptRow>}
         {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-x-info`}>Stopping…</p></TranscriptRow>}
         {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
       </AnimatePresence>

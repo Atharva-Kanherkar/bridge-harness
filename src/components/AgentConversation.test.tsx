@@ -343,6 +343,40 @@ describe("AgentConversation", () => {
     expect(html).toContain("→");
   });
 
+  describe("while the harness compacts its context", () => {
+    const compacting = event(0, "context.compacting", { sequence: 0, status: "inProgress", data: { harness: "claude" } });
+    const render = (events: AgentEvent[], working = true) => renderToStaticMarkup(
+      <AgentConversation session={session} onResolve={() => undefined} events={events} working={working} />,
+    );
+
+    it("says so, with the compacting harness's mark, instead of claiming to think", () => {
+      const html = render([compacting]);
+      expect(html).toContain("Compacting context…");
+      expect(html).toContain('data-harness="claude"');
+      expect(html).not.toContain(">Thinking<");
+    });
+
+    it("says so after the harness has opened a turn around it", () => {
+      expect(render([compacting, event(1, "turn.started")])).toContain("Compacting context…");
+    });
+
+    it("stops saying so once the boundary lands", () => {
+      const html = render([compacting, event(2, "context.compacted", { status: "completed", data: { harness: "claude" } })]);
+      expect(html).not.toContain("Compacting context…");
+      expect(html).toContain("Context compacted");
+    });
+
+    it("stops saying so once the turn is over, however it ended", () => {
+      expect(render([compacting, event(2, "turn.completed")])).not.toContain("Compacting context…");
+    });
+
+    it("never claims a compaction for a session that has no turn", () => {
+      const idle: Session = { ...session, status: "idle" };
+      const html = renderToStaticMarkup(<AgentConversation session={idle} onResolve={() => undefined} events={[compacting]} working={false} />);
+      expect(html).not.toContain("Compacting context…");
+    });
+  });
+
   it("narrates a model switch with the incoming harness's mark, and no first-launch note anywhere", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} modelSwitch={{ harness: "claude", label: "Opus" }} />);
     expect(html).toContain("Switching to Opus…");

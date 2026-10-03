@@ -184,6 +184,10 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
   switch (event.type) {
     case "usage":
       return;
+    // Evidence for the status row, not a row: `compactionInFlight` reads it
+    // from the live window, and the boundary that ends it is what is kept.
+    case "context.compacting":
+      return;
     case "session.lifecycle":
       if (event.settles) settleThinking(fold);
       return;
