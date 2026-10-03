@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appendAgentEventBatch } from "./agentEvents";
-import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, mergeConversationProjections, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
+import { answeredPending, attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, userTurnWatermark, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, mergeConversationProjections, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 import { asWireKind } from "./transcript/wire";
 
@@ -959,10 +959,11 @@ describe("attachmentUris", () => {
 });
 
 describe("undeliveredPending", () => {
-  const userTurn = (id: number, sessionId: string, text: string) =>
-    event(id, "message.completed", { sessionId, itemId: `u${id}`, role: "user", text });
-  const row = (sessionId: string, text: string) => ({ key: text, sessionId, text });
-  const noneSelected = { sessionId: undefined, durableUserTexts: new Set<string>() };
+  const userTurn = (id: number, sessionId: string, text: string, createdAt = "now") =>
+    event(id, "message.completed", { sessionId, itemId: `u${id}`, role: "user", text, createdAt });
+  const row = (sessionId: string, text: string, after?: number) => ({ key: text, sessionId, text, ...(after === undefined ? {} : { after }) });
+  const durable = (...texts: string[]) => reduceConversation(texts.map((text, index) => userTurn(index + 1, "main", text)));
+  const noneSelected = { sessionId: undefined, durableRows: [] };
 
   // The field failure: an aside's pending "hi" checked against the selected
   // session's slice never reconciled, so the aside's startup row counted
@@ -973,12 +974,12 @@ describe("undeliveredPending", () => {
     expect(delivered).toEqual([row("main", "hi")]);
   });
 
-  it("still reconciles the selected session through its durable texts alone", () => {
+  it("still reconciles the selected session through its durable rows alone", () => {
     const pending = [row("main", "what store did we pick?")];
-    const delivered = undeliveredPending(pending, [], { sessionId: "main", durableUserTexts: new Set(["what store did we pick?"]) });
+    const delivered = undeliveredPending(pending, [], { sessionId: "main", durableRows: durable("what store did we pick?") });
     expect(delivered).toEqual([]);
     // The durable source belongs to the selected session only.
-    const other = undeliveredPending([row("aside-1", "what store did we pick?")], [], { sessionId: "main", durableUserTexts: new Set(["what store did we pick?"]) });
+    const other = undeliveredPending([row("aside-1", "what store did we pick?")], [], { sessionId: "main", durableRows: durable("what store did we pick?") });
     expect(other).toHaveLength(1);
   });
 
@@ -991,5 +992,73 @@ describe("undeliveredPending", () => {
   it("matches on trimmed text, like the optimistic rows it clears", () => {
     const delivered = undeliveredPending([row("s", "  hi  ")], [userTurn(1, "s", "hi")], noneSelected);
     expect(delivered).toEqual([]);
+  });
+
+  // The audit's F3: "continue" was already in the chat, so the new send
+  // counted as delivered the moment it was made and its bubble never showed.
+  it("does not count an earlier identical turn as the delivery of a repeat", () => {
+    const earlier = Date.parse("2026-10-03T10:00:00.000Z");
+    const pending = [row("s", "continue", earlier)];
+    const live = [userTurn(1, "s", "continue", "2026-10-03T10:00:00.000Z")];
+    expect(undeliveredPending(pending, live, noneSelected)).toBe(pending);
+    const durableOld = reduceConversation(live);
+    expect(undeliveredPending(pending, [], { sessionId: "s", durableRows: durableOld })).toBe(pending);
+    const landed = [...live, userTurn(2, "s", "continue", "2026-10-03T10:05:00.000Z")];
+    expect(undeliveredPending(pending, landed, noneSelected)).toEqual([]);
+  });
+});
+
+describe("userTurnWatermark", () => {
+  const turn = (id: number, text: string, createdAt: string, role = "user") =>
+    reduceConversation([event(id, "message.completed", { itemId: `m${id}`, role, text, createdAt })])[0];
+
+  it("is the newest stamp of a user turn with the same trimmed text across projections", () => {
+    const live = [turn(1, "yes", "2026-10-03T10:00:00.000Z"), turn(2, "no", "2026-10-03T12:00:00.000Z")];
+    const durable = [turn(3, " yes ", "2026-10-03T11:00:00.000Z")];
+    expect(userTurnWatermark("yes", live, durable)).toBe(Date.parse("2026-10-03T11:00:00.000Z"));
+  });
+
+  it("ignores assistant rows, other text and unreadable stamps", () => {
+    const rows = [turn(1, "yes", "2026-10-03T10:00:00.000Z", "assistant"), turn(2, "yes", "now"), turn(3, "yess", "2026-10-03T10:00:00.000Z")];
+    expect(userTurnWatermark("yes", rows)).toBeUndefined();
+    expect(userTurnWatermark("yes")).toBeUndefined();
+  });
+});
+
+describe("answeredPending", () => {
+  const turn = (id: number, text: string, createdAt: string) =>
+    reduceConversation([event(id, "message.completed", { itemId: `m${id}`, role: "user", text, createdAt })])[0];
+  const at = (iso: string) => Date.parse(iso);
+
+  it("answers a repeat only with a turn newer than the one it repeats", () => {
+    const old = turn(1, "yes", "2026-10-03T10:00:00.000Z");
+    const pending = [{ text: "yes", after: at("2026-10-03T10:00:00.000Z") }];
+    expect(answeredPending(pending, [old]).size).toBe(0);
+    expect([...answeredPending(pending, [old, turn(2, "yes", "2026-10-03T10:00:01.000Z")])]).toEqual([0]);
+  });
+
+  it("lets one turn answer one send, in send order", () => {
+    const pending = [{ text: "yes" }, { text: "yes" }];
+    expect([...answeredPending(pending, [turn(1, "yes", "2026-10-03T10:00:00.000Z")])]).toEqual([0]);
+    expect([...answeredPending(pending, [turn(1, "yes", "2026-10-03T10:00:00.000Z"), turn(2, "yes", "2026-10-03T10:00:01.000Z")])]).toEqual([0, 1]);
+  });
+
+  it("keeps matching on text alone for a send with no earlier identical turn", () => {
+    expect([...answeredPending([{ text: "  hi " }], [turn(1, "hi", "2026-10-03T10:00:00.000Z")])]).toEqual([0]);
+  });
+
+  it("lets a turn with no readable stamp answer, as text matching did", () => {
+    expect([...answeredPending([{ text: "yes", after: at("2026-10-03T10:00:00.000Z") }], [turn(1, "yes", "now")])]).toEqual([0]);
+  });
+
+  it("does not let an older turn be claimed ahead of a newer one a later send needs", () => {
+    const pending = [{ text: "yes" }, { text: "yes", after: at("2026-10-03T10:00:00.000Z") }];
+    const rows = [turn(1, "yes", "2026-10-03T10:00:00.000Z"), turn(2, "yes", "2026-10-03T10:00:05.000Z")];
+    expect([...answeredPending(pending, rows)].sort()).toEqual([0, 1]);
+  });
+
+  it("ignores assistant rows with the same text", () => {
+    const assistant = reduceConversation([event(1, "message.completed", { itemId: "a1", role: "assistant", text: "yes", createdAt: "2026-10-03T10:00:00.000Z" })]);
+    expect(answeredPending([{ text: "yes" }], assistant).size).toBe(0);
   });
 });

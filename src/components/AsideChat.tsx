@@ -3,6 +3,7 @@ import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, FileText, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
+import type { PendingMessage } from "../conversation";
 import { useActiveTurnInput } from "../activeTurnSettings";
 import { activeTurnAction } from "../sessionInput";
 import { ComposerPill } from "./ComposerPill";
@@ -35,7 +36,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   adapters: AdapterDescriptor[];
   /** The global live stream; the panel filters to its own session. */
   events: AgentEvent[];
-  pendingMessages: string[];
+  pendingMessages: readonly PendingMessage[];
   working: boolean;
   queuedFollowUpCount?: number;
   /** Workspace paths for the same `@` mention typeahead the main composer uses. */

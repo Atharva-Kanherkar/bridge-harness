@@ -167,13 +167,13 @@ describe("session switches and optimistic bubbles", () => {
   it("keeps a later optimistic bubble in place when an earlier one lands as real", async () => {
     const bubblesWith = (text: string) =>
       [...host.querySelectorAll<HTMLElement>('[class*="ml-auto"]')].filter(node => node.textContent === text);
-    mount([], { working: true, pendingMessages: ["alpha", "beta"] });
+    mount([], { working: true, pendingMessages: [{ text: "alpha" }, { text: "beta" }] });
     const beta = bubblesWith("beta");
     expect(beta).toHaveLength(1);
 
     // "alpha" becomes a real message; its ghost leaves, but "beta" must not
     // move, flip its text, or be the thing that fades.
-    mount([event(1, "message.completed", { role: "user", text: "alpha" })], { pendingMessages: ["beta"] });
+    mount([event(1, "message.completed", { role: "user", text: "alpha" })], { pendingMessages: [{ text: "beta" }] });
     expect(bubblesWith("beta")).toHaveLength(1);
     expect(bubblesWith("beta")[0]).toBe(beta[0]);
     // The leaving ghost is the resolved "alpha" — the real message plus its
@@ -182,6 +182,53 @@ describe("session switches and optimistic bubbles", () => {
     await settle();
     expect(bubblesWith("alpha")).toHaveLength(1);
     expect(bubblesWith("beta")).toHaveLength(1);
+  });
+});
+
+describe("pending bubbles", () => {
+  const bubblesWith = (text: string) =>
+    [...host.querySelectorAll<HTMLElement>('[class*="ml-auto"]')].filter(node => node.textContent === text);
+
+  it("shows a repeat of an earlier turn until a newer turn answers it", async () => {
+    const earlier = "2026-10-03T10:00:00.000Z";
+    const old = event(1, "message.completed", { role: "user", text: "yes", createdAt: earlier });
+    mount([old], { working: true, pendingMessages: [{ text: "yes", after: Date.parse(earlier) }] });
+    expect(bubblesWith("yes"), "the earlier turn and the pending repeat").toHaveLength(2);
+
+    const answer = event(2, "message.completed", { role: "user", text: "yes", createdAt: "2026-10-03T10:01:00.000Z" });
+    mount([old, answer], { working: true, pendingMessages: [{ text: "yes", after: Date.parse(earlier) }] });
+    await settle();
+    expect(bubblesWith("yes"), "two real turns and no ghost").toHaveLength(2);
+  });
+
+  it("still hides a send with no earlier identical turn as soon as one lands", () => {
+    mount([event(1, "message.completed", { role: "user", text: "first time" })], { pendingMessages: [{ text: "first time" }] });
+    expect(bubblesWith("first time")).toHaveLength(1);
+  });
+
+  it("says how a mid-turn send was taken", () => {
+    mount([], { working: true, pendingMessages: [{ text: "also check the docs", delivery: "steered" }, { text: "then deploy", delivery: "queued" }, { text: "plain" }] });
+    expect(host.textContent).toContain("Steering");
+    expect(host.textContent).toContain("Queued — sent when this step finishes");
+    const labels = [...host.querySelectorAll("p")].filter(node => node.textContent === "Steering" || node.textContent?.startsWith("Queued"));
+    expect(labels).toHaveLength(2);
+  });
+
+  it("draws every image of a send in that send's own bubble", () => {
+    mount([], {
+      working: true,
+      pendingMessages: [
+        { text: "two pictures", attachments: ["data:image/png;base64,AAA", "data:image/png;base64,BBB"] },
+        { text: "words only" },
+        { text: "", attachments: ["data:image/png;base64,CCC"] },
+      ],
+    });
+    const bubbles = [...host.querySelectorAll<HTMLElement>('[class*="ml-auto"]')];
+    const withText = (text: string) => bubbles.find(node => node.textContent === text)!;
+    expect(withText("two pictures").querySelectorAll("img")).toHaveLength(2);
+    expect(withText("words only").querySelectorAll("img")).toHaveLength(0);
+    const imageOnly = bubbles.filter(node => node.textContent === "" && node.querySelectorAll("img").length === 1);
+    expect(imageOnly).toHaveLength(1);
   });
 });
 

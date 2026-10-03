@@ -30,7 +30,7 @@ async function mount(overrides: Partial<Parameters<typeof AsideChat>[0]> = {}) {
       session={aside}
       adapters={adapters}
       events={[]}
-      pendingMessages={["is this right?"]}
+      pendingMessages={[{ text: "is this right?" }]}
       working
       onSend={asyncNoop}
       onChangeModel={noop}

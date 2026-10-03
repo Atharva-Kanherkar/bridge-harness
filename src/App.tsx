@@ -99,7 +99,7 @@ import { useComposerSuggestion } from "./useComposerSuggestion";
 import { ComposerSlashMenu } from "./components/ComposerSlashMenu";
 import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus";
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "./composerSlash";
-import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
+import { projectSessionConversation, reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
 import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
@@ -348,7 +348,7 @@ function AppContent() {
   // the user must be able to see and resolve that here — otherwise the session
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
-  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued"; attachment?: string }[]>([]);
+  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; after?: number; delivery?: "steered" | "queued"; attachments: string[] }[]>([]);
   // Image attachments pasted into the composer, waiting to ride the next send.
   // Cleared on success, restored on failure — a refused send must not eat the
   // user's clipboard work.
@@ -1123,14 +1123,10 @@ function AppContent() {
     return state.sessions.find(candidate => candidate.id === asideLifecycle.sessionId);
   }, [asideLifecycle, session?.id, state.sessions]);
   const asidePending = useMemo(
-    () => pending.filter(item => item.sessionId === asideLifecycle?.sessionId).map(item => item.text),
+    () => pending.filter(item => item.sessionId === asideLifecycle?.sessionId),
     [pending, asideLifecycle?.sessionId],
   );
-  const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
-  const pendingForSessionAttachments = useMemo(
-    () => pending.filter(p => p.sessionId === session?.id && p.attachment).map(p => p.attachment as string),
-    [pending, session?.id],
-  );
+  const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
@@ -1464,9 +1460,9 @@ function AppContent() {
   // counted forever under an already-answered reply.
   useEffect(() => {
     setPending(current => {
-      const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
-      const durableUserTexts = new Set(durable.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
-      return undeliveredPending(current, agentEvents, { sessionId: session?.id, durableUserTexts });
+      if (!current.length) return current;
+      const durableRows = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+      return undeliveredPending(current, agentEvents, { sessionId: session?.id, durableRows });
     });
   }, [agentEvents, forest, session?.id]);
 
@@ -2250,6 +2246,16 @@ function AppContent() {
     composerRef.current?.focus();
   };
 
+  /// The newest user turn with `text` this chat already has, from what the app
+  /// holds for it: the live stream always, and the forest when it is the open
+  /// chat's. The pending bubble for a new send waits for a turn newer than
+  /// this, so repeating an earlier message ("yes", "continue") still shows it.
+  function sendWatermark(sessionId: string, text: string): number | undefined {
+    const live = reduceConversation(agentEvents.filter(event => event.sessionId === sessionId));
+    const durable: ConversationItem[] = forest?.sessionId === sessionId && forest.entries?.length
+      ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    return userTurnWatermark(text, live, durable);
+  }
   /// The delivery core both composers share: prepare, cold-start if needed,
   /// submit, with optimistic pending bookkeeping. Slash-command handling stays
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
@@ -2259,11 +2265,11 @@ function AppContent() {
     // should see their words the instant they press Send, and the daemon may
     // take a while to prepare the turn. If preparation rewrites the text, the
     // same row is updated in place.
-    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments?.[0]?.dataUri }]);
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, after: sendWatermark(target.id, submittedText), attachments: (sentAttachments ?? []).map(item => item.dataUri) }]);
     try {
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
       const text = prepared.text;
-      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
       if (!liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -2396,7 +2402,7 @@ function AppContent() {
     // durable row the backend persists carries the same attachment data, so a
     // reload replays it identically. If preparation rewrites the text, the
     // same row is updated in place rather than re-added.
-    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments[0]?.dataUri }]);
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, after: sendWatermark(target.id, submittedText), attachments: sentAttachments.map(item => item.dataUri) }]);
     let localOnly = false;
     const validateSelectedPage = async () => {
       const valid = await Promise.all(selectedBrowserContexts.map(context => validateBrowserSelectionPage(context.sessionId, context.tabId, context.navigationId)));
@@ -2410,7 +2416,7 @@ function AppContent() {
       const prepared = await bridgeApi.prepareTurn(target.id, serializeBrowserSelections(submittedText, selectedBrowserContexts, target.id));
       const text = prepared.text;
       retryText = selectedBrowserContexts.length ? submittedText : text;
-      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
@@ -3121,7 +3127,6 @@ function AppContent() {
                   working={turnActive}
                   modelSwitch={modelSwitch?.sessionId === session?.id ? modelSwitch : null}
                    pendingMessages={pendingForSession}
-                   pendingAttachments={pendingForSessionAttachments}
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
                    onAskAside={quoted => {

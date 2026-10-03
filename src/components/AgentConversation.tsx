@@ -2,7 +2,7 @@ import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { alignTurns, attachmentUris, compactionInFlight, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type PendingMessage, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
@@ -783,7 +783,7 @@ const ACTIVE_SESSION_STATUSES = new Set(["starting", "working", "waiting", "chec
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", trailing }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", trailing }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -875,34 +875,32 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const historyPending = !!session && !preview && forestEntries === undefined;
   if (historyPending && !visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton />;
   if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
-  const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
-  // An image-only send has no words yet — its optimistic row is the image, so
-  // an empty-text row would render as a blank bubble.
-  const optimistic = pendingMessages.filter(text => text.trim().length > 0 && !existingUserTexts.has(text.trim()));
+  // A send is answered only by a user turn newer than the newest identical one
+  // the chat already had when it was sent, so repeating "yes" or "continue"
+  // still shows its bubble at once. A send with neither words nor images has
+  // nothing to draw.
+  const answered = answeredPending(pendingMessages, visibleItems);
+  const optimistic = pendingMessages.filter((message, index) => !answered.has(index) && (message.text.trim().length > 0 || (message.attachments?.length ?? 0) > 0));
   // The session's *current* runtime, and its meter. Only a fallback: a row
   // that knows which runtime raised it outranks both (see `ErrorCard`).
   const errorContext: ErrorContext = { harness: session?.harness ?? undefined, provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events), allowReset: session?.kind === "chat" && !readOnly && !preview };
   // Content-addressed, occurrence-counted keys for the optimistic bubbles: when
   // an earlier pending message lands as a real message, the bubbles after it
   // keep their identity — one ghost fades, and no survivor flips its text.
-  const seenPending = new Map<string, number>();
-  const pendingRows = optimistic.map(text => {
-    const occurrence = seenPending.get(text) ?? 0;
-    seenPending.set(text, occurrence + 1);
-    return { key: `pending-${text}:${occurrence}`, text };
-  });
   // Text and images of one send share a single bubble, matching the persisted
   // user row. Image-only sends still get that same bubble with no prose.
-  const pendingAttachmentRows = pendingAttachments.map((dataUri, index) => ({ key: `pending-attachment-${index}`, dataUri }));
-  const optimisticBubbles = pendingRows.length
-    ? pendingRows.map((row, index) => ({
-        key: row.key,
-        text: row.text,
-        attachments: index === pendingRows.length - 1 ? pendingAttachmentRows.map(row => row.dataUri) : [],
-      }))
-    : pendingAttachmentRows.length
-      ? [{ key: pendingAttachmentRows[0].key, text: "", attachments: pendingAttachmentRows.map(row => row.dataUri) }]
-      : [];
+  const seenPending = new Map<string, number>();
+  const optimisticBubbles = optimistic.map(message => {
+    const text = message.text.trim() ? message.text : "";
+    const occurrence = seenPending.get(text) ?? 0;
+    seenPending.set(text, occurrence + 1);
+    return {
+      key: text ? `pending-${text}:${occurrence}` : `pending-attachment-${occurrence}`,
+      text,
+      attachments: message.attachments ?? [],
+      delivery: message.delivery,
+    };
+  });
   const lastEventAt = events.length ? new Date(events[events.length - 1]?.createdAt ?? 0).getTime() : 0;
   const clock = now ?? Date.now();
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
@@ -963,7 +961,12 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
             {bubble.attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Image you attached, still sending ${index + 1}`} className="max-h-40 rounded-xl"/>)}
           </div>}
-        </div></TranscriptRow>)}
+        </div>
+        {/* What the backend did with a message sent mid-turn: it either joined
+            the running step or waits for it to finish. Said on the message
+            itself, since that is what the reader is looking at. */}
+        {bubble.delivery && <p className="mt-1 text-right text-[11px] text-muted-foreground">{bubble.delivery === "steered" ? "Steering" : "Queued — sent when this step finishes"}</p>}
+        </TranscriptRow>)}
         {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? compaction?.harness ?? session?.harness}/></div></TranscriptRow>}
         {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-x-info`}>Stopping…</p></TranscriptRow>}
         {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
