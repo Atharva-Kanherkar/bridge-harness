@@ -100,6 +100,19 @@ describe("provider sign-in dialog", () => {
     expect(health).not.toHaveBeenCalled();
   });
 
+  it("drops a check that finishes after the dialog closed", async () => {
+    let answer!: (health: Health) => void;
+    vi.spyOn(bridgeApi, "health").mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    await open();
+    await finish();
+    expect(document.body.textContent).toContain("Checking your Claude Code sign-in");
+    act(() => buttonByText("Cancel")!.click());
+    answer(healthWith("signed_out"));
+    await flush();
+    expect(document.body.textContent).not.toContain("Sign-in didn't finish");
+    expect(document.body.textContent).toContain("Sign in to Claude Code");
+  });
+
   it("cancels the vendor process when the user cancels", async () => {
     const onClose = vi.fn(() => {
       root.render(<ProviderSignInDialog provider={null} label="" onAuthChanged={() => undefined} onClose={() => undefined} />);

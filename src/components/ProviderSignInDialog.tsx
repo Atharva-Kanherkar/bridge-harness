@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { CircleAlert, CircleCheck, LoaderCircle } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { UsageProvider } from "../usage";
@@ -33,13 +33,17 @@ export function ProviderSignInDialog({ provider, label, onRetry, onAuthChanged, 
 }) {
   const [phase, setPhase] = useState<Phase>("signing-in");
   const [attempt, setAttempt] = useState(0);
-  const close = () => { setPhase("signing-in"); onClose(); };
+  // A check still in flight when the dialog closes must not paint its
+  // verdict onto the next sign-in.
+  const runRef = useRef(0);
+  const close = () => { runRef.current += 1; setPhase("signing-in"); onClose(); };
   const exited = (output: string) => {
     if (!provider) return;
+    const run = runRef.current;
     setPhase("checking");
     void providerSignInOutcome(provider, output).then(outcome => {
       onAuthChanged();
-      setPhase(outcome);
+      if (runRef.current === run) setPhase(outcome);
     });
   };
   const retry = () => { close(); onRetry?.(); };
