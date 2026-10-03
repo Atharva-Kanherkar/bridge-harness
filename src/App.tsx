@@ -1,4 +1,3 @@
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "./components/ui/dialog";
 import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
@@ -86,7 +85,7 @@ import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
-import { ProviderLoginPane } from "./components/ProviderLoginPane";
+import { ProviderSignInDialog } from "./components/ProviderSignInDialog";
 import { ChatUsageDot } from "./components/UsageDot";
 import { ContextRing } from "./components/ContextRing";
 import { ContextLensDialog } from "./components/ContextLensDialog";
@@ -347,6 +346,9 @@ function AppContent() {
   // Cleared on success, restored on failure — a refused send must not eat the
   // user's clipboard work.
   const [loginProvider, setLoginProvider] = useState<UsageProvider | null>(null);
+  // Where the turn that needed sign-in came from: a failed send leaves its
+  // text in the composer, a failed turn leaves it in the transcript.
+  const [loginRetry, setLoginRetry] = useState<{ sessionId: string; source: "composer" | "transcript" } | null>(null);
   const [agentOnboardingComplete, setAgentOnboardingComplete] = useState(readAgentOnboardingComplete);
   const finishAgentOnboarding = useCallback((setup?: ModelSetupState) => {
     writeAgentOnboardingComplete();
@@ -533,7 +535,10 @@ function AppContent() {
       const target = loginSessionRef.current;
       if (active && target?.id === event.sessionId) {
         const provider = providerSignInForEvent(target.harness, event);
-        if (provider) setLoginProvider(current => current ?? provider);
+        if (provider) {
+          setLoginProvider(current => current ?? provider);
+          setLoginRetry(current => current ?? { sessionId: target.id, source: "transcript" });
+        }
       }
     }).then(fn => {
       if (!active) { fn(); return; }
@@ -2398,10 +2403,25 @@ function AppContent() {
       setPending(current => current.filter(item => item.key !== key));
       const message = errorMessage(e);
       const provider = needsProviderSignIn(target.harness, message);
-      if (provider) setLoginProvider(provider);
+      if (provider) {
+        setLoginProvider(provider);
+        setLoginRetry({ sessionId: target.id, source: "composer" });
+      }
       setError(message);
     }
   }
+  // Only offered while the chat that hit the sign-in wall is still open, so a
+  // retry can never land in a different conversation.
+  const lastUserText = useMemo(() => {
+    const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    const last = durable.filter(item => item.type === "message" && item.role === "user").at(-1);
+    return last?.type === "message" ? last.text.trim() : "";
+  }, [forest]);
+  const retryAfterSignIn = loginRetry && loginRetry.sessionId === session?.id
+    ? loginRetry.source === "composer" && composer.trim()
+      ? () => { void sendPrompt(); }
+      : lastUserText ? () => { void sendPrompt(lastUserText, []); } : undefined
+    : undefined;
   // Rethrow without also raising the global corner alert: the approval/question
   // card renders the failure itself.
   const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision, optionId?: string) => {
@@ -3416,13 +3436,13 @@ function AppContent() {
       />
     )}
 
-    <Dialog open={loginProvider !== null} onOpenChange={open => { if (!open) setLoginProvider(null); }}>
-      <DialogContent>
-        <DialogTitle>Sign in to continue</DialogTitle>
-        <DialogDescription>Your conversation is kept. Complete sign-in, then retry your message.</DialogDescription>
-        {loginProvider && <ProviderLoginPane provider={loginProvider} label={harnessLabel(loginProvider)} onClose={() => { setLoginProvider(null); void invalidateHealth(); }} />}
-      </DialogContent>
-    </Dialog>
+    <ProviderSignInDialog
+      provider={loginProvider}
+      label={loginProvider ? harnessLabel(loginProvider) : ""}
+      onRetry={retryAfterSignIn}
+      onAuthChanged={() => void invalidateHealth()}
+      onClose={() => { setLoginProvider(null); setLoginRetry(null); void invalidateHealth(); }}
+    />
     <OrchestratorCreateDialog
       open={modal === "orchestrator"}
       workspaceTitle={state.workspaces.find(item => item.id === pendingWorkspaceId)?.title ?? "workspace"}
