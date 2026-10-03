@@ -14,7 +14,7 @@ import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, Fi
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
-import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutResentAttachments, withoutResentText, type ComposerDraft } from "./composerDrafts";
+import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
 import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
@@ -409,13 +409,13 @@ function AppContent() {
       drafts.put(sessionId, { text, attachments: [] });
     }
   };
-  /** Empty a chat's draft once what it held has been used. */
-  const clearDraft = (sessionId: string | undefined) => {
+  /** Take what a send used out of the chat's draft, keeping anything added since. */
+  const consumeDraft = (sessionId: string | undefined, sent: ComposerDraft) => {
     if (draftOwnerRef.current === sessionId) {
-      setComposer("");
-      setAttachments([]);
+      setComposer(current => withoutSentText(current, sent.text));
+      setAttachments(current => withoutSentAttachments(current, sent.attachments));
     } else if (sessionId) {
-      drafts.put(sessionId, EMPTY_DRAFT);
+      drafts.put(sessionId, withoutSent(drafts.peek(sessionId), sent));
     }
   };
   /** Hand a failed send back to the chat it came from, ahead of anything typed since. */
@@ -2326,7 +2326,7 @@ function AppContent() {
         // Only a genuinely opened side chat spends the composer. A refused
         // ask (no question, unavailable harness, create in flight) keeps both
         // the draft and its attachments so the user can complete and retry.
-        if (await openSideChat(sideChat.query, session.id, sentAttachments)) clearDraft(origin);
+        if (await openSideChat(sideChat.query, session.id, sentAttachments)) consumeDraft(origin, { text: submittedText, attachments: sentAttachments });
       } catch {
         // The aside lifecycle owns the inline recovery state. Keep the source
         // draft and its attachments so Enter is also a valid retry path.
@@ -2344,7 +2344,7 @@ function AppContent() {
           if (shortcut.kind === "opened") {
             setHarnessShortcutFailure(undefined);
             // The new chat is on screen by now; the words were typed here.
-            clearDraft(origin);
+            consumeDraft(origin, { text: submittedText, attachments: [] });
           } else {
             setHarnessShortcutFailure(harnessShortcutError(shortcut));
           }
@@ -2394,8 +2394,8 @@ function AppContent() {
     } else {
       // A retry resends a payload its failure already put back in the
       // composer. Take that copy out, and leave anything typed since.
-      setComposer(current => withoutResentText(current, submittedText));
-      setAttachments(current => withoutResentAttachments(current, sentAttachments));
+      setComposer(current => withoutSentText(current, submittedText));
+      setAttachments(current => withoutSentAttachments(current, sentAttachments));
     }
     setSlashIndex(0);
     // The optimistic row lands synchronously, before the first round-trip: the

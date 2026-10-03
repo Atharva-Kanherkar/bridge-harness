@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ComposerDrafts, EMPTY_DRAFT, isEmptyDraft, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutResentAttachments, withoutResentText } from "./composerDrafts";
+import { ComposerDrafts, EMPTY_DRAFT, isEmptyDraft, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText } from "./composerDrafts";
 import type { ComposerAttachment } from "./pasteAttachments";
 
 const image = (id: string): ComposerAttachment => ({ id, mediaType: "image/png", dataUri: `data:image/png;base64,${id}` });
@@ -42,34 +42,47 @@ describe("mergeFailedSend", () => {
   });
 });
 
-describe("withoutResentText", () => {
+describe("withoutSentText", () => {
   it("empties a composer that holds exactly the resent words", () => {
-    expect(withoutResentText("prev", "prev")).toBe("");
-    expect(withoutResentText("  prev \n", "prev")).toBe("");
+    expect(withoutSentText("prev", "prev")).toBe("");
+    expect(withoutSentText("  prev \n", "prev")).toBe("");
   });
 
   it("removes the restored copy ahead of newer typing", () => {
-    expect(withoutResentText(mergeFailedText("next", "prev"), "prev")).toBe("next");
+    expect(withoutSentText(mergeFailedText("next", "prev"), "prev")).toBe("next");
   });
 
   it("finds the restored copy whatever whitespace surrounded the failed words", () => {
-    expect(withoutResentText(mergeFailedText("next", "  prev \n"), "prev")).toBe("next");
-    expect(withoutResentText(mergeFailedText("next", "prev"), " prev ")).toBe("next");
+    expect(withoutSentText(mergeFailedText("next", "  prev \n"), "prev")).toBe("next");
+    expect(withoutSentText(mergeFailedText("next", "prev"), " prev ")).toBe("next");
+  });
+
+  it("keeps what was typed after the sent words", () => {
+    expect(withoutSentText("$claude review this and the tests", "$claude review this")).toBe("and the tests");
+    expect(withoutSentText("  /btw why?\nmore", "/btw why?")).toBe("more");
   });
 
   it("leaves unrelated typing alone", () => {
-    expect(withoutResentText("something else", "prev")).toBe("something else");
-    expect(withoutResentText("previous thoughts", "prev")).toBe("previous thoughts");
+    expect(withoutSentText("something else", "prev")).toBe("something else");
+    expect(withoutSentText("previous thoughts", "prev")).toBe("previous thoughts");
   });
 
   it("never empties the composer for an image-only resend", () => {
-    expect(withoutResentText("typing", "")).toBe("typing");
+    expect(withoutSentText("typing", "")).toBe("typing");
   });
 });
 
-describe("withoutResentAttachments", () => {
+describe("withoutSentAttachments", () => {
   it("removes only the resent images", () => {
-    expect(withoutResentAttachments([image("a"), image("b")], [image("a")]).map(item => item.id)).toEqual(["b"]);
+    expect(withoutSentAttachments([image("a"), image("b")], [image("a")]).map(item => item.id)).toEqual(["b"]);
+  });
+});
+
+describe("withoutSent", () => {
+  it("takes the sent words and images and keeps an image pasted since", () => {
+    const left = withoutSent({ text: "$claude review this", attachments: [image("late")] }, { text: "$claude review this", attachments: [] });
+    expect(left.text).toBe("");
+    expect(left.attachments.map(item => item.id)).toEqual(["late"]);
   });
 });
 

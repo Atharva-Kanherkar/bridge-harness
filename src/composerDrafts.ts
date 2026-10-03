@@ -39,22 +39,33 @@ export function mergeFailedSend(current: ComposerDraft, failed: ComposerDraft): 
 }
 
 /**
- * The composer once a retried send has taken its words back out of it.
+ * The composer once a send has taken its words out of it.
  *
- * A retry (after signing in) resends a payload the failure had already put
- * back in the composer, alone or ahead of newer typing. That copy goes; the
- * newer typing, and anything else the composer holds, stays.
+ * A send that finishes after an await (a shortcut opening its chat, a retry
+ * after signing in) must not empty the composer wholesale: the user may have
+ * typed on, or the failure may have put the words back ahead of newer typing.
+ * Only the sent words go, and only as a whole leading run; anything after them,
+ * or a draft that no longer starts with them, stays.
  */
-export function withoutResentText(current: string, resent: string): string {
-  if (!resent.trim()) return current;
-  if (current.trim() === resent.trim()) return "";
-  const prefix = `${resent.trim()}${RESTORE_SEPARATOR}`;
-  return current.startsWith(prefix) ? current.slice(prefix.length) : current;
+export function withoutSentText(current: string, sent: string): string {
+  const words = sent.trim();
+  if (!words) return current;
+  const typed = current.trimStart();
+  if (!typed.startsWith(words)) return current;
+  const rest = typed.slice(words.length);
+  // "prev" never consumes the start of "previous".
+  if (rest && !/^\s/.test(rest)) return current;
+  return rest.replace(/^\s+/, "");
 }
 
-export function withoutResentAttachments(current: readonly ComposerAttachment[], resent: readonly ComposerAttachment[]): ComposerAttachment[] {
-  const ids = new Set(resent.map(attachment => attachment.id));
+/** The composer's images once a send has taken its own; ones pasted since stay. */
+export function withoutSentAttachments(current: readonly ComposerAttachment[], sent: readonly ComposerAttachment[]): ComposerAttachment[] {
+  const ids = new Set(sent.map(attachment => attachment.id));
   return current.filter(attachment => !ids.has(attachment.id));
+}
+
+export function withoutSent(current: ComposerDraft, sent: ComposerDraft): ComposerDraft {
+  return { text: withoutSentText(current.text, sent.text), attachments: withoutSentAttachments(current.attachments, sent.attachments) };
 }
 
 /**

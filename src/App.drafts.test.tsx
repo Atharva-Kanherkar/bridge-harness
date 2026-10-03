@@ -186,6 +186,29 @@ describe("drafts belong to their chat", () => {
   });
 });
 
+describe("a send that finishes later takes only what it sent", () => {
+  it("keeps an image pasted while a $harness shortcut is still opening its aside", async () => {
+    await open(chatA);
+    // Creation answers 300 ms late: long enough to paste while it is open.
+    const realCreate = bridgeApi.createAsideChat;
+    vi.spyOn(bridgeApi, "createAsideChat").mockImplementation(async (...args) => {
+      const created = await realCreate(...args);
+      return new Promise(resolve => setTimeout(() => resolve(created), 300));
+    });
+    await type("$claude review this");
+    await pressEnter();
+    await pasteImage("late.png");
+    const imagesNow = () => composer()!.closest("form")?.querySelectorAll("img").length ?? 0;
+    expect(imagesNow(), "the late image is on the composer").toBe(1);
+
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
+    await settle(6);
+    expect(bridgeApi.createAsideChat).toHaveBeenCalledOnce();
+    expect(composer()!.value, "the shortcut's words were used").toBe("");
+    expect(imagesNow(), "the image pasted after submit stays").toBe(1);
+  });
+});
+
 describe("a failed send never overwrites or loses the user's words", () => {
   it("puts the failed words ahead of what was typed while it failed", async () => {
     await open(chatA);
