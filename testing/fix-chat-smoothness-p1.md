@@ -17,6 +17,9 @@ F12–F14 and U1–U7 are out of scope and stay open on the audit issue.
 - A shortcut that opens another chat (`$codex …`) consumes the draft of the chat
   it was typed in; returning there shows an empty composer.
 - The welcome (hero) composer keeps its own state and is untouched.
+- A shortcut or side chat that consumes the draft consumes only what it
+  submitted: text typed and images pasted after submit stay, whether the chat
+  is still on screen or its draft is stored. (Review finding on PR #800.)
 
 ### F2 — a failed send never overwrites or loses the user's words
 - Failure while the chat is still on screen and the composer is empty: the sent
@@ -55,6 +58,12 @@ F12–F14 and U1–U7 are out of scope and stay open on the audit issue.
   "Queued — sent when this step finishes". A new turn shows no label.
 - Every attached image of a pending send renders in that send's bubble, not
   only the first, and not on another send's bubble.
+- The label survives acknowledgement: the backend persists a queued or steered
+  user row (`data.delivery`) before `submitInput` returns, so the persisted row
+  carries the label too. A queued row keeps "Queued" while its queue entry is
+  still waiting (the newest N queued rows, N = waiting follow-ups) and loses it
+  once consumed. A steered row says "Steering" while the turn is active and no
+  assistant reply has completed after it. (Review finding on PR #800.)
 
 ### F4 — old active pins are always candidates
 - Eligible candidates are read with `status='active'` in SQL, ranked in SQL
@@ -94,6 +103,11 @@ F12–F14 and U1–U7 are out of scope and stay open on the audit issue.
     existing cases and adds the repeated-text case for live and durable.
 - `src/motion.test.ts`: `scrollBehavior` with reduce / no-preference / no
   `matchMedia`.
+- `src/composerDrafts.test.ts`: `withoutSentText` strips the submitted text
+  alone, ahead of newer typing, or as a whole-word prefix; never mid-word.
+- `src/conversation.test.ts`: `deliveryNotes` labels the newest N queued rows,
+  drops the label as N falls, labels steered rows only while active and before
+  a later completed assistant reply.
 - `src/components/SteerComposer.test.tsx`: rerender with a new `sessionId`
   resets draft; editing during an in-flight steer survives success; Enter with
   `isComposing` does not send; failure is `role="alert"`.
@@ -121,6 +135,10 @@ App-level (`src/App.drafts.test.tsx`, jsdom, mock api):
   composer `prev`.
 - F2: `/usage` with `reload` rejecting after `submitInput` resolved → composer
   empty, error shown, `submitInput` called once.
+- F1: a `$harness` shortcut whose chat creation is held; an image pasted
+  before it completes stays on the source chat.
+- F6: an acknowledged queued row (published before `submitInput` resolves)
+  shows exactly one bubble with "Queued" while the follow-up waits.
 - F3: in the idle demo session, send text equal to an earlier user turn while
   `prepareTurn` is held → the bubble is visible; after delivery exactly one
   more row with that text exists.
