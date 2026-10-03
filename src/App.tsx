@@ -68,6 +68,9 @@ import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
+// The connector Inbox pane is unmounted until it works end to end. The code
+// stays; flip this to bring the tab and its toasts back.
+const INBOX_PANE_ENABLED = false;
 const AgentFleet = lazy(() => import("./components/AgentFleet").then(module => ({ default: module.AgentFleet })));
 const MissionControl = lazy(() => import("./components/MissionControl").then(module => ({ default: module.MissionControl })));
 import { AccessControl, type AccessMode } from "./components/AccessControl";
@@ -775,8 +778,12 @@ function AppContent() {
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
     // Always available: an inbox is about an account, not a repository, so
     // gating it on a worktree would hide it exactly where a direct chat is.
-    { id: "inbox", label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined },
+    ...(INBOX_PANE_ENABLED ? [{ id: "inbox" as const, label: "Inbox", icon: Inbox, available: true, badge: connectorUnread || undefined, alert: connectorAttention || undefined }] : []),
   ];
+  // A dock persisted on the Inbox would otherwise open onto an empty pane.
+  useEffect(() => {
+    if (!INBOX_PANE_ENABLED && dock.open && dock.pane === "inbox") dispatchDock({ type: "open-pane", pane: "transcript" });
+  }, [dock.open, dock.pane, dispatchDock]);
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
   // Cross-pane intents. Quoting names what a message is about instead of
@@ -2641,7 +2648,7 @@ function AppContent() {
         return;
       case "open-dock-pane": {
         const pane = DOCK_PANES[index ?? 0];
-        if (pane) dispatchDock({ type: "open-pane", pane });
+        if (pane && (INBOX_PANE_ENABLED || pane !== "inbox")) dispatchDock({ type: "open-pane", pane });
         return;
       }
       case "zoom-in":
@@ -3393,12 +3400,12 @@ function AppContent() {
       onDismiss={key => setAttentionToasts(current => current.filter(toast => toast.key !== key))}
     />
     {/* Above the CI stack: a person waiting on a reply outranks a check run. */}
-    <ConnectorToasts
+    {INBOX_PANE_ENABLED && <ConnectorToasts
       toasts={connectorToasts}
       suppressed={dock.open && dock.pane === "inbox"}
       onOpen={toast => openConnectorItem(toast.itemKey)}
       onDismiss={key => setConnectorToasts(current => reduceToasts(current, { type: "dismiss", key }))}
-    />
+    />}
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}
