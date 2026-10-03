@@ -30,6 +30,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::adapters::{AdapterRuntime, ShutdownReason, StartRequest};
+use crate::agent::NormalizedEvent;
 use crate::delegation::WriteMode;
 use crate::{BridgeCore, BridgeError};
 
@@ -186,7 +187,7 @@ const UNAUTHORIZED_SIGNALS: &[&str] = &[
     "forbidden",
 ];
 const RATE_LIMITED_SIGNALS: &[&str] =
-    &["rate_limit", "rate limit", "rate-limited", "429", "too many requests", "overloaded"];
+    &["rate_limit", "rate limit", "rate-limited", "429", "too many requests", "overloaded", "usage limit reached"];
 const UNKNOWN_MODEL_SIGNALS: &[&str] =
     &["unknown model", "model not found", "no such model", "invalid model", "model_not_found"];
 
@@ -274,6 +275,7 @@ impl SuggestionEngine {
                 ShutdownReason::Failed => "failed",
                 _ => "idle",
             };
+            core.adapter_registry.forget_session(&session.provider, session.runtime.provider_session_id());
             session.runtime.stop(reason);
             settle_hidden_session(core, &session.session_id, status);
         }
@@ -301,14 +303,18 @@ impl SuggestionEngine {
         }
         let outcome = {
             let session = state.session.as_mut().expect("a warm session was just ensured");
-            run_turn(session, text)
+            run_turn(core, session, text)
         };
         match outcome {
-            Ok(suggestion) => {
-                if let Some(session) = state.session.as_mut() {
+            Ok(completion) => {
+                if completion.interrupted {
+                    // Late terminal frames from an interrupted turn cannot be
+                    // reused as the next draft's completion.
+                    Self::drop_session(core, &mut state, ShutdownReason::Completed);
+                } else if let Some(session) = state.session.as_mut() {
                     session.turns_used += 1;
                 }
-                Ok(suggestion)
+                Ok(completion.text)
             }
             Err(error) => {
                 // A session that just failed a turn is not trusted for the next
@@ -333,7 +339,7 @@ fn start_warm_session(core: &Arc<BridgeCore>, provider: &str, model: &str) -> Re
             params![session_id, provider, model, SUGGESTION_SESSION_KIND, cwd],
         )?;
     }
-    let started = core.adapter_registry.start(
+    let started = core.adapter_registry.start_completion(
         provider,
         StartRequest {
             cwd: &cwd,
@@ -354,6 +360,9 @@ fn start_warm_session(core: &Arc<BridgeCore>, provider: &str, model: &str) -> Re
             return Err(error);
         }
     };
+    for message in &started.startup_messages {
+        core.adapter_registry.normalize(provider, message);
+    }
     let runtime = started.runtime;
     {
         let db = core.db.lock().unwrap();
@@ -400,54 +409,51 @@ fn settle_hidden_session(core: &Arc<BridgeCore>, session_id: &str, status: &str)
 /// or to the deadline — whichever comes first.
 struct TurnBuffer {
     text: String,
+    parts: Vec<(Option<String>, String)>,
+    started: bool,
     done: bool,
     error: Option<String>,
 }
 
 impl TurnBuffer {
     fn new() -> Self {
-        Self { text: String::new(), done: false, error: None }
+        Self { text: String::new(), parts: Vec::new(), started: false, done: false, error: None }
     }
 
-    fn observe(&mut self, line: &str) {
-        let Ok(message) = serde_json::from_str::<Value>(line) else {
-            return;
-        };
-        match message.get("type").and_then(Value::as_str) {
-            Some("assistant") => {
-                for block in content_blocks(&message) {
-                    if block.get("type").and_then(Value::as_str) == Some("text") {
-                        if let Some(chunk) = block.get("text").and_then(Value::as_str) {
-                            self.text.push_str(chunk);
-                        }
+    fn observe(&mut self, events: Vec<NormalizedEvent>) {
+        // Consume the whole batch: a failed turn can contain its terminal
+        // event followed by the error that explains it.
+        for event in events {
+            match event.kind.as_str() {
+                "turn.started" => self.started = true,
+                "message.delta" | "message.completed" if event.role.as_deref() == Some("assistant") => {
+                    self.started = true;
+                    let Some(text) = event.text else { continue; };
+                    if let Some((_, part)) = self.parts.iter_mut().find(|(id, _)| *id == event.item_id) {
+                        if event.kind == "message.completed" { *part = text; } else { part.push_str(&text); }
+                    } else {
+                        self.parts.push((event.item_id, text));
                     }
+                    self.text = self.parts.iter().map(|(_, text)| text.as_str()).collect();
                 }
-            }
-            Some("result") => {
-                if message.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
-                    self.error = Some(
-                        message
-                            .get("result")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| "the provider reported an error".to_owned()),
-                    );
+                "turn.completed" if self.started || event.data.get("result").is_some() => self.done = true,
+                "approval.requested" | "permission.denied" | "tool.started" => {
+                    self.error = Some("the suggestion model attempted to use tools".into());
+                    self.done = true;
                 }
-                self.done = true;
+                "error" => {
+                    self.error = Some(event.text.or(event.title).unwrap_or_else(|| "the suggestion provider reported an error".into()));
+                    self.done = true;
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 }
 
-fn content_blocks(message: &Value) -> impl Iterator<Item = &Value> {
-    message
-        .get("message")
-        .and_then(|inner| inner.get("content"))
-        .and_then(Value::as_array)
-        .map(|blocks| blocks.iter())
-        .into_iter()
-        .flatten()
+struct TurnCompletion {
+    text: String,
+    interrupted: bool,
 }
 
 /// Whether accumulated text has already hit this module's own cap,
@@ -467,25 +473,46 @@ fn trim_suggestion(text: &str) -> String {
     bounded.trim_end().to_owned()
 }
 
-fn run_turn(session: &mut WarmSession, text: &str) -> Result<String, BridgeError> {
+/// A typeahead cannot wait through a provider's scheduled account-limit retry.
+/// OpenCode can emit retries indefinitely without a terminal error frame.
+fn completion_retry_error(message: &Value) -> Option<String> {
+    if message.get("type").and_then(Value::as_str) != Some("session.status") { return None; }
+    let status = message.pointer("/properties/status")?;
+    if status.get("type").and_then(Value::as_str) != Some("retry") { return None; }
+    let detail = status.get("message").and_then(Value::as_str).unwrap_or("the suggestion provider is retrying");
+    let reason = status.pointer("/action/reason").and_then(Value::as_str);
+    Some(match reason { Some(reason) => format!("{reason}: {detail}"), None => detail.to_owned() })
+}
+
+fn run_turn(core: &Arc<BridgeCore>, session: &mut WarmSession, text: &str) -> Result<TurnCompletion, BridgeError> {
     session
         .runtime
         .send_turn(text)
         .map_err(|error| BridgeError::Invalid(format!("the suggestion turn could not be sent: {error}")))?;
     let deadline = Instant::now() + TURN_TIMEOUT;
     let mut buffer = TurnBuffer::new();
+    let mut interrupted = false;
     loop {
         if capped(&buffer.text) {
             let _ = session.runtime.interrupt();
+            interrupted = true;
             break;
         }
         if Instant::now() >= deadline {
             let _ = session.runtime.interrupt();
+            interrupted = true;
             break;
         }
         match session.receiver.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => {
-                buffer.observe(&line);
+                if let Ok(message) = serde_json::from_str::<Value>(&line) {
+                    if let Some(detail) = completion_retry_error(&message) {
+                        buffer.error = Some(detail);
+                        buffer.done = true;
+                    } else {
+                        buffer.observe(core.adapter_registry.normalize(&session.provider, &message));
+                    }
+                }
                 if buffer.done {
                     break;
                 }
@@ -503,7 +530,10 @@ fn run_turn(session: &mut WarmSession, text: &str) -> Result<String, BridgeError
     if let Some(detail) = buffer.error {
         return Err(BridgeError::Adapter(detail));
     }
-    Ok(trim_suggestion(&buffer.text))
+    if interrupted && buffer.text.is_empty() {
+        return Err(BridgeError::Adapter("the suggestion model did not respond within 8 seconds".into()));
+    }
+    Ok(TurnCompletion { text: trim_suggestion(&buffer.text), interrupted })
 }
 
 /// `models/suggest_completion`'s body. Disabled settings and an empty draft
@@ -633,6 +663,185 @@ mod tests {
         assert!(!capped("short"));
         assert!(capped(&"a".repeat(MAX_SUGGESTION_CHARS)));
         assert!(capped("stop\n\nhere"));
+    }
+
+    #[test]
+    fn opencode_completion_is_read_from_actual_wire_frames() {
+        let mut buffer = TurnBuffer::new();
+        let mut state = crate::agent::OpenCodeStreamState::default();
+        buffer.observe(crate::agent::normalize_opencode_message_with_state(&serde_json::json!({"type":"message.updated", "properties":{"sessionID":"s", "info":{"id":"m", "role":"assistant"}}}), &mut state));
+        buffer.observe(crate::agent::normalize_opencode_message_with_state(&serde_json::json!({
+            "type":"message.part.updated", "properties":{"sessionID":"s", "part":{
+                "id":"p", "messageID":"m", "type":"text", "text":" release notes", "time":{"start":1,"end":2}
+            }}
+        }), &mut state));
+        assert_eq!(buffer.text, " release notes");
+    }
+
+    #[test]
+    fn codex_deltas_are_replaced_by_final_text_without_duplicates() {
+        let mut state = crate::agent::CodexStreamState::default();
+        let mut buffer = TurnBuffer::new();
+        for frame in [
+            serde_json::json!({"method":"turn/started", "params":{"turn":{"id":"t"}}}),
+            serde_json::json!({"method":"item/reasoning/textDelta", "params":{"itemId":"r", "delta":"secret thought"}}),
+            serde_json::json!({"method":"item/agentMessage/delta", "params":{"itemId":"m", "delta":" release"}}),
+            serde_json::json!({"method":"item/completed", "params":{"item":{"id":"m", "type":"agentMessage", "text":" release notes"}}}),
+            serde_json::json!({"method":"turn/completed", "params":{"turn":{"status":"completed"}}}),
+        ] { buffer.observe(crate::agent::normalize_codex_message_with_state(&frame, &mut state)); }
+        assert_eq!(buffer.text, " release notes");
+        assert!(buffer.done);
+        assert!(buffer.error.is_none());
+    }
+
+    #[test]
+    fn opencode_deltas_and_snapshots_are_deduplicated_and_idle_finishes_the_turn() {
+        let mut state = crate::agent::OpenCodeStreamState::default();
+        let mut buffer = TurnBuffer::new();
+        for frame in [
+            serde_json::json!({"type":"session.status", "properties":{"sessionID":"s", "status":{"type":"idle"}}}),
+            serde_json::json!({"type":"session.status", "properties":{"sessionID":"s", "status":{"type":"busy"}}}),
+            serde_json::json!({"type":"message.updated", "properties":{"sessionID":"s", "info":{"id":"m", "role":"assistant"}}}),
+            serde_json::json!({"type":"message.part.updated", "properties":{"sessionID":"s", "part":{"id":"p", "messageID":"m", "type":"text", "text":"", "time":{"start":1}}}}),
+            serde_json::json!({"type":"message.part.delta", "properties":{"sessionID":"s", "partID":"p", "messageID":"m", "field":"text", "delta":" release"}}),
+            serde_json::json!({"type":"message.part.updated", "properties":{"sessionID":"s", "part":{"id":"p", "messageID":"m", "type":"text", "text":" release notes", "time":{"start":1,"end":2}}}}),
+            serde_json::json!({"type":"session.status", "properties":{"sessionID":"s", "status":{"type":"idle"}}}),
+        ] { buffer.observe(crate::agent::normalize_opencode_message_with_state(&frame, &mut state)); }
+        assert_eq!(buffer.text, " release notes");
+        assert!(buffer.done);
+    }
+
+    #[test]
+    fn claude_completion_preserves_leading_space_and_ignores_user_and_thinking() {
+        let mut state = crate::agent::ClaudeStreamState::default();
+        let mut buffer = TurnBuffer::new();
+        for frame in [
+            serde_json::json!({"type":"user", "message":{"id":"u", "role":"user", "content":[{"type":"text", "text":"draft"}]}}),
+            serde_json::json!({"type":"assistant", "message":{"id":"a", "role":"assistant", "content":[{"type":"thinking", "thinking":"thoughts"},{"type":"text", "text":" release notes"}]}}),
+            serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "result":" release notes"}),
+        ] { buffer.observe(crate::agent::normalize_claude_message_with_state(&frame, &mut state)); }
+        assert_eq!(buffer.text, " release notes");
+        assert!(buffer.done);
+    }
+
+    #[test]
+    fn failed_terminal_batches_keep_the_provider_error() {
+        let mut buffer = TurnBuffer::new();
+        let events = crate::agent::normalize_codex_message(&serde_json::json!({
+            "method":"turn/completed", "params":{"turn":{"status":"failed", "error":{"message":"rate_limited"}}}
+        }));
+        buffer.observe(events);
+        assert!(buffer.done);
+        assert_eq!(buffer.error.as_deref(), Some("rate_limited"));
+        let mut claude = TurnBuffer::new();
+        claude.observe(crate::agent::normalize_claude_message(&serde_json::json!({"type":"result", "subtype":"error", "is_error":true, "result":"unauthorized"})));
+        assert_eq!(claude.error.as_deref(), Some("unauthorized"));
+        let mut opencode = TurnBuffer::new();
+        opencode.observe(crate::agent::normalize_opencode_message_with_state(&serde_json::json!({"type":"session.error", "properties":{"sessionID":"s", "error":{"name":"APIError", "data":{"message":"unknown model"}}}}), &mut crate::agent::OpenCodeStreamState::default()));
+        assert!(opencode.error.is_some());
+    }
+
+    struct CompletionRuntime {
+        interrupted: Arc<std::sync::atomic::AtomicUsize>,
+        stopped: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl AdapterRuntime for CompletionRuntime {
+        fn process_id(&self) -> u32 { 0 }
+        fn provider_session_id(&self) -> &str { "completion-test" }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn interrupt(&self) -> Result<(), BridgeError> { self.interrupted.fetch_add(1, std::sync::atomic::Ordering::SeqCst); Ok(()) }
+        fn respond(&self, _: Value, _: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn stop(&mut self, _: ShutdownReason) { self.stopped.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+    }
+    struct CompletionAdapter {
+        starts: Arc<std::sync::atomic::AtomicUsize>,
+        interrupted: Arc<std::sync::atomic::AtomicUsize>,
+        stopped: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl crate::adapters::HarnessAdapter for CompletionAdapter {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn descriptor(&self) -> crate::model::AdapterDescriptor {
+            crate::model::AdapterDescriptor {
+                id: "completion-test".into(), label: "Completion test".into(), available: true,
+                auth_state: crate::model::AuthState::Unknown, version: Some("test".into()),
+                capabilities: vec!["messages".into()], sandbox_modes: vec![], unavailable_reason: None,
+                models: vec![], default_model: None, model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+            }
+        }
+        fn start(&self, _: StartRequest<'_>) -> Result<crate::adapters::StartedAdapter, BridgeError> {
+            let turn = self.starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let text = if turn == 0 { "a".repeat(MAX_SUGGESTION_CHARS + 1) } else { " fresh".into() };
+            let frame = serde_json::json!({"type":"assistant", "message":{"id":"m", "role":"assistant", "content":[{"type":"text", "text":text}]}});
+            let result = serde_json::json!({"type":"result", "subtype":"success", "result":text});
+            Ok(crate::adapters::StartedAdapter {
+                runtime: Box::new(CompletionRuntime { interrupted: self.interrupted.clone(), stopped: self.stopped.clone() }),
+                reader: Box::new(std::io::Cursor::new(format!("{frame}\n{result}\n"))), startup_messages: vec![],
+            })
+        }
+        fn resume(&self, _: crate::adapters::ResumeRequest<'_>) -> Result<crate::adapters::StartedAdapter, BridgeError> { unreachable!() }
+        fn supports_native_resume(&self) -> bool { false }
+        fn normalize(&self, frame: &Value) -> Vec<NormalizedEvent> { crate::agent::normalize_claude_message(frame) }
+    }
+
+    #[test]
+    fn capped_turn_recycles_the_runtime_before_the_next_draft() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let starts = Arc::new(AtomicUsize::new(0));
+        let interrupted = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let mut registry = crate::adapters::AdapterRegistry::empty();
+        registry.register(Box::new(CompletionAdapter { starts: starts.clone(), interrupted: interrupted.clone(), stopped: stopped.clone() })).unwrap();
+        core.adapter_registry = Arc::new(registry);
+        let core = Arc::new(core);
+        let engine = SuggestionEngine::new();
+        assert_eq!(engine.complete(&core, "completion-test", "test", "first").unwrap(), "a".repeat(MAX_SUGGESTION_CHARS));
+        assert!(engine.state.lock().unwrap().session.is_none());
+        assert_eq!(interrupted.load(Ordering::SeqCst), 1);
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
+        assert_eq!(engine.complete(&core, "completion-test", "test", "second").unwrap(), " fresh");
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        assert_eq!(engine.state.lock().unwrap().session.as_ref().unwrap().turns_used, 1);
+    }
+
+    #[test]
+    #[ignore = "requires an authenticated OpenCode model; set BRIDGE_SUGGESTION_LIVE_MODEL"]
+    fn live_inline_opencode_completion_uses_the_tool_denied_session() {
+        let model = std::env::var("BRIDGE_SUGGESTION_LIVE_MODEL").expect("set BRIDGE_SUGGESTION_LIVE_MODEL");
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        core.adapter_registry = Arc::new(crate::adapters::AdapterRegistry::built_in().unwrap());
+        let core = Arc::new(core);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !core.adapter_registry.descriptor("opencode").is_some_and(|adapter| adapter.available) {
+            assert!(Instant::now() < deadline, "OpenCode discovery did not finish");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        write_settings(&core.db.lock().unwrap(), &wire::SuggestionSettings { enabled: true, provider: "opencode".into(), model }).unwrap();
+        let result = suggest_completion(&core, "Please write a brief release note explaining the composer fixes, including").unwrap();
+        SuggestionEngine::drop_session(&core, &mut core.suggestion_engine.state.lock().unwrap(), ShutdownReason::Completed);
+        if std::env::var_os("BRIDGE_SUGGESTION_EXPECT_FALLBACK").is_some() {
+            assert!(result.used_fallback, "the exhausted OpenCode account should use the fallback");
+            assert_eq!(result.fallback_reason, Some(wire::SuggestionFallbackReason::RateLimited));
+        } else {
+            assert!(!result.used_fallback, "the configured OpenCode model should serve the completion");
+        }
+        assert!(!result.suggestion.trim().is_empty(), "the provider returned no draft continuation");
+        assert!(result.suggestion.chars().count() <= MAX_SUGGESTION_CHARS);
+        println!("Live completion returned {} characters; fallback={}", result.suggestion.chars().count(), result.used_fallback);
+    }
+
+    #[test]
+    fn opencode_account_limit_retry_triggers_the_rate_limited_fallback() {
+        let message = serde_json::json!({"type":"session.status", "properties":{"sessionID":"s", "status":{
+            "type":"retry", "message":"monthly usage limit reached", "action":{"reason":"account_rate_limit"}, "next":9999999999999_u64
+        }}});
+        let error = completion_retry_error(&message).unwrap();
+        assert_eq!(classify_error(&error), Some(FallbackReason::RateLimited));
+        assert_eq!(classify_error("monthly usage limit reached"), Some(FallbackReason::RateLimited));
+        assert!(completion_retry_error(&serde_json::json!({"type":"session.status", "properties":{"status":{"type":"busy"}}})).is_none());
     }
 
     #[test]

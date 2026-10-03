@@ -122,7 +122,17 @@ pub fn start_with_settings(
     request: StartRequest<'_>,
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
-    launch(request, None, settings)
+    launch(request, None, settings, false)
+}
+
+/// A standalone draft completion, with every provider tool family denied.
+/// This does not claim the offline worker sandbox: OpenCode's HTTP transport
+/// remains local and the session has no authority to read, write or run tools.
+pub fn start_completion_with_settings(
+    request: StartRequest<'_>,
+    settings: &OpenCodeSettings,
+) -> Result<StartedOpenCode, BridgeError> {
+    launch(request, None, settings, true)
 }
 
 pub fn resume_with_settings(
@@ -142,6 +152,7 @@ pub fn resume_with_settings(
         },
         Some(request.provider_session_id),
         settings,
+        false,
     )
 }
 
@@ -149,6 +160,7 @@ fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
     settings: &OpenCodeSettings,
+    completion_only: bool,
 ) -> Result<StartedOpenCode, BridgeError> {
     ensure_read_only_transport_supported(request.read_only_sandbox.is_some())?;
     // OpenCode's permission rules are coarse families, so admitting one reviewed
@@ -230,7 +242,11 @@ fn launch(
             .map_err(http_error("resume OpenCode session"))
             .and_then(|response| checked_json(response, "resume OpenCode session")),
         None => {
-            let body = session_create_body(model.as_ref(), variant.as_deref(), request.write_mode);
+            let body = if completion_only {
+                completion_session_body(model.as_ref(), variant.as_deref())
+            } else {
+                session_create_body(model.as_ref(), variant.as_deref(), request.write_mode)
+            };
             client
                 .post(endpoint(&base_url, "/session", &directory))
                 .timeout(Duration::from_secs(10))
@@ -323,6 +339,13 @@ fn ensure_read_only_transport_supported(enabled: bool) -> Result<(), BridgeError
     } else {
         Ok(())
     }
+}
+
+fn completion_session_body(model: Option<&ModelRef>, variant: Option<&str>) -> Value {
+    let mut body = session_create_body(model, variant, Some(WriteMode::ReadOnly));
+    body["title"] = json!("Bridge inline suggestions");
+    body["permission"] = json!([{"permission":"*", "pattern":"*", "action":"deny"}]);
+    body
 }
 
 fn session_create_body(
@@ -2446,6 +2469,17 @@ mod tests {
         assert!(validate_path_id("session id", "ses?x=1").is_err());
         assert!(validate_path_id("session id", "ses id").is_err());
         assert!(validate_path_id("session id", &"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn completion_session_denies_every_tool_without_altering_worker_permissions() {
+        let model = ModelRef { provider_id: "opencode-go".into(), model_id: "test-model".into() };
+        let body = completion_session_body(Some(&model), None);
+        assert_eq!(body["permission"], json!([{"permission":"*", "pattern":"*", "action":"deny"}]));
+        assert_eq!(body["model"]["providerID"], "opencode-go");
+        assert_eq!(body["model"]["id"], "test-model");
+        assert!(permission_rules(Some(WriteMode::ReadOnly)).as_array().unwrap().iter().any(|rule| rule["action"] == "ask"));
+        assert!(ensure_read_only_transport_supported(true).is_err());
     }
 
     #[test]

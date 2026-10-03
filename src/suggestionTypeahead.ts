@@ -13,6 +13,15 @@ import type { SuggestCompletionResult } from "./protocol/generated/protocol";
 
 const DEBOUNCE_MS = 400;
 
+export function createSuggestionQueue() {
+  let tail: Promise<unknown> = Promise.resolve();
+  return (request: () => Promise<SuggestCompletionResult>, current: () => boolean): Promise<SuggestCompletionResult | undefined> => {
+    const next = tail.then(() => current() ? request() : undefined);
+    tail = next.catch(() => undefined);
+    return next;
+  };
+}
+
 export function scheduleSuggestion(options: {
   text: string;
   enabled: boolean;
@@ -20,6 +29,8 @@ export function scheduleSuggestion(options: {
   onResult: (result: SuggestCompletionResult | undefined) => void;
   generation: { current: number };
   debounceMs?: number;
+  queue?: ReturnType<typeof createSuggestionQueue>;
+  onError?: (error: unknown | undefined) => void;
 }): () => void {
   const { text, enabled, request, onResult, generation } = options;
   // Clearing eagerly means a request that is superseded before it even fires
@@ -31,13 +42,19 @@ export function scheduleSuggestion(options: {
   }
   const mine = ++generation.current;
   const timer = window.setTimeout(() => {
-    request(text)
+    const current = () => generation.current === mine;
+    const pending = options.queue ? options.queue(() => request(text), current) : request(text);
+    pending
       .then(result => {
         if (generation.current !== mine) return;
-        onResult(result.suggestion ? result : undefined);
+        options.onError?.(undefined);
+        onResult(result?.suggestion ? result : undefined);
       })
-      .catch(() => {
-        if (generation.current === mine) onResult(undefined);
+      .catch(error => {
+        if (generation.current === mine) {
+          onResult(undefined);
+          options.onError?.(error);
+        }
       });
   }, options.debounceMs ?? DEBOUNCE_MS);
   return () => {

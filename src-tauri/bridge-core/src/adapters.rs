@@ -641,6 +641,12 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn as_any(&self) -> &dyn Any;
     fn descriptor(&self) -> AdapterDescriptor;
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError>;
+    /// Text completion has no workspace tools. Adapters with a separate
+    /// transport/tool policy can override this without changing worker modes.
+    fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        validate_start_compatibility(&self.descriptor(), &request)?;
+        self.start(request)
+    }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
     /// Whether [`ResumeRequest::fork`] can fork a stored provider thread into
@@ -904,6 +910,16 @@ impl AdapterRegistry {
         validate_start_compatibility(&descriptor, &request)?;
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         adapter.start(request)
+    }
+
+    pub fn start_completion(&self, id: &str, mut request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let adapter = self.adapters.get(id).ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?;
+        let descriptor = adapter.descriptor();
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
+        }
+        request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        adapter.start_completion(request)
     }
 
     pub fn resume(
@@ -1391,6 +1407,13 @@ impl HarnessAdapter for OpenCodeAdapter {
             runtime: Box::new(started.runtime),
             reader: Box::new(started.reader),
             startup_messages: started.startup_messages,
+        })
+    }
+    fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.ensure_model_is_selectable(request.model)?;
+        let started = opencode_adapter::start_completion_with_settings(request, &self.settings())?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
         })
     }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
