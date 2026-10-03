@@ -4,13 +4,25 @@ import { bridgeApi } from "../api";
 import type { UsageProvider } from "../usage";
 import { plainProviderLoginOutput, providerLoginCode, providerLoginUrl } from "../providerLoginPresentation";
 
-export function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider | "github" | "grok"; label: string; onClose: () => void }) {
+// `bare` drops the card and header for hosts that supply their own (the
+// sign-in dialog). `onExited` lets that host judge the result instead of
+// closing the moment the vendor process ends.
+export function ProviderLoginPane({ provider, label, onClose, onExited, bare = false }: {
+  provider: UsageProvider | "github" | "grok";
+  label: string;
+  onClose: () => void;
+  onExited?: (output: string) => void;
+  bare?: boolean;
+}) {
   const [output, setOutput] = useState("");
+  const outputTextRef = useRef("");
   const [entry, setEntry] = useState("");
   const [error, setError] = useState<string | null>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const exitedRef = useRef(onExited);
+  exitedRef.current = onExited;
   // Listen before launch: both subscriptions must be registered before the
   // vendor process starts, or its first output (OAuth URL, initial prompt)
   // can be lost permanently.
@@ -23,12 +35,14 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
     void (async () => {
       unlistenOutput = await bridgeApi.onTerminal(chunk => {
         if (!alive || chunk.sessionId !== "provider-login" || chunk.terminalId !== provider) return;
-        setOutput(previous => (previous + chunk.data).slice(-8000));
+        outputTextRef.current = (outputTextRef.current + chunk.data).slice(-8000);
+        setOutput(outputTextRef.current);
       });
       unlistenExit = await bridgeApi.onTerminalExited(exit => {
         if (!alive || exit.sessionId !== "provider-login" || exit.terminalId !== provider) return;
         exited = true;
-        closeRef.current();
+        if (exitedRef.current) exitedRef.current(plainProviderLoginOutput(outputTextRef.current));
+        else closeRef.current();
       });
       if (!alive) { unlistenOutput?.(); unlistenExit?.(); return; }
       try {
@@ -68,6 +82,48 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
   const cleanOutput = plainProviderLoginOutput(output);
   const loginUrl = providerLoginUrl(output);
   const loginCode = providerLoginCode(output);
+  const replyField = <div className="flex gap-1.5">
+    <input
+      value={entry}
+      onChange={event => setEntry(event.target.value)}
+      onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); send(); } }}
+      placeholder={bare ? "Paste code" : "Code or response"}
+      aria-label={`Reply to the ${label} sign-in prompt`}
+      className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-caption text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+    />
+    <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-caption font-medium text-foreground transition-colors hover:bg-accent">Send</button>
+  </div>;
+  const optionKeys = provider === "opencode" && <div className="mt-2 flex flex-wrap gap-2">{([
+    ["Previous option", "\u001b[A"], ["Next option", "\u001b[B"], ["Choose option", "\r"],
+  ] as const).map(([name, key]) => <button key={name} type="button" onClick={() => void writeReply(key)} className="min-h-8 rounded-md border border-border px-2 text-xs text-foreground">{name}</button>)}</div>;
+  const outputPane = <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground">{cleanOutput || "Starting secure sign-in…"}</pre>;
+  if (bare) return <div className="grid gap-4" aria-label={`${label} sign-in`}>
+    {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">{error}</div> : <div className="grid gap-3 rounded-xl border border-border-card bg-background/50 p-4">
+      <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+        <LoaderCircle className="shrink-0 animate-spin" size={14} aria-hidden="true" />
+        <span>{loginUrl ? "Waiting for you to finish in the browser" : `Starting ${label} sign-in…`}</span>
+      </div>
+      {loginUrl && <a href={loginUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-primary px-3 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">
+        Open sign-in page <ExternalLink size={13} aria-hidden="true" />
+      </a>}
+      {loginCode && <p className="text-[12px] text-muted-foreground">Enter this code on the sign-in page: <code aria-label="One-time code" className="select-all rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[13px] font-medium text-foreground">{loginCode}</code></p>}
+      {loginUrl && !loginCode && <div className="grid gap-1.5">
+        <p className="text-[11px] text-muted-foreground">If the page shows a code, paste it here.</p>
+        {replyField}
+      </div>}
+    </div>}
+    <details open={provider === "opencode" || (!!cleanOutput && !loginUrl)} className="group">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+        <Terminal size={12} aria-hidden="true" /> {loginUrl ? "Show details" : "Agent sign-in instructions"}
+        <ChevronDown className="transition-transform group-open:rotate-180" size={12} aria-hidden="true" />
+      </summary>
+      <div className="mt-2 grid gap-2">
+        {outputPane}
+        {optionKeys}
+        {(!loginUrl || loginCode) && replyField}
+      </div>
+    </details>
+  </div>;
   return <section className="u-glass-soft mt-3 overflow-hidden rounded-xl border border-border-card" aria-label={`${label} sign-in`}>
     <header className="flex items-center gap-3 border-b border-border-card px-4 py-3">
       <span className="grid size-9 shrink-0 place-items-center rounded-xl border border-border-card bg-background text-foreground">
@@ -98,22 +154,10 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
           <ChevronDown className="ml-auto transition-transform group-open:rotate-180" size={13} aria-hidden="true" />
         </summary>
         <div className="border-t border-border-card p-2.5">
-          <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-36 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground">{cleanOutput || "Starting secure sign-in…"}</pre>
-          {provider === "opencode" && <div className="mt-2 flex flex-wrap gap-2">{([
-            ["Previous option", "\u001b[A"], ["Next option", "\u001b[B"], ["Choose option", "\r"],
-          ] as const).map(([name, key]) => <button key={name} type="button" onClick={() => void writeReply(key)} className="min-h-8 rounded-md border border-border px-2 text-xs text-foreground">{name}</button>)}</div>}
+          {outputPane}
+          {optionKeys}
           <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Only use this field when {label} asks for a code or response.</p>
-          <div className="mt-2 flex gap-1.5">
-            <input
-              value={entry}
-              onChange={event => setEntry(event.target.value)}
-              onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); send(); } }}
-              placeholder="Code or response"
-              aria-label={`Reply to the ${label} sign-in prompt`}
-              className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-caption text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-            />
-            <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-caption font-medium text-foreground transition-colors hover:bg-accent">Send</button>
-          </div>
+          <div className="mt-2">{replyField}</div>
         </div>
       </details>
     </div>
