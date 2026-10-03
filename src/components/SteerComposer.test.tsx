@@ -23,8 +23,17 @@ async function mount(node: React.ReactElement) {
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => root.render(node));
-  return { container, unmount: () => act(async () => root.unmount()) };
+  return { container, rerender: (next: React.ReactElement) => act(async () => root.render(next)), unmount: () => act(async () => root.unmount()) };
 }
+
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+const box = (container: HTMLElement) => container.querySelector<HTMLTextAreaElement>("textarea")!;
 
 describe("SteerComposer", () => {
   it("sends what the user typed and clears the box", async () => {
@@ -70,6 +79,62 @@ describe("SteerComposer", () => {
     const { container, unmount } = await mount(<SteerComposer sessionId="w1" steerable={false} onSteer={onSteer}/>);
     expect(container.querySelector("textarea")).toBeNull();
     expect(container.textContent).toContain("Its typed result is final");
+    await unmount();
+  });
+
+  it("starts clean for each worker: no draft, failure or in-flight steer carries over", async () => {
+    const held = deferred();
+    const onSteer = vi.fn().mockReturnValueOnce(held.promise).mockRejectedValueOnce(new Error("refused"));
+    const { container, rerender, unmount } = await mount(<SteerComposer sessionId="w1" steerable onSteer={onSteer}/>);
+    await type(box(container), "for worker one");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    expect(container.textContent).toContain("Sending…");
+
+    await rerender(<SteerComposer sessionId="w2" steerable onSteer={onSteer}/>);
+    expect(box(container).value).toBe("");
+    expect(container.textContent).not.toContain("Sending…");
+    await type(box(container), "for worker two");
+    // The first worker's steer lands late; it must not clear the second's box.
+    await act(async () => held.resolve());
+    expect(box(container).value).toBe("for worker two");
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("refused");
+    await rerender(<SteerComposer sessionId="w3" steerable onSteer={onSteer}/>);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await unmount();
+  });
+
+  it("keeps what was typed while a steer was in flight", async () => {
+    const held = deferred();
+    const onSteer = vi.fn().mockReturnValue(held.promise);
+    const { container, unmount } = await mount(<SteerComposer sessionId="w1" steerable onSteer={onSteer}/>);
+    await type(box(container), "first thought");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    await type(box(container), "second thought");
+    await act(async () => held.resolve());
+    expect(box(container).value).toBe("second thought");
+    await unmount();
+  });
+
+  it("does not send on the Enter that confirms an IME composition", async () => {
+    const onSteer = vi.fn().mockResolvedValue(undefined);
+    const { container, unmount } = await mount(<SteerComposer sessionId="w1" steerable onSteer={onSteer}/>);
+    await type(box(container), "かんじ");
+    const composing = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: true });
+    await act(async () => { box(container).dispatchEvent(composing); });
+    expect(onSteer).not.toHaveBeenCalled();
+    await act(async () => { box(container).dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    expect(onSteer).toHaveBeenCalledWith("w1", "かんじ");
+    await unmount();
+  });
+
+  it("announces a refused steer", async () => {
+    const onSteer = vi.fn().mockRejectedValue(new Error("This worker already reported its typed result"));
+    const { container, unmount } = await mount(<SteerComposer sessionId="w1" steerable onSteer={onSteer}/>);
+    await type(box(container), "narrow the scope");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("already reported");
     await unmount();
   });
 

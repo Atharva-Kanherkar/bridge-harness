@@ -10,7 +10,14 @@ import { Button } from "@/components/ui/button";
 /// its orchestrator gave it, and what you type amends that objective rather than
 /// starting a conversation. Hidden once the worker has reported, because at that
 /// point the result is final and offering the box would be a lie.
-export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer this worker…", className = "shrink-0 border-t border-border px-4 py-3 sm:px-6", trailing }: {
+///
+/// One box per worker: the same slot can show a different worker next, and a
+/// draft, a steer still in flight, or a refusal must not carry over to it.
+export function SteerComposer(props: SteerComposerProps) {
+  return <SteerBox key={props.sessionId} {...props}/>;
+}
+
+interface SteerComposerProps {
   sessionId: string;
   steerable: boolean;
   onSteer: (sessionId: string, text: string) => Promise<void>;
@@ -23,7 +30,9 @@ export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer th
    *  to live "next to send" for every session, usage health included, has to
    *  be threaded in here too. */
   trailing?: ReactNode;
-}) {
+}
+
+function SteerBox({ sessionId, steerable, onSteer, label = "Steer this worker…", className = "shrink-0 border-t border-border px-4 py-3 sm:px-6", trailing }: SteerComposerProps) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
@@ -34,11 +43,14 @@ export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer th
     </div>;
   }
   const send = () => {
-    const text = draft.trim();
+    const sent = draft;
+    const text = sent.trim();
     if (!text || busy) return;
     setBusy(true); setFailure(undefined);
     void onSteer(sessionId, text)
-      .then(() => setDraft(""))
+      // Typing can go on while the steer is in flight. Only the words that
+      // were sent are cleared; anything written since stays.
+      .then(() => setDraft(current => current === sent ? "" : current))
       .catch((cause: unknown) => setFailure(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setBusy(false));
   };
@@ -48,7 +60,8 @@ export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer th
         value={draft}
         onChange={changed => setDraft(changed.target.value)}
         onKeyDown={pressed => {
-          if (pressed.key === "Enter" && !pressed.shiftKey) { pressed.preventDefault(); send(); }
+          // Enter that confirms an IME composition is not a send.
+          if (pressed.key === "Enter" && !pressed.shiftKey && !pressed.nativeEvent.isComposing) { pressed.preventDefault(); send(); }
         }}
         rows={1}
         placeholder={label}
@@ -59,6 +72,6 @@ export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer th
       {trailing}
     </div>
     <p className="mt-1.5 text-[11px] text-muted-foreground">Guidance is folded into the worker&rsquo;s objective and its orchestrator is told. It still reports a typed result.</p>
-    {failure && <p className="mt-1.5 text-[11px] text-destructive">{failure}</p>}
+    {failure && <p role="alert" className="mt-1.5 text-[11px] text-destructive">{failure}</p>}
   </form>;
 }
