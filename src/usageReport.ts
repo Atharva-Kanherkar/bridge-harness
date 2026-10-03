@@ -12,8 +12,8 @@ export type UsageWindowDays = 1 | 7 | 30 | 90;
 export const USAGE_WINDOW_OPTIONS: readonly UsageWindowDays[] = [1, 7, 30, 90];
 
 /** The presentations of the same summary the screen can switch between. */
-export type UsageLayout = "ledger" | "strips" | "flow" | "mosaic" | "calendar" | "classic";
-export const USAGE_LAYOUT_OPTIONS: readonly UsageLayout[] = ["ledger", "strips", "flow", "mosaic", "calendar", "classic"];
+export type UsageLayout = "ledger" | "strips" | "flow" | "mosaic" | "calendar";
+export const USAGE_LAYOUT_OPTIONS: readonly UsageLayout[] = ["ledger", "strips", "flow", "mosaic", "calendar"];
 
 export interface UsagePreferences {
   metric: UsageMetric;
