@@ -189,7 +189,7 @@ describe("AgentConversation", () => {
   it("renders the worker placeholder as a pulsing status, not italic prose", () => {
     const reply = event(1, "message.completed", { itemId: "a", role: "assistant", status: "completed", text: "_Checking on workers…_" });
     const html = renderToStaticMarkup(<AgentConversation session={session} events={[reply]} onResolve={() => undefined} />);
-    expect(html).toMatch(/data-worker-status/);
+    expect(html).toContain("data-thinking-row");
     expect(html).toMatch(/class="[^"]*thinking-word[^"]*">Checking on workers…</);
     expect(html).not.toContain("<em>");
   });

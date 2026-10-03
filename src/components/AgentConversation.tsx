@@ -1328,18 +1328,13 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
 }
 
 /// The host writes these as italic stand-ins when a turn is only a worker
-/// directive. They are status, not prose, so they pulse like the thinking word.
+/// directive. They are status, not prose, so they go through ThinkingRow.
 const WORKER_STATUS = /^_(Delegating to a worker|Checking on workers|Steering a worker|Stopping a worker)…_$/;
 
 function StreamedProse({ text, streaming }: { text: string; streaming: boolean }) {
   const smooth = useSmoothText(text, streaming);
-  const reducedMotion = useReducedMotion() ?? false;
   const status = WORKER_STATUS.exec(text.trim())?.[1];
-  if (status) {
-    return <div role="status" data-worker-status className="flex min-h-8 items-center text-[13px] text-muted-foreground">
-      <span data-pulse={reducedMotion ? undefined : ""} className={cn(!reducedMotion && "thinking-word")}>{status}…</span>
-    </div>;
-  }
+  if (status) return <ThinkingRow label={`${status}…`}/>;
   return <Markdown text={smooth} />;
 }
 
