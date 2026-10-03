@@ -26,6 +26,16 @@ const EXCLUDE_OVER_BUDGET: &str = "over_budget";
 /// the group exists to prevent, so the packet excludes it by code rather than
 /// trusting the ledger's one-active-member rule to have held.
 const EXCLUDE_CONFLICT_GROUP: &str = "conflict_group";
+/// More active records exist than one packet reads. Said once, so an audit
+/// never implies it weighed a record it did not.
+const EXCLUDE_TRUNCATED: &str = "candidate_window_truncated";
+/// How many active records one packet reads. The cap bounds the query, not the
+/// selection: the rows arrive in rank order and the character budget fills
+/// long before this many, so what it leaves behind could not have made it in.
+const ACTIVE_CANDIDATE_CAP: usize = 500;
+/// Records that are not active are read only to say why they were left out,
+/// and only the newest of them: they can never reach a packet.
+const EXCLUSION_REPORT_CAP: usize = 200;
 
 pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -191,70 +201,85 @@ pub fn for_session(
     if !injection_enabled(db, &scope_key)? {
         return Ok(None);
     }
+    // Only active records are candidates, and they are read apart from the
+    // rest. Every edit supersedes a record and extraction keeps proposing, so
+    // a shared newest-first window used to fill with that churn and push a
+    // long-lived pin out before its status was ever checked: it showed as
+    // active on the Memory screen and never reached a prompt.
+    //
+    // The order is the packet's rank. Explicit pins outrank suggestions;
+    // suggestions rank by confidence; newest first breaks ties. It is total,
+    // so the packet is reproducible from the ledger.
     let mut statement = db.prepare(
-        "SELECT id, body, kind, provenance, status, confidence_bps, conflict_group
+        "SELECT id, body, kind, provenance, confidence_bps, conflict_group
          FROM memory_records
-         WHERE scope_key=?1 AND status<>'deleted'
-         ORDER BY updated_at DESC, id DESC
-         LIMIT 200",
+         WHERE scope_key=?1 AND status='active'
+         ORDER BY provenance='user_explicit' DESC, COALESCE(confidence_bps, -1) DESC,
+                  updated_at DESC, id DESC
+         LIMIT ?2",
     )?;
     struct Row {
         id: String,
         body: String,
         kind: String,
         provenance: String,
-        status: String,
         confidence_bps: Option<i64>,
         conflict_group: Option<String>,
     }
-    let rows: Vec<Row> = statement
-        .query_map(params![scope_key], |row| {
-            Ok(Row {
-                id: row.get(0)?,
-                body: row.get(1)?,
-                kind: row.get(2)?,
-                provenance: row.get(3)?,
-                status: row.get(4)?,
-                confidence_bps: row.get(5)?,
-                conflict_group: row.get(6)?,
-            })
-        })?
+    let mut rows: Vec<Row> = statement
+        .query_map(
+            params![scope_key, (ACTIVE_CANDIDATE_CAP + 1) as i64],
+            |row| {
+                Ok(Row {
+                    id: row.get(0)?,
+                    body: row.get(1)?,
+                    kind: row.get(2)?,
+                    provenance: row.get(3)?,
+                    confidence_bps: row.get(4)?,
+                    conflict_group: row.get(5)?,
+                })
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
+    let truncated = rows.len() > ACTIVE_CANDIDATE_CAP;
+    rows.truncate(ACTIVE_CANDIDATE_CAP);
 
     let candidate_count = rows.len() as i64;
     let mut exclusions: Vec<(String, &'static str)> = Vec::new();
     let mut eligible: Vec<Row> = Vec::new();
     for row in rows {
-        match row.status.as_str() {
-            "active" => {
-                if unsafe_body(&row.body) {
-                    exclusions.push((row.id, EXCLUDE_UNSAFE));
-                } else {
-                    eligible.push(row);
-                }
-            }
-            "proposed" => exclusions.push((row.id, "proposed")),
-            "rejected" => exclusions.push((row.id, "rejected")),
-            "superseded" => exclusions.push((row.id, "superseded")),
-            "expired" => exclusions.push((row.id, "expired")),
-            other => {
-                debug_assert!(false, "unreachable status {other}");
-                exclusions.push((row.id, "unknown_status"));
-            }
+        if unsafe_body(&row.body) {
+            exclusions.push((row.id, EXCLUDE_UNSAFE));
+        } else {
+            eligible.push(row);
         }
     }
 
-    // Explicit pins outrank suggestions; suggestions rank by confidence. Both
-    // orderings are total, so the packet is reproducible from the ledger.
-    eligible.sort_by(|a, b| {
-        let a_explicit = a.provenance == "user_explicit";
-        let b_explicit = b.provenance == "user_explicit";
-        b_explicit.cmp(&a_explicit).then(
-            b.confidence_bps
-                .unwrap_or(-1)
-                .cmp(&a.confidence_bps.unwrap_or(-1)),
-        )
-    });
+    let mut statement = db.prepare(
+        "SELECT id, status
+         FROM memory_records
+         WHERE scope_key=?1 AND status NOT IN ('active', 'deleted')
+         ORDER BY updated_at DESC, id DESC
+         LIMIT ?2",
+    )?;
+    let inactive: Vec<(String, String)> = statement
+        .query_map(params![scope_key, EXCLUSION_REPORT_CAP as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, status) in inactive {
+        let code = match status.as_str() {
+            "proposed" => "proposed",
+            "rejected" => "rejected",
+            "superseded" => "superseded",
+            "expired" => "expired",
+            other => {
+                debug_assert!(false, "unreachable status {other}");
+                "unknown_status"
+            }
+        };
+        exclusions.push((id, code));
+    }
 
     // One subject, one answer. The ledger already leaves at most one member of
     // a group active, so a second one here means something wrote around that
@@ -349,10 +374,14 @@ pub fn for_session(
                 .collect()
         })
         .unwrap_or_default();
-    let exclusion_json: Vec<serde_json::Value> = exclusions
+    let mut exclusion_json: Vec<serde_json::Value> = exclusions
         .iter()
         .map(|(id, code)| serde_json::json!({"id": id, "code": code}))
         .collect();
+    if truncated {
+        // No record id: the point is the records it never read.
+        exclusion_json.push(serde_json::json!({"id": null, "code": EXCLUDE_TRUNCATED}));
+    }
     db.execute(
         "INSERT INTO memory_retrieval_audits(
             id, scope_key, recipient_session_id, objective_hash, candidate_count,
@@ -698,6 +727,155 @@ mod tests {
         assert_eq!(order, vec!["pin", "sug-high", "sug-low"]);
         assert_eq!(packet.selected[0].reason, "explicit pin");
         assert_eq!(packet.selected[1].reason, "extracted memory (95%)");
+    }
+
+    fn insert_at(db: &Connection, id: &str, provenance: &str, status: &str, updated_at: &str) {
+        db.execute(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, confidence_bps,
+                 conflict_group, valid_from, created_at, updated_at)
+             VALUES(?1,'account:local','preference',?2,?3,?4,NULL,NULL,?5,?5,?5)",
+            params![id, format!("Body of {id}"), provenance, status, updated_at],
+        )
+        .unwrap();
+    }
+
+    fn latest_candidate_count(db: &Connection) -> i64 {
+        db.query_row(
+            "SELECT candidate_count FROM memory_retrieval_audits ORDER BY created_at DESC, id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_old_active_pin_survives_newer_churn() {
+        // Every edit supersedes a record and extraction keeps proposing, so the
+        // newest rows of a long-lived ledger are mostly not active. They used to
+        // fill the candidate window before status was checked.
+        let (_dir, db) = packet_db();
+        insert_at(
+            &db,
+            "old-pin",
+            "user_explicit",
+            "active",
+            "2025-01-01T00:00:00Z",
+        );
+        for index in 0..250 {
+            let status = if index % 2 == 0 {
+                "superseded"
+            } else {
+                "rejected"
+            };
+            insert_at(
+                &db,
+                &format!("churn-{index:03}"),
+                "model_proposal",
+                status,
+                &format!("2026-09-01T00:{:02}:{:02}Z", index / 60, index % 60),
+            );
+        }
+        let packet = for_session(&db, "account:local", "session-1")
+            .unwrap()
+            .expect("the active pin is a candidate");
+        let ids: Vec<&str> = packet
+            .selected
+            .iter()
+            .map(|item| item.record_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["old-pin"]);
+        assert_eq!(latest_candidate_count(&db), 1);
+        // Churn is still explained, newest first and capped.
+        let exclusions = audit_exclusions(&db);
+        assert_eq!(exclusions.len(), EXCLUSION_REPORT_CAP);
+        assert!(exclusions
+            .iter()
+            .any(|(id, code)| id == "churn-249" && code == "rejected"));
+        assert!(!exclusions.iter().any(|(id, _)| id == "old-pin"));
+    }
+
+    #[test]
+    fn an_old_explicit_pin_outranks_newer_suggestions() {
+        let (_dir, db) = packet_db();
+        insert_at(
+            &db,
+            "old-pin",
+            "user_explicit",
+            "active",
+            "2025-01-01T00:00:00Z",
+        );
+        insert_at(
+            &db,
+            "new-sug",
+            "model_proposal",
+            "active",
+            "2026-09-01T00:00:00Z",
+        );
+        insert_at(
+            &db,
+            "newer-pin",
+            "user_explicit",
+            "active",
+            "2026-09-02T00:00:00Z",
+        );
+        let packet = for_session(&db, "account:local", "session-1")
+            .unwrap()
+            .unwrap();
+        let ids: Vec<&str> = packet
+            .selected
+            .iter()
+            .map(|item| item.record_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["newer-pin", "old-pin", "new-sug"]);
+    }
+
+    #[test]
+    fn a_truncated_candidate_window_is_audited() {
+        let (_dir, db) = packet_db();
+        for index in 0..=ACTIVE_CANDIDATE_CAP {
+            insert_at(
+                &db,
+                &format!("active-{index:04}"),
+                "model_proposal",
+                "active",
+                "2026-09-01T00:00:00Z",
+            );
+        }
+        for_session(&db, "account:local", "session-1").unwrap();
+        assert_eq!(latest_candidate_count(&db), ACTIVE_CANDIDATE_CAP as i64);
+        let raw: String = db
+            .query_row(
+                "SELECT exclusions FROM memory_retrieval_audits ORDER BY created_at DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let values: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+        let truncation: Vec<&serde_json::Value> = values
+            .iter()
+            .filter(|value| value["code"] == EXCLUDE_TRUNCATED)
+            .collect();
+        assert_eq!(truncation.len(), 1);
+        assert!(truncation[0]["id"].is_null());
+    }
+
+    #[test]
+    fn a_window_exactly_at_the_cap_is_not_truncated() {
+        let (_dir, db) = packet_db();
+        for index in 0..ACTIVE_CANDIDATE_CAP {
+            insert_at(
+                &db,
+                &format!("active-{index:04}"),
+                "model_proposal",
+                "active",
+                "2026-09-01T00:00:00Z",
+            );
+        }
+        for_session(&db, "account:local", "session-1").unwrap();
+        assert_eq!(latest_candidate_count(&db), ACTIVE_CANDIDATE_CAP as i64);
+        assert!(!audit_exclusions(&db)
+            .iter()
+            .any(|(_, code)| code == EXCLUDE_TRUNCATED));
     }
 
     #[test]
