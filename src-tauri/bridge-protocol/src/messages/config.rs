@@ -63,6 +63,48 @@ pub struct ReviewerSettingsResult {
     pub default_system_prompt: String,
 }
 
+/// How `sessions/search_chats` may use a model when the index is unsure.
+/// One record for the account. The model stage runs on Claude only, because
+/// it is the one harness that can enforce a turn with no tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct ChatSearchSettings {
+    /// Off means search never calls a model, even when asked to go deeper.
+    pub deep_search: bool,
+    /// A Claude model id. `None` is the cheapest one Bridge knows.
+    pub model: Option<String>,
+}
+
+impl Default for ChatSearchSettings {
+    fn default() -> Self {
+        Self {
+            deep_search: true,
+            model: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveChatSearchSettingsParams {
+    pub settings: ChatSearchSettings,
+}
+
+/// Global toggle for hiding AI attribution in model-generated git and GitHub
+/// text. One record, not per workspace. When `hide_ai_attribution` is true,
+/// Bridge prepends a strict no-attribution rule to every prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct AttributionSettings {
+    pub hide_ai_attribution: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveAttributionSettingsParams {
+    pub settings: AttributionSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveWorkerSettingsParams { pub workspace_id: String, pub settings: WorkerSettings }
@@ -191,8 +233,9 @@ pub struct SetDefaultAgentParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PermissionPolicy {
-    /// Auto-accept every provider approval, for every agent. Worker write scope
-    /// and browser outward effects are unaffected — those are authorization.
+    /// Full access: auto-accept every provider approval, for every agent, and
+    /// authorize the write scope a worker proposes. Browser outward effects and
+    /// prompt changes still ask.
     #[serde(alias = "bypassAll")]
     pub auto_approve_provider_permissions: bool,
     /// Allows these worker roles to propose guidance; each edit still requires

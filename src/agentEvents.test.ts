@@ -139,6 +139,19 @@ describe("appendAgentEventBatch", () => {
     expect(merged?.causalAnchor).toBe(41);
   });
 
+  it("anchors a delta to its own session's newest durable frame, not another session's", () => {
+    const other: AgentEvent = { ...event(900, "tool.completed", ""), sessionId: "session-2" };
+    const buffer = appendAgentEventBatch([event(41, "tool.completed", "")], [other, itemEvent("m1", "message.delta", "Hi")]);
+    expect(buffer.find(item => item.itemId === "m1")?.causalAnchor).toBe(41);
+  });
+
+  it("keeps a session's anchor when a replayed batch of older frames lands", () => {
+    let buffer = appendAgentEventBatch([], [event(50, "tool.completed", "")]);
+    buffer = appendAgentEventBatch(buffer, [event(47, "tool.completed", ""), event(48, "tool.completed", "")]);
+    buffer = appendAgentEventBatch(buffer, [itemEvent("m1", "message.delta", "Hi")]);
+    expect(buffer.find(item => item.itemId === "m1")?.causalAnchor).toBe(50);
+  });
+
   it("clears reasoning merge indexes on turn completion", () => {
     const d1: AgentEvent = { ...event(0, "reasoning.delta", "Part 1"), itemId: null };
     const turnCompleted: AgentEvent = { ...event(1, "turn.completed", ""), itemId: null };

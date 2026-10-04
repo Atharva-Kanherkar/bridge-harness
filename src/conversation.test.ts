@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appendAgentEventBatch } from "./agentEvents";
-import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, mergeConversationProjections, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
+import { answeredPending, attachmentUris, compactionReasonLabel, delegationChildSessionId, deliveryNotes, undeliveredPending, userTurnWatermark, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, mergeConversationProjections, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 import { asWireKind } from "./transcript/wire";
 
@@ -70,7 +70,7 @@ describe("normalized conversation reducer",()=>{
     buffer = appendAgentEventBatch(buffer, [event(43,"message.completed",{sequence:43,itemId:"m1",role:"assistant",status:"completed",text:"Let me check the store. Found it."})]);
     const items = reduceConversation(buffer);
     expect(items.map(item=>[item.type,item.text||item.title])).toEqual([
-      ["activity","check the store"],
+      ["message","check the store"],
       ["message","Let me check the store. Found it."],
       ["activity","sqlite3 query"],
     ]);
@@ -248,6 +248,168 @@ describe("normalized conversation reducer",()=>{
     expect(reasoningItems[0].status).toBe("completed");
     expect(reasoningItems[1].text).toBe("Turn 2 thoughts");
     expect(reasoningItems[1].status).toBe("completed");
+  });
+
+  /**
+   * One thought, printed twice.
+   *
+   * Nearly every harness sends reasoning with no provider item id, so a thought's
+   * live row keys on the live event id (`reasoning:41`) while its persisted twin
+   * keys on the forest entry (`entry:e2`). The merge deduplicates on identity, so
+   * it could not tell those were one row, kept both, and `coalesceThoughts` then
+   * joined them into a single Thinking card whose body was the same paragraph
+   * twice. Text is the one thing the two projections cannot word differently.
+   */
+  it("draws a thought once once the forest has caught up with it",()=>{
+    const text = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const live = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(41,"reasoning.completed",{itemId:null,text,status:"completed"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text,status:"completed"},41),
+    ],"e2");
+    // The two rows really are distinct as far as identity is concerned, which is
+    // why this cannot be fixed by keying on it.
+    expect(live.find(i=>i.type==="reasoning")?.identity).not.toBe(durable.find(i=>i.type==="reasoning")?.identity);
+    const thoughts = mergeConversationProjections(durable,live).filter(item=>item.type==="reasoning");
+    expect(thoughts).toHaveLength(1);
+    // The durable row survives: it is the one the reader can branch from.
+    expect(thoughts[0].entryId).toBe("e2");
+  });
+
+  it("does not double a thought the forest caught up with mid-stream",()=>{
+    // A delta is never persisted, so the live row holds only the opening of a
+    // body the forest already has whole, and the two cannot be compared for
+    // equality until the stream lands. That is the three-second poll window.
+    const live = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(0,"reasoning.delta",{itemId:null,text:"Confirmed: while a turn is live, messages get misc"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text:"Confirmed: while a turn is live, messages get miscategorized as tools.",status:"completed"},41),
+    ],"e2");
+    const thoughts = mergeConversationProjections(durable,live).filter(item=>item.type==="reasoning");
+    expect(thoughts).toHaveLength(1);
+    expect(thoughts[0].text).toBe("Confirmed: while a turn is live, messages get miscategorized as tools.");
+  });
+
+  it("reconciles a named thought on its item id alone",()=>{
+    // Codex names its reasoning, so the two identities already agree and the
+    // text match is not what keeps this to one row.
+    const text = "Reading the store first.";
+    const live = reduceConversation([event(41,"reasoning.completed",{itemId:"reasoning-1",text,status:"completed"})]);
+    const durable = projectSessionConversation([
+      entry("e2",null,"reasoning.completed",{itemId:"reasoning-1",text,status:"completed"},41),
+    ],"e2");
+    expect(live[0].identity).toBe("reasoning-1");
+    expect(mergeConversationProjections(durable,live).filter(item=>item.type==="reasoning")).toHaveLength(1);
+  });
+
+  it("keeps a new thought that no durable row says",()=>{
+    // The match is on the whole body, so a thought the forest has not caught up
+    // with, and any thought whose wording differs, is untouched.
+    const live = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(41,"reasoning.completed",{itemId:null,text:"A thought the forest has not seen yet",status:"completed"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text:"An earlier thought",status:"completed"},9),
+    ],"e2");
+    const thoughts = mergeConversationProjections(durable,live).filter(item=>item.type==="reasoning");
+    expect(thoughts).toHaveLength(2);
+    expect(thoughts.map(item=>item.text)).toEqual(["An earlier thought","A thought the forest has not seen yet"]);
+  });
+
+  it("keeps a new thought that only opens like the one before it",()=>{
+    // The prefix match is scoped to the newest stored thought, and needs real
+    // text to mean anything, so an old thought cannot swallow a new one that
+    // begins the same way.
+    const live = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(41,"reasoning.completed",{itemId:null,text:"Let me check the store first, then decide.",status:"completed"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text:"Let me check the store first.",status:"completed"},9),
+    ],"e2");
+    const thoughts = mergeConversationProjections(durable,live).filter(item=>item.type==="reasoning");
+    expect(thoughts).toHaveLength(2);
+    expect(thoughts[1].text).toBe("Let me check the store first, then decide.");
+  });
+
+  it("keeps a streaming thought too short to be the stored one",()=>{
+    const live = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(0,"reasoning.started",{itemId:null,text:"Let me",status:"streaming"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text:"Let me check the store first.",status:"completed"},41),
+    ],"e2");
+    expect(mergeConversationProjections(durable,live).filter(item=>item.type==="reasoning")).toHaveLength(2);
+  });
+
+  /**
+   * Dropping the doubled row is only half of it. The reader was watching the
+   * live row, and a survivor keyed off the stored entry is a different key, so
+   * `AnimatePresence` plays the card they were reading out while a new one
+   * arrives. The row they are looking at has to be the row that takes its place.
+   */
+  it("keeps a thought on the identity the reader was already watching",()=>{
+    const whole = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const opened = "Confirmed: while a turn is live, messages get misc";
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text:whole,status:"completed"},41),
+    ],"e2");
+    // Mid-thought: the live window holds only the opening of what the forest has
+    // already stored whole.
+    const streaming = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(0,"reasoning.started",{itemId:null,text:opened,status:"streaming"}),
+    ]);
+    const watched = streaming.find(item=>item.type==="reasoning")!;
+    const swapped = mergeConversationProjections(durable,streaming).find(item=>item.type==="reasoning")!;
+    expect(swapped.text).toBe(whole);
+    expect(swapped.identity).toBe(watched.identity);
+  });
+
+  it("keeps a settled thought on the identity it streamed under",()=>{
+    const text = "Confirmed: while a turn is live, messages get miscategorized as tools.";
+    const live = reduceConversation([
+      event(0,"user.message",{sequence:1,role:"user",status:"completed",text:"go"}),
+      event(41,"reasoning.completed",{itemId:null,text,status:"completed"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"go",role:"user",status:"completed"},1),
+      entry("e2","e1","reasoning.completed",{text,status:"completed"},41),
+    ],"e2");
+    const watched = live.find(item=>item.type==="reasoning")!;
+    const swapped = mergeConversationProjections(durable,live).find(item=>item.type==="reasoning")!;
+    expect(swapped.identity).toBe(watched.identity);
+    // Still the stored row, which is the one the reader can branch from.
+    expect(swapped.entryId).toBe("e2");
+  });
+
+  it("keeps an unnamed reply on the identity it streamed under",()=>{
+    // The same seam on the path the review opened: a provider that only names a
+    // message when it finishes leaves the live window holding unnamed deltas, and
+    // the merge pairs those with the stored reply on text.
+    const text = "Here is what I found in the store.";
+    const live = reduceConversation([event(0,"message.delta",{itemId:null,role:"assistant",status:"streaming",text})]);
+    const durable = projectSessionConversation([
+      entry("e1",null,"user.message",{text:"where does it live?",role:"user",status:"completed"},1),
+      entry("e2","e1","assistant.message",{itemId:"acp-message-1",text,role:"assistant",status:"completed"},7),
+    ],"e2");
+    const watched = live.find(item=>item.type==="message")!;
+    const swapped = mergeConversationProjections(durable,live).find(item=>item.type==="message" && item.role!=="user")!;
+    expect(watched.identity).not.toBe("acp-message-1");
+    expect(swapped.identity).toBe(watched.identity);
+    expect(swapped.entryId).toBe("e2");
   });
 });
 
@@ -797,10 +959,11 @@ describe("attachmentUris", () => {
 });
 
 describe("undeliveredPending", () => {
-  const userTurn = (id: number, sessionId: string, text: string) =>
-    event(id, "message.completed", { sessionId, itemId: `u${id}`, role: "user", text });
-  const row = (sessionId: string, text: string) => ({ key: text, sessionId, text });
-  const noneSelected = { sessionId: undefined, durableUserTexts: new Set<string>() };
+  const userTurn = (id: number, sessionId: string, text: string, createdAt = "now") =>
+    event(id, "message.completed", { sessionId, itemId: `u${id}`, role: "user", text, createdAt });
+  const row = (sessionId: string, text: string, after?: number) => ({ key: text, sessionId, text, ...(after === undefined ? {} : { after }) });
+  const durable = (...texts: string[]) => reduceConversation(texts.map((text, index) => userTurn(index + 1, "main", text)));
+  const noneSelected = { sessionId: undefined, durableRows: [] };
 
   // The field failure: an aside's pending "hi" checked against the selected
   // session's slice never reconciled, so the aside's startup row counted
@@ -811,12 +974,12 @@ describe("undeliveredPending", () => {
     expect(delivered).toEqual([row("main", "hi")]);
   });
 
-  it("still reconciles the selected session through its durable texts alone", () => {
+  it("still reconciles the selected session through its durable rows alone", () => {
     const pending = [row("main", "what store did we pick?")];
-    const delivered = undeliveredPending(pending, [], { sessionId: "main", durableUserTexts: new Set(["what store did we pick?"]) });
+    const delivered = undeliveredPending(pending, [], { sessionId: "main", durableRows: durable("what store did we pick?") });
     expect(delivered).toEqual([]);
     // The durable source belongs to the selected session only.
-    const other = undeliveredPending([row("aside-1", "what store did we pick?")], [], { sessionId: "main", durableUserTexts: new Set(["what store did we pick?"]) });
+    const other = undeliveredPending([row("aside-1", "what store did we pick?")], [], { sessionId: "main", durableRows: durable("what store did we pick?") });
     expect(other).toHaveLength(1);
   });
 
@@ -829,5 +992,107 @@ describe("undeliveredPending", () => {
   it("matches on trimmed text, like the optimistic rows it clears", () => {
     const delivered = undeliveredPending([row("s", "  hi  ")], [userTurn(1, "s", "hi")], noneSelected);
     expect(delivered).toEqual([]);
+  });
+
+  // The audit's F3: "continue" was already in the chat, so the new send
+  // counted as delivered the moment it was made and its bubble never showed.
+  it("does not count an earlier identical turn as the delivery of a repeat", () => {
+    const earlier = Date.parse("2026-10-03T10:00:00.000Z");
+    const pending = [row("s", "continue", earlier)];
+    const live = [userTurn(1, "s", "continue", "2026-10-03T10:00:00.000Z")];
+    expect(undeliveredPending(pending, live, noneSelected)).toBe(pending);
+    const durableOld = reduceConversation(live);
+    expect(undeliveredPending(pending, [], { sessionId: "s", durableRows: durableOld })).toBe(pending);
+    const landed = [...live, userTurn(2, "s", "continue", "2026-10-03T10:05:00.000Z")];
+    expect(undeliveredPending(pending, landed, noneSelected)).toEqual([]);
+  });
+});
+
+describe("userTurnWatermark", () => {
+  const turn = (id: number, text: string, createdAt: string, role = "user") =>
+    reduceConversation([event(id, "message.completed", { itemId: `m${id}`, role, text, createdAt })])[0];
+
+  it("is the newest stamp of a user turn with the same trimmed text across projections", () => {
+    const live = [turn(1, "yes", "2026-10-03T10:00:00.000Z"), turn(2, "no", "2026-10-03T12:00:00.000Z")];
+    const durable = [turn(3, " yes ", "2026-10-03T11:00:00.000Z")];
+    expect(userTurnWatermark("yes", live, durable)).toBe(Date.parse("2026-10-03T11:00:00.000Z"));
+  });
+
+  it("ignores assistant rows, other text and unreadable stamps", () => {
+    const rows = [turn(1, "yes", "2026-10-03T10:00:00.000Z", "assistant"), turn(2, "yes", "now"), turn(3, "yess", "2026-10-03T10:00:00.000Z")];
+    expect(userTurnWatermark("yes", rows)).toBeUndefined();
+    expect(userTurnWatermark("yes")).toBeUndefined();
+  });
+});
+
+describe("deliveryNotes", () => {
+  const user = (id: number, text: string, delivery?: string) =>
+    event(id, "message.completed", { itemId: `u${id}`, role: "user", text, ...(delivery ? { data: { delivery } } : {}) });
+  const reply = (id: number, text: string, status = "completed") =>
+    event(id, "message.completed", { itemId: `a${id}`, role: "assistant", text, status });
+  const notes = (events: AgentEvent[], waiting: number, active: boolean) =>
+    [...deliveryNotes(reduceConversation(events), waiting, active)].map(([key, note]) => `${key}:${note}`);
+
+  it("labels the newest queued rows while their follow-ups still wait", () => {
+    const events = [user(1, "start"), user(2, "then lint", "queued"), user(3, "then test", "queued")];
+    expect(notes(events, 2, true)).toEqual(["u2:queued", "u3:queued"]);
+    // The queue drains oldest first: one delivered, the older label goes.
+    expect(notes(events, 1, true)).toEqual(["u3:queued"]);
+    expect(notes(events, 0, true)).toEqual([]);
+  });
+
+  it("never labels more queued rows than there are", () => {
+    expect(notes([user(1, "then lint", "queued")], 5, false)).toEqual(["u1:queued"]);
+  });
+
+  it("labels a steer only while the step runs and nothing has answered after it", () => {
+    const steered = [user(1, "start"), reply(2, "working"), user(3, "use the old store", "steered")];
+    expect(notes(steered, 0, true)).toEqual(["u3:steered"]);
+    expect(notes(steered, 0, false)).toEqual([]);
+    expect(notes([...steered, reply(4, "switching to the old store")], 0, true)).toEqual([]);
+    // A reply still streaming has not answered yet.
+    expect(notes([...steered, event(4, "message.delta", { itemId: "a4", role: "assistant", text: "swit" })], 0, true)).toEqual(["u3:steered"]);
+  });
+
+  it("leaves ordinary turns alone", () => {
+    expect(notes([user(1, "hello"), reply(2, "hi")], 3, true)).toEqual([]);
+  });
+});
+
+describe("answeredPending", () => {
+  const turn = (id: number, text: string, createdAt: string) =>
+    reduceConversation([event(id, "message.completed", { itemId: `m${id}`, role: "user", text, createdAt })])[0];
+  const at = (iso: string) => Date.parse(iso);
+
+  it("answers a repeat only with a turn newer than the one it repeats", () => {
+    const old = turn(1, "yes", "2026-10-03T10:00:00.000Z");
+    const pending = [{ text: "yes", after: at("2026-10-03T10:00:00.000Z") }];
+    expect(answeredPending(pending, [old]).size).toBe(0);
+    expect([...answeredPending(pending, [old, turn(2, "yes", "2026-10-03T10:00:01.000Z")])]).toEqual([0]);
+  });
+
+  it("lets one turn answer one send, in send order", () => {
+    const pending = [{ text: "yes" }, { text: "yes" }];
+    expect([...answeredPending(pending, [turn(1, "yes", "2026-10-03T10:00:00.000Z")])]).toEqual([0]);
+    expect([...answeredPending(pending, [turn(1, "yes", "2026-10-03T10:00:00.000Z"), turn(2, "yes", "2026-10-03T10:00:01.000Z")])]).toEqual([0, 1]);
+  });
+
+  it("keeps matching on text alone for a send with no earlier identical turn", () => {
+    expect([...answeredPending([{ text: "  hi " }], [turn(1, "hi", "2026-10-03T10:00:00.000Z")])]).toEqual([0]);
+  });
+
+  it("lets a turn with no readable stamp answer, as text matching did", () => {
+    expect([...answeredPending([{ text: "yes", after: at("2026-10-03T10:00:00.000Z") }], [turn(1, "yes", "now")])]).toEqual([0]);
+  });
+
+  it("does not let an older turn be claimed ahead of a newer one a later send needs", () => {
+    const pending = [{ text: "yes" }, { text: "yes", after: at("2026-10-03T10:00:00.000Z") }];
+    const rows = [turn(1, "yes", "2026-10-03T10:00:00.000Z"), turn(2, "yes", "2026-10-03T10:00:05.000Z")];
+    expect([...answeredPending(pending, rows)].sort()).toEqual([0, 1]);
+  });
+
+  it("ignores assistant rows with the same text", () => {
+    const assistant = reduceConversation([event(1, "message.completed", { itemId: "a1", role: "assistant", text: "yes", createdAt: "2026-10-03T10:00:00.000Z" })]);
+    expect(answeredPending([{ text: "yes" }], assistant).size).toBe(0);
   });
 });

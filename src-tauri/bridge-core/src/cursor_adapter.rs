@@ -408,8 +408,8 @@ fn redact(text: &str, key: Option<&str>) -> String {
 /// Confirm that this build speaks ACP without opening a provider session.
 ///
 /// `session/new` can boot every MCP server the provider has configured. That
-/// work belongs to an actual user session, not an availability refresh. Models
-/// and modes are therefore learned on the first real launch and cached there.
+/// work belongs to a requested setup or chat session, not an availability
+/// refresh. Models and modes are learned there and cached for the same build.
 fn probe(
     executable: &CursorExecutable,
     timeout: Duration,
@@ -444,6 +444,52 @@ fn probe(
         });
     }
     Ok(profile)
+}
+
+/// User-requested setup opens a temporary session to learn actual auth and models.
+/// No prompt is sent. The shared ACP client bounds startup and reaps failures.
+fn setup_profile(executable: &CursorExecutable) -> Result<CursorProfile, CursorUnavailable> {
+    let profile = probe(executable, PROBE_TIMEOUT)?;
+    let directory = tempfile::tempdir().map_err(|error| CursorUnavailable::ProbeFailed {
+        version: executable.version.clone(),
+        reason: error.to_string(),
+    })?;
+    let key = configured_key();
+    let session = AcpSession::connect(
+        launch_for(
+            &executable.path,
+            directory.path(),
+            key.as_deref(),
+            crate::acp_session::DEFAULT_HANDSHAKE_TIMEOUT,
+        )
+        .ledger_kind("acp.setup"),
+    )
+    .map_err(|error| classify_probe_failure(&executable.version, &error, key.as_deref()))?;
+    let established = profile_after_session(&profile, &session);
+    session.shutdown(ShutdownReason::Completed);
+    Ok(established)
+}
+
+fn setup_and_record(
+    cache: &Arc<RwLock<Option<CachedProbe>>>,
+    gate: &Arc<Mutex<()>>,
+    located: Result<CursorExecutable, CursorUnavailable>,
+) -> Result<CursorProfile, CursorUnavailable> {
+    let _in_flight = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (executable, version, outcome) = match located {
+        Ok(executable) => {
+            let outcome = setup_profile(&executable);
+            (executable.path, executable.version, outcome)
+        }
+        Err(reason) => (PathBuf::new(), String::new(), Err(reason)),
+    };
+    // A failed setup must clear any previous sign-in/catalog proof.
+    *cache.write().unwrap() = Some(CachedProbe {
+        executable,
+        version,
+        outcome: outcome.clone(),
+    });
+    outcome
 }
 
 fn identifies_as_cursor(agent_name: Option<&str>) -> bool {
@@ -484,7 +530,7 @@ fn classify_probe_failure(version: &str, error: &AcpError, key: Option<&str>) ->
 ///
 /// ACP agents report model selectors and modes only after `session/new`; those
 /// fields stay empty until [`profile_after_session`] refreshes the cache after
-/// a user-owned launch.
+/// a requested setup or chat session.
 fn read_profile(
     executable: &CursorExecutable,
     capabilities: &AcpCapabilities,
@@ -1363,14 +1409,6 @@ impl CursorAdapter {
         }
         store_probe(&self.probe, &self.probing)
     }
-
-    fn cached(&self) -> Option<Result<CursorProfile, CursorUnavailable>> {
-        self.probe
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|cached| cached.outcome.clone())
-    }
 }
 
 #[cfg(test)]
@@ -1443,7 +1481,26 @@ fn probe_and_record(
 ) -> Result<CursorProfile, CursorUnavailable> {
     let (executable, version, outcome) = match located {
         Ok(executable) => {
-            let outcome = probe(&executable, PROBE_TIMEOUT);
+            let mut outcome = probe(&executable, PROBE_TIMEOUT);
+            // Initialize-only discovery cannot rediscover session facts. Retain
+            // them only after a successful probe of the same path and version.
+            // Changed builds and failed probes replace the old proof entirely.
+            {
+                let previous = cache.read().unwrap();
+                if let (Ok(fresh), Some(cached)) = (&mut outcome, previous.as_ref()) {
+                    if cached.describes(&executable) {
+                        if let Ok(established) = &cached.outcome {
+                            if established.session_opened {
+                                fresh.session_opened = true;
+                                fresh.models = established.models.clone();
+                                fresh.default_model = established.default_model.clone();
+                                fresh.modes = established.modes.clone();
+                                fresh.current_mode = established.current_mode.clone();
+                            }
+                        }
+                    }
+                }
+            }
             (executable.path.clone(), executable.version.clone(), outcome)
         }
         Err(reason) => (PathBuf::new(), String::new(), Err(reason)),
@@ -1459,6 +1516,16 @@ fn probe_and_record(
 impl crate::adapters::HarnessAdapter for CursorAdapter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn prepare_setup(&self) -> Result<(), BridgeError> {
+        let result = setup_and_record(&self.probe, &self.probing, locate());
+        if let Some(notify) = &self.notify {
+            notify();
+        }
+        result
+            .map(|_| ())
+            .map_err(|reason| BridgeError::Invalid(reason.reason()))
     }
 
     /// Take the probe again, off-thread, and say so when it lands.
@@ -1483,15 +1550,16 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
     }
 
     fn descriptor(&self) -> AdapterDescriptor {
-        let cached = self.cached();
-        let profile = cached.as_ref().and_then(|outcome| outcome.as_ref().ok());
-        let unavailable = cached.as_ref().and_then(|outcome| outcome.as_ref().err());
+        let cached = self.probe.read().unwrap().clone();
+        let outcome = cached.as_ref().map(|cached| &cached.outcome);
+        let profile = outcome.and_then(|outcome| outcome.as_ref().ok());
+        let unavailable = outcome.and_then(|outcome| outcome.as_ref().err());
         AdapterDescriptor {
             id: HARNESS_ID.into(),
             label: HARNESS_LABEL.into(),
             available: profile.is_some(),
             // `initialize` proves the binary speaks ACP but deliberately does
-            // not authenticate. Only a real user session is proof of login;
+            // not authenticate. A successful setup or chat session proves login;
             // discovery therefore stays honest rather than showing a false
             // signed-in state.
             auth_state: match (profile, unavailable) {
@@ -1500,7 +1568,10 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
                 (None, Some(reason)) => reason.auth_state(),
                 (None, None) => AuthState::Unknown,
             },
-            version: profile.map(|profile| profile.version.clone()),
+            version: cached
+                .as_ref()
+                .filter(|cached| !cached.version.is_empty())
+                .map(|cached| cached.version.clone()),
             capabilities: CAPABILITIES.iter().copied().map(str::to_owned).collect(),
             sandbox_modes: crate::builtin_compatibility::CURSOR_SANDBOXES.to_vec(),
             // Every unavailable state names a reason. Discovery that has not
@@ -1630,7 +1701,6 @@ mod tests {
     use crate::acp_events::AcpTurnOutcome;
     use crate::adapters::HarnessAdapter;
     use agent_client_protocol::schema::v1::{SessionConfigSelectGroup, SessionConfigSelectOption};
-    use std::os::unix::fs::PermissionsExt;
 
     /// A shim on the search path that behaves like one build of the vendor CLI.
     ///
@@ -1671,23 +1741,16 @@ mod tests {
             let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../testing/fixtures/cursor-fake-cli.sh");
             let path = directory.join(name);
+            // Publish a link to a stable executable only after its per-test
+            // data is complete. Freshly written executable wrappers can race
+            // other tests' process launches on Linux.
             std::fs::write(
-                &path,
-                format!(
-                    "#!/bin/sh\n\
-                     BRIDGE_CURSOR_FAKE_MODE='{}' \\\n\
-                     BRIDGE_CURSOR_FAKE_VERSION='{}' \\\n\
-                     BRIDGE_CURSOR_FAKE_AGENT_NAME='{}' \\\n\
-                     exec /bin/sh '{}' \"$@\"\n",
-                    self.mode,
-                    self.version,
-                    self.agent_name,
-                    fixture.display()
-                ),
+                directory.join(format!("{name}.fixture-config")),
+                format!("{}\n{}\n{}\n", self.version, self.mode, self.agent_name),
             )
-            .expect("the fake CLI is written");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("the fake CLI is executable");
+            .expect("the fake CLI data is written");
+            std::os::unix::fs::symlink(&fixture, &path)
+                .expect("the stable fake CLI is published");
             path
         }
     }
@@ -1742,6 +1805,87 @@ mod tests {
             id: id.to_owned(),
             kind: kind.to_owned(),
         }
+    }
+
+    #[test]
+    fn setup_check_learns_session_facts_without_a_prompt_and_refresh_preserves_them() {
+        let directory = temp_directory();
+        let path = FakeCli::speaking_protocol().install(directory.path(), PUBLISHED_EXECUTABLE);
+        let executable = locate_in(directory.path()).unwrap();
+        let adapter = CursorAdapter::with_probe(probe(&executable, PROBE_TIMEOUT));
+        assert_eq!(adapter.descriptor().auth_state, AuthState::Unknown);
+        assert!(adapter.descriptor().models.is_empty());
+
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())).unwrap();
+        let established = adapter.descriptor();
+        assert_eq!(established.auth_state, AuthState::SignedIn);
+        assert!(!established.models.is_empty());
+        assert!(established.default_model.is_some());
+        let trace_path = PathBuf::from(format!("{}.requests", path.display()));
+        let trace = std::fs::read_to_string(&trace_path).unwrap();
+        assert_eq!(trace.matches("\"method\":\"session/new\"").count(), 1);
+        assert!(!trace.contains("session/prompt"));
+
+        probe_and_record(&adapter.probe, Ok(executable)).unwrap();
+        let refreshed = adapter.descriptor();
+        assert_eq!(refreshed.auth_state, AuthState::SignedIn);
+        assert_eq!(refreshed.models, established.models);
+        assert_eq!(refreshed.default_model, established.default_model);
+        let trace = std::fs::read_to_string(trace_path).unwrap();
+        assert_eq!(
+            trace.matches("\"method\":\"session/new\"").count(),
+            1,
+            "ordinary discovery never opens another session"
+        );
+        assert!(!trace.contains("session/prompt"));
+    }
+
+    #[test]
+    fn setup_proof_is_cleared_when_the_build_changes_or_discovery_fails() {
+        let directory = temp_directory();
+        let _path = FakeCli::speaking_protocol().install(directory.path(), PUBLISHED_EXECUTABLE);
+        let executable = locate_in(directory.path()).unwrap();
+        let adapter = CursorAdapter::with_probe(probe(&executable, PROBE_TIMEOUT));
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())).unwrap();
+        let changed = CursorExecutable {
+            version: "2026.08.01-aaaaaaa".into(),
+            ..executable.clone()
+        };
+        probe_and_record(&adapter.probe, Ok(changed)).unwrap();
+        assert_eq!(adapter.descriptor().auth_state, AuthState::Unknown);
+        assert!(adapter.descriptor().models.is_empty());
+
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable)).unwrap();
+        assert_eq!(adapter.descriptor().auth_state, AuthState::SignedIn);
+        assert!(probe_and_record(&adapter.probe, Err(CursorUnavailable::NotInstalled)).is_err());
+        assert!(!adapter.descriptor().available);
+        assert!(adapter.descriptor().models.is_empty());
+        assert_ne!(adapter.descriptor().auth_state, AuthState::SignedIn);
+    }
+
+    #[test]
+    fn setup_sign_in_failure_replaces_old_proof_but_retains_installation_version() {
+        let directory = temp_directory();
+        let _path = FakeCli::speaking_protocol().install(directory.path(), PUBLISHED_EXECUTABLE);
+        let executable = locate_in(directory.path()).unwrap();
+        let adapter = CursorAdapter::with_probe(probe(&executable, PROBE_TIMEOUT));
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())).unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .join(format!("{PUBLISHED_EXECUTABLE}.fixture-config")),
+            format!("{}\nneeds_login\nCursor Agent\n", executable.version),
+        )
+        .unwrap();
+        assert!(matches!(
+            setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())),
+            Err(CursorUnavailable::NeedsSignIn { .. })
+        ));
+        let descriptor = adapter.descriptor();
+        assert_eq!(descriptor.auth_state, AuthState::SignedOut);
+        assert!(!descriptor.available);
+        assert!(descriptor.models.is_empty());
+        assert_eq!(descriptor.version, Some(executable.version));
     }
 
     #[test]
@@ -2443,14 +2587,17 @@ mod tests {
         send_cursor_event(&sender, &terminal).unwrap();
         drop(sender);
         let mut last = None;
-        while let Ok(line) = receiver.recv() { last = decode_event(&serde_json::from_str(&line).unwrap()); }
+        while let Ok(line) = receiver.recv() {
+            last = decode_event(&serde_json::from_str(&line).unwrap());
+        }
         assert_eq!(last, Some(terminal));
         assert!(metrics.snapshot().dropped_transient > 0);
     }
 
     #[test]
     fn the_reader_yields_one_line_per_event_and_then_end_of_file() {
-        let (sender, receiver, _) = crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        let (sender, receiver, _) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
         let sender = Arc::new(sender);
         let mut reader = CursorEventReader {
             lines: receiver,

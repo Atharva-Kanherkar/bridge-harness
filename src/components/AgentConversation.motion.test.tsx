@@ -26,8 +26,9 @@ const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): A
 });
 
 const command = (overrides: Partial<AgentEvent> = {}) => event(1, "command.completed", {
-  title: "bun run test",
-  data: { type: "commandExecution", command: "bun run test", durationMs: 3000, aggregatedOutput: "92 pass\n0 fail" },
+  // A plain shell command: build and test runs draw as check rows instead.
+  title: "bun run migrate",
+  data: { type: "commandExecution", command: "bun run migrate", durationMs: 3000, aggregatedOutput: "92 rows\n0 skipped" },
   ...overrides,
 });
 
@@ -98,28 +99,28 @@ describe("tool row disclosure", () => {
 
   it("animates a tool row's output open and holds it mounted while it collapses", async () => {
     await openGroup();
-    const row = buttonWith("bun run test");
+    const row = buttonWith("bun run migrate");
     expect(row).toBeDefined();
 
     act(() => row!.click());
-    expect(host.textContent).toContain("92 pass");
+    expect(host.textContent).toContain("92 rows");
 
     act(() => row!.click());
     // Held for its height transition rather than snapping shut.
-    expect(host.textContent).toContain("92 pass");
+    expect(host.textContent).toContain("92 rows");
     await settle();
-    expect(host.textContent).not.toContain("92 pass");
+    expect(host.textContent).not.toContain("92 rows");
   });
 
   it("animates an activity group closed the same way", async () => {
     await openGroup();
-    expect(host.textContent).toContain("bun run test");
+    expect(host.textContent).toContain("bun run migrate");
 
     const summary = buttonWith("Ran 1 command");
     act(() => summary!.click());
-    expect(host.textContent).toContain("bun run test");
+    expect(host.textContent).toContain("bun run migrate");
     await settle();
-    expect(host.textContent).not.toContain("bun run test");
+    expect(host.textContent).not.toContain("bun run migrate");
   });
 
   it("shows exactly one status glyph, swapped when the run finishes", async () => {
@@ -129,14 +130,15 @@ describe("tool row disclosure", () => {
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(1);
 
-    // Opened by hand, the finished call wears the tick instead.
+    // Opened by hand, the finished call wears no glyph at all: only running
+    // and failed rows earn one.
     mount([command({ status: "completed" })]);
     await settle();
     const summary = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Ran 1 command"));
     await act(async () => summary!.click());
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(0);
-    expect(host.querySelectorAll(".text-success").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("[data-tool-row] .lucide-check")).toHaveLength(0);
   });
 });
 
@@ -165,13 +167,13 @@ describe("session switches and optimistic bubbles", () => {
   it("keeps a later optimistic bubble in place when an earlier one lands as real", async () => {
     const bubblesWith = (text: string) =>
       [...host.querySelectorAll<HTMLElement>('[class*="ml-auto"]')].filter(node => node.textContent === text);
-    mount([], { working: true, pendingMessages: ["alpha", "beta"] });
+    mount([], { working: true, pendingMessages: [{ text: "alpha" }, { text: "beta" }] });
     const beta = bubblesWith("beta");
     expect(beta).toHaveLength(1);
 
     // "alpha" becomes a real message; its ghost leaves, but "beta" must not
     // move, flip its text, or be the thing that fades.
-    mount([event(1, "message.completed", { role: "user", text: "alpha" })], { pendingMessages: ["beta"] });
+    mount([event(1, "message.completed", { role: "user", text: "alpha" })], { pendingMessages: [{ text: "beta" }] });
     expect(bubblesWith("beta")).toHaveLength(1);
     expect(bubblesWith("beta")[0]).toBe(beta[0]);
     // The leaving ghost is the resolved "alpha" — the real message plus its
@@ -180,6 +182,74 @@ describe("session switches and optimistic bubbles", () => {
     await settle();
     expect(bubblesWith("alpha")).toHaveLength(1);
     expect(bubblesWith("beta")).toHaveLength(1);
+  });
+});
+
+describe("pending bubbles", () => {
+  const bubblesWith = (text: string) =>
+    [...host.querySelectorAll<HTMLElement>('[class*="ml-auto"]')].filter(node => node.textContent === text);
+
+  it("shows a repeat of an earlier turn until a newer turn answers it", async () => {
+    const earlier = "2026-10-03T10:00:00.000Z";
+    const old = event(1, "message.completed", { role: "user", text: "yes", createdAt: earlier });
+    mount([old], { working: true, pendingMessages: [{ text: "yes", after: Date.parse(earlier) }] });
+    expect(bubblesWith("yes"), "the earlier turn and the pending repeat").toHaveLength(2);
+
+    const answer = event(2, "message.completed", { role: "user", text: "yes", createdAt: "2026-10-03T10:01:00.000Z" });
+    mount([old, answer], { working: true, pendingMessages: [{ text: "yes", after: Date.parse(earlier) }] });
+    await settle();
+    expect(bubblesWith("yes"), "two real turns and no ghost").toHaveLength(2);
+  });
+
+  it("still hides a send with no earlier identical turn as soon as one lands", () => {
+    mount([event(1, "message.completed", { role: "user", text: "first time" })], { pendingMessages: [{ text: "first time" }] });
+    expect(bubblesWith("first time")).toHaveLength(1);
+  });
+
+  it("says how a mid-turn send was taken", () => {
+    mount([], { working: true, pendingMessages: [{ text: "also check the docs", delivery: "steered" }, { text: "then deploy", delivery: "queued" }, { text: "plain" }] });
+    expect(host.textContent).toContain("Steering");
+    expect(host.textContent).toContain("Queued — sent when this step finishes");
+    const labels = [...host.querySelectorAll("p")].filter(node => node.textContent === "Steering" || node.textContent?.startsWith("Queued"));
+    expect(labels).toHaveLength(2);
+  });
+
+  it("keeps the queued label once the real row replaces the optimistic one", async () => {
+    const acknowledged = event(1, "message.completed", { role: "user", text: "then run lint", data: { delivery: "queued" } });
+    mount([acknowledged], { working: true, queuedFollowUps: 1, pendingMessages: [{ text: "then run lint", delivery: "queued" }] });
+    await settle();
+    expect(bubblesWith("then run lint")).toHaveLength(1);
+    expect([...host.querySelectorAll("p")].filter(node => node.textContent === "Queued — sent when this step finishes")).toHaveLength(1);
+
+    // Delivered: the queue let it go, so the note goes too.
+    mount([acknowledged], { working: true, queuedFollowUps: 0 });
+    expect(host.textContent).not.toContain("Queued — sent when this step finishes");
+  });
+
+  it("says Steering on an acknowledged steer until the step answers", () => {
+    const steer = event(1, "message.completed", { role: "user", text: "use the old store", data: { delivery: "steered" } });
+    mount([steer], { working: true });
+    expect(bubblesWith("use the old store")).toHaveLength(1);
+    expect(host.textContent).toContain("Steering");
+    mount([steer, event(2, "message.completed", { role: "assistant", text: "Switching to the old store." })], { working: true });
+    expect(host.textContent).not.toContain("Steering");
+  });
+
+  it("draws every image of a send in that send's own bubble", () => {
+    mount([], {
+      working: true,
+      pendingMessages: [
+        { text: "two pictures", attachments: ["data:image/png;base64,AAA", "data:image/png;base64,BBB"] },
+        { text: "words only" },
+        { text: "", attachments: ["data:image/png;base64,CCC"] },
+      ],
+    });
+    const bubbles = [...host.querySelectorAll<HTMLElement>('[class*="ml-auto"]')];
+    const withText = (text: string) => bubbles.find(node => node.textContent === text)!;
+    expect(withText("two pictures").querySelectorAll("img")).toHaveLength(2);
+    expect(withText("words only").querySelectorAll("img")).toHaveLength(0);
+    const imageOnly = bubbles.filter(node => node.textContent === "" && node.querySelectorAll("img").length === 1);
+    expect(imageOnly).toHaveLength(1);
   });
 });
 

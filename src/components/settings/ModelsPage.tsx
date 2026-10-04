@@ -11,7 +11,7 @@
 // is the only one that differs from what was stored.
 
 import { useState } from "react";
-import { RefreshCw as ArrowsClockwise, ChevronDown as CaretDown, ChevronRight as CaretRight } from "lucide-react";
+import { RefreshCw as ArrowsClockwise } from "lucide-react";
 import {
   advertisedEfforts, availableModelOptions, isOrchestratorPurpose, normalizedEffort,
   profileLabels, profilePurposes,
@@ -25,15 +25,15 @@ import {
 const VERIFICATION: ProfilePurpose[] = ["reviewer", "evaluator"];
 
 const GROUPS: { label: string; note: string; includes: (purpose: ProfilePurpose) => boolean }[] = [
-  { label: "Orchestration", note: "The model you talk to", includes: isOrchestratorPurpose },
+  { label: "Your chats", note: "The model you talk to", includes: isOrchestratorPurpose },
   {
-    label: "Workers",
-    note: "Delegated agents, routed by capability tier",
+    label: "Background tasks",
+    note: "Bridge chooses an agent suited to each task",
     includes: purpose => !isOrchestratorPurpose(purpose) && !VERIFICATION.includes(purpose),
   },
   {
     label: "Verification",
-    note: "Roles with a specialized rubric",
+    note: "Models that check the work",
     includes: purpose => VERIFICATION.includes(purpose),
   },
 ];
@@ -67,9 +67,9 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
   };
 
   return <SettingsPage
-    title="Models"
-    description="Which model runs each Bridge role, and how hard it thinks."
-    action={<StatusPill>Version {version ?? "none"}</StatusPill>}
+    title="Model preferences"
+    description="Choose models for your chats and the tasks Bridge runs for you. These task choices take priority over an agent's defaults."
+    action={<StatusPill>{version ? "Saved preferences" : "Default preferences"}</StatusPill>}
   >
     {GROUPS.map(group => {
       const rows = profiles.filter(profile => group.includes(profile.purpose));
@@ -88,7 +88,7 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
       </SettingsGroup>;
     })}
 
-    <SettingsGroup label="Catalog" note="Where the model lists come from">
+    <SettingsGroup label="Available models" note="Model lists reported by your coding agents">
       {adapters.filter(adapter => adapter.available).map(adapter => {
         const catalog = adapter.modelCatalog;
         const isStale = catalog?.stale || catalog?.lastError;
@@ -97,18 +97,18 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
           lead={<HarnessMark harness={adapter.id} size={14} />}
           label={adapter.label}
           description={catalog?.lastError
-            ?? (catalog?.source === "last_known_good" ? "Using last-known-good models" : `${adapter.models.length} models`)}
+            ?? (catalog?.source === "last_known_good" ? "Using the last successful model list" : `${adapter.models.length} models`)}
           control={isStale
             ? <>
-                <StatusPill tone="warning">Stale</StatusPill>
+                <StatusPill tone="warning">Needs refresh</StatusPill>
                 <GhostButton disabled={refreshing} onClick={() => void refresh()}>
                   <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" className={refreshing ? "animate-spin" : undefined} />Retry
                 </GhostButton>
               </>
-            : <StatusPill tone="success">Fresh</StatusPill>}
+            : <StatusPill tone="success">Up to date</StatusPill>}
         />;
       })}
-      {stale.length === 0 && adapters.every(adapter => !adapter.available) && <SettingsRow label="No provider is available yet." />}
+      {stale.length === 0 && adapters.every(adapter => !adapter.available) && <SettingsRow label="No coding agent is available yet." />}
     </SettingsGroup>
   </SettingsPage>;
 }
@@ -140,29 +140,19 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
       label={profile.purpose in profileLabels ? profileLabels[profile.purpose] : profile.purpose}
       description={`${selected?.adapter.label ?? profile.provider} · ${selected?.model.label ?? profile.model}${efforts.length > 0 ? ` · ${profile.effort}` : ""}`}
       saved={saved}
-      control={<>
-        {!orchestrator && <StatusPill tone={selectionMode === "pinned" ? "info" : "neutral"}>
-          {selectionMode === "pinned" ? "Pinned" : "Tracks standard"}
+      onOpen={onToggle}
+      openLabel={`${profileLabels[profile.purpose]} settings`}
+      expanded={expanded}
+      adornment={!orchestrator && <StatusPill tone={selectionMode === "pinned" ? "info" : "neutral"}>
+          {selectionMode === "pinned" ? "Specific model" : "Automatic"}
         </StatusPill>}
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-label={`${profileLabels[profile.purpose]} settings`}
-          onClick={onToggle}
-          className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          {expanded
-            ? <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" />
-            : <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" />}
-        </button>
-      </>}
     />
     {expanded && <div className="border-t border-border bg-popover/40">
       {orchestrator
         ? <>
             <SettingsRow
               label="Model"
-              description="Any model your providers expose. Workers below are still routed by tier."
+              description="Choose a model reported by your coding agents. Background tasks keep their own model choices."
               control={<Select
                 label={`${profileLabels[profile.purpose]} model`}
                 value={`${profile.provider}:${profile.model}`}
@@ -196,13 +186,16 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
           </>
         : <>
             <SettingsRow
-              label="Selection behavior"
+              label="How Bridge chooses a model"
+              description={selectionMode === "pinned"
+                ? "Uses the coding agent and model selected below. If unavailable, Bridge tries the backup choice."
+                : "Bridge chooses an available model suited to this task and may change it over time."}
               control={<Select
-                label={`${profileLabels[profile.purpose]} selection behavior`}
+                label={`${profileLabels[profile.purpose]} model choice`}
                 value={selectionMode}
                 disabled={busy}
-                width="w-44"
-                options={[{ value: "track_standard", label: "Track standard" }, { value: "pinned", label: "Pinned model" }]}
+                width="w-52"
+                options={[{ value: "track_standard", label: "Choose automatically" }, { value: "pinned", label: "Use a specific model" }]}
                 onChange={value => {
                   const mode = value as "track_standard" | "pinned";
                   onUpdate({
@@ -214,20 +207,24 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               />}
             />
             <SettingsRow
-              label="Provider and model"
+              label="Coding agent and model"
+              description="Choosing a model switches this task to Use a specific model."
               control={<Select
                 label={`${profileLabels[profile.purpose]} model`}
                 value={`${profile.provider}:${profile.model}`}
-                disabled={busy || selectionMode === "track_standard"}
+                disabled={busy}
                 options={modelOptions}
                 onChange={value => {
+                  if (value === `${profile.provider}:${profile.model}`) return;
                   const option = options.find(candidate => candidate.value === value);
-                  if (option) onUpdate({ provider: option.adapter.id, model: option.model.id });
+                  if (option) onUpdate({ provider: option.adapter.id, model: option.model.id,
+                    effort: normalizedEffort(profile.effort, option.model), selectionMode: "pinned",
+                    pinned: true, learningEnabled: false });
                 }}
               />}
             />
             <SettingsRow
-              label="Reasoning effort"
+              label="Thinking level"
               control={<Select
                 label={`${profileLabels[profile.purpose]} effort`}
                 value={profile.effort}
@@ -238,53 +235,53 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
               />}
             />
             <SettingsRow
-              label="Fallback profile"
+              label="Backup choice"
               control={<Select
                 label={`${profileLabels[profile.purpose]} fallback`}
                 value={profile.fallbackPurpose ?? ""}
                 disabled={busy}
                 options={[
-                  { value: "", label: "Catalog default" },
+                  { value: "", label: "Default model" },
                   ...profilePurposes.filter(purpose => purpose !== profile.purpose).map(purpose => ({ value: purpose, label: profileLabels[purpose] })),
                 ]}
                 onChange={value => onUpdate({ fallbackPurpose: (value || null) as ProfilePurpose | null })}
               />}
             />
             <SettingsRow
-              label="Budget preference"
+              label="Cost preference"
               control={<Select
-                label={`${profileLabels[profile.purpose]} budget preference`}
+                label={`${profileLabels[profile.purpose]} cost preference`}
                 value={profile.budgetPreference ?? ""}
                 disabled={busy}
                 width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
-                  { value: "economy", label: "Economy" },
+                  { value: "economy", label: "Lower cost" },
                   { value: "quality", label: "Quality first" },
                 ]}
                 onChange={value => onUpdate({ budgetPreference: value || null })}
               />}
             />
             <SettingsRow
-              label="Latency preference"
+              label="Response speed"
               control={<Select
-                label={`${profileLabels[profile.purpose]} latency preference`}
+                label={`${profileLabels[profile.purpose]} response speed`}
                 value={profile.latencyPreference ?? ""}
                 disabled={busy}
                 width="w-44"
                 options={[
                   { value: "", label: "Balanced" },
-                  { value: "fast", label: "Low latency" },
-                  { value: "patient", label: "Patient" },
+                  { value: "fast", label: "Faster responses" },
+                  { value: "patient", label: "Willing to wait" },
                 ]}
                 onChange={value => onUpdate({ latencyPreference: value || null })}
               />}
             />
             <SettingsRow
-              label="Allow learning"
-              description="Bridge may rank eligible models for this role. It can never widen a scope or skip an approval."
+              label="Use past task results"
+              description="Bridge can use past task results to compare suitable models for this task. File access and approvals stay the same."
               control={<Switch
-                label={`${profileLabels[profile.purpose]} allow learning`}
+                label={`${profileLabels[profile.purpose]} use past task results`}
                 checked={profile.learningEnabled}
                 disabled={busy || selectionMode === "pinned"}
                 onChange={next => onUpdate({ learningEnabled: next })}

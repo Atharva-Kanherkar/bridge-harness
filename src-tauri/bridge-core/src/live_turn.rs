@@ -13,11 +13,11 @@ use crate::runtime::BridgeCore;
 use crate::sessions;
 use crate::switch_summary;
 use crate::{
-    adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
+    adapters, agent, agent_config, backend_binding, check_runner, compaction_controller, context_windows,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
     prompts, prompt_mutations, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
-    session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
+    session_prs, session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator, worktree_registry,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
@@ -140,6 +140,26 @@ fn worker_prompt_proposal_capability(db: &Connection, session_id: &str) -> bool 
     matches!(crate::prompt_mutation_policy::decide(db, session_id, "", session_id, true),
         Ok(crate::prompt_mutation_policy::PromptMutationDecision::RequireApproval(authority))
             if matches!(authority.target, prompts::PromptTarget::Worker(_)))
+}
+
+/// Only an orchestrator routes, so only an orchestrator is shown what it can
+/// route to. Read from the live registry at launch and delivered in the
+/// conversation tail with the rest of the capability contract, so a catalog
+/// change never rewrites the cached prompt prefix.
+fn with_routing_inventory(state: &Arc<BridgeCore>, summary: Option<String>) -> Option<String> {
+    // Disabled harnesses are left out entirely: advertising one invites a pin
+    // that can only fall back.
+    let descriptors = state
+        .adapter_registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| agent_config::is_harness_enabled(&state.db.lock().unwrap(), &descriptor.id))
+        .collect::<Vec<_>>();
+    let inventory = learning_router::routing_inventory(&descriptors);
+    Some(match summary.filter(|summary| !summary.trim().is_empty()) {
+        Some(summary) => format!("{summary}\n\n{inventory}"),
+        None => inventory,
+    })
 }
 
 fn configured_capability_summary(harness: &str, cwd: &str) -> Option<String> {
@@ -1107,6 +1127,7 @@ pub fn start_session(
     // Exclusive with model switches (and other starts) on this session for
     // the rest of the launch flow.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    ensure_session_not_archived(core, &session_id)?;
     // Which backend may serve this session, decided before anything is spawned
     // so a changed one is refused rather than silently substituted. `adapter_id`
     // stays the agent — it is what `sessions.harness` records — and `dispatch_id`
@@ -1204,7 +1225,8 @@ pub fn start_session(
     // Past the hot return: this call is really going to start a process, so the
     // volatile pair is built now rather than for a hot process that is never
     // sent one.
-    let capability_summary = configured_capability_summary(adapter_id, &path);
+    let capability_summary =
+        with_routing_inventory(state, configured_capability_summary(adapter_id, &path));
     let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let orchestrator_prompt = hot_check_prompt;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
@@ -1513,6 +1535,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    ensure_session_not_archived(core, &session_id)?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode): (
         String,
         String,
@@ -1775,7 +1798,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // Past the hot return, like start_session: a hot process is never sent a
     // frame, so it must not have a packet built — and an audit written — for
     // one.
-    let capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    let mut capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    if is_orchestrator {
+        capability_summary = with_routing_inventory(state, capability_summary);
+    }
     let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
@@ -2579,6 +2605,25 @@ fn handle_agent_value_timed(
         core.clone().publish_account_usage("codex", rate_limits);
         return;
     }
+    // Claude's measured window, read by the sidecar after a turn. It is a
+    // gauge, not conversation: record it and refresh state, never the event
+    // log or the forest.
+    if let Some(reading) = context_windows::reading_from_claude_frame(value) {
+        let recorded = {
+            let db = core.db.lock().unwrap();
+            let current = expected_launch.is_none_or(|(started_at, provider_session_id)| {
+                reader_launch_is_current(&db, session_id, started_at, provider_session_id)
+            });
+            let turn_id = current_turn.lock().unwrap().clone();
+            current
+                && context_windows::record_reading(&db, session_id, turn_id.as_deref(), &reading)
+                    .unwrap_or(false)
+        };
+        if recorded {
+            core.events.publish(CoreEvent::StateChanged);
+        }
+        return;
+    }
     let state = core.clone();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
@@ -2713,6 +2758,23 @@ fn handle_agent_value_timed(
                         && matches!(event.status.as_deref(), Some("failed") | Some("error")))
             });
         }
+        // A steer's interrupt provokes the same error frames, but here the
+        // turn's end is wanted: it is the boundary that delivers the steer. Keep
+        // `turn.completed`, as a cancellation rather than a failure.
+        if normalized.iter().any(|event| {
+            event.kind == "error"
+                || (event.kind == "turn.completed"
+                    && matches!(event.status.as_deref(), Some("failed") | Some("error")))
+        }) && state.steer_requested.lock().unwrap().contains(session_id)
+        {
+            normalized.retain(|event| event.kind != "error");
+            for event in &mut normalized {
+                if event.kind == "turn.completed" {
+                    event.status = Some("cancelled".into());
+                    event.title = Some("Redirected".into());
+                }
+            }
+        }
         // A maintenance turn uses the same provider process as the user chat,
         // but none of its content is conversation. `pending` covers the normal
         // path; the durable session status keeps the boundary alive after a
@@ -2759,6 +2821,7 @@ fn handle_agent_value_timed(
                     // a real failure in the new turn is never mistaken for
                     // fallout from a stop the user already got.
                     state.user_stop_requested.lock().unwrap().remove(session_id);
+                    state.steer_requested.lock().unwrap().remove(session_id);
                     let turn_id = event
                         .data
                         .pointer("/turn/id")
@@ -2892,6 +2955,16 @@ fn handle_agent_value_timed(
                         &format!("provider.{adapter_id}"),
                         &event.data,
                     );
+                    if let Some(reading) =
+                        context_windows::reading_from_usage_event(&adapter_id, &event.data)
+                    {
+                        let _ = context_windows::record_reading(
+                            &db,
+                            session_id,
+                            observed_turn_id.as_deref(),
+                            &reading,
+                        );
+                    }
                 }
                 // An agent-protocol permission Bridge answered on the agent's
                 // behalf, which is the one settlement no card-driven path
@@ -3399,6 +3472,12 @@ fn handle_agent_value_timed(
                     state.events.publish(CoreEvent::Agent(event));
                 }
             }
+            // A finished `gh pr create` links this chat to its PR. Detection
+            // only candidates; `session_prs::attach` verifies repository and
+            // head against the workspace before anything persists.
+            if normalized_event.kind == "command.completed" && !suppress_checkpoint_frame {
+                session_prs::detect_pull_request_creation(core, session_id, &normalized_event);
+            }
             if own_depth > 0 && !suppress_checkpoint_frame {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {
                     let _ = db.execute(
@@ -3544,6 +3623,8 @@ fn handle_agent_value_timed(
     }
 
     if turn_completed {
+        #[cfg(target_os = "macos")]
+        state.browser_clone_orchestrator.destroy(session_id);
         // The turn is terminal: the chat watchdog must stop measuring this
         // session until its reader serves the next turn. Workers never hold
         // a chat entry, so this is a no-op for them.
@@ -4172,6 +4253,7 @@ fn survives_checkpoint_turn(kind: &str) -> bool {
             | "usage.updated"
             | "error"
             | agent::NATIVE_COMPACTION_KIND
+            | agent::NATIVE_COMPACTING_KIND
     )
 }
 
@@ -4315,6 +4397,10 @@ mod checkpoint_turn_visibility_tests {
             survives_checkpoint_turn(agent::NATIVE_COMPACTION_KIND),
             "a harness compacting during Bridge's checkpoint turn is the one \
              moment the evidence matters most, and it must not be dropped"
+        );
+        assert!(
+            survives_checkpoint_turn(agent::NATIVE_COMPACTING_KIND),
+            "the announcement is half of the same fact"
         );
     }
 }
@@ -8359,7 +8445,7 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
         .prepare(
             "SELECT r.session_id,s.label,r.lifecycle_state,r.task_family,r.retry_count,
                     r.result_status,r.progress_summary,r.waiting_reason,r.waiting_since,r.last_activity_at,
-                    COALESCE(l.role,'unknown'),s.started_at
+                    COALESCE(l.role,'unknown'),s.started_at,s.harness,s.model
              FROM worker_runtime r
              JOIN sessions s ON s.id=r.session_id
              LEFT JOIN worker_leases l ON l.session_id=r.session_id
@@ -8392,6 +8478,11 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
                         "lastActivityAt": row.get::<_, Option<String>>(9)?,
                         "role": row.get::<_, String>(10)?,
                         "elapsedSeconds": elapsed_seconds,
+                        // So a pinned delegation's orchestrator can see whether
+                        // its pin was actually honored, without waiting for the
+                        // worker's typed result.
+                        "harness": row.get::<_, String>(12)?,
+                        "model": row.get::<_, Option<String>>(13)?,
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()
@@ -9336,7 +9427,7 @@ fn report_to_parent(
 
 // The result transaction leaves an outbox entry even if Bridge exits before
 // this sweep. Preparing metadata never requires the parent provider to exist.
-fn prepare_pending_worker_results(core: &Arc<BridgeCore>) {
+pub(crate) fn prepare_pending_worker_results(core: &Arc<BridgeCore>) {
     let pending = {
         let db = core.db.lock().unwrap();
         db.prepare("SELECT id,payload FROM durable_outbox WHERE destination='parent' AND event_type='worker.result' AND status='pending' AND next_attempt_at<=?1 ORDER BY created_at,id LIMIT 16")
@@ -9497,7 +9588,11 @@ fn prepare_worker_result_delivery(
                 params![report.evidence_id, Utc::now().to_rfc3339()],
             )?;
             if claimed == 0 { return Ok(()); }
-            let queued = if direct_dispatch { None } else {
+            // Consume the durable receipt even when its parent is hidden, but
+            // retain only the result history. Check ancestry in the enqueue
+            // transaction so archive cannot commit between check and delivery.
+            let archived = session_has_archived_ancestor(&transaction, &report.parent_session_id)?;
+            let queued = if direct_dispatch || archived { None } else {
                 Some(session_input::enqueue(&transaction, &report.parent_session_id, &routing_notice, &result.summary)?)
             };
             let result_event = agent::NormalizedEvent {
@@ -10423,6 +10518,29 @@ fn prepare_input(
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
+        slash::SlashDispatch::Find { query } => {
+            let text = if query.trim().is_empty() {
+                "Usage: /find <what you remember about the chat>. Searches every chat.".to_string()
+            } else {
+                let params = bridge_protocol::messages::SearchChatsParams {
+                    query: query.clone(),
+                    limit: None,
+                    deep: false,
+                };
+                // Index only: a slash reply lands in this chat's forest, and
+                // a model turn has no business being recorded there.
+                let result = crate::chat_search::search_with(
+                    &state.db,
+                    &params,
+                    chrono::Utc::now(),
+                    crate::chat_search::DeepGate::Unavailable(String::new()),
+                    || Err(String::new()),
+                )?;
+                crate::chat_search::format_reply(&result)
+            };
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
         slash::SlashDispatch::Pin { body } => {
             // The slash writes the same ledger the dialog reads, so it owes the
             // same hint. A refused save publishes nothing.
@@ -10550,6 +10668,10 @@ fn prepare_input(
                         ),
                     )?;
                 }
+                // The harness says when it starts compacting too, but not all
+                // of them do (OpenCode reports only the boundary), and a click
+                // that shows nothing until then reads as ignored.
+                emit_native_compacting(core, session_id, &session_harness)?;
                 core.events.publish(CoreEvent::StateChanged);
                 return Ok(InputPreparation::Handled { interceptions });
             }
@@ -10560,6 +10682,8 @@ fn prepare_input(
         slash::SlashDispatch::Clear => {
             state.credential_broker.clear_session(session_id);
             state.browser_bridge.revoke_session(session_id);
+            #[cfg(target_os = "macos")]
+            state.browser_clone_orchestrator.destroy(session_id);
             // The conversation that held the frame is gone, so the claim that
             // it was delivered goes with it.
             state.session_context.lock().unwrap().forget(session_id);
@@ -10713,10 +10837,31 @@ fn deliver_prepared_input(
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
     let browser_context = state.browser_bridge.capability_context(session_id, runtime.process_id());
-    let application_context = match (credential_context, browser_context) {
-        (Some(credentials), Some(browser)) => Some(format!("{credentials}\n\n{browser}")),
-        (credentials, browser) => credentials.or(browser),
+    // Two clone capabilities. The "ask for a clone" one is offered every turn so
+    // the agent can request a signed-in browser; the drive tool is added only
+    // once a clone exists (after the person approved), the same way the attached
+    // tab works.
+    #[cfg(target_os = "macos")]
+    let clone_context: Option<String> = {
+        let request = state
+            .browser_clone_orchestrator
+            .request_capability_context(session_id, runtime.process_id());
+        let drive = state
+            .browser_clone_orchestrator
+            .capability_context(session_id, runtime.process_id());
+        match (request, drive) {
+            (Some(request), Some(drive)) => Some(format!("{request}\n\n{drive}")),
+            (request, drive) => request.or(drive),
+        }
     };
+    #[cfg(not(target_os = "macos"))]
+    let clone_context: Option<String> = None;
+    let application_context = [credential_context, browser_context, clone_context]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let application_context =
+        (!application_context.is_empty()).then(|| application_context.join("\n\n"));
     let turn_context = adapters::TurnContext {
         session: session_frame.as_ref().map(session_context::SessionContext::text),
         credentials: application_context.as_deref(),
@@ -10811,14 +10956,21 @@ pub const STARTED_IDLE_STATUS: &str = "ready";
 /// message into a boundary that could never arrive (#261). Anything that marks a
 /// session `working` is asserting a turn exists.
 fn turn_is_active(core: &Arc<BridgeCore>, session_id: &str) -> Result<bool, BridgeError> {
+    turn_phase(core, session_id).map(|(active, _)| active)
+}
+
+/// `turn_is_active`, plus whether the activity is a checkpoint — the one kind of
+/// turn a new message must wait for rather than stop.
+fn turn_phase(core: &Arc<BridgeCore>, session_id: &str) -> Result<(bool, bool), BridgeError> {
     core.db
         .lock()
         .unwrap()
         .query_row(
-            "SELECT active_turn_id IS NOT NULL OR status IN ('working','checkpointing')
+            "SELECT active_turn_id IS NOT NULL OR status IN ('working','checkpointing'),
+                    status='checkpointing'
              FROM sessions WHERE id=?1",
             params![session_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| BridgeError::Invalid("Chat session does not exist".into()))
 }
@@ -10830,20 +10982,21 @@ pub fn send_turn(
 ) -> Result<(), BridgeError> {
     // The legacy entry point: always deliver now. Clients that want Bridge to
     // decide between starting, steering, and queueing call `submit_input`.
-    submit_input_internal(core, session_id, text, true, Vec::new()).map(|_| ())
+    submit_input_internal(core, session_id, text, true, Vec::new(), None).map(|_| ())
 }
 
 /// The typed active-turn input contract: one call the client makes whatever the
 /// session is doing, and an explicit disposition back saying what happened.
 ///
-/// Nothing here cancels anything. `interrupt_turn` stays a separate method
-/// precisely so sending guidance cannot be mistaken for stopping the work.
+/// Sending into a chat mid-turn stops that turn and runs the message instead;
+/// a worker's turn is steered or queued, never stopped. `interrupt_turn` stays
+/// the way to stop without saying anything new.
 pub fn submit_input(
     core: &Arc<BridgeCore>,
     session_id: String,
     text: String,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
-    submit_input_internal(core, session_id, text, false, Vec::new())
+    submit_input_internal(core, session_id, text, false, Vec::new(), None)
 }
 
 /// The same contract for a turn that carries pasted image attachments. Every
@@ -10855,7 +11008,14 @@ pub fn submit_input_with_attachments(
     text: String,
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
-    submit_input_internal(core, session_id, text, false, attachments)
+    submit_input_internal(core, session_id, text, false, attachments, None)
+}
+
+pub fn submit_input_with_preference(
+    core: &Arc<BridgeCore>, session_id: String, text: String,
+    attachments: Vec<wire::TurnImage>, preference: Option<wire::ActiveTurnInput>,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    submit_input_internal(core, session_id, text, false, attachments, preference)
 }
 
 fn configured_worker_request(
@@ -11375,8 +11535,10 @@ fn submit_input_internal(
     text: String,
     force_new_turn: bool,
     attachments: Vec<wire::TurnImage>,
+    preference: Option<wire::ActiveTurnInput>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     let _input_lease = core.input_activity.read().unwrap();
+    ensure_session_not_archived(core, &session_id)?;
     let state = core;
     // An image-only send is legitimate: the images are the message. Text alone
     // still may not be empty.
@@ -11431,19 +11593,34 @@ fn submit_input_internal(
         return Ok(result);
     }
 
+    let (turn_active, checkpointing) = turn_phase(core, &session_id)?;
+    let steering_capable = state
+        .adapters
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .is_some_and(|runtime| runtime.supports_active_turn_steering());
+    // Legacy callers without a preference stop the turn and run the message as the
+    // next one, on every provider: the text waits at the front of the queue and
+    // the interrupted turn's own boundary delivers it. Images cannot ride the
+    // queue, so a provider that can fold them into the live turn still does.
+    let stop_first = preference.is_none()
+        && session_input::interrupts_active_turn(worker.is_some(), turn_active, checkpointing)
+            && (attachments.is_empty() || !steering_capable);
     // The legacy `send_turn` entry point forces a new turn, which is the one
     // thing a worker cannot absorb: its turn is the objective, and a second
     // `turn/start` underneath it races the typed result. Workers always route.
-    let route = if force_new_turn && worker.is_none() {
+    let route = if stop_first {
+        session_input::InputRoute::Queue
+    } else if force_new_turn && worker.is_none() {
         session_input::InputRoute::NewTurn
     } else {
-        let steering_capable = state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(&session_id)
-            .is_some_and(|runtime| runtime.supports_active_turn_steering());
-        session_input::route(turn_is_active(core, &session_id)?, steering_capable)
+        session_input::route(turn_active, steering_capable && preference != Some(wire::ActiveTurnInput::Queue))
+    };
+    let disposition = if stop_first {
+        wire::InputDisposition::SteeredActiveTurn
+    } else {
+        route.disposition()
     };
 
     let prepared = match prepare_input(
@@ -11513,7 +11690,12 @@ fn submit_input_internal(
             }
             let queued = {
                 let db = state.db.lock().unwrap();
-                let queued = session_input::enqueue(
+                let enqueue = if stop_first {
+                    session_input::enqueue_steer
+                } else {
+                    session_input::enqueue
+                };
+                let queued = enqueue(
                     &db,
                     &session_id,
                     &prepared.provider_text,
@@ -11533,21 +11715,26 @@ fn submit_input_internal(
                     &session_id,
                     &adapter_id,
                     &prepared.display_text,
-                    "queued",
+                    if stop_first { "steered" } else { "queued" },
                     &prepared.images,
                 )? {
                     core.events.publish(CoreEvent::Agent(event));
                 }
+                // A steer is not a follow-up waiting its turn, so it stays out
+                // of the client's queued fold.
                 let _ = store::event(
                     &db,
                     "session",
-                    "session.input.queued",
+                    if stop_first { "session.input.steered" } else { "session.input.queued" },
                     &session_id,
                     &queued.id,
                 );
                 queued
             };
             core.events.publish(CoreEvent::StateChanged);
+            if stop_first {
+                interrupt_for_steer(core, &session_id, &queued.id);
+            }
             queued_input_id = Some(queued.id);
         }
     }
@@ -11559,10 +11746,86 @@ fn submit_input_internal(
         notify_parent_worker_steered(core, &session_id, &prepared.display_text, route);
     }
     Ok(wire::SubmitInputResult {
-        disposition: route.disposition(),
+        disposition,
         queued_input_id,
         interceptions,
     })
+}
+
+/// How long a steered turn gets to settle after its in-band interrupt before
+/// Bridge stops it the hard way.
+const STEER_SETTLE_GRACE: Duration = Duration::from_secs(5);
+
+/// Stop a chat's running turn so the steer queued at the front runs next.
+///
+/// The in-band interrupt keeps the provider process warm, and the interrupted
+/// turn's own `turn.completed` is the boundary that delivers the steer. A
+/// provider that never settles after the interrupt is stopped like the Stop
+/// button does it and resumed, so the person's words always land.
+fn interrupt_for_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
+    core.steer_requested
+        .lock()
+        .unwrap()
+        .insert(session_id.to_owned());
+    // Tests drive the boundary themselves; a fallback that relaunches a real
+    // provider has no place in them.
+    if cfg!(test) {
+        interrupt_live_turn(core, session_id);
+        return;
+    }
+    // Off the caller's thread: an interrupt can be an HTTP round trip, and the
+    // person's send should not wait on it.
+    let core = Arc::clone(core);
+    let session_id = session_id.to_owned();
+    let queued_id = queued_id.to_owned();
+    thread::spawn(move || {
+        interrupt_live_turn(&core, &session_id);
+        thread::sleep(STEER_SETTLE_GRACE);
+        settle_unanswered_steer(&core, &session_id, &queued_id);
+    });
+}
+
+fn interrupt_live_turn(core: &Arc<BridgeCore>, session_id: &str) {
+    if let Some(runtime) = core.adapters.lock().unwrap().get(session_id) {
+        // A refusal (the turn already ended, say) is fine: the boundary or the
+        // fallback still delivers.
+        let _ = runtime.interrupt();
+    }
+}
+
+/// The fallback behind [`interrupt_for_steer`]: if the steer is still waiting
+/// and the turn it interrupted is still running, stop that turn hard, resume the
+/// chat, and deliver.
+fn settle_unanswered_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
+    let (waiting, busy) = {
+        let db = core.db.lock().unwrap();
+        let waiting = db
+            .query_row(
+                "SELECT state=?2 FROM queued_session_input WHERE id=?1",
+                params![queued_id, session_input::STATE_QUEUED],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        let busy = db
+            .query_row(
+                "SELECT active_turn_id IS NOT NULL OR status IN ('working','waiting')
+                 FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        (waiting, busy)
+    };
+    if !waiting {
+        return;
+    }
+    if busy {
+        if stop_turn(core, session_id, TurnStop::Steered).is_err() {
+            return;
+        }
+        let _ = resume_for_send(core, session_id);
+    }
+    drain_queued_input(core, session_id);
 }
 
 /// The wrapper a user's words wear on their way into a running worker.
@@ -11605,6 +11868,9 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "queued input delivery") else {
         return false;
     };
+    if ensure_session_not_archived(core, session_id).is_err() {
+        return false;
+    }
     let state = core.clone();
     let queued = {
         let db = state.db.lock().unwrap();
@@ -11788,6 +12054,27 @@ fn emit_local_assistant(
             text: Some(text.into()),
             data: serde_json::json!({ "bridgeLocal": true }),
         },
+        &serde_json::json!({ "adapter": adapter_id }),
+    )?;
+    core.events.publish(CoreEvent::Agent(event));
+    Ok(())
+}
+
+/// Tell the transcript a forwarded `/compact` is running.
+///
+/// Live only: the store keeps no row for it (see
+/// [`agent::NATIVE_COMPACTING_KIND`]), and the harness's boundary is what
+/// settles it.
+fn emit_native_compacting(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    adapter_id: &str,
+) -> Result<(), BridgeError> {
+    let db = core.db.lock().unwrap();
+    let event = store::session_event(
+        &db,
+        session_id,
+        &agent::native_compacting(adapter_id),
         &serde_json::json!({ "adapter": adapter_id }),
     )?;
     core.events.publish(CoreEvent::Agent(event));
@@ -12071,39 +12358,125 @@ pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
         [session_id], |row| row.get::<_, bool>(0),
     )?;
     if is_worker { return stop_worker_session(core, session_id, StopCause::User); }
+    stop_turn(core, session_id, TurnStop::User)
+}
+
+/// Why a chat's turn is being stopped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnStop {
+    /// The Stop button: the person is done, so waiting follow-ups go too.
+    User,
+    /// A steer whose in-band interrupt never settled. The steer itself is
+    /// queued and still has to be delivered.
+    Steered,
+}
+
+fn stop_turn(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     let _lifecycle = core.claim_session_lifecycle(session_id, "cancel turn")?;
+    stop_turn_claimed(core, session_id, cause)
+}
+
+fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) -> Result<(), BridgeError> {
     // The DB lock serializes this boundary with normalization/publication.
     // Once released, no buffered frame can reopen the stopped turn.
     let runtime = {
         let db = core.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
         void_orphaned_questions(&transaction, session_id, "turn_cancelled");
-        transaction.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        if cause == TurnStop::User {
+            transaction.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        }
         transaction.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
         transaction.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status IN ('working','waiting','checkpointing')) THEN 'working' ELSE 'stopped' END WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)", [session_id])?;
         session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
         let mut event = agent::NormalizedEvent::new("turn.completed");
         event.status = Some("cancelled".into());
-        event.title = Some("Stopped".into());
-        event.data = serde_json::json!({"reason":"user_stopped"});
+        let (title, reason) = match cause {
+            TurnStop::User => ("Stopped", "user_stopped"),
+            TurnStop::Steered => ("Redirected", "user_steered"),
+        };
+        event.title = Some(title.into());
+        event.data = serde_json::json!({"reason":reason});
         let stored = store::session_event_in_transaction(&transaction, session_id, &event, &serde_json::Value::Null)?;
         transaction.commit()?;
         core.deactivate_reader_launch(session_id);
         // The reader gate suppresses shutdown frames. Do not leave a marker
         // that could swallow a genuine error during the next cold resume.
         core.user_stop_requested.lock().unwrap().remove(session_id);
+        core.steer_requested.lock().unwrap().remove(session_id);
         let runtime = { core.adapters.lock().unwrap().remove(session_id) };
         core.events.publish(CoreEvent::Agent(stored));
         runtime
     };
     core.events.publish(CoreEvent::StateChanged);
     core.browser_bridge.revoke_session(session_id);
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
     if let Some(mut runtime) = runtime {
         // Calling interrupt first could wait ten seconds on an HTTP abort or
         // a blocked pipe. Process-group shutdown is the bounded hard guarantee.
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }
     Ok(())
+}
+
+/// Archive already holds lifecycle claims for the whole family. End processes
+/// synchronously, without the optional before-shutdown checkpoint that can
+/// leave `stop_session` running a new model turn after it returns.
+pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let (live, worker): (bool, bool) = core.db.lock().unwrap().query_row(
+        "SELECT active_turn_id IS NOT NULL OR adapter_pid IS NOT NULL
+                OR status IN ('working','waiting','starting','resuming','checkpointing','ready','warm','restored'),
+                kind='worker' AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1)
+         FROM sessions WHERE id=?1",
+        [session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    // Waiting inputs must never revive an archived conversation, even when
+    // there is no live adapter left to retire.
+    core.db.lock().unwrap().execute(
+        "UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",
+        [session_id],
+    )?;
+    crate::switch_summary::stop_for_session(core, session_id, adapters::ShutdownReason::UserStopped);
+    core.deactivate_reader_launch(session_id);
+    core.browser_bridge.revoke_session(session_id);
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
+    let has_adapter = core.adapters.lock().unwrap().contains_key(session_id);
+    let has_pty = core.runtimes.lock().unwrap().contains_key(session_id);
+    if live || has_adapter || has_pty {
+        if worker {
+            stop_worker_session(core, session_id, StopCause::User)?;
+        } else {
+            stop_turn_claimed(core, session_id, TurnStop::User)?;
+        }
+        let runtime = { core.runtimes.lock().unwrap().remove(session_id) };
+        if let Some(mut runtime) = runtime {
+            runtime.child.kill().map_err(|error| BridgeError::Pty(error.to_string()))?;
+            let _ = runtime.child.wait();
+        }
+    }
+    Ok(())
+}
+
+/// A hidden family cannot be resumed by a stale window or queued input. Check
+/// under the lifecycle claim so a start cannot slip in after archive commits.
+fn ensure_session_not_archived(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    if session_has_archived_ancestor(&core.db.lock().unwrap(), session_id)? {
+        return Err(BridgeError::Invalid("Restore this archived chat before starting it".into()));
+    }
+    Ok(())
+}
+
+fn session_has_archived_ancestor(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(db.query_row(
+        "WITH RECURSIVE ancestors(id,parent_session_id,archived_at) AS (
+            SELECT id,parent_session_id,archived_at FROM sessions WHERE id=?1
+            UNION SELECT s.id,s.parent_session_id,s.archived_at FROM sessions s
+                JOIN ancestors a ON s.id=a.parent_session_id
+         ) SELECT EXISTS(SELECT 1 FROM ancestors WHERE archived_at IS NOT NULL)",
+        [session_id], |row| row.get(0),
+    )?)
 }
 
 pub fn stop_session(
@@ -12113,6 +12486,8 @@ pub fn stop_session(
     let state = core;
     void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
     state.browser_bridge.revoke_session(&session_id);
+    #[cfg(target_os = "macos")]
+    state.browser_clone_orchestrator.destroy(&session_id);
     let is_worker = state.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         params![session_id],
@@ -12806,6 +13181,8 @@ mod peek_digest_tests {
         assert_eq!(rows[0]["currentActivity"], "Running: cargo test");
         assert_eq!(rows[0]["lifecycle"], "working");
         assert_eq!(rows[0]["role"], "implementation");
+        assert_eq!(rows[0]["harness"], "claude");
+        assert!(rows[0]["model"].is_null());
         assert!(rows[0]["elapsedSeconds"].as_i64().is_some());
         // A reported worker is settled business, not fleet status.
         db.execute("UPDATE worker_runtime SET result_status='reported' WHERE session_id='child'", []).unwrap();
@@ -13170,11 +13547,14 @@ fn managed_root_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod submit_input_tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::api;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A live provider that records what it was told, and can be made to fail
     /// the write so the queue's release path is reachable.
     pub(super) struct FakeRuntime {
+        runtime_pid: u32,
         steering: bool,
         /// Whether this fake advertises image support. `false` keeps the
         /// trait default so the refusal path stays reachable in tests.
@@ -13221,16 +13601,16 @@ mod submit_input_tests {
 
     impl FakeRuntime {
         pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, false)
+            Self::build(steering, false, 0)
         }
 
         pub(super) fn new_with_images(
             steering: bool,
         ) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
-            Self::build(steering, true)
+            Self::build(steering, true, 0)
         }
 
-        fn build(steering: bool, images: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+        fn build(steering: bool, images: bool, runtime_pid: u32) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let contexts = Arc::new(Mutex::new(Vec::new()));
             let sent_images = Arc::new(Mutex::new(Vec::new()));
@@ -13241,6 +13621,7 @@ mod submit_input_tests {
             let interrupts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let refuse_interrupt = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
+                runtime_pid,
                 steering,
                 images,
                 sent: sent.clone(),
@@ -13272,7 +13653,7 @@ mod submit_input_tests {
 
     impl adapters::AdapterRuntime for FakeRuntime {
         fn process_id(&self) -> u32 {
-            0
+            self.runtime_pid
         }
         fn provider_session_id(&self) -> &str {
             "fake"
@@ -13425,6 +13806,26 @@ mod submit_input_tests {
     }
 
     #[test]
+    fn claude_context_usage_frame_records_a_reading_and_no_session_event() {
+        let (_dir, core, _guard) = core_with_chat("ready");
+        core.db.lock().unwrap().execute("UPDATE sessions SET model='claude-opus-5-5',provider_session_id='p1' WHERE id='chat'", []).unwrap();
+        let events_before: i64 = core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat'", [], |r| r.get(0)).unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &serde_json::json!({
+            "type":"context_usage","usedTokens":76_000,"windowTokens":200_000,"categories":[]
+        }));
+        let db = core.db.lock().unwrap();
+        let reading: (i64, i64, String, Option<String>, String) = db.query_row(
+            "SELECT used_tokens,window_tokens,state,turn_id,provider_session_id FROM context_readings WHERE session_id='chat'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).unwrap();
+        assert_eq!(reading, (76_000, 200_000, "measured".into(), Some("turn-1".into()), "p1".into()));
+        let percent: i64 = db.query_row("SELECT context_percent FROM sessions WHERE id='chat'", [], |r| r.get(0)).unwrap();
+        assert_eq!(percent, 38);
+        let events_after: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat'", [], |r| r.get(0)).unwrap();
+        assert_eq!(events_after, events_before, "a context gauge is not conversation");
+    }
+
+    #[test]
     fn composer_stop_settles_only_its_chat_without_waiting_for_provider_abort() {
         let (_dir, core, _guard) = core_with_chat("working");
         let handles = attach_handles(&core, false);
@@ -13453,6 +13854,82 @@ mod submit_input_tests {
         let (runtime, handles) = FakeRuntime::new(steering);
         core.adapters.lock().unwrap().insert("chat".into(), runtime);
         handles
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_application_request_approval_handoff_and_turn_cleanup_repeat() {
+        fn invoke(path: &std::path::Path, value: serde_json::Value) -> (bool, serde_json::Value) {
+            let output = std::process::Command::new(path).arg(value.to_string()).output().unwrap();
+            (output.status.success(), serde_json::from_slice(&output.stdout).unwrap())
+        }
+        let (_fixture, mut core, _managed_root) = core_with_chat("ready");
+        let browser = tempfile::tempdir_in("/tmp").unwrap();
+        let directory = browser.path().join("tool");
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(browser.path(), true);
+        let tool = crate::clone_browser_tool::CloneBrowserTool::new(Arc::clone(&supervisor), directory.clone()).unwrap();
+        let owner = Arc::get_mut(&mut core).unwrap();
+        owner.browser_clones = supervisor;
+        owner.browser_clone_orchestrator = crate::clone_orchestrator::CloneOrchestrator::new(Arc::clone(&owner.browser_clones), tool);
+        let (runtime, handles) = FakeRuntime::build(false, false, std::process::id());
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let extension = browser.path().join("extension");
+        std::fs::create_dir(&extension).unwrap();
+        std::fs::write(extension.join("manifest.json"), r#"{"manifest_version":3,"name":"Synthetic fixture","version":"1.0"}"#).unwrap();
+        for _ in 0..2 {
+            submit_input(&core, "chat".into(), "Test my local extension with a browser".into()).unwrap();
+            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text| text.contains("clone-request-chat")));
+            let request_tool = directory.join("clone-request-chat");
+            let (ok, asked) = invoke(&request_tool, serde_json::json!({"kind":"request","domain":"example.test","extensionPath":extension,"additionalDomains":["cdn.example.test"]}));
+            assert!(ok);
+            let id = asked["requestId"].as_str().unwrap();
+            assert_eq!(api::clone_requests(&core).len(), 1);
+            assert!(api::resolve_clone_request(&core, "chat", true, "stale", wire::CloneSignInPath::SignInInside, 10, None).is_err());
+            let snapshot = api::resolve_clone_request(&core, "chat", true, id, wire::CloneSignInPath::SignInInside, 10, None).unwrap().unwrap();
+            assert_eq!(snapshot.status, "waiting_for_you");
+            let guard = core.browser_clones.clone_guard(&snapshot.clone_id).unwrap();
+            let guard = guard.lock().unwrap();
+            assert!(guard.host_allowed("cdn.example.test"));
+            assert!(!guard.host_allowed("unapproved.test"));
+            drop(guard);
+            let (ok, approved) = invoke(&request_tool, serde_json::json!({"kind":"request_status","requestId":id}));
+            assert!(ok);
+            assert_eq!(approved["awaiting"], false);
+            assert!(approved["tool"].as_str().unwrap().contains("clone-browser-chat"));
+            let drive = directory.join("clone-browser-chat");
+            let paused = invoke(&drive, serde_json::json!({"kind":"status"})).1;
+            assert_eq!(paused["ok"], true);
+            assert_eq!(paused["paused"], true);
+            assert_eq!(paused["waitingForUser"], true);
+            assert!(paused["message"].as_str().unwrap().contains("Hand back"));
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0, "reads must pause during sign-in");
+            api::takeover_clone(&core, "chat").unwrap();
+            api::clone_input(&core, "chat", &wire::CloneInputEvent::Type { text: "123456".into() }).unwrap();
+            api::hand_back_clone(&core, "chat").unwrap();
+            std::fs::write(browser.path().join("google-rejected"), "synthetic").unwrap();
+            let blocked = api::clone_state(&core, "chat").unwrap().unwrap();
+            assert_eq!(blocked.waiting_reason.as_deref(), Some(crate::clone_browser_tool::GOOGLE_SIGNIN_MESSAGE));
+            std::fs::remove_file(browser.path().join("google-rejected")).unwrap();
+            assert!(api::clone_state(&core, "chat").unwrap().unwrap().waiting_reason.is_none());
+            let (ok, inspected) = invoke(&drive, serde_json::json!({"kind":"inspect"}));
+            assert!(ok);
+            assert!(!inspected.to_string().contains("123456"), "the person's typed secret leaked");
+            assert!(!invoke(&drive, serde_json::json!({"kind":"screenshot"})).0);
+            assert!(invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::takeover_clone(&core, "chat").unwrap();
+            assert!(!invoke(&drive, serde_json::json!({"kind":"inspect"})).0);
+            assert!(!invoke(&drive, serde_json::json!({"kind":"click","x":10,"y":20})).0);
+            api::hand_back_clone(&core, "chat").unwrap();
+            handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))), &codex_turn_completed());
+            assert!(core.browser_clone_orchestrator.view("chat").is_none());
+            assert!(api::clone_requests(&core).is_empty());
+            assert!(!drive.exists());
+            assert!(!request_tool.exists());
+            assert_eq!(std::fs::read_dir(browser.path().join("mounts")).unwrap().count(), 0);
+        }
+        let commands = std::fs::read_to_string(browser.path().join("commands.jsonl")).unwrap();
+        assert_eq!(commands.lines().filter(|line| line.contains("Extensions.loadUnpacked")).count(), 2);
     }
 
     // -- session-context frame (#528) ---------------------------------------
@@ -13488,9 +13965,12 @@ mod submit_input_tests {
             "the user's words are untouched"
         );
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
+        // The session frame is delivered on the first turn and not re-sent.
+        // (Every turn also carries the always-offered clone-request capability,
+        // which is not the frame.)
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
         assert!(
-            contexts[1].is_empty(),
+            !contexts[1].iter().any(|c| c.as_str() == frame.text()),
             "the thread holds the frame now; re-sending it every turn is what the tail delivery avoids"
         );
     }
@@ -13520,8 +14000,8 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "after the switch".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
-        assert!(contexts[1].is_empty());
+        assert!(contexts[0].iter().any(|c| c.as_str() == frame.text()), "the first turn carries the session frame");
+        assert!(!contexts[1].iter().any(|c| c.as_str() == frame.text()), "the frame is not re-sent");
     }
 
     /// A frame Bridge could not hand over is still owed. Otherwise a provider
@@ -13547,7 +14027,10 @@ mod submit_input_tests {
         send_turn(&core, "chat".into(), "retry".into()).unwrap();
 
         let contexts = handles.contexts.lock().unwrap().clone();
-        assert_eq!(contexts.last().unwrap(), &vec![frame.text().to_owned()]);
+        assert!(
+            contexts.last().unwrap().iter().any(|c| c.as_str() == frame.text()),
+            "the owed frame is re-delivered on the retry",
+        );
     }
 
     // -- stop / interrupt ----------------------------------------------------
@@ -14576,7 +15059,7 @@ mod submit_input_tests {
         );
         assert_eq!(
             outcome.disposition,
-            wire::InputDisposition::QueuedForPhaseBoundary
+            wire::InputDisposition::SteeredActiveTurn
         );
     }
 
@@ -14609,7 +15092,7 @@ mod submit_input_tests {
         );
         assert_eq!(
             outcome.disposition,
-            wire::InputDisposition::QueuedForPhaseBoundary,
+            wire::InputDisposition::SteeredActiveTurn,
             "the user's text must still be delivered, not lost with an error"
         );
         assert_eq!(
@@ -14682,6 +15165,38 @@ mod submit_input_tests {
     }
 
     #[test]
+    fn explicit_active_turn_preferences_control_delivery_without_interrupting() {
+        for preference in [wire::ActiveTurnInput::Steer, wire::ActiveTurnInput::Queue] {
+            for steering in [true, false] {
+                for active in [true, false] {
+                    let (_fixture, core, _managed_root) = core_with_chat(if active { "working" } else { "ready" });
+                    if active {
+                        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-1' WHERE id='chat'", []).unwrap();
+                    }
+                    let handles = attach_handles(&core, steering);
+                    let outcome = submit_input_with_preference(&core, "chat".into(), "follow up".into(), Vec::new(), Some(preference)).unwrap();
+                    let queued = active && (preference == wire::ActiveTurnInput::Queue || !steering);
+                    let expected = if !active { wire::InputDisposition::StartedNewTurn }
+                        else if queued { wire::InputDisposition::QueuedForPhaseBoundary }
+                        else { wire::InputDisposition::SteeredActiveTurn };
+                    assert_eq!(outcome.disposition, expected);
+                    assert_eq!(outcome.queued_input_id.is_some(), queued);
+                    assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
+                    assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), if queued { 1 } else { 0 });
+                    assert_eq!(handles.sent.lock().unwrap().len(), if queued { 0 } else { 1 });
+                    if queued {
+                        assert!(!drain_queued_input(&core, "chat"));
+                        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'", []).unwrap();
+                        assert!(drain_queued_input(&core, "chat"));
+                        assert_eq!(handles.sent.lock().unwrap().as_slice(), ["follow up".to_owned()]);
+                        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn an_idle_session_starts_a_normal_turn() {
         let (_fixture, core, _managed_root) = core_with_chat("ready");
         let sent = attach(&core, false);
@@ -14694,31 +15209,119 @@ mod submit_input_tests {
         assert_eq!(session_status(&core), "working");
     }
 
+    /// Sending into a chat mid-turn means "stop and do this instead", on every
+    /// provider: the turn is interrupted and its own end delivers the message.
     #[test]
-    fn a_steering_capable_provider_takes_guidance_mid_turn() {
-        let (_fixture, core, _managed_root) = core_with_chat("working");
-        let sent = attach(&core, true);
+    fn a_chat_send_mid_turn_interrupts_the_turn_and_runs_next() {
+        for steering in [true, false] {
+            let (_fixture, core, _managed_root) = core_with_chat("working");
+            core.db
+                .lock()
+                .unwrap()
+                .execute("UPDATE sessions SET harness='codex',active_turn_id='turn-1' WHERE id='chat'", [])
+                .unwrap();
+            let handles = attach_handles(&core, steering);
 
-        let outcome = submit_input(&core, "chat".into(), "use the other API".into()).unwrap();
+            let outcome = submit_input(&core, "chat".into(), "use the other API".into()).unwrap();
 
+            assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+            assert!(outcome.queued_input_id.is_some());
+            assert_eq!(handles.interrupts.load(Ordering::SeqCst), 1, "the running turn is stopped");
+            assert!(
+                handles.sent.lock().unwrap().is_empty(),
+                "never a second turn against the one still running"
+            );
+            {
+                let db = core.db.lock().unwrap();
+                let delivery: String = db
+                    .query_row(
+                        "SELECT json_extract(payload,'$.data.delivery') FROM session_entries
+                         WHERE session_id='chat' AND kind='user.message'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(delivery, "steered");
+                let queued_rows: i64 = db
+                    .query_row(
+                        "SELECT COUNT(*) FROM events WHERE kind='session.input.queued'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(queued_rows, 0, "a steer is not shown as a waiting follow-up");
+            }
+
+            // The interrupt makes the provider end the turn as failed. That end
+            // is the boundary, and the error it carries is not the person's.
+            handle_agent_value(
+                &core,
+                "chat",
+                &Arc::new(Mutex::new(Some("turn-1".into()))),
+                &codex_turn_aborted(),
+            );
+
+            assert_eq!(
+                handles.sent.lock().unwrap().as_slice(),
+                ["use the other API".to_owned()],
+                "the steer runs as soon as the interrupted turn ends"
+            );
+            let db = core.db.lock().unwrap();
+            let errors: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='error'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(errors, 0, "the provoked abort is not rendered as a failure");
+            let ended: String = db
+                .query_row(
+                    "SELECT json_extract(payload,'$.status') FROM session_entries
+                     WHERE session_id='chat' AND kind='turn.completed'
+                     ORDER BY sequence DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(ended, "cancelled");
+            assert_eq!(session_input::pending_count(&db, "chat").unwrap(), 0);
+        }
+    }
+
+    /// A half-written compaction is worse than a short wait, so a checkpoint is
+    /// never cut short by a steer.
+    #[test]
+    fn a_steer_never_interrupts_a_checkpoint() {
+        let (_fixture, core, _managed_root) = core_with_chat("checkpointing");
+        let handles = attach_handles(&core, true);
+
+        let outcome = submit_input(&core, "chat".into(), "after that, the docs".into()).unwrap();
+
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
         assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
-        assert_eq!(outcome.queued_input_id, None);
-        assert_eq!(
-            sent.lock().unwrap().as_slice(),
-            ["use the other API".to_owned()],
-            "steering goes to the provider immediately"
-        );
-        let db = core.db.lock().unwrap();
-        assert_eq!(
-            session_input::pending_count(&db, "chat").unwrap(),
-            0,
-            "nothing was queued: the provider took it"
-        );
     }
 
     #[test]
-    fn a_provider_that_cannot_steer_gets_a_durable_queue_not_a_second_turn() {
+    fn a_steer_waits_ahead_of_follow_ups_already_queued() {
         let (_fixture, core, _managed_root) = core_with_chat("working");
+        let sent = attach(&core, false);
+        session_input::enqueue(&core.db.lock().unwrap(), "chat", "worker report", "worker report").unwrap();
+
+        submit_input(&core, "chat".into(), "stop, do this".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'", [])
+            .unwrap();
+        assert!(drain_queued_input(&core, "chat"));
+
+        assert_eq!(sent.lock().unwrap().as_slice(), ["stop, do this".to_owned()]);
+    }
+
+    #[test]
+    fn a_checkpointing_chat_gets_a_durable_queue_not_a_second_turn() {
+        let (_fixture, core, _managed_root) = core_with_chat("checkpointing");
         let sent = attach(&core, false);
 
         let outcome = submit_input(&core, "chat".into(), "also update the docs".into()).unwrap();
@@ -15079,8 +15682,9 @@ mod submit_input_tests {
         for (status, steering, expected) in [
             ("ready", false, wire::InputDisposition::StartedNewTurn),
             ("working", true, wire::InputDisposition::SteeredActiveTurn),
+            ("working", false, wire::InputDisposition::SteeredActiveTurn),
             (
-                "working",
+                "checkpointing",
                 false,
                 wire::InputDisposition::QueuedForPhaseBoundary,
             ),
@@ -15210,7 +15814,7 @@ mod submit_input_tests {
 
         assert_eq!(
             second.disposition,
-            wire::InputDisposition::QueuedForPhaseBoundary,
+            wire::InputDisposition::SteeredActiveTurn,
             "the acknowledgement window still counts as busy"
         );
         assert_eq!(
@@ -15456,6 +16060,32 @@ mod submit_input_tests {
         assert_eq!(notice["childSessionId"], "child");
         assert!(notice["evidenceId"].is_string());
         assert_eq!(notice["result"], serde_json::to_value(result).unwrap());
+    }
+
+    #[test]
+    fn worker_result_delivery_suppresses_inputs_for_archived_ancestry() {
+        for archived_id in ["parent", "ancestor"] {
+            let (_fixture, core, _guard) = core_with_worker("working", "working", "pending");
+            let result = result_delivery_fixture(&core);
+            assert!(report_to_parent(&core, "child", &result));
+            {
+                let db = core.db.lock().unwrap();
+                db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) SELECT 'ancestor',workspace_id,harness,'Ancestor','idle',metric_source FROM sessions WHERE id='parent'", []).unwrap();
+                db.execute("UPDATE sessions SET parent_session_id='ancestor' WHERE id='parent'", []).unwrap();
+                db.execute("UPDATE sessions SET archived_at=?2 WHERE id=?1", params![archived_id, Utc::now().to_rfc3339()]).unwrap();
+            }
+            prepare_pending_worker_results(&core);
+            {
+                let db = core.db.lock().unwrap();
+                assert_eq!(session_input::pending_count(&db, "parent").unwrap(), 0);
+                let state: String = db.query_row("SELECT status FROM durable_outbox WHERE event_type='worker.result'", [], |row| row.get(0)).unwrap();
+                assert_eq!(state, "delivered");
+            }
+            assert!(parent_event_kinds(&core).contains(&"worker.result".to_owned()));
+            crate::api::unarchive_chat(&core, archived_id).unwrap();
+            prepare_pending_worker_results(&core);
+            assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 0);
+        }
     }
 
     #[test]

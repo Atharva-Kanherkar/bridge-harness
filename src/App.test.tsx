@@ -36,6 +36,12 @@ import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
 import { SHORTCUTS } from "./keymap";
 
+// jsdom has no Web Animations API; Base UI's dialog asks for running
+// animations when it closes.
+if (typeof Element !== "undefined" && !Element.prototype.getAnimations) {
+  Element.prototype.getAnimations = () => [];
+}
+
 const adapters: AdapterDescriptor[] = [
   {
     id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
@@ -80,8 +86,8 @@ describe("shell flags", () => {
     expect(source).toContain('onOpenMarketplace={() => setView("marketplace")}');
     expect(source).toContain('onOpenMemory={() => setView("memory")}');
     expect(source).toContain('if (view !== "memory") setMemoryDraft(null)');
-    expect(source).not.toContain('setView("automations")');
-    expect(source).not.toContain('view === "automations"');
+    expect(source).toContain('onOpenAutomations={() => setView("automations")}');
+    expect(source).toContain('view === "automations"');
     expect(source).toContain("chromeFullscreen");
     expect(source).toContain("data-flush-window");
     expect(source).toContain("setLayoutFullscreenDocument");
@@ -492,9 +498,8 @@ describe("the dock in the session view", () => {
     await settle(2);
     expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
     await click(dockToggle()!);
-    // The extension-based BrowserSurface is paused; the dock's "browser" pane
-    // now renders the plain iframe-based SimpleBrowser.
-    const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "No page open");
+    // Browser page state and its engine host survive dock pane switches.
+    const surface = () => dockAside()!.querySelector("[data-browser-viewport]");
     const before = surface();
     expect(before).toBeTruthy();
 
@@ -512,7 +517,59 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit4", key: "4" });
     await settle(2);
     expect(dockAside()!.textContent).not.toContain("needs a repository");
-    expect(dockAside()!.textContent).toContain("No page open");
+    expect(dockAside()!.textContent).toContain("New browser tab");
+    expect(dockAside()!.querySelector('[aria-label="Browser pages"]')).not.toBeNull();
+  });
+
+  // Contract: testing/feat-unify-browser-pane.md §2.
+  it("shows a requested clone inside the one Browser pane and keeps it across pane switches", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(container.querySelector('button[aria-label="Session actions"]')!);
+    const item = [...document.querySelectorAll('[role="menu"] [role="menuitemcheckbox"]')].find(node => node.textContent?.startsWith("Browser"))!;
+    await click(item);
+    await settle(2);
+
+    const browserTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Browser")!;
+    expect(browserTab.getAttribute("aria-selected")).toBe("true");
+    const surface = () => dockAside()!.querySelector("[data-clone-viewport]");
+    const before = surface();
+    expect(before).not.toBeNull();
+
+    await key({ ...chord, code: "Digit1", key: "1" });
+    expect(surface()).toBe(before);
+    expect(before!.closest(".hidden")).not.toBeNull();
+    await key({ ...chord, code: "Digit4", key: "4" });
+    expect(surface()).toBe(before);
+    expect(before!.closest(".hidden")).toBeNull();
+  });
+
+  it("gives direct chats the same Browser pane, clone included", async () => {
+    await mountApp();
+    await act(async () => {
+      await bridgeApi.createChat("codex", null, "Browser scratch");
+    });
+    await settle();
+    await click(chatRows().find(row => row.title.includes("Browser scratch"))!);
+    await key({ ...chord, code: "Digit4", key: "4" });
+    await settle(2);
+    expect(dockAside()!.textContent).not.toContain("needs a repository");
+    expect(dockAside()!.querySelector("[data-clone-viewport]")).not.toBeNull();
+  });
+
+  it("shows the attention dot on the Browser tab once it is opened, while another pane is active", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(dockToggle()!);
+    // A pane that was never opened is not polling, so it cannot claim attention.
+    expect(container.querySelector('[data-testid="dock-alert-browser"]')).toBeNull();
+
+    await key({ ...chord, code: "Digit4", key: "4" });
+    await settle(3);
+    await key({ ...chord, code: "Digit1", key: "1" });
+    // The mock clone starts on a login wall, i.e. waiting_for_you.
+    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="dock-alert-overflow"]')).not.toBeNull();
   });
 
   // Contract: testing/feat-dock-terminal.md §4.
@@ -531,39 +588,43 @@ describe("the dock in the session view", () => {
   });
 
   // Contract: testing/feat-dock-tasks.md §4.
-  it("opens the tasks pane on the sixth chord with the live roster", async () => {
+  it("opens the agents pane on the sixth chord with only what is running", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
     const dock = dockAside()!;
+    expect(dock.textContent).toContain("Implementation · strong");
     expect(dock.textContent).toContain("WORKING");
-    expect(dock.textContent).toContain("implementation");
-    expect(dock.textContent).toContain("DONE");
+    // The finished verification worker is the chat's history, not a running agent.
+    expect(dock.textContent).not.toContain("Verification · strong");
     expect(dock.textContent).toContain("Update the auth serializer");
     expect(dock.textContent).toContain("owned_path_conflict");
   });
 
-  it("carries the running count on the tasks descriptor before the pane ever mounts", async () => {
+  it("carries the running count on the agents descriptor before the pane ever mounts", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
-    const tasksTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Tasks")!;
-    expect(tasksTab.textContent).toContain("1");
+    const agentsTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Agents")!;
+    expect(agentsTab.textContent).toContain("1");
   });
 
-  it("mounts the usage dot beside a worker's steer composer", async () => {
+  it("mounts the context ring beside a worker's steer composer", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     await click(dockToggle()!);
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
-    const openWorker = dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open worker Implementation · strong"]')!;
-    await click(openWorker);
+    // A row opens the worker's chat in the pane; its own session is one more
+    // click from there.
+    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="View Implementation · strong"]')!);
+    expect(dockAside()!.querySelector('[role="region"][aria-label="Agent Implementation · strong"]')).not.toBeNull();
+    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
 
     expect(container.querySelector("h1")!.textContent).toContain("Implementation");
     expect(container.textContent).toContain("This is a background worker");
-    expect(container.querySelector('[aria-label^="Open usage"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label^="Context window"]')).not.toBeNull();
   });
 
   it("keeps the usage dot out of the title bar", async () => {
@@ -572,12 +633,30 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('header [aria-label^="Open usage"]')).toBeNull();
   });
 
-  it("mounts the usage dot at the chat composer's leading edge", async () => {
+  it("puts the context ring in the composer and the usage dot in the sidebar rail", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    const dot = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Open usage"]');
+    const ring = container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]');
+    expect(ring).not.toBeNull();
+    expect(container.querySelector('[data-composer-frame] [aria-label^="Open usage"]')).toBeNull();
+    const dot = container.querySelector<HTMLButtonElement>('[aria-label^="Open usage"]');
     expect(dot).not.toBeNull();
     expect(dot!.getAttribute("aria-controls")).toBe("usage-dot-panel");
+    expect(dot!.closest("[data-composer-frame]")).toBeNull();
+  });
+
+  it("opens the Context lens as a modal from the composer ring, not in the dock", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(container.querySelector<HTMLButtonElement>('[data-composer-frame] [aria-label^="Context window"]')!);
+    await settle(3);
+    const lens = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="Context lens"]');
+    expect(lens).not.toBeNull();
+    expect(lens!.querySelector('[aria-label="Context pressure"]')).not.toBeNull();
+    expect([...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Context")).toBeUndefined();
+    await click(lens!.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!);
+    await settle(3);
+    expect(document.body.querySelector('[role="dialog"][aria-label="Context lens"]')).toBeNull();
   });
 
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
@@ -806,6 +885,8 @@ describe("the dock in the session view", () => {
       setter.call(box, "/btw");
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    // Discovery owns the first Enter. Dismiss it to submit the bare command.
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await settle(4);
     expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
@@ -821,9 +902,20 @@ describe("the dock in the session view", () => {
   it("offers Ask aside on a transcript selection and quotes the excerpt", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
-    const transcriptRow = container.querySelector<HTMLElement>("[id^='forest-entry-']");
-    const selectable = transcriptRow
-      ?? [...container.querySelectorAll("h1, h2, p")].find(node => (node.textContent ?? "").trim().length > 3);
+    // Earlier cases leave this a new chat, whose transcript is only its
+    // greeting now that the session-start marker draws no card. Send one
+    // message so there is transcript prose to select.
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Explain the session supervisor");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    const transcript = container.querySelector<HTMLElement>("[data-conversation-content]");
+    const selectable = transcript?.querySelector<HTMLElement>("[id^='forest-entry-']")
+      ?? [...(transcript?.querySelectorAll<HTMLElement>("[class*='max-w-[85%]'], p") ?? [])].find(node => (node.textContent ?? "").trim().length > 3);
     expect(selectable).toBeTruthy();
     const range = document.createRange();
     range.selectNodeContents(selectable!);
@@ -899,6 +991,34 @@ describe("the dock in the session view", () => {
     expect(outside).toHaveLength(0);
   });
 
+  // A review-comment jump from Gitplace into a workspace with no chat: the
+  // draft's first message creates the chat, and the file still opens in it.
+  it("keeps a Gitplace file jump through a new chat's first message", async () => {
+    const real = await bridgeApi.state();
+    const lonely = real.workspaces.find(workspace => workspace.id === "demo-3")!;
+    vi.spyOn(bridgeApi, "state").mockResolvedValueOnce({ ...real, workspaces: [lonely], sessions: real.sessions.filter(chat => chat.workspaceId !== "demo-3") });
+    const read = vi.spyOn(bridgeApi, "readWorkspaceFile");
+    await mountApp();
+    await click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Gitplace")!);
+    await settle(4);
+    await click(container.querySelector<HTMLButtonElement>("section[aria-label='GitHub repository'] .divide-y button")!);
+    await settle(4);
+    const location = [...container.querySelectorAll<HTMLButtonElement>("section[aria-label='Review threads'] button")].find(button => button.textContent?.includes("src/api.ts"))!;
+    expect(location).toBeTruthy();
+    await click(location);
+    await settle(4);
+    expect(read).not.toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "Address the review comment");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(10);
+    expect(read).toHaveBeenCalledWith(expect.anything(), "src/api.ts");
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
@@ -910,10 +1030,10 @@ describe("the dock in the session view", () => {
   // shell — rail, title bar, session chrome, or the keymap/menu table —
   // may offer a way into them. Sidebar-only tests would miss a later
   // title-bar, menu, or chord entry point.
-  it("exposes Agent Fleet while keeping the Work board out of navigation", async () => {
+  it("exposes Terminals while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Terminals"]')).not.toBeNull();
     const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
@@ -1004,7 +1124,7 @@ describe("the dock in the session view", () => {
     await settle(6);
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for Orchestrator"));
+    const trigger = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat actions for New chat"));
     expect(trigger).toBeTruthy();
     await click(trigger!);
     const menu = document.querySelector('[role="menu"]');

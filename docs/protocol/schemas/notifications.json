@@ -59,6 +59,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "github/session_prs_changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "connectors/item_arrived"
     },
     {

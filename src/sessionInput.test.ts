@@ -43,13 +43,16 @@ describe("queuedFollowUps", () => {
   });
 });
 
+
 describe("activeTurnAction", () => {
-  it("offers Steer only where the provider advertises it", () => {
-    expect(activeTurnAction(["messages", "interrupt", "steering"])).toBe("steer");
-    expect(activeTurnAction(["messages", "interrupt"])).toBe("queue");
-    // An unknown provider is assumed unable to take input mid-turn: promising
-    // steering it cannot do is worse than promising a queue it will get.
-    expect(activeTurnAction(undefined)).toBe("queue");
-    expect(activeTurnAction([])).toBe("queue");
+  it.each([
+    ["steer", ["steering"], "steer"],
+    ["steer", [], "queue"],
+    ["steer", undefined, "queue"],
+    ["queue", ["steering"], "queue"],
+    ["queue", [], "queue"],
+    ["queue", undefined, "queue"],
+  ] as const)("%s with %j resolves to %s", (preference, capabilities, expected) => {
+    expect(activeTurnAction(capabilities ? [...capabilities] : undefined, preference)).toBe(expected);
   });
 });

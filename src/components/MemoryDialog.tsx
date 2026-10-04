@@ -15,6 +15,16 @@ import type {
 } from "../types";
 
 const KINDS = ["preference", "fact", "decision", "constraint"] as const;
+type Kind = typeof KINDS[number];
+const KIND_LABEL: Record<Kind, string> = { preference: "Preference", fact: "Fact", decision: "Decision", constraint: "Constraint" };
+const KIND_PLURAL: Record<Kind, string> = { preference: "Preferences", fact: "Facts", decision: "Decisions", constraint: "Constraints" };
+
+/** What each extraction mode does after a chat turn, said once beside its choice. */
+const MODES = [
+  { id: "remember", label: "Manual only", description: "No extraction runs; existing active memory stays active, and new memory is saved only when you ask." },
+  { id: "propose", label: "Review first", description: "Each validated extraction that fits the memory budget waits below for your decision." },
+  { id: "auto_apply", label: "Automatic", description: "Promotes only 90%+ candidates that cite and match a stable user message from the same chat, with no likely conflict or forgotten match; other validated candidates that fit the budget stay here for review." },
+] as const;
 /** Mirrors the contract cap in bridge-protocol's memory messages. */
 export const MAX_MEMORY_BODY_CHARS = 4000;
 
@@ -202,25 +212,26 @@ export function MemoryDialog({
     setSettings(next);
   });
 
-  const fieldClass = "w-full min-w-0 rounded-xl border border-input bg-card px-3 text-sm text-foreground transition-colors disabled:opacity-45";
-  const tabClass = (active: boolean) =>
-    `min-h-7 rounded-lg px-3 py-1 text-[12px] font-medium transition-colors ${active ? "bg-card text-foreground shadow-control" : "text-muted-foreground hover:text-foreground"}`;
+  const fieldClass = "rounded-lg border border-border-card bg-card text-foreground outline-none transition-colors placeholder:text-faint focus:border-ring/60 disabled:opacity-45";
+  const quietSelect = "h-7 min-w-0 rounded-lg border border-transparent bg-transparent px-1.5 text-caption text-muted-foreground outline-none transition-colors hover:text-foreground focus:border-border-card disabled:opacity-45";
+  const iconButton = "grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45";
   const models = adapters.find(adapter => adapter.id === profileHarness)?.models ?? [];
+  const composing = editingId !== null || body.length > 0;
+  const memoryCount = records?.length ?? 0;
+  const totalInjections = injections.reduce((sum, value) => sum + value, 0);
 
   return <div className="h-full overflow-y-auto" aria-labelledby="memory-title">
     <div className={SCREEN_CONTENT}>
-      <ScreenHeading id="memory-title" title="Memory" description="Details Bridge remembers across your conversations." />
-      <div className="u-segmented mb-5 max-w-full flex-wrap" role="group" aria-label="Memory views">
-        <button type="button" aria-pressed={tab === "pins"} className={tabClass(tab === "pins")} onClick={() => setTab("pins")}>About me</button>
-        <button type="button" aria-pressed={tab === "queue"} className={tabClass(tab === "queue")} onClick={() => setTab("queue")}>
-          Review queue{queueCount > 0 && <span className="ml-1.5 rounded-full bg-accent px-1 font-mono text-caption leading-4 text-muted-foreground">{queueCount}</span>}
-        </button>
-        <button type="button" aria-pressed={tab === "activity"} className={tabClass(tab === "activity")} onClick={() => setTab("activity")}>Activity</button>
-      </div>
-      {tab === "pins" && <div className="space-y-4">
-        <label className="flex items-center gap-2 text-[12px] text-muted-foreground">
+      <ScreenHeading
+        id="memory-title"
+        title="Memory"
+        description="What Bridge remembers across your conversations."
+        action={<label className="flex cursor-pointer items-center gap-2.5 text-caption text-muted-foreground">
+          Use in new chats
           <input
             type="checkbox"
+            role="switch"
+            className="peer sr-only"
             checked={injection ?? true}
             disabled={busy || injection === undefined}
             aria-label="Use active memory in new chats"
@@ -232,205 +243,245 @@ export function MemoryDialog({
               });
             }}
           />
-          Use active memory when starting a new conversation.
-        </label>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <div className="relative mr-1.5 min-w-40 flex-1">
-            <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <span aria-hidden="true" className="relative h-[18px] w-8 shrink-0 rounded-full bg-foreground/15 transition-colors after:absolute after:left-[2px] after:top-[2px] after:size-[14px] after:rounded-full after:bg-background after:transition-[left] after:duration-150 peer-checked:bg-foreground peer-checked:after:left-4 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-disabled:opacity-40" />
+        </label>}
+      />
+      <div className="u-segmented mb-6 max-w-full" role="group" aria-label="Memory views">
+        <button type="button" aria-pressed={tab === "pins"} data-active={tab === "pins"} className="u-segmented-item" onClick={() => setTab("pins")}>
+          Memories{memoryCount > 0 && <span className="ml-1.5 tabular-nums text-faint">{memoryCount}</span>}
+        </button>
+        <button type="button" aria-pressed={tab === "queue"} data-active={tab === "queue"} className="u-segmented-item" onClick={() => setTab("queue")}>
+          Review{queueCount > 0 && <span className="ml-1.5 tabular-nums text-faint">{queueCount}</span>}
+        </button>
+        <button type="button" aria-pressed={tab === "activity"} data-active={tab === "activity"} className="u-segmented-item" onClick={() => setTab("activity")}>Activity</button>
+      </div>
+      {tab === "pins" && <div>
+        <section aria-label="Memory editor" className="overflow-hidden rounded-xl border border-border-card bg-card transition-colors focus-within:border-ring/60">
+          {editingId && <p className="px-4 pt-3 text-caption text-muted-foreground">Editing memory</p>}
+          <textarea
+            ref={editorRef}
+            rows={composing ? 3 : 1}
+            className="block w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-relaxed text-foreground outline-none placeholder:text-faint disabled:opacity-45"
+            placeholder="Add something Bridge should remember about you or how you work"
+            value={body}
+            disabled={busy}
+            onChange={event => setBody(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && trimmed && !overLimit && !busy) {
+                event.preventDefault();
+                void save();
+              }
+            }}
+            aria-label="New memory"
+          />
+          {composing && <div className="flex flex-wrap items-center gap-2 border-t border-border px-2.5 py-2">
+            <select className={quietSelect} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
+              {KINDS.map(item => <option key={item} value={item}>{KIND_LABEL[item]}</option>)}
+            </select>
+            <span className={`ml-auto shrink-0 text-caption tabular-nums ${overLimit ? "text-destructive" : "text-faint"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
+            {editingId && <button
+              type="button"
+              className="h-7 shrink-0 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              disabled={busy}
+              onClick={cancelEdit}
+            >Cancel</button>}
+            <button
+              type="button"
+              className="h-7 shrink-0 rounded-lg bg-primary px-3 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
+              disabled={busy || !trimmed || overLimit}
+              onClick={() => void save()}
+            >{editingId ? "Update" : "Save"}</button>
+          </div>}
+        </section>
+        {overLimit && <p className="mt-2 px-0.5 text-caption text-destructive">Memories are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text; nothing is clipped for you.</p>}
+
+        <div className="mb-3 mt-8 flex flex-wrap items-center gap-2">
+          <div className="relative min-w-48 flex-1">
+            <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
             <input
               type="text"
               value={query}
               onChange={event => setQuery(event.target.value)}
-              placeholder="Search memory"
+              placeholder="Search"
               aria-label="Search memory"
-              className={`${fieldClass} h-8 pl-8 text-[12px]`}
+              className={`${fieldClass} h-8 w-full pl-8 pr-3 text-caption`}
             />
           </div>
-          {KINDS.map(item => (
-            <button
-              key={item}
-              type="button"
-              aria-pressed={filter === item}
-              className={`min-h-7 rounded-lg border px-2.5 py-1 text-[12px] font-medium transition-colors ${filter === item ? "border-transparent bg-selection text-selection-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}
-              onClick={() => setFilter(current => current === item ? null : item)}
-            >{item}</button>
-          ))}
-        </div>
-        <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-          {visible.map(record => (
-            <li key={record.id} className="flex items-start gap-3 px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <p className="whitespace-pre-wrap break-words text-sm text-foreground">{record.body}</p>
-                <p className="mt-1 text-caption text-muted-foreground">
-                  <span className="font-medium">{record.kind}</span> · {new Date(record.createdAt).toLocaleDateString()}
-                  {record.provenance === "model_proposal" && <> · extracted</>}
-                  {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
-                  {record.supersedes && <> · replaced an earlier pin</>}
-                  {(statById.get(record.id)?.recalls ?? 0) > 0 && (
-                    <span className="tabular-nums"> · recalled {statById.get(record.id)!.recalls}× · last {dayAge(statById.get(record.id)!.lastRecalledDay)}</span>
-                  )}
-                </p>
-              </div>
+          <div className="u-segmented" role="group" aria-label="Filter by kind">
+            <button type="button" aria-pressed={filter === null} data-active={filter === null} className="u-segmented-item" onClick={() => setFilter(null)}>All</button>
+            {KINDS.map(item => (
               <button
+                key={item}
                 type="button"
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                aria-label="Edit"
-                title="Edit"
-                disabled={busy}
-                onClick={() => beginEdit(record)}
-              ><Pencil size={14} aria-hidden="true" /></button>
-              <button
-                type="button"
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                aria-label="Forget"
-                title="Forget"
-                disabled={busy}
-                onClick={() => void act(() => bridgeApi.deleteMemoryRecord(record.id))}
-              ><X size={14} aria-hidden="true" /></button>
-            </li>
-          ))}
-          {records !== undefined && visible.length === 0 && (
-            <li className="rounded-xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
-              {query.trim() ? "No pins match your search." : filter ? `No ${filter} pins yet.` : "Nothing pinned yet. Add a memory below, or use /pin in any chat."}
-            </li>
-          )}
-        </ul>
-        <section className="space-y-2 border-t border-border pt-5" aria-label="Memory editor">
-          <h2 className="text-ui font-medium text-foreground">{editingId ? "Edit memory" : "Add a memory"}</h2>
-          <textarea
-            ref={editorRef}
-            className={`${fieldClass} min-h-24 py-2.5`}
-            placeholder="Something Bridge should remember about you or how you work"
-            value={body}
-            disabled={busy}
-            onChange={event => setBody(event.target.value)}
-            aria-label="New pin"
-          />
-          <div className="flex flex-wrap items-center gap-3">
-            <select className={cn(fieldClass, "h-9 w-36")} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
-              {KINDS.map(item => <option key={item} value={item}>{item}</option>)}
-            </select>
-            <span className={`shrink-0 text-caption tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
-            {editingId && (
-              <button
-                type="button"
-                className="ml-auto h-9 shrink-0 rounded-xl border border-border px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                disabled={busy}
-                onClick={cancelEdit}
-              >Cancel</button>
-            )}
-            <button
-              type="button"
-              className={`h-9 shrink-0 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45 ${editingId ? "" : "ml-auto"}`}
-              disabled={busy || !trimmed || overLimit}
-              onClick={() => void save()}
-            >{editingId ? "Save edit" : "Save pin"}</button>
+                aria-pressed={filter === item}
+                data-active={filter === item}
+                className="u-segmented-item"
+                onClick={() => setFilter(current => current === item ? null : item)}
+              >{KIND_PLURAL[item]}</button>
+            ))}
           </div>
-          {overLimit && <p className="text-[12px] text-destructive">Pins are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text — nothing is clipped for you.</p>}
-        </section>
+        </div>
+        {records !== undefined && visible.length === 0
+          ? <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-caption text-muted-foreground">
+            {query.trim() ? "No memories match your search." : filter ? `No ${KIND_PLURAL[filter as Kind].toLowerCase()} yet.` : "Nothing remembered yet. Add a memory above, or use /pin in any chat."}
+          </p>
+          : <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+            {visible.map(record => {
+              const stat = statById.get(record.id);
+              return <li key={record.id} className={cn("group flex items-start gap-3 px-4 py-3 transition-colors", editingId === record.id && "bg-accent/50")}>
+                <div className="min-w-0 flex-1">
+                  <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">{record.body}</p>
+                  <p className="mt-1 text-caption text-faint">
+                    {KIND_LABEL[record.kind as Kind] ?? record.kind} · {new Date(record.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                    {record.provenance === "model_proposal" && <> · extracted</>}
+                    {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
+                    {record.supersedes && <> · replaced an earlier memory</>}
+                    {(stat?.recalls ?? 0) > 0 && (
+                      <span className="tabular-nums"> · recalled {stat!.recalls}× · last {dayAge(stat!.lastRecalledDay)}</span>
+                    )}
+                  </p>
+                </div>
+                <div className="-my-0.5 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                  <button type="button" className={iconButton} aria-label="Edit" title="Edit" disabled={busy} onClick={() => beginEdit(record)}>
+                    <Pencil size={13} aria-hidden="true" />
+                  </button>
+                  <button type="button" className={iconButton} aria-label="Forget" title="Forget" disabled={busy} onClick={() => void act(() => bridgeApi.deleteMemoryRecord(record.id))}>
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              </li>;
+            })}
+          </ul>}
+
         {capabilities && capabilities.providerNative.length > 0 && (
-          <div className="border-t border-border pt-3">
-            <p className="text-[12px] font-medium text-muted-foreground">Provider-owned memory</p>
-            <ul className="mt-1.5 space-y-1">
+          <section className="mt-10">
+            <h2 className="mb-2 px-0.5 text-caption font-medium text-muted-foreground">Provider-owned memory</h2>
+            <ul className="space-y-1.5 px-0.5">
               {capabilities.providerNative.map(item => (
-                <li key={`${item.harness}:${item.command}`} className="text-[12px] text-muted-foreground">
-                  <span className="font-mono text-caption text-foreground">/{item.command}</span> · {harnessLabel(item.harness)} — {item.description}. Stays on that provider.
+                <li key={`${item.harness}:${item.command}`} className="flex flex-wrap items-baseline gap-x-2 text-caption text-faint">
+                  <span className="font-mono text-muted-foreground">/{item.command}</span>
+                  <span>{harnessLabel(item.harness)} · {item.description}. Stays on that provider.</span>
                 </li>
               ))}
             </ul>
-          </div>
+          </section>
         )}
       </div>}
-      {tab === "queue" && <div className="space-y-4">
-        <div className="space-y-2">
-          <p className="text-[12px] font-medium text-muted-foreground">After a chat turn</p>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button type="button" aria-pressed={settings?.mode === "remember"} className={tabClass(settings?.mode === "remember")} disabled={busy} onClick={() => void setMode("remember")}>Manual only</button>
-            <button type="button" aria-pressed={settings?.mode === "propose"} className={tabClass(settings?.mode === "propose")} disabled={busy} onClick={() => void setMode("propose")}>Review first</button>
-            <button type="button" aria-pressed={settings?.mode === "auto_apply"} className={tabClass(settings?.mode === "auto_apply")} disabled={busy} onClick={() => void setMode("auto_apply")}>Automatic</button>
+      {tab === "queue" && <div className="space-y-8">
+        <section>
+          <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">After a chat turn</h2>
+          <div role="group" aria-label="Extraction mode" className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+            {MODES.map(mode => {
+              const selected = settings?.mode === mode.id;
+              return <button
+                key={mode.id}
+                type="button"
+                aria-pressed={selected}
+                disabled={busy}
+                onClick={() => void setMode(mode.id)}
+                className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/50 disabled:opacity-60"
+              >
+                <span aria-hidden="true" className={cn("mt-[3px] grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors", selected ? "border-foreground" : "border-foreground/25")}>
+                  {selected && <span className="size-1.5 rounded-full bg-foreground" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] text-foreground">{mode.label}</span>
+                  <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">{mode.description}</span>
+                </span>
+              </button>;
+            })}
           </div>
-          <p className="text-[12px] leading-relaxed text-muted-foreground">Review first queues each validated extraction that fits the memory budget. Automatic promotes only 90%+ candidates that cite and match a stable user message from the same chat, with no likely conflict or forgotten match; other validated candidates that fit the budget stay here for review. Invalid, unsafe, duplicate, or over-budget output is refused. Manual only stops future extraction; existing active memory stays active, and new memory is saved only when you ask. Pin a helper to run extraction on one model instead.</p>
-          <div className="flex flex-wrap items-center gap-2">
-            <select className={`${fieldClass} h-9 w-40`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
-              <option value="">Chat's own model</option>
+          <p className="mt-2 px-0.5 text-caption text-faint">Invalid, unsafe, duplicate, or over-budget output is refused.</p>
+        </section>
+        <section>
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-4 py-3">
+            <span className="min-w-0 flex-1 basis-48">
+              <span className="block text-[13px] text-foreground">Extraction model</span>
+              <span className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">Runs on each chat&apos;s own model unless you pin a helper.</span>
+            </span>
+            <select className={`${fieldClass} h-7 w-40 px-2 text-caption`} value={profileHarness} disabled={busy} onChange={event => { setProfileHarness(event.target.value); setProfileModel(""); }} aria-label="Extraction harness">
+              <option value="">Chat&apos;s own model</option>
               {adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}
             </select>
-            <select className={`${fieldClass} h-9 w-48`} value={profileModel} disabled={busy || !profileHarness} onChange={event => setProfileModel(event.target.value)} aria-label="Extraction model">
+            <select className={`${fieldClass} h-7 w-44 px-2 text-caption`} value={profileModel} disabled={busy || !profileHarness} onChange={event => setProfileModel(event.target.value)} aria-label="Extraction model">
               <option value="">Model…</option>
               {models.map(model => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
             </select>
           </div>
           {settings?.lastRun && (
-            <p className="text-caption tabular-nums text-muted-foreground">
+            <p className="mt-2 px-0.5 text-caption tabular-nums text-faint">
               Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} extracted · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
             </p>
           )}
-        </div>
-        <ul className="space-y-2">
-          {(proposed ?? []).map(record => (
-            <li key={record.id} className="u-glass-soft rounded-xl px-3.5 py-3">
-              <p className="whitespace-pre-wrap break-words text-sm text-foreground">{record.body}</p>
-              <p className="mt-1 text-caption text-muted-foreground">
-                <span className="font-medium">{record.kind}</span>
-                {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
-                {record.rationale && <> · {record.rationale}</>}
-              </p>
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground transition-opacity disabled:opacity-45"
-                  disabled={busy}
-                  onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id))}
-                ><Check size={13} aria-hidden="true" />Approve</button>
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
-                  disabled={busy}
-                  onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id))}
-                >Reject</button>
-              </div>
-            </li>
-          ))}
-          {proposed !== undefined && proposed.length === 0 && (
-            <li className="rounded-xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
-              Nothing to review. Validated Review-first candidates and Automatic deferrals land here when they fit the memory budget.
-            </li>
-          )}
-        </ul>
+        </section>
+        <section>
+          <h2 className="mb-2 px-0.5 text-ui font-medium text-foreground">Waiting for review</h2>
+          {proposed !== undefined && proposed.length === 0
+            ? <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-caption text-muted-foreground">
+              Nothing to review. Candidates that need your approval land here.
+            </p>
+            : <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border-card bg-card">
+              {(proposed ?? []).map(record => (
+                <li key={record.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1 basis-64">
+                    <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">{record.body}</p>
+                    <p className="mt-1 text-caption text-faint">
+                      {KIND_LABEL[record.kind as Kind] ?? record.kind}
+                      {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
+                      {record.rationale && <> · {record.rationale}</>}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      className="h-7 rounded-lg px-2.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+                      disabled={busy}
+                      onClick={() => void act(() => bridgeApi.rejectMemoryRecord(record.id))}
+                    >Reject</button>
+                    <button
+                      type="button"
+                      className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-caption font-medium text-primary-foreground transition-opacity disabled:opacity-40"
+                      disabled={busy}
+                      onClick={() => void act(() => bridgeApi.approveMemoryRecord(record.id))}
+                    ><Check size={12} aria-hidden="true" />Approve</button>
+                  </div>
+                </li>
+              ))}
+            </ul>}
+        </section>
       </div>}
       {tab === "activity" && <div className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-2">
-          <section className="u-glass-soft rounded-xl px-3.5 py-3">
-            <p className="text-[12px] font-medium text-muted-foreground">Recall · 14 days</p>
-            <Sparkbars values={injections} className="mt-2.5" />
-            <p className="mt-1.5 text-caption tabular-nums text-muted-foreground">peak {peakInjections} injections / day</p>
+          <section className="rounded-xl border border-border-card bg-card px-4 py-3.5">
+            <p className="text-caption text-muted-foreground">Recalls · 14 days</p>
+            <p className="mt-1 font-display text-title font-semibold tabular-nums tracking-tight text-foreground">{totalInjections}</p>
+            <Sparkbars values={injections} className="mt-3" />
+            <p className="mt-2 text-caption tabular-nums text-faint">peak {peakInjections} injections / day</p>
           </section>
-          <section className="u-glass-soft rounded-xl px-3.5 py-3">
-            <p className="text-[12px] font-medium text-muted-foreground">Packet budget</p>
-            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-accent" role="meter" aria-label="Packet budget" aria-valuenow={budgetPct} aria-valuemin={0} aria-valuemax={100}>
-              <div className={`h-full rounded-full ${budgetPct > 90 ? "bg-destructive" : "bg-foreground/70"}`} style={{ width: `${Math.min(100, budgetPct)}%` }} />
+          <section className="rounded-xl border border-border-card bg-card px-4 py-3.5">
+            <p className="text-caption text-muted-foreground">Packet budget</p>
+            <p className="mt-1 font-display text-title font-semibold tabular-nums tracking-tight text-foreground">{budgetPct}%</p>
+            <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-foreground/10" role="meter" aria-label="Packet budget" aria-valuenow={budgetPct} aria-valuemin={0} aria-valuemax={100}>
+              <div className={cn("h-full rounded-full", budgetPct > 90 ? "bg-destructive" : "bg-foreground/70")} style={{ width: `${Math.min(100, budgetPct)}%` }} />
             </div>
-            <p className="mt-2 text-caption tabular-nums text-muted-foreground">
+            <p className="mt-2 text-caption tabular-nums text-faint">
               {stats?.budgetCharsUsed ?? 0} / {stats?.budgetCharsMax ?? 0} chars · refuses at capacity, never evicts
             </p>
           </section>
         </div>
-        <section className="u-glass-soft rounded-xl px-3.5 py-3">
-          <p className="text-[12px] font-medium text-muted-foreground">Consolidation log</p>
-          <ul className="mt-2 space-y-1.5">
-            {(log ?? []).map((entry, index) => (
-              <li key={index} className="flex items-baseline gap-2 text-[12px]">
-                <span className="w-14 shrink-0 rounded-full border border-border px-1.5 text-center font-mono text-caption uppercase leading-4 text-muted-foreground">{entry.op}</span>
-                <span className="min-w-0 flex-1 truncate text-foreground" title={entry.detail}>{entry.detail}</span>
-                <span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground">{dayAge(entry.day)}</span>
-              </li>
-            ))}
-            {log !== undefined && log.length === 0 && (
-              <li className="rounded-xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
-                No consolidation runs yet.
-              </li>
-            )}
-          </ul>
+        <section className="rounded-xl border border-border-card bg-card px-4 py-3.5">
+          <p className="text-caption text-muted-foreground">Consolidation log</p>
+          {log !== undefined && log.length === 0
+            ? <p className="py-6 text-center text-caption text-faint">No consolidation runs yet.</p>
+            : <ul className="mt-2 divide-y divide-border">
+              {(log ?? []).map((entry, index) => (
+                <li key={index} className="flex items-baseline gap-3 py-2 text-caption">
+                  <span className="w-14 shrink-0 font-mono text-[11px] uppercase tracking-wide text-faint">{entry.op}</span>
+                  <span className="min-w-0 flex-1 truncate text-foreground" title={entry.detail}>{entry.detail}</span>
+                  <span className="shrink-0 tabular-nums text-faint">{dayAge(entry.day)}</span>
+                </li>
+              ))}
+            </ul>}
         </section>
       </div>}
     </div>
@@ -447,11 +498,11 @@ function dayAge(day: number): string {
 function Sparkbars({ values, className }: { values: number[]; className?: string }) {
   const max = values.length ? Math.max(1, ...values) : 1;
   return (
-    <div className={`flex h-8 items-end gap-0.5 ${className ?? ""}`} aria-hidden="true">
+    <div className={cn("flex h-8 items-end gap-[3px]", className)} aria-hidden="true">
       {values.map((value, index) => (
         <div
           key={index}
-          className="min-h-px flex-1 rounded-sm bg-foreground/55"
+          className={cn("min-h-[2px] flex-1 rounded-[2px]", value > 0 ? "bg-foreground/60" : "bg-foreground/10")}
           style={{ height: `${Math.round((value / max) * 100)}%` }}
         />
       ))}

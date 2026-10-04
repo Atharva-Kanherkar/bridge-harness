@@ -88,6 +88,31 @@ beforeEach(() => {
 });
 
 describe("BridgeSidebar responsive rail", () => {
+  it("draws the rail's trailing slot after Gitplace", () => {
+    const html = render({ onOpenGitplace: noop, railTrailing: <button type="button" aria-label="Open usage — test">u</button> });
+    const gitplace = html.indexOf('aria-label="Gitplace"');
+    const usage = html.indexOf('aria-label="Open usage — test"');
+    expect(gitplace).toBeGreaterThan(-1);
+    expect(usage).toBeGreaterThan(gitplace);
+  });
+
+  it("marks a chat whose agents are still working after its own turn ended", () => {
+    const html = render({
+      chats: [session("idle-orchestrator", { status: "ready" }), session("busy-orchestrator", { status: "working" })],
+      liveAgents: new Map([["idle-orchestrator", ["w1", "w2"]], ["busy-orchestrator", ["w3"]]]),
+    });
+    expect(html).toContain("2 agents working");
+    expect(html).toContain("bg-info");
+    // The orchestrator's own turn keeps the green working signal.
+    expect(html).not.toContain("1 agent working");
+    expect(html).toContain("bg-success");
+  });
+
+  it("says agent, not agents, for one", () => {
+    const html = render({ chats: [session("solo", { status: "ready" })], liveAgents: new Map([["solo", ["w1"]]]) });
+    expect(html).toContain("1 agent working");
+  });
+
   it("stays off-canvas on narrow windows until it is opened", () => {
     const html = render({ mobileOpen: false });
     expect(html).toContain("left-0");
@@ -173,7 +198,7 @@ describe("BridgeSidebar hidden", () => {
     const html = render({ mobileOpen: true });
     expect(asideTag(html)).not.toContain("inert");
     expect(html).toContain("Policy engine budget");
-    expect(html).toContain("Repositories");
+    expect(html).toContain("Projects");
   });
 });
 
@@ -281,7 +306,7 @@ describe("BridgeSidebar history", () => {
     const html = render({ chats });
     expect(html).toContain("Japan relocation planning");
     expect(html).toContain("Inside harness");
-    expect(html).toContain("Repositories");
+    expect(html).toContain("Projects");
     expect(html).toContain("No project");
     expect(html).toContain("harness");
   });
@@ -316,8 +341,9 @@ describe("BridgeSidebar history", () => {
     expect(render({ chats: [session("a", { status: "working" })] })).toContain("No chat matches this filter");
   });
 
-  it("labels the list Repositories", () => {
-    expect(render()).toContain("Repositories");
+  it("labels the list Projects, the same noun as the nav", () => {
+    expect(render()).not.toContain("Repositories");
+    expect(render()).toContain("Projects");
     expect(render()).not.toContain(">Chats<");
   });
 
@@ -465,9 +491,9 @@ describe("BridgeSidebar action rows", () => {
     expect(html).not.toContain("Needs you");
   });
 
-  it("offers Agent Fleet while keeping the Work board hidden", () => {
+  it("offers Terminals (the Agent Fleet screen) while keeping the Work board hidden", () => {
     const html = render();
-    expect(html).toContain("Agent Fleet");
+    expect(html).toContain("Terminals");
     expect(html).not.toContain("Work board");
   });
 

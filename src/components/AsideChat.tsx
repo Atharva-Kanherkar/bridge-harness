@@ -3,21 +3,24 @@ import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, FileText, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
+import type { PendingMessage } from "../conversation";
+import { useActiveTurnInput } from "../activeTurnSettings";
+import { activeTurnAction } from "../sessionInput";
 import { ComposerPill } from "./ComposerPill";
 import { ChatModelControl } from "./ChatModelControl";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
 import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
-import { mergeForestSnapshot } from "../forest";
-import { startSerialPoll } from "../polling";
+import { usePolledSessionForest } from "../forest";
 import { applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
-import { scheduleSuggestion } from "../suggestionTypeahead";
-import { activeTurnAction } from "../sessionInput";
+import { useComposerSuggestion } from "../useComposerSuggestion";
+import { ComposerSuggestionStatus } from "./ComposerSuggestionStatus";
+import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "../composerSlash";
 import { SIDE_CHAT_COMMANDS } from "../sideChat";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
-import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot, SlashCommand } from "../types";
-import type { InteractionResolutionResult, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
+import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SlashCommand } from "../types";
+import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -27,18 +30,20 @@ import type { InteractionResolutionResult, QuestionAction, SuggestCompletionResu
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
   /** The global live stream; the panel filters to its own session. */
   events: AgentEvent[];
-  pendingMessages: string[];
+  pendingMessages: readonly PendingMessage[];
   working: boolean;
+  queuedFollowUpCount?: number;
   /** Workspace paths for the same `@` mention typeahead the main composer uses. */
   workspaceFiles?: string[];
   /** Slash commands already loaded by the host; the aside does not refetch them. */
   slashCommands?: SlashCommand[];
+  suggestionSettings?: SuggestionSettingsSnapshot;
   /** This aside's model switch in flight, for the same "Switching to …"
    *  narration the main conversation shows. */
   modelSwitch?: { harness: string; label: string } | null;
@@ -58,8 +63,9 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   onPromote: () => void;
   onClose: () => void;
 }) {
+  const activeTurnInput = useActiveTurnInput();
+  const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
   const [draft, setDraft] = useState("");
-  const [forest, setForest] = useState<SessionForestSnapshot>();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -70,35 +76,17 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
-  const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
-  const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
-  const suggestionGeneration = useRef(0);
+  const [selection, setSelection] = useState<[number, number]>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
-  const forestKeyRef = useRef("");
   const typeaheadOpenRef = useRef(false);
   const ownEvents = events.filter(event => event.sessionId === session.id);
 
-  const slashQuery = /^\/([^\s]*)$/.exec(draft)?.[1];
-  const slashMatches = useMemo(() => {
-    if (slashQuery == null) return [];
-    const query = slashQuery.toLowerCase();
-    // A side chat cannot open a side chat of its own: the panel is a single
-    // overlay and the aside is pinned to its harness, so Bridge's /btw and
-    // /side are hidden here instead of offered and then refused on send.
-    return slashCommandsForHarness(slashCommands, session.harness)
-      .filter(command => !SIDE_CHAT_COMMANDS.includes(command.name.toLowerCase()))
-      .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
-      .sort((a, b) => {
-        const aName = a.name.toLowerCase();
-        const bName = b.name.toLowerCase();
-        const aPrefix = query ? Number(aName.startsWith(query)) : 0;
-        const bPrefix = query ? Number(bName.startsWith(query)) : 0;
-        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        return aName.localeCompare(bName);
-      });
-  }, [slashQuery, slashCommands, session.harness]);
+  const slashToken = composerSlashToken(draft, selection?.[0] ?? draft.length, selection?.[1] ?? draft.length);
+  const slashQuery = slashToken?.query;
+  const slashMatches = composerSlashMatches(slashCommandsForHarness(slashCommands, session.harness)
+    .filter(command => !SIDE_CHAT_COMMANDS.includes(command.name.toLowerCase())), slashToken);
   const slashOpen = slashQuery != null && slashMatches.length > 0 && !slashDismissed;
 
   const mentionQuery = fileMentionQuery(draft);
@@ -120,21 +108,14 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
       .slice(0, 50)
       .map(file => file.path);
   }, [mentionQuery, workspaceFileOptions]);
-  const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
+  const mentionOpen = !slashToken && mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
 
   useEffect(() => {
     if (initialDraft) setDraft(current => current || initialDraft);
   }, [initialDraft]);
 
-  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(() => undefined); }, []);
-
-  useEffect(() => scheduleSuggestion({
-    text: draft,
-    enabled: !!suggestionSettings?.settings.enabled,
-    request: bridgeApi.suggestCompletion,
-    onResult: setDraftSuggestion,
-    generation: suggestionGeneration,
-  }), [draft, suggestionSettings?.settings.enabled, suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+  const completion = useComposerSuggestion(draft, suggestionSettings, session.id, slashToken !== undefined || mentionQuery != null);
+  const draftSuggestion = completion.result;
 
   useEffect(() => {
     if (!mentionOpen) return;
@@ -159,34 +140,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
-  // never a live frame. Digest-gated the same way the main conversation polls
-  // its own forest: the live stream can grow every frame during a turn, and a
-  // full snapshot refetch on every frame is what used to hang the panel. Only
-  // the cheap digest is checked that often; the snapshot itself is only
-  // refetched when the digest actually moves.
-  useEffect(() => {
-    forestKeyRef.current = "";
-    setForest(undefined);
-    let active = true;
-    let pollsSinceFullFetch = 0;
-    const refresh = async () => {
-      const digest = await bridgeApi.sessionForestDigest(session.id).catch(() => undefined);
-      const force = pollsSinceFullFetch >= 9 || digest === undefined;
-      if (!active) return;
-      if (!force && digest === forestKeyRef.current) {
-        pollsSinceFullFetch += 1;
-        return;
-      }
-      const value = await bridgeApi.sessionForest(session.id).catch(() => undefined);
-      if (!active) return;
-      pollsSinceFullFetch = 0;
-      if (!value) return;
-      forestKeyRef.current = digest ?? "";
-      setForest(current => mergeForestSnapshot(current, value));
-    };
-    const stop = startSerialPoll(refresh, 3000);
-    return () => { active = false; stop(); };
-  }, [session.id]);
+  // never a live frame.
+  const forest = usePolledSessionForest(session.id);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -260,7 +215,14 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   };
 
   function applySlash(command: SlashCommand) {
-    setDraft(`/${command.name} `);
+    if (!slashToken) return;
+    const inserted = insertComposerSlash(draft, slashToken, command.name);
+    setDraft(inserted.text);
+    setSelection([inserted.caret, inserted.caret]);
+    window.setTimeout(() => {
+      const input = inputRef.current;
+      if (input?.value === inserted.text) { input.focus(); input.setSelectionRange(inserted.caret, inserted.caret); }
+    }, 0);
     setSlashIndex(0);
     setSlashDismissed(true);
   }
@@ -277,13 +239,13 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
       if (event.key === "ArrowDown") { event.preventDefault(); setMentionIndex(index => Math.min(index + 1, fileMatches.length - 1)); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
       if (event.key === "Escape") { event.preventDefault(); setMentionDismissed(true); return; }
-      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
+      if ((event.key === "Enter" && !event.shiftKey) || (event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); applyMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
     }
     if (slashOpen) {
       if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(index => Math.max(index - 1, 0)); return; }
       if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
-      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
+      if ((event.key === "Enter" && !event.shiftKey) || (event.key === "Tab" && !event.shiftKey)) { event.preventDefault(); applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
     }
   }
 
@@ -349,6 +311,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             activeLeafId={forest?.head?.activeEntryId ?? null}
             working={working}
             pendingMessages={pendingMessages}
+            queuedFollowUps={queuedFollowUpCount}
             modelSwitch={modelSwitch}
             onResolve={onResolve}
             onAnswerQuestion={onAnswerQuestion}
@@ -365,8 +328,10 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
           </p>}
           {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
           {sending && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Sending…</p>}
+          {queuedFollowUpCount > 0 && <p className="mb-2 px-1 text-[11px] text-muted-foreground" role="status">{queuedFollowUpCount} follow-up{queuedFollowUpCount === 1 ? "" : "s"} queued; sent when this step finishes</p>}
           {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-[11px] text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
           {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{lifecycle.error} You can retry below.</p>}
+          <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
           {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
           <div className="relative">
             {mentionOpen && <div id="aside-file-mention-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
@@ -403,6 +368,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               className="mx-0 max-w-none px-0 pb-0 pt-0 sm:px-0 sm:pb-0"
               value={draft}
               onChange={value => { setDraft(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); }}
+              onSelectionChange={(start, end) => setSelection([start, end])}
               onSubmit={() => void send()}
               onKeyDown={onComposerKeyDown}
               onPaste={handlePaste}
@@ -420,11 +386,12 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               onAcceptSuggestion={() => {
                 if (!draftSuggestion?.suggestion) return;
                 setDraft(current => `${current}${draftSuggestion.suggestion}`);
-                setDraftSuggestion(undefined);
+                completion.clear();
               }}
-              placeholder={`Ask ${harnessLabel(session.harness)}…`}
+              placeholder={`Ask ${harnessLabel(session.harness)}… / skills & commands · @ files`}
               working={working}
-              activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
+              activeAction={activeAction}
+              activeActionNote={activeTurnInput === "steer" && activeAction === "queue" ? "This provider cannot steer a live turn. Held until the current step finishes." : undefined}
               inputRef={inputRef}
             />
           </div>

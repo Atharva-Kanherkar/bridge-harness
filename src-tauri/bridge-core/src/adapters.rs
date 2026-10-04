@@ -651,6 +651,12 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn as_any(&self) -> &dyn Any;
     fn descriptor(&self) -> AdapterDescriptor;
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError>;
+    /// Text completion has no workspace tools. Adapters with a separate
+    /// transport/tool policy can override this without changing worker modes.
+    fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        validate_start_compatibility(&self.descriptor(), &request)?;
+        self.start(request)
+    }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
     /// Whether [`ResumeRequest::fork`] can fork a stored provider thread into
@@ -683,6 +689,12 @@ pub trait HarnessAdapter: Send + Sync + Any {
     /// notify when it lands — because the recorded answer can be changed by
     /// things Bridge does not observe, a sign-in above all.
     fn refresh_availability(&self) {}
+
+    /// Explicit first-run check for agents whose auth/catalog require session/new.
+    /// Discovery remains passive; this check must not send a prompt.
+    fn prepare_setup(&self) -> Result<(), BridgeError> {
+        Ok(())
+    }
 }
 
 pub struct AdapterRegistry {
@@ -766,6 +778,15 @@ impl AdapterRegistry {
         Self {
             adapters: HashMap::new(),
         }
+    }
+
+    /// Claude alone, for the live chat-search measurement: no Codex or
+    /// OpenCode discovery processes.
+    #[cfg(test)]
+    pub(crate) fn claude_only() -> Result<Self, BridgeError> {
+        let mut registry = Self::empty();
+        registry.register(Box::new(ClaudeAdapter::new(None)))?;
+        Ok(registry)
     }
 
     pub fn built_in() -> Result<Self, BridgeError> {
@@ -854,6 +875,22 @@ impl AdapterRegistry {
         }
     }
 
+    pub fn prepare_agent_setup(&self, id: &str) -> Result<AdapterDescriptor, BridgeError> {
+        let adapter = self
+            .adapters
+            .get(id)
+            .ok_or_else(|| BridgeError::Invalid(format!("Unknown coding agent: {id}")))?;
+        adapter.prepare_setup()?;
+        Ok(adapter.descriptor())
+    }
+
+    /// One adapter's descriptor. Building a descriptor can run the harness's
+    /// `--version` or a Keychain lookup, so a caller that needs one harness
+    /// must not pay for all of them.
+    pub fn descriptor(&self, id: &str) -> Option<AdapterDescriptor> {
+        self.adapters.get(id).map(|adapter| adapter.descriptor())
+    }
+
     pub fn descriptors(&self) -> Vec<AdapterDescriptor> {
         let mut descriptors: Vec<_> = self
             .adapters
@@ -883,6 +920,16 @@ impl AdapterRegistry {
         validate_start_compatibility(&descriptor, &request)?;
         request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         adapter.start(request)
+    }
+
+    pub fn start_completion(&self, id: &str, mut request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        let adapter = self.adapters.get(id).ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?;
+        let descriptor = adapter.descriptor();
+        if !descriptor.available {
+            return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
+        }
+        request.effort = supported_model_effort(&descriptor, request.model, request.effort);
+        adapter.start_completion(request)
     }
 
     pub fn resume(
@@ -1372,6 +1419,13 @@ impl HarnessAdapter for OpenCodeAdapter {
             startup_messages: started.startup_messages,
         })
     }
+    fn start_completion(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        self.ensure_model_is_selectable(request.model)?;
+        let started = opencode_adapter::start_completion_with_settings(request, &self.settings())?;
+        Ok(StartedAdapter {
+            runtime: Box::new(started.runtime), reader: Box::new(started.reader), startup_messages: started.startup_messages,
+        })
+    }
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         self.ensure_model_is_selectable(request.model)?;
         let settings = self.settings();
@@ -1432,7 +1486,11 @@ fn inferred_tier(id: &str, label: &str) -> CapabilityTier {
         .any(|part| name.contains(part))
     {
         CapabilityTier::Fast
-    } else if ["opus", "fable", "sol", "strong", "pro", "max"]
+    // `astra` is OpenAI's top Codex tier (GPT-6-Astra, "our most capable model
+    // for complex, demanding work"). Without it the strongest model a provider
+    // offers falls through to standard, which is the one mistake this heuristic
+    // must not make.
+    } else if ["opus", "fable", "sol", "astra", "strong", "pro", "max"]
         .iter()
         .any(|part| name.contains(part))
     {
@@ -1452,7 +1510,9 @@ pub struct DiscoveredModel {
     /// The provider marks this as its own default for the (inferred) tier.
     pub is_default: bool,
     /// Reasoning effort levels the provider says this model accepts.
-    pub supported_effort_levels: Vec<String>,
+    /// `None` means the row omitted the ladder, so a curated ladder can stay.
+    /// `Some`, including an empty list, is the provider's answer.
+    pub supported_effort_levels: Option<Vec<String>>,
 }
 
 /// Priority handed to a discovered model the provider marks as its default. Set
@@ -1506,7 +1566,12 @@ fn runtime_candidates_with_fallbacks(
                 Some(fallback) => {
                     let mut merged = fallback.clone();
                     merged.label = label;
-                    merged.supported_effort_levels = supported_effort_levels;
+                    // An omitted ladder keeps curation. An explicit list,
+                    // including an empty one, replaces it — a model that
+                    // reports no effort knob must not inherit a false control.
+                    if let Some(levels) = supported_effort_levels {
+                        merged.supported_effort_levels = levels;
+                    }
                     if is_default {
                         merged.promotion_priority = DISCOVERED_DEFAULT_PRIORITY;
                     }
@@ -1526,7 +1591,7 @@ fn runtime_candidates_with_fallbacks(
                             -1 - (index as i64)
                         },
                     );
-                    candidate.supported_effort_levels = supported_effort_levels;
+                    candidate.supported_effort_levels = supported_effort_levels.unwrap_or_default();
                     candidate
                 }
             }
@@ -1563,17 +1628,29 @@ impl CodexAdapter {
         adapter
     }
 }
+/// Reasoning efforts the curated Codex catalog advertises until live discovery
+/// reports `supportedReasoningEfforts`. Order is the picker's low-to-ceiling
+/// ladder; a live list replaces it, and an explicit empty list clears it.
+const CODEX_CURATED_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+
+fn codex_fallback_model(
+    id: &str,
+    label: &str,
+    tier: CapabilityTier,
+    promotion_priority: i64,
+) -> CatalogCandidate {
+    let mut candidate = CatalogCandidate::stable(id, label, tier, promotion_priority);
+    candidate.supported_effort_levels = CODEX_CURATED_EFFORTS.iter().map(|level| (*level).to_owned()).collect();
+    candidate
+}
+
 fn codex_fallback_candidates() -> Vec<CatalogCandidate> {
     vec![
-        CatalogCandidate::stable("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 1),
-        CatalogCandidate::stable("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 1),
-        CatalogCandidate::stable("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 1),
-        CatalogCandidate::stable(
-            "gpt-5.3-codex",
-            "GPT-5.3 Codex",
-            CapabilityTier::Standard,
-            0,
-        ),
+        codex_fallback_model("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 1),
+        codex_fallback_model("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 1),
+        codex_fallback_model("gpt-6.1-sol", "GPT-6.1 Sol", CapabilityTier::Strong, 1),
+        codex_fallback_model("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 0),
+        codex_fallback_model("gpt-5.3-codex", "GPT-5.3 Codex", CapabilityTier::Standard, 0),
     ]
 }
 
@@ -2032,7 +2109,7 @@ mod tests {
             id: id.into(),
             label: label.into(),
             is_default: false,
-            supported_effort_levels: Vec::new(),
+            supported_effort_levels: Some(Vec::new()),
         }
     }
 
@@ -2079,7 +2156,7 @@ mod tests {
     fn discovered_effort_levels_flow_onto_the_selectable_model() {
         let fallback = claude_fallback_candidates();
         let mut sonnet = discovered("sonnet", "Claude Sonnet");
-        sonnet.supported_effort_levels = vec!["low".into(), "high".into(), "xhigh".into()];
+        sonnet.supported_effort_levels = Some(vec!["low".into(), "high".into(), "xhigh".into()]);
         let haiku = discovered("haiku", "Claude Haiku");
         let resolved = model_catalog::normalize(
             crate::model::ModelCatalogSource::RuntimeApi,
@@ -2091,6 +2168,41 @@ mod tests {
         // the control rather than offering a fixed list it does not accept.
         let haiku = resolved.iter().find(|model| model.id == "haiku").unwrap();
         assert!(haiku.supported_effort_levels.is_empty());
+    }
+
+    #[test]
+    fn codex_curated_fallback_advertises_a_reasoning_ladder() {
+        let resolved = model_catalog::resolve(
+            "codex",
+            Err("Codex discovery has not completed".into()),
+            &codex_fallback_candidates(),
+            None,
+            chrono::Utc::now(),
+        );
+        for id in ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.3-codex"] {
+            let model = resolved.models.iter().find(|model| model.id == id).unwrap();
+            assert_eq!(model.supported_effort_levels, ["low", "medium", "high", "xhigh", "max", "ultra"], "{id}");
+        }
+    }
+
+    #[test]
+    fn a_live_codex_ladder_replaces_curation_and_an_empty_one_clears_it() {
+        let fallback = codex_fallback_candidates();
+        let mut sol = discovered("gpt-5.6-sol", "GPT-5.6-Sol");
+        sol.supported_effort_levels = Some(vec!["low".into(), "high".into()]);
+        let mut omitted = discovered("gpt-5.6-terra", "GPT Terra");
+        omitted.supported_effort_levels = None;
+        let cleared = discovered("gpt-5.6-luna", "GPT Luna");
+        let resolved = model_catalog::normalize(
+            crate::model::ModelCatalogSource::RuntimeApi,
+            runtime_candidates_with_fallbacks(vec![sol, omitted, cleared], &fallback),
+        );
+        assert_eq!(resolved.iter().find(|model| model.id == "gpt-5.6-sol").unwrap().supported_effort_levels, ["low", "high"]);
+        assert_eq!(
+            resolved.iter().find(|model| model.id == "gpt-5.6-terra").unwrap().supported_effort_levels,
+            ["low", "medium", "high", "xhigh", "max", "ultra"],
+        );
+        assert!(resolved.iter().find(|model| model.id == "gpt-5.6-luna").unwrap().supported_effort_levels.is_empty());
     }
 
     #[test]
@@ -2123,12 +2235,13 @@ mod tests {
     #[test]
     fn a_discovered_provider_default_becomes_the_tier_default() {
         let fallback = codex_fallback_candidates();
-        // A brand-new model the provider now marks as its own default. It infers
-        // to Standard and must outrank the curated Standard default.
-        let mut astra = discovered("gpt-6-astra", "GPT Astra");
-        astra.is_default = true;
+        // A brand-new model the provider now marks as its own default. Its name
+        // carries no tier keyword, so it infers to Standard and must outrank the
+        // curated Standard default.
+        let mut vega = discovered("gpt-6-vega", "GPT Vega");
+        vega.is_default = true;
         let candidates = runtime_candidates_with_fallbacks(
-            vec![astra, discovered("gpt-5.6-terra", "GPT Terra")],
+            vec![vega, discovered("gpt-5.6-terra", "GPT Terra")],
             &fallback,
         );
         let resolved =
@@ -2137,11 +2250,30 @@ mod tests {
             .iter()
             .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
             .unwrap();
-        assert_eq!(standard_default.id, "gpt-6-astra");
+        assert_eq!(standard_default.id, "gpt-6-vega");
         // The curated model is still selectable, just no longer the default.
         assert!(resolved
             .iter()
             .any(|model| model.id == "gpt-5.6-terra" && !model.default_for_tier));
+    }
+
+    /// Every tier keyword earns its place by naming a model a provider actually
+    /// ships, and the strongest model on offer must never fall through to
+    /// standard — `gpt-6-astra` is OpenAI's top Codex tier and did exactly that.
+    #[test]
+    fn the_strongest_and_fastest_models_each_provider_ships_infer_their_tier() {
+        for (id, label, expected) in [
+            ("claude-opus-5-5", "Opus 5.5", CapabilityTier::Strong),
+            ("claude-fable-5-1", "Fable", CapabilityTier::Strong),
+            ("gpt-6-astra", "GPT-6-Astra", CapabilityTier::Strong),
+            ("gpt-6-sol", "GPT-6-Sol", CapabilityTier::Strong),
+            ("gpt-6-luna", "GPT-6-Luna", CapabilityTier::Fast),
+            ("claude-haiku-4-5", "Haiku 4.5", CapabilityTier::Fast),
+            ("claude-sonnet-5", "Sonnet 5", CapabilityTier::Standard),
+            ("claude-sonnet-5-5", "Sonnet 5.5", CapabilityTier::Standard),
+        ] {
+            assert_eq!(inferred_tier(id, label), expected, "{id}");
+        }
     }
 
     struct Fake;

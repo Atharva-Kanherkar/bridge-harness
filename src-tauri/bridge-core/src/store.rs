@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 61;
+const LATEST_SCHEMA_VERSION: i64 = 64;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -723,6 +723,15 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                     "INTEGER NOT NULL DEFAULT 0",
                 )?;
             }
+            // Durable chat-to-PR links behind the in-chat PR status card.
+            62 => crate::session_prs::install_store(&transaction)?,
+            // One digest row per chat plus FTS vocabularies, for cross-chat
+            // search. Entries need no reindex: their FTS rows already carry
+            // a session id.
+            63 => crate::chat_search::index::install(&transaction)?,
+            // Live context-window readings per harness thread, behind the
+            // in-chat context ring and the Context pane.
+            64 => crate::context_windows::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -4257,12 +4266,17 @@ pub(crate) fn session_event_in_transaction(
     } else if final_kind.ends_with(".delta")
         || final_kind.ends_with(".progress")
         || final_kind == "question.settled"
+        || final_kind == crate::agent::NATIVE_COMPACTING_KIND
     {
-        // Streaming frames and one control signal are the only events that
+        // Streaming frames and two control signals are the only events that
         // leave no trace. A delta is worthless once its terminal event lands
         // carrying the whole content, and `question.settled` merely tells
         // `live_turn.rs` to resolve an existing `approval.requested` row; it
-        // is not itself a durable conversation item.
+        // is not itself a durable conversation item. A harness announcing it
+        // is compacting is the same shape: true for a moment, then replaced
+        // by the boundary (`context.compacted`) that is the durable record,
+        // and a stored "compacting" row would be a claim history can never
+        // retract if the boundary never arrives.
         return Ok(AgentEvent {
             id: 0,
             session_id: session_id.into(),
@@ -4486,6 +4500,24 @@ mod tests {
         assert_eq!(replayed[0].provider_meta, live.provider_meta);
         let second = session_event(&db, "s", &event, &json!({"adapter":"codex"})).unwrap();
         assert_ne!(second.provider_meta["bridgeEntryId"], live.provider_meta["bridgeEntryId"]);
+    }
+
+    #[test]
+    fn a_compaction_in_progress_leaves_no_row() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','working','reported')",
+            [],
+        )
+        .unwrap();
+        let live = session_event(&db, "s", &crate::agent::native_compacting("claude"), &json!({})).unwrap();
+        assert_eq!(live.kind, crate::agent::NATIVE_COMPACTING_KIND);
+        assert_eq!(live.sequence, 0, "a transient event returns sequence 0");
+        assert_eq!(live.status.as_deref(), Some("inProgress"));
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='s'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "nothing the forest could replay as a stale compaction");
     }
 
     #[test]

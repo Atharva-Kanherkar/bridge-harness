@@ -39,6 +39,10 @@ function mount(overrides: Partial<Parameters<typeof MemoryDialog>[0]> = {}) {
 const textarea = () => document.querySelector<HTMLTextAreaElement>("textarea")!;
 const buttonByText = (needle: string) =>
   [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes(needle))!;
+const buttonNamed = (name: string) =>
+  [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === name);
+const tab = (name: string) =>
+  [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Memory views"] button')].find(button => button.textContent?.startsWith(name))!;
 const click = (element: Element) => {
   act(() => { element.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
 };
@@ -189,10 +193,10 @@ describe("MemoryDialog", () => {
   it("kind chips filter client-side, and a second click clears the filter", async () => {
     mount();
     await flush();
-    click(buttonByText("fact"));
+    click(buttonNamed("Facts")!);
     expect(container.textContent).toContain("Works in IST");
     expect(container.textContent).not.toContain("Prefers tabs over spaces");
-    click(buttonByText("fact"));
+    click(buttonNamed("Facts")!);
     expect(container.textContent).toContain("Prefers tabs over spaces");
   });
 
@@ -203,7 +207,7 @@ describe("MemoryDialog", () => {
     expect(container.textContent).toContain("Works in IST");
     expect(container.textContent).not.toContain("Prefers tabs over spaces");
     setSearch("zzz-no-match");
-    expect(container.textContent).toContain("No pins match your search.");
+    expect(container.textContent).toContain("No memories match your search.");
     setSearch("");
     expect(container.textContent).toContain("Prefers tabs over spaces");
   });
@@ -221,7 +225,7 @@ describe("MemoryDialog", () => {
   it("the Activity tab shows recall volume, the packet budget, and the consolidation log", async () => {
     mount();
     await flush();
-    click(buttonByText("Activity"));
+    click(tab("Activity"));
     expect(container.textContent).toContain("peak 4 injections / day");
     expect(container.textContent).toContain("1234 / 4000 chars");
     expect(container.textContent).toContain("Consolidation log");
@@ -236,7 +240,7 @@ describe("MemoryDialog", () => {
     mount();
     await flush();
     setBody("Always run bun run check first");
-    click(buttonByText("Save pin"));
+    click(buttonNamed("Save")!);
     await flush();
     expect(bridgeApi.saveMemoryRecord).toHaveBeenCalledWith("Always run bun run check first", "preference", undefined);
     expect(container.textContent).toContain("Always run bun run check first");
@@ -248,7 +252,7 @@ describe("MemoryDialog", () => {
     await flush();
     setBody("😀".repeat(2001));
     expect(container.textContent).toContain("2001 / 4000");
-    expect(buttonByText("Save pin").disabled).toBe(false);
+    expect(buttonNamed("Save")!.disabled).toBe(false);
   });
 
   it("refuses over the cap with a visible count instead of clipping", async () => {
@@ -256,8 +260,8 @@ describe("MemoryDialog", () => {
     await flush();
     setBody("x".repeat(4001));
     expect(container.textContent).toContain("4001 / 4000");
-    expect(buttonByText("Save pin").disabled).toBe(true);
-    click(buttonByText("Save pin"));
+    expect(buttonNamed("Save")!.disabled).toBe(true);
+    click(buttonNamed("Save")!);
     await flush();
     expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
   });
@@ -313,7 +317,7 @@ describe("MemoryDialog", () => {
     mount({ initialBody: "y".repeat(4001) });
     await flush();
     expect(textarea().value).toBe("y".repeat(4001));
-    expect(buttonByText("Save pin").disabled).toBe(true);
+    expect(buttonNamed("Save")!.disabled).toBe(true);
     expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
   });
 
@@ -336,15 +340,15 @@ describe("MemoryDialog edit", () => {
     await flush();
     click([...document.querySelectorAll('[aria-label="Edit"]')][0]);
     expect(textarea().value).toBe("Prefers tabs over spaces");
-    expect(buttonByText("Save edit")).toBeDefined();
+    expect(buttonNamed("Update")).toBeDefined();
     setBody("Prefers spaces after all");
-    click(buttonByText("Save edit"));
+    click(buttonNamed("Update")!);
     await flush();
     expect(bridgeApi.supersedeMemoryRecord).toHaveBeenCalledWith("r-tabs", "Prefers spaces after all", "preference");
     expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Prefers spaces after all");
     expect(container.textContent).not.toContain("Prefers tabs over spaces");
-    expect(container.textContent).toContain("replaced an earlier pin");
+    expect(container.textContent).toContain("replaced an earlier memory");
   });
 
   it("cancelling an edit restores the plain composer and writes nothing", async () => {
@@ -353,7 +357,7 @@ describe("MemoryDialog edit", () => {
     click([...document.querySelectorAll('[aria-label="Edit"]')][0]);
     click(buttonByText("Cancel"));
     expect(textarea().value).toBe("");
-    expect(buttonByText("Save pin")).toBeDefined();
+    expect(buttonNamed("Update")).toBeUndefined();
     expect(bridgeApi.supersedeMemoryRecord).not.toHaveBeenCalled();
     expect(bridgeApi.saveMemoryRecord).not.toHaveBeenCalled();
   });
@@ -386,7 +390,7 @@ describe("MemoryDialog injection toggle", () => {
     await flush();
     const toggle = document.querySelector<HTMLInputElement>('[aria-label="Use active memory in new chats"]')!;
     expect(toggle.checked).toBe(true);
-    expect(container.textContent).toContain("Use active memory when starting a new conversation.");
+    expect(container.textContent).toContain("Use in new chats");
     act(() => { toggle.click(); });
     await flush();
     expect(bridgeApi.setMemoryInjection).toHaveBeenCalledWith(false);
@@ -398,41 +402,41 @@ describe("MemoryDialog review queue", () => {
   it("lists proposals with confidence and rationale, and pins carry no fake confidence", async () => {
     mount();
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     expect(container.textContent).toContain("Deploys only on Fridays");
     expect(container.textContent).toContain("82% confident");
     expect(container.textContent).toContain("Said twice in one chat");
-    click(buttonByText("About me"));
+    click(tab("Memories"));
     expect(container.textContent).not.toContain("% confident");
   });
 
   it("approve activates through the api and the row leaves the queue", async () => {
     mount();
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     click(buttonByText("Approve"));
     await flush();
     expect(bridgeApi.approveMemoryRecord).toHaveBeenCalledWith("r-prop");
     expect(container.textContent).toContain("Nothing to review");
-    click(buttonByText("About me"));
+    click(tab("Memories"));
     expect(container.textContent).toContain("Deploys only on Fridays");
   });
 
   it("reject settles through the api and activates nothing", async () => {
     mount();
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     click(buttonByText("Reject"));
     await flush();
     expect(bridgeApi.rejectMemoryRecord).toHaveBeenCalledWith("r-prop");
-    click(buttonByText("About me"));
+    click(tab("Memories"));
     expect(container.textContent).not.toContain("Deploys only on Fridays");
   });
 
   it("offers explicit manual, review-first, and automatic modes with the safeguards explained", async () => {
     mount();
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     expect(container.textContent).toContain("Manual only");
     expect(container.textContent).toContain("Review first");
     expect(container.textContent).toContain("Automatic");
@@ -446,7 +450,7 @@ describe("MemoryDialog review queue", () => {
     const onError = vi.fn();
     mount({ onError });
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     expect(buttonByText("Manual only").getAttribute("aria-pressed")).toBe("true");
     click(buttonByText("Review first"));
     await flush();
@@ -461,7 +465,7 @@ describe("MemoryDialog review queue", () => {
     const onError = vi.fn();
     mount({ onError });
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     click(buttonByText("Automatic"));
     await flush();
     expect(onError).not.toHaveBeenCalled();
@@ -484,7 +488,7 @@ describe("MemoryDialog review queue", () => {
       }],
     });
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
@@ -510,7 +514,7 @@ describe("MemoryDialog review queue", () => {
       adapters: [{ id: "claude", label: "Claude", available: true, authState: "authenticated", capabilities: [], models: [] } as never],
     });
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     const harness = container.querySelector<HTMLSelectElement>('select[aria-label="Extraction harness"]')!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
@@ -533,7 +537,7 @@ describe("MemoryDialog review queue", () => {
     };
     mount();
     await flush();
-    click(buttonByText("Review queue"));
+    click(tab("Review"));
     expect(container.textContent).toContain("Last run completed");
     expect(container.textContent).toContain("2 extracted");
     expect(container.textContent).toContain("$0.0017");

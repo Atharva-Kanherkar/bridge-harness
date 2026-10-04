@@ -17,7 +17,7 @@ import type { AgentEvent, SessionEntry } from "./types";
 
 export { itemIdentity, itemSignature, sameItem, sameItems, subagentLabel, subagentSource, type ConversationItem, type ConversationItemType, type SubagentSource } from "./transcript/item";
 export { alignTurns, groupItems, isToolItem, type Rendered } from "./transcript/grouping";
-export { compactionReasonLabel, reasoningDisplayText } from "./transcript/codec";
+export { compactionInFlight, compactionReasonLabel, reasoningDisplayText } from "./transcript/codec";
 export { isInternalCompactionEnvelope, stripWorkerResultBlocks } from "./transcript/reducer";
 export {
   classifyExploratoryCommand,
@@ -67,6 +67,121 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
 }
 
 /**
+ * A message the user has sent that has not come back as a user turn yet.
+ *
+ * Text alone cannot say whether it has come back: "yes" or "continue" is often
+ * already in the transcript from an earlier turn, and matching on text hid the
+ * new bubble until the server answered. So a send also remembers `after`, the
+ * stamp of the newest identical turn the chat already had when it was sent,
+ * and only a turn stamped later answers it.
+ */
+export interface PendingSend {
+  text: string;
+  /**
+   * Epoch milliseconds of the newest user turn with this text that already
+   * existed at send time. Absent when there was none: then any turn with this
+   * text answers it.
+   */
+  after?: number;
+}
+
+/** An optimistic bubble: the send, how the backend took it, and its images. */
+export interface PendingMessage extends PendingSend {
+  /** Set when the send arrived during a running turn; absent for a new turn. */
+  delivery?: DeliveryNote;
+  /** Data URIs of every image sent with it. */
+  attachments?: readonly string[];
+}
+
+function stampOf(item: ConversationItem): number {
+  return Date.parse(item.createdAt ?? "");
+}
+
+function isUserTurn(item: ConversationItem): boolean {
+  return item.type === "message" && item.role === "user";
+}
+
+/**
+ * The stamp a new send of `text` has to beat: the newest user turn with that
+ * text in any of these projections, or undefined when none has one.
+ *
+ * Both stamps come from the backend's clock, so the comparison never depends on
+ * the client's. Turns without a readable stamp are skipped here and, in
+ * `answeredPending`, answer anything: no worse than matching on text.
+ */
+export function userTurnWatermark(text: string, ...projections: readonly (readonly ConversationItem[])[]): number | undefined {
+  const wanted = text.trim();
+  let newest: number | undefined;
+  for (const rows of projections) {
+    for (const item of rows) {
+      if (!isUserTurn(item) || item.text.trim() !== wanted) continue;
+      const at = stampOf(item);
+      if (!Number.isNaN(at) && (newest === undefined || at > newest)) newest = at;
+    }
+  }
+  return newest;
+}
+
+/**
+ * Which pending sends these rows answer, as indexes into `pending`.
+ *
+ * A row answers a send with the same trimmed text that it is newer than. Each
+ * row answers one send at most, and sends claim rows in the order they were
+ * sent, so two identical sends need two turns.
+ *
+ * One known limit: once the first of two identical sends in flight lands and
+ * is dropped from `pending`, its row can answer the second, whose bubble then
+ * goes a moment early. Nothing is left stranded either way.
+ */
+export function answeredPending(pending: readonly PendingSend[], rows: readonly ConversationItem[]): Set<number> {
+  const answered = new Set<number>();
+  if (!pending.length) return answered;
+  const turns = rows.filter(isUserTurn);
+  const claimed = new Set<ConversationItem>();
+  pending.forEach((send, index) => {
+    const text = send.text.trim();
+    const row = turns.find(item => {
+      if (claimed.has(item) || item.text.trim() !== text) return false;
+      if (send.after === undefined) return true;
+      const at = stampOf(item);
+      return Number.isNaN(at) || at > send.after;
+    });
+    if (!row) return;
+    claimed.add(row);
+    answered.add(index);
+  });
+  return answered;
+}
+
+/** How a message sent while a turn was running was taken, while that still matters. */
+export type DeliveryNote = "steered" | "queued";
+
+/**
+ * Which acknowledged user turns still say how they were delivered, by row key.
+ *
+ * The backend persists a mid-turn message with `data.delivery` before it even
+ * answers the send, so the optimistic bubble hands over to the real row almost
+ * at once and the note has to live on the real row. A queued follow-up is
+ * still waiting while the session's queue holds it; the queue drains oldest
+ * first, so the newest `waitingFollowUps` queued rows are the waiting ones. A
+ * steer joins the running step at once, so it says so only while that step is
+ * still running and nothing has answered after it.
+ */
+export function deliveryNotes(items: readonly ConversationItem[], waitingFollowUps: number, turnActive: boolean): Map<string, DeliveryNote> {
+  const notes = new Map<string, DeliveryNote>();
+  const queued = items.filter(item => isUserTurn(item) && item.data.delivery === "queued");
+  for (const item of queued.slice(Math.max(0, queued.length - waitingFollowUps))) notes.set(item.key, "queued");
+  if (!turnActive) return notes;
+  let answeredAfter = false;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.type === "message" && item.role === "assistant" && item.status !== "streaming") answeredAfter = true;
+    else if (!answeredAfter && isUserTurn(item) && item.data.delivery === "steered") notes.set(item.key, "steered");
+  }
+  return notes;
+}
+
+/**
  * The optimistic pending rows that have not yet come back as real user turns.
  *
  * Delivery is judged per row, in the row's **own** session: a pending message
@@ -79,59 +194,179 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
  * Returns the same array reference when nothing was delivered, so callers can
  * keep referential equality for render stability.
  */
-export function undeliveredPending<T extends { sessionId: string; text: string }>(
+export function undeliveredPending<T extends PendingSend & { sessionId: string }>(
   pending: readonly T[],
   liveEvents: AgentEvent[],
-  selected: { sessionId?: string; durableUserTexts: ReadonlySet<string> },
+  selected: { sessionId?: string; durableRows: readonly ConversationItem[] },
 ): T[] {
   if (!pending.length) return pending as T[];
-  const liveTexts = new Map<string, Set<string>>();
-  const deliveredIn = (sessionId: string, text: string): boolean => {
-    let texts = liveTexts.get(sessionId);
-    if (!texts) {
-      texts = new Set(
-        reduceConversation(liveEvents.filter(event => event.sessionId === sessionId))
-          .filter(item => item.type === "message" && item.role === "user")
-          .map(item => item.text.trim()),
-      );
-      liveTexts.set(sessionId, texts);
-    }
-    if (texts.has(text)) return true;
-    return sessionId === selected.sessionId && selected.durableUserTexts.has(text);
-  };
-  const next = pending.filter(item => !deliveredIn(item.sessionId, item.text.trim()));
-  return next.length === pending.length ? (pending as T[]) : next;
+  const bySession = new Map<string, T[]>();
+  for (const item of pending) {
+    const sends = bySession.get(item.sessionId);
+    if (sends) sends.push(item);
+    else bySession.set(item.sessionId, [item]);
+  }
+  const delivered = new Set<T>();
+  for (const [sessionId, sends] of bySession) {
+    const live = reduceConversation(liveEvents.filter(event => event.sessionId === sessionId));
+    for (const index of answeredPending(sends, live)) delivered.add(sends[index]);
+    if (sessionId !== selected.sessionId) continue;
+    for (const index of answeredPending(sends, selected.durableRows)) delivered.add(sends[index]);
+  }
+  return delivered.size ? pending.filter(item => !delivered.has(item)) : (pending as T[]);
 }
 
-function assistantShadowText(item: ConversationItem): string | undefined {
+/**
+ * The text two projections of one row would share, when they have no shared id.
+ *
+ * A row's `identity` is what tells the merge that a live frame and its persisted
+ * twin are one thing, and it is only as good as the ids the two sides carry. A
+ * tool call always names itself, and named prose does too, so their identities
+ * agree and the dedupe below never has to guess.
+ *
+ * A thought usually does not. `liveKey` returns no key for an unnamed reasoning
+ * frame (the reducer borrows the turn's), and the durable writer files the same
+ * frame under the forest entry's own id, so the live row reads
+ * `reasoning:<event id>` while its twin reads `entry:<entry id>`, which are two
+ * numbering spaces that can never agree. Both rows then survive the merge, and
+ * `coalesceThoughts` joins them into a single card whose body is the same
+ * paragraph twice: one thought, printed twice, in the one component the
+ * transcript has for thinking.
+ *
+ * So a row with no id to match on is matched on its text, the one thing the two
+ * projections cannot word differently. Unnamed assistant prose already needed
+ * this and already had it. A thought is the same problem with the same answer,
+ * and the commoner case, since nearly every harness sends reasoning with no item
+ * id. The match is on the whole trimmed body, so a row it drops is replaced by
+ * one that says exactly the same thing, and the durable row is the one that
+ * survives a reload anyway.
+ */
+function shadowRowText(item: ConversationItem): string | undefined {
+  if (item.type === "reasoning") return item.text.trim() || undefined;
   if (item.type !== "message" || item.role === "user") return undefined;
   return item.text.trim() || undefined;
+}
+
+/**
+ * How much of a streaming row has to be there before it counts as the opening of
+ * the thought the forest already holds.
+ *
+ * A delta is never persisted, so a thought the forest has caught up with leaves
+ * a live row holding only the opening of a body that is already stored whole. The
+ * two cannot be compared for equality until the stream finishes, and a forest
+ * poll is three seconds wide, which is long enough for the whole seam to be on
+ * screen twice. Comparing prefixes fixes it, but "the newest stored thought
+ * begins with what I have just streamed" only means something once there is
+ * enough text to mean anything: the first few words of a thought are the part
+ * two different thoughts are most likely to share.
+ */
+const STREAMED_PREFIX_FLOOR = 24;
+
+/**
+ * A row on one projection, remembered for the row it turned out to be the twin
+ * of on the other.
+ *
+ * `sequence` is where the row belongs in the merged order. `identity` is what
+ * the reader is already looking at, and a row that is replaced by its twin has
+ * to keep answering to it: `rowKey` derives from identity, and `AnimatePresence`
+ * treats a changed key as one row leaving and another arriving.
+ */
+interface Shadow {
+  sequence: number;
+  identity: string;
+}
+
+function shadowOf(item: ConversationItem): Shadow {
+  return { sequence: item.sequence, identity: item.identity ?? itemIdentity(item) };
+}
+
+/**
+ * The stored row, standing in for the live row the reader was already watching.
+ *
+ * Only the identity moves. The stored row stays the survivor on purpose, since
+ * it is the one the reader can branch from and the one that survives a reload,
+ * and it keeps its own sequence unless the caller's pairing already moved it.
+ */
+function adopt(item: ConversationItem, shadow: Shadow): ConversationItem {
+  if (item.identity === shadow.identity) return item;
+  return { ...item, identity: shadow.identity };
 }
 
 export function mergeConversationProjections(durableItems: ConversationItem[], liveItems: ConversationItem[]): ConversationItem[] {
   const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
   const liveAnchors = new Map(liveItems.map(item => [item.identity ?? itemIdentity(item), item.sequence]));
-  const liveShadows = new Map<string, number>();
+  /**
+   * The live row each shadowed text belongs to, and where it sat when it did.
+   *
+   * Held as one value because the pair is a pairing: the sequence says where the
+   * row belongs in the merged order, and the identity says what the reader is
+   * already looking at, which the survivor has to keep answering to. See
+   * `Shadow`.
+   */
+  const liveShadows = new Map<string, Shadow>();
   const durableTexts = new Set<string>();
   for (const live of liveItems) {
     if (live.status !== "streaming" && live.itemId) continue;
-    const text = assistantShadowText(live);
-    // Preserve find() semantics: the first matching item supplies the anchor,
+    const text = shadowRowText(live);
+    // Preserve find() semantics: the first matching item supplies the shadow,
     // which need not be the smallest sequence in an unsorted input.
-    if (text !== undefined && !liveShadows.has(text)) liveShadows.set(text, live.sequence);
+    if (text !== undefined && !liveShadows.has(text)) liveShadows.set(text, shadowOf(live));
   }
+  for (const item of durableItems) {
+    const text = shadowRowText(item);
+    if (text !== undefined) durableTexts.add(text);
+  }
+
+  /**
+   * The stored thought a live row is still streaming into, if one is.
+   *
+   * The thought being streamed is the newest one in the forest, so the newest
+   * stored thought is the only one that can still be arriving. Comparing a
+   * streaming row against all of them would let an old thought swallow a new one
+   * that merely opens the same way. Resolved before the stored rows are mapped,
+   * because the answer decides which identity the newest stored thought adopts.
+   */
+  let newestStoredThought: ConversationItem | undefined;
+  for (const item of durableItems) if (item.type === "reasoning") newestStoredThought = item;
+  const streamingInto = newestStoredThought && newestStoredThought.text.trim();
+  let arriving: Shadow | undefined;
+  for (const live of liveItems) {
+    if (durableIds.has(live.identity ?? itemIdentity(live))) continue;
+    if (live.status !== "streaming") continue;
+    const text = shadowRowText(live);
+    if (text === undefined || text.length < STREAMED_PREFIX_FLOOR) continue;
+    if (streamingInto?.startsWith(text)) arriving = shadowOf(live);
+  }
+
   const items = durableItems.map(item => {
     const identity = item.identity ?? itemIdentity(item);
-    const text = assistantShadowText(item);
-    if (text !== undefined) durableTexts.add(text);
-    const anchor = liveAnchors.get(identity) ?? (text === undefined ? undefined : liveShadows.get(text));
-    return anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
+    const text = shadowRowText(item);
+    const byIdentity = liveAnchors.get(identity);
+    // Paired on text, so the two ids never met. Handing the survivor the live
+    // row's identity is what keeps the reader on the row they were already
+    // reading: a row keyed off the stored entry instead is a different key, and
+    // `AnimatePresence` answers a changed key by playing the old row's exit while
+    // the new one enters, which is the doubled reply all over again.
+    // The newest stored thought is the one a live row can be streaming *into*,
+    // which is the pairing no text equality can make.
+    const shadow = byIdentity !== undefined ? undefined
+      : item === newestStoredThought
+        ? (arriving ?? (text === undefined ? undefined : liveShadows.get(text)))
+        : (text === undefined ? undefined : liveShadows.get(text));
+    const anchor = byIdentity ?? shadow?.sequence;
+    const anchored = anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
+    return shadow === undefined ? anchored : adopt(anchored, shadow);
   });
   for (const live of liveItems) {
     const identity = live.identity ?? itemIdentity(live);
     if (durableIds.has(identity)) continue;
-    const text = assistantShadowText(live);
+    const text = shadowRowText(live);
     if ((live.status === "streaming" || !live.itemId) && text !== undefined && durableTexts.has(text)) continue;
+    // Dropped in favour of the stored thought it is streaming into, which is the
+    // one holding the whole body. That row adopted this one's identity above, so
+    // the card the reader is watching mid-thought does not remount when the body
+    // it was streaming finally arrives.
+    if (arriving !== undefined && shadowOf(live).identity === arriving.identity) continue;
     items.push(live);
   }
   items.sort((a, b) => a.sequence - b.sequence);
@@ -186,12 +421,12 @@ export function delegationChildSessionId(item: ConversationItem): string | undef
 }
 
 /**
- * Collapse each worker's result onto the panel that spawned it.
+ * Collapse each worker's result onto the row that spawned it.
  *
- * The spawn row is a live panel while the worker runs, so letting the result
- * arrive as its own row further down left the user with two cards for one
- * worker: a stale live one and a disconnected outcome. One worker is one place
- * in the transcript, from "delegated" through to "done".
+ * Letting the result arrive as its own row further down left the user with two
+ * rows for one worker: a stale "delegated" and a disconnected outcome. One
+ * worker is one line in the transcript, from "delegated" through to "done";
+ * the worker itself is watched in the dock's Agents pane.
  *
  * Applied to the merged durable+live list rather than inside either projection,
  * because a spawn read from the forest and a result still only in the live
@@ -224,8 +459,7 @@ export function foldWorkerDelegations(items: ConversationItem[]): ConversationIt
     // worker was asked to do. A result's text is the worker's own prose, which
     // is a different fact and can run to paragraphs; letting it overwrite the
     // objective turned a finished card into a wall of summary with the ask
-    // gone, and then repeated the same prose in the result strip below. The
-    // summary has its own place on the card, read from the typed envelope.
+    // gone. The worker's own words stay in its chat in the Agents pane.
     // Fill only when the spawn carried no objective at all.
     if (item.text && !panel.text && !workerResultSummary(item.text)) panel.text = item.text;
     // The panel keeps its own key and eventId: the key is what React reconciles

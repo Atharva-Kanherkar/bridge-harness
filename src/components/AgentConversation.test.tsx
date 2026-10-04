@@ -4,15 +4,49 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import * as conversation from "../conversation";
+import { bridgeApi } from "../api";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
-import type { AgentEvent, CompletionSummary, Session, SessionEntry, WorkerRuntimeRecord } from "../types";
+import { durableEntriesFrom, harnessStream } from "../transcript/golden";
+import type { AgentEvent, CompletionSummary, Session, SessionEntry } from "../types";
 
 const session: Session = { id: "s", workspaceId: "w", harness: "codex", label: "Orchestrator", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "reported", model: "gpt-5.6-luna", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" };
 const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({ id, sessionId: "s", sequence: id, protocolVersion: 1, kind: asWireKind(kind), itemId: null, role: null, status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides });
 const completion = (verdict: CompletionSummary["verdict"]): CompletionSummary => ({ attemptId:"a",contractId:"c",verdict,repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:0,totalRequired:1,markdownCommitted:false,waiverReason:verdict === "waived" ? "Accepted risk" : null,checks:[{checkId:"gate",kind:"deterministic",required:true,status:verdict === "verified" ? "passed" : verdict === "changes_requested" ? "failed" : verdict === "superseded" ? "stale" : verdict === "waived" ? "skipped" : "pending",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:null,outputDigest:verdict === "verified" ? "digest" : null,artifactRefs:[]}] });
 
 describe("AgentConversation", () => {
+  it("offers a banked reset on the user's Codex limit wall, never on a worker or read-only transcript", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const now = Math.floor(Date.now() / 1000);
+    const empty = { tokens: { status: "unavailable" as const }, costMicrousd: { status: "unavailable" as const }, models: [] };
+    const get = vi.spyOn(bridgeApi, "getProviderUsageOverviews").mockResolvedValue({
+      schemaVersion: 1, generatedAt: now, providers: [{
+        schemaVersion: 1, generatedAt: now, provider: "codex", account: "a@example.test", observedAt: now,
+        coverage: "test", windows: [], today: empty, month: empty, error: null,
+        resetCredits: { availableCount: 1, detailsKnown: false, credits: [], nextExpiresAt: null },
+      }],
+    });
+    const listen = vi.spyOn(bridgeApi, "onProviderUsageOverviews").mockResolvedValue(() => undefined);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const limit = event(1, "error", { itemId: "limit", status: "failed", text: "You've hit your usage limit." });
+    try {
+      await act(async () => root.render(<AgentConversation session={{ ...session, kind: "chat" }} events={[limit]} onResolve={() => undefined} />));
+      expect(host.textContent).toContain("1 reset banked");
+      expect(host.textContent).toContain("Use reset");
+      expect(get).toHaveBeenCalledTimes(1);
+      await act(async () => root.render(<AgentConversation session={{ ...session, kind: "worker" }} events={[limit]} onResolve={() => undefined} />));
+      expect(host.textContent).not.toContain("Use reset");
+      await act(async () => root.render(<AgentConversation session={{ ...session, kind: "chat" }} events={[limit]} onResolve={() => undefined} readOnly />));
+      expect(host.textContent).not.toContain("Use reset");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      get.mockRestore();
+      listen.mockRestore();
+    }
+  });
   it("does not reproject an unchanged durable branch on live-only updates", async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const project = vi.spyOn(conversation, "projectSessionConversation");
@@ -100,15 +134,85 @@ describe("AgentConversation", () => {
   // A session left on its adapter's default stores no model id. `modelLabel`
   // renders that absence as an em dash, which the narration row would have
   // read out as "— is reading your message…".
-  it("names the harness in the startup row when the session carries no model id", () => {
-    const html = renderToStaticMarkup(<AgentConversation session={{ ...session, model: null }} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("Codex is reading your message");
-    expect(html).not.toContain("— is reading your message");
+  it("copies a settled assistant reply as its Markdown and ticks", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const reply = event(1, "message.completed", { itemId: "a", role: "assistant", status: "completed", text: "**Done.** See `src/app.ts`." });
+    await act(async () => root.render(<AgentConversation session={session} events={[reply]} onResolve={() => undefined} onRemember={() => undefined} />));
+    const bar = host.querySelector("[data-reply-actions]")!;
+    expect(bar.getAttribute("data-reply-actions")).toBe("latest");
+    const labels = [...bar.querySelectorAll("button")].map(button => button.getAttribute("aria-label"));
+    expect(labels.slice(0, 2)).toEqual(["Copy", "Remember this"]);
+    await act(async () => { (bar.querySelector('button[aria-label="Copy"]') as HTMLButtonElement).click(); });
+    expect(writeText).toHaveBeenCalledWith("**Done.** See `src/app.ts`.");
+    expect(bar.querySelector('button[aria-label="Copied"]')).not.toBeNull();
+    await act(async () => root.unmount());
+    host.remove();
   });
 
-  it("names the model in the startup row when the session has one", () => {
+  it("keeps the bar visible on the latest reply only, and offers none while streaming", () => {
+    const older = event(1, "message.completed", { itemId: "a", role: "assistant", status: "completed", text: "First." });
+    const ask = event(2, "message.completed", { itemId: "u", role: "user", status: "completed", text: "And?" });
+    const latest = event(3, "message.completed", { itemId: "b", role: "assistant", status: "completed", text: "Second." });
+    const html = renderToStaticMarkup(<AgentConversation session={session} events={[older, ask, latest]} onResolve={() => undefined} />);
+    expect(html.match(/data-reply-actions="latest"/g)).toHaveLength(1);
+    expect(html.match(/data-reply-actions="hover"/g)).toHaveLength(1);
+    const streaming = event(3, "message.delta", { itemId: "b", role: "assistant", status: "streaming", text: "Sec" });
+    const live = renderToStaticMarkup(<AgentConversation session={session} events={[older, streaming]} onResolve={() => undefined} />);
+    expect(live).not.toContain('data-reply-actions="latest"');
+  });
+
+  it("gives a user bubble Copy without adding in-flow height", () => {
+    const ask = event(1, "message.completed", { itemId: "u", role: "user", status: "completed", text: "Fix the build" });
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(<AgentConversation session={session} events={[ask]} onResolve={() => undefined} />);
+    const bar = host.querySelector("[data-reply-actions]")!;
+    expect(bar.querySelector('button[aria-label="Copy"]')).not.toBeNull();
+    // Out of flow: a hidden bar must not pad the bubble.
+    expect(bar.className).toContain("absolute");
+    expect(bar.className).toContain("opacity-0");
+  });
+
+  it("shows Thinking in the startup row and never names the model", () => {
+    for (const model of [null, session.model]) {
+      const html = renderToStaticMarkup(<AgentConversation session={{ ...session, model }} onResolve={() => undefined} events={[]} working />);
+      expect(html).toContain(">Thinking<");
+      expect(html).not.toContain("is reading your message");
+      expect(html).not.toContain("GPT Luna");
+    }
+  });
+
+  it("renders the worker placeholder as a pulsing status, not italic prose", () => {
+    const reply = event(1, "message.completed", { itemId: "a", role: "assistant", status: "completed", text: "_Checking on workers…_" });
+    const html = renderToStaticMarkup(<AgentConversation session={session} events={[reply]} onResolve={() => undefined} />);
+    expect(html).toContain("data-thinking-row");
+    expect(html).toMatch(/class="[^"]*thinking-word[^"]*">Checking on workers…</);
+    expect(html).not.toContain("<em>");
+  });
+
+  it("pulses the Thinking word, and holds it static under reduced motion", async () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("GPT Luna is reading your message");
+    expect(html).toMatch(/class="[^"]*thinking-word[^"]*">Thinking</);
+    const matchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes("reduce"), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false })) as typeof window.matchMedia;
+    try {
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />));
+      const word = [...container.querySelectorAll("span")].find(span => span.textContent === "Thinking")!;
+      expect(word).toBeTruthy();
+      expect(word.className).not.toContain("thinking-word");
+      await act(async () => root.unmount());
+      container.remove();
+    } finally {
+      window.matchMedia = matchMedia;
+    }
   });
 
   // The startup row's whole job is to say *which* agent is starting and how
@@ -133,7 +237,7 @@ describe("AgentConversation", () => {
   });
 
   it.each([
-    { elapsed: 2400, label: "2s" },
+    { elapsed: 10_400, label: "10s" },
     { elapsed: 42_163_000, label: "11h 42m" },
   ])("keeps the status first and formats a $elapsed ms wait as $label", async ({ elapsed, label }) => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
@@ -149,7 +253,7 @@ describe("AgentConversation", () => {
       expect(line).not.toBeNull();
       expect(line.textContent).toBe(label);
       const row = line.parentElement!;
-      expect(row.textContent).toBe(`GPT Luna is reading your message…${label}`);
+      expect(row.textContent).toBe(`Thinking${label}`);
       await act(async () => root.unmount());
       container.remove();
     } finally {
@@ -245,6 +349,40 @@ describe("AgentConversation", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[changed]} activeLeafId="e1" />);
     expect(html).not.toContain("Used tools");
     expect(html).toContain("→");
+  });
+
+  describe("while the harness compacts its context", () => {
+    const compacting = event(0, "context.compacting", { sequence: 0, status: "inProgress", data: { harness: "claude" } });
+    const render = (events: AgentEvent[], working = true) => renderToStaticMarkup(
+      <AgentConversation session={session} onResolve={() => undefined} events={events} working={working} />,
+    );
+
+    it("says so, with the compacting harness's mark, instead of claiming to think", () => {
+      const html = render([compacting]);
+      expect(html).toContain("Compacting context…");
+      expect(html).toContain('data-harness="claude"');
+      expect(html).not.toContain(">Thinking<");
+    });
+
+    it("says so after the harness has opened a turn around it", () => {
+      expect(render([compacting, event(1, "turn.started")])).toContain("Compacting context…");
+    });
+
+    it("stops saying so once the boundary lands", () => {
+      const html = render([compacting, event(2, "context.compacted", { status: "completed", data: { harness: "claude" } })]);
+      expect(html).not.toContain("Compacting context…");
+      expect(html).toContain("Context compacted");
+    });
+
+    it("stops saying so once the turn is over, however it ended", () => {
+      expect(render([compacting, event(2, "turn.completed")])).not.toContain("Compacting context…");
+    });
+
+    it("never claims a compaction for a session that has no turn", () => {
+      const idle: Session = { ...session, status: "idle" };
+      const html = renderToStaticMarkup(<AgentConversation session={idle} onResolve={() => undefined} events={[compacting]} working={false} />);
+      expect(html).not.toContain("Compacting context…");
+    });
   });
 
   it("narrates a model switch with the incoming harness's mark, and no first-launch note anywhere", () => {
@@ -461,6 +599,12 @@ describe("AgentConversation", () => {
     expect(html).toContain("were not explicitly authorized");
     expect(html).toContain("Render Mermaid inline");
   });
+  it("says an unscoped delegation approval has no path limit rather than showing an empty scope", () => {
+    const entry: SessionEntry = { id:"approval",sessionId:"s",parentEntryId:null,sequence:5,semanticSchemaVersion:2,kind:"approval.requested",payload:{status:"pending",approvalType:"delegation_path_scope",title:"Approve delegation write scope",objective:"Review PR #7",reason:"owned_path_provenance_required",requestedOwnedPaths:[]},providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[entry]} activeLeafId="approval"/>);
+    expect(html).toContain("Write scope");
+    expect(html).toContain("No path limit (the worker named none)");
+  });
   it("mirrors a background worker's approval onto the parent instead of calling it a failure", () => {
     const blocked = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
       event(1, "delegation.blocked", { role: "system", status: "waiting", title: "Implementation · strong needs your approval", text: "Run bun install?", data: { childBlocked: true, childSessionId: "child", label: "Implementation · strong", objective: "Render Mermaid inline", command: "bun install", cwd: "/repo", ownedPaths: ["src/**"], orchestratorNotified: true } })
@@ -547,130 +691,57 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("Retry this task");
   });
 
-  /* ── The live worker panel ──────────────────────────────────────────── */
+  /* ── A delegation in the orchestrator's transcript ─────────────────── */
+  // Contract: testing/feat-agents-pane-auto-open.md, orchestrator transcript.
 
-  const workerSession = (overrides: Partial<Session> = {}): Session => ({
-    ...session, id: "w1", label: "Implementation · strong", parentSessionId: "s", depth: 1,
-    kind: "workspace", startedAt: "2026-08-21T10:00:00Z", ...overrides,
-  });
-  const workerRuntime = (overrides: Partial<WorkerRuntimeRecord> = {}): WorkerRuntimeRecord => ({
-    sessionId: "w1", parentSessionId: "s", lifecycleState: "working", taskFamily: "implementation",
-    compatibilityKey: "key", resultStatus: "pending", retryCount: 0, warmUntil: null, worktreePath: null,
-    worktreeBranch: null, lastResult: null, lastActivityAt: null, waitingSince: null, waitingReason: null,
-    progressSummary: null, updatedAt: "now", ...overrides,
-  });
   const spawned = event(30, "delegation.spawned", {
     itemId: "spawn-w1", role: "system", status: "working", title: "Delegated to Implementation · strong",
     text: "Add refresh-token rotation",
     data: { childSessionId: "w1", modelLabel: "Fable", effort: "high" },
   });
-  const workerActivity = (id: number, title: string): AgentEvent => event(id, "tool.started", { sessionId: "w1", title });
 
-  it("shows a live worker panel while the worker runs", () => {
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned]}
-      now={Date.parse("2026-08-21T10:02:30Z")}
-      workers={{
-        sessions: [session, workerSession()],
-        runtimes: [workerRuntime({ retryCount: 1, progressSummary: "editing src/auth/store.rs" })],
-        events: [workerActivity(31, "read store.rs"), workerActivity(32, "edit store.rs")],
-      }}
-      onOpenSession={() => undefined}
-    />);
-    expect(html).toContain("Implementation · strong");
-    expect(html).toContain("WORKING");
-    expect(html).toContain("editing src/auth/store.rs");
-    expect(html).toContain("retry 1");
-    // The mini-feed is the whole point: something visibly moving in the chat.
-    expect(html).toContain("edit store.rs");
-    // One way in. "Expand" opened the same worker in an overlay and read as a
-    // second, different thing the reader had to choose between.
-    expect(html).not.toContain("Expand");
-    expect(html).toContain("Open session");
-    // And the old static line is gone.
-    expect(html).not.toContain("Delegated · Delegated to");
+  it("keeps a running worker to one quiet row, never a live card", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned]} onOpenSession={() => undefined} onOpenAgent={() => undefined}/>);
+    expect(html).toContain("Delegated");
+    expect(html).toContain("Fable · high");
+    // The worker is watched in the Agents pane: no status, feed, clock or Stop here.
+    expect(html).not.toContain('aria-label="Worker ');
+    expect(html).not.toContain("WORKING");
+    expect(html).not.toContain(">Stop<");
+    expect(html).toContain("Show in Agents");
   });
 
-  it("names the waiting reason instead of showing a stalled panel", () => {
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned]}
-      now={Date.parse("2026-08-21T10:02:30Z")}
-      workers={{
-        sessions: [session, workerSession({ status: "waiting" })],
-        runtimes: [workerRuntime({ lifecycleState: "waiting", waitingReason: "approval_requested" })],
-        events: [],
-      }}
-    />);
-    expect(html).toContain("NEEDS YOU");
-    expect(html).toContain("waiting: approval requested");
+  it("hands the worker's id to the host from Show in Agents", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const onOpenAgent = vi.fn();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} forestEntries={[]} events={[spawned]} onOpenAgent={onOpenAgent}/>));
+      const show = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Show in Agents"));
+      expect(show).toBeTruthy();
+      await act(async () => show!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onOpenAgent).toHaveBeenCalledWith("w1");
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
-  it("turns the same panel into the result card when the result lands", () => {
+  it("offers the Agents pane only when the host can open it", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned]}/>);
+    expect(html).toContain("Delegated");
+    expect(html).not.toContain("Show in Agents");
+  });
+
+  it("folds the result onto the same quiet row", () => {
     const result = event(33, "delegation.result", {
       itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
       text: "Rotation added.", data: { childSessionId: "w1", delivered: true, status: "completed" },
     });
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned, result]}
-      now={Date.parse("2026-08-21T10:05:00Z")}
-      workers={{
-        sessions: [session, workerSession({ status: "stopped" })],
-        runtimes: [workerRuntime({
-          resultStatus: "reported", lifecycleState: "completed",
-          lastResult: { status: "completed", summary: "Rotation added.", filesChanged: ["src/auth/store.rs"], tests: [{ command: "cargo test auth", status: "passed" }] },
-        })],
-        events: [workerActivity(31, "edit store.rs")],
-      }}
-    />);
-    expect(html).toContain("DONE");
-    expect(html).toContain("1 file");
-    expect(html).toContain("1 test passing");
-    // One card, not a live panel plus a disconnected outcome row.
-    expect(html).not.toContain("Subagent finished");
-    // And the live ticker stops: no half-finished feed under a finished result.
-    expect(html).not.toContain("edit store.rs");
-    // The ask survives the outcome. A result's prose used to overwrite the
-    // objective, so a finished card no longer said what it had been asked for.
-    expect(html).toContain("Add refresh-token rotation");
-    // The summary is shown once. It used to open the card in full and then
-    // repeat its first sentence, truncated, three bands lower.
-    expect(html.split("Rotation added.").length - 1).toBe(1);
-  });
-
-  it("clamps a long result summary behind one affordance", () => {
-    const long = `Reviewed the auth module and posted a comment-only review. ${"Findings cite concrete files and lines. ".repeat(8)}`;
-    const result = event(33, "delegation.result", {
-      itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
-      text: long, data: { childSessionId: "w1", delivered: true, status: "completed" },
-    });
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned, result]}
-      workers={{
-        sessions: [session, workerSession({ status: "stopped" })],
-        runtimes: [workerRuntime({
-          resultStatus: "reported", lifecycleState: "completed",
-          // The fence the typed envelope arrives in is wire chatter, not the
-          // worker's newest activity, and the card used to print it as status.
-          progressSummary: "```bridge-worker-result",
-          lastResult: { status: "completed", summary: long, filesChanged: [], tests: [] },
-        })],
-        events: [],
-      }}
-      onOpenSession={() => undefined}
-    />);
-    expect(html).toContain("line-clamp-3");
-    expect(html).toContain("Read the full result");
-    expect(html).not.toContain("bridge-worker-result");
-    // The objective band is clamped too, so no card opens with a wall.
-    expect(html).toContain("line-clamp-2");
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[spawned, result]} onOpenAgent={() => undefined}/>);
+    expect(html.split("Subagent finished").length - 1).toBe(1);
+    expect(html).not.toContain("Delegated");
+    expect(html).toContain("Show in Agents");
   });
 
   it("still shows a classified failure with its retry action after folding", () => {
@@ -683,24 +754,11 @@ describe("AgentConversation", () => {
       session={session}
       onResolve={() => undefined}
       events={[spawned, failed]}
-      workers={{ sessions: [session, workerSession()], runtimes: [workerRuntime()], events: [] }}
       onRetryWorker={async () => undefined}
       onOpenSession={() => undefined}
     />);
     expect(html).toContain("the worker stopped responding");
     expect(html).toContain("Retry this task");
-  });
-
-  it("falls back to the quiet row when the worker's session is not loaded yet", () => {
-    // The spawn event can beat the state poll that carries the child session row.
-    const html = renderToStaticMarkup(<AgentConversation
-      session={session}
-      onResolve={() => undefined}
-      events={[spawned]}
-      workers={{ sessions: [session], runtimes: [], events: [] }}
-    />);
-    expect(html).toContain("Delegated");
-    expect(html).not.toContain("Open session");
   });
 
   it("shows a chip when someone steers a worker", () => {
@@ -713,7 +771,6 @@ describe("AgentConversation", () => {
       session={session}
       onResolve={() => undefined}
       events={[spawned, steered]}
-      workers={{ sessions: [session, workerSession()], runtimes: [workerRuntime()], events: [] }}
       onOpenSession={() => undefined}
     />);
     expect(html).toContain("You steered Implementation · strong");
@@ -812,5 +869,77 @@ describe("AgentConversation", () => {
       onForkSession={onForkSession} onRewindEntry={onRewindEntry} leafEntryIds={["e-a"]} />));
     expect([...container.querySelectorAll("button")].every(button => button.getAttribute("aria-label") !== "Fork from here")).toBe(true);
     await act(async () => root.unmount());
+  });
+
+  it("keeps one reply node through the live-to-durable swap", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const stream = harnessStream("claude");
+    const entries = durableEntriesFrom(stream[0].sessionId, stream);
+    const reply = "Fixed the assertion in src/lib.rs.";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const replyNodes = () => [...host.querySelectorAll(".md")].filter(node => node.textContent?.includes(reply));
+    const chat = { ...session, id: stream[0].sessionId, harness: "claude", kind: "chat" as const };
+    try {
+      await act(async () => root.render(<AgentConversation session={chat} events={stream} forestEntries={[]} onResolve={() => undefined} />));
+      const [live] = replyNodes();
+      expect(live).toBeDefined();
+      await act(async () => root.render(<AgentConversation session={chat} events={stream} forestEntries={entries} activeLeafId={entries[entries.length - 1].id} onResolve={() => undefined} />));
+      const after = replyNodes();
+      expect(after).toHaveLength(1);
+      expect(after[0]).toBe(live);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("keeps one reply node when the swap runs on the unnamed text match", async () => {
+    // The swap above reduces a complete stream, so its terminal frame names the
+    // reply and the two projections meet on identity. A provider that only names
+    // a message when it finishes leaves the live window holding unnamed deltas
+    // and no terminal event, and the merge has to pair those with the stored
+    // reply by text instead. That pairing is a real match, so the row it hands
+    // the reader has to be the row they were already looking at: keying the
+    // survivor off the stored entry remounted it, and the exit/enter pair put
+    // the reply on screen twice all over again.
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const reply = "Here is what I found in the store.";
+    const live = [event(0, "message.delta", { itemId: null, role: "assistant", status: "streaming", text: reply })];
+    const forest: SessionEntry[] = [
+      { id: "e1", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2, kind: "user.message", payload: { text: "where does it live?", role: "user", status: "completed" }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+      { id: "e2", sessionId: "s", parentEntryId: "e1", sequence: 7, semanticSchemaVersion: 2, kind: "assistant.message", payload: { itemId: "acp-message-1", text: reply, role: "assistant", status: "completed" }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" },
+    ];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const replyNodes = () => [...host.querySelectorAll(".md")].filter(node => node.textContent?.includes(reply));
+    try {
+      await act(async () => root.render(<AgentConversation session={session} events={live} forestEntries={[]} onResolve={() => undefined} />));
+      const [before] = replyNodes();
+      expect(before).toBeDefined();
+      await act(async () => root.render(<AgentConversation session={session} events={live} forestEntries={forest} activeLeafId="e2" onResolve={() => undefined} />));
+      const after = replyNodes();
+      expect(after).toHaveLength(1);
+      expect(after[0]).toBe(before);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+
+  it("streams prose at full ink", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<AgentConversation session={session} events={[event(0, "message.delta", { itemId: "m", role: "assistant", text: "Streaming now" })]} forestEntries={[]} onResolve={() => undefined} />));
+      expect(host.querySelector(".md")).not.toBeNull();
+      expect(host.querySelector(".md.dim")).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });

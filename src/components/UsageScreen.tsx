@@ -6,13 +6,19 @@ import { harnessLabel } from "../utils";
 import type { UsageHistorySource, UsagePriceOverride, UsageSummaryResult } from "../types";
 import { HarnessMark } from "./harnessMarks";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
-import { UsageChart, seriesDotClass } from "./UsageChart";
 import { UsageInsights } from "./UsageInsights";
-import { UsageHeatmap } from "./UsageHeatmap";
+import { UsageLedger } from "./UsageLedger";
+import { UsageStrips } from "./UsageStrips";
+import { UsageFlow } from "./UsageFlow";
+import { UsageMosaic } from "./UsageMosaic";
+import { UsageCalendar } from "./UsageCalendar";
+import type { UsageLayoutProps } from "./UsageLayoutParts";
+import { useProviderUsageOverviews } from "./UsageDot";
+import { UsageResetRow } from "./UsageResetRow";
 import {
-  buildChartSeries, buildUsageReport, costSourceLabel, enumeratePeriods, formatCount, formatDayShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, formatWindowLabel,
-  makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
-  type UsageMetric, type UsagePreferences, type UsageReport, type UsageWindowDays,
+  buildUsageReport, enumeratePeriods, formatCount, formatDayShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, formatWindowLabel,
+  makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_LAYOUT_OPTIONS, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
+  type UsageLayout, type UsageMetric, type UsagePreferences, type UsageReport, type UsageWindow, type UsageWindowDays,
 } from "../usageReport";
 
 // The usage destination: what Bridge's harnesses processed and what it would
@@ -32,6 +38,17 @@ const MAX_SCAN_PASSES = 25;
 
 type Breakdown = "model" | "time";
 type UsageTab = "usage" | "insights";
+
+const LAYOUT_LABELS: Record<UsageLayout, string> = { ledger: "Ledger", strips: "Strips", flow: "Flow", mosaic: "Mosaic", calendar: "Calendar" };
+
+/** The five switchable presentations. */
+const LAYOUTS: Record<UsageLayout, (props: UsageLayoutProps) => React.ReactNode> = {
+  ledger: UsageLedger,
+  strips: UsageStrips,
+  flow: UsageFlow,
+  mosaic: UsageMosaic,
+  calendar: UsageCalendar,
+};
 
 function windowLabel(days: UsageWindowDays): string {
   return days === 1 ? "24h" : `${days}d`;
@@ -69,6 +86,8 @@ function relativeStamp(iso: string | null | undefined): string {
 }
 
 export function UsageScreen({ onError, onOpenMeter }: { onError: (message: string) => void; onOpenMeter?: () => void }) {
+  const providerUsage = useProviderUsageOverviews();
+  useEffect(() => { providerUsage.refresh(); }, [providerUsage.refresh]);
   const [preferences, setPreferences] = useState<UsagePreferences>(() => readUsagePreferences());
   const [refreshTick, setRefreshTick] = useState(0);
   const [summaryTick, setSummaryTick] = useState(0);
@@ -78,9 +97,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const [loading, setLoading] = useState(true);
   const [sources, setSources] = useState<UsageHistorySource[]>([]);
   const [overrides, setOverrides] = useState<UsagePriceOverride[]>([]);
-  const [breakdown, setBreakdown] = useState<Breakdown>("model");
   const [tab, setTab] = useState<UsageTab>("usage");
-  const [activityOpen, setActivityOpen] = useState(false);
+  const [tableOpen, setTableOpen] = useState(false);
   const [scanning, setScanning] = useState(preferences.includeImported);
   const [scanFailed, setScanFailed] = useState(false);
   const [refreshingRates, setRefreshingRates] = useState(false);
@@ -194,9 +212,9 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   }, [preferences.includeImported, refreshTick, onError]);
 
   const report = useMemo(() => summary ? buildUsageReport(summary, periods) : null, [summary, periods]);
-  const series = useMemo(() => report ? buildChartSeries(report, preferences.metric) : [], [report, preferences.metric]);
   const metric = preferences.metric;
-  const format = metric === "cost" ? formatUsd : formatTokens;
+  const layout = preferences.layout;
+  const LayoutView = LAYOUTS[layout];
 
   const scan = () => {
     update({ includeImported: true });
@@ -241,15 +259,20 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         action={<span className="inline-flex shrink-0 items-center gap-2">
           <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }]} onChange={setTab} />
           {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
-          <button type="button" onClick={() => setRefreshTick(tick => tick + 1)} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
+          <button type="button" onClick={() => { setRefreshTick(tick => tick + 1); providerUsage.refresh(); }} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
         </span>}
       />
 
       {tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
+      {providerUsage.overviews?.providers.map(snapshot =>
+        <div key={snapshot.provider} className="mb-3 empty:hidden"><UsageResetRow snapshot={snapshot} onUpdated={providerUsage.refresh} /></div>)}
       <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />
-        <span className="ml-auto pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
+        <span className="pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
+        <select aria-label="Layout" value={layout} onChange={event => update({ layout: event.target.value as UsageLayout })} className="ml-auto h-8 rounded-lg border border-border bg-background px-2.5 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          {USAGE_LAYOUT_OPTIONS.map(option => <option key={option} value={option}>{LAYOUT_LABELS[option]}</option>)}
+        </select>
       </div>
 
       {report && (incompleteSources.length > 0 || dashboardSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
@@ -263,87 +286,15 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       </ul>}
 
       {loading && !summary ? <div role="status" className="grid h-56 place-items-center text-caption text-muted-foreground"><LoaderCircle size={16} className="animate-spin" aria-hidden="true" /><span className="sr-only">Loading usage</span></div> : report && <>
-        <section className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]" aria-label="Summary">
-          <div className={CARD}>
-            {partialTotal && <span role="status" className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground"><span className="size-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />Partial total · {partialLabel}</span>}
-            <div className="font-display text-4xl font-semibold tabular-nums tracking-tight text-foreground">{metric === "cost" ? formatUsd(report.totals.costMicrousd) : formatTokens(report.totals.processedTokens)}</div>
-            <p className="mt-1 text-caption text-muted-foreground">{formatCount(report.totals.records)} requests{metric === "cost" ? ` · API estimate · ${costSourceLabel(report.costSource)}` : " · processed tokens"}</p>
-            <ul className="mt-4 space-y-2.5" aria-label="By harness">
-              {report.harnesses.length === 0 && <li className="text-caption text-muted-foreground">No activity in this window.</li>}
-              {report.harnesses.map(entry => <li key={entry.harness} className="flex items-start justify-between gap-3">
-                <span className="inline-flex min-w-0 items-center gap-2 text-ui text-foreground"><span className={cn("size-2 shrink-0 rounded-[3px]", seriesDotClass(entry.harness))} aria-hidden="true" /><HarnessMark harness={entry.harness} size={13} /><span className="truncate">{harnessLabel(entry.harness)}</span></span>
-                <span className="text-right">
-                  <span className="block text-ui tabular-nums text-foreground">{metric === "cost" ? formatUsd(entry.costMicrousd) : formatTokens(entry.processedTokens)}</span>
-                  <span className="block text-[11px] tabular-nums text-muted-foreground">{metric === "cost" ? `${formatPercent(entry.costShare)} of cost · ${formatTokens(entry.processedTokens)} tokens` : `${formatPercent(entry.tokenShare)} of tokens · ${formatUsd(entry.costMicrousd)}`}</span>
-                </span>
-              </li>)}
-            </ul>
-          </div>
-          <div className={cn(CARD, "min-w-0")}>
-            <h2 className="mb-3 text-ui font-medium text-foreground">{window_.resolution === "hour" ? "Hourly" : "Daily"} {metric === "cost" ? "cost" : "processed tokens"}</h2>
-            <UsageChart series={series} periods={periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
-          </div>
-        </section>
-
-        <section className={cn(CARD, "mt-4 py-3")} aria-label="Activity">
-          <button type="button" aria-expanded={activityOpen} aria-controls="usage-activity" onClick={() => setActivityOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
-            <h2 className="text-ui font-medium text-foreground">Activity</h2>
-            <span className="text-caption text-muted-foreground">{window_.resolution === "hour" ? "by hour" : "by day"}, coloured by harness</span>
-            <ChevronDown size={14} className={cn("ml-auto text-muted-foreground transition-transform", activityOpen && "rotate-180")} aria-hidden="true" />
-          </button>
-          {activityOpen && <div id="usage-activity" className="mt-3">
-            <UsageHeatmap periods={report.periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
-          </div>}
-        </section>
-
-        <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="Totals">
-          {[
-            ["Processed tokens", formatTokens(report.totals.processedTokens)],
-            ["Cached input", formatTokens(report.totals.cacheReadTokens)],
-            ["Uncached input", formatTokens(report.totals.uncachedInputTokens)],
-            ["Output", formatTokens(report.totals.outputTokens)],
-            ["Reasoning (in output)", formatTokens(report.totals.reasoningTokens)],
-            ["Local cache savings", formatUsd(report.totals.cacheSavingsMicrousd)],
-          ].map(([label, value]) => <div key={label} className={cn(CARD, "py-3")}>
-            <div className="text-[11px] text-muted-foreground">{label}</div>
-            <div className="mt-0.5 text-ui font-medium tabular-nums text-foreground">{value}</div>
-          </div>)}
-        </section>
-
-        <section className={cn(CARD, "mt-4")} aria-label="Breakdown">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-ui font-medium text-foreground">Breakdown</h2>
-            <Segmented<Breakdown> label="Breakdown by" value={breakdown} options={[{ value: "model", label: "Model" }, { value: "time", label: window_.resolution === "hour" ? "Hour" : "Day" }]} onChange={setBreakdown} />
-          </div>
-          {breakdown === "model" ? <table className="w-full text-ui">
-            <thead><tr className={TABLE_HEAD}><th className="w-2/5 pb-2 font-medium">Model</th><th className={cn("w-1/5 pb-2 font-medium", NUM)}>Cost</th><th className={cn("w-1/5 pb-2 font-medium", NUM)}>Share</th><th className={cn("w-1/5 pb-2 font-medium", NUM)}>Tokens</th></tr></thead>
-            <tbody>
-              {report.models.length === 0 && <tr><td colSpan={4} className="py-6 text-center text-caption text-muted-foreground">No activity in this window.</td></tr>}
-              {report.models.map(row => <tr key={`${row.harness}:${row.model}`} className="border-t border-border">
-                <td className="py-2"><span className="inline-flex items-center gap-2"><HarnessMark harness={row.harness} size={12} /><span className="font-mono text-caption text-foreground">{row.model}</span>{row.costSource === "unpriced" && <span className="text-[11px] text-muted-foreground">unpriced</span>}</span></td>
-                <td className={cn("py-2 text-foreground", NUM)}>{formatUsd(row.costMicrousd)}</td>
-                <td className={cn("py-2 text-muted-foreground", NUM)}>{formatPercent(row.costShare)}</td>
-                <td className={cn("py-2 text-muted-foreground", NUM)}>{formatTokens(row.tokens)}</td>
-              </tr>)}
-            </tbody>
-          </table> : <table className="w-full text-ui">
-            <thead><tr className={TABLE_HEAD}>
-              <th className="w-2/5 pb-2 font-medium">{window_.resolution === "hour" ? "Hour" : "Day"}</th>
-              {report.harnesses.map(entry => <th key={entry.harness} className={cn("pb-2 font-medium", NUM)}>{harnessLabel(entry.harness)}</th>)}
-              <th className={cn("pb-2 font-medium", NUM)}>Total</th><th className={cn("pb-2 font-medium", NUM)}>Tokens</th>
-            </tr></thead>
-            <tbody>
-              {report.periods.every(period => period.tokens === 0 && period.costMicrousd === 0) && <tr><td colSpan={report.harnesses.length + 3} className="py-6 text-center text-caption text-muted-foreground">No activity in this window.</td></tr>}
-              {/* Newest first: a 90-period window puts the interesting end at the top. */}
-              {[...report.periods].reverse().filter(period => period.tokens > 0 || period.costMicrousd > 0).map(period => <tr key={period.period} className="border-t border-border">
-                <td className="py-2 tabular-nums text-foreground">{formatPeriodLabel(period.period, window_.resolution, window_.timeZone)}</td>
-                {report.harnesses.map(entry => <td key={entry.harness} className={cn("py-2 text-muted-foreground", NUM)}>{formatUsd(period.costByHarness[entry.harness] ?? 0)}</td>)}
-                <td className={cn("py-2 text-foreground", NUM)}>{formatUsd(period.costMicrousd)}</td>
-                <td className={cn("py-2 text-muted-foreground", NUM)}>{formatTokens(period.tokens)}</td>
-              </tr>)}
-            </tbody>
-          </table>}
-        </section>
+          <LayoutView report={report} summary={summary!} periods={periods} window={window_} windowDays={preferences.windowDays} metric={metric} partial={partialTotal ? partialLabel : null} />
+          <section className={cn(CARD, "mt-6 py-3")} aria-label="Breakdown table">
+            <button type="button" aria-expanded={tableOpen} aria-controls="usage-breakdown-table" onClick={() => setTableOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
+              <h2 className="text-ui font-medium text-foreground">Breakdown table</h2>
+              <span className="text-caption text-muted-foreground">{formatCount(report.models.length)} {report.models.length === 1 ? "model" : "models"} · {formatCount(report.harnesses.length)} {report.harnesses.length === 1 ? "harness" : "harnesses"}</span>
+              <ChevronDown size={14} className={cn("ml-auto text-muted-foreground transition-transform", tableOpen && "rotate-180")} aria-hidden="true" />
+            </button>
+            {tableOpen && <div id="usage-breakdown-table" className="mt-3"><BreakdownTables report={report} window={window_} /></div>}
+          </section>
 
         <section className={cn(CARD, "mt-4")} aria-label="History sources">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -390,6 +341,45 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   </div>;
 }
 
+/** Model and period tables: the non-visual equivalent of every chart on the screen. */
+function BreakdownTables({ report, window: window_, heading }: { report: UsageReport; window: UsageWindow; heading?: boolean }) {
+  const [breakdown, setBreakdown] = useState<Breakdown>("model");
+  return <>
+    <div className="mb-3 flex items-center justify-between gap-3">
+      {heading ? <h2 className="text-ui font-medium text-foreground">Breakdown</h2> : <span className="text-caption text-muted-foreground">By model or by {window_.resolution === "hour" ? "hour" : "day"}</span>}
+      <Segmented<Breakdown> label="Breakdown by" value={breakdown} options={[{ value: "model", label: "Model" }, { value: "time", label: window_.resolution === "hour" ? "Hour" : "Day" }]} onChange={setBreakdown} />
+    </div>
+    {breakdown === "model" ? <table className="w-full text-ui">
+      <thead><tr className={TABLE_HEAD}><th className="w-2/5 pb-2 font-medium">Model</th><th className={cn("w-1/5 pb-2 font-medium", NUM)}>Cost</th><th className={cn("w-1/5 pb-2 font-medium", NUM)}>Share</th><th className={cn("w-1/5 pb-2 font-medium", NUM)}>Tokens</th></tr></thead>
+      <tbody>
+        {report.models.length === 0 && <tr><td colSpan={4} className="py-6 text-center text-caption text-muted-foreground">No activity in this window.</td></tr>}
+        {report.models.map(row => <tr key={`${row.harness}:${row.model}`} className="border-t border-border">
+          <td className="py-2"><span className="inline-flex items-center gap-2"><HarnessMark harness={row.harness} size={12} /><span className="font-mono text-caption text-foreground">{row.model}</span>{row.costSource === "unpriced" && <span className="text-[11px] text-muted-foreground">unpriced</span>}</span></td>
+          <td className={cn("py-2 text-foreground", NUM)}>{formatUsd(row.costMicrousd)}</td>
+          <td className={cn("py-2 text-muted-foreground", NUM)}>{formatPercent(row.costShare)}</td>
+          <td className={cn("py-2 text-muted-foreground", NUM)}>{formatTokens(row.tokens)}</td>
+        </tr>)}
+      </tbody>
+    </table> : <table className="w-full text-ui">
+      <thead><tr className={TABLE_HEAD}>
+        <th className="w-2/5 pb-2 font-medium">{window_.resolution === "hour" ? "Hour" : "Day"}</th>
+        {report.harnesses.map(entry => <th key={entry.harness} className={cn("pb-2 font-medium", NUM)}>{harnessLabel(entry.harness)}</th>)}
+        <th className={cn("pb-2 font-medium", NUM)}>Total</th><th className={cn("pb-2 font-medium", NUM)}>Tokens</th>
+      </tr></thead>
+      <tbody>
+        {report.periods.every(period => period.tokens === 0 && period.costMicrousd === 0) && <tr><td colSpan={report.harnesses.length + 3} className="py-6 text-center text-caption text-muted-foreground">No activity in this window.</td></tr>}
+        {/* Newest first: a 90-period window puts the interesting end at the top. */}
+        {[...report.periods].reverse().filter(period => period.tokens > 0 || period.costMicrousd > 0).map(period => <tr key={period.period} className="border-t border-border">
+          <td className="py-2 tabular-nums text-foreground">{formatPeriodLabel(period.period, window_.resolution, window_.timeZone)}</td>
+          {report.harnesses.map(entry => <td key={entry.harness} className={cn("py-2 text-muted-foreground", NUM)}>{formatUsd(period.costByHarness[entry.harness] ?? 0)}</td>)}
+          <td className={cn("py-2 text-foreground", NUM)}>{formatUsd(period.costMicrousd)}</td>
+          <td className={cn("py-2 text-muted-foreground", NUM)}>{formatTokens(period.tokens)}</td>
+        </tr>)}
+      </tbody>
+    </table>}
+  </>;
+}
+
 interface PriceDraft { input: string; output: string; cacheRead: string; cacheWrite: string }
 
 function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, onChange }: {
@@ -400,6 +390,7 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
   onRefreshRates: () => void;
   onChange: (next: Promise<UsagePriceOverride[]>) => Promise<void>;
 }) {
+  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<PriceDraft>({ input: "", output: "", cacheRead: "", cacheWrite: "" });
   const [invalid, setInvalid] = useState(false);
@@ -431,19 +422,20 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
 
   const field = (key: keyof PriceDraft, label: string) => <input aria-label={label} inputMode="decimal" value={draft[key]} onChange={event => setDraft(current => ({ ...current, [key]: event.target.value }))} className="h-7 w-full rounded-md border border-border bg-background px-2 text-right font-mono text-caption tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />;
 
-  return <section className={cn(CARD, "mt-4")} aria-label="Model prices">
-    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-      <div>
+  // Collapsed by default: prices are a setting you visit, not a figure you read.
+  return <section className={cn(CARD, open ? "mt-4" : "mt-4 py-3")} aria-label="Model prices">
+    <div className="flex items-center gap-2">
+      <button type="button" aria-expanded={open} aria-controls="usage-model-prices" onClick={() => setOpen(current => !current)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <h2 className="text-ui font-medium text-foreground">Model prices</h2>
-        <p className="text-caption text-muted-foreground">USD per million tokens. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
-      </div>
-      <div className="flex items-center gap-1 text-caption tabular-nums text-muted-foreground">
-        <span>Snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
-        <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
-          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
-        </button>
-      </div>
+        <span className="truncate text-caption tabular-nums text-muted-foreground">{formatCount(rows.length)} {rows.length === 1 ? "model" : "models"} in this window · snapshot {summary.pricing.snapshotDate}{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
+        <ChevronDown size={14} className={cn("ml-auto shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden="true" />
+      </button>
+      <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+        <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+      </button>
     </div>
+    {open && <div id="usage-model-prices" className="mt-3">
+    <p className="mb-3 text-caption text-muted-foreground">USD per million tokens, from a {formatCount(summary.pricing.knownModels)}-model rate snapshot. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
     <table className="w-full text-ui">
       <thead><tr className={TABLE_HEAD}><th className="w-2/6 pb-2 font-medium">Model</th><th className={cn("pb-2 font-medium", NUM)}>Input</th><th className={cn("pb-2 font-medium", NUM)}>Output</th><th className={cn("pb-2 font-medium", NUM)}>Cache read</th><th className={cn("pb-2 font-medium", NUM)}>Cache write</th><th className="w-28 pb-2" /></tr></thead>
       <tbody>
@@ -462,10 +454,10 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
                 <button type="button" onClick={() => setEditing(null)} className="rounded-md px-2 py-1 text-caption text-muted-foreground hover:bg-accent">Cancel</button>
               </td>
             </> : <>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override ? "text-foreground" : "text-muted-foreground")}>{row.override ? microToUsdPerMtok(row.override.inputMicrousdPerMtok) : "Automatic"}</td>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override ? "text-foreground" : "text-muted-foreground")}>{row.override ? microToUsdPerMtok(row.override.outputMicrousdPerMtok) : "Automatic"}</td>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override?.cacheReadMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}>{row.override?.cacheReadMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheReadMicrousdPerMtok) : "Automatic"}</td>
-              <td className={cn("py-2 font-mono text-caption", NUM, row.override?.cacheWriteMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}>{row.override?.cacheWriteMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheWriteMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override ? "text-foreground" : "text-muted-foreground")}`}>{row.override ? microToUsdPerMtok(row.override.inputMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override ? "text-foreground" : "text-muted-foreground")}`}>{row.override ? microToUsdPerMtok(row.override.outputMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override?.cacheReadMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}`}>{row.override?.cacheReadMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheReadMicrousdPerMtok) : "Automatic"}</td>
+              <td className={`text-caption ${cn("py-2 font-mono", NUM, row.override?.cacheWriteMicrousdPerMtok != null ? "text-foreground" : "text-muted-foreground")}`}>{row.override?.cacheWriteMicrousdPerMtok != null ? microToUsdPerMtok(row.override.cacheWriteMicrousdPerMtok) : "Automatic"}</td>
               <td className="py-2 text-right">
                 <button type="button" onClick={() => startEdit(row.model, row.override)} className="rounded-md px-2 py-1 text-caption text-foreground hover:bg-accent">Edit</button>
                 {row.override && <button type="button" aria-label={`Reset ${row.model} to automatic`} onClick={() => void onChange(bridgeApi.clearUsagePriceOverride(row.model))} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><RotateCcw size={13} aria-hidden="true" /></button>}
@@ -476,5 +468,6 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
       </tbody>
     </table>
     {invalid && <p role="alert" className="mt-2 text-caption text-destructive">Enter non-negative numbers. Enter 0 for free tokens.</p>}
+    </div>}
   </section>;
 }

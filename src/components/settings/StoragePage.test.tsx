@@ -3,7 +3,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../api";
-import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
 import { StoragePage } from "./StoragePage";
 
 let host: HTMLDivElement;
@@ -20,129 +19,74 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Let the mount effect's two fetches settle. */
-async function render() {
-  await act(async () => {
-    root.render(<StoragePage />);
-  });
+async function render(onAskBridge?: (prompt: string) => void) {
+  await act(async () => { root.render(<StoragePage onAskBridge={onAskBridge} />); });
+  await act(async () => { await Promise.resolve(); });
 }
 
 const button = (label: string) =>
-  [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === label);
+  [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === label || node.getAttribute("aria-label") === label);
+const row = (text: string) =>
+  [...host.querySelectorAll("section[aria-label='Everything on this Mac'] li")].find(node => node.textContent?.includes(text));
 
-it("shows what the worktrees cost against the cap", async () => {
+it("shows free space against the whole disk and the home folder's biggest children", async () => {
   await render();
-  const text = host.textContent ?? "";
-  expect(text).toContain("2.6 GiB");
-  expect(text).toContain("across 4 checkouts");
-  expect(text).toContain("10.0 GiB per repository");
+  const disk = host.querySelector("section[aria-label='Disk']")?.textContent ?? "";
+  expect(disk).toContain("19.4 GB");
+  expect(disk).toContain("free of 494 GB");
+  expect(disk).toContain("Nearly full");
+  expect(disk).toContain("Library");
+  expect(disk).toContain("Apps, system, and other");
 });
 
-it("offers Reclaim only for a checkout that can be proven expendable", async () => {
+it("lists cleanup suggestions largest first with whether they rebuild themselves", async () => {
   await render();
-  const rows = [...host.querySelectorAll("li")];
-  const reclaimable = rows.find(row => row.textContent?.includes("bridge/demo-session2"));
-  const retained = rows.find(row => row.textContent?.includes("bridge/worker-1w"));
-
-  expect(reclaimable?.querySelector("button")).toBeTruthy();
-  expect(retained?.querySelector("button")).toBeNull();
-  // The reason replaces the control rather than sitting in a tooltip.
-  expect(retained?.textContent).toContain("has not been adopted or discarded yet");
+  const suggestions = [...host.querySelectorAll("section[aria-label='Cleanup suggestions'] li")].map(node => node.textContent ?? "");
+  expect(suggestions[0]).toContain("Docker disk image");
+  expect(suggestions.find(text => text.includes("npm cache"))).toContain("Rebuilt automatically");
 });
 
-it("never offers to reclaim a checkout Bridge did not create", async () => {
+it("drills into a folder and protects the standard ones", async () => {
   await render();
-  const external = [...host.querySelectorAll("li")]
-    .find(row => row.textContent?.includes("chore/hand-made"));
-  expect(external?.querySelector("button")).toBeNull();
-  expect(external?.textContent).toContain("Not created by Bridge");
+  expect((row("Documents")?.querySelector("[role=checkbox]") as HTMLButtonElement | null)?.disabled).toBe(true);
+  expect(row("Documents")?.textContent).toContain("Protected");
+  await act(async () => { button("Downloads")!.click(); });
+  await act(async () => { await Promise.resolve(); });
+  expect(row("Xcode_16.4.xip")?.textContent).toContain("11.9 GB");
 });
 
-it("reports what a reclaim freed and drops the row", async () => {
+it("moves selected items to the Trash only after confirmation", async () => {
+  const remove = vi.spyOn(bridgeApi, "deletePaths");
   await render();
-  await act(async () => {
-    button("Reclaim")?.click();
-  });
-  expect(host.textContent).toContain("Confirm cleanup");
-  await act(async () => { button("Confirm cleanup")?.click(); });
-  expect(host.textContent).toContain("Reclaimed 2.5 GiB");
-  expect(host.textContent).not.toContain("bridge/demo-session2");
+  await act(async () => { button("Downloads")!.click(); });
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { (row("Xcode_16.4.xip")!.querySelector("[role=checkbox]") as HTMLButtonElement).click(); });
+  await act(async () => { (row("Docker.dmg")!.querySelector("[role=checkbox]") as HTMLButtonElement).click(); });
+  expect(host.querySelector("[aria-label='Selection']")?.textContent).toContain("2 selected · 14.0 GB");
+  const bar = host.querySelector("[aria-label='Selection']")!;
+  await act(async () => { [...bar.querySelectorAll("button")].find(node => node.textContent === "Move to Trash")!.click(); });
+  expect(remove).not.toHaveBeenCalled();
+  expect(host.textContent).toContain("Move 2 items to the Trash?");
+  const confirm = host.querySelector("[aria-label='Confirm deletion']")!;
+  await act(async () => { [...confirm.querySelectorAll("button")].find(node => node.textContent === "Move to Trash")!.click(); });
+  expect(remove).toHaveBeenCalledWith(["/Users/demo/Downloads/Xcode_16.4.xip", "/Users/demo/Downloads/Docker.dmg"], false);
+  expect(host.textContent).toContain("Moved 2 items, 14.0 GB to the Trash");
+  expect(row("Xcode_16.4.xip")).toBeUndefined();
 });
 
-it("offers Delete for a checkout Bridge could not prove safe, and never for one it flatly retains", async () => {
-  await render();
-  const rows = [...host.querySelectorAll("li")];
-  const atRisk = rows.find(row => row.textContent?.includes("bridge/worker-scratch"));
-  const retained = rows.find(row => row.textContent?.includes("bridge/worker-1w"));
-
-  expect(atRisk?.textContent).toContain("Delete");
-  expect(retained?.textContent).not.toContain("Delete");
+it("hands a question to a Bridge chat with what the page measured", async () => {
+  const ask = vi.fn();
+  await render(ask);
+  await act(async () => { button("What can I safely delete?")!.click(); });
+  expect(ask).toHaveBeenCalledTimes(1);
+  const prompt = ask.mock.calls[0][0] as string;
+  expect(prompt).toContain("19.4 GB free of 494 GB");
+  expect(prompt).toContain("Docker disk image: 31.0 GB");
+  expect(prompt).toContain("wait for me to say yes");
+  expect(prompt).toContain("My question: What can I safely delete?");
 });
 
-it("deletes a checkout only after the destructive confirmation, and drops the row", async () => {
+it("has no copilot when nothing can open a chat", async () => {
   await render();
-  await act(async () => {
-    button("Delete")?.click();
-  });
-  expect(host.textContent).toContain("Bridge could not prove this checkout is safe to remove");
-  await act(async () => { button("Delete anyway")?.click(); });
-  expect(host.textContent).toContain("Deleted");
-  expect(host.textContent).not.toContain("bridge/worker-scratch");
-});
-
-it("says plainly when a sweep could reclaim nothing", async () => {
-  await render();
-  // The one reclaimable row goes first, so the second sweep has nothing left.
-  await act(async () => {
-    button("Sweep")?.click();
-  });
-  await act(async () => { button("Confirm cleanup")?.click(); });
-  await act(async () => {
-    button("Sweep")?.click();
-  });
-  await act(async () => { button("Confirm cleanup")?.click(); });
-  expect(host.textContent).toContain("Nothing could be reclaimed safely");
-});
-
-
-it("confirms deletion of an unreadable checkout and refreshes rows and totals", async () => {
-  const entry: WorktreeInventoryEntry = {
-    id: "orphan", kind: "worker", repoRoot: "/repo", path: "/worktrees/workers/repo/orphan",
-    branch: "orphan-branch", ownerSessionId: null, ownerWorkspaceId: null,
-    state: "unverifiable", disposition: "unverifiable", retainedReason: "git cannot read this checkout",
-    assessedAt: null, sizeBytes: 4096, sizeMeasuredAt: null, createdAt: "2026-09-01", lastUsedAt: "2026-09-01", idleSeconds: 500,
-  };
-  const usage: WorktreeUsage = {
-    totalCount: 1, totalBytes: 4096, reclaimableCount: 0, reclaimableBytes: 0, retainedCount: 1,
-    maxTotalBytes: 10240, maxPerRepo: 12, workerIdleTtlSeconds: 86400, orchestratorIdleTtlSeconds: 86400, githubIdleTtlSeconds: 86400,
-    repositories: [{ repoRoot: "/repo", count: 1, sizeBytes: 4096, reclaimableBytes: 0, overBudget: false }],
-  };
-  const inventory = vi.spyOn(bridgeApi, "listWorktrees").mockResolvedValue([entry]);
-  const totals = vi.spyOn(bridgeApi, "worktreeUsage").mockResolvedValue(usage);
-  const reclaim = vi.spyOn(bridgeApi, "reclaimWorktree").mockResolvedValue({ reclaimed: true, bytesFreed: 4096, disposition: "unverifiable", detail: null });
-  await render();
-  await act(async () => { button("Delete")!.click(); });
-  expect(host.textContent).toContain(entry.path);
-  expect(reclaim).not.toHaveBeenCalled();
-  await act(async () => { button("Cancel")!.click(); });
-  expect(reclaim).not.toHaveBeenCalled();
-  await act(async () => { button("Delete")!.click(); });
-  inventory.mockResolvedValue([]);
-  totals.mockResolvedValue({ ...usage, totalCount: 0, totalBytes: 0, retainedCount: 0, repositories: [] });
-  await act(async () => { button("Delete anyway")!.click(); });
-  expect(reclaim).toHaveBeenCalledWith("orphan", true);
-  expect(host.textContent).toContain("Deleted 4.0 KiB");
-  expect(host.textContent).toContain("across 0 checkouts");
-  expect(host.textContent).not.toContain("orphan-branch");
-});
-
-it("explains external counts, unknown sizes and the scope of retention", async () => {
-  const entries = await bridgeApi.listWorktrees();
-  const external = entries.find(entry => entry.state === "external")!;
-  vi.spyOn(bridgeApi, "listWorktrees").mockResolvedValue([{ ...external, sizeBytes: null }]);
-  await render();
-  expect(host.textContent).toContain("including 1 external");
-  expect(host.textContent).toContain("1 checkout not yet measured");
-  expect(host.textContent).toContain("targets at most");
-  expect(host.textContent).toContain("Confirmed Delete can discard dirty or unreadable checkouts");
+  expect(host.querySelector("aside[aria-label='Ask Bridge']")).toBeNull();
 });

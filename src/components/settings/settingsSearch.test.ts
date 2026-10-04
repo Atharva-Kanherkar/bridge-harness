@@ -34,7 +34,7 @@ describe("filterSettingsRows", () => {
   it("names the page each hit belongs to", () => {
     const groups = filterSettingsRows("install", rows);
     expect(groups).toHaveLength(1);
-    expect(groups[0].pageLabel).toBe("Harnesses");
+    expect(groups[0].pageLabel).toBe("Coding agents");
   });
 
   it("returns nothing rather than everything when nothing matches", () => {
@@ -47,7 +47,7 @@ describe("STATIC_SETTINGS_ROWS", () => {
   // nine pages, so every page has to contribute at least one row to it.
   it("covers every page that has a fixed row", () => {
     const covered = new Set(STATIC_SETTINGS_ROWS.map(row => row.section));
-    for (const section of ["appearance", "permissions", "composer", "agents", "models", "prompts", "harnesses", "work", "import"] as const) {
+    for (const section of ["appearance", "permissions", "composer", "agents", "models", "prompts", "harnesses", "clones", "work", "import"] as const) {
       expect(covered.has(section)).toBe(true);
     }
   });

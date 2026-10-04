@@ -143,23 +143,9 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     static func templateIcon() -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
-            // Dot grid from the current assets/bridge-icon.png Doto B mark.
-            // Omit the app tile and center its 431 x 607 foreground at 16pt high.
-            let scale: CGFloat = 16 / 607
-            let left = (18 - 431 * scale) / 2
-            let rows = [[0, 1, 2, 3], [1, 4], [1, 4], [1, 2, 3],
-                        [1, 4], [1, 4], [0, 1, 2, 3]]
-            NSColor.black.setFill()
-            for (row, columns) in rows.enumerated() {
-                for column in columns {
-                    NSRect(x: left + CGFloat(column * 88) * scale,
-                           y: 1 + CGFloat(row * 88) * scale,
-                           width: 79 * scale, height: 79 * scale).fill()
-                }
-            }
-            return true
-        }
+        // The embedded foreground uses the same vector as the app icon.
+        let image = NSImage(data: Data(BridgeIconArtwork.svg.utf8))!
+        image.size = NSSize(width: 18, height: 18)
         image.isTemplate = true
         return image
     }

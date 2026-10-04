@@ -15,6 +15,17 @@ version="${BRIDGE_CURSOR_FAKE_VERSION-2026.07.23-e383d2b}"
 mode="${BRIDGE_CURSOR_FAKE_MODE:-protocol}"
 agent_name="${BRIDGE_CURSOR_FAKE_AGENT_NAME:-Cursor Agent}"
 
+# FakeCli publishes a symlink to this immutable executable and supplies data
+# beside the link. Read data rather than executing a newly written wrapper;
+# direct fixture invocations still use the environment variables above.
+if [ -r "${0}.fixture-config" ]; then
+    {
+        IFS= read -r version
+        IFS= read -r mode
+        IFS= read -r agent_name
+    } < "${0}.fixture-config"
+fi
+
 if [ "${1:-}" = "--version" ]; then
     if [ -z "$version" ]; then
         printf 'unknown command\n' >&2
@@ -72,6 +83,9 @@ answered=0
 pending_new=""
 
 while IFS= read -r line; do
+    if [ -r "${0}.fixture-config" ]; then
+        printf '%s\n' "$line" >> "${0}.requests"
+    fi
     id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)","method".*/\1/p')
     case "$line" in
         *'"method":"initialize"'*)

@@ -200,6 +200,23 @@ describe("SessionDock", () => {
     expect(container.querySelector('[data-testid="dock-alert-terminal"]')).not.toBeNull();
   });
 
+  // Contract: testing/feat-unify-browser-pane.md §1.
+  it("marks the browser tab while another pane is active and keeps its body mounted", () => {
+    const panes: DockPaneDescriptor[] = [...PANES.filter(pane => pane.id !== "browser"), { id: "browser", label: "Browser", icon: Code2, available: true, alert: true }];
+    mount({ state: open({ pane: "browser", visited: ["changes", "browser"] }), panes });
+    const browserBody = body("browser");
+    expect(browserBody).not.toBeNull();
+    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
+
+    mount({ state: open({ pane: "changes", visited: ["changes", "browser"] }), panes });
+    expect(body("browser")).toBe(browserBody);
+    expect(hidden(body("browser"))).toBe(true);
+    expect(container.querySelector('[data-testid="dock-alert-browser"]')).not.toBeNull();
+
+    mount({ state: open({ pane: "changes", visited: ["changes", "browser"] }), panes: [...PANES.filter(pane => pane.id !== "browser"), { id: "browser", label: "Browser", icon: Code2, available: true }] });
+    expect(container.querySelector('[data-testid="dock-alert-browser"]')).toBeNull();
+  });
+
   it("conceals everything without unmounting when hidden by fullscreen", () => {
     const state = open();
     mount({ state });

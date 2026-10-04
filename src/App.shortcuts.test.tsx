@@ -122,6 +122,7 @@ describe("keyboard shortcuts inside the app", () => {
       expect.any(String),
       "",
       [expect.objectContaining({ mediaType: "image/png", dataUri: expect.stringMatching(/^data:image\/png;base64,/) })],
+      "steer",
     );
   });
 

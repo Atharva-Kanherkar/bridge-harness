@@ -297,6 +297,52 @@ fn probe(executable: &GrokExecutable, timeout: Duration) -> Result<GrokProfile, 
     Ok(profile)
 }
 
+/// User-requested setup opens a temporary session to learn actual auth and models.
+/// No prompt is sent. The shared ACP client bounds startup and reaps failures.
+fn setup_profile(executable: &GrokExecutable) -> Result<GrokProfile, GrokUnavailable> {
+    let profile = probe(executable, PROBE_TIMEOUT)?;
+    let directory = tempfile::tempdir().map_err(|error| GrokUnavailable::ProbeFailed {
+        version: executable.version.clone(),
+        reason: error.to_string(),
+    })?;
+    let keys = configured_keys();
+    let session = AcpSession::connect(
+        launch_for(
+            &executable.path,
+            directory.path(),
+            &keys,
+            crate::acp_session::DEFAULT_HANDSHAKE_TIMEOUT,
+        )
+        .ledger_kind("acp.setup"),
+    )
+    .map_err(|error| classify_probe_failure(&executable.version, &error, &keys))?;
+    let established = profile_after_session(&profile, &session);
+    session.shutdown(ShutdownReason::Completed);
+    Ok(established)
+}
+
+fn setup_and_record(
+    cache: &Arc<RwLock<Option<CachedProbe>>>,
+    gate: &Arc<Mutex<()>>,
+    located: Result<GrokExecutable, GrokUnavailable>,
+) -> Result<GrokProfile, GrokUnavailable> {
+    let _in_flight = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (executable, version, outcome) = match located {
+        Ok(executable) => {
+            let outcome = setup_profile(&executable);
+            (executable.path, executable.version, outcome)
+        }
+        Err(reason) => (PathBuf::new(), String::new(), Err(reason)),
+    };
+    // A failed setup must clear any previous sign-in/catalog proof.
+    *cache.write().unwrap() = Some(CachedProbe {
+        executable,
+        version,
+        outcome: outcome.clone(),
+    });
+    outcome
+}
+
 fn identifies_as_grok(agent_name: Option<&str>) -> bool {
     agent_name.is_some_and(|name| {
         let lower = name.to_ascii_lowercase();
@@ -334,7 +380,7 @@ fn classify_probe_failure(
 ///
 /// ACP agents report model selectors and modes only after `session/new`; those
 /// fields stay empty until [`profile_after_session`] refreshes the cache
-/// following a user-owned launch.
+/// following a requested setup or chat session.
 fn read_profile(
     executable: &GrokExecutable,
     capabilities: &AcpCapabilities,
@@ -1041,14 +1087,6 @@ impl GrokAdapter {
         }
         store_probe(&self.probe, &self.probing)
     }
-
-    fn cached(&self) -> Option<Result<GrokProfile, GrokUnavailable>> {
-        self.probe
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|cached| cached.outcome.clone())
-    }
 }
 
 #[cfg(test)]
@@ -1104,7 +1142,26 @@ fn probe_and_record(
 ) -> Result<GrokProfile, GrokUnavailable> {
     let (executable, version, outcome) = match located {
         Ok(executable) => {
-            let outcome = probe(&executable, PROBE_TIMEOUT);
+            let mut outcome = probe(&executable, PROBE_TIMEOUT);
+            // Initialize-only discovery cannot rediscover session facts. Retain
+            // them only after a successful probe of the same path and version.
+            // Changed builds and failed probes replace the old proof entirely.
+            {
+                let previous = cache.read().unwrap();
+                if let (Ok(fresh), Some(cached)) = (&mut outcome, previous.as_ref()) {
+                    if cached.describes(&executable) {
+                        if let Ok(established) = &cached.outcome {
+                            if established.session_opened {
+                                fresh.session_opened = true;
+                                fresh.models = established.models.clone();
+                                fresh.default_model = established.default_model.clone();
+                                fresh.modes = established.modes.clone();
+                                fresh.current_mode = established.current_mode.clone();
+                            }
+                        }
+                    }
+                }
+            }
             (executable.path.clone(), executable.version.clone(), outcome)
         }
         Err(reason) => (PathBuf::new(), String::new(), Err(reason)),
@@ -1122,6 +1179,16 @@ impl crate::adapters::HarnessAdapter for GrokAdapter {
         self
     }
 
+    fn prepare_setup(&self) -> Result<(), BridgeError> {
+        let result = setup_and_record(&self.probe, &self.probing, locate());
+        if let Some(notify) = &self.notify {
+            notify();
+        }
+        result
+            .map(|_| ())
+            .map_err(|reason| BridgeError::Invalid(reason.reason()))
+    }
+
     fn refresh_availability(&self) {
         let probe = self.probe.clone();
         let probing = self.probing.clone();
@@ -1137,22 +1204,26 @@ impl crate::adapters::HarnessAdapter for GrokAdapter {
     }
 
     fn descriptor(&self) -> AdapterDescriptor {
-        let cached = self.cached();
-        let profile = cached.as_ref().and_then(|outcome| outcome.as_ref().ok());
-        let unavailable = cached.as_ref().and_then(|outcome| outcome.as_ref().err());
+        let cached = self.probe.read().unwrap().clone();
+        let outcome = cached.as_ref().map(|cached| &cached.outcome);
+        let profile = outcome.and_then(|outcome| outcome.as_ref().ok());
+        let unavailable = outcome.and_then(|outcome| outcome.as_ref().err());
         AdapterDescriptor {
             id: HARNESS_ID.into(),
             label: HARNESS_LABEL.into(),
             available: profile.is_some(),
             // `initialize` proves the binary speaks ACP but deliberately does
-            // not authenticate. Only a real user session is proof of login.
+            // not authenticate. A successful setup or chat session proves login.
             auth_state: match (profile, unavailable) {
                 (Some(profile), _) if profile.session_opened => AuthState::SignedIn,
                 (Some(_), _) => AuthState::Unknown,
                 (None, Some(reason)) => reason.auth_state(),
                 (None, None) => AuthState::Unknown,
             },
-            version: profile.map(|profile| profile.version.clone()),
+            version: cached
+                .as_ref()
+                .filter(|cached| !cached.version.is_empty())
+                .map(|cached| cached.version.clone()),
             capabilities: CAPABILITIES.iter().copied().map(str::to_owned).collect(),
             sandbox_modes: crate::builtin_compatibility::CURSOR_SANDBOXES.to_vec(),
             unavailable_reason: profile.is_none().then(|| match unavailable {
@@ -1294,10 +1365,11 @@ mod tests {
                      BRIDGE_GROK_FAKE_MODE='{}' \\\n\
                      BRIDGE_GROK_FAKE_VERSION='{}' \\\n\
                      BRIDGE_GROK_FAKE_AGENT_NAME='{}' \\\n\
-                     exec /bin/sh '{}' \"$@\"\n",
+                     BRIDGE_GROK_FAKE_TRACE='{}' exec /bin/sh '{}' \"$@\"\n",
                     self.mode,
                     self.version,
                     self.agent_name,
+                    path.with_extension("requests").display(),
                     fixture.display()
                 ),
             )
@@ -1307,6 +1379,92 @@ mod tests {
                 .expect("the fake CLI is executable");
             path
         }
+    }
+
+    #[test]
+    fn setup_check_learns_session_facts_without_a_prompt_and_refresh_preserves_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = FakeGrokCli::speaking_protocol().install(directory.path(), "grok");
+        let executable = GrokExecutable {
+            path: path.clone(),
+            version: "1.0.4-e2b819f".into(),
+        };
+        let adapter = GrokAdapter::with_probe(probe(&executable, PROBE_TIMEOUT));
+        assert_eq!(adapter.descriptor().auth_state, AuthState::Unknown);
+        assert!(adapter.descriptor().models.is_empty());
+
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())).unwrap();
+        let established = adapter.descriptor();
+        assert_eq!(established.auth_state, AuthState::SignedIn);
+        assert!(!established.models.is_empty());
+        assert!(established.default_model.is_some());
+        let trace_path = path.with_extension("requests");
+        let trace = std::fs::read_to_string(&trace_path).unwrap();
+        assert_eq!(trace.matches("\"method\":\"session/new\"").count(), 1);
+        assert!(!trace.contains("session/prompt"));
+
+        probe_and_record(&adapter.probe, Ok(executable)).unwrap();
+        let refreshed = adapter.descriptor();
+        assert_eq!(refreshed.auth_state, AuthState::SignedIn);
+        assert_eq!(refreshed.models, established.models);
+        assert_eq!(refreshed.default_model, established.default_model);
+        let trace = std::fs::read_to_string(trace_path).unwrap();
+        assert_eq!(
+            trace.matches("\"method\":\"session/new\"").count(),
+            1,
+            "ordinary discovery never opens another session"
+        );
+        assert!(!trace.contains("session/prompt"));
+    }
+
+    #[test]
+    fn setup_proof_is_cleared_when_the_build_changes_or_discovery_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = FakeGrokCli::speaking_protocol().install(directory.path(), "grok");
+        let executable = GrokExecutable {
+            path: path.clone(),
+            version: "1.0.4-e2b819f".into(),
+        };
+        let adapter = GrokAdapter::with_probe(probe(&executable, PROBE_TIMEOUT));
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())).unwrap();
+        let changed = GrokExecutable {
+            version: "1.0.5-newbuild".into(),
+            ..executable.clone()
+        };
+        probe_and_record(&adapter.probe, Ok(changed)).unwrap();
+        assert_eq!(adapter.descriptor().auth_state, AuthState::Unknown);
+        assert!(adapter.descriptor().models.is_empty());
+
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable)).unwrap();
+        assert_eq!(adapter.descriptor().auth_state, AuthState::SignedIn);
+        assert!(probe_and_record(&adapter.probe, Err(GrokUnavailable::NotInstalled)).is_err());
+        assert!(!adapter.descriptor().available);
+        assert!(adapter.descriptor().models.is_empty());
+        assert_ne!(adapter.descriptor().auth_state, AuthState::SignedIn);
+    }
+
+    #[test]
+    fn setup_sign_in_failure_replaces_old_proof_but_retains_installation_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = FakeGrokCli::speaking_protocol().install(directory.path(), "grok");
+        let executable = GrokExecutable {
+            path: path.clone(),
+            version: "1.0.4-e2b819f".into(),
+        };
+        let adapter = GrokAdapter::with_probe(probe(&executable, PROBE_TIMEOUT));
+        setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())).unwrap();
+        FakeGrokCli::speaking_protocol()
+            .mode("needs_login")
+            .install(directory.path(), "grok");
+        assert!(matches!(
+            setup_and_record(&adapter.probe, &adapter.probing, Ok(executable.clone())),
+            Err(GrokUnavailable::NeedsSignIn { .. })
+        ));
+        let descriptor = adapter.descriptor();
+        assert_eq!(descriptor.auth_state, AuthState::SignedOut);
+        assert!(!descriptor.available);
+        assert!(descriptor.models.is_empty());
+        assert_eq!(descriptor.version, Some(executable.version));
     }
 
     #[test]

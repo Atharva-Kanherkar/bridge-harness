@@ -184,6 +184,10 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
   switch (event.type) {
     case "usage":
       return;
+    // Evidence for the status row, not a row: `compactionInFlight` reads it
+    // from the live window, and the boundary that ends it is what is kept.
+    case "context.compacting":
+      return;
     case "session.lifecycle":
       if (event.settles) settleThinking(fold);
       return;
@@ -207,7 +211,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       const item = fold.items.get(key) ?? place(fold, {
         key, type: "message", eventId: envelope.eventId, role: event.role,
         status: "streaming", text: "", data: {}, sequence: envelope.sequence,
-        entryId: envelope.entryId,
+        entryId: envelope.entryId, createdAt: envelope.createdAt,
       });
       item.text += event.text;
       item.status = "streaming";
@@ -230,6 +234,9 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
         key, type: "message", eventId: envelope.eventId, role: event.role,
         status: event.status, title: event.title, text: "", data: {},
         sequence: envelope.sequence, entryId: envelope.entryId,
+        // When the row was written: a repeated message ("yes") is told apart
+        // from the identical turn before it by this stamp alone.
+        createdAt: envelope.createdAt,
       });
       item.eventId = envelope.eventId;
       item.status = event.status ?? item.status;

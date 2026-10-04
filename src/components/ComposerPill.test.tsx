@@ -100,6 +100,26 @@ describe("ComposerPill", () => {
     expect(onStop).not.toHaveBeenCalled();
   });
 
+  it("keeps Stop beside a plain Send while agents run under an idle turn", () => {
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    render({ value: "what did the docs worker change?", working: false, agentsWorking: true, activeAction: "queue", onSubmit, onStop });
+
+    expect(stop()).not.toBeNull();
+    // The words go to the orchestrator now, so this is a send, never a queue.
+    expect(container.querySelector('button[aria-label="Queue"]')).toBeNull();
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    expect(send.disabled).toBe(false);
+    act(() => send.click());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("hides Stop once nothing is running", () => {
+    render({ value: "", working: false, agentsWorking: false, onStop: () => {} });
+    expect(stop()).toBeNull();
+  });
+
   it("says Queue when the provider cannot take input mid-turn", () => {
     render({ value: "also update the docs", working: true, activeAction: "queue", onStop: () => {} });
 
@@ -107,6 +127,11 @@ describe("ComposerPill", () => {
     expect(submit.disabled).toBe(false);
     expect(submit.title).toBe("Held until the current step finishes");
     expect(container.querySelector('button[aria-label="Steer"]')).toBeNull();
+  });
+
+  it("explains unsupported steering in the Queue tooltip", () => {
+    render({ value: "next", working: true, activeAction: "queue", activeActionNote: "This provider cannot steer a live turn.", onStop: () => {} });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!.title).toBe("This provider cannot steer a live turn.");
   });
 
   it("submits on Enter during an active turn", () => {
@@ -227,6 +252,16 @@ describe("ComposerPill", () => {
   });
 
   describe("inline suggestions", () => {
+    it("preserves backwards focus navigation with Shift+Tab", () => {
+      const onAcceptSuggestion = vi.fn();
+      render({ value: "draft", suggestion: " continues", onAcceptSuggestion });
+      textarea().setSelectionRange(5, 5);
+      const event = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+      act(() => textarea().dispatchEvent(event));
+      expect(onAcceptSuggestion).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    });
+
     const putCaretAtEnd = (value: string) => {
       act(() => {
         textarea().setSelectionRange(value.length, value.length);
@@ -362,5 +397,36 @@ describe("ComposerPill", () => {
 
       expect(onSubmit).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("browser context attachments", () => {
+  it("shows removable untrusted context while preserving the user's prompt", () => {
+    const onRemoveBrowserSelection = vi.fn();
+    const onChange = vi.fn();
+    render({ value: "Make this blue", onChange, onRemoveBrowserSelection, browserSelections: [{
+      id: "selected-1", sessionId: "task-1", tabId: "tab-1", navigationId: 2,
+      url: "http://localhost:3000/", title: "Preview", selector: "button", snippet: "<button>Save</button>",
+      bounds: { x: 0, y: 0, width: 100, height: 40 }, annotations: [],
+    }] });
+    expect(container.textContent).toContain("Page element");
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Remove browser selection"]')!.click());
+    expect(onRemoveBrowserSelection).toHaveBeenCalledWith("selected-1");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(textarea().value).toBe("Make this blue");
+  });
+  it("keeps Stop and Steer on the textarea's row in the inline layout", () => {
+    render({ layout: "inline", working: true, activeAction: "steer", onStop: () => {}, value: "go" });
+    const row = textarea().closest("div.flex.items-end");
+    expect(row).not.toBeNull();
+    expect(row!.contains(stop())).toBe(true);
+    expect(row!.contains(container.querySelector('button[type="submit"]'))).toBe(true);
+    expect(textarea().className).toContain("text-sm");
+  });
+
+  it("keeps the dock layout's controls below the textarea", () => {
+    render({ working: true, activeAction: "steer", onStop: () => {} });
+    expect(textarea().closest("div.flex.items-end")).toBeNull();
+    expect(textarea().className).toContain("text-[15px]");
   });
 });

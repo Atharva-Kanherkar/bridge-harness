@@ -16,6 +16,7 @@ import { formatReset, type UsageProvider } from "../usage";
 import { HarnessMark, harnessChartDot } from "./harnessMarks";
 import { harnessLabel } from "../utils";
 import { useMeterClock } from "./meter/MeterReadings";
+import { UsageResetRow } from "./UsageResetRow";
 
 export const PROVIDER_ORDER: UsageProvider[] = ["codex", "claude", "cursor", "opencode"];
 
@@ -161,7 +162,7 @@ function adapterState(adapter?: AdapterDescriptor): "not_installed" | "signed_ou
   return "normal";
 }
 
-function ProviderSection({ snapshot, adapter, nowSeconds, onSignIn }: { snapshot: UsageOverviewSnapshot; adapter?: AdapterDescriptor; nowSeconds: number; onSignIn?: (provider: UsageProvider) => void }) {
+function ProviderSection({ snapshot, adapter, nowSeconds, onSignIn, onRefresh }: { snapshot: UsageOverviewSnapshot; adapter?: AdapterDescriptor; nowSeconds: number; onSignIn?: (provider: UsageProvider) => void; onRefresh?: () => void }) {
   const provider = snapshot.provider as UsageProvider;
   const fresh = snapshotFresh(snapshot, nowSeconds);
   const state = adapterState(adapter);
@@ -180,6 +181,7 @@ function ProviderSection({ snapshot, adapter, nowSeconds, onSignIn }: { snapshot
       ? snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} fresh={fresh} nowSeconds={nowSeconds} />)
       : <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{snapshot.error ?? (state === "not_installed" ? `${harnessLabel(provider)} isn't installed. Add it in Settings → Harnesses.` : "No quota reported yet.")}</p>}
     {snapshot.windows.length > 0 && snapshot.error && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{snapshot.error}</p>}
+    <UsageResetRow snapshot={snapshot} onUpdated={onRefresh} compact />
   </section>;
 }
 
@@ -198,9 +200,12 @@ export interface UsageDotProps {
   error?: string | null;
   /** Test seam; production reads the ticking meter clock. */
   nowMs?: number;
+  /** Sits in the sidebar's bottom rail: the card portals onto the document
+   *  and opens upward from the trigger, clear of the sidebar's clipping. */
+  rail?: boolean;
 }
 
-export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing = false, onRefresh, onOpenUsage, onSignIn, compact = false, error = null, nowMs }: UsageDotProps) {
+export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing = false, onRefresh, onOpenUsage, onSignIn, compact = false, error = null, nowMs, rail = false }: UsageDotProps) {
   const [open, setOpen] = useState(false);
   const clock = useMeterClock();
   // The timer ages idle readings. A newly pushed snapshot can arrive between
@@ -242,6 +247,21 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
     return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
   }, [compact, frame, open]);
 
+  // The rail card is fixed to the viewport: anchored at the trigger's left
+  // edge, opening upward, never taller than the room above the trigger.
+  const [railAnchor, setRailAnchor] = useState<{ left: number; bottom: number; maxHeight: number }>();
+  useEffect(() => {
+    if (!rail || !open) return;
+    const measure = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setRailAnchor({ left: Math.max(8, rect.left), bottom: window.innerHeight - rect.top + 6, maxHeight: Math.max(0, Math.min(window.innerHeight * 0.8, rect.top - 12)) });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [rail, open]);
+
   useEffect(() => {
     if (!open) return;
     const dismiss = (event: PointerEvent) => {
@@ -267,16 +287,17 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
       id="usage-dot-panel"
       role="dialog"
       aria-label="Usage"
+      style={rail && railAnchor ? { left: railAnchor.left, bottom: railAnchor.bottom } : undefined}
       className={cn(
-        "absolute z-50",
+        rail ? "fixed z-50" : "absolute z-50",
         // The same 360pt card as the menu-bar meter, hung from the composer's
         // right edge and just clear of it: its own shape, never a seam.
-        compact ? "bottom-full right-0 mb-1.5 w-[min(100vw-1.5rem,22.5rem)]" : "right-0 top-full pt-2 w-[min(100vw-1.5rem,22.5rem)]",
+        rail ? "w-[min(100vw-1.5rem,22.5rem)]" : compact ? "bottom-full right-0 mb-1.5 w-[min(100vw-1.5rem,22.5rem)]" : "right-0 top-full pt-2 w-[min(100vw-1.5rem,22.5rem)]",
         "transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
         open ? "visible translate-y-0 pointer-events-auto opacity-100" : "invisible translate-y-1 pointer-events-none opacity-0",
       )}
     >
-      <div style={compact && availableHeight !== undefined ? { maxHeight: availableHeight } : undefined} className="u-glass-popover flex max-h-[70dvh] w-full flex-col overflow-hidden rounded-2xl">
+      <div style={rail && railAnchor ? { maxHeight: railAnchor.maxHeight } : compact && availableHeight !== undefined ? { maxHeight: availableHeight } : undefined} className="u-glass-popover flex max-h-[70dvh] w-full flex-col overflow-hidden rounded-2xl">
         <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
           <h2 className="font-display text-sm font-semibold text-foreground">Usage</h2>
           <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live limits" : `${percentLabel(worst.used)} · ${harnessLabel(worst.provider)} ${worst.window.label}`}</span>
@@ -289,7 +310,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
           {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[11px] leading-relaxed text-destructive">{error}</p>}
           {overviews == null && !error && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading usage</div>}
-          {snapshots.map(snapshot => <ProviderSection key={snapshot.provider} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} onSignIn={onSignIn} />)}
+          {snapshots.map(snapshot => <ProviderSection key={snapshot.provider} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} onSignIn={onSignIn} onRefresh={onRefresh} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
         </div>
       </div>
@@ -300,7 +321,9 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
     <button
       type="button"
       className={cn(
-        compact
+        rail
+          ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+          : compact
           ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
           : "relative grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-card transition-colors hover:bg-accent",
         open && "bg-accent",
@@ -313,7 +336,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
     >
       <UsageRing percent={worst?.used ?? null} tier={tier} />
     </button>
-    {compact && frame ? createPortal(panel, frame) : panel}
+    {rail ? (typeof document === "undefined" ? panel : createPortal(panel, document.body)) : compact && frame ? createPortal(panel, frame) : panel}
   </div>;
 });
 
@@ -354,7 +377,7 @@ export function useProviderUsageOverviews(): { overviews: ProviderUsageOverviews
 
 /** The dot as the composer mounts it: live data, refresh wired, worker and
  *  chat composers alike. */
-export function ChatUsageDot({ adapters, onOpenUsage, onSignIn, compact = true }: { adapters?: AdapterDescriptor[]; onOpenUsage?: () => void; onSignIn?: (provider: UsageProvider) => void; compact?: boolean }) {
+export function ChatUsageDot({ adapters, onOpenUsage, onSignIn, compact = true, rail = false }: { adapters?: AdapterDescriptor[]; onOpenUsage?: () => void; onSignIn?: (provider: UsageProvider) => void; compact?: boolean; rail?: boolean }) {
   const { overviews, refreshing, refresh, error } = useProviderUsageOverviews();
-  return <UsageDot overviews={overviews} adapters={adapters} refreshing={refreshing} onRefresh={refresh} onOpenUsage={onOpenUsage} onSignIn={onSignIn} compact={compact} error={error} />;
+  return <UsageDot overviews={overviews} adapters={adapters} refreshing={refreshing} onRefresh={refresh} onOpenUsage={onOpenUsage} onSignIn={onSignIn} compact={compact && !rail} rail={rail} error={error} />;
 }

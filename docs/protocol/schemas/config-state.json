@@ -134,7 +134,7 @@
       "properties": {
         "autoApproveProviderPermissions": {
           "default": false,
-          "description": "Auto-accept every provider approval, for every agent. Worker write scope and browser outward effects are unaffected — those are authorization.",
+          "description": "Full access: auto-accept every provider approval, for every agent, and authorize the write scope a worker proposes. Browser outward effects and prompt changes still ask.",
           "type": "boolean"
         },
         "updatedAt": {

@@ -5,11 +5,13 @@ pub use bridge_core::{
 
 pub mod agent_batch;
 pub mod daemon_host;
+mod embedded_browser;
 pub mod menu;
 pub mod meter_tray;
 mod menu_bar;
 pub mod window_chrome;
 mod diagnostics;
+mod nightly_updater;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -221,6 +223,18 @@ async fn github_connect(workspace_id: String, remote_url: String, state: State<'
 }
 
 #[tauri::command]
+async fn github_session_prs(session_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("chat pull requests", move || api::github_session_prs(&core, &session_id, refresh)).await
+}
+
+#[tauri::command]
+async fn github_attach_pr(session_id: String, reference: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubAttachPrResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("attach pull request", move || api::github_attach_pr(&core, &session_id, &reference)).await
+}
+
+#[tauri::command]
 async fn browser_bridge_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
@@ -272,6 +286,97 @@ async fn takeover_browser(state: State<'_, Arc<BridgeCore>>) -> Result<(), Bridg
 }
 
 #[tauri::command]
+async fn request_clone(
+    session_id: String,
+    domain: String,
+    browser: bridge_protocol::messages::CloneBrowserKind,
+    sign_in_path: bridge_protocol::messages::CloneSignInPath,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Option<bridge_protocol::messages::CloneSnapshot>, BridgeError> {
+    let core = Arc::clone(state.inner());
+    let params = bridge_protocol::messages::RequestCloneParams {
+        session_id,
+        domain,
+        browser,
+        sign_in_path,
+    };
+    blocking("request_clone", move || api::request_clone(&core, &params)).await
+}
+
+#[tauri::command]
+async fn clone_state(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Option<bridge_protocol::messages::CloneSnapshot>, BridgeError> {
+    let core = Arc::clone(state.inner());
+    blocking("clone_state", move || api::clone_state(&core, &session_id)).await
+}
+
+#[tauri::command]
+async fn takeover_clone(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::takeover_clone(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn hand_back_clone(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::hand_back_clone(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn destroy_clone(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = Arc::clone(state.inner());
+    blocking("destroy_clone", move || api::destroy_clone(&core, &session_id)).await
+}
+
+#[tauri::command]
+async fn clone_input(
+    session_id: String,
+    input: bridge_protocol::messages::CloneInputEvent,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = Arc::clone(state.inner());
+    blocking("clone_input", move || api::clone_input(&core, &session_id, &input)).await
+}
+
+#[tauri::command]
+async fn resolve_clone_request(
+    session_id: String,
+    allow: bool,
+    request_id: String,
+    sign_in_path: bridge_protocol::messages::CloneSignInPath,
+    ttl_minutes: u64,
+    agent_vision: Option<bool>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Option<bridge_protocol::messages::CloneSnapshot>, BridgeError> {
+    let core = Arc::clone(state.inner());
+    blocking("resolve_clone_request", move || api::resolve_clone_request(&core, &session_id, allow, &request_id, sign_in_path, ttl_minutes, agent_vision)).await
+}
+
+#[tauri::command]
+async fn read_clone_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    api::read_clone_settings(state.inner())
+}
+
+#[tauri::command]
+async fn write_clone_settings(settings: bridge_protocol::messages::CloneSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    api::write_clone_settings(state.inner(), &settings)
+}
+
+#[tauri::command]
+async fn clone_requests(state: State<'_, Arc<BridgeCore>>) -> Result<Vec<bridge_protocol::messages::CloneRequest>, BridgeError> {
+    Ok(api::clone_requests(state.inner()))
+}
+
+#[tauri::command]
 async fn detach_browser(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
     api::detach_browser(state.inner())
 }
@@ -310,14 +415,14 @@ async fn start_remote_browser(
 }
 
 #[tauri::command]
-async fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
-    api::marketplace_catalog()
+async fn marketplace_catalog() -> Result<marketplace::MarketplaceCatalog, BridgeError> {
+    blocking("Marketplace catalog", || Ok(api::marketplace_catalog())).await
 }
 
 #[tauri::command]
 async fn marketplace_app_auth_states(
 ) -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
-    api::marketplace_app_auth_states()
+    blocking("Marketplace auth", api::marketplace_app_auth_states).await
 }
 
 #[tauri::command]
@@ -514,17 +619,19 @@ async fn inspect_managed_agent(
 #[tauri::command]
 async fn install_managed_agent(
     agent_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
-    api::install_managed_agent(&agent_id)
+    api::install_managed_agent(&state, &agent_id)
 }
 
 #[tauri::command]
 async fn repair_managed_agent(
     agent_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
 {
-    api::repair_managed_agent(&agent_id)
+    api::repair_managed_agent(&state, &agent_id)
 }
 
 #[tauri::command]
@@ -584,6 +691,15 @@ async fn get_context_breakdown(
         api::get_context_breakdown(&core, &session_id)
     })
     .await
+}
+
+#[tauri::command]
+async fn get_context_windows(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ContextWindowsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Context windows", move || api::get_context_windows(&core, &session_id)).await
 }
 
 #[tauri::command]
@@ -686,7 +802,8 @@ async fn archive_chat(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::ArchiveChatResult, BridgeError> {
-    api::archive_chat(state.inner(), &session_id)
+    let core = state.inner().clone();
+    blocking("Archive chat", move || api::archive_chat(&core, &session_id)).await
 }
 
 #[tauri::command]
@@ -725,12 +842,46 @@ async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSet
 }
 
 #[tauri::command]
+async fn get_attribution_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AttributionSettings, BridgeError> {
+    api::get_attribution_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_attribution_settings(settings: bridge_protocol::messages::AttributionSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AttributionSettings, BridgeError> {
+    api::save_attribution_settings(state.inner(), &bridge_protocol::messages::SaveAttributionSettingsParams { settings })
+}
+
+#[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
     force: bool,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::WorktreeReclaimResult, BridgeError> {
     api::reclaim_worktree(state.inner(), &worktree_id, force)
+}
+
+#[tauri::command]
+async fn storage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskOverview, BridgeError> {
+    let core = state.inner().clone();
+    blocking("storage overview", move || api::storage_overview(&core)).await
+}
+
+#[tauri::command]
+async fn scan_directory(path: Option<String>, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskListing, BridgeError> {
+    let core = state.inner().clone();
+    blocking("scan directory", move || api::scan_directory(&core, &bridge_protocol::messages::ScanDirectoryParams { path, refresh })).await
+}
+
+#[tauri::command]
+async fn delete_paths(paths: Vec<String>, permanent: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskDeleteResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("delete paths", move || api::delete_paths(&core, &bridge_protocol::messages::DeletePathsParams { paths, permanent })).await
+}
+
+#[tauri::command]
+async fn empty_trash(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::EmptyTrashResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("empty trash", move || api::empty_trash(&core)).await
 }
 
 #[tauri::command]
@@ -903,6 +1054,13 @@ async fn refresh_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> 
 async fn refresh_provider_usage_overviews_interactive(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
     let core = state.inner().clone();
     blocking("Refresh provider usage interactively", move || api::refresh_provider_usage_overviews_interactive(&core)).await
+}
+
+#[tauri::command]
+async fn redeem_provider_usage_reset(state: State<'_, Arc<BridgeCore>>, provider: String, credit_id: Option<String>, idempotency_key: String) -> Result<wire::RedeemProviderUsageResetResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = wire::RedeemProviderUsageResetParams { provider, credit_id, idempotency_key };
+    blocking("Redeem provider usage reset", move || api::redeem_provider_usage_reset(&core, &params)).await
 }
 
 #[tauri::command]
@@ -1416,12 +1574,19 @@ async fn resolve_reference(
 async fn create_workspace_session(
     workspace_id: String,
     create_worktree: Option<bool>,
+    kind: Option<bridge_core::sessions::WorkspaceSessionKind>,
+    harness: Option<Harness>,
+    model: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Worktree creation shells out to Git; keep it on the blocking pool.
     let core = state.inner().clone();
     blocking("Worktree creation", move || {
-        api::create_workspace_session(&core, &workspace_id, create_worktree.unwrap_or(false))
+        api::create_workspace_session_with_model(
+            &core, &workspace_id, create_worktree.unwrap_or(false),
+            kind.unwrap_or(bridge_core::sessions::WorkspaceSessionKind::Orchestrator),
+            harness.as_ref(), model.as_deref(),
+        )
     })
     .await
 }
@@ -1478,6 +1643,23 @@ async fn update_chat_model(
 async fn refresh_model_catalogs(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, BridgeError> {
     let core = state.inner().clone();
     blocking("Model catalogue refresh", move || api::refresh_model_catalogs(&core)).await
+}
+
+#[tauri::command]
+async fn prepare_agent_setup(
+    state: State<'_, Arc<BridgeCore>>,
+    agent_id: String,
+) -> Result<AdapterDescriptor, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Agent setup check", move || {
+        api::prepare_agent_setup(&core, &agent_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn install_codex_update() -> Result<(), BridgeError> {
+    blocking("Codex update", api::install_codex_update).await
 }
 
 /// Carry a source chat's projected context into another chat as a durable
@@ -1692,11 +1874,12 @@ async fn submit_input(
     session_id: String,
     text: String,
     attachments: Option<Vec<bridge_protocol::messages::TurnImage>>,
+    active_turn_input: Option<bridge_protocol::messages::ActiveTurnInput>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::SubmitInputResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Input submission", move || {
-        api::submit_input_with_attachments(&core, session_id, text, attachments.unwrap_or_default())
+        api::submit_input_with_preference(&core, session_id, text, attachments.unwrap_or_default(), active_turn_input)
     })
     .await
 }
@@ -1836,6 +2019,29 @@ async fn search_session_entries(
         api::search_session_entries(&core, &session_id, &query, limit, offset)
     })
     .await
+}
+
+#[tauri::command]
+async fn search_chats(
+    query: String,
+    limit: Option<u32>,
+    deep: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SearchChatsResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::SearchChatsParams { query, limit, deep };
+    // A deep search runs a provider turn, so it stays off the async runtime.
+    blocking("Chat search", move || api::search_chats(&core, &params)).await
+}
+
+#[tauri::command]
+async fn get_chat_search_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSearchSettings, BridgeError> {
+    api::get_chat_search_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_chat_search_settings(settings: bridge_protocol::messages::ChatSearchSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSearchSettings, BridgeError> {
+    api::save_chat_search_settings(state.inner(), &bridge_protocol::messages::SaveChatSearchSettingsParams { settings })
 }
 
 #[tauri::command]
@@ -2611,6 +2817,8 @@ pub fn run() -> i32 {
             github_review,
             github_checkout,
             github_connect,
+            github_session_prs,
+            github_attach_pr,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,
@@ -2618,6 +2826,16 @@ pub fn run() -> i32 {
             set_browser_permission,
             resolve_browser_approval,
             takeover_browser,
+            request_clone,
+            clone_state,
+            takeover_clone,
+            hand_back_clone,
+            destroy_clone,
+            resolve_clone_request,
+            clone_input,
+            read_clone_settings,
+            write_clone_settings,
+            clone_requests,
             detach_browser,
             route_browser,
             browser_skills,
@@ -2653,6 +2871,7 @@ pub fn run() -> i32 {
             get_session_forest_digest,
             get_context_breakdown,
             get_context_breakdown_digest,
+            get_context_windows,
             replay_session_events,
             create_completion_plan,
             record_completion_check,
@@ -2669,7 +2888,15 @@ pub fn run() -> i32 {
             save_worker_settings,
             get_reviewer_settings,
             save_reviewer_settings,
+            get_attribution_settings,
+            save_attribution_settings,
+            get_chat_search_settings,
+            save_chat_search_settings,
             reclaim_worktree,
+            storage_overview,
+            scan_directory,
+            delete_paths,
+            empty_trash,
             sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,
@@ -2686,6 +2913,7 @@ pub fn run() -> i32 {
             get_provider_usage_overviews,
             refresh_provider_usage_overviews,
             refresh_provider_usage_overviews_interactive,
+            redeem_provider_usage_reset,
             get_usage_overview,
             refresh_usage_overview,
             get_menu_bar_settings,
@@ -2745,6 +2973,8 @@ pub fn run() -> i32 {
             locate_workspace_folders,
             update_chat_model,
             refresh_model_catalogs,
+            prepare_agent_setup,
+            install_codex_update,
             carry_session_handoff,
             list_slash_commands,
             resolve_slash_command,
@@ -2778,6 +3008,7 @@ pub fn run() -> i32 {
             write_workspace_file,
             compact_session,
             search_session_entries,
+            search_chats,
             export_session_transcript,
             save_memory_record,
             list_memory_records,
@@ -2816,6 +3047,7 @@ pub fn run() -> i32 {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(embedded_browser::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2879,6 +3111,16 @@ pub fn run() -> i32 {
             }
         })
         .invoke_handler(move |invoke| {
+            // Child browser pages are untrusted even when their address matches
+            // the development origin. Local-origin app commands bypass ACL by
+            // default, so enforce this boundary independently of capabilities.
+            if !embedded_browser::trusted_shell(invoke.message.webview_ref().label()) {
+                invoke.resolver.reject("Browser pages cannot invoke Bridge commands");
+                return true;
+            }
+            if matches!(invoke.message.command(), "check_nightly_update" | "install_nightly_update" | "ensure_update_installable") {
+                return nightly_updater::commands(invoke);
+            }
             match host.get() {
                 Some(HostMode::Daemon(runtime)) => {
                     daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
@@ -4676,6 +4918,7 @@ mod tests {
             owned_path_provenance: policy::OwnedPathProvenance {
                 trusted_paths: request.owned_paths.clone(),
                 source_entry_ids: vec!["test-user-entry".into()],
+                ..Default::default()
             },
             requested_harness: "codex".into(),
             task_family: "implementation".into(),

@@ -86,5 +86,7 @@ if [ ! -f "$updater_tar" ] || [ ! -f "$updater_sig" ]; then
   echo "release: expected signed updater artifacts at $updater_tar; check TAURI_SIGNING_PRIVATE_KEY and createUpdaterArtifacts." >&2
   exit 1
 fi
+node "$project_root/scripts/verify-updater-signature.mjs" \
+  "$project_root/src-tauri/tauri.conf.json" "$updater_tar" "$updater_sig"
 cp "$updater_tar" "$project_root/src-tauri/target/release/bundle/dmg/Bridge_${app_version}_${dmg_arch}.app.tar.gz"
 cp "$updater_sig" "$project_root/src-tauri/target/release/bundle/dmg/Bridge_${app_version}_${dmg_arch}.app.tar.gz.sig"

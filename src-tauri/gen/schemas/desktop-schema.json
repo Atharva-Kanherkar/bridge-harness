@@ -2469,6 +2469,78 @@
           "markdownDescription": "Denies the save command without any pre-configured scope."
         },
         {
+          "description": "Enables the action command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:allow-action",
+          "markdownDescription": "Enables the action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:allow-close",
+          "markdownDescription": "Enables the close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the create command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:allow-create",
+          "markdownDescription": "Enables the create command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the layout command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:allow-layout",
+          "markdownDescription": "Enables the layout command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the navigate command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:allow-navigate",
+          "markdownDescription": "Enables the navigate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:allow-snapshot",
+          "markdownDescription": "Enables the snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the action command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:deny-action",
+          "markdownDescription": "Denies the action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:deny-close",
+          "markdownDescription": "Denies the close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the create command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:deny-create",
+          "markdownDescription": "Denies the create command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the layout command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:deny-layout",
+          "markdownDescription": "Denies the layout command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the navigate command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:deny-navigate",
+          "markdownDescription": "Denies the navigate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "embedded-browser:deny-snapshot",
+          "markdownDescription": "Denies the snapshot command without any pre-configured scope."
+        },
+        {
           "description": "This permission set configures which\nnotification features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all notification related features.\n\n\n#### This default permission set includes:\n\n- `allow-is-permission-granted`\n- `allow-request-permission`\n- `allow-notify`\n- `allow-register-action-types`\n- `allow-register-listener`\n- `allow-cancel`\n- `allow-get-pending`\n- `allow-remove-active`\n- `allow-get-active`\n- `allow-check-permissions`\n- `allow-show`\n- `allow-batch`\n- `allow-list-channels`\n- `allow-delete-channel`\n- `allow-create-channel`\n- `allow-permission-state`",
           "type": "string",
           "const": "notification:default",

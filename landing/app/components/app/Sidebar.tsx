@@ -30,7 +30,10 @@ function Row({ session }: { session: SidebarSession }) {
         <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
           <span className="truncate text-[13px] font-medium leading-4 tracking-[-0.008em] text-foreground">{session.title}</span>
           <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-[0.875rem] tracking-[-0.004em] text-muted-foreground">
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot[session.tone]}`} aria-hidden="true" />
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot[session.tone]} ${session.status === "working" || session.status === "needs you" ? "motion-safe:animate-pulse" : ""}`}
+              aria-hidden="true"
+            />
             <span className="truncate">{session.status}</span>
             <span aria-hidden="true">·</span>
             <span className="shrink-0 tabular-nums text-faint">{session.time}</span>

@@ -69,13 +69,23 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.17 enables the `auto_apply` memory extraction mode.** A new client must
 /// not pair with an older daemon that still rejects that persisted setting,
 /// and an older client must not pair with a daemon that may already hold it.
-/// **1.18 adds typed composer dictation and its transient transcript event.**
-/// **1.19 separates voice draft ownership and changes provider capability states.**
-/// Older clients cannot interpret fresh-draft events or revised hypotheses.
-/// **1.20 adds explicit local voice setup, progress, retry, and removal.**
+/// **1.18 adds `config/get_attribution_settings` and
+/// `config/save_attribution_settings`.** A new client must not pair with an
+/// older daemon that answers both with `method_not_found`, leaving the toggle
+/// unable to load or persist; a 1.17 client still pairs with a 1.18 daemon,
+/// which simply serves it without attribution methods.
+/// **1.19 adds `sessions/search_chats`, `config/get_chat_search_settings` and
+/// `config/save_chat_search_settings`.** A new client must not pair with an
+/// older daemon, whose sidebar search would fail with `method_not_found` on
+/// the first keystroke; a 1.18 client still pairs with a 1.19 daemon.
+/// **1.20 adds `sessions/get_context_windows`.** A new client must not pair
+/// with an older daemon, whose Context pane would fail with
+/// `method_not_found`; a 1.19 client still pairs with a 1.20 daemon.
+/// **1.21 adds draft-owned composer dictation, local setup and transcript events.**
+/// Pre-voice clients and daemons are rejected to keep transient events compatible.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 20,
+    minor: 21,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -89,7 +99,7 @@ impl ProtocolVersion {
     /// Whether a server at `self` can serve a client that expects `client`.
     pub fn accepts(self, client: ProtocolVersion) -> bool {
         const AUTOMATIC_MEMORY_MINOR: u32 = 17;
-        const INDEPENDENT_VOICE_MINOR: u32 = 19;
+        const INDEPENDENT_VOICE_MINOR: u32 = 21;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -266,11 +276,51 @@ mod tests {
 
     #[test]
     fn independent_voice_rejects_stale_clients_and_daemons() {
-        for minor in [17, 18] {
+        for minor in [17, 18, 19, 20] {
             let older = ProtocolVersion { major: 1, minor };
             assert!(!older.accepts(PROTOCOL_VERSION));
             assert!(!PROTOCOL_VERSION.accepts(older));
         }
+    }
+
+    #[test]
+    fn attribution_client_rejects_daemon_without_attribution_settings() {
+        // A 1.18 client must not pair with a 1.17 daemon: both attribution
+        // calls would fail with `method_not_found` only when the toggle is
+        // used. A 1.17 client still pairs with a 1.18 daemon, which serves it
+        // without attribution methods.
+        let before_attribution = ProtocolVersion { major: 1, minor: 17 };
+        assert!(!before_attribution.accepts(PROTOCOL_VERSION));
+        assert!(
+            ProtocolVersion { major: 1, minor: 18 }.accepts(before_attribution),
+            "attribution is additive: a 1.17 client still pairs with a 1.18 daemon"
+        );
+        assert!(
+            ProtocolVersion { major: 1, minor: 18 }.accepts(before_attribution),
+            "the 1.17 minimum-client boundary still holds on a 1.18 daemon"
+        );
+    }
+
+    #[test]
+    fn chat_search_client_rejects_daemon_without_search_chats() {
+        let before_search = ProtocolVersion { major: 1, minor: 18 };
+        assert!(!before_search.accepts(PROTOCOL_VERSION));
+        assert!(
+            ProtocolVersion { major: 1, minor: 19 }.accepts(before_search),
+            "chat search is additive: a 1.18 client still pairs with a 1.19 daemon"
+        );
+        assert!(ProtocolVersion { major: 1, minor: 19 }.accepts(before_search));
+    }
+
+    #[test]
+    fn context_windows_client_rejects_daemon_without_the_method() {
+        let before = ProtocolVersion { major: 1, minor: 19 };
+        assert!(!before.accepts(PROTOCOL_VERSION));
+        assert!(
+            ProtocolVersion { major: 1, minor: 20 }.accepts(before),
+            "context windows are additive: a 1.19 client still pairs with a 1.20 daemon"
+        );
+        assert!(ProtocolVersion { major: 1, minor: 20 }.accepts(before));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {

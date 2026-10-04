@@ -1,5 +1,5 @@
 import { ArrowUp, GripVertical, LayoutGrid, Maximize2, SquareArrowOutUpRight } from "lucide-react";
-import TranscriptEntry from "./Transcript";
+import TranscriptEntry, { entryTicks } from "./Transcript";
 import HarnessMark from "./HarnessMark";
 import { harnessLabel, type Tile, type Tone } from "../../content/appScenes";
 
@@ -19,14 +19,33 @@ const ink: Record<Tone, string> = {
   faint: "text-muted-foreground",
 };
 
+const GAP = 5;
+
+/** When each line of a tile starts, staggered per tile so the grid never moves in lockstep. */
+function schedule(tile: Tile, index: number) {
+  let at = index * 7;
+  return tile.lines.map(line => {
+    const start = at;
+    at += entryTicks(line) + GAP;
+    return { start, ticks: entryTicks(line) };
+  });
+}
+
+/** Ticks until every tile has finished streaming. */
+export function missionTicks(tiles: Tile[]) {
+  return Math.max(0, ...tiles.map((tile, i) => {
+    const last = schedule(tile, i).at(-1);
+    return last ? last.start + last.ticks : 0;
+  }));
+}
+
 /*
  * Mission Control: every active chat at once, each tile the real conversation with its own
- * composer. `step` reveals tiles in order, then streams each tile's entries, so the grid
- * fills the way it does when a fleet spins up.
+ * composer. All tiles stream together on their own schedules, so the grid reads as a fleet
+ * working rather than a slideshow.
  */
-export default function MissionGrid({ tiles, step }: { tiles: Tile[]; step: number }) {
-  const visible = Math.min(tiles.length, Math.max(1, step));
-  const streamed = Math.max(0, step - tiles.length);
+export default function MissionGrid({ tiles, t }: { tiles: Tile[]; t: number }) {
+  const visible = tiles.length;
 
   return (
     <section className="flex min-h-0 min-w-0 flex-col">
@@ -38,7 +57,10 @@ export default function MissionGrid({ tiles, step }: { tiles: Tile[]; step: numb
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-2 gap-2 overflow-hidden p-2 max-sm:grid-cols-1">
-        {tiles.slice(0, visible).map((tile, index) => (
+        {tiles.map((tile, index) => {
+          const lines = schedule(tile, index);
+          const busy = lines.some(line => t >= line.start && t < line.start + line.ticks);
+          return (
           <article
             key={tile.title}
             className={`flex min-h-0 min-w-0 animate-entry-in flex-col overflow-hidden rounded-md border bg-background motion-reduce:animate-none ${
@@ -47,9 +69,9 @@ export default function MissionGrid({ tiles, step }: { tiles: Tile[]; step: numb
           >
             <header className={`flex h-9 shrink-0 items-center gap-1.5 border-b border-border px-1.5 ${index === 0 ? "bg-accent" : "bg-background"}`}>
               <GripVertical size={12} className="shrink-0 text-muted-foreground/70" aria-hidden="true" />
-              <span className={`size-1.5 shrink-0 rounded-full ${dot[tile.tone]} ${tile.tone === "success" ? "motion-safe:animate-pulse" : ""}`} aria-hidden="true" />
+              <span className={`size-1.5 shrink-0 rounded-full ${dot[tile.tone]} ${busy || tile.tone === "warning" ? "motion-safe:animate-pulse" : ""}`} aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{tile.title}</span>
-              <span className={`shrink-0 text-[10px] uppercase tracking-[0.06em] ${ink[tile.tone]}`}>{tile.status}</span>
+              <span className={`shrink-0 text-[10px] uppercase tracking-[0.06em] ${ink[tile.tone]}`}>{busy && tile.tone === "success" ? "streaming" : tile.status}</span>
               <span className="hidden shrink-0 items-center gap-1 text-[11px] text-muted-foreground lg:inline-flex">
                 <HarnessMark harness={tile.harness} size={12} />
                 {harnessLabel[tile.harness]} · {tile.repo}
@@ -60,11 +82,13 @@ export default function MissionGrid({ tiles, step }: { tiles: Tile[]; step: numb
             </header>
 
             <div className="flex min-h-0 flex-1 flex-col justify-end gap-2.5 overflow-hidden px-3 py-2.5">
-              {tile.lines.slice(0, Math.max(1, Math.min(tile.lines.length, streamed - index + 1))).map((entry, i) => (
-                <div key={i} className="animate-entry-in motion-reduce:animate-none">
-                  <TranscriptEntry entry={entry} />
-                </div>
-              ))}
+              {tile.lines.map((entry, i) =>
+                t < lines[i].start ? null : (
+                  <div key={i} className="animate-entry-in motion-reduce:animate-none">
+                    <TranscriptEntry entry={entry} p={Math.min(1, (t - lines[i].start) / lines[i].ticks)} />
+                  </div>
+                ),
+              )}
             </div>
 
             <div className="shrink-0 px-2 pb-2">
@@ -76,7 +100,8 @@ export default function MissionGrid({ tiles, step }: { tiles: Tile[]; step: numb
               </div>
             </div>
           </article>
-        ))}
+          );
+        })}
       </div>
     </section>
   );

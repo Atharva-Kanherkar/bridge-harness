@@ -10,8 +10,12 @@ import { WorkSettingsSection } from "./WorkSettingsSection";
 import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { ImportHarnessSection } from "./ImportHarnessSection";
+import { SettingsGroup, SettingsRow, TextButton } from "./settings/kit";
 import { SettingsRail } from "./settings/SettingsRail";
+import { ActiveTurnInputSetting } from "./settings/ActiveTurnInputSetting";
 import { AppearancePage } from "./settings/AppearancePage";
+import { UpdatesPage } from "./settings/UpdatesPage";
+import type { UpdateInfo } from "../updater";
 import { PermissionsSection } from "./settings/PermissionsPage";
 import { ComposerPage } from "./settings/ComposerPage";
 import { HarnessesPage, type HarnessDraft } from "./settings/HarnessesPage";
@@ -20,8 +24,9 @@ import { ModelsPage } from "./settings/ModelsPage";
 import { StoragePage } from "./settings/StoragePage";
 import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
 import { WorkersPage } from "./settings/WorkersPage";
+import { ClonesPage } from "./settings/ClonesPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
-import { type Section } from "./settings/sections";
+import { primarySection, SECTION_LABELS, type Section } from "./settings/sections";
 import { VoiceSettingsPage } from "./settings/VoiceSettingsPage";
 
 export type { Section };
@@ -34,7 +39,7 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onHealthChange = () => undefined, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onVoiceChanged?: () => void; onHealthChange?: () => void; onError: (message: string) => void }) {
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "general", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onHealthChange = () => undefined, contextual = false, availableUpdate, onUpdate = () => undefined, onError, onAskBridge }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onVoiceChanged?: () => void; contextual?: boolean; availableUpdate?: UpdateInfo; onUpdate?: (update: UpdateInfo | undefined) => void; onError: (message: string) => void; /** Start a Bridge chat with this first message (the storage copilot). */ onAskBridge?: (prompt: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
   useEffect(() => {
     let active = true;
@@ -67,6 +72,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   // One copy of the runtime list, read by both the Harnesses list and a single
   // harness's detail page, so an install never has to be reported twice.
   const managed = useManagedAgents(undefined, onHealthChange);
+  useEffect(() => { setSection(initialSection); setPresetDetailId(null); setHarnessDetailId(null); }, [initialSection]);
 
   useEffect(() => {
     let active = true;
@@ -228,8 +234,31 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
+  const navigate = (next: Section) => { setSection(next); setQuery(""); setPresetDetailId(null); setHarnessDetailId(null); };
+  const agentPreferences = <>
+    <SettingsGroup label="How Bridge works">
+      <SettingsRow label="Model preferences" description="Choose models for chats and background tasks. Start with Bridge's defaults." onOpen={() => navigate("models")} />
+      <SettingsRow label="Saved setups" description="Reuse your own agent choices and instructions. Also available beside New Chat." onOpen={() => navigate("agents")} />
+    </SettingsGroup>
+    <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced</summary><div className="mt-3">
+      <SettingsGroup>
+        <SettingsRow label="Background tasks" description="Tasks running at once, retries, and how long Bridge waits for an agent." onOpen={() => navigate("workers")} />
+        <SettingsRow label="Bridge instructions" description="Change instructions for Bridge's built-in roles. Permissions still apply." onOpen={() => navigate("prompts")} />
+      </SettingsGroup>
+    </div></details>
+  </>;
+  const generalLinks = <SettingsGroup label="Preferences">
+    <SettingsRow label="Voice" description="Private, on-device dictation and local speech model setup." onOpen={() => navigate("voice")} />
+    <SettingsRow label="Typing & search" description="Text suggestions while you type, and how Bridge searches chat history." onOpen={() => navigate("composer")} />
+    <SettingsRow label="Menu bar" description="Show account usage and spend in the macOS menu bar." onOpen={() => navigate("menuBar")} />
+    <SettingsRow label="Updates" description={availableUpdate ? `Bridge ${availableUpdate.version} is available.` : "Check for new versions of Bridge."} onOpen={() => navigate("updates")} />
+  </SettingsGroup>;
+  const dataLinks = <SettingsGroup label="Chat history">
+    <SettingsRow label="Archived chats" description="Search, read and unarchive conversations." onOpen={() => navigate("archives")} />
+    <SettingsRow label="Import history" description="Bring supported chat history and configuration from another coding agent." onOpen={() => navigate("import")} />
+  </SettingsGroup>;
   return <div className="flex h-full min-h-0 flex-col md:flex-row">
-    <SettingsRail
+    {!contextual && <SettingsRail
       section={section}
       query={query}
       rows={searchRows}
@@ -237,14 +266,18 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       onQueryChange={setQuery}
       // A rail item is named for a page, not for whatever detail was last open
       // on it, so it lands on the list. Drafts survive; only the routing resets.
-      onSelect={next => { setSection(next); setQuery(""); setPresetDetailId(null); setHarnessDetailId(null); }}
+      onSelect={navigate}
       onResetAll={() => void resetEverything()}
-    />
+    />}
     <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
 
       {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
 
+      {!contextual && section !== primarySection(section) && section !== "harnesses" && <div className="mx-auto w-full max-w-page px-5 pt-4 sm:px-8"><TextButton onClick={() => navigate(primarySection(section))}>Back to {SECTION_LABELS[primarySection(section)]}</TextButton></div>}
+      {section === "general" && <AppearancePage title="General" extra={<><ActiveTurnInputSetting onError={onError} />{generalLinks}</>} />}
+      {section === "data" && <StoragePage title="Data & storage" extra={dataLinks} onError={onError} onAskBridge={onAskBridge} />}
       {section === "appearance" && <AppearancePage />}
+      {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}
       {section === "menuBar" && <MenuBarSettingsPage />}
 
       {section === "permissions" && config && <PermissionsSection
@@ -253,6 +286,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         busy={busy}
         saved={saved}
         onChange={policy => void savePolicy(policy)}
+        extra={<SettingsGroup label="Browser access"><SettingsRow label="Browser copies" description="How agents use a separate browser for work that needs sign-in." onOpen={() => navigate("clones")} /></SettingsGroup>}
       />}
 
       {section === "composer" && <ComposerPage adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError} />}
@@ -260,9 +294,10 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
 
       {section === "prompts" && <PromptStudio />}
       {section === "import" && <ImportHarnessSection onError={onError} />}
-      {section === "storage" && <StoragePage onError={onError} />}
+      {section === "storage" && <StoragePage onError={onError} onAskBridge={onAskBridge} />}
       {section === "archives" && <ArchivedChatsPage />}
       {section === "workers" && <WorkersPage adapters={adapters} />}
+      {section === "clones" && <ClonesPage onError={onError} />}
       {section === "work" && <WorkSettingsSection onError={onError} onOpenBoard={onOpenWorkBoard} />}
 
       {section === "agents" && config && <PresetsPage
@@ -282,11 +317,12 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         onError={onError}
       />}
 
-      {section === "harnesses" && config && <HarnessesPage
+      {(section === "harnesses" || section === "codingAgents") && config && <HarnessesPage
         adapters={adapters}
         harnesses={config.harnesses}
         modelOptions={modelOptions}
         managed={managed}
+        preferences={agentPreferences}
         busy={busy}
         openCodeCatalog={openCodeCatalog}
         openCodeDiscoveryError={openCodeDiscoveryError}

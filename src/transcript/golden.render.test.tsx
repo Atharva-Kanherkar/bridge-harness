@@ -65,18 +65,19 @@ function rowDigest(row: Element): string {
     if (state === "streaming") {
       // The mark is part of the claim: every harness's streaming thought draws
       // the same one, from the same component.
-      return `thought:streaming:${row.querySelector(".thinking-shimmer") ? "shimmer" : "no-mark"}`;
+      return `thought:streaming:${row.querySelector("[data-thinking-row]") ? "mark" : "no-mark"}`;
     }
     return `thought:completed:${(thought as HTMLDetailsElement).open ? "open" : "closed"}`;
   }
   if (row.querySelector('[class*="max-w-[85%]"]')) return "user-bubble";
-  if (row.querySelector(".thinking-shimmer")) return "assistant-prose:pending";
+  if (row.querySelector("[data-thinking-row]")) return "assistant-prose:pending";
   return "assistant-prose";
 }
 
 async function render(
   harness: GoldenHarness,
   source: { events?: AgentEvent[]; forestEntries?: SessionEntry[] },
+  working = false,
 ): Promise<{ container: HTMLDivElement; digest: string[]; unmount: () => Promise<void> }> {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement("div");
@@ -89,6 +90,7 @@ async function render(
       events={source.events ?? []}
       forestEntries={source.forestEntries}
       activeLeafId={source.forestEntries?.at(-1)?.id ?? null}
+      working={working}
     />,
   ));
   const rows = container.querySelector("[data-conversation-content]");
@@ -151,7 +153,7 @@ describe("golden streams, rendered", () => {
       expect(drawn[harness], `${harness} draws a thought in flight differently`).toEqual(drawn[HARNESSES[0]]);
       // Same component, same state, same mark: the one thing a reader must not
       // be able to use to tell the agents apart.
-      expect(drawn[harness]).toContain("thought:streaming:shimmer");
+      expect(drawn[harness]).toContain("thought:streaming:mark");
     }
   });
 
@@ -170,7 +172,9 @@ it("renders a distinct finished cue for an ACP action, including replay", async 
   for (const completed of [false, true]) {
     const events = completed ? frames : frames.slice(0, 2);
     for (const source of [{ events }, { forestEntries: durableEntriesFrom("cursor", events) }]) {
-      const view = await render("cursor", source);
+      // A stream cut before its completion frame is still a live turn: the
+      // session's own status is not passed on this surface, so `working` is.
+      const view = await render("cursor", source, !completed);
       try {
         for (const button of view.container.querySelectorAll('button[aria-expanded="false"]')) {
           if (/steps?/.test(button.textContent ?? "")) await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));

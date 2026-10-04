@@ -22,7 +22,8 @@ use std::{
 
 #[derive(Default)]
 pub struct UsageOverviewService {
-    refresh: Mutex<Option<Instant>>,
+    refresh: Mutex<ProviderRefreshState>,
+    redeem: Mutex<()>,
     providers: [Mutex<ProviderRefreshState>; 3],
     history: Mutex<Option<CachedSummary>>,
 }
@@ -163,6 +164,7 @@ fn codex_snapshot(
         quota_source: None,
         observed_at: cache.quota.as_ref().map(|q| q.observed_at),
         windows: windows(cache.quota.as_ref(), cache.error.is_some(), now.timestamp()),
+        reset_credits: cache.quota.as_ref().and_then(|q| q.reset_credits.clone()),
         account_metrics: vec![],
         today: period(&today_rows),
         month: period(&rows),
@@ -189,25 +191,187 @@ pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError>
 }
 
 pub fn refresh(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError> {
-    refresh_codex(core)?;
+    refresh_codex(core, true)?;
     snapshot(core)
 }
 
-fn refresh_codex(core: &BridgeCore) -> Result<(), BridgeError> {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingReset {
+    account: String,
+    credit_id: Option<String>,
+    idempotency_key: String,
+}
+
+enum ResetTarget {
+    Codex { account: String },
+    Claude { account: String, org: String, credit: bridge_protocol::messages::UsageResetCredit },
+}
+
+impl ResetTarget {
+    fn account(&self) -> &str {
+        match self { Self::Codex { account } | Self::Claude { account, .. } => account }
+    }
+}
+
+fn reuse_or_create_pending(
+    prior: Option<PendingReset>, account: &str, credit_id: Option<&str>, key: &str,
+) -> Result<PendingReset, BridgeError> {
+    if let Some(prior) = prior {
+        if prior.account != account || prior.credit_id.as_deref() != credit_id {
+            return Err(BridgeError::Invalid("A previous reset claim is unsettled. Refresh usage before trying another credit.".into()));
+        }
+        return Ok(prior);
+    }
+    Ok(PendingReset { account: account.into(), credit_id: credit_id.map(str::to_owned), idempotency_key: key.into() })
+}
+
+/// The only account-affecting usage action. It is called by the explicit UI
+/// confirmation, never from the collector or routing paths.
+pub fn redeem_reset(
+    core: &BridgeCore,
+    params: &bridge_protocol::messages::RedeemProviderUsageResetParams,
+) -> Result<bridge_protocol::messages::RedeemProviderUsageResetResult, BridgeError> {
+    use bridge_protocol::messages::RedeemProviderUsageResetResult;
+    if !matches!(params.provider.as_str(), "codex" | "claude") {
+        return Err(BridgeError::Invalid("This provider cannot redeem resets in Bridge.".into()));
+    }
+    if uuid::Uuid::parse_str(&params.idempotency_key).is_err()
+        || params.credit_id.as_ref().is_some_and(|id| id.is_empty() || id.len() > 128 || id.chars().any(char::is_control))
+    {
+        return Err(BridgeError::Invalid("Invalid reset request.".into()));
+    }
+    let _guard = core.usage_overview.redeem.lock()
+        .map_err(|_| BridgeError::Invalid("Reset request unavailable".into()))?;
+    let (target, pending) = {
+        let db = core.db.lock().unwrap();
+        let target = if params.provider == "codex" {
+            let cache = load_cache(&db)?;
+            let quota = cache.quota.ok_or_else(|| BridgeError::Invalid("Refresh Codex usage before using a reset.".into()))?;
+            let bank = quota.reset_credits.as_ref().ok_or_else(|| BridgeError::Invalid("No Codex reset is available.".into()))?;
+            if cache.error.is_some() || Utc::now().timestamp() - quota.observed_at >= 600
+                || bank.available_count == Some(0)
+                || params.credit_id.as_ref().is_some_and(|id| !bank.credits.iter().any(|credit| &credit.id == id))
+            { return Err(BridgeError::Invalid("Refresh Codex usage before using a reset.".into())); }
+            ResetTarget::Codex { account: quota.account.ok_or_else(|| BridgeError::Invalid("Codex account is unavailable.".into()))? }
+        } else {
+            let cache = load_provider(&db, "claude")?;
+            let usage = cache.usage.ok_or_else(|| BridgeError::Invalid("Refresh Claude usage before using a reset.".into()))?;
+            let credit_id = params.credit_id.as_deref().ok_or_else(|| BridgeError::Invalid("Select a Claude reset grant.".into()))?;
+            let credit = usage.reset_credits.as_ref().and_then(|bank| bank.credits.iter()
+                .find(|credit| credit.id == credit_id && credit.usable_now == Some(true)))
+                .cloned().ok_or_else(|| BridgeError::Invalid("Claude reset grant is unavailable.".into()))?;
+            if cache.error.is_some() || Utc::now().timestamp() - usage.observed_at >= 600 {
+                return Err(BridgeError::Invalid("Refresh Claude usage before using a reset.".into()));
+            }
+            ResetTarget::Claude {
+                account: usage.account.ok_or_else(|| BridgeError::Invalid("Claude account is unavailable.".into()))?,
+                org: usage.account_scope.ok_or_else(|| BridgeError::Invalid("Claude organization is unavailable.".into()))?,
+                credit,
+            }
+        };
+        let account = target.account();
+        let previous: Option<String> = db.query_row(
+            "SELECT payload FROM configuration_entries WHERE kind='usage_reset_claim' AND id=?1",
+            [&params.provider], |row| row.get(0),
+        ).optional()?;
+        let prior: Option<PendingReset> = previous.and_then(|value| serde_json::from_str(&value).ok());
+        if prior.as_ref().is_some_and(|prior| prior.account != account) {
+            db.execute("DELETE FROM configuration_entries WHERE kind='usage_reset_claim' AND id=?1", [&params.provider])?;
+            return Err(BridgeError::Invalid("Provider account changed. Refresh usage before redeeming.".into()));
+        }
+        let pending = reuse_or_create_pending(prior, account, params.credit_id.as_deref(), &params.idempotency_key)?;
+        db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_reset_claim',?1,?2,?3,?3)
+            ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+            params![params.provider, serde_json::to_string(&pending).map_err(|error| BridgeError::Invalid(error.to_string()))?, Utc::now().to_rfc3339()])?;
+        (target, pending)
+    };
+    let result = match &target {
+        ResetTarget::Codex { account } => crate::codex_adapter::account::consume(
+            account, pending.credit_id.as_deref(), &pending.idempotency_key,
+        ),
+        ResetTarget::Claude { account, org, credit } => crate::provider_usage::claim_claude_reset(
+            account, org, credit, &pending.idempotency_key,
+        ).map_err(BridgeError::Adapter),
+    };
+    let response = match result {
+        Ok(response) => response,
+        Err(error) => {
+            if error.to_string().contains("changed") {
+                core.db.lock().unwrap().execute("DELETE FROM configuration_entries WHERE kind='usage_reset_claim' AND id=?1", [&params.provider])?;
+                return Err(error);
+            }
+            // A request may have reached the provider before a timeout. Keep
+            // its key for any retry and re-read usage before offering one.
+            if refresh_reset_provider(core, &params.provider).is_ok() {
+                let db = core.db.lock().unwrap();
+                let remaining = if params.provider == "codex" {
+                    load_cache(&db).ok().and_then(|cache| cache.quota?.reset_credits?.available_count)
+                } else {
+                    load_provider(&db, "claude").ok().and_then(|cache| cache.usage?.reset_credits?.available_count)
+                };
+                if remaining == Some(0) {
+                    let _ = db.execute("DELETE FROM configuration_entries WHERE kind='usage_reset_claim' AND id=?1", [&params.provider]);
+                }
+            }
+            return Ok(RedeemProviderUsageResetResult {
+                outcome: "unconfirmed".into(), resets_left: None, cleared: vec![],
+                weekly_resets_at: None, cooldown_until: None,
+            });
+        }
+    };
+    {
+        let db = core.db.lock().unwrap();
+        db.execute("DELETE FROM configuration_entries WHERE kind='usage_reset_claim' AND id=?1", [&params.provider])?;
+        if response.outcome == "reset" {
+            clear_redeemed_cooldown(&db, &params.provider)?;
+        }
+        crate::store::event(&db, "provider", "provider.usage_reset_redeemed", &params.provider, &response.outcome)?;
+    }
+    if response.outcome == "reset" { let _ = refresh_reset_provider(core, &params.provider); }
+    Ok(response)
+}
+
+fn clear_redeemed_cooldown(db: &Connection, provider: &str) -> Result<(), BridgeError> {
+    db.execute("DELETE FROM harness_quota_cooldowns WHERE harness=?1", [provider])?;
+    Ok(())
+}
+
+fn refresh_reset_provider(core: &BridgeCore, provider: &str) -> Result<(), BridgeError> {
+    if provider == "codex" { return refresh_codex_force(core); }
+    let mut state = core.usage_overview.providers[0].lock().unwrap();
+    state.completed_at = None;
+    state.manual_completed_at = None;
+    drop(state);
+    let settings = crate::menu_bar::load(&core.db.lock().unwrap())?;
+    refresh_provider(core, bridge_protocol::messages::MenuBarProvider::Claude, &settings, 0, true)
+}
+
+fn refresh_codex_force(core: &BridgeCore) -> Result<(), BridgeError> {
+    {
+        let mut state = core.usage_overview.refresh.lock().unwrap();
+        state.completed_at = None;
+        state.manual_completed_at = None;
+    }
+    refresh_codex(core, true)
+}
+
+fn refresh_codex(core: &BridgeCore, interactive: bool) -> Result<(), BridgeError> {
     // One central owner coalesces menu, settings and desktop requests. Never
     // hold the database while waiting for the provider process/network.
     // Concurrent callers join the active refresh instead of returning an old
     // snapshot and prematurely presenting that request as completed.
+    let requested_at = Instant::now();
     let mut last = core
         .usage_overview
         .refresh
         .lock()
         .map_err(|_| BridgeError::Invalid("Usage refresh is unavailable".into()))?;
-    if last.is_some_and(|last| last.elapsed().as_secs() < 15) {
+    if last.should_skip(interactive, requested_at) {
         return Ok(());
     }
     let prior = load_cache(&core.db.lock().unwrap())?;
-    let cache = match crate::codex_adapter::account::read() {
+    let cache = match crate::codex_adapter::account::read(interactive) {
         Ok(quota) => CachedQuota {
             quota: Some(quota),
             error: None,
@@ -219,6 +383,7 @@ fn refresh_codex(core: &BridgeCore) -> Result<(), BridgeError> {
             quota: prior.quota.map(|mut q| {
                 q.account = None;
                 q.plan = None;
+                q.reset_credits = None;
                 q
             }),
             error: Some(error.to_string()),
@@ -241,7 +406,9 @@ fn refresh_codex(core: &BridgeCore) -> Result<(), BridgeError> {
     if !ids.is_empty() {
         let _ = crate::usage_history::scan_history(core, &env, Some(10_000), Some(&ids));
     }
-    *last = Some(Instant::now());
+    let completed_at = Instant::now();
+    last.completed_at = Some(completed_at);
+    if interactive { last.manual_completed_at = Some(completed_at); }
     Ok(())
 }
 
@@ -561,6 +728,7 @@ mod tests {
             observed_at: 100,
             limits: json!({"primary":{"usedPercent":58,"resetsAt":100000,"windowDurationMins":10080},"secondary":null}),
             rate_limits_by_limit_id: BTreeMap::new(),
+            reset_credits: None,
         };
         let value = windows(Some(&quota), false, 101);
         assert_eq!(value.len(), 1);
@@ -599,6 +767,7 @@ mod tests {
                 ),
                 ("metadata-only".into(), json!({"limitName":"Metadata only"})),
             ]),
+            reset_credits: None,
         };
         let value = windows(Some(&quota), false, 101);
         assert_eq!(value.len(), 2);
@@ -627,6 +796,7 @@ mod tests {
                     json!({"limitName":"Model quota","secondary":{"usedPercent":4}}),
                 ),
             ]),
+            reset_credits: None,
         };
         let value = windows(Some(&quota), false, 101);
         assert_eq!(value.len(), 2);
@@ -642,6 +812,7 @@ mod tests {
             observed_at: 100,
             limits: json!({"primary":{"usedPercent":42,"resetsAt":101}, "secondary":{"usedPercent":0,"resetsAt":200}}),
             rate_limits_by_limit_id: BTreeMap::new(),
+            reset_credits: None,
         };
         let value = windows(Some(&q), false, 102);
         assert_eq!(value[0].used_percent.value, Some(42.0));
@@ -810,6 +981,7 @@ pub fn provider_snapshots(
             quota_source: quota.source,
             observed_at: (quota.observed_at > 0).then_some(quota.observed_at),
             windows: quota.windows,
+            reset_credits: quota.reset_credits,
             account_metrics: quota.metrics,
             today: today_usage,
             month: month_usage,
@@ -982,7 +1154,7 @@ pub fn refresh_providers(
                 let settings = &settings;
                 scope.spawn(move || {
                     if p == MenuBarProvider::Codex {
-                        refresh_codex(core)
+                        refresh_codex(core, false)
                     } else {
                         refresh_provider(core, p, settings, index - 1, false)
                     }
@@ -1013,7 +1185,7 @@ pub fn refresh_providers_interactive(
                 let settings = &settings;
                 scope.spawn(move || {
                     if provider == MenuBarProvider::Codex {
-                        refresh_codex(core)
+                        refresh_codex(core, true)
                     } else {
                         refresh_provider(core, provider, settings, index - 1, true)
                     }
@@ -1033,6 +1205,28 @@ pub fn refresh_providers_interactive(
 #[cfg(test)]
 mod provider_tests {
     use super::*;
+
+    #[test]
+    fn unsettled_reset_reuses_its_key_and_rejects_other_grants() {
+        let first = reuse_or_create_pending(None, "a@example.test", Some("credit-1"), "first-key").unwrap();
+        let retry = reuse_or_create_pending(Some(first.clone()), "a@example.test", Some("credit-1"), "second-key").unwrap();
+        assert_eq!(retry.idempotency_key, "first-key");
+        assert!(reuse_or_create_pending(Some(first.clone()), "a@example.test", Some("credit-2"), "second-key").is_err());
+        assert!(reuse_or_create_pending(Some(first), "b@example.test", Some("credit-1"), "second-key").is_err());
+    }
+
+    #[test]
+    fn redeemed_reset_clears_only_that_provider_cooldown() {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        for provider in ["codex", "claude"] {
+            db.execute("INSERT INTO harness_quota_cooldowns(workspace_id,harness,reason,exhausted_at,cooldown_until)
+                VALUES('w',?1,'limit','2026-09-01T00:00:00Z','2026-09-30T00:00:00Z')", [provider]).unwrap();
+        }
+        clear_redeemed_cooldown(&db, "codex").unwrap();
+        let remaining: Vec<String> = db.prepare("SELECT harness FROM harness_quota_cooldowns")
+            .unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(remaining, ["claude"]);
+    }
 
     fn test_day() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 9, 12).unwrap()
@@ -1151,6 +1345,7 @@ mod provider_tests {
                 }
             }),
             rate_limits_by_limit_id: BTreeMap::new(),
+            reset_credits: None,
         };
         let cache = || CachedQuota {
             quota: Some(quota.clone()),

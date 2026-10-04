@@ -38,6 +38,10 @@ pub enum SlashDispatch {
     Clear,
     /// Bridge-handled: FTS5 recall in this session only.
     Recall { query: String },
+    /// Bridge-handled: find a chat across every chat, index only. The
+    /// composer intercepts it to open the sidebar search, so this arm only
+    /// answers clients that submit it directly.
+    Find { query: String },
     /// Bridge-handled: save an about-me pin to `account:local`.
     Pin { body: String },
     /// Bridge-handled: list active `account:local` pins.
@@ -80,6 +84,12 @@ pub fn list_commands_for_project(
         SlashCommand {
             name: "recall".into(),
             description: "Search this chat's history (this session only)".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "find".into(),
+            description: "Find a past chat from what you remember about it".into(),
             harness: "bridge".into(),
             kind: "builtin".into(),
         },
@@ -215,9 +225,9 @@ pub fn dispatch_for_project(
 ) -> SlashDispatch {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix('/') else {
-        return SlashDispatch::Forward {
-            text: text.to_string(),
-        };
+        return expand_inline_commands(text, session_harness, available, project)
+            .map(|text| SlashDispatch::Expand { text })
+            .unwrap_or_else(|| SlashDispatch::Forward { text: text.to_string() });
     };
     let mut parts = rest.splitn(2, char::is_whitespace);
     let Some(name) = parts.next().filter(|value| !value.is_empty()) else {
@@ -241,6 +251,11 @@ pub fn dispatch_for_project(
         "usage" | "cost" | "stats" => return SlashDispatch::Usage,
         "recall" => {
             return SlashDispatch::Recall {
+                query: args.unwrap_or("").to_string(),
+            };
+        }
+        "find" => {
+            return SlashDispatch::Find {
                 query: args.unwrap_or("").to_string(),
             };
         }
@@ -298,7 +313,7 @@ pub fn dispatch_for_project(
                 let mut expanded = format!("# /{}\n\n{}\n", chosen.name, body.trim());
                 if let Some(args) = args {
                     expanded.push('\n');
-                    expanded.push_str(args);
+                    expanded.push_str(&expand_inline_commands(args, session_harness, available, project).unwrap_or_else(|| args.to_owned()));
                     expanded.push('\n');
                 }
                 return SlashDispatch::Expand { text: expanded };
@@ -325,6 +340,44 @@ pub fn dispatch_for_project(
     }
 }
 
+/// Explicit inline skills/prompts use the same installed catalog and loader
+/// as leading slash commands. Builtins remain leading-only, and quoted code,
+/// paths and URLs are never interpreted as invocations.
+fn expand_inline_commands(
+    text: &str,
+    session_harness: &str,
+    available: &std::collections::HashSet<String>,
+    project: Option<&Path>,
+) -> Option<String> {
+    let mut in_code = false;
+    let mut names = Vec::new();
+    for token in text.split_whitespace() {
+        let ticks = token.chars().filter(|ch| *ch == '`').count();
+        let quoted = in_code || ticks > 0;
+        if ticks % 2 == 1 { in_code = !in_code; }
+        if quoted { continue; }
+        if let Some(name) = token.strip_prefix('/') {
+            if !name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':'))
+                && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    if names.is_empty() { return None; }
+    let catalog = list_commands_for_project(available, project);
+    let mut expanded = String::new();
+    for name in names {
+        let Some(command) = catalog.iter().find(|command| command.harness == session_harness
+            && command.name.eq_ignore_ascii_case(name) && matches!(command.kind.as_str(), "skill" | "command" | "prompt")) else { continue; };
+        if let Some(body) = load_expandable_body(session_harness, &command.name, project) {
+            expanded.push_str(&format!("# /{}\n\n{}\n\n", command.name, body.trim()));
+        }
+    }
+    if expanded.is_empty() { return None; }
+    expanded.push_str(text);
+    Some(expanded)
+}
+
 /// True when Bridge handles the slash locally and must never auto-switch harness.
 pub fn is_bridge_local(name: &str) -> bool {
     matches!(
@@ -338,6 +391,7 @@ pub fn is_bridge_local(name: &str) -> bool {
             | "new"
             | "reset"
             | "recall"
+            | "find"
             | "pin"
             | "pins"
             | "unpin"
@@ -801,6 +855,11 @@ mod tests {
             dispatch("/unpin abcdef12", "claude", &available),
             SlashDispatch::Unpin { selector } if selector == "abcdef12"
         ));
+        assert!(matches!(
+            dispatch("/find the plugins stall", "codex", &available),
+            SlashDispatch::Find { query } if query == "the plugins stall"
+        ));
+        assert!(is_bridge_local("find"));
         assert!(is_bridge_local("pin") && is_bridge_local("pins") && is_bridge_local("unpin"));
         let catalog = list_commands(&HashSet::new());
         assert!(catalog
@@ -809,6 +868,9 @@ mod tests {
         assert!(catalog
             .iter()
             .any(|command| command.name == "pin" && command.harness == "bridge"));
+        assert!(catalog
+            .iter()
+            .any(|command| command.name == "find" && command.harness == "bridge"));
     }
 
     #[test]
@@ -835,6 +897,26 @@ mod tests {
             dispatch("/btw", "claude", &available),
             SlashDispatch::SideChat { query, .. } if query.is_empty()
         ));
+    }
+
+    #[test]
+    fn inline_skills_expand_without_discarding_the_sentence() {
+        let project = tempfile::tempdir().unwrap();
+        for name in ["composer-review-one", "composer-review-two"] {
+            let skill = project.path().join(".agents/skills").join(name);
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(skill.join("SKILL.md"), format!("Use {name} invariants.")).unwrap();
+        }
+        let available = HashSet::from(["codex".into()]);
+        let text = "Please use /composer-review-one and /composer-review-two on the composer";
+        let SlashDispatch::Expand { text: expanded } = dispatch_for_project(text, "codex", &available, Some(project.path())) else { panic!("inline skills were not expanded"); };
+        assert!(expanded.contains("Use composer-review-one invariants."));
+        assert!(expanded.contains("Use composer-review-two invariants."));
+        assert!(expanded.ends_with(text));
+        for literal in ["please /clear this", "read https://host/composer-review-one", "open /composer-review-one/file.ts", "explain `/composer-review-one`", "```\n/composer-review-one\n```", "use /unknown-composer-skill"] {
+            assert!(matches!(dispatch_for_project(literal, "codex", &available, Some(project.path())), SlashDispatch::Forward { text } if text == literal), "{literal}");
+        }
+        assert!(matches!(dispatch_for_project(text, "claude", &available, Some(project.path())), SlashDispatch::Forward { .. }));
     }
 
     #[test]

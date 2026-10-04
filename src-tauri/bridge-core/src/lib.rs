@@ -10,12 +10,14 @@ pub mod acp_events;
 pub mod acp_registry;
 pub mod acp_session;
 pub mod adapters;
+pub mod disk_space;
 pub mod agent;
 pub mod agent_config;
 pub mod agent_integration;
 pub mod agent_lifecycle;
 pub mod analytics;
 pub mod api;
+pub mod attribution_settings;
 pub mod automations;
 pub mod backend_binding;
 pub mod binary;
@@ -23,12 +25,34 @@ pub mod briefing_conformance;
 pub mod briefing_policy;
 pub mod build_cache;
 pub mod browser_bridge;
+/// Throwaway browser clones on a RAM disk. macOS only: it needs `hdiutil` and
+/// `diskutil`, and the attached-tab bridge above stays the cross-platform path.
+#[cfg(target_os = "macos")]
+pub mod browser_clone;
+/// Two-layer containment for a browser clone: a request checker on the CDP
+/// Fetch domain and a local egress proxy. Shares an allow list with the clone.
+#[cfg(target_os = "macos")]
+pub mod browser_clone_guard;
+/// macOS-only, one-domain cookie import from the user's Chrome or Brave
+/// profile, decrypting via the system Keychain. Never reads the password store.
+#[cfg(target_os = "macos")]
+pub mod browser_clone_signin;
+/// The narrow, capability-bound command surface an agent uses to drive one
+/// guarded clone. No cookie, storage, or eval kind exists on it.
+#[cfg(target_os = "macos")]
+pub mod clone_browser_tool;
+/// Composes the clone process, guard, sign-in, and agent tool into the
+/// actual flow: approve, spawn, sign in, arm, drive, and destroy.
+#[cfg(target_os = "macos")]
+pub mod clone_orchestrator;
 pub mod builtin_compatibility;
 pub mod capability_projection;
+pub mod chat_search;
 pub mod check_runner;
 pub mod claude_adapter;
 pub mod claude_import;
 pub mod codex_adapter;
+mod codex_update;
 pub mod compaction_controller;
 pub mod connector_eval;
 pub mod connector_inbox;
@@ -40,6 +64,7 @@ pub mod completion;
 pub mod context;
 pub mod context_breakdown;
 pub mod context_inventory;
+pub mod context_windows;
 pub mod credential_broker;
 pub mod cursor_adapter;
 pub mod grok_adapter;
@@ -103,6 +128,7 @@ pub mod secret_interception;
 pub mod session_context;
 pub mod session_forest;
 pub mod session_input;
+pub mod session_prs;
 pub mod session_recall;
 pub mod session_reference;
 pub mod session_titles;

@@ -44,7 +44,13 @@ impl PolicyCoordinator {
         {
             policy::OwnedPathProvenance::default()
         } else {
-            owned_path_provenance(db, parent_session_id, turn_id, Path::new(&path))?
+            let mut provenance = owned_path_provenance(db, parent_session_id, turn_id, Path::new(&path))?;
+            // Full access means every approval is granted for the user, and a
+            // write-scope card is an approval. An unreadable policy asks.
+            provenance.full_access = crate::agent_config::permission_policy(db)
+                .map(|policy| policy.auto_approve_provider_permissions)
+                .unwrap_or(false);
+            provenance
         };
         let input = policy::PolicyInput {
             workspace_id: workspace_id.clone(),
@@ -67,6 +73,26 @@ impl PolicyCoordinator {
         let outcome = policy::PolicyEngine::new(crate::worker_settings::policy(db, &workspace_id)?).decide(&input);
         let pending_approval_id =
             policy::record_decision(db, parent_session_id, turn_id, &input, &outcome)?;
+        // Logged where provider auto-approvals are, and only when the launch
+        // goes ahead: a queued route is decided again when it drains.
+        if input.owned_path_provenance.full_access
+            && request.write_mode != crate::delegation::WriteMode::ReadOnly
+            && matches!(outcome.decision, policy::RouteDecision::SpawnWorker(_) | policy::RouteDecision::ResumeWorker { .. })
+            && !policy::scope_explicitly_authorized(&request.owned_paths, &input.owned_path_provenance)
+        {
+            let scope = if request.owned_paths.is_empty() {
+                "with no path limit".to_owned()
+            } else {
+                format!("within {}", request.owned_paths.join(", "))
+            };
+            crate::store::event(
+                db,
+                "permission",
+                "approval.auto_allowed",
+                parent_session_id,
+                &format!("Full access let a worker write {scope}"),
+            )?;
+        }
         Ok(WorkerRouteContext {
             workspace_id,
             parent_depth,
@@ -89,6 +115,7 @@ fn owned_path_provenance(
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let mut trusted_paths = Vec::new();
     let mut source_entry_ids = Vec::new();
+    let mut unscoped_write_approved = false;
     let prior_write_decision = branch.iter().position(|entry| {
         entry.payload["turnId"] == turn_id
             && entry
@@ -156,10 +183,15 @@ fn owned_path_provenance(
                     && request.payload["turnId"] == turn_id
             })
     }) {
-        let paths = entry
-            .payload
-            .get("approvedOwnedPaths")
-            .and_then(serde_json::Value::as_array)
+        let approved = entry.payload.get("approvedOwnedPaths").and_then(serde_json::Value::as_array);
+        // Only a card that listed no paths grants an unscoped writer. Paths
+        // that fail grounding below leave the list empty too, and grant nothing.
+        if approved.is_some_and(Vec::is_empty) {
+            unscoped_write_approved = true;
+            source_entry_ids.push(entry.id.clone());
+            continue;
+        }
+        let paths = approved
             .into_iter()
             .flatten()
             .filter_map(serde_json::Value::as_str)
@@ -177,6 +209,8 @@ fn owned_path_provenance(
     Ok(policy::OwnedPathProvenance {
         trusted_paths,
         source_entry_ids,
+        unscoped_write_approved,
+        full_access: false,
     })
 }
 
@@ -789,6 +823,76 @@ mod tests {
         assert!(resolve_policy_delegation_approval(&db, "parent", approval.sequence, "accept", &approval.payload).is_err());
         assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(SessionForest::new(&db).active_branch("parent").unwrap().iter().filter(|entry| entry.kind == "approval.requested").count(), 1);
+    }
+
+    /// A writer that names no paths is how a harness without a read-only
+    /// sandbox (OpenCode) gets launched, by the orchestrator and by the PR
+    /// reviewer alike. Accepting that card used to authorize nothing, so the
+    /// relaunch failed with "already resolved" and the orchestrator retried
+    /// into a fresh card, every turn.
+    #[test]
+    fn accepting_a_writer_that_named_no_paths_launches_it() {
+        use crate::live_turn::{reserve_worker_launch_outcome, resolve_policy_delegation_approval, WorkerReservationOutcome};
+        let workspace = tempfile::tempdir().unwrap();
+        let db = database(workspace.path());
+        db.execute("UPDATE sessions SET active_turn_id='turn-a' WHERE id='parent'", []).unwrap();
+        let outcome = reserve_worker_launch_outcome(&db, "parent", "turn-a", &request(&[]), "model", true, None).unwrap();
+        assert!(matches!(outcome, WorkerReservationOutcome::AwaitingApproval(_)));
+        let approval = SessionForest::new(&db).active_branch("parent").unwrap().pop().unwrap();
+        let resolved = resolve_policy_delegation_approval(&db, "parent", approval.sequence, "accept", &approval.payload).unwrap();
+        let outcome = reserve_worker_launch_outcome(&db, "parent", &resolved.turn_id, &resolved.request, "model", true, None).unwrap();
+        assert!(matches!(outcome, WorkerReservationOutcome::Reserved(_)));
+        // The grant is for the unscoped request that was shown, not a blank
+        // cheque: a named scope in the same turn is still its own decision.
+        let route = PolicyCoordinator::decide_worker_route(&db, "parent", "turn-a", &request(&["src/**"]), true).unwrap();
+        assert_eq!(route.outcome.reason, policy::RouteReason::OwnedPathProvenanceRequired);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_accepted_scope_that_fails_grounding_is_not_an_unscoped_grant() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("external")).unwrap();
+        let db = database(workspace.path());
+        PolicyCoordinator::decide_worker_route(&db, "parent", "turn-a", &request(&["external/**"]), true).unwrap();
+        let approval = SessionForest::new(&db).active_branch("parent").unwrap().pop().unwrap();
+        crate::live_turn::resolve_policy_delegation_approval(&db, "parent", approval.sequence, "accept", &approval.payload).unwrap();
+        let provenance = owned_path_provenance(&db, "parent", "turn-a", workspace.path()).unwrap();
+        assert!(provenance.trusted_paths.is_empty());
+        assert!(!provenance.unscoped_write_approved);
+    }
+
+    #[test]
+    fn full_access_authorizes_agent_proposed_write_scopes_without_a_card() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+        let db = database(workspace.path());
+        crate::agent_config::save_permission_policy(&db, crate::agent_config::PermissionPolicy {
+            auto_approve_provider_permissions: true,
+            ..Default::default()
+        }).unwrap();
+        let audited = |db: &Connection| db.query_row(
+            "SELECT COUNT(*) FROM events WHERE kind='approval.auto_allowed' AND entity_id='parent'",
+            [], |row| row.get::<_, i64>(0)).unwrap();
+        for (turn, paths) in [("turn-a", &["src/**"][..]), ("turn-b", &[][..])] {
+            let route = PolicyCoordinator::decide_worker_route(&db, "parent", turn, &request(paths), true).unwrap();
+            assert!(matches!(route.outcome.decision, policy::RouteDecision::SpawnWorker(_)), "{turn}: {:?}", route.outcome);
+            assert!(route.pending_approval_id.is_none());
+        }
+        let branch = SessionForest::new(&db).active_branch("parent").unwrap();
+        assert!(branch.iter().all(|entry| entry.kind != "approval.requested"));
+        // Each grant is on the auto-approval log, so it reads as Full access
+        // acting rather than as a gate that silently vanished.
+        assert_eq!(audited(&db), 2);
+        // Full access authorizes a scope; it does not make an invalid one valid.
+        let route = PolicyCoordinator::decide_worker_route(&db, "parent", "turn-c", &request(&["../outside/**"]), true).unwrap();
+        assert_eq!(route.outcome.reason, policy::RouteReason::InvalidOwnedPath);
+        // A scope the user declared needed no grant, so it logs nothing.
+        SessionForest::new(&db).append("parent", EntryKind::UserMessage, json!({"text":"Write scope: src/**"})).unwrap();
+        let route = PolicyCoordinator::decide_worker_route(&db, "parent", "turn-d", &request(&["src/**"]), true).unwrap();
+        assert!(matches!(route.outcome.decision, policy::RouteDecision::SpawnWorker(_)));
+        assert_eq!(audited(&db), 2);
     }
 
     #[test]

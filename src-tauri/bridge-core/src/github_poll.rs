@@ -1,7 +1,7 @@
 //! Live check polling for pull requests the GitHub surface has already exposed.
 
-use crate::{events::CoreEvent, github_surface::{CheckStatus, PullRequestCheck, PullRequestSummary}, BridgeCore};
-use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
+use crate::{events::CoreEvent, github_surface::{CheckStatus, PullRequestCheck, PullRequestState, PullRequestSummary}, BridgeCore};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, Mutex}, time::{Duration, Instant}};
 
 pub const FOCUSED_CADENCE: Duration = Duration::from_secs(15);
 pub const UNFOCUSED_CADENCE: Duration = Duration::from_secs(120);
@@ -25,6 +25,31 @@ struct WatchedPullRequest {
     head_branch: String,
     title: String,
     checks: Option<Vec<PullRequestCheck>>,
+    /// A chat-attached PR: watched on the card's behalf rather than the
+    /// pane's list, kept across list re-fetches, and followed into merged or
+    /// closed so the card flips state without waiting for a refocus.
+    attached: bool,
+    state: Option<PullRequestState>,
+    head_sha: Option<String>,
+    /// Attached entries poll at the focused cadence while checks run and the
+    /// unfocused one once settled; list-watched entries (`None`) poll every
+    /// cycle like they always have.
+    next_poll: Option<Instant>,
+}
+
+impl WatchedPullRequest {
+    fn listed(path: PathBuf, pull_request: &PullRequestSummary, checks: Option<Vec<PullRequestCheck>>) -> Self {
+        Self {
+            path,
+            head_branch: pull_request.head_branch.clone(),
+            title: pull_request.title.clone(),
+            checks,
+            attached: false,
+            state: None,
+            head_sha: None,
+            next_poll: None,
+        }
+    }
 }
 
 impl GithubPoller {
@@ -41,10 +66,12 @@ impl GithubPoller {
         // Carry each surviving PR's last-seen checks across the re-list. A list
         // refetch happens on every checks-changed event, so resetting baselines
         // here would blind the very next poll's change detection — one real
-        // transition per refetch would go unannounced.
+        // transition per refetch would go unannounced. Chat-attached entries
+        // are not the list's business: a merged PR leaves the open list while
+        // its card still wants the state flip, so they survive untouched.
         let mut previous = HashMap::new();
         watched.retain(|(workspace, number), entry| {
-            if workspace == workspace_id {
+            if workspace == workspace_id && !entry.attached {
                 previous.insert(*number, entry.checks.take());
                 false
             } else {
@@ -54,22 +81,52 @@ impl GithubPoller {
         for pull_request in pull_requests {
             if pull_request.checks.queued > 0 || pull_request.checks.in_progress > 0 {
                 let checks = previous.remove(&pull_request.number).flatten();
-                watched.insert(
-                    (workspace_id.into(), pull_request.number),
-                    WatchedPullRequest {
-                        path: path.clone(),
-                        head_branch: pull_request.head_branch.clone(),
-                        title: pull_request.title.clone(),
-                        checks,
-                    },
-                );
+                watched.entry((workspace_id.into(), pull_request.number))
+                    .or_insert_with(|| WatchedPullRequest::listed(path.clone(), pull_request, checks));
             }
         }
     }
 
+    /// Follow one chat-attached PR. Idempotent: a re-arm keeps the baselines
+    /// the change detection diffs against.
+    pub fn watch_attached(
+        &self,
+        workspace_id: &str,
+        path: PathBuf,
+        number: u64,
+        head_branch: &str,
+        title: &str,
+    ) {
+        let mut watched = self.watched.lock().unwrap();
+        watched
+            .entry((workspace_id.into(), number))
+            .and_modify(|entry| {
+                entry.attached = true;
+                entry.path = path.clone();
+                entry.head_branch = head_branch.to_owned();
+                entry.title = title.to_owned();
+            })
+            .or_insert_with(|| WatchedPullRequest {
+                path,
+                head_branch: head_branch.to_owned(),
+                title: title.to_owned(),
+                checks: None,
+                attached: true,
+                state: None,
+                head_sha: None,
+                next_poll: None,
+            });
+    }
+
     fn poll_once(&self, core: &BridgeCore) {
-        let pending: Vec<_> = self.watched.lock().unwrap().iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+        let pending: Vec<_> = self.watched.lock().unwrap().iter()
+            .filter(|(_, value)| value.next_poll.is_none_or(|due| due <= Instant::now()))
+            .map(|(key, value)| (key.clone(), value.clone())).collect();
         for ((workspace_id, number), watched) in pending {
+            if watched.attached {
+                self.poll_attached(core, &workspace_id, number, &watched);
+                continue;
+            }
             core.github_surface.invalidate_checks(&watched.path, number);
             let Ok(checks) = core.github_surface.pr_checks(&watched.path, number) else { continue };
             let complete = all_checks_complete(&checks);
@@ -93,6 +150,51 @@ impl GithubPoller {
             if let Some((head_branch, title)) = terminal {
                 self.announce_terminal(core, workspace_id, number, head_branch, title, checks);
             }
+        }
+    }
+
+    /// One poll of a chat-attached PR. On top of the check rollup this tracks
+    /// PR state and head SHA, because a card must flip to merged or closed and
+    /// must notice a fresh push — both invisible to `pr checks`. Terminal plus
+    /// settled (state merged/closed with nothing running) unwatches the PR, so
+    /// background polling stays bounded; a slow cadence applies before that so
+    /// a later push still surfaces.
+    fn poll_attached(&self, core: &BridgeCore, workspace_id: &str, number: u64, watched: &WatchedPullRequest) {
+        core.github_surface.invalidate_brief(&watched.path, number);
+        core.github_surface.invalidate_checks(&watched.path, number);
+        // A transient `gh` failure keeps every last-known value; the card
+        // shows its stored snapshot labelled stale and the next cycle retries.
+        let Ok(brief) = core.github_surface.pr_brief(&watched.path, number) else { return };
+        let Ok(checks) = core.github_surface.pr_checks(&watched.path, number) else { return };
+        let checks_active = checks.iter().any(|check| check.status != CheckStatus::Completed);
+        let state_terminal = matches!(brief.state, PullRequestState::Closed | PullRequestState::Merged);
+        let complete = all_checks_complete(&checks);
+        let mut watched_map = self.watched.lock().unwrap();
+        let Some(entry) = watched_map.get_mut(&(workspace_id.to_owned(), number)) else { return };
+        // Baselines start empty, so the first observation reports only a
+        // genuinely completed check set — same rule as the list-watched path.
+        let changed = rollup_changed(entry.checks.as_deref(), &checks, complete)
+            || entry.state.is_some_and(|state| state != brief.state)
+            || entry.head_sha.as_deref().is_some_and(|sha| sha != brief.head_sha);
+        let terminal = complete.then(|| (entry.head_branch.clone(), entry.title.clone()));
+        entry.checks = Some(checks.clone());
+        entry.state = Some(brief.state);
+        entry.head_sha = Some(brief.head_sha.clone());
+        entry.head_branch = brief.head_branch.clone();
+        entry.title = brief.title.clone();
+        entry.next_poll = Some(Instant::now() + if checks_active { FOCUSED_CADENCE } else { UNFOCUSED_CADENCE });
+        if state_terminal && !checks_active {
+            watched_map.remove(&(workspace_id.to_owned(), number));
+        }
+        drop(watched_map);
+        if changed {
+            core.events.publish(CoreEvent::GithubChecksChanged {
+                workspace_id: workspace_id.to_owned(),
+                number,
+            });
+        }
+        if let Some((head_branch, title)) = terminal {
+            self.announce_terminal(core, workspace_id.to_owned(), number, head_branch, title, checks);
         }
     }
 
@@ -333,6 +435,121 @@ mod tests {
             watched.get(&("ws".into(), 7)).unwrap().checks,
             Some(vec![check(CheckStatus::InProgress)]),
         );
+    }
+
+    #[test]
+    fn attached_entries_survive_a_list_rewatch_with_their_baselines() {
+        let poller = GithubPoller::default();
+        let path = PathBuf::from("/tmp/repo");
+        poller.watch_attached("ws", path.clone(), 9, "feat/card", "Card PR");
+        poller
+            .watched
+            .lock()
+            .unwrap()
+            .get_mut(&("ws".into(), 9))
+            .unwrap()
+            .checks = Some(vec![check(CheckStatus::InProgress)]);
+        // The pane refetches its list; the attached PR (merged, say, and so
+        // absent from the open list) must keep being followed for its card.
+        poller.watch("ws", path, &[]);
+        let watched = poller.watched.lock().unwrap();
+        let entry = watched.get(&("ws".into(), 9)).expect("attached entry survives");
+        assert!(entry.attached);
+        assert_eq!(entry.checks, Some(vec![check(CheckStatus::InProgress)]));
+    }
+
+    #[test]
+    fn watch_attached_is_idempotent_and_keeps_baselines() {
+        let poller = GithubPoller::default();
+        poller.watch_attached("ws", PathBuf::from("/tmp/repo"), 9, "feat/card", "Card PR");
+        poller
+            .watched
+            .lock()
+            .unwrap()
+            .get_mut(&("ws".into(), 9))
+            .unwrap()
+            .checks = Some(vec![check(CheckStatus::Completed)]);
+        poller.watch_attached("ws", PathBuf::from("/tmp/repo"), 9, "feat/card", "Card PR");
+        let watched = poller.watched.lock().unwrap();
+        assert_eq!(watched.len(), 1, "re-arming never duplicates the watch");
+        assert_eq!(
+            watched.get(&("ws".into(), 9)).unwrap().checks,
+            Some(vec![check(CheckStatus::Completed)]),
+            "the change-detection baseline survives a re-arm",
+        );
+    }
+
+    #[test]
+    fn an_attached_pr_is_retried_after_a_transient_gh_failure() {
+        let scratch = tempfile::tempdir().unwrap();
+        // `for_tests` has no `gh`: every read fails, which is exactly the
+        // transient-outage shape the card must ride through.
+        let core = crate::runtime::BridgeCore::for_tests(scratch.path());
+        let poller = GithubPoller::default();
+        poller.watch_attached("ws", scratch.path().to_path_buf(), 9, "feat/card", "Card PR");
+        poller.poll_once(&core);
+        let watched = poller.watched.lock().unwrap();
+        let entry = watched.get(&("ws".into(), 9)).expect("a failed poll keeps the watch");
+        assert!(
+            entry.next_poll.is_none(),
+            "a failed cycle leaves the entry due immediately so the next cycle retries",
+        );
+    }
+
+    #[test]
+    fn listing_a_pending_attached_pr_keeps_its_attachment_and_all_baselines() {
+        use crate::github_surface::{CheckRollup, Mergeability, ReviewDecision};
+        let poller = GithubPoller::default();
+        poller.watch_attached("ws", PathBuf::from("/tmp/repo"), 9, "feat/pr", "PR");
+        {
+            let mut watched = poller.watched.lock().unwrap();
+            let entry = watched.get_mut(&("ws".into(), 9)).unwrap();
+            entry.checks = Some(vec![check(CheckStatus::InProgress)]);
+            entry.state = Some(PullRequestState::Open);
+            entry.head_sha = Some("abc".into());
+        }
+        poller.watch("ws", PathBuf::from("/tmp/repo"), &[PullRequestSummary {
+            number: 9, title: "PR".into(), state: PullRequestState::Open, is_draft: false,
+            author: None, head_branch: "feat/pr".into(), review_decision: ReviewDecision::None,
+            mergeability: Mergeability::Mergeable, merge_state_status: String::new(),
+            checks: CheckRollup { in_progress: 1, total: 1, ..Default::default() }, url: String::new(),
+        }]);
+        let watched = poller.watched.lock().unwrap();
+        let entry = watched.get(&("ws".into(), 9)).unwrap();
+        assert!(entry.attached);
+        assert_eq!(entry.checks, Some(vec![check(CheckStatus::InProgress)]));
+        assert_eq!(entry.state, Some(PullRequestState::Open));
+        assert_eq!(entry.head_sha.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn a_checks_only_poll_failure_preserves_baselines_and_retries() {
+        let (scratch, core, repo) = crate::session_prs::tests::fixture();
+        let poller = GithubPoller::default();
+        poller.watch_attached("w", repo, 12, "feat/pr", "PR");
+        let baseline = vec![check(CheckStatus::InProgress)];
+        {
+            let mut watched = poller.watched.lock().unwrap();
+            let entry = watched.get_mut(&("w".into(), 12)).unwrap();
+            entry.checks = Some(baseline.clone());
+            entry.state = Some(PullRequestState::Open);
+            entry.head_sha = Some("old".into());
+        }
+        std::fs::write(scratch.path().join("offline"), "").unwrap();
+        let mut events = core.events.subscribe();
+        poller.poll_once(&core);
+        {
+            let watched = poller.watched.lock().unwrap();
+            let entry = watched.get(&("w".into(), 12)).unwrap();
+            assert_eq!(entry.checks, Some(baseline));
+            assert_eq!(entry.head_sha.as_deref(), Some("old"));
+            assert!(entry.next_poll.is_none());
+        }
+        assert!(events.try_recv().is_err(), "no invented transition on an outage");
+        std::fs::remove_file(scratch.path().join("offline")).unwrap();
+        poller.poll_once(&core);
+        assert!(matches!(events.try_recv(), Ok(CoreEvent::GithubChecksChanged { number: 12, .. })));
+        assert_eq!(poller.watched.lock().unwrap().get(&("w".into(), 12)).unwrap().checks.as_ref().unwrap()[0].status, CheckStatus::Completed);
     }
 
     #[test]

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 // persistence round-trip — so the split, the divider, and restart restore can
 // be asserted without mounting anything.
 
-export type DockPaneId = "changes" | "code" | "terminal" | "browser" | "transcript" | "tasks" | "github" | "inbox";
+export type DockPaneId = "changes" | "code" | "terminal" | "browser" | "transcript" | "tasks" | "github" | "inbox" | "context";
 
 export type DockState = {
   open: boolean;
@@ -26,7 +26,8 @@ export type DockAction =
   | { type: "set-width"; width: number; available: number }
   | { type: "toggle-expanded" };
 
-export const DOCK_PANES: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox"];
+// The order is the ⌥⌘N chord order: new panes append, so no existing chord moves.
+export const DOCK_PANES: readonly DockPaneId[] = ["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox", "context"];
 
 export const MIN_DOCK_WIDTH = 320;
 export const MAX_DOCK_WIDTH = 760;
@@ -103,7 +104,9 @@ export function readDockState(key: string, storage: Pick<Storage, "getItem"> = l
   if (typeof record.open !== "boolean" || typeof record.expanded !== "boolean" || typeof record.width !== "number" || !Number.isFinite(record.width)) {
     return defaultDockState();
   }
-  const pane = isDockPaneId(record.pane) ? record.pane : DEFAULT_PANE;
+  // The clone pane folded into Browser; a saved "clone" lands there.
+  const saved = record.pane === "clone" ? "browser" : record.pane;
+  const pane = isDockPaneId(saved) ? saved : DEFAULT_PANE;
   const width = Math.max(MIN_DOCK_WIDTH, Math.min(MAX_DOCK_WIDTH, record.width));
   return {
     open: record.open,

@@ -510,6 +510,65 @@ pub struct GithubConnectResult {
     pub replaced_remote: bool,
 }
 
+// --- chat-attached pull requests --------------------------------------------
+
+/// The pull requests linked to one chat. Sessions attach through a verified
+/// `gh pr create` completion or the explicit Attach PR action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubSessionPrsParams {
+    pub session_id: String,
+    /// Bypass the short `gh` caches (chat reopened, manual retry).
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// One chat-attached pull request with live state. `stale` marks a last-known
+/// snapshot kept through a transient `gh` failure; `checkDetails` feeds the
+/// card's collapsible check list, including failure log links.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPullRequest {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub state: PullRequestState,
+    pub is_draft: bool,
+    pub head_branch: String,
+    pub head_sha: String,
+    pub checks: CheckRollup,
+    pub check_details: Vec<PullRequestCheck>,
+    /// `toolCompletion` (verified `gh pr create`) or `manual` (Attach PR).
+    pub attribution: String,
+    pub attached_at: String,
+    pub fetched_at: Option<String>,
+    pub stale: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubSessionPrsResult {
+    pub pull_requests: Vec<SessionPullRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubAttachPrParams {
+    pub session_id: String,
+    /// A pull request URL, or a bare number (`341` or `#341`) read against the
+    /// repository the session's workspace resolves to.
+    pub reference: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubAttachPrResult {
+    pub attached: bool,
+    pub message: String,
+    pub pull_request: Option<SessionPullRequest>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

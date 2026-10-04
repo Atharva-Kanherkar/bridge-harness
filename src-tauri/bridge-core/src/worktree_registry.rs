@@ -29,8 +29,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// An isolated chat's own checkout.
+/// An orchestrator's isolated checkout.
 pub const KIND_ORCHESTRATOR: &str = "orchestrator";
+/// A direct workspace chat's isolated checkout.
+pub const KIND_DIRECT: &str = "direct";
 /// A delegated worker's child checkout.
 pub const KIND_WORKER: &str = "worker";
 /// A pull request checked out for review.
@@ -57,13 +59,14 @@ pub const STATE_REMOVED: &str = "removed";
 /// root. Reconcile walks these and only these.
 const KIND_DIRECTORIES: &[(&str, &str)] = &[
     ("orchestrators", KIND_ORCHESTRATOR),
+    ("direct", KIND_DIRECT),
     ("workers", KIND_WORKER),
     ("github", KIND_GITHUB),
 ];
 
 /// How deep a kind's checkouts sit below the worktrees root.
 ///
-/// `orchestrators/<workspace>/<session>` and `workers/<task>/<session>` both
+/// `orchestrators/<workspace>/<session>`, `direct/<workspace>/<session>`, and `workers/<task>/<session>`
 /// nest twice; `github/pr-<n>-<branch>` sits directly under its directory.
 /// Walking the wrong depth finds the grouping directory instead of the checkout,
 /// which is neither a worktree nor recognisable as one.
@@ -78,7 +81,7 @@ fn kind_depth(kind: &str) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeRecord {
     pub id: String,
-    /// [`KIND_ORCHESTRATOR`], [`KIND_WORKER`], or [`KIND_GITHUB`].
+    /// [`KIND_ORCHESTRATOR`], [`KIND_DIRECT`], [`KIND_WORKER`], or [`KIND_GITHUB`].
     pub kind: String,
     /// The main checkout this worktree is linked to — where `git worktree
     /// remove` and `git worktree prune` have to run.

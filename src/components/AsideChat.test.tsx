@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeActiveTurnInput } from "../activeTurnSettings";
 import { AsideChat } from "./AsideChat";
 import { asWireKind } from "../transcript/wire";
 import { bridgeApi } from "../api";
@@ -29,7 +30,7 @@ async function mount(overrides: Partial<Parameters<typeof AsideChat>[0]> = {}) {
       session={aside}
       adapters={adapters}
       events={[]}
-      pendingMessages={["is this right?"]}
+      pendingMessages={[{ text: "is this right?" }]}
       working
       onSend={asyncNoop}
       onChangeModel={noop}
@@ -43,6 +44,7 @@ async function mount(overrides: Partial<Parameters<typeof AsideChat>[0]> = {}) {
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  localStorage.clear();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -61,6 +63,39 @@ const makeEvent = (sequence: number): AgentEvent => ({
 });
 
 describe("AsideChat", () => {
+  it("inserts an embedded skill at the cursor without sending or losing the suffix", async () => {
+    const onSend = vi.fn();
+    await mount({ onSend, initialDraft: "Please use /rev on this change", slashCommands: [
+      { name: "review", description: "Review changes", kind: "skill", harness: "claude" },
+      { name: "clear", description: "Clear context", kind: "builtin", harness: "bridge" },
+    ] });
+    const box = dialog().querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => { box.focus(); box.setSelectionRange(15, 15); box.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(dialog().querySelector("#aside-slash-listbox")!.textContent).toContain("/review");
+    expect(dialog().querySelector("#aside-slash-listbox")!.textContent).not.toContain("/clear");
+    await act(async () => box.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(box.value).toBe("Please use /review on this change");
+    expect(box.selectionStart).toBe("Please use /review ".length);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("uses updated composer settings and accepts inline completion with Tab", async () => {
+    const suggest = vi.spyOn(bridgeApi, "suggestCompletion").mockResolvedValue({ suggestion: " failure modes", usedFallback: false, fallbackReason: null });
+    const onSend = vi.fn();
+    await mount({ onSend, initialDraft: "Explain the" });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
+    expect(suggest).not.toHaveBeenCalled();
+    await mount({ onSend, suggestionSettings: { configured: true, settings: { enabled: true, provider: "claude", model: "sonnet" } } });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); });
+    expect(suggest).toHaveBeenCalledWith("Explain the");
+    const box = dialog().querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => { box.focus(); box.setSelectionRange(box.value.length, box.value.length); box.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await act(async () => box.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    expect(box.value).toBe("Explain the failure modes");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("wears the harness's tinted mark and names the delegation", async () => {
     await mount();
     expect(dialog().getAttribute("aria-label")).toBe("Aside with Claude");
@@ -107,15 +142,15 @@ describe("AsideChat", () => {
     expect(pill.disabled).toBe(true);
   });
 
-  it("offers Steer mid-turn when the aside's harness advertises steering", async () => {
-    const steering = [{ ...adapters[0], capabilities: ["steering"] }];
-    await mount({ adapters: steering, working: true });
-    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Steer")).toBe(true);
-  });
-
-  it("keeps Queue mid-turn when the harness cannot steer", async () => {
+  it("uses the global preference and shows fallback and durable queue count", async () => {
+    await mount({ working: true, adapters: adapters.map(adapter => ({ ...adapter, capabilities: ["steering"] })), queuedFollowUpCount: 2 });
+    expect(document.body.querySelector('button[aria-label="Steer"]')).not.toBeNull();
+    await act(async () => writeActiveTurnInput("queue"));
+    expect(document.body.querySelector('button[aria-label="Queue"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("2 follow-ups queued");
+    await act(async () => writeActiveTurnInput("steer"));
     await mount({ working: true });
-    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Queue")).toBe(true);
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!.title).toContain("cannot steer");
   });
 
   it("disables the model control while the aside is working", async () => {

@@ -7,6 +7,7 @@ import type {
   ManagedAgentStatus,
 } from "../protocol/generated/protocol";
 import type { AdapterDescriptor } from "../types";
+import { canInstallManagedAgent } from "../onboarding";
 import { HarnessMark } from "./harnessMarks";
 import {
   GhostButton, SettingsGroup, SettingsRow, StatusPill, TextButton, type PillTone,
@@ -43,8 +44,8 @@ import {
 /** How a backing is described, so a user runtime is never presented as Bridge's. */
 const SOURCE_LABEL: Record<ManagedAgentStatus["backing"], string> = {
   managed: "Bridge-managed",
-  external: "Your own install (found on PATH)",
-  explicit: "Your own install (configured path)",
+  external: "Your own install (found on this computer)",
+  explicit: "Your own install (chosen location)",
   bundled: "Shipped with Bridge",
   none: "Not installed",
 };
@@ -69,7 +70,12 @@ function stateTone(status: ManagedAgentStatus): PillTone {
 
 /** Source and version on one line, which is what a row has room for. */
 export function sourceLine(agent: ManagedAgentStatus): string {
-  return agent.version ? `${SOURCE_LABEL[agent.backing]} · ${agent.version}` : SOURCE_LABEL[agent.backing];
+  const source = agent.version ? `${SOURCE_LABEL[agent.backing]} · ${agent.version}` : SOURCE_LABEL[agent.backing];
+  // Naming the target version is the whole difference between "something is
+  // out of date" and a user knowing what pressing Update gets them.
+  return agent.updateAvailable && agent.pinnedVersion
+    ? `${source} · update to ${agent.pinnedVersion}`
+    : source;
 }
 
 export type ManagedAgents = {
@@ -79,6 +85,8 @@ export type ManagedAgents = {
   errors: Record<string, string>;
   reload: () => void;
   install: (agent: ManagedAgentStatus) => void;
+  /** Same RPC as install — the engine reinstalls whenever the pin moved. */
+  update: (agent: ManagedAgentStatus) => void;
   repair: (agent: ManagedAgentStatus) => void;
   requestRemove: (agent: ManagedAgentStatus) => void;
   /** Rendered wherever the caller wants; null when nothing is being confirmed. */
@@ -95,11 +103,15 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
   const [listError, setListError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<ManagedAgentStatus | null>(null);
 
+  const writes = useRef(0);
+  const latestRead = useRef(0);
   const load = useCallback(() => {
+    const read = ++latestRead.current;
+    const before = writes.current;
     setListError(null);
     return bridgeApi.listManagedAgents()
-      .then(list => setAgents(list.agents))
-      .catch(error => setListError(error instanceof Error ? error.message : String(error)));
+      .then(list => { if (read === latestRead.current && before === writes.current) setAgents(list.agents); })
+      .catch(error => { if (read === latestRead.current && before === writes.current) setListError(error instanceof Error ? error.message : String(error)); });
   }, []);
 
   useEffect(() => {
@@ -109,6 +121,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
 
   /** Apply the status the operation returned rather than guessing the new one. */
   const applyResult = useCallback((result: ManagedAgentOperationResult) => {
+    writes.current += 1;
     setAgents(current =>
       (current ?? []).map(agent => (agent.agentId === result.agentId ? result.status : agent)));
   }, []);
@@ -145,6 +158,7 @@ export function useManagedAgents(initialAgents?: ManagedAgentStatus[], onChanged
     errors,
     reload: () => void load(),
     install: agent => void run(agent, "Installing", bridgeApi.installManagedAgent),
+    update: agent => void run(agent, "Updating", bridgeApi.installManagedAgent),
     repair: agent => void run(agent, "Repairing", bridgeApi.repairManagedAgent),
     requestRemove: agent => setConfirming(agent),
     confirmation: confirming
@@ -174,6 +188,18 @@ function needsRepair(agent: ManagedAgentStatus): boolean {
   return agent.state === "repairable" || agent.state === "broken";
 }
 
+/**
+ * Whether Bridge pins a newer payload than the one it installed.
+ *
+ * The API answers this; the UI never compares version strings itself. A managed
+ * payload stays receipt-valid forever, so without an Update action a runtime
+ * installed months ago keeps winning over the current pin — which is how a
+ * newly released provider model never shows up in the picker.
+ */
+function hasUpdate(agent: ManagedAgentStatus): boolean {
+  return agent.updateAvailable && !needsRepair(agent);
+}
+
 /** The action a runtime offers on a list row: Install, Repair, or nothing. */
 function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: ManagedAgents }) {
   const busy = state.busy[agent.agentId];
@@ -185,8 +211,10 @@ function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: Managed
       data-testid={`agent-busy-${agent.agentId}`}
     >{busy}…</span>;
   }
+  if (isAbsent(agent) && !canInstallManagedAgent(agent)) return <span className="text-xs text-muted-foreground">Manual install needed</span>;
   if (isAbsent(agent)) return <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>;
-  if (needsRepair(agent)) return <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>;
+  if (needsRepair(agent)) return canInstallManagedAgent(agent) ? <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton> : <span className="text-xs text-muted-foreground">Manual repair needed</span>;
+  if (hasUpdate(agent)) return <GhostButton onClick={() => state.update(agent)}>Update</GhostButton>;
   return null;
 }
 
@@ -201,8 +229,8 @@ export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticatio
   const groups = useMemo(() => {
     const agents = state.agents ?? [];
     return [
-      { label: "Installed", note: "Bridge can start these now", agents: agents.filter(agent => !isAbsent(agent)) },
-      { label: "Available", note: "Installed from the vendor's official source", agents: agents.filter(isAbsent) },
+      { label: "Installed", note: "Found on your computer; sign-in is checked separately", agents: agents.filter(agent => !isAbsent(agent)) },
+      { label: "Available", note: "Choose an agent to see its installation options", agents: agents.filter(isAbsent) },
     ].filter(group => group.agents.length > 0);
   }, [state.agents]);
 
@@ -235,7 +263,7 @@ export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticatio
             </StatusPill>
             <RowAction agent={agent} state={state} />
             {!isAbsent(agent) && authState === "signed_in" && <span className="text-[11px] font-medium text-success" data-testid={`agent-auth-${agent.agentId}`}>Signed in</span>}
-            {!isAbsent(agent) && authState === "signed_out" && <GhostButton onClick={() => setLogin(agent.agentId)}>Sign in</GhostButton>}
+            {!isAbsent(agent) && (authState === "signed_out" || authState === "unknown") && <GhostButton onClick={() => setLogin(agent.agentId)}>Sign in</GhostButton>}
             {!isAbsent(agent) && authState === "unknown" && <span className="text-[11px] text-muted-foreground" data-testid={`agent-auth-${agent.agentId}`}>Sign-in status unknown</span>}
           </>}
         />
@@ -256,14 +284,16 @@ export function ManagedAgentRows({ state, adapters = [], onOpen, onAuthenticatio
  * do about it. Remove appears here and nowhere else, because a destructive
  * action belongs on the page about the thing, not in a list of nine.
  */
-export function ManagedAgentDetail({ state, agentId }: { state: ManagedAgents; agentId: string }) {
+export function ManagedAgentDetail({ state, agentId, adapters = [], onAuthenticationChanged }: { state: ManagedAgents; agentId: string; adapters?: AdapterDescriptor[]; onAuthenticationChanged?: () => void }) {
+  const [login, setLogin] = useState(false);
+  const auth = agentAuthState(agentId, adapters);
   const reasonId = useId();
   const agent = state.agents?.find(item => item.agentId === agentId);
   if (!agent) return null;
   const busy = state.busy[agentId];
   const running = agent.state === "running";
 
-  return <SettingsGroup label="Runtime" note={<StatusPill tone={stateTone(agent)}>
+  return <SettingsGroup label="Installation" note={<StatusPill tone={stateTone(agent)}>
     <span data-testid={`agent-state-${agent.agentId}`}>{stateLabel(agent)}</span>
   </StatusPill>}>
     <SettingsRow
@@ -273,13 +303,14 @@ export function ManagedAgentDetail({ state, agentId }: { state: ManagedAgents; a
       control={busy
         ? <span role="status" aria-live="polite" className="text-[11px] text-muted-foreground motion-safe:animate-pulse" data-testid={`agent-busy-${agent.agentId}`}>{busy}…</span>
         : <>
-            {isAbsent(agent) && <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>}
-            {needsRepair(agent) && <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>}
+            {isAbsent(agent) && canInstallManagedAgent(agent) && <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>}
+            {needsRepair(agent) && canInstallManagedAgent(agent) && <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>}
+            {hasUpdate(agent) && <GhostButton onClick={() => state.update(agent)}>Update</GhostButton>}
             {/* Deliberately quiet: the agent already works, so a managed copy is
                 an opt-in, not a call to action. Making it the only button read
                 as "this needs installing" for an agent the user can already
                 chat with. */}
-            {!isAbsent(agent) && !needsRepair(agent) && agent.backing !== "managed" && <TextButton onClick={() => state.install(agent)}>
+            {!isAbsent(agent) && !needsRepair(agent) && agent.backing !== "managed" && canInstallManagedAgent(agent) && <TextButton onClick={() => state.install(agent)}>
               Let Bridge manage its own copy
             </TextButton>}
             {/* The one gate on removal: the API said whether this is Bridge's.
@@ -291,6 +322,10 @@ export function ManagedAgentDetail({ state, agentId }: { state: ManagedAgents; a
             >Remove</TextButton>}
           </>}
     />
+    {!isAbsent(agent) && auth !== null && <SettingsRow label="Account" description={auth === "signed_in" ? "Sign-in information found on this computer" : auth === "signed_out" ? "Sign in to use this coding agent" : "Bridge cannot confirm sign-in yet"} control={auth !== "signed_in" && <GhostButton onClick={() => setLogin(true)}>Sign in</GhostButton>} />}
+    {login && <div className="px-3.5 pb-3"><ProviderLoginPane provider={agentId as UsageProvider} label={agent.label} onClose={() => { setLogin(false); state.reload(); onAuthenticationChanged?.(); }} /></div>}
+    {isAbsent(agent) && !canInstallManagedAgent(agent) && <SettingsRow label="Manual installation needed" description="Bridge has no supported download for this computer. Install the agent using the vendor's instructions, then check again." />}
+    {needsRepair(agent) && !canInstallManagedAgent(agent) && <SettingsRow label="Manual repair needed" description="Bridge has no supported repair for this computer. Repair the installation using the vendor's instructions, then check again." />}
     {agent.executable && <SettingsRow label="Path" description={agent.executable} mono />}
     {!isAbsent(agent) && !needsRepair(agent) && agent.backing !== "managed" && <SettingsRow
       label="Nothing to install"

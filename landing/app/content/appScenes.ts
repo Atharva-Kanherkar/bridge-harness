@@ -90,7 +90,8 @@ export type Entry =
   | { kind: "notice"; edge: Tone; title: string; status?: string; text: string; caption?: string; code?: string; actions?: string[] }
   | { kind: "activity"; summary: string; steps: string; rows: { label: string; path?: string; stat?: string }[]; diff?: string }
   | { kind: "checks"; title: string; status: string; revision: string; checks: Check[] }
-  | { kind: "worker"; harness: HarnessId; label: string; status: string; tone: Tone; text: string };
+  | { kind: "worker"; harness: HarnessId; label: string; status: string; tone: Tone; text: string }
+  | { kind: "switch"; from: HarnessId; to: HarnessId; model: string };
 
 export type Dock = {
   origin: string;
@@ -115,6 +116,10 @@ export type Scene = {
   /** Which body the frame renders. The chrome around it never changes. */
   view: "chat" | "mission";
   toolbar?: { title: string; subtitle: string };
+  /** What the composer's model chip reads; a `switch` entry changes it as it plays. */
+  model?: { harness: HarnessId; label: string };
+  /** Already in the thread when the scene opens, so the pane starts mid-conversation. */
+  history?: Entry[];
   prompt?: string;
   entries?: Entry[];
   dock?: Dock;
@@ -151,7 +156,7 @@ export const scenes: Scene[] = [
         rows: [
           { label: "Read", path: "worktree_coordinator.rs" },
           { label: "Edited", path: "worktree_coordinator.rs", stat: "+12 −9" },
-          { label: "Ran", path: "cargo test -p bridge-core worktree::", stat: "exit 0" },
+          { label: "Ran", path: "cargo test -p bridge-core worktree::", stat: "2.1s" },
         ],
         diff: codeDiff,
       },
@@ -189,6 +194,7 @@ export const scenes: Scene[] = [
         elapsed: "2m",
         lines: [
           { kind: "assistant", text: "The coordinator marks a branch reclaimed before the forest entry lands, so the sidebar reads one stale tick." },
+          { kind: "collapsed", label: "Read worktree_coordinator.rs · bridge-core" },
           { kind: "rail", label: "Delegated", status: "running", text: "Implementation on Claude, isolated worktree" },
           { kind: "notice", edge: "success", title: "Worker result", status: "tests passed", text: "Reordered reclaim after the forest append." },
         ],
@@ -204,6 +210,8 @@ export const scenes: Scene[] = [
           { kind: "assistant", text: "Rotating on read means two concurrent reads can both mint a token. Moving the swap behind the store lock." },
           { kind: "collapsed", label: "Read tokenStore.ts · src/auth" },
           { kind: "rail", label: "Checkpoint", status: "Saved", text: "Lock ordering decided" },
+          { kind: "collapsed", label: "Edited tokenStore.ts · +9 −4" },
+          { kind: "assistant", text: "Both readers now wait on the same lock, so only one mint lands." },
         ],
       },
       {
@@ -214,6 +222,7 @@ export const scenes: Scene[] = [
         tone: "warning",
         elapsed: "12m",
         lines: [
+          { kind: "collapsed", label: "Read StreamingChart.tsx · src/components" },
           { kind: "assistant", text: "The chart drops frames because every tick re-sorts the series. I can memoise it, but the fix touches shared state." },
           {
             kind: "notice",
@@ -235,10 +244,50 @@ export const scenes: Scene[] = [
         lines: [
           { kind: "collapsed", label: "Edited tokenStore.ts · +9 −4" },
           { kind: "rail", label: "Worktree", status: "clean", text: ".worktrees/worker-2f9a" },
-          { kind: "notice", edge: "info", title: "Ran bun test src/auth", status: "exit 0", text: "42 passed, 0 failed." },
+          { kind: "notice", edge: "info", title: "Ran bun test src/auth", status: "passed", text: "42 passed, 0 failed." },
+          { kind: "assistant", text: "Green. Handing the diff back to the orchestrator for review." },
         ],
       },
     ],
+  },
+  {
+    id: "switch",
+    label: "Switch mid-chat",
+    view: "chat",
+    toolbar: { title: "Refresh-token rotation", subtitle: "atlas-api · atlas/token-rotation" },
+    model: { harness: "codex", label: "Codex · GPT Luna" },
+    history: [
+      { kind: "assistant", text: "Rotating on read means two concurrent reads can both mint a token. The swap belongs behind the store lock." },
+      { kind: "rail", label: "Checkpoint", status: "Saved", text: "Lock ordering decided" },
+    ],
+    prompt: "Keep going, but hand this to Claude Opus.",
+    entries: [
+      { kind: "switch", from: "codex", to: "claude", model: "Claude Code · Claude Opus" },
+      { kind: "assistant", text: "Picking up from the lock-ordering checkpoint. Moving the swap behind the store lock and giving the race a test of its own." },
+      {
+        kind: "activity",
+        summary: "Ran 1 command, read 1 file, edited 1 file",
+        steps: "3 steps · 4s",
+        rows: [
+          { label: "Read", path: "src/auth/tokenStore.ts" },
+          { label: "Edited", path: "src/auth/tokenStore.ts", stat: "+9 −4" },
+          { label: "Ran", path: "bun test src/auth", stat: "1.4s" },
+        ],
+        diff: `  const current = await store.get(id);
+- return rotate(current);
++ return store.withLock(id, () => rotate(current));`,
+      },
+      { kind: "notice", edge: "success", title: "Same thread, new harness", status: "42 passed", text: "Codex's plan and checkpoint carried over. Claude finished the change without a re-brief." },
+    ],
+    dock: {
+      origin: "atlas/token-rotation · uncommitted vs HEAD (4e1f0a2)",
+      added: 31,
+      removed: 6,
+      files: [
+        { dir: "src/auth/", name: "tokenStore.ts", added: 9, removed: 4, risk: "High", lang: "frontend" },
+        { dir: "src/auth/", name: "tokenStore.test.ts", added: 22, removed: 2, risk: "Low", lang: "frontend" },
+      ],
+    },
   },
   {
     id: "policy",

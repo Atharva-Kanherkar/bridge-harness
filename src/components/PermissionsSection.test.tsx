@@ -39,12 +39,14 @@ describe("PermissionsSection", () => {
     const { container, unmount } = await mount(
       <PermissionsSection policy={policy(true)} autoApprovals={[]} busy={false} onChange={() => undefined} />,
     );
-    expect(container.textContent).toContain("Worker write scope");
-    expect(container.textContent).toContain("Browser outward effects");
-    expect(container.textContent).toContain("Agent prompt changes");
+    // Full access covers worker write scope, so it is not listed as asking.
+    expect(container.textContent).not.toContain("Worker write scope");
+    expect(container.textContent).toContain("let background tasks write to their assigned files");
+    expect(container.textContent).toContain("Sending or publishing from a browser");
+    expect(container.textContent).toContain("Changes to shared agent instructions");
     expect(container.textContent).toContain("These keep asking either way");
-    expect(container.textContent).toContain("Auto-approve provider permissions");
-    expect(container.textContent).toContain("Questions and macOS prompts still wait for you");
+    expect(container.textContent).toContain("Let agents act without asking");
+    expect(container.textContent).toContain("Questions and macOS permissions still need your response");
     expect(container.textContent).not.toContain("Bypass all approvals");
     await unmount();
   });
@@ -105,7 +107,7 @@ describe("PermissionsSection", () => {
     const toggles = container.querySelectorAll('[role="switch"][aria-label$="prompt proposals"]');
     expect(toggles.length).toBe(5);
     expect([...toggles].every(item => item.getAttribute("aria-checked") === "false")).toBe(true);
-    expect(container.textContent).toContain("You review every change before it is saved to the shared role default");
+    expect(container.textContent).toContain("You review the exact change before it is saved");
     await unmount();
   });
 

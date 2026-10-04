@@ -232,4 +232,20 @@ describe("SessionToolbar", () => {
     click([...menu()!.querySelectorAll("button")].find(button => button.textContent?.includes("Code"))!);
     expect(onOpenPane).toHaveBeenCalledWith("code");
   });
+
+  // Contract: testing/feat-dock-clone.md §3.
+  it("lists an alerting overflow pane in the menu, opens it, and marks it when it needs you", () => {
+    const onOpenPane = vi.fn();
+    const dockPanes: DockPaneDescriptor[] = [
+      { id: "code", label: "Code", icon: Code2, available: true },
+      { id: "tasks", label: "Agents", icon: Code2, available: true, alert: true },
+    ];
+    mount({ dockPanes, activePane: "code", dockOpen: true, onOpenPane });
+    expect(container.querySelector('button[aria-label="Agents"]')).toBeNull();
+    expect(container.querySelector('[data-testid="dock-alert-overflow"]')).not.toBeNull();
+    click(overflow());
+    expect(menu()!.querySelector('[data-testid="dock-alert-rail-tasks"]')).not.toBeNull();
+    click([...menu()!.querySelectorAll("button")].find(button => button.textContent?.includes("Agents"))!);
+    expect(onOpenPane).toHaveBeenCalledWith("tasks");
+  });
 });

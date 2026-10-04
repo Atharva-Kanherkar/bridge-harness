@@ -313,6 +313,8 @@ fn status_from_payload(
             .as_ref()
             .map(|resolution| resolution.path().display().to_string()),
         version: receipt_of(payload).map(|receipt| receipt.version.clone()),
+        pinned_version: recipe_for(agent_id).ok().as_ref().map(pinned_version),
+        update_available: !payload_matches_pin(agent_id, payload),
         vendor_message: None,
         process_id: None,
         consecutive_failures: 0,
@@ -461,17 +463,8 @@ fn perform_install(agent_id: &str, repair: bool) -> Result<ManagedAgentOperation
     let store = store()?;
     let source = recipe_for(agent_id)?;
     let existing = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
-    if !repair && matches!(existing, ManagedPayloadStatus::Installed { .. }) {
-        if let Some(receipt) = receipt_of(&existing) {
-            // Both halves, because a vendor's version string is not a promise
-            // about bytes: a re-pinned digest under an unchanged version has to
-            // reinstall rather than report the superseded payload as current.
-            if receipt.version == pinned_version(&source)
-                && receipt.source == source_label(&source)
-            {
-                return Ok(ManagedAgentOperationOutcome::AlreadyCurrent);
-            }
-        }
+    if !repair && receipt_matches_pin(receipt_of(&existing), &source) {
+        return Ok(ManagedAgentOperationOutcome::AlreadyCurrent);
     }
 
     let staging = store
@@ -530,6 +523,40 @@ fn pinned_version(source: &managed_runtime::RuntimeSource) -> String {
 /// artifact carries its digest beside the url, because the url alone is stable
 /// across a corrected pin and the receipt is the only record of which bytes were
 /// actually installed.
+/// Does an installed receipt describe exactly the pinned recipe?
+///
+/// Both halves, because a vendor's version string is not a promise about bytes:
+/// a re-pinned digest under an unchanged version has to reinstall rather than
+/// report the superseded payload as current.
+///
+/// `None` — no receipt, so nothing of Bridge's is installed — is not a match:
+/// there is no payload to be current.
+fn receipt_matches_pin(
+    receipt: Option<&crate::managed_payload::ManagedPayloadReceipt>,
+    source: &managed_runtime::RuntimeSource,
+) -> bool {
+    receipt.is_some_and(|receipt| {
+        receipt.version == pinned_version(source) && receipt.source == source_label(source)
+    })
+}
+
+/// Is the payload Bridge owns for this agent the one Bridge currently pins?
+///
+/// True when Bridge owns nothing: an agent with no managed payload has no
+/// update to offer — installing a first copy is a different action, and the
+/// panel already offers it.
+fn payload_matches_pin(agent_id: &str, payload: &ManagedPayloadStatus) -> bool {
+    if matches!(payload, ManagedPayloadStatus::NotInstalled) {
+        return true;
+    }
+    // No recipe for this platform means Bridge cannot say the payload is behind
+    // one. Reporting an update it could not perform would be a dead button.
+    let Ok(source) = recipe_for(agent_id) else {
+        return true;
+    };
+    receipt_matches_pin(receipt_of(payload), &source)
+}
+
 fn source_label(source: &managed_runtime::RuntimeSource) -> String {
     match source {
         managed_runtime::RuntimeSource::NpmClosure {
@@ -824,6 +851,51 @@ mod tests {
             1,
             "inspect must walk one tree once, where it used to walk it four times"
         );
+    }
+
+    /// A payload installed under an older pin must report an update, and an
+    /// agent Bridge owns nothing for must not.
+    ///
+    /// The bug this locks: a managed payload stays receipt-valid forever, so
+    /// `managed_entrypoint` kept resolving a runtime installed months ago while
+    /// the pin moved on. Nothing compared the two, so a provider's newly
+    /// released models never reached the picker and no surface said why.
+    #[test]
+    fn a_payload_behind_its_pin_reports_an_update_naming_the_pinned_version() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("managed-runtimes");
+        let store = ManagedPayloadStore::new(&root);
+        // The fixture installs version 9.9.9 from `fixture://…`, which is by
+        // construction neither the pinned version nor the pinned source.
+        install_fixture(&store, fixture.path(), "claude");
+        let _root = exclusive_managed_root(&root);
+
+        let listed = list_managed_agents().unwrap();
+        let claude = listed
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == "claude")
+            .expect("claude is a built-in agent");
+        assert_eq!(claude.version.as_deref(), Some("9.9.9"));
+        assert!(
+            claude.update_available,
+            "an installed payload that is not the pinned one is an update, not a current install"
+        );
+        assert_eq!(
+            claude.pinned_version.as_deref(),
+            Some(crate::managed_runtime::CLAUDE_SDK_VERSION),
+            "the status has to name what an update would move to"
+        );
+
+        for agent in &listed.agents {
+            if agent.agent_id == "claude" {
+                continue;
+            }
+            assert!(
+                !agent.update_available,
+                "an agent Bridge owns no payload for has no update to offer: {agent:?}"
+            );
+        }
     }
 
     #[test]

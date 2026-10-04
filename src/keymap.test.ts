@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { chordLabel, formatChord, isTypingTarget, matchShortcut, SHORTCUTS, shortcutFor, shortcutsInGroup, strokeDigit, type KeyStroke, type Shortcut } from "./keymap";
+import { chordLabel, formatChord, isTypingTarget, isWindowLevel, matchShortcut, SHORTCUTS, shortcutFor, shortcutsInGroup, strokeDigit, type KeyStroke, type Shortcut } from "./keymap";
 
 function stroke(overrides: Partial<KeyStroke> = {}): KeyStroke {
   return { key: "", code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...overrides };
@@ -52,12 +52,54 @@ describe("the keymap", () => {
     const match = matchShortcut(stroke({ key: "º", code: "Digit0", metaKey: true, altKey: true }));
     expect(match?.shortcut.id).toBe("toggle-dock");
     expect(match?.index).toBeUndefined();
-    // A bare ⌘0 names no chat, so it must not resolve to the first one.
-    expect(matchShortcut(stroke({ key: "0", code: "Digit0", metaKey: true }))).toBeUndefined();
+    // A bare ⌘0 is a command of its own (actual size), but it must never
+    // resolve to a chat.
+    const actual = matchShortcut(stroke({ key: "0", code: "Digit0", metaKey: true }));
+    expect(actual?.shortcut.id).toBe("zoom-reset");
+    expect(actual?.index).toBeUndefined();
+  });
+
+  it("answers both spellings macOS sends for plus and minus", () => {
+    // On a US layout the plus key is `=` alone and `+` shifted, and both are one
+    // zoom in. The polyfill ignored shift to get this; a chord that pinned shift
+    // would lose the shifted half of the gesture.
+    expect(matchShortcut(stroke({ key: "=", metaKey: true }))?.shortcut.id).toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "+", metaKey: true, shiftKey: true }))?.shortcut.id).toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "-", metaKey: true }))?.shortcut.id).toBe("zoom-out");
+    expect(matchShortcut(stroke({ key: "_", metaKey: true, shiftKey: true }))?.shortcut.id).toBe("zoom-out");
+    // The numeric keypad spells the same characters and is still one command.
+    expect(matchShortcut(stroke({ key: "+", code: "NumpadAdd", metaKey: true }))?.shortcut.id).toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "0", code: "Numpad0", metaKey: true }))?.shortcut.id).toBe("zoom-reset");
+    // Shift being optional must not make these chords match anything unheld.
+    expect(matchShortcut(stroke({ key: "=" }))?.shortcut.id).not.toBe("zoom-in");
+    expect(matchShortcut(stroke({ key: "=", altKey: true, metaKey: true }))?.shortcut.id).not.toBe("zoom-in");
   });
 
   it("lets Control stand in for Command", () => {
     expect(matchShortcut(stroke({ key: "k", ctrlKey: true }))?.shortcut.id).toBe("open-recall");
+  });
+
+  it("keeps zoom reachable from inside the composer", () => {
+    // The polyfill listened on the window, so Cmd+ worked with the composer
+    // focused, which is where most keystrokes land. A chord without
+    // `whileTyping` would be dead for most of a session.
+    for (const key of ["=", "-", "0"]) {
+      expect(matchShortcut(stroke({ key, metaKey: true }), true)?.shortcut.id, key).toBeDefined();
+    }
+    // And they must not have become a way to type a command character.
+    expect(matchShortcut(stroke({ key: "0", metaKey: true }), true)?.index).toBeUndefined();
+  });
+
+  it("marks only zoom as answering inside the terminal pane", () => {
+    // The terminal suppresses commands so its own keys are not stolen. Zoom is
+    // the one exemption, because the polyfill answered it there too and wide
+    // output is a fair reason to want the window larger. Naming the exempt set
+    // exactly keeps a new command from inheriting the exemption by accident.
+    const exempt = SHORTCUTS.filter(candidate => candidate.windowLevel).map(candidate => candidate.id).sort();
+    expect(exempt).toEqual(["zoom-in", "zoom-out", "zoom-reset"]);
+    expect(isWindowLevel("zoom-in")).toBe(true);
+    expect(isWindowLevel("new-chat")).toBe(false);
+    expect(isWindowLevel("toggle-sidebar")).toBe(false);
   });
 
   it("suppresses every command that is not meant to reach a text field", () => {

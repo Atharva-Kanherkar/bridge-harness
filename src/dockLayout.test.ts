@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DOCK_WIDTH,
+  DOCK_PANES,
   DOCK_SHEET_THRESHOLD,
   MAX_DOCK_WIDTH,
   MIN_CONVERSATION_WIDTH,
@@ -22,6 +23,20 @@ function memoryStorage(initial: Record<string, string> = {}) {
     setItem: (key: string, value: string) => void map.set(key, value),
   };
 }
+
+describe("DOCK_PANES", () => {
+  it("appends Context last so no existing chord moves", () => {
+    expect(DOCK_PANES).toEqual(["changes", "code", "terminal", "browser", "transcript", "tasks", "github", "inbox", "context"]);
+  });
+});
+
+describe("readDockState", () => {
+  it("sends a saved clone pane to Browser, where clones now live", () => {
+    const storage = memoryStorage();
+    storage.setItem("bridge.dock.v1.ws-1", JSON.stringify({ open: true, expanded: false, width: 420, pane: "clone" }));
+    expect(readDockState("ws-1", storage)).toMatchObject({ pane: "browser", visited: ["browser"] });
+  });
+});
 
 describe("dockReducer", () => {
   it("starts collapsed with the documented defaults", () => {

@@ -91,6 +91,19 @@ pub fn refresh_model_catalogs(core: &Arc<BridgeCore>) -> Result<Health, BridgeEr
     health(core)
 }
 
+pub fn prepare_agent_setup(
+    core: &Arc<BridgeCore>,
+    agent_id: &str,
+) -> Result<AdapterDescriptor, BridgeError> {
+    core.adapter_registry.prepare_agent_setup(agent_id)
+}
+
+/// The only command the Codex update confirmation may execute. There are no
+/// renderer-supplied URLs or shell arguments at this boundary.
+pub fn install_codex_update() -> Result<(), BridgeError> {
+    crate::codex_update::install()
+}
+
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
 }
@@ -548,6 +561,38 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
     Ok(wire::GithubChecksResult { checks })
 }
 
+/// The pull requests attached to one chat, newest first, with live state.
+/// Reading (re)arms the poller, so a reopened chat resumes background updates
+/// without the GitHub pane being open.
+pub fn github_session_prs(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    refresh: bool,
+) -> Result<wire::GithubSessionPrsResult, BridgeError> {
+    let views = crate::session_prs::session_pull_requests(core, session_id, refresh)?;
+    let pull_requests = views
+        .into_iter()
+        .map(github_wire)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(wire::GithubSessionPrsResult { pull_requests })
+}
+
+/// Attach a chat to a pull request the user named explicitly. Verification is
+/// server-side and repository-scoped; the client cannot bind an arbitrary PR.
+pub fn github_attach_pr(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    reference: &str,
+) -> Result<wire::GithubAttachPrResult, BridgeError> {
+    let reference = crate::session_prs::parse_attach_reference(reference)?;
+    let view = crate::session_prs::attach(core, session_id, &reference, crate::session_prs::ATTRIBUTION_MANUAL)?;
+    Ok(wire::GithubAttachPrResult {
+        attached: true,
+        message: format!("Attached PR #{}.", view.number),
+        pull_request: Some(github_wire(view)?),
+    })
+}
+
 pub fn github_issues(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubIssuesResult, BridgeError> {
     let path = locked_workspace_path(core, workspace_id)?;
     let issues = github_wire(core.github_surface.list_issues(Path::new(&path)).map_err(github_error)?)?;
@@ -633,7 +678,7 @@ pub fn github_review(
     // model profile fills whatever they leave unset, and its tier shapes the
     // worker. The profile's model is only used when its provider matches the
     // chosen harness, otherwise the launch path picks the harness's tier default.
-    let (resolved, reviewer_settings, supports_read_only) = {
+    let (resolved, reviewer_settings, supports_read_only, hide_attribution) = {
         let db = core.db.lock().unwrap();
         let descriptors = core.adapter_registry.descriptors();
         let supports_read_only = descriptors
@@ -653,9 +698,10 @@ pub fn github_review(
             )?,
             crate::reviewer_settings::load(&db)?,
             supports_read_only,
+            crate::attribution_settings::hide_enabled(&db),
         )
     };
-    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only);
+    let plan = reviewer_launch_plan(&reviewer_settings, resolved.as_ref(), &harness, number, supports_read_only, hide_attribution);
     let ReviewerLaunchPlan { capability_tier, effort, model, write_mode, objective } = plan;
 
     // Establish the parent orchestrator session. Reuse the caller's session when
@@ -766,6 +812,7 @@ pub(crate) fn reviewer_launch_plan(
     harness: &str,
     number: u64,
     supports_read_only: bool,
+    hide_attribution: bool,
 ) -> ReviewerLaunchPlan {
     let per_harness = settings.harnesses.get(harness);
     let (capability_tier, profile_effort, profile_model) = match profile {
@@ -797,7 +844,7 @@ pub(crate) fn reviewer_launch_plan(
         effort,
         model,
         write_mode,
-        objective: crate::reviewer_settings::objective(settings, number),
+        objective: crate::reviewer_settings::objective_with_hide(settings, number, hide_attribution),
     }
 }
 
@@ -1242,7 +1289,9 @@ pub struct ForestDigest {
     pub digest: String,
 }
 
-pub use bridge_protocol::messages::{ContextBreakdownDigestResult, ContextBreakdownResult};
+pub use bridge_protocol::messages::{
+    ContextBreakdownDigestResult, ContextBreakdownResult, ContextWindowsResult,
+};
 
 /// The cheap half of forest polling: an opaque token that changes whenever
 /// `get_session_forest` would return different store-derived content.
@@ -1270,6 +1319,15 @@ pub fn get_context_breakdown_digest(
     session_id: &str,
 ) -> Result<wire::ContextBreakdownDigestResult, BridgeError> {
     core.context_breakdown_digest(session_id)
+}
+
+/// Every live context window in the chat's agent tree, as each harness
+/// reports it.
+pub fn get_context_windows(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<wire::ContextWindowsResult, BridgeError> {
+    core.context_windows(session_id)
 }
 
 pub fn get_session_forest(
@@ -1395,23 +1453,38 @@ pub fn fork_session(
     })
 }
 
-/// Create an orchestrator session inside a workspace (the classic Bridge agent
-/// that plans and delegates to workers). Multiple are allowed per workspace.
+/// Create an orchestrator session inside a workspace. Multiple are allowed.
 pub fn create_workspace_session(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
     create_worktree: bool,
 ) -> Result<BridgeState, BridgeError> {
+    create_workspace_session_with_model(core, workspace_id, create_worktree,
+        sessions::WorkspaceSessionKind::Orchestrator, None, None)
+}
+
+/// Create a workspace root session with its mode and direct provider selection.
+pub fn create_workspace_session_with_model(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    create_worktree: bool,
+    kind: sessions::WorkspaceSessionKind,
+    direct_harness: Option<&Harness>,
+    direct_model: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     core.workspace_path(workspace_id)?;
     let operation = core.workspace_operation(workspace_id);
     let _operation = crate::runtime::lock_operation(&operation);
-    let plan = core.plan_workspace_session(workspace_id, create_worktree)?;
+    let plan = core.plan_workspace_session_with_model(
+        workspace_id, create_worktree, kind, direct_harness, direct_model,
+    )?;
     let worktree = match plan.worktree_source().map(str::to_owned) {
-        Some(source) => Some(sessions::prepare_orchestrator_worktree(
+        Some(source) => Some(sessions::prepare_workspace_worktree(
             &core.worktrees,
             plan.workspace_title(),
             Path::new(&source),
             plan.session_id(),
+            kind,
         )?),
         None => None,
     };
@@ -1428,7 +1501,7 @@ pub fn start_session(
 }
 
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
-/// harness/model with no briefing; an `orchestrator` session runs codex with
+/// harness/model with no routing briefing; an `orchestrator` session runs its configured harness with
 /// the routing briefing + delegation protocol.
 pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
     // The "imported history cannot resume" gate lives in `live_turn::start_chat`
@@ -1655,6 +1728,13 @@ pub fn submit_input_with_attachments(
     live_turn::submit_input_with_attachments(core, session_id, text, attachments)
 }
 
+pub fn submit_input_with_preference(
+    core: &Arc<BridgeCore>, session_id: String, text: String,
+    attachments: Vec<wire::TurnImage>, preference: Option<wire::ActiveTurnInput>,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    live_turn::submit_input_with_preference(core, session_id, text, attachments, preference)
+}
+
 /// Resolve and dispatch a leading `#agent` directive without starting or
 /// steering the parent provider. The live-turn layer owns the lifecycle path.
 pub fn dispatch_agent_shortcut(
@@ -1703,6 +1783,26 @@ pub fn search_session_entries(
 ) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
     let db = core.db.lock().unwrap();
     session_recall::search_page(&db, session_id, query, limit, offset)
+}
+
+/// Find a chat across every chat. Index only unless `deep` is set and the
+/// index is unsure; the model stage, when it runs, blocks for seconds.
+pub fn search_chats(
+    core: &Arc<BridgeCore>,
+    params: &wire::SearchChatsParams,
+) -> Result<wire::SearchChatsResult, BridgeError> {
+    crate::chat_search::search(core, params)
+}
+
+pub fn get_chat_search_settings(core: &Arc<BridgeCore>) -> Result<wire::ChatSearchSettings, BridgeError> {
+    crate::chat_search::settings::load(&core.db.lock().unwrap())
+}
+
+pub fn save_chat_search_settings(
+    core: &Arc<BridgeCore>,
+    params: &wire::SaveChatSearchSettingsParams,
+) -> Result<wire::ChatSearchSettings, BridgeError> {
+    crate::chat_search::settings::save(&core.db.lock().unwrap(), params)
 }
 
 /// Write one session's durable record out as JSONL.
@@ -3048,6 +3148,25 @@ fn provider_login_command(core: &Arc<BridgeCore>, provider: &str) -> Result<Comm
             command.args(["auth", "login"]);
             Ok(command)
         }
+        // The device flow without prompts: GH_PROMPT_DISABLED makes gh print
+        // the one-time code and URL, then poll, instead of waiting for Enter.
+        "github" => {
+            let binary = binary::resolve("gh")
+                .ok_or_else(|| BridgeError::Invalid("GitHub CLI is not installed".into()))?;
+            let mut command = CommandBuilder::new(binary);
+            command.args([
+                "auth",
+                "login",
+                "--hostname",
+                "github.com",
+                "--git-protocol",
+                "https",
+                "--web",
+                "--clipboard",
+            ]);
+            command.env("GH_PROMPT_DISABLED", "1");
+            Ok(command)
+        }
         other => Err(BridgeError::Invalid(format!("Unknown provider {other:?}"))),
     }
 }
@@ -3144,9 +3263,13 @@ pub fn start_provider_login(
         // serving the pre-login one until restart. Unconditional — a cancelled
         // login re-probes to the same answer — and non-blocking: the fresh
         // result arrives as its own adapters-changed hint when it lands.
-        core_reader
-            .adapter_registry
-            .refresh_availability(&terminal_reader);
+        if terminal_reader == "github" {
+            core_reader.github_surface.refresh_availability();
+        } else {
+            core_reader
+                .adapter_registry
+                .refresh_availability(&terminal_reader);
+        }
         core_reader.events.publish(CoreEvent::TerminalExited {
             session_id: workspace_reader,
             terminal_id: terminal_reader,
@@ -4086,6 +4209,10 @@ pub fn refresh_provider_usage_overviews_interactive(core: &Arc<BridgeCore>) -> R
     crate::usage_overview::refresh_providers_interactive(core)
 }
 
+pub fn redeem_provider_usage_reset(core: &Arc<BridgeCore>, params: &wire::RedeemProviderUsageResetParams) -> Result<wire::RedeemProviderUsageResetResult, BridgeError> {
+    crate::usage_overview::redeem_reset(core, params)
+}
+
 pub fn get_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     crate::usage_overview::snapshot(core)
 }
@@ -4136,6 +4263,14 @@ pub fn get_reviewer_settings(core: &Arc<BridgeCore>) -> Result<wire::ReviewerSet
 
 pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerSettings) -> Result<wire::ReviewerSettingsResult, BridgeError> {
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
+}
+
+pub fn get_attribution_settings(core: &Arc<BridgeCore>) -> Result<wire::AttributionSettings, BridgeError> {
+    crate::attribution_settings::load(&core.db.lock().unwrap())
+}
+
+pub fn save_attribution_settings(core: &Arc<BridgeCore>, params: &wire::SaveAttributionSettingsParams) -> Result<wire::AttributionSettings, BridgeError> {
+    crate::attribution_settings::save(&core.db.lock().unwrap(), params)
 }
 
 /// Every worktree Bridge knows about, with the last assessment of what may be
@@ -4218,29 +4353,47 @@ pub fn archive_chat(
     core: &Arc<BridgeCore>,
     session_id: &str,
 ) -> Result<worktree_registry::ArchiveChatResult, BridgeError> {
-    let (status, active_turn, adapter_pid): (String, Option<String>, Option<i64>) =
-        core.db.lock().unwrap().query_row(
-            "SELECT status,active_turn_id,adapter_pid FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    // Hold every hidden session's lifecycle claim through shutdown and reclaim.
+    // Acquire all claims before changing anything, so a concurrent launch fails
+    // the archive without partially stopping the family.
+    let family = {
+        let db = core.db.lock().unwrap();
+        // Resolve the requested row first: a missing id must not report success.
+        db.query_row("SELECT id FROM sessions WHERE id=?1", [session_id], |row| row.get::<_, String>(0))?;
+        let mut statement = db.prepare(
+            "WITH RECURSIVE family(id) AS (
+                SELECT id FROM sessions WHERE id=?1
+                UNION SELECT s.id FROM sessions s JOIN family f ON s.parent_session_id=f.id
+             ) SELECT id FROM family ORDER BY id",
         )?;
-    // A `ready` chat has no turn in flight but still owns a live provider
-    // process. Hiding it would take away the only route to that process while
-    // it goes on holding memory, a port and a model session — and the worktree
-    // would be retained anyway, since the same claim marks it in use. Archiving
-    // has to mean the chat is really finished.
-    if active_turn.is_some()
-        || adapter_pid.is_some()
-        || matches!(
-            status.as_str(),
-            "working" | "waiting" | "starting" | "resuming" | "checkpointing" | "ready"
-        )
+        let ids = statement.query_map([session_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+    let _claims = family.iter()
+        .map(|id| core.claim_session_lifecycle(id, "archive chat"))
+        .collect::<Result<Vec<_>, _>>()?;
     {
-        return Err(BridgeError::Invalid(
-            "Stop this chat before archiving it".into(),
-        ));
+        let db = core.db.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
+        // A worker finishing shutdown frees a pool slot. Cancel this family's
+        // queued delegations before that slot can dispatch a hidden successor.
+        for id in &family {
+            tx.execute(
+                "UPDATE worker_queue SET queue_status='cancelled',blocked_at=NULL,
+                    last_error='parent chat archived',updated_at=?2
+                 WHERE parent_session_id=?1 AND queue_status IN ('queued','dispatching','blocked_on_human')",
+                params![id, chrono::Utc::now().to_rfc3339()],
+            )?;
+        }
+        tx.commit()?;
     }
-
+    // Retire the parent first so a worker cancellation cannot start a new turn
+    // on it while the rest of the family is being shut down.
+    live_turn::stop_session_for_archive(core, session_id)?;
+    for id in family.iter().filter(|id| id.as_str() != session_id) {
+        live_turn::stop_session_for_archive(core, id)?;
+    }
     let owned = { worktree_registry::owned_by_session(&core.db.lock().unwrap(), session_id)? };
     let reclaim = match owned {
         Some(record) => Some(worktree_registry::reclaim(
@@ -4253,11 +4406,33 @@ pub fn archive_chat(
         None => None,
     };
 
-    core.db.lock().unwrap().execute(
-        "UPDATE sessions SET archived_at=?2,ended_at=COALESCE(ended_at,?2),active_turn_id=NULL
-          WHERE id=?1 AND archived_at IS NULL",
-        params![session_id, chrono::Utc::now().to_rfc3339()],
-    )?;
+    {
+        let db = core.db.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE sessions SET archived_at=?2,ended_at=COALESCE(ended_at,?2),active_turn_id=NULL
+              WHERE id=?1 AND archived_at IS NULL",
+            params![session_id, now],
+        )?;
+        // Settle delivery atomically with visibility. A sweep may have queued
+        // a result during shutdown, or may not run until after an immediate
+        // restore. Outbox ids reference the canonical parent result entries;
+        // keep those entries while retiring their model delivery obligations.
+        for id in &family {
+            tx.execute(
+                "UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'",
+                [id],
+            )?;
+            tx.execute(
+                "UPDATE durable_outbox SET status='delivered',delivered_at=?2
+                 WHERE destination='parent' AND event_type='worker.result' AND status='pending'
+                   AND id IN (SELECT id FROM session_entries WHERE session_id=?1 AND kind='worker.result')",
+                params![id, now],
+            )?;
+        }
+        tx.commit()?;
+    }
     {
         let db = core.db.lock().unwrap();
         let freed = reclaim
@@ -4312,6 +4487,59 @@ pub fn reclaim_worktree(
         core.events.publish(CoreEvent::StateChanged);
     }
     Ok(outcome)
+}
+
+/// The home folder every storage request is relative to.
+fn storage_home() -> Result<PathBuf, BridgeError> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .ok_or_else(|| BridgeError::Invalid("HOME is not set to an absolute path".into()))
+}
+
+fn storage_guard(core: &Arc<BridgeCore>) -> Result<crate::disk_space::Guard, BridgeError> {
+    let data_dir = core
+        .database_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| BridgeError::Invalid("the database has no parent folder".into()))?;
+    Ok(crate::disk_space::Guard { home: storage_home()?, data_dir, worktrees: core.worktrees.clone() })
+}
+
+/// How full the disk is and the usual places it fills up. Sizes still being
+/// measured come back as `null` with `measuring` set; ask again for them.
+pub fn storage_overview(_core: &Arc<BridgeCore>) -> Result<wire::DiskOverview, BridgeError> {
+    Ok(crate::disk_space::overview(&crate::disk_space::Scanner::global(), &storage_home()?))
+}
+
+/// One folder's children with the sizes known so far. Never waits on a walk.
+pub fn scan_directory(
+    core: &Arc<BridgeCore>,
+    params: &wire::ScanDirectoryParams,
+) -> Result<wire::DiskListing, BridgeError> {
+    let guard = storage_guard(core)?;
+    let path = match params.path.as_deref() {
+        Some(path) if !path.trim().is_empty() => PathBuf::from(path),
+        _ => guard.home.clone(),
+    };
+    if !path.is_absolute() {
+        return Err(BridgeError::Invalid(format!("{} is not an absolute path", path.display())));
+    }
+    Ok(crate::disk_space::list(&crate::disk_space::Scanner::global(), &guard, &path, params.refresh))
+}
+
+/// Move paths to the Trash, or delete them outright. A refusal is reported
+/// per path rather than failing the whole request.
+pub fn delete_paths(
+    core: &Arc<BridgeCore>,
+    params: &wire::DeletePathsParams,
+) -> Result<wire::DiskDeleteResult, BridgeError> {
+    let guard = storage_guard(core)?;
+    Ok(crate::disk_space::delete(&crate::disk_space::Scanner::global(), &guard, &params.paths, params.permanent))
+}
+
+pub fn empty_trash(_core: &Arc<BridgeCore>) -> Result<wire::EmptyTrashResult, BridgeError> {
+    Ok(crate::disk_space::empty_trash())
 }
 
 /// Run the maintenance pass now instead of waiting for the tick.
@@ -5060,6 +5288,255 @@ pub fn browser_skills() -> Vec<browser_bridge::BrowserSkill> {
     browser_bridge::bundled_skills()
 }
 
+// ---- browser clones -------------------------------------------------------
+// The wire methods exist on every platform; the runtime is macOS-only, so off
+// macOS they report "no clone" / "not available".
+
+use bridge_protocol::messages::{
+    CloneBrowserKind, CloneSignInPath, CloneSnapshot, RequestCloneParams,
+};
+
+#[cfg(target_os = "macos")]
+fn clone_snapshot(core: &Arc<BridgeCore>, session_id: &str) -> Option<CloneSnapshot> {
+    use crate::clone_orchestrator::{CloneStatus, SignInPath};
+    let view = match core.browser_clone_orchestrator.view(session_id) {
+        Some(view) => view,
+        None => {
+            // No clone yet, but the agent may have asked for one; surface that so
+            // the dock can show the Allow/Deny card.
+            let request = core.browser_clone_orchestrator.pending_details(session_id)?;
+            let domain = request.domain;
+            return Some(CloneSnapshot {
+                session_id: session_id.to_owned(),
+                clone_id: String::new(),
+                domain: domain.clone(),
+                status: "requested".to_owned(),
+                sign_in_path: read_clone_settings(core).ok()?.settings.default_sign_in_path,
+                minutes_left: 0,
+                screenshot: None,
+                screenshot_redacted_regions: 0,
+                pending_request: Some(domain),
+                pending_request_id: Some(request.id),
+                extension_path: request.extension_path,
+                additional_domains: Some(request.additional_domains),
+                waiting_reason: None,
+                agent_vision: None,
+                agent_pointer: None,
+            });
+        }
+    };
+    // A fresh frame for the dock's live view; absent until a page has painted.
+    let screenshot = core
+        .browser_clone_orchestrator
+        .frame(session_id)
+        .ok()
+        .map(|data| format!("data:image/png;base64,{data}"));
+    let status = match view.status {
+        CloneStatus::Acting => "acting",
+        CloneStatus::WaitingForYou => "waiting_for_you",
+        CloneStatus::TakenOver => "taken_over",
+    };
+    let sign_in_path = match view.sign_in_path {
+        SignInPath::Import => CloneSignInPath::Import,
+        SignInPath::SignInInside => CloneSignInPath::SignInInside,
+    };
+    Some(CloneSnapshot {
+        session_id: view.session_id,
+        clone_id: view.clone_id,
+        domain: view.domain,
+        status: status.to_owned(),
+        sign_in_path,
+        minutes_left: view.minutes_left,
+        screenshot,
+        screenshot_redacted_regions: 0,
+        pending_request: None,
+        pending_request_id: None,
+        extension_path: None,
+        additional_domains: None,
+        waiting_reason: core.browser_clone_orchestrator.sign_in_help(session_id).map(str::to_owned),
+        agent_vision: Some(core.browser_clone_orchestrator.agent_vision(session_id)),
+        agent_pointer: core.browser_clone_orchestrator.agent_pointer(session_id).map(|(x, y, action, age_ms)| {
+            bridge_protocol::messages::CloneAgentPointer { x, y, action: action.to_owned(), age_ms }
+        }),
+    })
+}
+
+pub fn clone_state(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(clone_snapshot(core, session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id);
+        Ok(None)
+    }
+}
+
+pub fn request_clone(
+    core: &Arc<BridgeCore>,
+    params: &RequestCloneParams,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::clone_orchestrator::{CloneBrowser, SignInPath};
+        let browser = match params.browser {
+            CloneBrowserKind::Chrome => CloneBrowser::Chrome,
+            CloneBrowserKind::Brave => CloneBrowser::Brave,
+        };
+        let path = match params.sign_in_path {
+            CloneSignInPath::Import => SignInPath::Import,
+            CloneSignInPath::SignInInside => SignInPath::SignInInside,
+        };
+        // The tool capability is re-minted with the live runtime pid on each
+        // turn (see live_turn), so the initial mint's pid does not matter here.
+        let settings = read_clone_settings(core)?.settings;
+        core.browser_clone_orchestrator
+            .start_approved_clone(&params.session_id, &params.domain, browser, path, Some(std::time::Duration::from_secs(settings.ttl_minutes * 60)), 0, settings.agent_vision)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        Ok(clone_snapshot(core, &params.session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, params);
+        Err(BridgeError::Invalid(
+            "Browser clones are only available on macOS".into(),
+        ))
+    }
+}
+
+pub fn takeover_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.take_over(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+pub fn hand_back_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.hand_back(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+pub fn destroy_clone(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    core.browser_clone_orchestrator.destroy(session_id);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (core, session_id);
+    Ok(())
+}
+
+/// Input from the person into a clone they have taken over (click, scroll,
+/// typing, a login key). Refused unless the clone is taken over.
+pub fn clone_input(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    input: &bridge_protocol::messages::CloneInputEvent,
+) -> Result<(), BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::clone_orchestrator::CloneInput;
+        use bridge_protocol::messages::CloneInputEvent as Wire;
+        let input = match input.clone() {
+            Wire::Click { x, y } => CloneInput::Click { x, y },
+            Wire::Scroll { x, y, delta_y } => CloneInput::Scroll { x, y, delta_y },
+            Wire::Type { text } => CloneInput::Type { text },
+            Wire::Key { key } => CloneInput::Key { key },
+        };
+        core.browser_clone_orchestrator
+            .forward_input(session_id, input)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id, input);
+        Err(BridgeError::Invalid("Browser clones are only available on macOS".into()))
+    }
+}
+
+/// The person answers the agent's clone request. On allow, the clone is spawned
+/// for the asked domain and page actions are approved; on deny, the request is
+/// dropped. Returns the resulting snapshot (the running clone, or `None`).
+pub fn resolve_clone_request(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    allow: bool,
+    request_id: &str,
+    sign_in_path: CloneSignInPath,
+    ttl_minutes: u64,
+    agent_vision: Option<bool>,
+) -> Result<Option<CloneSnapshot>, BridgeError> {
+    #[cfg(target_os = "macos")]
+    {
+        validate_clone_ttl(ttl_minutes)?;
+        let agent_vision = match agent_vision {
+            Some(vision) => vision,
+            None => read_clone_settings(core)?.settings.agent_vision,
+        };
+        if allow {
+            let runtime_pid = core.adapters.lock().unwrap_or_else(|p| p.into_inner())
+                .get(session_id)
+                .map(|runtime| runtime.process_id())
+                .filter(|pid| *pid != 0)
+                .ok_or_else(|| BridgeError::Invalid("The requesting agent is no longer running".into()))?;
+            core.browser_clone_orchestrator
+                .approve_request(session_id, request_id, runtime_pid,
+                    match sign_in_path { CloneSignInPath::Import => crate::clone_orchestrator::SignInPath::Import, CloneSignInPath::SignInInside => crate::clone_orchestrator::SignInPath::SignInInside },
+                    Some(std::time::Duration::from_secs(ttl_minutes * 60)), agent_vision)
+                .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        } else {
+            core.browser_clone_orchestrator.deny_request(session_id, request_id).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        }
+        Ok(clone_snapshot(core, session_id))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (core, session_id, allow, request_id, sign_in_path, ttl_minutes, agent_vision);
+        Ok(None)
+    }
+}
+
+fn validate_clone_ttl(minutes: u64) -> Result<(), BridgeError> {
+    if !(1..=240).contains(&minutes) { return Err(BridgeError::Invalid("Clone lifetime must be between 1 and 240 minutes".into())); }
+    Ok(())
+}
+
+pub fn read_clone_settings(core: &Arc<BridgeCore>) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    use bridge_protocol::messages::{CloneSettings, CloneSettingsSnapshot};
+    let payload: Option<String> = core.db.lock().unwrap_or_else(|p| p.into_inner())
+        .query_row("SELECT payload FROM configuration_entries WHERE kind='browser_clones' AND id='settings'", [], |row| row.get(0)).optional()?;
+    let settings = match payload {
+        Some(payload) => serde_json::from_str::<CloneSettings>(&payload).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+        // Import is the default: the clone starts signed in as you, like your own browser.
+        None => CloneSettings { default_sign_in_path: CloneSignInPath::Import, ttl_minutes: 30, agent_vision: true },
+    };
+    validate_clone_ttl(settings.ttl_minutes)?;
+    Ok(CloneSettingsSnapshot { connected: cfg!(target_os = "macos"), settings })
+}
+
+pub fn write_clone_settings(core: &Arc<BridgeCore>, settings: &bridge_protocol::messages::CloneSettings) -> Result<bridge_protocol::messages::CloneSettingsSnapshot, BridgeError> {
+    if !cfg!(target_os = "macos") { return Err(BridgeError::Invalid("Browser clones are only available on macOS".into())); }
+    validate_clone_ttl(settings.ttl_minutes)?;
+    let payload = serde_json::to_string(settings).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let now = chrono::Utc::now().to_rfc3339();
+    core.db.lock().unwrap_or_else(|p| p.into_inner()).execute(
+        "INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('browser_clones','settings',?1,?2,?2) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at", params![payload, now])?;
+    read_clone_settings(core)
+}
+
+pub fn clone_requests(core: &Arc<BridgeCore>) -> Vec<bridge_protocol::messages::CloneRequest> {
+    #[cfg(target_os = "macos")]
+    { core.browser_clone_orchestrator.pending_requests() }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = core; Vec::new() }
+}
+
 pub fn configure_remote_browser(
     core: &Arc<BridgeCore>,
     config: Option<browser_bridge::RemoteBrowserConfig>,
@@ -5431,68 +5908,164 @@ mod tests {
         assert!(fixture.chat_worktree.is_dir());
     }
 
-    /// A `ready` chat has no turn in flight but still owns a live provider
-    /// process. Archiving it would hide the only route to that process while it
-    /// went on holding memory and a model session — and the worktree would be
-    /// retained anyway, since the same claim marks it in use.
-    #[test]
-    fn archiving_refuses_a_chat_whose_adapter_is_still_alive() {
-        let fixture = chat_fixture();
-        fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE sessions SET status='ready',adapter_pid=4242,
-                    adapter_process_identity='claude:4242' WHERE id='chat'",
-                [],
-            )
-            .unwrap();
-        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
-        assert!(error.to_string().contains("Stop this chat"), "{error:?}");
-        assert!(fixture.chat_worktree.is_dir());
-        let archived: Option<String> = fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .query_row("SELECT archived_at FROM sessions WHERE id='chat'", [], |row| row.get(0))
-            .unwrap();
-        assert!(archived.is_none(), "and it is not hidden");
+    struct ArchiveRuntime {
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
-    /// Boot recovery clears the claim for a process that is really gone, so a
-    /// `ready` row left by a crashed run must not block archiving forever.
-    #[test]
-    fn archiving_a_ready_chat_with_no_live_adapter_still_works() {
-        let fixture = chat_fixture();
-        fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .execute("UPDATE sessions SET status='idle',adapter_pid=NULL WHERE id='chat'", [])
-            .unwrap();
-        assert!(super::archive_chat(&fixture.core, "chat").unwrap().archived);
+    impl crate::adapters::AdapterRuntime for ArchiveRuntime {
+        fn process_id(&self) -> u32 { 4242 }
+        fn provider_session_id(&self) -> &str { "archive-test" }
+        fn current_turn(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+            std::sync::Arc::new(std::sync::Mutex::new(None))
+        }
+        fn send_turn(&self, _: &str) -> Result<(), crate::BridgeError> {
+            panic!("archiving must not start a shutdown checkpoint turn")
+        }
+        fn interrupt(&self) -> Result<(), crate::BridgeError> { Ok(()) }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), crate::BridgeError> { Ok(()) }
+        fn stop(&mut self, _: crate::adapters::ShutdownReason) {
+            self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn attach_archive_runtime(core: &crate::runtime::BridgeCore, id: &str) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        core.adapters.lock().unwrap().insert(id.into(), Box::new(ArchiveRuntime { stopped: stopped.clone() }));
+        stopped
     }
 
     #[test]
-    fn archiving_refuses_a_chat_that_is_still_running() {
+    fn archiving_stops_live_statuses_and_clears_process_and_turn_claims() {
+        for status in ["ready", "working", "waiting", "starting", "resuming", "checkpointing", "warm", "restored"] {
+            let fixture = chat_fixture();
+            fixture.core.db.lock().unwrap().execute(
+                "UPDATE sessions SET status=?1,active_turn_id=CASE WHEN ?1='ready' THEN NULL ELSE 'turn' END,adapter_pid=4242,
+                 adapter_process_identity='claude:4242' WHERE id='chat'", [status],
+            ).unwrap();
+            let stopped = attach_archive_runtime(&fixture.core, "chat");
+            let gate = std::sync::Arc::new(std::sync::Mutex::new(true));
+            fixture.core.reader_launches.lock().unwrap().insert("chat".into(), gate.clone());
+            // Meaningful history would trigger the optional stop_session checkpoint.
+            crate::session_forest::SessionForest::new(&fixture.core.db.lock().unwrap()).append(
+                "chat", crate::session_forest::EntryKind::UserMessage, serde_json::json!({"text":"Keep this history"}),
+            ).unwrap();
+
+            let result = super::archive_chat(&fixture.core, "chat").unwrap();
+            assert!(result.archived, "{status}");
+            assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "{status}");
+            assert!(!*gate.lock().unwrap());
+            assert!(!fixture.core.adapters.lock().unwrap().contains_key("chat"));
+            assert!(!fixture.chat_worktree.exists(), "stopped before reclaim: {status}");
+            let db = fixture.core.db.lock().unwrap();
+            let claims: (String, Option<String>, Option<i64>, Option<String>) = db.query_row(
+                "SELECT status,active_turn_id,adapter_pid,adapter_process_identity FROM sessions WHERE id='chat'", [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).unwrap();
+            assert_eq!(claims, ("stopped".into(), None, None, None));
+            assert!(crate::store::session_events_after(&db, "chat", 0, 200).unwrap().iter().any(|event| event.text.as_deref() == Some("Keep this history")));
+        }
+    }
+
+    #[test]
+    fn archiving_clears_stale_adapter_claims_and_also_handles_idle_chats() {
+        for status in ["idle", "ready"] {
+            let fixture = chat_fixture();
+            fixture.core.db.lock().unwrap().execute(
+                "UPDATE sessions SET status=?1,adapter_pid=4242,adapter_process_identity='stale' WHERE id='chat'", [status],
+            ).unwrap();
+            assert!(super::archive_chat(&fixture.core, "chat").unwrap().archived);
+            assert!(!fixture.chat_worktree.exists());
+        }
+    }
+
+    #[test]
+    fn archiving_stops_descendants_abandons_inputs_and_keeps_siblings_running() {
         let fixture = chat_fixture();
-        fixture
-            .core
-            .db
-            .lock()
-            .unwrap()
-            .execute("UPDATE sessions SET status='working' WHERE id='chat'", [])
-            .unwrap();
-        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
-        assert!(
-            error.to_string().contains("Stop this chat"),
-            "{error:?}",
-        );
-        assert!(fixture.chat_worktree.is_dir());
+        {
+            let db = fixture.core.db.lock().unwrap();
+            db.execute("UPDATE sessions SET status='working',active_turn_id='turn'", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('worker','w','codex','Worker','working','reported','chat','worker')", []).unwrap();
+            db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker','chat','working','research','key','now')", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('aside','w','codex','Aside','ready','reported','worker','aside')", []).unwrap();
+            for id in ["chat", "worker", "aside"] {
+                db.execute("INSERT INTO worker_queue(id,parent_session_id,workspace_id,turn_id,request,actual_model,queue_status,created_at,updated_at) VALUES(?1,?1,'w','turn','{}','codex','queued','now','now')", [id]).unwrap();
+            }
+            for id in ["chat", "worker", "aside", "sibling"] {
+                db.execute("INSERT INTO queued_session_input(id,session_id,provider_text,display_text,state,created_at) VALUES(?1,?1,'Next','Next','queued','now')", [id]).unwrap();
+            }
+        }
+        let stopped = ["chat", "worker", "aside", "sibling"].map(|id| attach_archive_runtime(&fixture.core, id));
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        for flag in &stopped[..3] { assert!(flag.load(std::sync::atomic::Ordering::SeqCst)); }
+        assert!(!stopped[3].load(std::sync::atomic::Ordering::SeqCst));
+        let db = fixture.core.db.lock().unwrap();
+        let queued: i64 = db.query_row("SELECT COUNT(*) FROM queued_session_input WHERE state='queued' AND session_id<>'sibling'", [], |r| r.get(0)).unwrap();
+        assert_eq!(queued, 0);
+        let cancelled: i64 = db.query_row("SELECT COUNT(*) FROM worker_queue WHERE queue_status='cancelled'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cancelled, 3);
+        let lifecycle: String = db.query_row("SELECT lifecycle_state FROM worker_runtime WHERE session_id='worker'", [], |r| r.get(0)).unwrap();
+        assert_eq!(lifecycle, "cancelled");
+        drop(db);
+        let remaining = crate::store::state(&fixture.core.db.lock().unwrap()).unwrap();
+        assert_eq!(remaining.sessions.len(), 1);
+        assert_eq!(remaining.sessions[0].id, "sibling");
+        assert!(matches!(remaining.sessions[0].status, crate::model::SessionStatus::Working));
+        assert!(fixture.core.adapters.lock().unwrap().contains_key("sibling"));
+        // Cancellation reports arrive through the durable outbox, after archive
+        // returns. They must not recreate input or replay when history returns.
+        crate::live_turn::prepare_pending_worker_results(&fixture.core);
+        assert_eq!(crate::session_input::pending_count(&fixture.core.db.lock().unwrap(), "chat").unwrap(), 0);
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        crate::live_turn::prepare_pending_worker_results(&fixture.core);
+        assert_eq!(crate::session_input::pending_count(&fixture.core.db.lock().unwrap(), "chat").unwrap(), 0);
+    }
+
+    #[test]
+    fn immediate_restore_does_not_replay_pending_archive_cancellation() {
+        let fixture = chat_fixture();
+        {
+            let db = fixture.core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('worker','w','codex','Worker','working','reported','chat','worker')", []).unwrap();
+            db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker','chat','working','research','key','now')", []).unwrap();
+        }
+        let stopped = attach_archive_runtime(&fixture.core, "worker");
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        let results: i64 = fixture.core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='worker.result'", [], |row| row.get(0)).unwrap();
+        assert_eq!(results, 1, "canonical cancellation evidence is preserved");
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        crate::live_turn::prepare_pending_worker_results(&fixture.core);
+        assert_eq!(crate::session_input::pending_count(&fixture.core.db.lock().unwrap(), "chat").unwrap(), 0);
+    }
+
+    #[test]
+    fn archiving_lifecycle_conflicts_leave_the_entire_family_visible_and_alive() {
+        let fixture = chat_fixture();
+        fixture.core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('worker','w','codex','Worker','working','reported','chat','aside')", []).unwrap();
+        let stopped = attach_archive_runtime(&fixture.core, "chat");
+        let _held = fixture.core.claim_session_lifecycle("worker", "session start").unwrap();
+        assert!(super::archive_chat(&fixture.core, "chat").unwrap_err().to_string().contains("already in progress"));
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(session_count(&fixture.core), 3);
+        assert!(fixture.chat_worktree.exists());
+        // The claims acquired before the conflict have been released too.
+        assert!(fixture.core.claim_session_lifecycle("chat", "test").is_ok());
+    }
+
+    #[test]
+    fn archived_roots_and_descendants_cannot_restart_until_restored() {
+        let fixture = chat_fixture();
+        fixture.core.db.lock().unwrap().execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES('aside','w','codex','Aside','idle','reported','chat','aside')", []).unwrap();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        for id in ["chat", "aside"] {
+            let error = super::start_chat(&fixture.core, id.into()).unwrap_err();
+            assert!(error.to_string().contains("Restore this archived chat"), "{error}");
+            let error = super::submit_input(&fixture.core, id.into(), "Resume work".into()).unwrap_err();
+            assert!(error.to_string().contains("Restore this archived chat"), "{error}");
+            assert!(!crate::live_turn::drain_queued_input(&fixture.core, id));
+        }
+        assert!(fixture.core.adapters.lock().unwrap().is_empty());
+        assert!(super::archive_chat(&fixture.core, "missing").is_err());
     }
 
     /// Replays the recorded approve/deny decision for every action kind through
@@ -5546,25 +6119,25 @@ mod tests {
             used_fallback: false,
         };
         // Nothing configured: the profile speaks for its own provider only.
-        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true);
+        let plain = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "codex", 9, true, false);
         assert_eq!((plain.model.as_deref(), plain.effort, plain.capability_tier), (Some("gpt-5-codex"), delegation::Effort::Medium, CapabilityTier::Standard));
         assert_eq!(plain.write_mode, delegation::WriteMode::ReadOnly);
         assert!(plain.objective.starts_with("Review pull request #9"));
-        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true);
+        let other = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "claude", 9, true, false);
         assert_eq!(other.model, None, "a Codex model is not handed to Claude");
         assert_eq!(other.effort, delegation::Effort::Medium);
         // Settings for the harness win over the profile.
         let mut settings = ReviewerSettings { system_prompt: "Check PR {number}.".into(), ..Default::default() };
         settings.harnesses.insert("claude".into(), ReviewerHarnessSettings { model: Some("claude-opus-5".into()), effort: Some(wire::Effort::Xhigh) });
-        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true);
+        let configured = super::reviewer_launch_plan(&settings, Some(&profile), "claude", 9, true, false);
         assert_eq!((configured.model.as_deref(), configured.effort), (Some("claude-opus-5"), delegation::Effort::Xhigh));
         assert!(configured.objective.starts_with("Check PR 9."), "{}", configured.objective);
         assert!(configured.objective.contains("only post a comment"), "custom prompts keep the safety guardrail: {}", configured.objective);
         // No profile at all: strong tier, high effort, harness default model.
-        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true);
+        let bare = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 9, true, false);
         assert_eq!((bare.model, bare.effort, bare.capability_tier), (None, delegation::Effort::High, CapabilityTier::Strong));
         // A harness without read_only support reviews from an isolated worktree.
-        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false);
+        let opencode = super::reviewer_launch_plan(&ReviewerSettings::default(), Some(&profile), "opencode", 9, false, false);
         assert_eq!(opencode.write_mode, delegation::WriteMode::Isolated);
     }
 
@@ -5574,10 +6147,20 @@ mod tests {
         use crate::delegation;
         // The same harness id gets isolated iff its descriptor lacks read_only —
         // no hard-coded name decides write access.
-        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false);
+        let isolated = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, false, false);
         assert_eq!(isolated.write_mode, delegation::WriteMode::Isolated);
-        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true);
+        let readonly = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "custom", 3, true, false);
         assert_eq!(readonly.write_mode, delegation::WriteMode::ReadOnly);
+    }
+
+    #[test]
+    fn reviewer_launch_plan_prepends_hiding_rule_when_on() {
+        use bridge_protocol::messages::ReviewerSettings;
+        let hidden = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, true);
+        assert!(hidden.objective.starts_with(crate::prompts::ATTRIBUTION_HIDING_RULE));
+        assert!(hidden.objective.contains("Review pull request #7"));
+        let shown = super::reviewer_launch_plan(&ReviewerSettings::default(), None, "codex", 7, true, false);
+        assert!(!shown.objective.contains("Co-authored-by"));
     }
 
     #[test]
@@ -6007,22 +6590,35 @@ pub fn inspect_managed_agent(
     crate::managed_agents::inspect_managed_agent(agent_id)
 }
 
+/// Install or upgrade an agent's managed payload, then re-read its catalog.
+///
+/// The catalog refresh is the point of the install as often as not: a payload
+/// bump is how a newly released provider model reaches Bridge, and the adapter
+/// caches its model list from whichever payload was resolvable when it last
+/// looked. Without this the models the user just downloaded stay invisible
+/// until the app restarts.
 pub fn install_managed_agent(
+    core: &Arc<BridgeCore>,
     agent_id: &str,
 ) -> Result<
     bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
-    crate::managed_agents::install_managed_agent(agent_id)
+    let result = crate::managed_agents::install_managed_agent(agent_id)?;
+    core.adapter_registry.refresh_availability(agent_id);
+    Ok(result)
 }
 
 pub fn repair_managed_agent(
+    core: &Arc<BridgeCore>,
     agent_id: &str,
 ) -> Result<
     bridge_protocol::messages::ManagedAgentOperationResult,
     crate::managed_agents::ManagedAgentError,
 > {
-    crate::managed_agents::repair_managed_agent(agent_id)
+    let result = crate::managed_agents::repair_managed_agent(agent_id)?;
+    core.adapter_registry.refresh_availability(agent_id);
+    Ok(result)
 }
 
 /// Takes the core because removal must first prove nothing is running against
@@ -6101,5 +6697,35 @@ mod chat_effort_tests {
         assert!(selected_chat_effort(&model, Some("low"), Some("high")).is_err());
         assert_eq!(selected_chat_effort(&model, None, Some("low")).unwrap(), None);
         assert_eq!(selected_chat_effort(&model, None, Some("high")).unwrap().as_deref(), Some("high"));
+    }
+}
+
+#[cfg(test)]
+mod clone_settings_tests {
+    use super::*;
+    #[test]
+    fn clone_lifetime_validation_rejects_zero_and_unbounded_leases() {
+        assert!(validate_clone_ttl(0).is_err());
+        assert!(validate_clone_ttl(241).is_err());
+        assert!(validate_clone_ttl(u64::MAX).is_err());
+        assert!(validate_clone_ttl(1).is_ok());
+        assert!(validate_clone_ttl(240).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_settings_round_trip_through_the_native_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(dir.path()));
+        let defaults = read_clone_settings(&core).unwrap();
+        assert!(defaults.connected);
+        assert_eq!(defaults.settings.default_sign_in_path, CloneSignInPath::Import);
+        assert!(defaults.settings.agent_vision);
+        let settings = bridge_protocol::messages::CloneSettings { default_sign_in_path: CloneSignInPath::SignInInside, ttl_minutes: 60, agent_vision: false };
+        write_clone_settings(&core, &settings).unwrap();
+        assert_eq!(read_clone_settings(&core).unwrap().settings, settings);
+        let mut invalid = settings.clone(); invalid.ttl_minutes = 0;
+        assert!(write_clone_settings(&core, &invalid).is_err());
+        assert_eq!(read_clone_settings(&core).unwrap().settings, settings);
     }
 }

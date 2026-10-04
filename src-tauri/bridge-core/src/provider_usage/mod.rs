@@ -54,6 +54,8 @@ pub(crate) struct AccountUsage {
     pub plan: Option<String>,
     pub observed_at: i64,
     pub windows: Vec<UsageQuotaWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<bridge_protocol::messages::UsageResetCredits>,
     pub metrics: Vec<UsageAccountMetric>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -99,6 +101,15 @@ pub(crate) fn read_interactive(
         MenuBarProvider::Claude => claude::read_interactive(core).map_err(Into::into),
         _ => read(core, provider, settings),
     }
+}
+
+pub(crate) fn claim_claude_reset(
+    account: &str,
+    org: &str,
+    credit: &bridge_protocol::messages::UsageResetCredit,
+    key: &str,
+) -> Result<bridge_protocol::messages::RedeemProviderUsageResetResult, String> {
+    claude::claim(account, org, credit, key)
 }
 
 pub(crate) fn read(

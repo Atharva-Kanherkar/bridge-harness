@@ -1,43 +1,121 @@
-# Both local release and CI use the same signature, icon, and notarization gates.
-# Required secrets: APPLE_CERTIFICATE (base64 Developer ID Application .p12),
-# APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY, and
-# APPLE_API_KEY_P8. APPLE_API_ISSUER is required for Team API keys; omit it for
-# Individual API keys. Also required: TAURI_SIGNING_PRIVATE_KEY, to sign the
-# app updater artifact consumed by the in-app updater (the key has no
-# password); the matching public key is committed in
-# src-tauri/tauri.conf.json. No artifact is published until all verification
-# passes.
-name: Release macOS DMG
+# The protected main-push Release Please workflow calls this after it creates a
+# tag and draft. Preflight verifies that exact source commit and discovers its
+# newest eligible Release Please tag; every release job then checks out that
+# exact tag commit before the only signing-secret-bearing job can start.
+name: Release macOS
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
-  workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact protected main commit whose Release Please job succeeded
+        required: true
+        type: string
+      release_please_app_client_id:
+        description: Repository-scoped release App client ID
+        required: true
+        type: string
+    secrets:
+      RELEASE_PLEASE_APP_PRIVATE_KEY:
+        required: true
+      APPLE_CERTIFICATE:
+        required: true
+      APPLE_CERTIFICATE_PASSWORD:
+        required: true
+      APPLE_SIGNING_IDENTITY:
+        required: true
+      APPLE_API_ISSUER:
+        required: false
+      APPLE_API_KEY:
+        required: true
+      APPLE_API_KEY_P8:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: release-macos-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  dmg:
-    runs-on: macos-15
+  preflight:
+    name: Validate Release Please draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # GitHub hides draft releases from callers without push access. This token
+    # is used only by the protected resolver's read calls; later jobs downgrade.
     permissions:
       contents: write
+      pull-requests: read
+    outputs:
+      should_release: ${{ steps.release.outputs.should_release }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_version: ${{ steps.release.outputs.release_version }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - name: Check out the exact candidate commit and tags
+        # actions/checkout v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          bun-version: 1.3.13
-      - uses: actions/setup-node@v4
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22"
-      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Validate release tag and signing inputs
+      - name: Resolve an authorized, retryable release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: node scripts/resolve-production-release.mjs
+
+  build-signed-artifacts:
+    name: Build, sign, and notarize
+    needs: preflight
+    if: needs.preflight.outputs.should_release == 'true'
+    runs-on: macos-15
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact release commit
+        # actions/checkout v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          fetch-depth: 0
+
+      # oven-sh/setup-bun v2.2.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.13
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+
+      # dtolnay/rust-toolchain stable, pinned 2026-09-13
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+
+      - name: Validate exact tagged source
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+        run: |
+          node scripts/release-version.mjs
+          if [ "$RELEASE_TAG" != "v$RELEASE_VERSION" ] || [ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ] || [ "$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")" != "$RELEASE_SHA" ]; then
+            echo "Release tag, version, and checkout do not identify the same commit." >&2
+            exit 1
+          fi
+
+      - name: Validate production credentials are configured
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -54,11 +132,6 @@ jobs:
           done
           if [ -n "$missing" ]; then
             echo "Public release requires these repository secrets:$missing" >&2
-            exit 1
-          fi
-          version=$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json")).version')
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "Tag does not match the app version." >&2
             exit 1
           fi
 
@@ -83,65 +156,112 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
           security list-keychains -d user -s "$RUNNER_TEMP/bridge-signing.keychain-db" login.keychain-db
 
-      - name: Build, test, sign, notarize, and verify exact DMG contents
+      - name: Build, test, sign, notarize, staple, and verify
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/bridge-auth.p8
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: sh scripts/release-dmg.sh
-
-      - name: Retain verified DMG and updater artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Bridge-macOS-verified
-          path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/dmg/*.dmg.sha256
-            src-tauri/target/release/bundle/dmg/*.app.tar.gz
-            src-tauri/target/release/bundle/dmg/*.app.tar.gz.sig
-          if-no-files-found: error
-
-      # A manual run from a branch only retains a verified artifact. Publishing
-      # requires a matching version tag and never overwrites an existing release.
-      - name: Publish verified tagged release
-        if: github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          version=$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json")).version')
-          case "$(uname -m)" in
-            arm64) arch=aarch64 ;;
-            x86_64) arch=x64 ;;
-            *) exit 1 ;;
-          esac
-          dmg="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.dmg"
-          updater_tar="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.app.tar.gz"
-          updater_sig_value=$(cat "$updater_tar.sig")
-          pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          node -e '
-            const fs = require("fs");
-            const [, version, pubDate, sig, tarName, arch] = process.argv;
-            const manifest = {
-              version,
-              notes: "See CHANGELOG.md for changes.",
-              pub_date: pubDate,
-              platforms: {
-                [`darwin-${arch}`]: {
-                  signature: sig,
-                  url: `https://github.com/Atharva-Kanherkar/bridge-harness/releases/latest/download/${tarName}`,
-                },
-              },
-            };
-            fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2));
-          ' "$version" "$pub_date" "$updater_sig_value" "$(basename -- "$updater_tar")" "$arch"
-          printf '%s\n' "Signed and notarized macOS release. See CHANGELOG.md for changes." "Claude requires Node 18 or later on PATH." > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$GITHUB_REF_NAME" "$dmg" "$dmg.sha256" "$updater_tar" "$updater_tar.sig" latest.json --verify-tag --draft --title "Bridge v$version" --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Remove temporary signing credentials
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/bridge-signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/bridge-signing.p12" "$RUNNER_TEMP/bridge-auth.p8"
+
+      - name: Retain verified release artifacts for isolated acceptance
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Bridge-macOS-${{ needs.preflight.outputs.release_tag }}
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg.sha256
+            src-tauri/target/release/bundle/dmg/*.app.tar.gz
+            src-tauri/target/release/bundle/dmg/*.app.tar.gz.sig
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+
+  smoke-release-dmg:
+    name: Smoke mounted release DMG
+    needs: [preflight, build-signed-artifacts]
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact release acceptance code
+        # actions/checkout v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+
+      - name: Download signed artifacts without release credentials
+        # actions/download-artifact v4.3.0
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: Bridge-macOS-${{ needs.preflight.outputs.release_tag }}
+          path: release-artifacts
+
+      - name: Exercise the app and bundled daemon from the mounted DMG
+        run: |
+          set -- release-artifacts/*.dmg
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "Expected exactly one release DMG." >&2
+            exit 1
+          fi
+          sh scripts/smoke-packaged-macos-dmg.sh "$1"
+
+  publish-release:
+    name: Publish verified GitHub Release
+    needs: [preflight, build-signed-artifacts, smoke-release-dmg]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact release publication code and tags
+        # actions/checkout v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          fetch-depth: 0
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+
+      # Publishing a recovered tag whose workflow files differ from current
+      # main requires GitHub's Workflows write permission. GITHUB_TOKEN cannot
+      # receive it, so use the same repository-scoped release App briefly.
+      - name: Create short-lived publication token
+        id: release-token
+        # actions/create-github-app-token v3.2.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ inputs.release_please_app_client_id }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+
+      - name: Download accepted release artifacts
+        # actions/download-artifact v4.3.0
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: Bridge-macOS-${{ needs.preflight.outputs.release_tag }}
+          path: release-artifacts
+
+      - name: Upload to the draft and publish after verification
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.release_version }}
+          RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+          RELEASE_ARTIFACT_DIR: ${{ github.workspace }}/release-artifacts
+        run: sh scripts/publish-github-release.sh

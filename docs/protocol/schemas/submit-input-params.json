@@ -3,6 +3,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "ActiveTurnInput": {
+      "enum": [
+        "steer",
+        "queue"
+      ],
+      "type": "string"
+    },
     "TurnImage": {
       "additionalProperties": false,
       "description": "One image a user attached to a submitted turn.\n\nImages travel as base64 in-band rather than by path: the clipboard source may never have touched the filesystem, and the wire stays provider-neutral — each adapter decides what the pair becomes (Anthropic image content blocks for Claude). Bytes are transport payload, so secret interception and `@file` context never see them.",
@@ -24,6 +31,17 @@
     }
   },
   "properties": {
+    "activeTurnInput": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ActiveTurnInput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Absent preserves legacy interrupt behavior. Explicit Steer uses native steering with queue fallback; Queue waits for the phase boundary."
+    },
     "attachments": {
       "description": "Image attachments pasted or otherwise added in the composer. Absent (or `None`) means none: older clients omit it and stay on plain text.",
       "items": {

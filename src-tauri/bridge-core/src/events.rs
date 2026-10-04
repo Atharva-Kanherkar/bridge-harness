@@ -84,6 +84,9 @@ pub enum CoreEvent {
         failed: u32,
         total: u32,
     },
+    /// A chat's attached pull requests changed (a PR attached, or the link
+    /// set otherwise moved). Clients refetch `github/github_session_prs`.
+    GithubSessionPrsChanged { session_id: String },
     /// A connector message Bridge had not seen before. Published *before* any
     /// card exists, so a slow or failed render delays the polish and never the
     /// notification. The headline is Bridge's own, built from structured
@@ -128,6 +131,7 @@ impl CoreEvent {
             CoreEvent::SessionStartup { .. } => NotificationName::SessionStartup,
             CoreEvent::GithubChecksChanged { .. } => NotificationName::GithubChecksChanged,
             CoreEvent::GithubCiFinished { .. } => NotificationName::GithubCiFinished,
+            CoreEvent::GithubSessionPrsChanged { .. } => NotificationName::GithubSessionPrsChanged,
             CoreEvent::ConnectorItemArrived { .. } => NotificationName::ConnectorItemArrived,
             CoreEvent::ConnectorCardReady { .. } => NotificationName::ConnectorCardReady,
             CoreEvent::ConnectorItemResolved { .. } => NotificationName::ConnectorItemResolved,
@@ -179,6 +183,11 @@ impl CoreEvent {
             CoreEvent::GithubCiFinished { workspace_id, number, head_branch, title, failed, total } => serde_json::json!({
                 "workspaceId": workspace_id, "number": number, "headBranch": head_branch,
                 "title": title, "failed": failed, "total": total,
+            }),
+            // The session id only: the card list is refetched, never rebuilt
+            // from the hint.
+            CoreEvent::GithubSessionPrsChanged { session_id } => serde_json::json!({
+                "sessionId": session_id,
             }),
             CoreEvent::ConnectorItemArrived { family, item_key, headline, channel_label, author } => serde_json::json!({
                 "family": family, "itemKey": item_key, "headline": headline,
@@ -335,6 +344,7 @@ impl EventBus {
                 | CoreEvent::SessionStartup { .. } => {}
                 | CoreEvent::GithubChecksChanged { .. }
                 | CoreEvent::GithubCiFinished { .. }
+                | CoreEvent::GithubSessionPrsChanged { .. }
                 | CoreEvent::ConnectorItemArrived { .. }
                 | CoreEvent::ConnectorCardReady { .. }
                 | CoreEvent::ConnectorItemResolved { .. }
@@ -449,6 +459,9 @@ mod tests {
                 title: "t".into(),
                 failed: 1,
                 total: 2,
+            },
+            CoreEvent::GithubSessionPrsChanged {
+                session_id: "s".into(),
             },
             CoreEvent::ConnectorItemArrived {
                 family: "slack".into(),

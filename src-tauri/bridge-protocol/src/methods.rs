@@ -40,6 +40,8 @@ methods![
     // health
     (Health, "health", "health"),
     (RefreshModelCatalogs, "health", "refresh_model_catalogs"),
+    (PrepareAgentSetup, "health", "prepare_agent_setup"),
+    (InstallCodexUpdate, "health", "install_codex_update"),
     // state — the aggregate application snapshot
     (GetState, "state", "get_state"),
     // projects
@@ -61,6 +63,8 @@ methods![
     (GithubReview, "github", "github_review"),
     (GithubCheckout, "github", "github_checkout"),
     (GithubConnect, "github", "github_connect"),
+    (GithubSessionPrs, "github", "github_session_prs"),
+    (GithubAttachPr, "github", "github_attach_pr"),
     // connectors — in-app surfaces over the harness's own authenticated MCP servers
     (ConnectorList, "connectors", "connector_list"),
     (ConnectorInbox, "connectors", "connector_inbox"),
@@ -88,6 +92,7 @@ methods![
     (GetSessionForestDigest, "sessions", "get_session_forest_digest"),
     (GetContextBreakdown, "sessions", "get_context_breakdown"),
     (GetContextBreakdownDigest, "sessions", "get_context_breakdown_digest"),
+    (GetContextWindows, "sessions", "get_context_windows"),
     (ReplaySessionEvents, "sessions", "replay_session_events"),
     (ActivateSessionEntry, "sessions", "activate_session_entry"),
     (CreateChat, "sessions", "create_chat"),
@@ -106,6 +111,7 @@ methods![
     (DispatchAgentShortcut, "sessions", "dispatch_agent_shortcut"),
     (CompactSession, "sessions", "compact_session"),
     (SearchSessionEntries, "sessions", "search_session_entries"),
+    (SearchChats, "sessions", "search_chats"),
     (ExportSessionTranscript, "sessions", "export_session_transcript"),
     (InterruptTurn, "sessions", "interrupt_turn"),
     (RetryWorkerTask, "sessions", "retry_worker_task"),
@@ -124,6 +130,10 @@ methods![
     (SaveWorkerSettings, "config", "save_worker_settings"),
     (GetReviewerSettings, "config", "get_reviewer_settings"),
     (SaveReviewerSettings, "config", "save_reviewer_settings"),
+    (GetAttributionSettings, "config", "get_attribution_settings"),
+    (SaveAttributionSettings, "config", "save_attribution_settings"),
+    (GetChatSearchSettings, "config", "get_chat_search_settings"),
+    (SaveChatSearchSettings, "config", "save_chat_search_settings"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
     (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
@@ -183,6 +193,10 @@ methods![
     (WorktreeUsageReport, "worktrees", "worktree_usage"),
     (ReclaimWorktree, "worktrees", "reclaim_worktree"),
     (SweepWorktrees, "worktrees", "sweep_worktrees"),
+    (StorageOverview, "storage", "storage_overview"),
+    (ScanDirectory, "storage", "scan_directory"),
+    (DeletePaths, "storage", "delete_paths"),
+    (EmptyTrash, "storage", "empty_trash"),
     // token and cost usage
     (UsageSummary, "usage", "summary"),
     (ListUsagePriceOverrides, "usage", "list_price_overrides"),
@@ -199,6 +213,7 @@ methods![
     (GetProviderUsageOverviews, "usage", "get_provider_usage_overviews"),
     (RefreshProviderUsageOverviews, "usage", "refresh_provider_usage_overviews"),
     (RefreshProviderUsageOverviewsInteractive, "usage", "refresh_provider_usage_overviews_interactive"),
+    (RedeemProviderUsageReset, "usage", "redeem_provider_usage_reset"),
     (GetUsageOverview, "usage", "get_usage_overview"),
     (RefreshUsageOverview, "usage", "refresh_usage_overview"),
     (GetMenuBarSettings, "menu_bar", "get_menu_bar_settings"),
@@ -261,6 +276,17 @@ methods![
     (BrowserSkills, "browser", "browser_skills"),
     (ConfigureRemoteBrowser, "browser", "configure_remote_browser"),
     (StartRemoteBrowser, "browser", "start_remote_browser"),
+    // browser clones — throwaway signed-in browsers an agent drives
+    (RequestClone, "clones", "request_clone"),
+    (CloneState, "clones", "clone_state"),
+    (TakeoverClone, "clones", "takeover_clone"),
+    (HandBackClone, "clones", "hand_back_clone"),
+    (DestroyClone, "clones", "destroy_clone"),
+    (ResolveCloneRequest, "clones", "resolve_clone_request"),
+    (CloneInput, "clones", "clone_input"),
+    (ReadCloneSettings, "clones", "read_clone_settings"),
+    (WriteCloneSettings, "clones", "write_clone_settings"),
+    (CloneRequests, "clones", "clone_requests"),
     // agents — the runtime lifecycle for the built-in integrations. Distinct
     // from `marketplace`, which is about plugins running inside an agent.
     (ListManagedAgents, "agents", "list_managed_agents"),

@@ -1,15 +1,36 @@
 {
   "manifest_version": 3,
   "name": "Bridge Authenticated Browser for Safari",
-  "version": "0.5.5",
+  "version": "0.7.0",
   "description": "Attach one user-approved Safari tab to Bridge.",
-  "permissions": ["activeTab", "nativeMessaging", "scripting", "storage", "tabs"],
-  "host_permissions": ["http://*/*", "https://*/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "Attach this tab to Bridge" },
-  "content_scripts": [{
-    "matches": ["http://*/*", "https://*/*"],
-    "js": ["content.js"],
-    "run_at": "document_start"
-  }]
+  "permissions": [
+    "activeTab",
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Attach this tab to Bridge"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
 }

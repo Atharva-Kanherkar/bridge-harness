@@ -1,52 +1,28 @@
-// The ten settings pages and the four rail groups they sit in.
-//
-// Ids are wire-stable, not cosmetic: `App.tsx` opens `permissions` from the
-// bypass badge and `prompts` from the usage panel, so renaming either would
-// break a caller that has nothing to do with Settings. `agents` still addresses
-// what the rail now calls Presets, and `work` what it calls Work briefing, for
-// the same reason.
-
+// Legacy ids remain valid for contextual links; only four destinations live in the rail.
 export type Section =
-  | "appearance"
-  | "menuBar"
-  | "permissions"
-  | "composer"
-  | "voice"
-  | "agents"
-  | "models"
-  | "prompts"
-  | "harnesses"
-  | "work"
-  | "import"
-  | "archives"
-  | "workers"
-  | "storage";
+  | "general" | "codingAgents" | "data"
+  | "appearance" | "menuBar" | "updates" | "permissions" | "composer" | "voice"
+  | "agents" | "models" | "prompts" | "harnesses" | "clones"
+  | "work" | "import" | "archives" | "workers" | "storage";
 
-export type RailGroup = "General" | "Agents" | "Runtimes" | "Data";
-
+export type PrimarySection = "general" | "codingAgents" | "permissions" | "data";
+export type RailGroup = "Settings";
 export const SECTION_LABELS: Record<Section, string> = {
-  appearance: "Appearance",
-  menuBar: "Menu Bar",
-  permissions: "Permissions",
-  composer: "Composer",
-  voice: "Voice",
-  agents: "Presets",
-  models: "Models",
-  prompts: "Prompts",
-  harnesses: "Harnesses",
-  work: "Work briefing",
-  import: "Import",
-  storage: "Storage",
-  archives: "Archived chats",
-  workers: "Workers",
+  voice: "Voice", general: "General", codingAgents: "Coding agents", data: "Data & storage",
+  appearance: "Appearance", menuBar: "Menu bar", updates: "Updates",
+  permissions: "Permissions", composer: "Typing & search", agents: "Saved setups",
+  models: "Model preferences", prompts: "Bridge instructions", harnesses: "Coding agents",
+  clones: "Browser copies", work: "Daily briefing", import: "Import history",
+  storage: "Disk usage", archives: "Archived chats", workers: "Background tasks",
 };
-
-/** Rail order. The list is the contract: General, Agents, Runtimes, Data. */
-export const SECTION_ORDER: { group: RailGroup; sections: Section[] }[] = [
-  { group: "General", sections: ["appearance", "menuBar", "permissions", "composer", "voice"] },
-  { group: "Agents", sections: ["agents", "models", "workers", "prompts"] },
-  { group: "Runtimes", sections: ["harnesses"] },
-  { group: "Data", sections: ["work", "import", "storage", "archives"] },
+export const PRIMARY_SECTIONS: PrimarySection[] = ["general", "codingAgents", "permissions", "data"];
+export const SECTION_ORDER: { group: RailGroup; sections: PrimarySection[] }[] = [
+  { group: "Settings", sections: PRIMARY_SECTIONS },
 ];
-
-export const ALL_SECTIONS: Section[] = SECTION_ORDER.flatMap(group => group.sections);
+export const ALL_SECTIONS = Object.keys(SECTION_LABELS) as Section[];
+export function primarySection(section: Section): PrimarySection {
+  if (["general", "appearance", "menuBar", "updates", "composer", "voice"].includes(section)) return "general";
+  if (["permissions", "clones"].includes(section)) return "permissions";
+  if (["data", "import", "storage", "archives"].includes(section)) return "data";
+  return "codingAgents";
+}

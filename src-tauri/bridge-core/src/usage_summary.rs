@@ -273,8 +273,8 @@ pub fn aggregate(
             .as_deref()
             .map(str::trim)
             .filter(|model| !model.is_empty())
-            .unwrap_or("unknown")
-            .to_owned();
+            .map(crate::usage_pricing::strip_variant_suffix)
+            .unwrap_or_else(|| "unknown".to_owned());
         let key = (
             day.format("%Y-%m-%d").to_string(),
             hour_start.clone().unwrap_or_default(),
@@ -695,6 +695,20 @@ mod tests {
             input("2026-01-01T02:00:00Z", "codex", "gpt-5", "s1", 10, Some(1)),
         ]).unwrap();
         assert_eq!(partly[0].cost_source, CostSource::ModelPriced);
+    }
+
+    #[test]
+    fn a_context_variant_buckets_with_its_base_model() {
+        let pricing = Pricing::bundled_only();
+        let window = request("2026-01-01", "2026-01-01", None);
+        let buckets = aggregate(&window, &pricing, [
+            input("2026-01-01T01:00:00Z", "claude", "claude-opus-5-5[1m]", "s1", 10, None),
+            input("2026-01-01T02:00:00Z", "claude", "claude-opus-5-5", "s2", 10, None),
+        ]).unwrap();
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].model, "claude-opus-5-5");
+        assert_eq!(buckets[0].records, 2);
+        assert_eq!(buckets[0].cost_source, CostSource::ModelPriced);
     }
 
     #[test]

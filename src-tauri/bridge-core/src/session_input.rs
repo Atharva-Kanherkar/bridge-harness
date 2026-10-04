@@ -5,9 +5,12 @@
 //! policy behind them:
 //!
 //! - nothing is running → start a normal turn;
-//! - a turn is running and the provider takes input natively → steer it;
-//! - a turn is running and the provider cannot → queue the text durably and
-//!   deliver it at the next phase boundary, exactly once.
+//! - a chat's own turn is running → stop it and start a new turn with the
+//!   text, on every provider ([`interrupts_active_turn`]);
+//! - a worker's turn is running and the provider takes input natively → steer
+//!   it;
+//! - otherwise → queue the text durably and deliver it at the next phase
+//!   boundary, exactly once.
 //!
 //! The queue is SQLite, not a field on a runtime struct, because a reconnect or
 //! a daemon restart must not lose what the user typed — and a replayed drain
@@ -75,6 +78,21 @@ pub const fn route(turn_active: bool, adapter_supports_steering: bool) -> InputR
     } else {
         InputRoute::Queue
     }
+}
+
+/// Whether a submit should stop the turn in flight before it is delivered.
+///
+/// A person typing into their own chat mid-turn means "stop and do this
+/// instead". Folding the words into the running turn only reaches the model at
+/// the provider's next input boundary, and queueing waits for the whole turn,
+/// so both read as Bridge ignoring them. Stopping is the one behaviour every
+/// provider can honour the same way.
+///
+/// A worker keeps steering: its turn is the orchestrator's objective, and a
+/// human amends it rather than replacing it. A checkpoint is never cut short,
+/// because a half-written compaction is worse than a short wait.
+pub const fn interrupts_active_turn(is_worker: bool, turn_active: bool, checkpointing: bool) -> bool {
+    !is_worker && turn_active && !checkpointing
 }
 
 /// Why a worker would not take what a human typed.
@@ -187,6 +205,53 @@ pub fn enqueue(
         display_text: display_text.to_owned(),
     })
 }
+
+/// Queue a steer ahead of every ordinary follow-up.
+///
+/// The person asked for this to run next, so it must not wait behind a
+/// worker's report or an earlier follow-up. Steers sit in the negative
+/// sequence range, in submission order among themselves, which keeps
+/// `next_queued` a plain `ORDER BY sequence`.
+pub fn enqueue_steer(
+    db: &Connection,
+    session_id: &str,
+    provider_text: &str,
+    display_text: &str,
+) -> Result<QueuedInput, BridgeError> {
+    let id = Uuid::new_v4().to_string();
+    db.execute(
+        "INSERT INTO queued_session_input
+            (sequence,id,session_id,provider_text,display_text,state,created_at)
+         VALUES(
+            COALESCE((SELECT MAX(sequence) FROM queued_session_input WHERE sequence<0), ?7) + 1,
+            ?1,?2,?3,?4,?5,?6)",
+        params![
+            id,
+            session_id,
+            provider_text,
+            display_text,
+            STATE_QUEUED,
+            Utc::now().to_rfc3339(),
+            STEER_SEQUENCE_FLOOR
+        ],
+    )?;
+    let sequence = db.query_row(
+        "SELECT sequence FROM queued_session_input WHERE id=?1",
+        params![id],
+        |row| row.get(0),
+    )?;
+    Ok(QueuedInput {
+        id,
+        sequence,
+        session_id: session_id.to_owned(),
+        provider_text: provider_text.to_owned(),
+        display_text: display_text.to_owned(),
+    })
+}
+
+/// Where steers start counting. Far enough below zero that the range never
+/// reaches ordinary rows.
+const STEER_SEQUENCE_FLOOR: i64 = -(1 << 62);
 
 /// The oldest waiting row for a session, in submission order.
 pub fn next_queued(db: &Connection, session_id: &str) -> Result<Option<QueuedInput>, BridgeError> {
@@ -352,6 +417,14 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_send_mid_turn_stops_the_turn_but_a_worker_or_checkpoint_does_not() {
+        assert!(interrupts_active_turn(false, true, false));
+        assert!(!interrupts_active_turn(false, false, false));
+        assert!(!interrupts_active_turn(true, true, false));
+        assert!(!interrupts_active_turn(false, true, true));
+    }
+
+    #[test]
     fn route_never_starts_a_second_turn_against_a_busy_provider() {
         assert_eq!(route(false, false), InputRoute::NewTurn);
         assert_eq!(route(false, true), InputRoute::NewTurn);
@@ -444,6 +517,22 @@ mod tests {
         assert_eq!(pending_count(&db, "s-1").unwrap(), 0);
         // A replayed drain after delivery finds nothing to send.
         assert!(!claim(&db, &queued.id).unwrap());
+    }
+
+    #[test]
+    fn a_steer_runs_before_ordinary_follow_ups_and_after_earlier_steers() {
+        let db = db();
+        let follow_up = enqueue(&db, "s-1", "follow", "follow").unwrap();
+        let first = enqueue_steer(&db, "s-1", "a", "a").unwrap();
+        let second = enqueue_steer(&db, "s-1", "b", "b").unwrap();
+        for expected in [&first, &second, &follow_up] {
+            let next = next_queued(&db, "s-1").unwrap().unwrap();
+            assert_eq!(next.id, expected.id);
+            assert!(claim(&db, &next.id).unwrap());
+            mark_delivered(&db, &next.id).unwrap();
+        }
+        // Ordinary rows keep counting up from where they were.
+        assert!(enqueue(&db, "s-1", "later", "later").unwrap().sequence > follow_up.sequence);
     }
 
     #[test]

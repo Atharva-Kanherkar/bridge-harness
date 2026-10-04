@@ -16,6 +16,20 @@
       "resultSchema": "health-result.json"
     },
     {
+      "command": "prepare_agent_setup",
+      "domain": "health",
+      "method": "health/prepare_agent_setup",
+      "paramsSchema": "prepare-agent-setup-params.json",
+      "resultSchema": "adapter-descriptor.json"
+    },
+    {
+      "command": "install_codex_update",
+      "domain": "health",
+      "method": "health/install_codex_update",
+      "paramsSchema": null,
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "get_state",
       "domain": "state",
       "method": "state/get_state",
@@ -133,6 +147,20 @@
       "method": "github/github_connect",
       "paramsSchema": "github-connect-params.json",
       "resultSchema": "github-connect-result.json"
+    },
+    {
+      "command": "github_session_prs",
+      "domain": "github",
+      "method": "github/github_session_prs",
+      "paramsSchema": "github-session-prs-params.json",
+      "resultSchema": "github-session-prs-result.json"
+    },
+    {
+      "command": "github_attach_pr",
+      "domain": "github",
+      "method": "github/github_attach_pr",
+      "paramsSchema": "github-attach-pr-params.json",
+      "resultSchema": "github-attach-pr-result.json"
     },
     {
       "command": "connector_list",
@@ -303,6 +331,13 @@
       "resultSchema": "context-breakdown-digest-result.json"
     },
     {
+      "command": "get_context_windows",
+      "domain": "sessions",
+      "method": "sessions/get_context_windows",
+      "paramsSchema": "get-context-windows-params.json",
+      "resultSchema": "context-windows-result.json"
+    },
+    {
       "command": "replay_session_events",
       "domain": "sessions",
       "method": "sessions/replay_session_events",
@@ -429,6 +464,13 @@
       "resultSchema": "search-session-entries-result.json"
     },
     {
+      "command": "search_chats",
+      "domain": "sessions",
+      "method": "sessions/search_chats",
+      "paramsSchema": "search-chats-params.json",
+      "resultSchema": "search-chats-result.json"
+    },
+    {
       "command": "export_session_transcript",
       "domain": "sessions",
       "method": "sessions/export_session_transcript",
@@ -553,6 +595,34 @@
       "method": "config/save_reviewer_settings",
       "paramsSchema": "save-reviewer-settings-params.json",
       "resultSchema": "reviewer-settings-result.json"
+    },
+    {
+      "command": "get_attribution_settings",
+      "domain": "config",
+      "method": "config/get_attribution_settings",
+      "paramsSchema": null,
+      "resultSchema": "attribution-settings.json"
+    },
+    {
+      "command": "save_attribution_settings",
+      "domain": "config",
+      "method": "config/save_attribution_settings",
+      "paramsSchema": "save-attribution-settings-params.json",
+      "resultSchema": "attribution-settings.json"
+    },
+    {
+      "command": "get_chat_search_settings",
+      "domain": "config",
+      "method": "config/get_chat_search_settings",
+      "paramsSchema": null,
+      "resultSchema": "chat-search-settings.json"
+    },
+    {
+      "command": "save_chat_search_settings",
+      "domain": "config",
+      "method": "config/save_chat_search_settings",
+      "paramsSchema": "save-chat-search-settings-params.json",
+      "resultSchema": "chat-search-settings.json"
     },
     {
       "command": "list_archived_chats",
@@ -884,6 +954,34 @@
       "resultSchema": "worktree-sweep-result.json"
     },
     {
+      "command": "storage_overview",
+      "domain": "storage",
+      "method": "storage/storage_overview",
+      "paramsSchema": null,
+      "resultSchema": "disk-overview.json"
+    },
+    {
+      "command": "scan_directory",
+      "domain": "storage",
+      "method": "storage/scan_directory",
+      "paramsSchema": "scan-directory-params.json",
+      "resultSchema": "disk-listing.json"
+    },
+    {
+      "command": "delete_paths",
+      "domain": "storage",
+      "method": "storage/delete_paths",
+      "paramsSchema": "delete-paths-params.json",
+      "resultSchema": "disk-delete-result.json"
+    },
+    {
+      "command": "empty_trash",
+      "domain": "storage",
+      "method": "storage/empty_trash",
+      "paramsSchema": null,
+      "resultSchema": "empty-trash-result.json"
+    },
+    {
       "command": "summary",
       "domain": "usage",
       "method": "usage/summary",
@@ -980,6 +1078,13 @@
       "method": "usage/refresh_provider_usage_overviews_interactive",
       "paramsSchema": null,
       "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "redeem_provider_usage_reset",
+      "domain": "usage",
+      "method": "usage/redeem_provider_usage_reset",
+      "paramsSchema": "redeem-provider-usage-reset-params.json",
+      "resultSchema": "redeem-provider-usage-reset-result.json"
     },
     {
       "command": "get_usage_overview",
@@ -1353,6 +1458,76 @@
       "resultDeferred": "provider-defined remote browser session descriptor"
     },
     {
+      "command": "request_clone",
+      "domain": "clones",
+      "method": "clones/request_clone",
+      "paramsSchema": "request-clone-params.json",
+      "resultSchema": "clone-state-result.json"
+    },
+    {
+      "command": "clone_state",
+      "domain": "clones",
+      "method": "clones/clone_state",
+      "paramsSchema": "clone-state-params.json",
+      "resultSchema": "clone-state-result.json"
+    },
+    {
+      "command": "takeover_clone",
+      "domain": "clones",
+      "method": "clones/takeover_clone",
+      "paramsSchema": "takeover-clone-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "hand_back_clone",
+      "domain": "clones",
+      "method": "clones/hand_back_clone",
+      "paramsSchema": "hand-back-clone-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "destroy_clone",
+      "domain": "clones",
+      "method": "clones/destroy_clone",
+      "paramsSchema": "destroy-clone-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "resolve_clone_request",
+      "domain": "clones",
+      "method": "clones/resolve_clone_request",
+      "paramsSchema": "resolve-clone-request-params.json",
+      "resultSchema": "clone-state-result.json"
+    },
+    {
+      "command": "clone_input",
+      "domain": "clones",
+      "method": "clones/clone_input",
+      "paramsSchema": "clone-input-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "read_clone_settings",
+      "domain": "clones",
+      "method": "clones/read_clone_settings",
+      "paramsSchema": null,
+      "resultSchema": "clone-settings-snapshot.json"
+    },
+    {
+      "command": "write_clone_settings",
+      "domain": "clones",
+      "method": "clones/write_clone_settings",
+      "paramsSchema": "write-clone-settings-params.json",
+      "resultSchema": "clone-settings-snapshot.json"
+    },
+    {
+      "command": "clone_requests",
+      "domain": "clones",
+      "method": "clones/clone_requests",
+      "paramsSchema": null,
+      "resultSchema": "clone-requests-result.json"
+    },
+    {
       "command": "list_managed_agents",
       "domain": "agents",
       "method": "agents/list_managed_agents",
@@ -1530,7 +1705,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 20
+    "minor": 21
   },
   "reserved": {
     "cancel": "$/cancel",

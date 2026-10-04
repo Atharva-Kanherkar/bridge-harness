@@ -95,7 +95,8 @@ fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::Discover
                 label: label.to_owned(),
                 // Canonicalizing the default alias preserves provider preference.
                 is_default: alias == "default",
-                supported_effort_levels,
+                // Claude treats a missing ladder as "no knob", not "unknown".
+                supported_effort_levels: Some(supported_effort_levels),
             })
         }).collect::<Vec<_>>();
         if !found.is_empty() { return Ok(found); }
@@ -160,6 +161,20 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
     )
 }
 
+fn sdk_configuration_for_launch(
+    briefing: Option<&crate::briefing_policy::BriefingRuntimePolicy>,
+    discover: impl FnOnce() -> crate::marketplace::ClaudeSdkConfiguration,
+) -> crate::marketplace::ClaudeSdkConfiguration {
+    if briefing.is_some_and(|policy| policy.toolless()) {
+        // There can be no plugin or connector in this run. Discovery invokes
+        // CLI commands and connection probes; skip it rather than discarding
+        // its output after paying for it on every search.
+        crate::marketplace::ClaudeSdkConfiguration::default()
+    } else {
+        discover()
+    }
+}
+
 fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
@@ -222,11 +237,14 @@ fn launch(
                 })),
                 "deniedBuiltins": crate::briefing_policy::BriefingRuntimePolicy::denied_builtin_names(),
                 "maxArgumentBytes": policy.max_argument_bytes(),
+                // No tool definitions and no coding preset. Present only for a
+                // policy compiled toolless, whose scope is empty by construction.
+                "toolless": policy.toolless(),
             }))
         }
         None => None,
     };
-    let sdk_configuration = crate::marketplace::claude_sdk_configuration();
+    let sdk_configuration = sdk_configuration_for_launch(briefing, crate::marketplace::claude_sdk_configuration);
     let lifecycle_phase = if resume_session_id.is_some() {
         ContextLifecyclePhase::Resume
     } else {
@@ -1535,6 +1553,32 @@ mod briefing_boundary_tests {
     }
 
     #[test]
+    fn a_toolless_launch_skips_discovery_but_other_launches_keep_it() {
+        let ordinary = policy();
+        let toolless = BriefingRuntimePolicy::compile_toolless(wire::WorkBriefLimits {
+            max_wall_seconds: 60, max_turns: 4, max_tool_calls: 1,
+            max_output_tokens: None, cost_ceiling_microusd: None,
+        }).unwrap();
+        let empty = super::sdk_configuration_for_launch(Some(&toolless), || {
+            panic!("tool-free search must not run plugin or connector discovery")
+        });
+        assert!(empty.plugins.is_empty());
+        assert!(empty.mcp_servers.is_empty());
+        for briefing in [None, Some(&ordinary)] {
+            let calls = std::cell::Cell::new(0);
+            let configuration = super::sdk_configuration_for_launch(briefing, || {
+                calls.set(calls.get() + 1);
+                crate::marketplace::ClaudeSdkConfiguration {
+                    plugins: vec!["fixture-plugin".into()],
+                    ..Default::default()
+                }
+            });
+            assert_eq!(calls.get(), 1);
+            assert_eq!(configuration.plugins, vec!["fixture-plugin"]);
+        }
+    }
+
+    #[test]
     fn the_sidecar_is_handed_the_allowlist_the_denylist_and_the_argument_ceiling() {
         // What the adapter serializes, asserted on the policy's own accessors so a
         // change to either side has to change this test too.
@@ -1566,8 +1610,8 @@ mod catalogue_tests {
         assert_eq!(models[0].label, "Opus 5");
         assert!(models[0].is_default);
         assert_ne!(models[0].id, models[2].id);
-        assert_eq!(models[0].supported_effort_levels, ["high", "max"]);
-        assert!(models[3].supported_effort_levels.is_empty());
+        assert_eq!(models[0].supported_effort_levels.clone().unwrap(), ["high", "max"]);
+        assert!(models[3].supported_effort_levels.as_ref().unwrap().is_empty());
     }
     #[test]
     fn ignores_malformed_rows_and_unresolved_default() {

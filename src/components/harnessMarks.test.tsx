@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
+import { BRIDGE_ICON_PATH } from "../brand/bridgeIcon";
 
 const markup = (harness?: string | null, live = false) =>
   renderToStaticMarkup(<HarnessMark harness={harness} live={live} />);
@@ -59,6 +60,8 @@ describe("HarnessMark", () => {
     expect(bridge).not.toContain("A8.6 8.6");
     expect(bridge).toContain("text-muted-foreground");
     expect(bridge).not.toContain("text-harness-");
+    expect(bridge).toContain(BRIDGE_ICON_PATH);
+    expect(bridge).toContain('fill-rule="evenodd"');
   });
 
   // The harness id space is open, so an agent Bridge has no mark for must still
