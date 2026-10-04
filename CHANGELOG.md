@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.7.0...v0.8.0) (2026-10-04)
+
+
+### Features
+
+* **memory:** calmer memory surface and a one-time recall note in chat ([#802](https://github.com/Atharva-Kanherkar/bridge-harness/issues/802)) ([8f8f990](https://github.com/Atharva-Kanherkar/bridge-harness/commit/8f8f990a6b71a042d3ed2e701fd4138f58930283))
+* **storage:** manage disk space across the whole Mac ([#804](https://github.com/Atharva-Kanherkar/bridge-harness/issues/804)) ([3811a99](https://github.com/Atharva-Kanherkar/bridge-harness/commit/3811a9908b68353167c837fbd5c15981740c783d))
+
+
+### Bug Fixes
+
+* refresh Bridge B icons across app and web ([#803](https://github.com/Atharva-Kanherkar/bridge-harness/issues/803)) ([25a50c8](https://github.com/Atharva-Kanherkar/bridge-harness/commit/25a50c848048164fee6b995f15733e1b78df704c))
+
 ## [0.7.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.6.0...v0.7.0) (2026-10-03)
 
 
