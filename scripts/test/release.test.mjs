@@ -15,7 +15,7 @@ test("updater public key is an encoded minisign box, not raw key bytes", () => {
   const bytes = Buffer.from(key, "base64");
   assert.equal(bytes.length, 42);
   assert.equal(bytes.subarray(0, 2).toString(), "Ed");
-  assert.equal(key, "RWT4/NpOZ0FS0jYSgOK3Tzp5hECYrogjQl7/R0U7FZ2jAtKFVR1ma3eg", "encoding repair must preserve the existing signing key");
+  assert.equal(key, "RWQM0Gki9BupGZUlOAoQ0YYBumc6qByT3KkUZtwq3aEVkjrAqJJ+XbyW", "updater public key must match the current signing key");
 });
 
 const credentialNames = ["APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID", "APPLE_API_KEY", "APPLE_API_KEY_PATH", "APPLE_API_ISSUER", "APPLE_SIGNING_IDENTITY", "BRIDGE_RELEASE_ENV"];
