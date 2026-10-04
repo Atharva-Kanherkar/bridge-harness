@@ -148,9 +148,11 @@ validation instead of silently falling back to another account.
   validates the generated Cargo, npm, and Bun lockfile entries before any
   release build receives credentials.
 - `npm run generate:icons` exports the full platform icon set from
-  `assets/bridge-icon.png`, sorts ICNS entries for reproducible output, and checks
-  the Doto B icon’s achromatic foreground and dark tile in every macOS PNG
-  size and embedded ICNS PNG. The Tauri build hook runs this automatically.
+  `assets/bridge-icon.svg`, sorts ICNS entries for reproducible output, and checks
+  the B icon’s achromatic foreground and dark tile in all platform PNGs,
+  embedded ICNS PNGs, and ICO frames. It also refreshes the website icons,
+  shared frontend path, native menu template, and `assets/bridge-icon.png`
+  preview. The Tauri build hook runs this automatically.
 - The app must pass strict code-signature verification and have a Developer ID
   authority, a TeamIdentifier, Hardened Runtime, and the actual entitlement
   values from `src-tauri/entitlements.plist`. A key present with a false value is

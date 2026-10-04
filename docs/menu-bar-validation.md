@@ -1,5 +1,21 @@
 # Menu Bar implementation validation
 
+## Current icon artwork
+
+The canonical B is in `assets/bridge-icon.svg`. `bun run generate:icons`
+derives `BridgeIconArtwork.swift` from the same foreground path used by the
+app exports and frontend glyphs. `MenuController.templateIcon()` renders this
+embedded SVG without the rounded tile as an 18-point monochrome template;
+the Open Bridge menu item uses a 16-point copy.
+
+To inspect these production template renders, run
+`BRIDGE_ICON_RENDER_DIR=/tmp/bridge-icon-renders bun run test:menu-bar`.
+The native checks verify the continuous stem, both transparent counters,
+point sizes, and template behavior. The installed-preview evidence below
+records earlier builds and their artwork.
+
+## Earlier implementation validation
+
 Checked on 2026-09-10, on Apple silicon with macOS 26. The implementation is
 isolated in `codex/native-menu-bar`, based on main at `384997b`. The Codex
 quota-window fixes are committed as `13ee07e`.

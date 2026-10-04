@@ -1,9 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <title>Bridge — Span</title>
-  <rect width="1024" height="1024" rx="220" fill="#111411"/>
-  <g fill="#f2f1ec">
-    <rect x="264" y="400" width="96" height="312"/>
-    <rect x="664" y="400" width="96" height="312"/>
-  </g>
-  <rect x="192" y="304" width="640" height="104" fill="#44e3a4"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 32 32">
+  <rect x="0.125" y="0.125" width="31.75" height="31.75" rx="7" fill="#000000" stroke="#202020" stroke-width="0.25"/>
+  <title>Bridge</title>
+  <path fill="#e4e4e4" fill-rule="evenodd" d="M8 5h13v3h3v7h-3v3h4v6h-3v3H8V5Zm4 4v5h8V9h-8Zm0 10v4h9v-4h-9Z"/>
 </svg>

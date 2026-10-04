@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
@@ -57,7 +57,7 @@ export function verifyVisibleMark(bytes, label) {
   for (let i = 0; i < pixels.length; i += channels) {
     if (channels === 4 && pixels[i + 3] < 128) continue;
     const [r, g, b] = pixels.subarray(i, i + 3);
-    // The Doto B is achromatic. Count antialiased dots at small sizes and
+    // The Bridge B is achromatic. Count antialiased edges at small sizes and
     // reject the retired mint artwork as well as empty exports.
     if (Math.max(r, g, b) - Math.min(r, g, b) > 40) chromatic++;
     if (Math.min(r, g, b) > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 30) foreground++;
@@ -65,7 +65,7 @@ export function verifyVisibleMark(bytes, label) {
   }
   const count = width * height;
   if (foreground / count < 0.035 || chromatic / count > 0.01 || dark / count < 0.2)
-    throw new Error(`${label}: Bridge's visible Doto mark and dark background are missing or colored (foreground=${foreground}, chromatic=${chromatic}, dark=${dark})`);
+    throw new Error(`${label}: Bridge's visible mark and dark background are missing or colored (foreground=${foreground}, chromatic=${chromatic}, dark=${dark})`);
   return { width, height };
 }
 
@@ -103,6 +103,27 @@ export function canonicalizeIcns(bytes) {
   return Buffer.concat([bytes.subarray(0, 8), ...entries]);
 }
 
+export function verifyIco(bytes, label = "icon.ico") {
+  if (bytes.length < 6 || bytes.readUInt16LE(0) !== 0 || bytes.readUInt16LE(2) !== 1)
+    throw new Error(`${label}: invalid ICO container`);
+  const count = bytes.readUInt16LE(4);
+  if (!count || bytes.length < 6 + count * 16) throw new Error(`${label}: truncated ICO directory`);
+  const sizes = new Set();
+  for (let index = 0; index < count; index++) {
+    const entry = 6 + index * 16;
+    const length = bytes.readUInt32LE(entry + 8);
+    const offset = bytes.readUInt32LE(entry + 12);
+    if (offset < 6 + count * 16 || length > bytes.length - offset)
+      throw new Error(`${label}: truncated ICO frame`);
+    const { width, height } = verifyVisibleMark(bytes.subarray(offset, offset + length), `${label}:${index}`);
+    if (width !== (bytes[entry] || 256) || height !== (bytes[entry + 1] || 256))
+      throw new Error(`${label}: wrong frame dimensions`);
+    sizes.add(width);
+  }
+  for (const size of [16, 32, 256])
+    if (!sizes.has(size)) throw new Error(`${label}: missing ${size}px icon`);
+}
+
 export function verifyIconDirectory(directory) {
   for (const [name, size] of [["32x32.png", 32], ["64x64.png", 64], ["128x128.png", 128], ["128x128@2x.png", 256], ["icon.png", 512]]) {
     const path = resolve(directory, name);
@@ -110,6 +131,15 @@ export function verifyIconDirectory(directory) {
     if (actual.width !== size || actual.height !== size) throw new Error(`${name}: wrong dimensions`);
   }
   verifyIcns(readFileSync(resolve(directory, "icon.icns")));
+  verifyIco(readFileSync(resolve(directory, "icon.ico")));
+  const verifyPngs = (path) => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const child = resolve(path, entry.name);
+      if (entry.isDirectory()) verifyPngs(child);
+      else if (entry.name.endsWith(".png")) verifyVisibleMark(readFileSync(child), child);
+    }
+  };
+  verifyPngs(directory);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
