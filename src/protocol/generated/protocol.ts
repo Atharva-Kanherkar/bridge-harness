@@ -135,6 +135,10 @@ export type BridgeMethod =
   | "worktrees/worktree_usage"
   | "worktrees/reclaim_worktree"
   | "worktrees/sweep_worktrees"
+  | "storage/storage_overview"
+  | "storage/scan_directory"
+  | "storage/delete_paths"
+  | "storage/empty_trash"
   | "usage/summary"
   | "usage/list_price_overrides"
   | "usage/set_price_override"
@@ -368,6 +372,10 @@ export const BRIDGE_METHODS = [
   { method: "worktrees/worktree_usage", domain: "worktrees", command: "worktree_usage" },
   { method: "worktrees/reclaim_worktree", domain: "worktrees", command: "reclaim_worktree" },
   { method: "worktrees/sweep_worktrees", domain: "worktrees", command: "sweep_worktrees" },
+  { method: "storage/storage_overview", domain: "storage", command: "storage_overview" },
+  { method: "storage/scan_directory", domain: "storage", command: "scan_directory" },
+  { method: "storage/delete_paths", domain: "storage", command: "delete_paths" },
+  { method: "storage/empty_trash", domain: "storage", command: "empty_trash" },
   { method: "usage/summary", domain: "usage", command: "summary" },
   { method: "usage/list_price_overrides", domain: "usage", command: "list_price_overrides" },
   { method: "usage/set_price_override", domain: "usage", command: "set_price_override" },
@@ -662,6 +670,10 @@ export interface BridgeMethodParams {
   "worktrees/worktree_usage": undefined;
   "worktrees/reclaim_worktree": ReclaimWorktreeParams;
   "worktrees/sweep_worktrees": undefined;
+  "storage/storage_overview": undefined;
+  "storage/scan_directory": ScanDirectoryParams;
+  "storage/delete_paths": DeletePathsParams;
+  "storage/empty_trash": undefined;
   "sessions/archive_chat": ArchiveChatParams;
   "config/get_worker_settings": GetWorkerSettingsParams;
   "config/save_worker_settings": SaveWorkerSettingsParams;
@@ -908,6 +920,10 @@ export interface BridgeMethodResults {
   "worktrees/worktree_usage": WorktreeUsage;
   "worktrees/reclaim_worktree": WorktreeReclaimResult;
   "worktrees/sweep_worktrees": WorktreeSweepResult;
+  "storage/storage_overview": DiskOverview;
+  "storage/scan_directory": DiskListing;
+  "storage/delete_paths": DiskDeleteResult;
+  "storage/empty_trash": EmptyTrashResult;
   "usage/summary": UsageSummaryResult;
   "usage/list_price_overrides": ListUsagePriceOverridesResult;
   "usage/set_price_override": ListUsagePriceOverridesResult;
@@ -1396,6 +1412,41 @@ export interface ContextWindowSegment {
 }
 
 export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
+
+export interface DiskDeleteFailure {
+  path: string;
+  reason: string;
+}
+
+export interface DiskEntry {
+  itemCount?: number | null;
+  kind: string;
+  measuring: boolean;
+  modifiedAt?: string | null;
+  name: string;
+  partial: boolean;
+  path: string;
+  protectedReason?: string | null;
+  sizeBytes?: number | null;
+}
+
+export interface DiskSuggestion {
+  description: string;
+  group: string;
+  id: string;
+  label: string;
+  measuring: boolean;
+  path: string;
+  safety: string;
+  sizeBytes?: number | null;
+}
+
+export interface DiskVolume {
+  freeBytes: number;
+  mountPoint: string;
+  totalBytes: number;
+  usedBytes: number;
+}
 
 export interface EarlierContextWindow {
   harness: string;
@@ -3789,6 +3840,46 @@ export interface WorktreeSweepResult {
   retained: number;
   retainedBytes: number;
   skipped: number;
+}
+
+export interface DiskOverview {
+  home: string;
+  measuring: boolean;
+  suggestions: DiskSuggestion[];
+  volume?: DiskVolume | null;
+}
+
+export interface ScanDirectoryParams {
+  path?: string | null;
+  refresh?: boolean;
+}
+
+export interface DiskListing {
+  entries: DiskEntry[];
+  measuring: boolean;
+  omittedBytes: number;
+  omittedCount: number;
+  parent?: string | null;
+  path: string;
+  sizeBytes: number;
+  unreadable?: string | null;
+}
+
+export interface DeletePathsParams {
+  paths: string[];
+  permanent?: boolean;
+}
+
+export interface DiskDeleteResult {
+  bytesFreed: number;
+  deleted: string[];
+  failed: DiskDeleteFailure[];
+  trashed: boolean;
+}
+
+export interface EmptyTrashResult {
+  detail?: string | null;
+  emptied: boolean;
 }
 
 export interface ArchiveChatParams {

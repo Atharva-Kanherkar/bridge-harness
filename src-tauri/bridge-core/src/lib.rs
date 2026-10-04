@@ -10,6 +10,7 @@ pub mod acp_events;
 pub mod acp_registry;
 pub mod acp_session;
 pub mod adapters;
+pub mod disk_space;
 pub mod agent;
 pub mod agent_config;
 pub mod agent_integration;

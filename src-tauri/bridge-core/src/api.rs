@@ -4465,6 +4465,59 @@ pub fn reclaim_worktree(
     Ok(outcome)
 }
 
+/// The home folder every storage request is relative to.
+fn storage_home() -> Result<PathBuf, BridgeError> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .ok_or_else(|| BridgeError::Invalid("HOME is not set to an absolute path".into()))
+}
+
+fn storage_guard(core: &Arc<BridgeCore>) -> Result<crate::disk_space::Guard, BridgeError> {
+    let data_dir = core
+        .database_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| BridgeError::Invalid("the database has no parent folder".into()))?;
+    Ok(crate::disk_space::Guard { home: storage_home()?, data_dir, worktrees: core.worktrees.clone() })
+}
+
+/// How full the disk is and the usual places it fills up. Sizes still being
+/// measured come back as `null` with `measuring` set; ask again for them.
+pub fn storage_overview(_core: &Arc<BridgeCore>) -> Result<wire::DiskOverview, BridgeError> {
+    Ok(crate::disk_space::overview(&crate::disk_space::Scanner::global(), &storage_home()?))
+}
+
+/// One folder's children with the sizes known so far. Never waits on a walk.
+pub fn scan_directory(
+    core: &Arc<BridgeCore>,
+    params: &wire::ScanDirectoryParams,
+) -> Result<wire::DiskListing, BridgeError> {
+    let guard = storage_guard(core)?;
+    let path = match params.path.as_deref() {
+        Some(path) if !path.trim().is_empty() => PathBuf::from(path),
+        _ => guard.home.clone(),
+    };
+    if !path.is_absolute() {
+        return Err(BridgeError::Invalid(format!("{} is not an absolute path", path.display())));
+    }
+    Ok(crate::disk_space::list(&crate::disk_space::Scanner::global(), &guard, &path, params.refresh))
+}
+
+/// Move paths to the Trash, or delete them outright. A refusal is reported
+/// per path rather than failing the whole request.
+pub fn delete_paths(
+    core: &Arc<BridgeCore>,
+    params: &wire::DeletePathsParams,
+) -> Result<wire::DiskDeleteResult, BridgeError> {
+    let guard = storage_guard(core)?;
+    Ok(crate::disk_space::delete(&crate::disk_space::Scanner::global(), &guard, &params.paths, params.permanent))
+}
+
+pub fn empty_trash(_core: &Arc<BridgeCore>) -> Result<wire::EmptyTrashResult, BridgeError> {
+    Ok(crate::disk_space::empty_trash())
+}
+
 /// Run the maintenance pass now instead of waiting for the tick.
 pub fn sweep_worktrees(
     core: &Arc<BridgeCore>,

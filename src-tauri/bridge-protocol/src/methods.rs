@@ -185,6 +185,10 @@ methods![
     (WorktreeUsageReport, "worktrees", "worktree_usage"),
     (ReclaimWorktree, "worktrees", "reclaim_worktree"),
     (SweepWorktrees, "worktrees", "sweep_worktrees"),
+    (StorageOverview, "storage", "storage_overview"),
+    (ScanDirectory, "storage", "scan_directory"),
+    (DeletePaths, "storage", "delete_paths"),
+    (EmptyTrash, "storage", "empty_trash"),
     // token and cost usage
     (UsageSummary, "usage", "summary"),
     (ListUsagePriceOverrides, "usage", "list_price_overrides"),
