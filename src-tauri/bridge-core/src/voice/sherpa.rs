@@ -42,7 +42,6 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 const COMMAND_APPEND: u8 = 1;
 const COMMAND_FINISH: u8 = 2;
-const COMMAND_CANCEL: u8 = 3;
 const RESPONSE_READY: u8 = 0x80;
 const RESPONSE_PARTIAL: u8 = 0x81;
 const RESPONSE_FINAL: u8 = 0x82;
@@ -653,7 +652,7 @@ impl Drop for PendingFileCleanup {
 struct SherpaStream {
     child: Option<Child>,
     input: Option<ChildStdin>,
-    frames: mpsc::Receiver<Result<HelperFrame, EngineFailure>>,
+    frames: Option<mpsc::Receiver<Result<HelperFrame, EngineFailure>>>,
     reader: Option<thread::JoinHandle<()>>,
     cancellation_watcher: Option<thread::JoinHandle<()>>,
     watcher_stop: Arc<AtomicBool>,
@@ -726,6 +725,7 @@ impl SherpaStream {
             Err(_) => {
                 let _ = adapters::terminate_process_group(child.id());
                 let _ = child.wait();
+                drop(frames);
                 let _ = reader.join();
                 return Err(EngineFailure::Unavailable);
             }
@@ -733,7 +733,7 @@ impl SherpaStream {
         let mut stream = Self {
             child: Some(child),
             input: Some(input),
-            frames,
+            frames: Some(frames),
             reader: Some(reader),
             cancellation_watcher: Some(cancellation_watcher),
             watcher_stop,
@@ -771,7 +771,7 @@ impl SherpaStream {
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<HelperFrame, EngineFailure> {
-        match self.frames.recv_timeout(timeout) {
+        match self.frames.as_ref().ok_or(EngineFailure::Inference)?.recv_timeout(timeout) {
             Ok(frame) => frame,
             Err(_) => {
                 self.terminate();
@@ -783,6 +783,9 @@ impl SherpaStream {
     fn terminate(&mut self) {
         self.watcher_stop.store(true, Ordering::Release);
         self.input.take();
+        // Disconnect the bounded queue before joining its producer. A reader
+        // blocked in send() cannot be released by killing the helper alone.
+        self.frames.take();
         if let Some(mut child) = self.child.take() {
             let _ = adapters::terminate_process_group(child.id());
             let _ = child.wait();
@@ -805,7 +808,7 @@ impl VoiceStream for SherpaStream {
         }
         self.send(COMMAND_APPEND, &bytes)?;
         match self.receive(INFERENCE_TIMEOUT)? {
-            HelperFrame::Partial(text) => Ok((!text.is_empty()).then_some(text)),
+            HelperFrame::Partial(text) => Ok(Some(text)),
             _ => Err(EngineFailure::Inference),
         }
     }
@@ -820,6 +823,9 @@ impl VoiceStream for SherpaStream {
             return Err(EngineFailure::Inference);
         }
         self.input.take();
+        // Disconnect the bounded queue before joining its producer. A reader
+        // blocked in send() cannot be released by killing the helper alone.
+        self.frames.take();
         if let Some(mut child) = self.child.take() {
             if !child.wait().is_ok_and(|status| status.success()) {
                 return Err(EngineFailure::Inference);
@@ -839,11 +845,7 @@ impl VoiceStream for SherpaStream {
 
 impl Drop for SherpaStream {
     fn drop(&mut self) {
-        if let Some(input) = self.input.as_mut() {
-            let mut header = [0_u8; 5];
-            header[0] = COMMAND_CANCEL;
-            let _ = input.write_all(&header).and_then(|_| input.flush());
-        }
+        // Cleanup must never wait for a blocked helper to read another command.
         self.terminate();
     }
 }
@@ -971,6 +973,45 @@ mod tests {
         assert!(oversized.contains("exceeded"));
         let wrong_digest = copy_verified(payload.as_slice(), Vec::new(), payload.len() as u64, &"0".repeat(64), |_| {}).unwrap_err();
         assert!(wrong_digest.contains("checksum"));
+    }
+
+    #[cfg(unix)]
+    fn scripted_provider(directory: &Path, script: &[u8]) -> SherpaProvider {
+        use std::os::unix::fs::PermissionsExt;
+        let helper = directory.join("helper.sh");
+        fs::write(&helper, script).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        SherpaProvider {
+            helper,
+            runtime: directory.join("runtime"),
+            model: directory.join("model"),
+            supervised: false,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_empty_partial_retracts_the_previous_hypothesis() {
+        let fixture = tempfile::tempdir().unwrap();
+        let provider = scripted_provider(fixture.path(),
+            b"#!/bin/sh\nprintf '\\200\\000\\000\\000\\000\\201\\000\\000\\000\\000'\nsleep 30\n");
+        let mut stream = SherpaStream::spawn(&provider, Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(stream.append(&[0]).unwrap(), Some(String::new()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn termination_releases_a_reader_blocked_on_a_full_frame_queue() {
+        let fixture = tempfile::tempdir().unwrap();
+        let provider = scripted_provider(fixture.path(),
+            b"#!/bin/sh\nprintf '\\200\\000\\000\\000\\000'\ni=0\nwhile [ $i -lt 8 ]; do printf '\\201\\000\\000\\000\\000'; i=$((i+1)); done\nsleep 30\n");
+        let mut stream = SherpaStream::spawn(&provider, Arc::new(AtomicBool::new(false))).unwrap();
+        let pid = stream.child.as_ref().unwrap().id();
+        thread::sleep(Duration::from_millis(100));
+        let (done, completed) = mpsc::channel();
+        thread::spawn(move || { stream.terminate(); let _ = done.send(()); });
+        assert!(completed.recv_timeout(Duration::from_secs(2)).is_ok(), "cleanup blocked on queued frames");
+        assert!(adapters::process_identity(pid).is_none());
     }
 
     #[cfg(unix)]

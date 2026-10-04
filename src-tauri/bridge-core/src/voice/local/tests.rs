@@ -438,3 +438,32 @@ fn session_audio_budget_is_enforced_before_inference() {
         .contains("session exceeds"));
     wait_idle(&service);
 }
+
+
+#[test]
+fn model_removal_waits_for_take_admission_and_preserves_an_active_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = BridgeCore::for_tests(dir.path());
+    core.voice = super::super::VoiceService::for_data_dir(dir.path());
+    core.voice.local.set_provider(Some(Arc::new(FakeProvider::default())));
+    let core = Arc::new(core);
+    // Hold the same admission boundary as voice::start, before it reserves
+    // its worker slot. Removal must not clear the provider in this window.
+    let admission = core.voice.admission.lock().unwrap();
+    let removing = core.clone();
+    let (sent, received) = mpsc::channel();
+    let removal = std::thread::spawn(move || {
+        let result = crate::api::voice_local_remove(&removing, wire::VoiceLocalRemoveParams { confirm_removal: true });
+        sent.send(result).unwrap();
+    });
+    let early = received.recv_timeout(Duration::from_millis(50));
+    let started = core.voice.local.start(params("draft:removal"), core.events.clone()).unwrap();
+    drop(admission);
+    let result = received.recv_timeout(Duration::from_secs(2));
+    core.voice.local.cancel(&started.voice_session_id);
+    wait_idle(&core.voice.local);
+    removal.join().unwrap();
+    assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)), "removal raced a pending start");
+    assert!(result.unwrap().unwrap_err().to_string().contains("Finish or cancel dictation"));
+    assert_eq!(core.voice.local.capability().state, wire::VoiceAvailability::Ready);
+}

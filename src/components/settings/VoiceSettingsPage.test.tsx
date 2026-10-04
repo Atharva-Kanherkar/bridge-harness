@@ -81,3 +81,13 @@ it("removes a ready installation only after confirmation", async () => {
   expect(remove).toHaveBeenCalledTimes(1);
   expect(changed).toHaveBeenCalled();
 });
+
+
+it("refreshes composer availability when setup immediately reports ready", async () => {
+  const changed = vi.fn();
+  vi.spyOn(bridgeApi, "voiceLocalSetup").mockResolvedValue({ ...base, state: "ready" });
+  await render(base, changed);
+  await act(async () => { button("Download and install").click(); });
+  expect(changed).toHaveBeenCalledTimes(1);
+  expect(button("Remove local model")).toBeTruthy();
+});

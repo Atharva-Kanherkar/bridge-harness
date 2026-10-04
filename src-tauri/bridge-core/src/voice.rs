@@ -15,6 +15,10 @@ use uuid::Uuid;
 
 pub const SAMPLE_RATE: u32 = 16_000;
 pub const CHANNELS: u16 = 1;
+// Codex realtime notifications identify only the reusable provider thread,
+// not an individual take. Until that lifecycle is correlated, a late frame
+// after cancellation could be attributed to the next draft's recording.
+const CODEX_DICTATION_ENABLED: bool = false;
 pub const MAX_CHUNK_BYTES: u32 = 64 * 1024;
 pub const MAX_SESSION_BYTES: u32 = 4 * 1024 * 1024;
 
@@ -32,7 +36,7 @@ struct ActiveVoiceSession {
 #[derive(Default)]
 pub struct VoiceService {
     sessions: Mutex<HashMap<String, ActiveVoiceSession>>,
-    admission: Mutex<()>,
+    pub(crate) admission: Mutex<()>,
     pub local: local::LocalVoiceService,
     pub local_install: sherpa::InstallManager,
 }
@@ -137,6 +141,13 @@ fn codex_capability(
     core: &BridgeCore,
     session_id: &str,
 ) -> Result<wire::VoiceProviderCapability, BridgeError> {
+    if !CODEX_DICTATION_ENABLED {
+        return Ok(capability(
+            wire::VoiceProviderId::Codex,
+            wire::VoiceAvailability::Unsupported,
+            Some("Experimental Codex dictation is disabled until recording events can be correlated safely".into()),
+        ));
+    }
     let session = binding(core, session_id)?;
     let reason = if session.harness != "codex" {
         Some("Voice dictation is currently available for Codex chats only".into())
@@ -486,6 +497,21 @@ mod tests {
                 created_at: std::time::Instant::now(),
             },
         );
+    }
+
+    #[test]
+    fn uncorrelated_codex_transport_cannot_admit_a_recording() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(fixture.path());
+        let capability = codex_capability(&core, "provider-thread").unwrap();
+        assert_eq!(capability.state, wire::VoiceAvailability::Unsupported);
+        assert!(capability.unavailable_reason.unwrap().contains("disabled"));
+        let result = start(&core, wire::VoiceStartParams {
+            owner_key: "draft".into(), session_id: Some("provider-thread".into()),
+            provider: wire::VoiceProviderId::Codex,
+        });
+        assert!(result.unwrap_err().to_string().contains("disabled"));
+        assert!(core.voice.sessions.lock().unwrap().is_empty());
     }
 
     #[test]

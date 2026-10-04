@@ -1696,6 +1696,7 @@ pub fn voice_local_setup(core: &Arc<BridgeCore>, params: wire::VoiceLocalSetupPa
     if !params.confirm_download {
         return Err(BridgeError::Invalid("Local dictation setup requires explicit download confirmation".into()));
     }
+    let _admission = core.voice.admission.lock().unwrap();
     core.voice.local_install.start(&core.voice.local)
 }
 
@@ -1703,6 +1704,8 @@ pub fn voice_local_remove(core: &Arc<BridgeCore>, params: wire::VoiceLocalRemove
     if !params.confirm_removal {
         return Err(BridgeError::Invalid("Local dictation removal requires explicit confirmation".into()));
     }
+    // Serialize the busy check and file removal with admitting a new take.
+    let _admission = core.voice.admission.lock().unwrap();
     core.voice.local_install.remove(&core.voice.local)
 }
 

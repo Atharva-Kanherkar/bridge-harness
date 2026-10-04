@@ -91,6 +91,8 @@ describe("voice capture lifecycle", () => {
     const processor = { onaudioprocess: null, connect: vi.fn(), disconnect: vi.fn() };
     const mute = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
     const context = {
+      state: "running",
+      resume: vi.fn().mockResolvedValue(undefined),
       sampleRate: 48_000,
       destination: {},
       createMediaStreamSource: vi.fn(() => source),
@@ -148,6 +150,23 @@ describe("voice capture lifecycle", () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({
       message: "The microphone audio processor stopped unexpectedly.",
     }));
+    expect(mocks.track.stop).toHaveBeenCalledTimes(1);
+    expect(mocks.context.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes a suspended context before recording", async () => {
+    const mocks = captureMocks();
+    mocks.context.state = "suspended";
+    const capture = await VoiceCapture.start(vi.fn());
+    expect(mocks.context.resume).toHaveBeenCalledTimes(1);
+    await capture.stop();
+  });
+
+  it("releases the mic when resuming the context fails", async () => {
+    const mocks = captureMocks();
+    mocks.context.state = "suspended";
+    mocks.context.resume.mockRejectedValue(new Error("resume denied"));
+    await expect(VoiceCapture.start(vi.fn())).rejects.toThrow("resume denied");
     expect(mocks.track.stop).toHaveBeenCalledTimes(1);
     expect(mocks.context.close).toHaveBeenCalledTimes(1);
   });

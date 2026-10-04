@@ -150,6 +150,7 @@ export class VoiceCapture {
       source.connect(node);
       node.connect(mute);
       mute.connect(context.destination);
+      if (context.state === "suspended") await context.resume();
       return new VoiceCapture(stream, context, node, source, mute, onEnded, flush, detach);
     } catch (error) {
       try { source?.disconnect(); } catch { /* best-effort partial setup cleanup */ }

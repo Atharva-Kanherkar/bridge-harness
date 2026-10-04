@@ -39,18 +39,22 @@ export function VoiceSettingsPage({ onError, onChanged }: {
   const changed = useRef(onChanged);
   changed.current = onChanged;
 
+  const acceptStatus = useCallback((next: VoiceLocalStatusResult) => {
+    setStatus(next);
+    if (previousState.current && previousState.current !== next.state && (next.state === "ready" || next.state === "notInstalled")) changed.current?.();
+    previousState.current = next.state;
+    return next;
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
       const next = await bridgeApi.voiceLocalStatus();
-      setStatus(next);
-      if (previousState.current && previousState.current !== next.state && (next.state === "ready" || next.state === "notInstalled")) changed.current?.();
-      previousState.current = next.state;
-      return next;
+      return acceptStatus(next);
     } catch (error) {
       onError(String(error));
       return undefined;
     }
-  }, [onError]);
+  }, [acceptStatus, onError]);
 
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
@@ -61,7 +65,7 @@ export function VoiceSettingsPage({ onError, onChanged }: {
 
   const setup = async () => {
     setBusy(true);
-    try { setStatus(await bridgeApi.voiceLocalSetup()); }
+    try { acceptStatus(await bridgeApi.voiceLocalSetup()); }
     catch (error) { onError(String(error)); }
     finally { setBusy(false); }
   };
