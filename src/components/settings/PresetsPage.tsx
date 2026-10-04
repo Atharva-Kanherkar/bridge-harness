@@ -7,7 +7,7 @@
 // Saving follows the screen's one rule, with one carve-out that the rule
 // implies rather than contradicts: a preset that has never been saved has no
 // stored record to write one field into, so on a new preset every control
-// dirties the draft and the bar reads "Create setup". On an existing preset,
+// dirties the draft and the bar reads "Create agent". On an existing preset,
 // switches and selects write the stored record with exactly one field replaced.
 
 import { useMemo, useState } from "react";
@@ -29,7 +29,7 @@ const EFFORTS: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
 
 export function newAgent(): AgentDefinition {
   return {
-    id: "", name: "New setup", description: "", role: "orchestrator", harness: "bridge",
+    id: "", name: "New agent", description: "", role: "orchestrator", harness: "bridge",
     model: null, effort: "medium", systemPrompt: "", enabled: true, isDefault: false,
     isBuiltIn: false, createdAt: "", updatedAt: "",
   };
@@ -55,8 +55,20 @@ export function PresetsPage({
   onMakeDefault: (agent: AgentDefinition) => void;
   onError: (message: string) => void;
 }) {
-  const [showBuiltIn, setShowBuiltIn] = useState(false);
-  const visible = agents.filter(agent => showBuiltIn || !agent.isBuiltIn);
+  const mine = agents.filter(agent => !agent.isBuiltIn);
+  const builtIn = agents.filter(agent => agent.isBuiltIn);
+  const row = (agent: AgentDefinition) => <SettingsRow
+    key={agent.id}
+    lead={<HarnessMark harness={agent.harness} size={14} />}
+    label={agent.name}
+    openLabel={`Edit ${agent.name}`}
+    description={`${agent.role} · ${agent.harness}`}
+    onOpen={() => onOpen(agent)}
+    control={<>
+      {agent.isDefault && <StatusPill tone="info">Default</StatusPill>}
+      {!agent.enabled && <StatusPill>Off</StatusPill>}
+    </>}
+  />;
   if (draft) {
     return <PresetDetail
       draft={draft}
@@ -75,26 +87,17 @@ export function PresetsPage({
   }
 
   return <SettingsPage
-    title="Saved setups"
-    description="Save an agent, model, and instructions you want to reuse. Choose it from the / menu in a chat to use it."
-    action={<GhostButton onClick={onNew}><Plus size={12} strokeWidth={1.7} aria-hidden="true" />New setup</GhostButton>}
+    title="Agents"
+    description="Save a model and instructions you want to reuse. Start a new chat with one from the agent menu, or type # in a chat."
+    action={<GhostButton onClick={onNew}><Plus size={12} strokeWidth={1.7} aria-hidden="true" />New agent</GhostButton>}
   >
-    <SettingsGroup label="Your saved setups" note={`${visible.length} total`}>
-      {visible.length === 0 && <SettingsRow label="No saved setups yet" description="Bridge already has defaults. Create a setup only when you want your own reusable instructions." />}
-      {visible.map(agent => <SettingsRow
-        key={agent.id}
-        lead={<HarnessMark harness={agent.harness} size={14} />}
-        label={agent.name}
-        openLabel={`Edit ${agent.name}`}
-        description={`${agent.role} · ${agent.harness}`}
-        onOpen={() => onOpen(agent)}
-        control={<>
-          {agent.isDefault && <StatusPill tone="info">Default</StatusPill>}
-          {!agent.enabled && <StatusPill>Off</StatusPill>}
-        </>}
-      />)}
+    <SettingsGroup label="Your agents" note={`${mine.length} total`}>
+      {mine.length === 0 && <SettingsRow label="No agents yet" description="Create one when you want your own reusable instructions. Bridge's built-in agents are below." />}
+      {mine.map(row)}
     </SettingsGroup>
-    <TextButton onClick={() => setShowBuiltIn(value => !value)}>{showBuiltIn ? "Hide built-in roles" : "Advanced: edit built-in roles"}</TextButton>
+    <SettingsGroup label="Bridge defaults" note={`${builtIn.length} built in`}>
+      {builtIn.map(row)}
+    </SettingsGroup>
   </SettingsPage>;
 }
 
@@ -149,11 +152,11 @@ function PresetDetail({
   };
 
   return <SettingsPage
-    title={isNew ? "New setup" : draft.name}
-    breadcrumb={[{ label: "Saved setups", onClick: onBack }, { label: isNew ? "New setup" : draft.name }]}
+    title={isNew ? "New agent" : draft.name}
+    breadcrumb={[{ label: "Agents", onClick: onBack }, { label: isNew ? "New agent" : draft.name }]}
     description={isNew
-      ? "Your saved setup. You can delete it at any time."
-      : draft.isBuiltIn ? "Built-in Bridge role. Reset restores its original instructions and choices." : "Your saved setup. You can delete it at any time."}
+      ? "Your agent. You can delete it at any time."
+      : draft.isBuiltIn ? "Built-in Bridge role. Reset restores its original instructions and choices." : "Your agent. You can delete it at any time."}
     action={!isNew && <>
       {draft.role === "orchestrator" && !draft.isDefault && <TextButton
         disabled={busy || !draft.enabled}
@@ -187,7 +190,7 @@ function PresetDetail({
         label="What it does"
         saved={isFlashed("role")}
         control={<Select
-          label="What this setup does"
+          label="What this agent does"
           value={draft.role}
           disabled={busy}
           width="w-44"
@@ -209,7 +212,7 @@ function PresetDetail({
         label="Coding agent"
         saved={isFlashed("harness")}
         control={<Select
-          label="Coding agent for this setup"
+          label="Coding agent for this agent"
           value={draft.harness}
           disabled={busy}
           options={harnessOptions}
@@ -220,7 +223,7 @@ function PresetDetail({
         label="Model"
         saved={isFlashed("model")}
         control={<Select
-          label="Model for this setup"
+          label="Model for this agent"
           value={draft.model ?? ""}
           disabled={busy || draft.harness === "bridge"}
           options={[{ value: "", label: "Provider default" }, ...models]}
@@ -231,7 +234,7 @@ function PresetDetail({
         label="Thinking level"
         saved={isFlashed("effort")}
         control={<Select
-          label="Thinking level for this setup"
+          label="Thinking level for this agent"
           value={draft.effort}
           disabled={busy}
           width="w-40"
@@ -241,10 +244,10 @@ function PresetDetail({
       />
     </SettingsGroup>
 
-    <SettingsGroup label="Custom instructions" note="Used with this setup. Permissions still apply.">
+    <SettingsGroup label="Custom instructions" note="Used with this agent. Permissions still apply.">
       <SettingsBlockRow>
         <TextArea
-          label="Instructions for this setup"
+          label="Instructions for this agent"
           value={draft.systemPrompt ?? ""}
           placeholder="Describe how you want this agent to work…"
           onChange={value => onDraft({ ...draft, systemPrompt: value })}
@@ -256,8 +259,8 @@ function PresetDetail({
       dirty={dirty}
       saving={busy}
       canSave={draft.name.trim().length > 0}
-      label={isNew ? "New setup" : "Unsaved changes"}
-      saveLabel={isNew ? "Create setup" : "Save"}
+      label={isNew ? "New agent" : "Unsaved changes"}
+      saveLabel={isNew ? "Create agent" : "Save"}
       onSave={() => void onSave(draft).catch(error => onError(error instanceof Error ? error.message : String(error)))}
       onDiscard={() => (isNew || !stored) ? onBack() : onDraft(structuredClone(stored))}
     />

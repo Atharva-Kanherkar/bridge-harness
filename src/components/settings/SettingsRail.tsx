@@ -96,7 +96,7 @@ export function SettingsRail({ section, query, rows, onQueryChange, onSelect, on
       {confirming
         ? <div className="rounded-lg border border-border-card bg-card p-2.5">
             <p className="text-[11.5px] leading-relaxed text-muted-foreground">
-              This restores default agent settings, model choices, and instructions, and removes your saved setups. Chats and sign-in details are kept.
+              This restores default agent settings, model choices, and instructions, and removes your agents. Chats and sign-in details are kept.
             </p>
             <div className="mt-2.5 flex items-center gap-2">
               <GhostButton onClick={() => setConfirming(false)}>Keep them</GhostButton>

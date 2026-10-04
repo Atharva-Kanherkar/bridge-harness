@@ -1,8 +1,7 @@
-import { ChevronDown, Cloud, FolderGit2, GitBranch, GitFork, Laptop, Plus, Terminal } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { Bot, ChevronDown, FolderGit2, GitBranch, GitFork, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
-import type { Workspace } from "../types";
+import type { AgentDefinition, Workspace } from "../types";
 
 export type ComposerContextStripProps = {
   workspaces: Workspace[];
@@ -21,13 +20,13 @@ export type ComposerContextStripProps = {
   onRequestBranches: () => void;
   onSelectBranch: (branch: string) => void;
   onToggleWorktree: () => void;
+  /** Enabled worker agents a new chat can start with. */
+  agents?: AgentDefinition[];
+  agent?: AgentDefinition | null;
+  onSelectAgent?: (agent: AgentDefinition | null) => void;
+  /** Opens the Agents page to create one. */
+  onCreateAgent?: () => void;
 };
-
-const HOSTS: { id: "local" | "cloud" | "ssh"; label: string; icon: LucideIcon; disabled: boolean }[] = [
-  { id: "local", label: "This computer", icon: Laptop, disabled: false },
-  { id: "cloud", label: "Cloud", icon: Cloud, disabled: true },
-  { id: "ssh", label: "SSH", icon: Terminal, disabled: true },
-];
 
 const CHIP =
   "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
@@ -57,10 +56,14 @@ export function ComposerContextStrip({
   onRequestBranches,
   onSelectBranch,
   onToggleWorktree,
+  agents = [],
+  agent = null,
+  onSelectAgent,
+  onCreateAgent,
 }: ComposerContextStripProps) {
   const repoMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
   const branchMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
-  const hostMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 220 });
+  const agentMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
   const worktreeMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
   const worktreeAvailable = !!workspace?.projectId;
   const branchAvailable = worktreeAvailable && !worktree;
@@ -175,36 +178,45 @@ export function ComposerContextStrip({
         />
       </MenuPanel>
 
-      <button
-        type="button"
-        ref={hostMenu.triggerRef}
-        aria-label="Agent host: This computer"
-        aria-haspopup="menu"
-        aria-expanded={hostMenu.open}
-        title="This computer"
-        onClick={hostMenu.toggle}
-        className={cn(CHIP, "ml-auto shrink-0", hostMenu.open && "bg-accent text-foreground")}
-      >
-        <Laptop size={13} strokeWidth={1.7} aria-hidden="true" />
-        <span className="hidden @xl/composer-context:inline">This computer</span>
-        <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
-      </button>
-      <MenuPanel controller={hostMenu} label="Agent host">
-        {HOSTS.map(item => {
-          const Icon = item.icon;
-          return <MenuItem
-            key={item.id}
-            label={item.label}
-            disabled={item.disabled}
-            checked={item.id === "local"}
+      {onSelectAgent && <>
+        <button
+          type="button"
+          ref={agentMenu.triggerRef}
+          aria-label={`Agent: ${agent?.name ?? "None"}`}
+          aria-haspopup="menu"
+          aria-expanded={agentMenu.open}
+          title={agent?.name ?? "No agent"}
+          onClick={agentMenu.toggle}
+          className={cn(CHIP, "ml-auto min-w-0 max-w-[12rem] shrink-0", agentMenu.open && "bg-accent text-foreground")}
+        >
+          <Bot size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
+          <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent?.name ?? "No agent"}</span>
+          <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
+        </button>
+        <MenuPanel controller={agentMenu} label="Agent">
+          <MenuItem
+            label="No agent"
             role="menuitemradio"
-            leading={<Icon size={13} aria-hidden="true" />}
-            trailing={item.disabled ? <span className="text-caption text-muted-foreground">Unavailable</span> : undefined}
-            onClick={() => hostMenu.close()}
-          />;
-        })}
-        <ContextHelp text="Agents run on this Mac. Cloud and SSH hosts are not available yet." />
-      </MenuPanel>
+            checked={!agent}
+            leading={<Bot size={13} aria-hidden="true" />}
+            onClick={() => { onSelectAgent(null); agentMenu.close(); }}
+          />
+          {agents.map(item => <MenuItem
+            key={item.id ?? item.name}
+            label={item.name}
+            role="menuitemradio"
+            checked={item.id === agent?.id}
+            disabled={locked}
+            leading={<Bot size={13} aria-hidden="true" />}
+            onClick={() => { onSelectAgent(item); agentMenu.close(); }}
+          />)}
+          {onCreateAgent && <>
+            <MenuSeparator />
+            <MenuItem label="New agent…" leading={<Plus size={13} aria-hidden="true" />} onClick={() => { agentMenu.close(); onCreateAgent(); }} />
+          </>}
+          <ContextHelp text={agents.length === 0 ? "No agents are enabled. Create one in Settings." : "Start this chat with one of your agents instead of the orchestrator."} />
+        </MenuPanel>
+      </>}
     </div>
   );
 }

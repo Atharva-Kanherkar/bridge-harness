@@ -10,7 +10,7 @@ export type RailGroup = "Settings";
 export const SECTION_LABELS: Record<Section, string> = {
   voice: "Voice", general: "General", codingAgents: "Coding agents", data: "Data & storage",
   appearance: "Appearance", menuBar: "Menu bar", updates: "Updates",
-  permissions: "Permissions", composer: "Typing & search", agents: "Saved setups",
+  permissions: "Permissions", composer: "Typing & search", agents: "Agents",
   models: "Model preferences", prompts: "Bridge instructions", harnesses: "Coding agents",
   clones: "Browser copies", work: "Daily briefing", import: "Import history",
   storage: "Disk usage", archives: "Archived chats", workers: "Background tasks",
