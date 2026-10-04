@@ -164,6 +164,20 @@ describe("MemoryDialog", () => {
     expect(container.textContent).toContain("remembers across your conversations");
   });
 
+  it("shows a loading skeleton, not an empty list, until pins arrive", async () => {
+    const releases: Array<() => void> = [];
+    vi.spyOn(bridgeApi, "listMemoryRecords").mockImplementation(
+      () => new Promise(resolve => { releases.push(() => resolve({ scopeKey: "account:local", records: [] })); }),
+    );
+    mount();
+    expect(document.querySelector('[data-testid="memory-loading"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Nothing remembered yet");
+    await act(async () => { releases.forEach(release => release()); });
+    await flush();
+    expect(document.querySelector('[data-testid="memory-loading"]')).toBeNull();
+    expect(container.textContent).toContain("Nothing remembered yet");
+  });
+
   it("fills the main canvas like Projects, not a floating overlay", async () => {
     mount();
     await flush();
