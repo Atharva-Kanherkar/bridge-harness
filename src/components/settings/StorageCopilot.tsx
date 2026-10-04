@@ -36,13 +36,17 @@ export function StorageCopilot({ chat, selectedCount, starting = false, onAsk }:
   onAsk: (question: string) => void;
 }) {
   if (chat) {
-    return <div className="flex h-[min(46rem,calc(100dvh-8rem))] flex-col gap-2 lg:sticky lg:top-6 lg:self-start">
+    return <div className={cn(RAIL, "gap-2")}>
       <QuickAsks compact selectedCount={selectedCount} disabled={starting} onAsk={onAsk} />
       <div className="min-h-0 flex-1">{chat}</div>
     </div>;
   }
   return <StorageCopilotIntro selectedCount={selectedCount} starting={starting} onAsk={onAsk} />;
 }
+
+/** The rail fills the window beside the page (title bar, sticky offset, and
+ *  bottom gap taken out) and stays put while the listing scrolls. */
+const RAIL = "flex h-[38rem] flex-col lg:sticky lg:top-6 lg:h-[calc(100dvh-6rem)] lg:self-start";
 
 const selectedAsk = (count: number) => `Tell me what the ${count} item${count === 1 ? "" : "s"} I selected are, and whether I can delete them.`;
 
@@ -61,7 +65,7 @@ function QuickAsks({ compact = false, selectedCount, disabled, onAsk }: { compac
       </li>)}
     </ul>;
   }
-  return <ul aria-label="Quick asks" className="grid grid-cols-2 gap-2">
+  return <ul aria-label="Quick asks" className="grid grid-cols-2 gap-2 [&>li:last-child:nth-child(odd)]:col-span-2">
     {asks.map(ask => {
       const Icon = ask.icon;
       return <li key={ask.label}>
@@ -81,27 +85,32 @@ function StorageCopilotIntro({ selectedCount, starting, onAsk }: { selectedCount
     onAsk(text);
     setQuestion("");
   };
-  return <aside aria-label="Ask Bridge" className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-    <div className="rounded-xl border border-border bg-card p-4">
+  // Shaped like the chat it becomes: what it can do on top, the starting
+  // points in the middle, the composer pinned to the bottom.
+  return <aside aria-label="Ask Bridge" className={cn(RAIL, "overflow-hidden rounded-xl border border-border bg-background")}>
+    <header className="shrink-0 border-b border-border px-4 py-3">
       <h3 className="text-ui font-medium text-foreground">Storage agent</h3>
       <p className="mt-1 text-caption leading-relaxed text-muted-foreground">
         Sees what this page measured, digs deeper with read-only commands, and proposes cleanups as plans you tick and approve. Nothing moves without you.
       </p>
-      <form onSubmit={event => { event.preventDefault(); submit(question); }} className="mt-3 flex items-end gap-2 rounded-lg bg-muted/50 p-1.5 focus-within:ring-2 focus-within:ring-ring">
-        <textarea
-          aria-label="Ask about your storage"
-          value={question}
-          rows={2}
-          placeholder="What's using my space?"
-          onChange={event => setQuestion(event.target.value)}
-          onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(question); } }}
-          className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-muted-foreground"
-        />
-        <button type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting} className="grid size-7 shrink-0 place-items-center rounded-md bg-foreground text-background transition-opacity hover:opacity-90 disabled:opacity-30">
-          <ArrowUp size={14} aria-hidden="true" />
-        </button>
-      </form>
+    </header>
+    <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <p className="mb-2 px-1 text-caption text-muted-foreground">Start with</p>
+      <QuickAsks selectedCount={selectedCount} disabled={starting} onAsk={submit} />
     </div>
-    <QuickAsks selectedCount={selectedCount} disabled={starting} onAsk={submit} />
+    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="m-3 mt-0 flex shrink-0 items-end gap-2 rounded-xl border border-border bg-card p-1.5 focus-within:ring-2 focus-within:ring-ring">
+      <textarea
+        aria-label="Ask about your storage"
+        value={question}
+        rows={3}
+        placeholder="What's using my space?"
+        onChange={event => setQuestion(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(question); } }}
+        className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-muted-foreground"
+      />
+      <button type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting} className="grid size-7 shrink-0 place-items-center rounded-md bg-foreground text-background transition-opacity hover:opacity-90 disabled:opacity-30">
+        <ArrowUp size={14} aria-hidden="true" />
+      </button>
+    </form>
   </aside>;
 }

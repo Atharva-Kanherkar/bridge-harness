@@ -428,12 +428,12 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
   };
 
   return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
-    <header className="mb-8">
-      <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
-      <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
-    </header>
     <div className={cn("grid gap-8", copilot && "lg:grid-cols-[minmax(0,1fr)_24rem]")}>
       <div className="@container/storage min-w-0 space-y-10">
+        <header>
+          <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
+          <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
+        </header>
         {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
         {!overview && !error && <p role="status" className="text-caption text-muted-foreground">Looking at your disk…</p>}
         <DiskSummary overview={overview} home={home} onOpen={open} onEmptyTrash={() => setConfirming("empty-trash")} busy={busy} />
