@@ -24,6 +24,8 @@ export type ComposerContextStripProps = {
   agents?: AgentDefinition[];
   agent?: AgentDefinition | null;
   onSelectAgent?: (agent: AgentDefinition | null) => void;
+  /** Opens the Agents page to create one. */
+  onCreateAgent?: () => void;
 };
 
 const CHIP =
@@ -57,6 +59,7 @@ export function ComposerContextStrip({
   agents = [],
   agent = null,
   onSelectAgent,
+  onCreateAgent,
 }: ComposerContextStripProps) {
   const repoMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
   const branchMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
@@ -182,12 +185,12 @@ export function ComposerContextStrip({
           aria-label={`Agent: ${agent?.name ?? "None"}`}
           aria-haspopup="menu"
           aria-expanded={agentMenu.open}
-          title={agent?.name ?? "Choose an agent"}
+          title={agent?.name ?? "No agent"}
           onClick={agentMenu.toggle}
           className={cn(CHIP, "ml-auto min-w-0 max-w-[12rem] shrink-0", agentMenu.open && "bg-accent text-foreground")}
         >
           <Bot size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-          <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent?.name ?? "Choose an agent"}</span>
+          <span className="hidden min-w-0 truncate @xl/composer-context:inline">{agent?.name ?? "No agent"}</span>
           <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
         </button>
         <MenuPanel controller={agentMenu} label="Agent">
@@ -207,6 +210,10 @@ export function ComposerContextStrip({
             leading={<Bot size={13} aria-hidden="true" />}
             onClick={() => { onSelectAgent(item); agentMenu.close(); }}
           />)}
+          {onCreateAgent && <>
+            <MenuSeparator />
+            <MenuItem label="New agent…" leading={<Plus size={13} aria-hidden="true" />} onClick={() => { agentMenu.close(); onCreateAgent(); }} />
+          </>}
           <ContextHelp text={agents.length === 0 ? "No agents are enabled. Create one in Settings." : "Start this chat with one of your agents instead of the orchestrator."} />
         </MenuPanel>
       </>}

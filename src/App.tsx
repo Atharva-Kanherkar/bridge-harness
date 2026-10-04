@@ -3562,6 +3562,7 @@ function AppContent() {
         harnessShortcutFailure={harnessShortcutFailure}
         onDraftChange={() => setHarnessShortcutFailure(undefined)}
         onNewWorkspace={() => void createWorkspaceFromFolder()}
+        onOpenAgents={() => setView("saved-setups")}
         onHealthChange={invalidateHealth}
       />}
     </main>
@@ -3697,7 +3698,8 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, onVoiceSetup }: {
+function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, onOpenAgents, onVoiceSetup }: {
+  onOpenAgents: () => void;
   agents: AgentDefinition[];
   onVoiceSetup: () => void;
   slashCommands: import("./types").SlashCommand[];
@@ -3908,6 +3910,7 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
         onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
         agents={agents.filter(item => item.enabled && item.role !== "orchestrator")}
         agent={agent}
+        onCreateAgent={onOpenAgents}
         onSelectAgent={next => { setAgent(next); if (next) onSelectSessionKind("orchestrator"); }}
       /> : undefined}
     />

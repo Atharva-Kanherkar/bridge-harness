@@ -62,7 +62,7 @@ describe("ComposerContextStrip", () => {
     expect(text).toContain("bridge-harness");
     expect(text).toContain("feat/cursor-sidebar-dev");
     expect(text).toContain("Work on branch");
-    expect(text).toContain("Choose an agent");
+    expect(text).toContain("No agent");
     expect(text).not.toContain("This computer");
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
   });
@@ -77,7 +77,8 @@ describe("ComposerContextStrip", () => {
   it("lists agents and reports the pick, or None to go back to the orchestrator", () => {
     const researcher = { id: "a1", name: "Researcher", role: "research", enabled: true } as AgentDefinition;
     const onSelectAgent = vi.fn();
-    mount({ agents: [researcher], onSelectAgent });
+    const onCreateAgent = vi.fn();
+    mount({ agents: [researcher], onSelectAgent, onCreateAgent });
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="Agent: None"]')!.click());
     const menu = document.querySelector('[role="menu"][aria-label="Agent"]')!;
     const options = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
@@ -85,6 +86,10 @@ describe("ComposerContextStrip", () => {
     act(() => options[1].click());
     expect(onSelectAgent).toHaveBeenCalledWith(researcher);
     expect(document.querySelector('[role="menu"][aria-label="Agent"]')).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Agent: None"]')!.click());
+    const create = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Agent"] button')].find(item => item.textContent === "New agent…")!;
+    act(() => create.click());
+    expect(onCreateAgent).toHaveBeenCalledTimes(1);
   });
 
   it("opens locked context menus and offers new settings without retargeting the chat", () => {
