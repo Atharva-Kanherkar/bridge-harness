@@ -2487,7 +2487,7 @@ function AppContent() {
     await reload();
     return result;
   }, [reload, session?.id]);
-  // The "Memory used" chip is audit-backed: what this session's prompt actually
+  // The "Recalled N memories" note is audit-backed: what this session's prompt actually
   // received, re-read on every memory change.
   useEffect(() => {
     setPacketAudit(null);
@@ -3155,6 +3155,7 @@ function AppContent() {
                   leafEntryIds={forest?.leaves.map(entry => entry.id)}
                   stopping={stopping}
                   onInterrupt={session ? requestStop : undefined}
+                  leading={<MemoryUsedChip audit={packetAudit} onOpenMemory={() => setView("memory")} />}
                   trailing={<ChatPullRequestCards
                     prs={chatPrs.prs}
                     refreshing={chatPrs.refreshing}
@@ -3170,7 +3171,6 @@ function AppContent() {
                 {/* A follow-up the provider cannot take mid-turn is held, not
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
-                <MemoryUsedChip audit={packetAudit} onOpenMemory={() => setView("memory")} />
                 {queuedFollowUpCount > 0 && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Clock3 size={12} aria-hidden="true" />
