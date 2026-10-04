@@ -4,51 +4,36 @@ Issue: #651
 
 ## Scope
 
-The currently wired transport is Codex-only dictation for an already-running direct chat.
-Bridge captures microphone audio, streams bounded PCM chunks through the existing
-Codex app-server process, and writes only the user-role transcript into the
-composer. It never submits the draft automatically.
+The composer selects opt-in, harness-independent local dictation. Bridge captures
+microphone audio, streams bounded PCM chunks to a supervised sherpa-onnx helper,
+and inserts finalized text into the unchanged draft. It never submits the draft
+or creates a coding turn automatically.
 
-The user approved opt-in local, harness-independent dictation on 2026-09-21;
-delivery is tracked in `docs/plans/voice-dictation-rework.md`. The independent
-daemon service and test-only fake engine now exist; the native engine and its
-setup flow are not yet connected. Claude's internal speech endpoint and implicit
-cross-provider fallback remain excluded. Other harnesses show a disabled mic with
-an unavailable reason, rather than hiding the control.
+Settings provides explicit engine/model download, progress, retry and removal.
+Downloads are pinned by size and checksum and activated atomically. Capability
+probes never download or load a model. Production setup currently supports Apple
+silicon Macs and an English speech model.
 
-## Delivery phases
+The Codex realtime transport remains disabled and is not selected by the
+composer. Authenticated dictation-only behavior and late-event correlation across
+successive takes on one provider thread remain unverified. Claude's internal
+speech endpoint and implicit cross-provider fallback remain excluded.
 
-1. **Protocol foundation — complete.** Add the versioned voice messages,
-   capability response, transient transcript event, generated TypeScript, and
-   schema/registry coverage.
-2. **Codex transport — implemented; runtime validation pending.** Gate on the
-   experimental schema and route realtime requests/notifications. Provider request
-   correlation and confirmed dictation-only behavior remain unverified.
-3. **Capture and composer — safety rework implemented.** Bounded client queues,
-   preview-only partials, snapshot-checked final insertion, and mic controls.
-   AudioWorklet/continuous resampling and packaged capture validation remain pending.
-4. **Lifecycle hardening — reopened.** Client operation ownership, terminal cleanup,
-   deadlines, and draft-edit protection have regression coverage. Backend expiry
-   and late events across successive takes on the same provider thread still need
-   work. Previous passing tests did not establish end-to-end safety.
-5. **Live validation and delivery — pending.** Exercise an authenticated Codex
-   session with macOS microphone permission, collect acceptance evidence, and
-   prepare the PR.
-6. **Independent local provider — foundation implemented.** Native evaluation is
-   recorded separately. The daemon-owned provider/stream boundary accepts fresh
-   draft owners, without a coding session, database mutation, adapter launch, or
-   credential lookup. A test-only fake verifies the contract. The production
-   service reports `needsSetup`; real engine integration and setup remain pending.
+## Delivery status
+
+- Typed protocol, local setup/removal, supervised native helper, AudioWorklet
+  capture and composer safety are implemented.
+- Automated checks cover client ownership, preview/final insertion, PCM limits,
+  cancellation, helper cleanup, download verification and generated artifacts.
+- Live microphone validation on the exact packaged build remains pending.
+- Authenticated Codex validation and safe take correlation remain pending; keep it disabled.
 
 ## Protocol
 
-- Protocol 1.18 adds `voice/capabilities`, `voice/start`, `voice/append`,
-  `voice/stop`, and `voice/cancel`.
-- Protocol 1.19 separates required `ownerKey` from optional `sessionId`, types
-  provider IDs, exposes `ready`/`needsSetup`/`unsupported`/`failed` capability
-  states and processing location, and adds replacement `partial` hypotheses.
-  Old clients/daemons are rejected in both directions. Transcript payloads now
-  have generated schemas/TypeScript rather than a hand-maintained frontend shape.
+- Protocol 1.21 includes draft-owned dictation, local setup/status/removal,
+  typed provider capabilities and transient transcript events. It also retains
+  main's attribution, chat search and context-window methods. Pre-voice clients
+  and daemons are rejected in both directions.
 - Every live operation after start is addressed by an opaque `voiceSessionId`.
 - Chunks carry a zero-based, strictly increasing sequence and are bounded both
   per chunk and per session.
@@ -68,15 +53,21 @@ an unavailable reason, rather than hiding the control.
   sequence/PCM/chunk/total limits, and hold their busy slot until engine cleanup
   finishes. Startup and RPC waits are bounded; idle takes expire actively.
   Late replies after cancellation or deadline cannot emit a fresh take's text.
-- Future real-engine implementations must honor the cancellation token and
-  supervise/kill/reap their helper process. A non-cooperative engine currently
-  remains busy until it returns; the service deliberately cannot start additional
-  workers around a stuck one. This is not yet a hard-kill native implementation.
+- The production engine observes cancellation through a supervised helper,
+  which is killed and reaped before the busy slot is released. Bounded reader
+  queues are disconnected before joining their threads, and cleanup does not
+  write to a potentially blocked helper. A non-cooperative test provider remains
+  busy until it returns; additional workers cannot bypass that ownership.
+- Model removal is serialized with recording admission and refuses an active
+  take or installation. Successful setup refreshes composer availability,
+  including an immediate ready response.
 - Engine failures expose fixed diagnostic messages, not raw engine errors,
   audio payloads, or transcript text. Fake providers are available only in tests,
   never through a runtime setting or a shipped fallback.
 
-- Codex is offered only when the installed experimental schema contains the
+- Codex remains disabled until individual recordings can be correlated safely.
+  Schema support alone must not enable the transport.
+- The transport also requires that the installed experimental schema contains the
   complete realtime request surface and the live app-server was initialized with
   `experimentalApi: true`.
 - Start uses the active chat's existing Codex app-server connection. It does not
@@ -90,12 +81,15 @@ an unavailable reason, rather than hiding the control.
 
 ## Capture and composer behavior
 
-- The mic is visible with a reason when unavailable. Only an idle, live Codex
-  direct chat currently enables capture; Retry refreshes capabilities/events.
+- The mic is visible with a reason when unavailable. An idle composer with an
+  installed local engine enables capture regardless of coding harness. Retry
+  refreshes capabilities/events; Settings exposes model setup.
 - Click toggles capture; a hold of at least 300 ms stops on release. Space is
   hold-to-talk, Enter finishes without sending, and Escape cancels. `/voice`
   invokes the same controller.
-- Audio is downmixed/resampled to 16 kHz mono PCM s16le before transport.
+- Audio is captured through a packaged AudioWorklet, with a compatibility
+  fallback, continuous 16 kHz PCM s16le conversion and acknowledged tail flushing.
+  A suspended audio context is resumed before startup completes.
 - Partial/final utterances render in a separate preview. Terminal completion
   inserts finalized text at the captured selection only if draft owner, revision,
   and text are unchanged. No partial transcript edits the draft. Surrounding
