@@ -50,7 +50,7 @@ describe("SettingsScreen", () => {
   it("puts Reset all in the rail footer, behind a confirmation that names what it deletes", async () => {
     const html = renderToStaticMarkup(<SettingsScreen {...props} />);
     expect(html).toContain("Reset all settings");
-    expect(html).not.toContain("removes your saved setups");
+    expect(html).not.toContain("removes your agents");
   });
 
   describe("mounted", () => {
@@ -199,8 +199,6 @@ describe("SettingsScreen", () => {
 
     it("opens a preset detail page from the list, with no third sidebar", async () => {
       await render({ initialSection: "agents" });
-      expect(container.textContent).not.toContain("Bridge orchestrator");
-      await open("Advanced: edit built-in roles");
       expect(container.textContent).toContain("Bridge orchestrator");
       // The list is rows in the one column; the old build drew its own sidebar
       // here and started content 440px in.
@@ -219,7 +217,6 @@ describe("SettingsScreen", () => {
     // it. The draft still survives, which is what the contract asks for.
     it("returns to the list when the rail item is clicked again, keeping the draft", async () => {
       await render({ initialSection: "agents" });
-      await open("Advanced: edit built-in roles");
       await open("Edit Bridge orchestrator");
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeTruthy();
 
@@ -228,8 +225,7 @@ describe("SettingsScreen", () => {
       await act(async () => flush());
 
       await open("Coding agents");
-      await open("Saved setups");
-      await open("Advanced: edit built-in roles");
+      await open("Agents");
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeNull();
 
       await open("Edit Bridge orchestrator");
@@ -283,10 +279,10 @@ describe("SettingsScreen", () => {
     it("names what Reset all deletes before it deletes it", async () => {
       await render();
       await open("Reset all settings");
-      expect(container.textContent).toContain("removes your saved setups");
+      expect(container.textContent).toContain("removes your agents");
       expect(container.textContent).toContain("Keep them");
       await open("Keep them");
-      expect(container.textContent).not.toContain("removes your saved setups");
+      expect(container.textContent).not.toContain("removes your agents");
     });
   });
 });

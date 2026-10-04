@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {  Archive, Clock, BookMarked,
+import {  Archive, Clock, Bot,
  Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
@@ -754,7 +754,7 @@ export function BridgeSidebar({
             <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
             {!searchOpen && <><span className="min-w-0 flex-1 truncate">New Chat</span><span aria-hidden="true" className="text-[11px] font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
           </button>
-          {!searchOpen && onOpenSavedSetups && <button type="button" onClick={onOpenSavedSetups} aria-label="Saved setups" title="Saved setups: reusable agent choices and instructions" className="inline-flex size-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground hover:bg-card hover:text-foreground"><BookMarked size={15} aria-hidden="true" /></button>}
+          {!searchOpen && onOpenSavedSetups && <button type="button" onClick={onOpenSavedSetups} aria-label="Agents" title="Agents: your own and Bridge's built-in agents" className="inline-flex size-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground hover:bg-card hover:text-foreground"><Bot size={15} aria-hidden="true" /></button>}
           {!searchOpen && (
             <button
               type="button"

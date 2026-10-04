@@ -51,7 +51,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "composer", label: "Search deeper", description: "Let chat search ask a small model when the index is unsure" },
   { section: "composer", label: "Search model", description: "Which Claude model chat search uses" },
 
-  { section: "agents", label: "New setup", description: "Create a saved setup with reusable instructions" },
+  { section: "agents", label: "New agent", description: "Create an agent with reusable instructions" },
 
   { section: "models", label: "Your chats", description: "The model you talk to" },
   { section: "models", label: "Background tasks", description: "Agents the orchestrator delegates to" },

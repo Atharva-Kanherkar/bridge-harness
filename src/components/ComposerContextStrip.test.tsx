@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Workspace } from "../types";
+import type { AgentDefinition, Workspace } from "../types";
 import { ComposerContextStrip } from "./ComposerContextStrip";
 
 const workspace = (overrides: Partial<Workspace> = {}): Workspace => ({
@@ -56,33 +56,35 @@ function mount(overrides: Partial<Parameters<typeof ComposerContextStrip>[0]> = 
 }
 
 describe("ComposerContextStrip", () => {
-  it("shows repo, branch, worktree, and This computer", () => {
-    mount();
+  it("shows repo, branch, worktree, and the agent chooser", () => {
+    mount({ onSelectAgent: vi.fn() });
     const text = container.textContent ?? "";
     expect(text).toContain("bridge-harness");
     expect(text).toContain("feat/cursor-sidebar-dev");
     expect(text).toContain("Work on branch");
-    expect(text).toContain("This computer");
+    expect(text).toContain("Choose an agent");
+    expect(text).not.toContain("This computer");
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
   });
 
   it("uses the same type size on every context chip", () => {
-    mount();
+    mount({ onSelectAgent: vi.fn() });
     const buttons = [...container.querySelector('[aria-label="Chat context"]')!.querySelectorAll("button")];
     expect(buttons).toHaveLength(4);
     expect(buttons.every(button => button.className.includes("text-[12px]"))).toBe(true);
   });
 
-  it("explains host availability without offering an unsupported switch", () => {
-    mount();
-    const host = container.querySelector<HTMLButtonElement>('[aria-label="Agent host: This computer"]')!;
-    act(() => host.click());
-    const menu = document.querySelector('[role="menu"][aria-label="Agent host"]')!;
-    expect(menu.textContent).toContain("Cloud and SSH hosts are not available yet");
+  it("lists agents and reports the pick, or None to go back to the orchestrator", () => {
+    const researcher = { id: "a1", name: "Researcher", role: "research", enabled: true } as AgentDefinition;
+    const onSelectAgent = vi.fn();
+    mount({ agents: [researcher], onSelectAgent });
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Agent: None"]')!.click());
+    const menu = document.querySelector('[role="menu"][aria-label="Agent"]')!;
     const options = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
-    expect(options.filter(option => !option.disabled).map(option => option.textContent)).toEqual(["This computer"]);
-    act(() => options[0].click());
-    expect(document.querySelector('[role="menu"][aria-label="Agent host"]')).toBeNull();
+    expect(options.map(option => option.textContent)).toEqual(["No agent", "Researcher"]);
+    act(() => options[1].click());
+    expect(onSelectAgent).toHaveBeenCalledWith(researcher);
+    expect(document.querySelector('[role="menu"][aria-label="Agent"]')).toBeNull();
   });
 
   it("opens locked context menus and offers new settings without retargeting the chat", () => {

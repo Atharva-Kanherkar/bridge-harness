@@ -2942,7 +2942,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Saved setups" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3552,6 +3552,7 @@ function AppContent() {
         onSelectWorkspace={id => { writeLastWorkspaceId(id); setWelcomeWorkspaceId(id); setNewChatDraft(current => current ? { ...current, workspaceId: id } : current); }}
         onRequestBranches={() => { if (welcomeWorkspace) void requestWorkspaceBranches(welcomeWorkspace.id); }}
         onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
+        agents={configuredAgents}
         onToggleWorktree={() => setNewChatDraft(current => current
           ? { ...current, createWorktree: !current.createWorktree }
           // Fresh welcome surface with no draft yet: the worktree decision is now
@@ -3696,7 +3697,8 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, onVoiceSetup }: {
+function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, onVoiceSetup }: {
+  agents: AgentDefinition[];
   onVoiceSetup: () => void;
   slashCommands: import("./types").SlashCommand[];
   suggestionSettings?: SuggestionSettingsSnapshot;
@@ -3792,10 +3794,14 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
   };
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
+  const [agent, setAgent] = useState<AgentDefinition | null>(null);
+  const agentToken = agent ? agentShortcutCandidates([agent], "")[0]?.token : undefined;
   const submit = () => {
     if (voice.isActive()) { void voice.stop(); return; }
-    const text = draft.trim();
-    if (text === "/voice" && attachments.length === 0) { beginVoice(); return; }
+    const typed = draft.trim();
+    // A chosen agent rides the same `#agent objective` directive the in-chat shortcut parses.
+    const text = agentToken && typed ? `#${agentToken} ${typed}` : typed;
+    if (typed === "/voice" && attachments.length === 0) { beginVoice(); return; }
     const started = text || attachments.length > 0 ? onStartChat(text, attachments) : onStartChat();
     void started.then(cleared => { if (cleared) { setDraft(""); setAttachments([]); } });
   };
@@ -3886,7 +3892,7 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
-      trailing={workspace ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
+      trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}
@@ -3900,13 +3906,18 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
         onRequestBranches={onRequestBranches}
         onSelectBranch={onSelectBranch}
         onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
+        agents={agents.filter(item => item.enabled && item.role !== "orchestrator")}
+        agent={agent}
+        onSelectAgent={next => { setAgent(next); if (next) onSelectSessionKind("orchestrator"); }}
       /> : undefined}
     />
     <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
     </div>
     {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
-      {workspace
+      {workspace && agent
+        ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{agent.name}</span> · Your first message goes straight to this agent.</span>
+        : workspace
         ? <span id={sessionModeHintId}><span className="font-medium text-foreground">{sessionKind === "direct" ? "Direct" : "Orchestrator"}</span> · {sessionModeDescription(sessionKind)}</span>
         : <span>{greeting.hint}</span>}
       <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
