@@ -11,6 +11,8 @@
 - src/components/harnessMarks.test.tsx: Bridge uses the canonical B while retaining its existing neutral tint and routing semantics.
 - Native menu-bar tests: the B has a continuous stem and two transparent counters; status and menu icons retain their template flags and point sizes.
 
+- Existing chat-search budget fixture: reach the first guess before expiring on the second turn, with enough timing margin for a concurrent debug test run. Preserve its assertions.
+
 ## Integration / Functional Tests
 - Run bun run generate:icons twice and confirm identical generated file hashes.
 - Run bun run build and NODE_OPTIONS=--no-experimental-webstorage bun run test. The environment flag disables Node 26's global web storage so jsdom supplies test localStorage.
