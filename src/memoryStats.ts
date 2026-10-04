@@ -52,6 +52,17 @@ export function deriveRecallStats(records: MemoryRecord[], audit: PacketInjectio
       if (day > stat.lastDay) stat.lastDay = day;
     }
   }
+  const active = records.filter(record => recordState(record) === "pinned" || recordState(record) === "active");
+  const byKind = new Map<string, { kind: string; active: number; recalled: number; recalls: number }>();
+  let recalledRecords = 0;
+  for (const record of active) {
+    const recalls = perRecord.get(record.id)?.recalls ?? 0;
+    const entry = byKind.get(record.kind) ?? { kind: record.kind, active: 0, recalled: 0, recalls: 0 };
+    entry.active += 1;
+    entry.recalls += recalls;
+    if (recalls > 0) { entry.recalled += 1; recalledRecords += 1; }
+    byKind.set(record.kind, entry);
+  }
   const budgetCharsUsed = records
     .filter(record => recordState(record) === "pinned" || recordState(record) === "active")
     .reduce((sum, record) => sum + [...record.body.trim()].length, 0);
@@ -66,6 +77,12 @@ export function deriveRecallStats(records: MemoryRecord[], audit: PacketInjectio
     injectionsPerDay,
     budgetCharsUsed: Math.min(budgetCharsUsed, PACKET_BUDGET_CHARS),
     budgetCharsMax: PACKET_BUDGET_CHARS,
+    packets: injectionCount,
+    packetsWithMemories: audit.filter(injection => injection.ids.length > 0).length,
+    activeRecords: active.length,
+    recalledRecords,
+    byKind: [...byKind.values()],
+    exclusions: [],
   };
 }
 

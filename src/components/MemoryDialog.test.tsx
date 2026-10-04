@@ -142,10 +142,16 @@ beforeEach(() => {
     injectionsPerDay: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0, 4],
     budgetCharsUsed: 1234,
     budgetCharsMax: 4000,
+    packets: 7,
+    packetsWithMemories: 6,
+    activeRecords: 2,
+    recalledRecords: 1,
+    byKind: [{ kind: "preference", active: 1, recalled: 1, recalls: 3 }, { kind: "fact", active: 1, recalled: 0, recalls: 0 }],
+    exclusions: [{ code: "over_budget", count: 2 }],
   });
-  vi.spyOn(bridgeApi, "memoryConsolidationLog").mockResolvedValue([
-    { op: "merge", detail: "2 worktree notes folded into one", day: 12 },
-    { op: "retire", detail: "r-old tombstoned", day: 2 },
+  vi.spyOn(bridgeApi, "memoryActivityLog").mockResolvedValue([
+    { source: "consolidation", status: "completed", applied: 3, refused: 1, detail: "merged two notes", at: new Date().toISOString() },
+    { source: "extraction", status: "failed", applied: 0, refused: 0, detail: "the harness ended before answering", at: new Date().toISOString() },
   ]);
 });
 
@@ -236,18 +242,51 @@ describe("MemoryDialog", () => {
     expect(quiet.textContent).not.toContain("recalled");
   });
 
-  it("the Activity tab shows recall volume, the packet budget, and the consolidation log", async () => {
+  it("the Activity tab shows recall volume, memory use, the packet budget, and recent runs", async () => {
     mount();
     await flush();
     click(tab("Activity"));
     expect(container.textContent).toContain("peak 4 injections / day");
     expect(container.textContent).toContain("1234 / 4000 chars");
-    expect(container.textContent).toContain("Consolidation log");
-    expect(container.textContent).toContain("2 worktree notes folded into one");
-    expect(container.textContent).toContain("merge");
-    expect(container.textContent).toContain("11d ago");
+    expect(container.textContent).toContain("6 of 7 packets carried a memory");
+    expect(container.textContent).toContain("1 of 2 active memories reached a prompt.");
+    expect(container.textContent).toContain("50%");
+    expect(container.textContent).toContain("1 of 1 used · 3 recalls");
+    expect(container.textContent).toContain("Over the packet budget");
+    expect(container.textContent).toContain("3 applied, 1 refused · merged two notes");
+    expect(container.textContent).toContain("failed: the harness ended before answering");
+    expect(container.textContent).toContain("does not measure whether a memory helped");
     const meter = document.querySelector('[role="meter"][aria-label="Packet budget"]')!;
     expect(meter.getAttribute("aria-valuenow")).toBe("31");
+  });
+
+  it("the Insights tab only reads until the user asks for an analysis", async () => {
+    const insights = vi.spyOn(bridgeApi, "memoryInsights").mockImplementation(async refresh => refresh
+      ? {
+        status: "ready", generatedAt: new Date().toISOString(), harness: "claude", model: "m",
+        report: {
+          headline: "Preferences carry the load", summary: "One of two memories reached a prompt.",
+          highlights: [{ title: "Idle fact", detail: "Works in IST was never recalled.", tone: "watch" }],
+          themes: [{ label: "Workflow", share: 1 }], recommendations: ["Retire the idle fact."],
+          stats: { perRecord: [], injectionsPerDay: Array<number>(14).fill(0), budgetCharsUsed: 0, budgetCharsMax: 4000, packets: 7, packetsWithMemories: 6, activeRecords: 2, recalledRecords: 1, byKind: [], exclusions: [] },
+          memoriesAnalysed: 2,
+        },
+      }
+      : { status: "empty" });
+    mount();
+    await flush();
+    click(tab("Insights"));
+    await flush();
+    expect(insights).toHaveBeenCalledTimes(1);
+    expect(insights).toHaveBeenLastCalledWith(false);
+    expect(container.textContent).toContain("Nothing analysed yet");
+    click(buttonNamed("Analyse my memory")!);
+    await flush();
+    expect(insights).toHaveBeenLastCalledWith(true);
+    expect(container.textContent).toContain("Preferences carry the load");
+    expect(container.textContent).toContain("Retire the idle fact.");
+    expect(container.textContent).toContain("50%");
+    expect(container.textContent).toContain("6 of 7");
   });
 
   it("saving goes through the api and the list refreshes on the hint", async () => {

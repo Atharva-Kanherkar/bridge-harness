@@ -13,9 +13,9 @@ import { formatCount, formatTokens, formatUsd } from "../usageReport";
 // always tell which is which. Colour follows the harness; everything else is
 // the achromatic chrome. Motion is one reveal per card, never a loop.
 
-const CARD = "u-surface rounded-2xl p-4";
+export const CARD = "u-surface rounded-2xl p-4";
 
-const TONE: Record<UsageInsightTone, { dot: string; label: string }> = {
+export const TONE: Record<UsageInsightTone, { dot: string; label: string }> = {
   neutral: { dot: "bg-muted-foreground/60", label: "Note" },
   good: { dot: "bg-success", label: "Good" },
   watch: { dot: "bg-foreground", label: "Watch" },
@@ -23,11 +23,11 @@ const TONE: Record<UsageInsightTone, { dot: string; label: string }> = {
 
 const LOADING_STEPS = ["Reading your usage ledger", "Sampling recent prompts", "Checking pull requests", "Asking your harness to write it up"];
 
-function rise(index: number): { className: string; style: React.CSSProperties } {
+export function rise(index: number): { className: string; style: React.CSSProperties } {
   return { className: "motion-safe:animate-[insight-rise_420ms_ease-out_both]", style: { animationDelay: `${Math.min(index, 8) * 60}ms` } };
 }
 
-function relative(iso: string): string {
+export function relative(iso: string): string {
   const minutes = Math.round((Date.now() - Date.parse(iso)) / 60_000);
   if (!Number.isFinite(minutes) || minutes < 1) return "just now";
   if (minutes < 60) return `${minutes} min ago`;
@@ -125,7 +125,7 @@ function DayArea({ report }: { report: UsageInsightsReport }) {
 
 /** Themes as one segmented bar plus the list it indexes. Ordered by share, so
  * an ink ramp by rank reads as "bigger is darker" rather than as identity. */
-function Themes({ report }: { report: UsageInsightsReport }) {
+export function Themes({ report }: { report: Pick<UsageInsightsReport, "themes"> }) {
   const themes = [...report.themes].sort((a, b) => b.share - a.share);
   const shades = ["bg-foreground", "bg-foreground/75", "bg-foreground/55", "bg-foreground/40", "bg-foreground/28", "bg-foreground/18"];
   if (themes.length === 0) return <p className="text-caption text-muted-foreground">No themes were found in the sampled prompts.</p>;
