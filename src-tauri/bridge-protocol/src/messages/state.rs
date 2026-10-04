@@ -278,6 +278,91 @@ pub struct HealthWarning {
     pub paths: Vec<String>,
 }
 
+/// Where the runtime that owns a data directory runs. Informational: it says
+/// nothing about billing, which is [`CredentialPolicy`]'s job — location must
+/// not decide who pays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionTopology {
+    /// Inside the desktop app's own process.
+    #[default]
+    Embedded,
+    /// The `bridged` daemon on the user's machine.
+    LocalDaemon,
+    /// A runner executing on someone else's machine or a sandbox.
+    RemoteRunner,
+}
+
+/// Which credentials a deployment lets harnesses run on. Independent of
+/// [`ExecutionTopology`]: any topology can carry any policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialPolicy {
+    /// Whatever the user signed the harness in with, subscription included.
+    #[default]
+    UserManaged,
+    /// Metered credentials only: an API key or a cloud-provider account. A
+    /// consumer-subscription login is refused before the session starts.
+    ApiKeyOnly,
+    /// Only credentials the deployment's operator provisions through a cloud
+    /// provider account. Gateway-issued credentials are not yet recognised.
+    EnterpriseManaged,
+}
+
+impl CredentialPolicy {
+    /// The kebab-case wire name, also the flag and environment spelling.
+    pub const fn name(self) -> &'static str {
+        match self {
+            CredentialPolicy::UserManaged => "user-managed",
+            CredentialPolicy::ApiKeyOnly => "api-key-only",
+            CredentialPolicy::EnterpriseManaged => "enterprise-managed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<CredentialPolicy> {
+        [
+            CredentialPolicy::UserManaged,
+            CredentialPolicy::ApiKeyOnly,
+            CredentialPolicy::EnterpriseManaged,
+        ]
+        .into_iter()
+        .find(|policy| policy.name() == value.trim().to_ascii_lowercase())
+    }
+
+    /// Whether the policy refuses any credential at all.
+    pub const fn restricts(self) -> bool {
+        !matches!(self, CredentialPolicy::UserManaged)
+    }
+}
+
+impl ExecutionTopology {
+    pub const fn name(self) -> &'static str {
+        match self {
+            ExecutionTopology::Embedded => "embedded",
+            ExecutionTopology::LocalDaemon => "local-daemon",
+            ExecutionTopology::RemoteRunner => "remote-runner",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<ExecutionTopology> {
+        [
+            ExecutionTopology::Embedded,
+            ExecutionTopology::LocalDaemon,
+            ExecutionTopology::RemoteRunner,
+        ]
+        .into_iter()
+        .find(|topology| topology.name() == value.trim().to_ascii_lowercase())
+    }
+}
+
+/// The deployment a daemon is running as, reported on `health/health`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentInfo {
+    pub topology: ExecutionTopology,
+    pub credential_policy: CredentialPolicy,
+}
+
 /// `health/health`'s result. Mirrors `bridge_core::api::Health`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -301,6 +386,10 @@ pub struct HealthResult {
     /// daemon still parses.
     #[serde(default)]
     pub warnings: Vec<HealthWarning>,
+    /// The active execution topology and credential policy. Defaulted so a
+    /// document from an older daemon still parses.
+    #[serde(default)]
+    pub deployment: DeploymentInfo,
 }
 
 #[cfg(test)]
@@ -403,6 +492,29 @@ mod tests {
     }
 
     #[test]
+    fn deployment_names_match_the_wire_spelling() {
+        for policy in [
+            CredentialPolicy::UserManaged,
+            CredentialPolicy::ApiKeyOnly,
+            CredentialPolicy::EnterpriseManaged,
+        ] {
+            assert_eq!(serde_json::to_value(policy).unwrap(), json!(policy.name()));
+            assert_eq!(CredentialPolicy::parse(policy.name()), Some(policy));
+        }
+        for topology in [
+            ExecutionTopology::Embedded,
+            ExecutionTopology::LocalDaemon,
+            ExecutionTopology::RemoteRunner,
+        ] {
+            assert_eq!(serde_json::to_value(topology).unwrap(), json!(topology.name()));
+            assert_eq!(ExecutionTopology::parse(topology.name()), Some(topology));
+        }
+        assert_eq!(CredentialPolicy::parse("apikey"), None);
+        assert!(!CredentialPolicy::UserManaged.restricts());
+        assert!(CredentialPolicy::ApiKeyOnly.restricts());
+    }
+
+    #[test]
     fn health_results_round_trip() {
         let health = HealthResult {
             ok: true,
@@ -448,8 +560,16 @@ mod tests {
                 detail: "See \u{201c}macOS file access prompts\u{201d} in README.md.".into(),
                 paths: vec!["/Users/dev/Documents/app".into()],
             }],
+            deployment: DeploymentInfo {
+                topology: ExecutionTopology::LocalDaemon,
+                credential_policy: CredentialPolicy::ApiKeyOnly,
+            },
         };
         let wire = serde_json::to_value(&health).unwrap();
+        assert_eq!(
+            wire["deployment"],
+            json!({"topology": "local-daemon", "credentialPolicy": "api-key-only"})
+        );
         assert_eq!(wire["adapters"][0]["authState"], json!("signed_in"));
         assert_eq!(wire["adapters"][0]["models"][0]["defaultForTier"], json!(true));
         assert_eq!(wire["harnesses"]["claude"], json!(true));
@@ -474,10 +594,13 @@ mod tests {
             snapshot_total_bytes: 0,
             adapters: vec![],
             warnings: vec![],
+            deployment: DeploymentInfo::default(),
         })
         .unwrap();
         wire.as_object_mut().unwrap().remove("warnings");
+        wire.as_object_mut().unwrap().remove("deployment");
         let parsed: HealthResult = serde_json::from_value(wire).unwrap();
         assert!(parsed.warnings.is_empty());
+        assert_eq!(parsed.deployment, DeploymentInfo::default());
     }
 }

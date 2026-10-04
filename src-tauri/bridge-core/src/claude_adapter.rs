@@ -194,6 +194,9 @@ fn launch(
     // the `claude -p` "exit after one turn" behaviour). Provider discovery
     // supplies enabled plugins and credential-free connector endpoints while
     // the sidecar remains isolated from unrelated global hooks and permissions.
+    // A restrictive credential policy is checked against the environment the
+    // sidecar will inherit, before anything spawns.
+    crate::credential_policy::admit_claude_launch()?;
     let node = binary::resolve("node").ok_or_else(|| {
         BridgeError::Invalid(
             "Node.js is required to run Claude (expected `node` on PATH). Install Node 18+ to use Claude models."
@@ -323,6 +326,15 @@ fn launch(
     // from the environment can never point the sidecar at something Bridge does
     // not own.
     configure_sdk_environment(&mut command);
+    let subscription_allowed = crate::credential_policy::admits(
+        crate::credential_policy::active().credential_policy,
+        crate::credential_policy::AuthSource::Subscription,
+    );
+    if !subscription_allowed {
+        // An inherited subscription token must not win over the API key the
+        // policy was satisfied by.
+        command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+    }
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -330,7 +342,9 @@ fn launch(
             .env("CLAUDE_CODE_TMPDIR", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
-        if std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_none() {
+        // The keychain login is a subscription credential: a deployment that
+        // forbids those does not inject it.
+        if subscription_allowed && std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_none() {
             if let Some(token) = claude_oauth_token()? {
                 command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
             }

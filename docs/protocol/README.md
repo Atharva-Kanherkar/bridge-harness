@@ -97,6 +97,32 @@ daemon binds nothing but the Unix socket and the health listener.
   handshake deadline. Binary messages are not part of the protocol and close
   the connection.
 
+## Deployment and credential policy
+
+`health/health` reports `deployment { topology, credentialPolicy }`.
+`topology` (`embedded`, `local-daemon`, `remote-runner`) says where the runtime
+lives; `credentialPolicy` says which credentials harnesses may run on. They are
+independent: location never decides billing.
+
+```bash
+bridged --credential-policy api-key-only --topology remote-runner
+# or BRIDGE_CREDENTIAL_POLICY / BRIDGE_EXECUTION_TOPOLOGY
+```
+
+| Policy | Admits |
+| --- | --- |
+| `user-managed` (default) | anything the user signed in with |
+| `api-key-only` | an API key or a cloud-provider account |
+| `enterprise-managed` | a cloud-provider account the operator provisions |
+
+Enforced where a harness starts, not in the credential broker. Codex is asked
+`account/read` before its thread opens; Claude's launch environment is checked
+before the sidecar spawns, and a subscription token is neither injected nor
+inherited. Other adapters are refused under a restrictive policy because their
+credential source cannot be verified yet. A refusal is error **1006
+`credential_policy_violation`** naming the policy and what it requires. An
+unparseable `BRIDGE_CREDENTIAL_POLICY` fails closed to `api-key-only`.
+
 ## Clients
 
 **`bridge-client`** (`src-tauri/bridge-client/`) is the shared Rust client:
