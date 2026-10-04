@@ -12,6 +12,7 @@ import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type Age
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
+import { useVoiceDictation } from "./useVoiceDictation";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
 import { ComposerDrafts, EMPTY_DRAFT, mergeFailedAttachments, mergeFailedSend, mergeFailedText, withoutSent, withoutSentAttachments, withoutSentText, type ComposerDraft } from "./composerDrafts";
@@ -262,7 +263,16 @@ function AppContent() {
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
-  const [composer, setComposer] = useState("");
+  const [composer, setComposerValue] = useState("");
+  // Keep a revision even for an edit-away-and-back in one React batch. Async
+  // dictation must observe mutations immediately, not only after a render.
+  const composerDraftRef = useRef({ text: "", revision: 0 });
+  const setComposer = useCallback((change: string | ((current: string) => string)) => {
+    const current = composerDraftRef.current;
+    const text = typeof change === "function" ? change(current.text) : change;
+    composerDraftRef.current = { text, revision: current.revision + 1 };
+    setComposerValue(text);
+  }, []);
   const [referenceChips, setReferenceChips] = useState<ReferenceChipModel[]>([]);
   const resolvedReferences = useRef(new Map<string, ResolveReferenceResult>());
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
@@ -748,6 +758,8 @@ function AppContent() {
   // opened directly (from Agent Fleet or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
+  const composerOwnerRef = useRef<string>();
+  composerOwnerRef.current = view === "workspace" && paradigm !== "grid" ? session?.id : undefined;
   // Selection changes before the history effect runs. Never paint the prior
   // chat under the new header, even for that first render.
   const forest = loadedForest?.sessionId === session?.id ? loadedForest : undefined;
@@ -1218,6 +1230,33 @@ function AppContent() {
   );
   const activeTurnInput = useActiveTurnInput();
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session?.harness)?.capabilities, activeTurnInput);
+  const voice = useVoiceDictation({
+    ownerKey: composerOwnerRef.current,
+    sessionId: session?.id,
+    provider: "local",
+    harness: session?.harness,
+    kind: session?.kind,
+    runtimeStatus: session?.status,
+    working: turnActive,
+    readDraft: () => {
+      const draft = composerDraftRef.current;
+      const textarea = composerRef.current;
+      return { ...draft, ownerKey: composerOwnerRef.current ?? "inactive-draft", sessionId: session?.id,
+        selectionStart: textarea?.selectionStart ?? draft.text.length,
+        selectionEnd: textarea?.selectionEnd ?? draft.text.length };
+    },
+    commit: (text, caret) => {
+      setComposer(text);
+      const revision = composerDraftRef.current.revision;
+      const owner = session?.id;
+      requestAnimationFrame(() => {
+        // A navigation or edit between commit and paint owns the selection now.
+        if (composerOwnerRef.current === owner && composerDraftRef.current.revision === revision && composerRef.current?.value === text) {
+          composerRef.current.setSelectionRange(caret, caret);
+        }
+      });
+    },
+  });
   // Folded from the durable event feed, so a reconnect reports the same waiting
   // follow-ups the composer showed before it.
   const queuedFollowUpCount = useMemo(
@@ -2288,7 +2327,14 @@ function AppContent() {
       throw e;
     }
   }
+  async function beginVoiceDictation() {
+    if (!voice.available || voice.isActive()) return;
+    if (composerDraftRef.current.text.trim() === "/voice") setComposer("");
+    await voice.start();
+  }
+
   async function sendPrompt(forcedText?: string, forcedAttachments?: ComposerAttachment[]) {
+    if (voice.isActive()) { await voice.stop(); return; }
     const submittedText = (forcedText ?? composer).trim();
     const sentAttachments = forcedAttachments ?? attachments;
     // The chat whose composer this came from. Every await below can end with
@@ -2302,6 +2348,10 @@ function AppContent() {
       return;
     }
     if (!submittedText && sentAttachments.length === 0) return;
+    if (submittedText === "/voice" && sentAttachments.length === 0) {
+      await beginVoiceDictation();
+      return;
+    }
     // `/find` searches every chat from the sidebar. It is never a turn: the
     // words go to the search field, which runs the deep stage, and nothing
     // is written to the open chat.
@@ -2971,7 +3021,7 @@ function AppContent() {
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} onAskBridge={prompt => { setView("workspace"); setParadigm("single"); void openNewChat(prompt); }} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} onAskBridge={prompt => { setView("workspace"); setParadigm("single"); void openNewChat(prompt); }} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
@@ -3286,6 +3336,17 @@ function AppContent() {
                     stopping={stopping}
                     agentsWorking={chatAgents.length > 0}
                     onStop={session ? stopChat : undefined}
+                    voiceAvailable={voice.available}
+                    voiceState={voice.state}
+                    voicePreview={voice.preview}
+                    voiceError={voice.error}
+                    voiceUnavailableReason={voice.unavailableReason}
+                    voiceProviderLabel="Local dictation · audio stays on this Mac"
+                    onVoiceStart={() => void beginVoiceDictation()}
+                    onVoiceStop={() => void voice.stop()}
+                    onVoiceCancel={voice.cancel}
+                    onVoiceRetry={voice.retry}
+                    onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
                     inputRef={composerRef}
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"

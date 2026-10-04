@@ -27,6 +27,7 @@ import { WorkersPage } from "./settings/WorkersPage";
 import { ClonesPage } from "./settings/ClonesPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { primarySection, SECTION_LABELS, type Section } from "./settings/sections";
+import { VoiceSettingsPage } from "./settings/VoiceSettingsPage";
 
 export type { Section };
 export { PermissionsSection };
@@ -38,7 +39,7 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "general", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onHealthChange = () => undefined, contextual = false, availableUpdate, onUpdate = () => undefined, onError, onAskBridge }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; contextual?: boolean; availableUpdate?: UpdateInfo; onUpdate?: (update: UpdateInfo | undefined) => void; onError: (message: string) => void; /** Start a Bridge chat with this first message (the storage copilot). */ onAskBridge?: (prompt: string) => void }) {
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "general", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onHealthChange = () => undefined, contextual = false, availableUpdate, onUpdate = () => undefined, onError, onAskBridge }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onVoiceChanged?: () => void; contextual?: boolean; availableUpdate?: UpdateInfo; onUpdate?: (update: UpdateInfo | undefined) => void; onError: (message: string) => void; /** Start a Bridge chat with this first message (the storage copilot). */ onAskBridge?: (prompt: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
   useEffect(() => {
     let active = true;
@@ -247,6 +248,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     </div></details>
   </>;
   const generalLinks = <SettingsGroup label="Preferences">
+    <SettingsRow label="Voice" description="Private, on-device dictation and local speech model setup." onOpen={() => navigate("voice")} />
     <SettingsRow label="Typing & search" description="Text suggestions while you type, and how Bridge searches chat history." onOpen={() => navigate("composer")} />
     <SettingsRow label="Menu bar" description="Show account usage and spend in the macOS menu bar." onOpen={() => navigate("menuBar")} />
     <SettingsRow label="Updates" description={availableUpdate ? `Bridge ${availableUpdate.version} is available.` : "Check for new versions of Bridge."} onOpen={() => navigate("updates")} />
@@ -288,6 +290,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       />}
 
       {section === "composer" && <ComposerPage adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError} />}
+      {section === "voice" && <VoiceSettingsPage onError={onError} onChanged={onVoiceChanged} />}
 
       {section === "prompts" && <PromptStudio />}
       {section === "import" && <ImportHarnessSection onError={onError} />}

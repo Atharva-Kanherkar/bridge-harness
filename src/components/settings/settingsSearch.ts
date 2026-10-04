@@ -47,6 +47,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
 
   { section: "composer", label: "Inline suggestions", description: "Ghost-text continuations of your draft, accepted with Tab" },
   { section: "composer", label: "Suggestion model", description: "Which model writes the inline continuation" },
+  { section: "voice", label: "Local dictation", description: "Download or remove the private on-device English speech model" },
   { section: "composer", label: "Search deeper", description: "Let chat search ask a small model when the index is unsure" },
   { section: "composer", label: "Search model", description: "Which Claude model chat search uses" },
 

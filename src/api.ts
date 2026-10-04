@@ -18,6 +18,7 @@ import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
+import type { VoiceCapabilitiesResult, VoiceLocalStatusResult, VoiceStartResult, VoiceProviderId, VoiceTranscriptEvent } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -170,6 +171,7 @@ const unit = (result: Promise<null>): Promise<void> => result.then(() => undefin
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
+export type VoiceTranscriptPayload = VoiceTranscriptEvent;
 type GithubChecksChangedPayload = { workspaceId: string; number: number };
 const githubCiListeners = new Set<(payload: GithubCiFinishedPayload) => void>();
 const sessionPrListeners = new Set<(payload: { sessionId: string }) => void>();
@@ -2850,6 +2852,48 @@ export const bridgeApi = {
     await bridgeApi.sendTurn(sessionId, text);
     return { disposition: "startedNewTurn", interceptions: [] };
   },
+  voiceCapabilities: (sessionId?: string): Promise<VoiceCapabilitiesResult> => isTauri()
+    ? call("voice/voice_capabilities", { sessionId })
+    : Promise.resolve({
+        sessionId,
+        selectedProvider: null,
+        providers: [{
+          provider: "local",
+          state: "unsupported",
+          processing: "onDevice",
+          supportedLocales: [],
+          unavailableReason: "Voice dictation requires the desktop runtime",
+          encoding: "pcm_s16_le",
+          sampleRate: 16_000,
+          channels: 1,
+          maxChunkBytes: 65_536,
+          maxSessionBytes: 4_194_304,
+        }],
+      }),
+  voiceStart: (ownerKey: string, provider: VoiceProviderId, sessionId?: string): Promise<VoiceStartResult> =>
+    call("voice/voice_start", { ownerKey, sessionId, provider }),
+  voiceAppend: (voiceSessionId: string, sequence: number, data: string, samplesPerChannel: number): Promise<void> =>
+    unit(call("voice/voice_append", { voiceSessionId, sequence, data, samplesPerChannel })),
+  voiceStop: (voiceSessionId: string): Promise<void> =>
+    unit(call("voice/voice_stop", { voiceSessionId })),
+  voiceCancel: (voiceSessionId: string): Promise<void> =>
+    unit(call("voice/voice_cancel", { voiceSessionId })),
+  voiceLocalStatus: (): Promise<VoiceLocalStatusResult> => isTauri()
+    ? call("voice/voice_local_status")
+    : Promise.resolve({
+        state: "unsupported",
+        engineVersion: "1.13.8",
+        modelId: "nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25",
+        locale: "en-US",
+        downloadBytes: 482_197_219,
+        installedBytes: 694_157_312,
+        downloadedBytes: 0,
+        reason: "Local dictation setup requires the desktop runtime",
+      }),
+  voiceLocalSetup: (): Promise<VoiceLocalStatusResult> =>
+    call("voice/voice_local_setup", { confirmDownload: true }),
+  voiceLocalRemove: (): Promise<VoiceLocalStatusResult> =>
+    call("voice/voice_local_remove", { confirmRemoval: true }),
   dispatchAgentShortcut: async (sessionId: string, token: string, objective: string): Promise<DispatchAgentShortcutResult> => {
     if (isTauri()) return call("sessions/dispatch_agent_shortcut", { sessionId, token, objective });
     if (!objective.trim()) throw new Error("Agent shortcut objective cannot be empty; add what the specialist should do");
@@ -2991,6 +3035,10 @@ export const bridgeApi = {
   },
   onAccountUsage: async (handler: (payload: AccountUsagePayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<AccountUsagePayload>("account-usage", handler);
+    return () => undefined;
+  },
+  onVoiceTranscript: async (handler: (payload: VoiceTranscriptPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<VoiceTranscriptPayload>("voice-transcript", handler);
     return () => undefined;
   },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {

@@ -76,6 +76,49 @@ fn macos_bundle_ships_webkit_jit_entitlements() {
 }
 
 #[test]
+fn macos_bundle_declares_microphone_access() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
+    let manifest_body = std::fs::read_to_string(&manifest).expect("Info.plist is readable");
+    assert!(
+        manifest_body.contains("<key>NSMicrophoneUsageDescription</key>")
+            && manifest_body.contains("transcribe text into the composer"),
+        "the packaged app must explain composer dictation before macOS prompts for microphone access"
+    );
+
+    let entitlements = Path::new(env!("CARGO_MANIFEST_DIR")).join("entitlements.plist");
+    let entitlement_body =
+        std::fs::read_to_string(&entitlements).expect("entitlements.plist is readable");
+    assert!(
+        entitlement_body
+            .contains("<key>com.apple.security.device.audio-input</key>\n\t<true/>"),
+        "the signed app must retain the audio-input entitlement"
+    );
+}
+
+#[test]
+fn local_dictation_helper_is_bundled_and_prepared_without_downloading_a_model() {
+    let parsed = tauri_conf();
+    let external = parsed["bundle"]["externalBin"]
+        .as_array()
+        .expect("bundle.externalBin is an array");
+    assert!(
+        external
+            .iter()
+            .any(|entry| entry == "binaries/bridge-voice-helper"),
+        "the signed app must ship the supervised native speech helper"
+    );
+    assert!(
+        parsed["build"]["beforeBuildCommand"]
+            .as_str()
+            .is_some_and(|command| command.contains("prepare:voice-helper")),
+        "the helper must be compiled before Tauri validates and signs external binaries"
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    assert!(root.join("scripts/prepare-voice-helper.sh").is_file());
+    assert!(root.join("src-tauri/voice-helper/main.c").is_file());
+}
+
+#[test]
 fn claude_sidecar_is_bundled_under_resources() {
     let parsed = tauri_conf();
     let resources = parsed["bundle"]["resources"]

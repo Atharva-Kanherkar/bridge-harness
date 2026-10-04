@@ -9,6 +9,7 @@ cd "$project_root"
 if [ "${1:-}" = "dev" ]; then
   bun run prepare:browser-host:dev
   bun run prepare:daemon:dev
+  bun run prepare:voice-helper
 fi
 
 # Use the installed CLI directly so this does not recurse through the package

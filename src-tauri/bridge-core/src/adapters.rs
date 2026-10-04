@@ -178,6 +178,16 @@ pub trait AdapterRuntime: Send {
     fn supports_active_turn_steering(&self) -> bool {
         false
     }
+    fn supports_voice_dictation(&self) -> bool { false }
+    fn voice_start(&self) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
+    }
+    fn voice_append(&self, _data: &str, _sample_rate: u32, _channels: u16, _samples_per_channel: u32) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
+    }
+    fn voice_stop(&self) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
+    }
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
     /// Resolve a permission with the exact provider option advertised on the

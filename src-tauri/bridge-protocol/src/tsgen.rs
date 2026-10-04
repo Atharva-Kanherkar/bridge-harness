@@ -56,6 +56,11 @@ fn envelope_schemas() -> Vec<(&'static str, Value)> {
 fn root_schemas() -> Vec<(&'static str, Value)> {
     let mut roots = envelope_schemas();
     roots.extend(payload_schemas());
+    // Voice is a transient notification rather than a method result. Generate
+    // its payload too so clients cannot drift on owner IDs or partial semantics.
+    roots.push(("VoiceTranscriptEvent", serde_json::to_value(
+        schema_for!(crate::messages::VoiceTranscriptEvent)
+    ).unwrap()));
     for (name, schema) in &mut roots {
         if let Some(object) = schema.as_object_mut() {
             // schemars titles transparent wrappers after their inner type

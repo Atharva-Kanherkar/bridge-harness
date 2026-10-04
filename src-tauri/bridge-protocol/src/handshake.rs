@@ -81,9 +81,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.20 adds `sessions/get_context_windows`.** A new client must not pair
 /// with an older daemon, whose Context pane would fail with
 /// `method_not_found`; a 1.19 client still pairs with a 1.20 daemon.
+/// **1.21 adds draft-owned composer dictation, local setup and transcript events.**
+/// Pre-voice clients and daemons are rejected to keep transient events compatible.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 20,
+    minor: 21,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -97,11 +99,15 @@ impl ProtocolVersion {
     /// Whether a server at `self` can serve a client that expects `client`.
     pub fn accepts(self, client: ProtocolVersion) -> bool {
         const AUTOMATIC_MEMORY_MINOR: u32 = 17;
+        const INDEPENDENT_VOICE_MINOR: u32 = 21;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
                 && self.minor >= AUTOMATIC_MEMORY_MINOR
                 && client.minor < AUTOMATIC_MEMORY_MINOR)
+            && !(self.major == 1
+                && self.minor >= INDEPENDENT_VOICE_MINOR
+                && client.minor < INDEPENDENT_VOICE_MINOR)
     }
 }
 
@@ -269,6 +275,15 @@ mod tests {
     }
 
     #[test]
+    fn independent_voice_rejects_stale_clients_and_daemons() {
+        for minor in [17, 18, 19, 20] {
+            let older = ProtocolVersion { major: 1, minor };
+            assert!(!older.accepts(PROTOCOL_VERSION));
+            assert!(!PROTOCOL_VERSION.accepts(older));
+        }
+    }
+
+    #[test]
     fn attribution_client_rejects_daemon_without_attribution_settings() {
         // A 1.18 client must not pair with a 1.17 daemon: both attribution
         // calls would fail with `method_not_found` only when the toggle is
@@ -277,11 +292,11 @@ mod tests {
         let before_attribution = ProtocolVersion { major: 1, minor: 17 };
         assert!(!before_attribution.accepts(PROTOCOL_VERSION));
         assert!(
-            PROTOCOL_VERSION.accepts(before_attribution),
+            ProtocolVersion { major: 1, minor: 18 }.accepts(before_attribution),
             "attribution is additive: a 1.17 client still pairs with a 1.18 daemon"
         );
         assert!(
-            negotiate(&request(1, 17)).is_ok(),
+            ProtocolVersion { major: 1, minor: 18 }.accepts(before_attribution),
             "the 1.17 minimum-client boundary still holds on a 1.18 daemon"
         );
     }
@@ -291,10 +306,10 @@ mod tests {
         let before_search = ProtocolVersion { major: 1, minor: 18 };
         assert!(!before_search.accepts(PROTOCOL_VERSION));
         assert!(
-            PROTOCOL_VERSION.accepts(before_search),
+            ProtocolVersion { major: 1, minor: 19 }.accepts(before_search),
             "chat search is additive: a 1.18 client still pairs with a 1.19 daemon"
         );
-        assert!(negotiate(&request(1, 18)).is_ok());
+        assert!(ProtocolVersion { major: 1, minor: 19 }.accepts(before_search));
     }
 
     #[test]
@@ -302,10 +317,10 @@ mod tests {
         let before = ProtocolVersion { major: 1, minor: 19 };
         assert!(!before.accepts(PROTOCOL_VERSION));
         assert!(
-            PROTOCOL_VERSION.accepts(before),
+            ProtocolVersion { major: 1, minor: 20 }.accepts(before),
             "context windows are additive: a 1.19 client still pairs with a 1.20 daemon"
         );
-        assert!(negotiate(&request(1, 19)).is_ok());
+        assert!(ProtocolVersion { major: 1, minor: 20 }.accepts(before));
     }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {
@@ -333,9 +348,7 @@ mod tests {
         for incompatible in [
             request(PROTOCOL_VERSION.major + 1, 0),
             request(PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor + 1),
-            // A client below the 1.17 minimum boundary, not merely one minor
-            // behind: 1.17 clients still pair with a 1.18 daemon.
-            request(1, 16),
+            request(PROTOCOL_VERSION.major, 16),
         ] {
             let error = negotiate(&incompatible).unwrap_err();
             assert_eq!(error.code, ErrorCode::IncompatibleProtocol.code());
