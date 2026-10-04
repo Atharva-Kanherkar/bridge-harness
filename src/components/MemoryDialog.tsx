@@ -321,7 +321,16 @@ export function MemoryDialog({
             ))}
           </div>
         </div>
-        {records !== undefined && visible.length === 0
+        {records === undefined
+          ? <div role="status" aria-label="Loading memories" data-testid="memory-loading" className="space-y-4 rounded-xl border border-border-card bg-card px-4 py-4 motion-safe:animate-pulse">
+            {[0, 1, 2].map(row => (
+              <div key={row} className="space-y-2">
+                <div className="h-3.5 w-3/4 rounded bg-muted" />
+                <div className="h-3 w-1/3 rounded bg-muted" />
+              </div>
+            ))}
+          </div>
+          : visible.length === 0
           ? <p className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-caption text-muted-foreground">
             {query.trim() ? "No memories match your search." : filter ? `No ${KIND_PLURAL[filter as Kind].toLowerCase()} yet.` : "Nothing remembered yet. Add a memory above, or use /pin in any chat."}
           </p>
