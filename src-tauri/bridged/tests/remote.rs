@@ -104,6 +104,17 @@ fn recv(socket: &mut WebSocket<TcpStream>) -> Value {
     }
 }
 
+/// The frame that answers request `id`, skipping interleaved notifications
+/// (a mutation publishes its own `state-changed`).
+fn recv_response(socket: &mut WebSocket<TcpStream>, id: i64) -> Value {
+    loop {
+        let frame = recv(socket);
+        if frame.get("id") == Some(&json!(id)) {
+            return frame;
+        }
+    }
+}
+
 fn handshake_frame(token: &str) -> Value {
     json!({
         "jsonrpc": "2.0", "id": 0, "method": "protocol/handshake",
@@ -129,21 +140,23 @@ fn a_websocket_client_with_the_token_and_an_allowed_origin_drives_the_daemon() {
     assert_eq!(accepted["result"]["server"]["name"], json!("bridge"));
 
     send(&mut socket, json!({"jsonrpc": "2.0", "id": 1, "method": "health/health"}));
-    let health = recv(&mut socket);
+    let health = recv_response(&mut socket, 1);
     assert_eq!(health["id"], json!(1));
     assert_eq!(health["result"]["ok"], json!(true));
 
     // A mutation then an event: notifications interleave on the same socket.
     send(&mut socket, json!({"jsonrpc": "2.0", "id": 2, "method": "sessions/create_chat", "params": {"harness": "shell"}}));
-    let created = recv(&mut socket);
+    let created = recv_response(&mut socket, 2);
     assert_eq!(created["result"]["sessions"].as_array().unwrap().len(), 1);
+    // The event stream reaches this socket: a published hint arrives as a
+    // notification (the mutation above may have published its own too).
     running.daemon.core.events.publish(bridge_core::events::CoreEvent::StateChanged);
     let hint = recv(&mut socket);
     assert_eq!(hint["method"], json!("state-changed"));
 
     // Params are validated against the same contract as the Unix socket.
     send(&mut socket, json!({"jsonrpc": "2.0", "id": 3, "method": "browser/browser_frame", "params": {"afterRevision": -1}}));
-    assert_eq!(recv(&mut socket)["error"]["code"], json!(-32602));
+    assert_eq!(recv_response(&mut socket, 3)["error"]["code"], json!(-32602));
 
     drop(socket);
     running.stop();
@@ -196,7 +209,13 @@ fn oversized_and_binary_messages_end_the_connection() {
     recv(&mut socket);
     let huge = "x".repeat(bridged::MAX_FRAME_BYTES + 1024);
     let _ = socket.send(Message::text(huge));
-    let refused = recv(&mut socket);
+    // Skip any event notification that raced ahead of the refusal.
+    let refused = loop {
+        let frame = recv(&mut socket);
+        if frame.get("error").is_some() {
+            break frame;
+        }
+    };
     assert_eq!(refused["error"]["code"], json!(-32600));
 
     let mut socket = connect(running.addr, Some(ALLOWED_ORIGIN)).unwrap();
@@ -217,7 +236,7 @@ fn both_transports_serve_the_same_daemon_and_share_the_connection_cap() {
     send(&mut socket, handshake_frame(&running.token));
     recv(&mut socket);
     send(&mut socket, json!({"jsonrpc": "2.0", "id": 1, "method": "sessions/create_chat", "params": {"harness": "shell"}}));
-    let created = recv(&mut socket);
+    let created = recv_response(&mut socket, 1);
     let session_id = created["result"]["sessions"][0]["id"].as_str().unwrap().to_owned();
 
     // The Unix socket sees the chat the WebSocket client created.

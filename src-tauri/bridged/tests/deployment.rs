@@ -37,11 +37,19 @@ fn a_pinned_deployment_is_reported_and_enforced_at_harness_start() {
     let stream = UnixStream::connect(&socket_path).unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
+    // Notifications (boot-time discovery events) interleave with responses,
+    // so a call returns the frame that answers it, not merely the next one.
     let mut call = |frame: Value| -> Value {
+        let id = frame["id"].clone();
         writeln!(writer, "{frame}").unwrap();
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        serde_json::from_str(&line).unwrap()
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let received: Value = serde_json::from_str(&line).unwrap();
+            if received.get("id") == Some(&id) {
+                return received;
+            }
+        }
     };
     let handshake = call(json!({
         "jsonrpc": "2.0", "id": 0, "method": "protocol/handshake",
