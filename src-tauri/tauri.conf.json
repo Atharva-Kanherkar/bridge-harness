@@ -35,7 +35,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgRDI1MjQxNjc0RURBRkNGOApSV1Q0L05wT1owRlMwallTZ09LM1R6cDVoRUNZcm9nalFsNy9SMFU3RloyakF0S0ZWUjFtYTNlZwo=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE5QTkxQkY0MjI2OUQwMEMKUldRTTBHa2k5QnVwR1pVbE9Bb1EwWVlCdW1jNnFCeVQzS2tVWnR3cTNhRVZranJBcUpKK1hieVcK",
       "endpoints": [
         "https://github.com/Atharva-Kanherkar/bridge-harness/releases/latest/download/latest.json"
       ]
