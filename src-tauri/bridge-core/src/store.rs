@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 64;
+const LATEST_SCHEMA_VERSION: i64 = 65;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -732,6 +732,8 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // Live context-window readings per harness thread, behind the
             // in-chat context ring and the Context pane.
             64 => crate::context_windows::install_store(&transaction)?,
+            // The latest Memory Insights report: one row, like usage insights.
+            65 => crate::memory_insights::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

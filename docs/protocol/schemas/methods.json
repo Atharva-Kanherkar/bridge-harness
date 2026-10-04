@@ -723,6 +723,27 @@
       "resultSchema": "memory-packet-audit.json"
     },
     {
+      "command": "get_recall_stats",
+      "domain": "memory",
+      "method": "memory/get_recall_stats",
+      "paramsSchema": null,
+      "resultSchema": "memory-recall-stats.json"
+    },
+    {
+      "command": "get_activity_log",
+      "domain": "memory",
+      "method": "memory/get_activity_log",
+      "paramsSchema": null,
+      "resultSchema": "memory-activity-log.json"
+    },
+    {
+      "command": "get_insights",
+      "domain": "memory",
+      "method": "memory/get_insights",
+      "paramsSchema": "get-insights-params.json",
+      "resultSchema": "memory-insights-result.json"
+    },
+    {
       "command": "list_memory_records_as_of",
       "domain": "memory",
       "method": "memory/list_memory_records_as_of",

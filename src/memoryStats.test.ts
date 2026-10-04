@@ -44,6 +44,17 @@ describe("deriveRecallStats", () => {
     expect(stats.budgetCharsMax).toBe(PACKET_BUDGET_CHARS);
     expect(stats.budgetCharsUsed).toBeLessThanOrEqual(PACKET_BUDGET_CHARS);
   });
+  it("reports how much of the ledger was used, by kind, and how many packets carried memory", () => {
+    const stats = deriveRecallStats([rec("a", { kind: "preference" }), rec("b", { kind: "fact" }), rec("c", { kind: "fact" })], [
+      { day: 13, ids: ["a", "b"] },
+      { day: 12, ids: [] },
+    ]);
+    expect(stats.packets).toBe(2);
+    expect(stats.packetsWithMemories).toBe(1);
+    expect(stats.activeRecords).toBe(3);
+    expect(stats.recalledRecords).toBe(2);
+    expect(stats.byKind.find(entry => entry.kind === "fact")).toEqual({ kind: "fact", active: 2, recalled: 1, recalls: 1 });
+  });
   it("handles an empty audit without NaN", () => {
     const stats = deriveRecallStats(records, []);
     expect(stats.perRecord.every(stat => stat.recalls === 0 && stat.inPacketRatio === 0)).toBe(true);

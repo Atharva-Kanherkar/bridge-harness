@@ -5,10 +5,12 @@ import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
+import { relative } from "./UsageInsights";
+import { MemoryInsights } from "./MemoryInsights";
 import type {
   AdapterDescriptor,
   MemoryCapabilities,
-  MemoryConsolidationEntry,
+  MemoryActivityEntry,
   MemoryExtractionSettings,
   MemoryRecallStats,
   MemoryRecord,
@@ -52,7 +54,7 @@ export function rememberAction(text: string): "save" | "open-dialog" {
  * surface. Deliberately not this chat's history and not the helper picker —
  * the header says so, because the one-dialog-three-products confusion is the
  * bug this surface exists to fix. The Activity tab carries the read-only
- * recall analytics (injections, packet budget, consolidation log) that used to
+ * recall analytics (injections, how much of the ledger is used, packet budget, recent runs) that used to
  * live on a separate full-screen surface; one product, one UI.
  */
 export function MemoryDialog({
@@ -69,14 +71,14 @@ export function MemoryDialog({
   onClose: () => void;
   onError: (message: string) => void;
 }) {
-  const [tab, setTab] = useState<"pins" | "queue" | "activity">("pins");
+  const [tab, setTab] = useState<"pins" | "queue" | "activity" | "insights">("pins");
   const [records, setRecords] = useState<MemoryRecord[]>();
   const [proposed, setProposed] = useState<MemoryRecord[]>();
   const [settings, setSettings] = useState<MemoryExtractionSettings>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
   const [injection, setInjection] = useState<boolean>();
   const [stats, setStats] = useState<MemoryRecallStats>();
-  const [log, setLog] = useState<MemoryConsolidationEntry[]>();
+  const [log, setLog] = useState<MemoryActivityEntry[]>();
   const [filter, setFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [body, setBody] = useState("");
@@ -130,15 +132,15 @@ export function MemoryDialog({
         bridgeApi.getExtractionSettings(),
         bridgeApi.getMemoryInjection(),
         bridgeApi.memoryRecallStats("account:local"),
-        bridgeApi.memoryConsolidationLog("account:local"),
-      ]).then(([activeList, proposedList, extraction, injectionSettings, recallStats, consolidation]) => {
+        bridgeApi.memoryActivityLog("account:local"),
+      ]).then(([activeList, proposedList, extraction, injectionSettings, recallStats, activity]) => {
         if (!active || generation !== readGeneration.current) return;
         setRecords(activeList.records);
         setProposed(proposedList.records);
         setSettings(extraction);
         setInjection(injectionSettings.enabled);
         setStats(recallStats);
-        setLog(consolidation);
+        setLog(activity);
         setProfileHarness(current => current || extraction.harness || "");
         setProfileModel(current => current || extraction.model || "");
       }).catch(error => {
@@ -176,6 +178,7 @@ export function MemoryDialog({
   const statById = new Map((stats?.perRecord ?? []).map(stat => [stat.id, stat]));
   const injections = stats?.injectionsPerDay ?? [];
   const peakInjections = injections.length ? Math.max(...injections) : 0;
+  const usedPct = stats && stats.activeRecords > 0 ? Math.round((stats.recalledRecords / stats.activeRecords) * 100) : null;
   const budgetPct = stats && stats.budgetCharsMax > 0 ? Math.round((stats.budgetCharsUsed / stats.budgetCharsMax) * 100) : 0;
 
   const act = async (work: () => Promise<unknown>) => {
@@ -254,6 +257,7 @@ export function MemoryDialog({
           Review{queueCount > 0 && <span className="ml-1.5 tabular-nums text-faint">{queueCount}</span>}
         </button>
         <button type="button" aria-pressed={tab === "activity"} data-active={tab === "activity"} className="u-segmented-item" onClick={() => setTab("activity")}>Activity</button>
+        <button type="button" aria-pressed={tab === "insights"} data-active={tab === "insights"} className="u-segmented-item" onClick={() => setTab("insights")}>Insights</button>
       </div>
       {tab === "pins" && <div>
         <section aria-label="Memory editor" className="overflow-hidden rounded-xl border border-border-card bg-card transition-colors focus-within:border-ring/60">
@@ -478,23 +482,73 @@ export function MemoryDialog({
             </p>
           </section>
         </div>
+        <section className="rounded-xl border border-border-card bg-card px-4 py-3.5" aria-label="Memory use">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-caption text-muted-foreground">Memory use · 14 days</p>
+            <p className="text-caption tabular-nums text-faint">{stats?.packetsWithMemories ?? 0} of {stats?.packets ?? 0} packets carried a memory</p>
+          </div>
+          <p className="mt-1 font-display text-title font-semibold tabular-nums tracking-tight text-foreground">{usedPct === null ? "n/a" : `${usedPct}%`}</p>
+          <p className="text-caption tabular-nums text-faint">
+            {usedPct === null ? "No active memories yet." : `${stats?.recalledRecords ?? 0} of ${stats?.activeRecords ?? 0} active memories reached a prompt.`}
+          </p>
+          {(stats?.byKind.length ?? 0) > 0 && <ul className="mt-3 space-y-2" aria-label="Use by kind">
+            {stats!.byKind.map(entry => (
+              <li key={entry.kind}>
+                <div className="mb-1 flex items-baseline justify-between gap-3 text-caption">
+                  <span className="text-foreground">{KIND_PLURAL[entry.kind as Kind] ?? entry.kind}</span>
+                  <span className="tabular-nums text-faint">{entry.recalled} of {entry.active} used · {entry.recalls} recalls</span>
+                </div>
+                <div className="h-1 w-full overflow-hidden rounded-full bg-foreground/10">
+                  <div className="h-full rounded-full bg-foreground/70" style={{ width: `${entry.active === 0 ? 0 : Math.round((entry.recalled / entry.active) * 100)}%` }} />
+                </div>
+              </li>
+            ))}
+          </ul>}
+          {(stats?.exclusions.length ?? 0) > 0 && <div className="mt-3 border-t border-border pt-3">
+            <p className="text-caption text-muted-foreground">Held back at the packet gate</p>
+            <ul className="mt-1.5 space-y-1">
+              {stats!.exclusions.map(item => (
+                <li key={item.code} className="flex items-baseline justify-between gap-3 text-caption">
+                  <span className="text-foreground">{EXCLUSION_LABEL[item.code] ?? item.code}</span>
+                  <span className="tabular-nums text-faint">{item.count} {item.count === 1 ? "packet" : "packets"}</span>
+                </li>
+              ))}
+            </ul>
+          </div>}
+          <p className="mt-3 text-caption text-faint">Counts what reached a prompt. It does not measure whether a memory helped.</p>
+        </section>
         <section className="rounded-xl border border-border-card bg-card px-4 py-3.5">
-          <p className="text-caption text-muted-foreground">Consolidation log</p>
+          <p className="text-caption text-muted-foreground">Recent runs</p>
           {log !== undefined && log.length === 0
-            ? <p className="py-6 text-center text-caption text-faint">No consolidation runs yet.</p>
+            ? <p className="py-6 text-center text-caption text-faint">No extraction or consolidation runs yet.</p>
             : <ul className="mt-2 divide-y divide-border">
               {(log ?? []).map((entry, index) => (
                 <li key={index} className="flex items-baseline gap-3 py-2 text-caption">
-                  <span className="w-14 shrink-0 font-mono text-[11px] uppercase tracking-wide text-faint">{entry.op}</span>
-                  <span className="min-w-0 flex-1 truncate text-foreground" title={entry.detail}>{entry.detail}</span>
-                  <span className="shrink-0 tabular-nums text-faint">{dayAge(entry.day)}</span>
+                  <span className="w-24 shrink-0 font-mono text-[11px] uppercase tracking-wide text-faint">{entry.source}</span>
+                  <span className="min-w-0 flex-1 truncate text-foreground" title={runDetail(entry)}>{runDetail(entry)}</span>
+                  <span className="shrink-0 tabular-nums text-faint">{relative(entry.at)}</span>
                 </li>
               ))}
             </ul>}
         </section>
       </div>}
+      {tab === "insights" && <MemoryInsights onError={onError} />}
     </div>
   </div>;
+}
+
+const EXCLUSION_LABEL: Record<string, string> = {
+  unsafe_body: "Text the packet refuses to carry",
+  over_budget: "Over the packet budget",
+  conflict_group: "Conflicting with another memory",
+  candidate_window_truncated: "Beyond the candidate window",
+};
+
+/** One line for a settled run: what it did, or why it did not. */
+function runDetail(entry: MemoryActivityEntry): string {
+  if (entry.status !== "completed") return entry.detail ? `${entry.status}: ${entry.detail}` : entry.status;
+  if (entry.source === "extraction") return `${entry.applied} ${entry.applied === 1 ? "proposal" : "proposals"} written`;
+  return `${entry.applied} applied, ${entry.refused} refused${entry.detail ? ` · ${entry.detail}` : ""}`;
 }
 
 /** Day buckets run 0 = 13 days ago … 13 = today. */
