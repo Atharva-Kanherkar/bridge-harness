@@ -1468,8 +1468,9 @@ export interface ContextWindowSegment {
 
 export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
 
-export type DelegationNotifyLevel = "all" | "actionable" | "results-only";
 export type CredentialPolicy = "user-managed" | "api-key-only" | "enterprise-managed";
+
+export type DelegationNotifyLevel = "all" | "actionable" | "results-only";
 
 export interface DeploymentInfo {
   credentialPolicy: CredentialPolicy;
