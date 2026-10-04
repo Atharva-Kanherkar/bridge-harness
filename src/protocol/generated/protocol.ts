@@ -3382,6 +3382,7 @@ export interface ActivateSessionEntryParams {
 export interface CreateChatParams {
   harness: HarnessId;
   model?: string | null;
+  purpose?: string | null;
   title?: string | null;
 }
 

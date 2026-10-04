@@ -248,7 +248,7 @@ pub fn dispatch(
         }
         MethodName::CreateChat => {
             let p: wire::CreateChatParams = decode(method, params)?;
-            reply(api::create_chat(core, &p.harness.into(), p.model.as_deref(), p.title.as_deref()))
+            reply(api::create_chat(core, &p.harness.into(), p.model.as_deref(), p.title.as_deref(), p.purpose.as_deref()))
         }
         MethodName::CreateAsideChat => {
             let p: wire::CreateAsideChatParams = decode(method, params)?;

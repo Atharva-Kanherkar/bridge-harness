@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FileLinkContext, Markdown, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
 
 const mermaidMock = vi.hoisted(() => ({
@@ -500,5 +500,30 @@ describe("bare URLs in prose", () => {
 
   it("does not link a scheme it would never open", () => {
     expect(render("javascript:alert(1) and file:///etc/passwd")).not.toContain("<a ");
+  });
+});
+
+describe("storage agent blocks", () => {
+  it("draws a storage-plan fence as a read-only plan outside the Storage page", () => {
+    const plan = JSON.stringify({ title: "Caches", items: [{ path: "/Users/demo/.npm", sizeBytes: 2_000_000_000, why: "npm cache", safety: "safe" }] });
+    const html = renderToStaticMarkup(<Markdown text={"```storage-plan\n" + plan + "\n```"} />);
+    expect(html).toContain("Plan: Caches");
+    expect(html).toContain("2.0 GB");
+    expect(html).toContain("to act on this plan");
+    expect(html).not.toContain("Move 1 to Trash");
+  });
+
+  it("shows a plan that is still streaming in as a draft, not raw JSON", () => {
+    const html = renderToStaticMarkup(<Markdown text={"```storage-plan\n{\"title\": \"Cach"} />);
+    expect(html).toContain("Drafting a cleanup plan");
+    expect(html).not.toContain("title");
+  });
+
+  it("folds a message's storage snapshot into a chip", () => {
+    const html = renderToStaticMarkup(<MentionText text={"hi\n\n```storage-snapshot\nDisk: 1 GB free\n```"} />);
+    expect(html.startsWith("hi")).toBe(true);
+    expect(html).toContain("Storage page snapshot");
+    expect(html).toContain("<details");
+    expect(html).not.toContain("```");
   });
 });

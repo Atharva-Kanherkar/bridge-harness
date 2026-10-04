@@ -7,25 +7,36 @@
 // person asks for more; the backend refuses the few places that would break
 // macOS or Bridge, and says why per row.
 //
-// The copilot rail is a standing Bridge chat docked beside the listing. The
-// first question of each visit carries what this page measured, so the agent
-// can look deeper than a size listing can.
+// The copilot rail is a standing Bridge chat docked beside the listing, with
+// its own system prompt (`storage_agent.rs`). Messages carry what this page
+// measured whenever it changed, and the agent proposes changes as
+// ```storage-plan cards the person approves here (`StoragePlanCard`).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { FolderOpen, MessageCircle, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
-import type { DiskEntry, DiskListing, DiskOverview } from "../../types";
-import { cleanupTotal, diskBytes, displayPath, storageBriefing } from "../../diskSpace";
-import { GhostButton, PrimaryButton, TextButton } from "./kit";
+import type { DiskEntry, DiskListing, DiskOverview, DiskSuggestion } from "../../types";
+import { cleanupTotal, diskBytes, displayPath, storageSnapshot, withSnapshot, type StoragePlanItem } from "../../diskSpace";
+import { StorageAgentContext, type StorageAgentHost } from "../StoragePlanCard";
+import { GhostButton, PrimaryButton, StatusPill, TextButton } from "./kit";
 import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
 
 const POLL_MS = 1500;
 
-/** Achromatic by design: a frame hosting other brands stays neutral, so the
- *  breakdown is a lightness ramp rather than a palette. */
-const RAMP = ["bg-foreground/80", "bg-foreground/60", "bg-foreground/45", "bg-foreground/32", "bg-foreground/22"];
-const OTHER = "bg-foreground/12";
+/** The page's one categorical palette: the validated six-hue ramp the context
+ *  lens already wears, in rank order, so the biggest thing is always the same
+ *  blue. Chrome stays achromatic; only data marks are coloured. */
+const SERIES = ["bg-ctx-1", "bg-ctx-2", "bg-ctx-3", "bg-ctx-4", "bg-ctx-5", "bg-ctx-6"];
+const SERIES_WASH = ["bg-ctx-1/12", "bg-ctx-2/12", "bg-ctx-3/12", "bg-ctx-4/12", "bg-ctx-5/12", "bg-ctx-6/12"];
+const OTHER = "bg-foreground/15";
+/** Suggestion groups wear a fixed series so a card's colour means its kind. */
+const GROUP_SERIES: Record<string, number> = { developer: 0, caches: 1, files: 3 };
+const groupSeries = (group: string) => GROUP_SERIES[group] ?? 2;
+const GROUP_LABEL: Record<string, string> = { developer: "Developer", caches: "Cache", files: "Files" };
+
+const TILE = "rounded-xl border border-border bg-card";
 
 const ROOTS = [
   { label: "Home", path: null },
@@ -57,8 +68,19 @@ function Size({ entry }: { entry: Pick<DiskEntry, "sizeBytes" | "measuring"> & {
   </span>;
 }
 
-/** Free space, and what fills the rest: the home folder's biggest children in
- *  a lightness ramp, then everything else the volume reports as used. */
+const IconAction = ({ label, onClick, disabled, tone = "muted", children }: { label: string; onClick: () => void; disabled?: boolean; tone?: "muted" | "destructive"; children: ReactNode }) =>
+  <button
+    type="button"
+    aria-label={label}
+    title={label}
+    disabled={disabled}
+    onClick={onClick}
+    className={cn("grid size-7 place-items-center rounded-md outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-30", tone === "destructive" ? "text-muted-foreground hover:bg-destructive/10 hover:text-destructive" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
+  >{children}</button>;
+
+/** Free space, and what fills the rest: two tiles side by side. The home
+ *  folder's biggest children each wear a series colour; everything else the
+ *  volume reports as used is one quiet segment. */
 function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
   overview: DiskOverview | null;
   home: DiskListing | null;
@@ -68,69 +90,90 @@ function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
 }) {
   const volume = overview?.volume;
   if (!volume) return null;
-  const top = (home?.entries ?? []).filter(entry => (entry.sizeBytes ?? 0) > 0).slice(0, RAMP.length);
+  const top = (home?.entries ?? []).filter(entry => (entry.sizeBytes ?? 0) > 0).slice(0, SERIES.length);
   const named = top.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0);
   const other = Math.max(volume.usedBytes - named, 0);
   const share = (value: number) => `${Math.max((value / volume.totalBytes) * 100, value > 0 ? 0.4 : 0)}%`;
+  const percent = (value: number) => `${Math.round((value / volume.totalBytes) * 100)}%`;
   const usedShare = volume.usedBytes / volume.totalBytes;
-  return <section aria-label="Disk">
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      <span className="font-display text-4xl font-semibold tabular-nums tracking-tight text-foreground">{diskBytes(volume.freeBytes)}</span>
-      <span className="text-ui text-muted-foreground">free of {diskBytes(volume.totalBytes)}</span>
-      {usedShare > 0.9 && <span className="text-caption text-warning">Nearly full</span>}
-      <span className="ml-auto"><TextButton onClick={onEmptyTrash} disabled={busy}>Empty Trash</TextButton></span>
+  const safe = cleanupTotal(overview.suggestions, "safe");
+  return <section aria-label="Disk" className="grid gap-3 @2xl/storage:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+    <div className={cn(TILE, "flex flex-col p-4")}>
+      <p className="text-caption text-muted-foreground">Free</p>
+      <p className="mt-1 flex flex-wrap items-baseline gap-x-2">
+        <span className="font-display text-4xl font-semibold tabular-nums tracking-tight text-foreground">{diskBytes(volume.freeBytes)}</span>
+        <span className="text-ui text-muted-foreground">free of {diskBytes(volume.totalBytes)}</span>
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {usedShare > 0.9 ? <StatusPill tone="warning">Nearly full</StatusPill> : <StatusPill tone="success">{percent(volume.freeBytes)} free</StatusPill>}
+        {safe > 0 && <StatusPill tone="info">{diskBytes(safe)} rebuildable</StatusPill>}
+      </div>
+      <div className="mt-auto pt-4"><GhostButton onClick={onEmptyTrash} disabled={busy}>Empty Trash</GhostButton></div>
     </div>
-    <div className="mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`${diskBytes(volume.usedBytes)} used of ${diskBytes(volume.totalBytes)}`}>
-      {top.map((entry, index) => <span key={entry.path} className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out]", RAMP[index])} style={{ width: share(entry.sizeBytes ?? 0) }} />)}
-      <span className={cn("h-full", OTHER)} style={{ width: share(other) }} />
+    <div className={cn(TILE, "p-4")}>
+      <p className="text-caption text-muted-foreground">What fills it</p>
+      <div className="mt-3 flex h-3 w-full gap-0.5 overflow-hidden rounded-full bg-muted" role="img" aria-label={`${diskBytes(volume.usedBytes)} used of ${diskBytes(volume.totalBytes)}`}>
+        {top.map((entry, index) => <span key={entry.path} className={cn("h-full origin-left first:rounded-l-full motion-safe:animate-[meter-fill_600ms_ease-out]", SERIES[index])} style={{ width: share(entry.sizeBytes ?? 0) }} />)}
+        <span className={cn("h-full", OTHER)} style={{ width: share(other) }} />
+      </div>
+      <ul className="mt-3 grid grid-cols-1 gap-1 @md/storage:grid-cols-2">
+        {top.map((entry, index) => <li key={entry.path}>
+          <button type="button" onClick={() => onOpen(entry.path)} className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-caption outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+            <span className={cn("size-2.5 shrink-0 rounded-[3px]", SERIES[index])} />
+            <span className="min-w-0 flex-1 truncate text-foreground">{entry.name}</span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">{diskBytes(entry.sizeBytes)}</span>
+          </button>
+        </li>)}
+        <li className="flex items-center gap-2 px-1.5 py-1 text-caption">
+          <span className={cn("size-2.5 shrink-0 rounded-[3px]", OTHER)} />
+          <span className="min-w-0 flex-1 truncate text-foreground">Apps, system, and other</span>
+          <span className="shrink-0 tabular-nums text-muted-foreground">{diskBytes(other)}</span>
+        </li>
+      </ul>
     </div>
-    <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
-      {top.map((entry, index) => <li key={entry.path}>
-        <button type="button" onClick={() => onOpen(entry.path)} className="flex items-center gap-1.5 rounded text-caption text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
-          <span className={cn("size-2 rounded-full", RAMP[index])} />
-          <span className="text-foreground">{entry.name}</span>
-          <span className="tabular-nums">{diskBytes(entry.sizeBytes)}</span>
-        </button>
-      </li>)}
-      <li className="flex items-center gap-1.5 text-caption text-muted-foreground">
-        <span className={cn("size-2 rounded-full", OTHER)} />
-        <span className="text-foreground">Apps, system, and other</span>
-        <span className="tabular-nums">{diskBytes(other)}</span>
-      </li>
-    </ul>
   </section>;
 }
 
-function Suggestions({ overview, onOpen, onDelete, busy }: {
+function suggestionEntry(item: DiskSuggestion): DiskEntry {
+  return { name: item.label, path: item.path, kind: "directory", sizeBytes: item.sizeBytes, itemCount: null, measuring: item.measuring, partial: false, modifiedAt: null, protectedReason: null };
+}
+
+/** Known cleanup candidates as a grid of cards: colour says what kind of
+ *  thing it is, the pill says whether it comes back on its own. */
+function Suggestions({ overview, onOpen, onDelete, onAsk, busy }: {
   overview: DiskOverview;
   onOpen: (path: string) => void;
   onDelete: (entry: DiskEntry) => void;
+  onAsk?: (item: DiskSuggestion) => void;
   busy: boolean;
 }) {
   const rows = [...overview.suggestions].sort((a, b) => (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1));
   if (rows.length === 0) return null;
   const safe = cleanupTotal(overview.suggestions, "safe");
+  const review = cleanupTotal(overview.suggestions, "review");
   return <section aria-label="Cleanup suggestions">
-    <SectionHeading title="Worth a look" detail={safe > 0 ? `${diskBytes(safe)} rebuilds itself on demand` : undefined} />
-    <ul className="divide-y divide-border/50">
-      {rows.map(item => <li key={item.id} className="group flex items-center gap-4 py-2.5">
-        <button type="button" onClick={() => onOpen(item.path)} className="min-w-0 flex-1 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <p className="flex items-baseline gap-2">
-            <span className="text-ui text-foreground">{item.label}</span>
-            <span className={`text-caption ${item.safety === "safe" ? "text-success" : "text-muted-foreground"}`}>{item.safety === "safe" ? "Rebuilt automatically" : "Review first"}</span>
-          </p>
-          <p className="truncate text-caption text-muted-foreground">{item.description}</p>
-        </button>
-        <span className="w-20 shrink-0 text-right text-ui tabular-nums text-foreground"><Size entry={item} /></span>
-        <span className="flex w-28 shrink-0 justify-end opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-          <TextButton
-            tone="destructive"
-            disabled={busy || !item.sizeBytes}
-            ariaLabel={`Move ${item.label} to the Trash`}
-            onClick={() => onDelete({ name: item.label, path: item.path, kind: "directory", sizeBytes: item.sizeBytes, itemCount: null, measuring: item.measuring, partial: false, modifiedAt: null, protectedReason: null })}
-          >Move to Trash</TextButton>
-        </span>
-      </li>)}
+    <SectionHeading title="Worth a look" detail={safe > 0 ? <><span className="text-success">{diskBytes(safe)}</span> rebuilds itself on demand{review > 0 ? <>, {diskBytes(review)} to review</> : null}</> : undefined} />
+    <ul className="grid grid-cols-1 gap-3 @md/storage:grid-cols-2 @4xl/storage:grid-cols-3">
+      {rows.map(item => {
+        const series = groupSeries(item.group);
+        return <li key={item.id} className={cn(TILE, "group relative flex flex-col overflow-hidden p-3.5 transition-colors hover:border-muted-foreground/40")}>
+          <span aria-hidden="true" className={cn("absolute inset-y-0 left-0 w-1", SERIES[series])} />
+          <div className="flex items-start gap-2">
+            <span className={cn("rounded-md px-1.5 py-0.5 text-[11px] leading-none text-foreground", SERIES_WASH[series])}>{GROUP_LABEL[item.group] ?? "Other"}</span>
+            <span className="ml-auto whitespace-nowrap">{item.safety === "safe" ? <StatusPill tone="success">Rebuilds itself</StatusPill> : <StatusPill tone="warning">Review first</StatusPill>}</span>
+          </div>
+          <button type="button" onClick={() => onOpen(item.path)} className="mt-2 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <span className="block text-ui font-medium text-foreground">{item.label}</span>
+            <span className="mt-0.5 line-clamp-2 text-caption text-muted-foreground">{item.description}</span>
+          </button>
+          <div className="mt-auto flex items-end gap-1 pt-3">
+            <span className="mr-auto whitespace-nowrap font-display text-xl font-semibold tabular-nums tracking-tight text-foreground"><Size entry={item} /></span>
+            {onAsk && <IconAction label={`Ask about ${item.label}`} onClick={() => onAsk(item)}><MessageCircle size={14} aria-hidden="true" /></IconAction>}
+            <IconAction label={`Show ${item.label}`} onClick={() => onOpen(item.path)}><FolderOpen size={14} aria-hidden="true" /></IconAction>
+            <IconAction label={`Move ${item.label} to the Trash`} tone="destructive" disabled={busy || !item.sizeBytes} onClick={() => onDelete(suggestionEntry(item))}><Trash2 size={14} aria-hidden="true" /></IconAction>
+          </div>
+        </li>;
+      })}
     </ul>
   </section>;
 }
@@ -150,7 +193,9 @@ function Breadcrumb({ path, home, onOpen }: { path: string; home: string | undef
   </nav>;
 }
 
-function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onToggle, onDelete, onRefresh }: {
+const EXPLORER_ROW = "grid grid-cols-[auto_minmax(0,1fr)_5.5rem_5.5rem] items-center gap-3 px-3 sm:grid-cols-[auto_minmax(0,1fr)_6rem_5.5rem_5.5rem]";
+
+function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onToggle, onDelete, onAsk, onRefresh }: {
   listing: DiskListing | null;
   overview: DiskOverview | null;
   root: string | null;
@@ -160,6 +205,7 @@ function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onT
   onOpen: (path: string) => void;
   onToggle: (entry: DiskEntry) => void;
   onDelete: (entry: DiskEntry) => void;
+  onAsk?: (entry: DiskEntry) => void;
   onRefresh: () => void;
 }) {
   const largest = Math.max(...(listing?.entries ?? []).map(entry => entry.sizeBytes ?? 0), 1);
@@ -173,61 +219,76 @@ function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onT
       title="Everything on this Mac"
       detail={listing ? <>{diskBytes(listing.sizeBytes)}{listing.measuring ? " so far, still measuring" : ""}</> : undefined}
       action={<>
-        {ROOTS.map(item => <TextButton key={item.label} onClick={() => onRoot(item.path)}>
-          <span className={cn((root ?? null) === item.path && "text-foreground")}>{item.label}</span>
-        </TextButton>)}
+        <span role="group" aria-label="Start from" className="flex rounded-lg bg-muted p-0.5">
+          {ROOTS.map(item => <button
+            key={item.label}
+            type="button"
+            aria-pressed={(root ?? null) === item.path}
+            onClick={() => onRoot(item.path)}
+            className={cn("rounded-md px-2.5 py-1 text-caption outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", (root ?? null) === item.path ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}
+          >{item.label}</button>)}
+        </span>
         <TextButton onClick={onRefresh} disabled={busy} ariaLabel="Measure this folder again">Remeasure</TextButton>
       </>}
     />
-    {listing && <Breadcrumb path={listing.path} home={overview?.home} onOpen={onOpen} />}
-    {listing?.unreadable && <p className="mt-3 text-caption text-muted-foreground">{listing.unreadable}</p>}
-    <ul className="mt-2 divide-y divide-border/50">
-      {listing?.entries.map(entry => {
-        const folder = entry.kind === "directory" || entry.kind === "package";
-        const checked = selected.has(entry.path);
-        return <li key={entry.path} className={cn("group flex items-center gap-3 py-2", checked && "bg-accent/40")}>
-          <button
-            type="button"
-            role="checkbox"
-            aria-label={`Select ${entry.name}`}
-            aria-checked={checked}
-            disabled={Boolean(entry.protectedReason)}
-            onClick={() => onToggle(entry)}
-            className={cn("grid size-3.5 shrink-0 place-items-center rounded-[4px] outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30", checked ? "bg-foreground ring-foreground" : "ring-border hover:ring-muted-foreground")}
-          >
-            {checked && <span className="size-1.5 rounded-[2px] bg-background" />}
-          </button>
-          <div className="min-w-0 flex-1">
-            {folder
-              ? <button type="button" onClick={() => onOpen(entry.path)} className="block max-w-full truncate rounded text-left text-ui text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">{entry.name}</button>
-              : <span className="block truncate text-ui text-foreground">{entry.name}</span>}
-            <span className="mt-1 block h-0.5 rounded-full bg-muted">
-                      <span className="block h-full rounded-full bg-foreground/30" style={{ width: `${((entry.sizeBytes ?? 0) / largest) * 100}%` }} />
+    <div className={cn(TILE, "overflow-hidden")}>
+      <div className="border-b border-border px-3 py-2">{listing ? <Breadcrumb path={listing.path} home={overview?.home} onOpen={onOpen} /> : <span className="text-caption text-muted-foreground">Measuring…</span>}</div>
+      {listing?.unreadable && <p className="px-3 pt-3 text-caption text-muted-foreground">{listing.unreadable}</p>}
+      <ul className="divide-y divide-border/50">
+        {listing?.entries.map((entry, index) => {
+          const folder = entry.kind === "directory" || entry.kind === "package";
+          const checked = selected.has(entry.path);
+          return <li key={entry.path} className={cn("group py-2", EXPLORER_ROW, checked && "bg-accent/50")}>
+            <button
+              type="button"
+              role="checkbox"
+              aria-label={`Select ${entry.name}`}
+              aria-checked={checked}
+              disabled={Boolean(entry.protectedReason)}
+              onClick={() => onToggle(entry)}
+              className={cn("grid size-4 shrink-0 place-items-center rounded-[5px] outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30", checked ? "bg-foreground ring-foreground" : "ring-border hover:ring-muted-foreground")}
+            >
+              {checked && <span className="size-1.5 rounded-[2px] bg-background" />}
+            </button>
+            <div className="min-w-0">
+              {folder
+                ? <button type="button" onClick={() => onOpen(entry.path)} className="block max-w-full truncate rounded text-left text-ui text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">{entry.name}</button>
+                : <span className="block truncate text-ui text-foreground">{entry.name}</span>}
+              <span className="mt-1 block h-1 rounded-full bg-muted">
+                <span className={cn("block h-full rounded-full", SERIES[index % SERIES.length])} style={{ width: `${((entry.sizeBytes ?? 0) / largest) * 100}%` }} />
+              </span>
+            </div>
+            <span className="hidden text-right text-caption tabular-nums text-muted-foreground sm:block">
+              {folder && entry.itemCount ? `${entry.itemCount.toLocaleString()} item${entry.itemCount === 1 ? "" : "s"}` : ""}
             </span>
-          </div>
-          <span className="hidden w-24 shrink-0 text-right text-caption tabular-nums text-muted-foreground sm:block">
-            {folder && entry.itemCount ? `${entry.itemCount.toLocaleString()} item${entry.itemCount === 1 ? "" : "s"}` : ""}
-          </span>
-          <span className="w-20 shrink-0 text-right text-ui tabular-nums text-foreground"><Size entry={entry} /></span>
-          <span className="flex w-28 shrink-0 justify-end opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-            {entry.protectedReason
-              ? <span className="truncate text-caption text-muted-foreground" title={entry.protectedReason}>Protected</span>
-              : <TextButton tone="destructive" disabled={busy} ariaLabel={`Move ${entry.name} to the Trash`} onClick={() => onDelete(entry)}>Move to Trash</TextButton>}
-          </span>
-        </li>;
-      })}
-      {listing && listing.omittedCount > 0 && <li className="flex items-center gap-3 py-2 pl-6.5 text-caption text-muted-foreground">
-        <span className="flex-1">{listing.omittedCount.toLocaleString()} smaller items</span>
-        <span className="w-20 text-right tabular-nums">{diskBytes(listing.omittedBytes)}</span>
-        <span className="w-28" />
-      </li>}
-      {unseen > 0 && <li className="flex items-center gap-3 py-2 pl-6.5 text-caption text-muted-foreground">
-        <span className="flex-1">System volume, snapshots, and space macOS can purge</span>
-        <span className="w-20 text-right tabular-nums">{diskBytes(unseen)}</span>
-        <span className="w-28" />
-      </li>}
-    </ul>
-    {listing && !listing.unreadable && listing.entries.length === 0 && <p className="py-6 text-center text-caption text-muted-foreground">This folder is empty.</p>}
+            <span className="text-right text-ui tabular-nums text-foreground"><Size entry={entry} /></span>
+            <span className="flex justify-end opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+              {entry.protectedReason
+                ? <span className="truncate text-caption text-muted-foreground" title={entry.protectedReason}>Protected</span>
+                : <>
+                  {onAsk && <IconAction label={`Ask about ${entry.name}`} onClick={() => onAsk(entry)}><MessageCircle size={14} aria-hidden="true" /></IconAction>}
+                  <IconAction label={`Move ${entry.name} to the Trash`} tone="destructive" disabled={busy} onClick={() => onDelete(entry)}><Trash2 size={14} aria-hidden="true" /></IconAction>
+                </>}
+            </span>
+          </li>;
+        })}
+        {listing && listing.omittedCount > 0 && <li className={cn("py-2 text-caption text-muted-foreground", EXPLORER_ROW)}>
+          <span className="size-4" />
+          <span>{listing.omittedCount.toLocaleString()} smaller items</span>
+          <span className="hidden sm:block" />
+          <span className="text-right tabular-nums">{diskBytes(listing.omittedBytes)}</span>
+          <span />
+        </li>}
+        {unseen > 0 && <li className={cn("py-2 text-caption text-muted-foreground", EXPLORER_ROW)}>
+          <span className="size-4" />
+          <span>System volume, snapshots, and space macOS can purge</span>
+          <span className="hidden sm:block" />
+          <span className="text-right tabular-nums">{diskBytes(unseen)}</span>
+          <span />
+        </li>}
+      </ul>
+      {listing && !listing.unreadable && listing.entries.length === 0 && <p className="py-6 text-center text-caption text-muted-foreground">This folder is empty.</p>}
+    </div>
   </section>;
 }
 
@@ -316,23 +377,63 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
     } catch (caught) { fail(caught); } finally { setBusy(false); }
   };
 
-  // Only the first question of a visit carries the measurement; after that the
-  // chat already has it, and repeating it would bury the conversation.
-  const briefed = useRef(false);
+  // Each message carries what the page measured, but only when that changed
+  // since the last one: the agent always has current numbers and the chat
+  // never repeats them. The agent's brief is its system prompt, not this.
+  const lastSnapshot = useRef("");
+  const [trashedByAgent, setTrashedByAgent] = useState<{ path: string; sizeBytes: number | null }[]>([]);
+  const unreported = useRef<{ path: string; sizeBytes: number | null }[]>([]);
   const brief = (question: string) => {
-    if (briefed.current) return question;
-    briefed.current = true;
-    return storageBriefing({ question, overview, listing, selected: selection });
+    const snapshot = storageSnapshot({ overview, listing, home, selected: selection, trashed: unreported.current });
+    if (snapshot === lastSnapshot.current) return question.trim();
+    lastSnapshot.current = snapshot;
+    unreported.current = [];
+    return withSnapshot(question, snapshot);
   };
   const ask = (question: string) => copilot?.ask(brief(question));
+  const askAbout = (name: string, path: string, size: number | null | undefined) =>
+    ask(`What is ${name} (${displayPath(path, overview?.home)}, ${diskBytes(size)})? Can I get that space back, and how?`);
+
+  // What a ```storage-plan card may do on this page.
+  const trashedPaths = useMemo(() => new Set(trashedByAgent.map(item => item.path)), [trashedByAgent]);
+  const agentHost: StorageAgentHost = {
+    home: overview?.home,
+    busy,
+    trashed: trashedPaths,
+    trash: async (items: StoragePlanItem[]) => {
+      setBusy(true); setError(undefined);
+      try {
+        const result = await api.deletePaths(items.map(item => item.path), false);
+        const moved = items.filter(item => result.deleted.includes(item.path)).map(item => ({ path: item.path, sizeBytes: item.sizeBytes }));
+        setTrashedByAgent(current => [...current, ...moved]);
+        unreported.current = [...unreported.current, ...moved];
+        setSelected(current => {
+          const next = new Map(current);
+          for (const deleted of result.deleted) next.delete(deleted);
+          return next;
+        });
+        await load(pathRef.current);
+        const done = moved.length === 0 ? "" : `Moved ${moved.length} item${moved.length === 1 ? "" : "s"}${result.bytesFreed ? `, ${diskBytes(result.bytesFreed)},` : ""} to the Trash. Empty the Trash to get the space back.`;
+        const refused = result.failed.map(failure => `${failure.path.split("/").pop()}: ${failure.reason}`).join(" ");
+        return [done, refused].filter(Boolean).join(" ") || "Nothing was removed.";
+      } catch (caught) { fail(caught); return message(caught); } finally { setBusy(false); }
+    },
+    select: items => setSelected(current => {
+      const next = new Map(current);
+      for (const item of items) next.set(item.path, { name: item.path.split("/").pop() ?? item.path, path: item.path, kind: "directory", sizeBytes: item.sizeBytes, itemCount: null, measuring: false, partial: false, modifiedAt: null, protectedReason: null });
+      return next;
+    }),
+    reveal: target => open(target.slice(0, target.lastIndexOf("/")) || "/"),
+    reply: text => { ask(text); },
+  };
 
   return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
     <header className="mb-8">
       <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
       <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
     </header>
-    <div className={cn("grid gap-12", copilot && "lg:grid-cols-[minmax(0,1fr)_22rem]")}>
-      <div className="min-w-0 space-y-12">
+    <div className={cn("grid gap-8", copilot && "lg:grid-cols-[minmax(0,1fr)_24rem]")}>
+      <div className="@container/storage min-w-0 space-y-10">
         {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
         {!overview && !error && <p role="status" className="text-caption text-muted-foreground">Looking at your disk…</p>}
         <DiskSummary overview={overview} home={home} onOpen={open} onEmptyTrash={() => setConfirming("empty-trash")} busy={busy} />
@@ -374,7 +475,7 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
             </>}
         </div>}
 
-        {overview && <Suggestions overview={overview} onOpen={open} onDelete={entry => setConfirming({ entries: [entry], permanent: false })} busy={busy} />}
+        {overview && <Suggestions overview={overview} onOpen={open} onDelete={entry => setConfirming({ entries: [entry], permanent: false })} onAsk={copilot ? item => askAbout(item.label, item.path, item.sizeBytes) : undefined} busy={busy} />}
 
         <Explorer
           listing={listing}
@@ -386,19 +487,20 @@ export function StoragePage({ onError, title = "Storage", extra, copilot }: {
           onOpen={open}
           onToggle={toggle}
           onDelete={entry => setConfirming({ entries: [entry], permanent: false })}
+          onAsk={copilot ? entry => askAbout(entry.name, entry.path, entry.sizeBytes) : undefined}
           onRefresh={() => void load(path, true)}
         />
 
         <WorktreeStorage onError={onError} />
         {extra}
       </div>
-      {copilot?.render(brief, selection.length)}
+      {copilot && <StorageAgentContext.Provider value={agentHost}>{copilot.render(brief, selection.length)}</StorageAgentContext.Provider>}
     </div>
 
     {selection.length > 0 && <div role="region" aria-label="Selection" className="sticky bottom-4 z-10 mx-auto mt-6 flex w-fit items-center gap-3 rounded-full bg-popover px-4 py-2 text-caption shadow-lg">
       <span className="tabular-nums text-foreground">{selection.length} selected · {diskBytes(selectedBytes)}</span>
       <TextButton onClick={() => setSelected(new Map())}>Clear</TextButton>
-      {copilot && <TextButton onClick={() => ask(`Tell me what the ${selection.length} item${selection.length === 1 ? "" : "s"} I selected are, and whether I can delete them.`)}>Ask Bridge</TextButton>}
+      {copilot && <TextButton onClick={() => ask(`Tell me what the ${selection.length} item${selection.length === 1 ? "" : "s"} I selected are, and whether I can delete them.`)}>Ask the agent</TextButton>}
       <TextButton tone="destructive" disabled={busy} onClick={() => setConfirming({ entries: selection, permanent: false })}>Move to Trash</TextButton>
     </div>}
   </div>;

@@ -1,16 +1,22 @@
 // The Storage page's copilot rail: one standing chat docked beside the
-// listing rather than a new chat per question. It is an ordinary direct chat
-// (no project, a private scratch dir), so its history survives between visits
-// and it stays reachable from the sidebar like any other chat.
+// listing rather than a new chat per question. It is a direct chat created
+// with the `storage` purpose, so its brief is a system prompt of its own
+// (`storage_agent.rs`), its history survives between visits, and it stays
+// reachable from the sidebar like any other chat.
 
 import { useState, type ReactNode } from "react";
-import { PrimaryButton } from "./kit";
+import { ArrowUp, Boxes, Container, FolderSearch, HardDrive, ListChecks, Sparkles } from "lucide-react";
+import { cn } from "@/lib/utils";
 
-export const STORAGE_QUESTIONS = [
-  "What can I safely delete?",
-  "Find old node_modules and build folders across my projects",
-  "Why is System Data so large?",
-  "Clean up developer caches I don't need",
+export interface StorageQuickAsk { label: string; prompt: string; icon: typeof Sparkles; series: string }
+
+/** Starting points, each a full instruction so a click is a whole request. */
+export const STORAGE_QUICK_ASKS: StorageQuickAsk[] = [
+  { label: "What can I safely delete?", prompt: "What can I safely delete? Measure first, then give me a plan.", icon: Sparkles, series: "bg-ctx-1" },
+  { label: "Old node_modules and builds", prompt: "Find node_modules, target, dist, and .next folders across my projects that haven't been touched in 30 days, and plan their removal.", icon: FolderSearch, series: "bg-ctx-2" },
+  { label: "Developer caches", prompt: "Clean up developer caches I don't need: Homebrew, npm, bun, pnpm, Go, Cargo, Xcode DerivedData. Prefer each tool's own cleanup command.", icon: Boxes, series: "bg-ctx-3" },
+  { label: "Docker and simulators", prompt: "How much are Docker and the iOS/Android simulators using, and what can go?", icon: Container, series: "bg-ctx-4" },
+  { label: "Why is System Data so large?", prompt: "Why is System Data so large? Check local Time Machine snapshots, caches, and logs.", icon: HardDrive, series: "bg-ctx-5" },
 ];
 
 /** What the host app lends the Storage page: the page knows what it measured,
@@ -18,7 +24,7 @@ export const STORAGE_QUESTIONS = [
 export interface StorageCopilotHost {
   /** Send a prompt into the storage chat, starting the chat if there is none. */
   ask: (prompt: string) => void;
-  /** The rail. `brief` wraps a question with what the page measured. */
+  /** The rail. `brief` folds what the page measured onto a message. */
   render: (brief: (question: string) => string, selectedCount: number) => ReactNode;
 }
 
@@ -30,9 +36,42 @@ export function StorageCopilot({ chat, selectedCount, starting = false, onAsk }:
   onAsk: (question: string) => void;
 }) {
   if (chat) {
-    return <div className="h-[min(44rem,calc(100dvh-8rem))] lg:sticky lg:top-6 lg:self-start">{chat}</div>;
+    return <div className="flex h-[min(46rem,calc(100dvh-8rem))] flex-col gap-2 lg:sticky lg:top-6 lg:self-start">
+      <QuickAsks compact selectedCount={selectedCount} disabled={starting} onAsk={onAsk} />
+      <div className="min-h-0 flex-1">{chat}</div>
+    </div>;
   }
   return <StorageCopilotIntro selectedCount={selectedCount} starting={starting} onAsk={onAsk} />;
+}
+
+const selectedAsk = (count: number) => `Tell me what the ${count} item${count === 1 ? "" : "s"} I selected are, and whether I can delete them.`;
+
+/** One-click requests. Compact above a live chat (a scrolling chip row); a
+ *  grid of tiles before the chat exists. */
+function QuickAsks({ compact = false, selectedCount, disabled, onAsk }: { compact?: boolean; selectedCount: number; disabled: boolean; onAsk: (prompt: string) => void }) {
+  const asks = selectedCount > 0
+    ? [{ label: `Explain the ${selectedCount} selected`, prompt: selectedAsk(selectedCount), icon: ListChecks, series: "bg-ctx-6" }, ...STORAGE_QUICK_ASKS]
+    : STORAGE_QUICK_ASKS;
+  if (compact) {
+    return <ul aria-label="Quick asks" className="flex shrink-0 gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none]">
+      {asks.map(ask => <li key={ask.label} className="shrink-0">
+        <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-caption text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
+          <span aria-hidden="true" className={cn("size-1.5 rounded-full", ask.series)} />{ask.label}
+        </button>
+      </li>)}
+    </ul>;
+  }
+  return <ul aria-label="Quick asks" className="grid grid-cols-2 gap-2">
+    {asks.map(ask => {
+      const Icon = ask.icon;
+      return <li key={ask.label}>
+        <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="flex h-full w-full flex-col items-start gap-2 rounded-xl border border-border bg-card p-3 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
+          <span aria-hidden="true" className={cn("grid size-6 place-items-center rounded-md text-background", ask.series)}><Icon size={13} /></span>
+          {ask.label}
+        </button>
+      </li>;
+    })}
+  </ul>;
 }
 
 function StorageCopilotIntro({ selectedCount, starting, onAsk }: { selectedCount: number; starting: boolean; onAsk: (question: string) => void }) {
@@ -43,29 +82,26 @@ function StorageCopilotIntro({ selectedCount, starting, onAsk }: { selectedCount
     setQuestion("");
   };
   return <aside aria-label="Ask Bridge" className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-    <div>
-      <h3 className="text-ui font-medium text-foreground">Ask Bridge</h3>
+    <div className="rounded-xl border border-border bg-card p-4">
+      <h3 className="text-ui font-medium text-foreground">Storage agent</h3>
       <p className="mt-1 text-caption leading-relaxed text-muted-foreground">
-        A chat that stays here and sees what this page measured. It can dig deeper, explain what something is, and clean up once you say yes.
+        Sees what this page measured, digs deeper with read-only commands, and proposes cleanups as plans you tick and approve. Nothing moves without you.
       </p>
+      <form onSubmit={event => { event.preventDefault(); submit(question); }} className="mt-3 flex items-end gap-2 rounded-lg bg-muted/50 p-1.5 focus-within:ring-2 focus-within:ring-ring">
+        <textarea
+          aria-label="Ask about your storage"
+          value={question}
+          rows={2}
+          placeholder="What's using my space?"
+          onChange={event => setQuestion(event.target.value)}
+          onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(question); } }}
+          className="min-w-0 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui text-foreground outline-none placeholder:text-muted-foreground"
+        />
+        <button type="submit" aria-label={starting ? "Starting" : "Ask"} disabled={!question.trim() || starting} className="grid size-7 shrink-0 place-items-center rounded-md bg-foreground text-background transition-opacity hover:opacity-90 disabled:opacity-30">
+          <ArrowUp size={14} aria-hidden="true" />
+        </button>
+      </form>
     </div>
-    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="space-y-2">
-      <textarea
-        aria-label="Ask about your storage"
-        value={question}
-        rows={3}
-        placeholder="What's using my space?"
-        onChange={event => setQuestion(event.target.value)}
-        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(question); } }}
-        className="w-full resize-none rounded-lg bg-muted/50 px-3 py-2 text-ui text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-      />
-      <div className="flex justify-end"><PrimaryButton type="submit" disabled={!question.trim() || starting}>{starting ? "Starting…" : "Ask"}</PrimaryButton></div>
-    </form>
-    <ul className="space-y-0.5">
-      {selectedCount > 0 && <li><button type="button" disabled={starting} onClick={() => submit(`Tell me what the ${selectedCount} item${selectedCount === 1 ? "" : "s"} I selected are, and whether I can delete them.`)} className="w-full rounded-md px-2 py-1.5 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">Ask about the {selectedCount} selected</button></li>}
-      {STORAGE_QUESTIONS.map(text => <li key={text}>
-        <button type="button" disabled={starting} onClick={() => submit(text)} className="w-full rounded-md px-2 py-1.5 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">{text}</button>
-      </li>)}
-    </ul>
+    <QuickAsks selectedCount={selectedCount} disabled={starting} onAsk={submit} />
   </aside>;
 }
