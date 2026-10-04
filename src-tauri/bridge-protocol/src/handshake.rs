@@ -83,9 +83,13 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `method_not_found`; a 1.19 client still pairs with a 1.20 daemon.
 /// **1.21 adds draft-owned composer dictation, local setup and transcript events.**
 /// Pre-voice clients and daemons are rejected to keep transient events compatible.
+/// **1.22 adds `config/get_delegation_notify_settings` and
+/// `config/save_delegation_notify_settings`.** A new client must not pair with
+/// an older daemon, whose notification-level control would fail with
+/// `method_not_found`; a 1.21 client still pairs with a 1.22 daemon.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 21,
+    minor: 22,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

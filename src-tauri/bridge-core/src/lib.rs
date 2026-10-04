@@ -18,6 +18,7 @@ pub mod agent_lifecycle;
 pub mod analytics;
 pub mod api;
 pub mod attribution_settings;
+pub mod delegation_notify;
 pub mod automations;
 pub mod backend_binding;
 pub mod binary;

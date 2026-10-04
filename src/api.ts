@@ -16,7 +16,7 @@ import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } fro
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
-import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
 import type { VoiceCapabilitiesResult, VoiceLocalStatusResult, VoiceStartResult, VoiceProviderId, VoiceTranscriptEvent } from "./protocol/generated/protocol";
 import type {
@@ -1408,6 +1408,13 @@ function mockConnectorDismiss(itemKey: string): ConnectorDismissResult {
 /// `bridge_core::reviewer_settings` and reaches the UI through the result.
 const MOCK_REVIEWER_PROMPT = "Review pull request #{number} in this repository and post a concise, constructive review as a comment. Do not approve, merge, request changes, or close the PR.";
 
+let mockNotifyGlobal: DelegationNotifyLevel = "all";
+const mockNotifyOverrides = new Map<string, DelegationNotifyLevel>();
+function mockNotifyView(sessionId?: string): DelegationNotifySettingsView {
+  const sessionOverride = sessionId ? mockNotifyOverrides.get(sessionId) ?? null : null;
+  return { level: sessionOverride ?? mockNotifyGlobal, globalLevel: mockNotifyGlobal, sessionOverride };
+}
+
 export const bridgeApi = {
   installCodexUpdate: (): Promise<void> => isTauri()
     ? unit(call("health/install_codex_update"))
@@ -2223,6 +2230,17 @@ export const bridgeApi = {
   saveReviewerSettings: async (settings: ReviewerSettings): Promise<ReviewerSettingsResult> => {
     if (isTauri()) return call("config/save_reviewer_settings", { settings });
     return { settings: structuredClone(settings), defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
+  },
+  delegationNotifySettings: async (sessionId?: string): Promise<DelegationNotifySettingsView> => {
+    if (isTauri()) return call("config/get_delegation_notify_settings", { sessionId: sessionId ?? null });
+    return mockNotifyView(sessionId);
+  },
+  saveDelegationNotifySettings: async (sessionId: string | null, level: DelegationNotifyLevel | null): Promise<DelegationNotifySettingsView> => {
+    if (isTauri()) return call("config/save_delegation_notify_settings", { sessionId, level });
+    if (sessionId === null) mockNotifyGlobal = level ?? "all";
+    else if (level === null) mockNotifyOverrides.delete(sessionId);
+    else mockNotifyOverrides.set(sessionId, level);
+    return mockNotifyView(sessionId ?? undefined);
   },
   attributionSettings: async (): Promise<AttributionSettings> => {
     if (isTauri()) return call("config/get_attribution_settings");

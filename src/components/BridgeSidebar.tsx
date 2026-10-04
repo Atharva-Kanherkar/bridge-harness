@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {  Archive, Clock, BookMarked,
+import {  Archive, Check, Clock, BookMarked,
  Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
@@ -9,6 +9,7 @@ import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
+import { NOTIFY_LEVELS, useDelegationNotify } from "../delegationNotify";
 import { mentionToken, toPublicAlias } from "../referenceChip";
 import { MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
@@ -143,7 +144,7 @@ function ChatRow({
 }
 
 const ROW_MENU_WIDTH = 224;
-const ROW_MENU_HEIGHT_ESTIMATE = 200;
+const ROW_MENU_HEIGHT_ESTIMATE = 300;
 
 function ChatRowMenu({
   chat,
@@ -207,6 +208,7 @@ function ChatRowMenu({
             <span className="min-w-0 flex-1 truncate">Open parent: {forkLabel}</span>
           </button>
         )}
+        {chat.kind !== "worker" && <ChatNoticeLevel chatId={chat.id} item={item} />}
         {onArchive && (
           <>
             <MenuSeparator />
@@ -217,6 +219,37 @@ function ChatRowMenu({
           </>
         )}
       </MenuPanel>
+    </>
+  );
+}
+
+/** Per-orchestrator override of which worker notices cost it a model turn. */
+function ChatNoticeLevel({ chatId, item }: { chatId: string; item: string }) {
+  const { view, set } = useDelegationNotify(chatId);
+  return (
+    <>
+      <MenuSeparator />
+      <div className="px-2 pb-0.5 pt-1 text-[11px] text-muted-foreground">Worker notices</div>
+      {NOTIFY_LEVELS.map(option => {
+        const current = view?.level === option.value;
+        const inherited = current && view?.sessionOverride == null;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="menuitemradio"
+            aria-checked={current}
+            disabled={!view}
+            className={item}
+            title={option.description}
+            onClick={() => set(inherited ? null : option.value)}
+          >
+            <Check size={12} strokeWidth={1.7} className={cn("shrink-0", current ? "text-foreground" : "opacity-0")} aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">{option.label}</span>
+            {inherited && <span className="shrink-0 text-[11px] text-muted-foreground">default</span>}
+          </button>
+        );
+      })}
     </>
   );
 }

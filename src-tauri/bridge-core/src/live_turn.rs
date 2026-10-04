@@ -6383,8 +6383,10 @@ fn surface_child_approval_on_parent(
     let delivered = !direct_dispatch && if let Some(proposal_id) = prompt_proposal_id {
         queue_parent_prompt_notice(core, &context.parent_session_id, proposal_id, "pending", &routing_notice, text)
     } else {
-        state.adapters.lock().unwrap().get(&context.parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok())
+        crate::delegation_notify::deliver_routing_notice(
+            core, &context.parent_session_id, Some(child_session_id),
+            crate::delegation_notify::NoticeKind::WorkerBlockedOnApproval, &routing_notice,
+        )
     };
     let event = agent::NormalizedEvent {
         kind: "delegation.blocked".into(),
@@ -6480,8 +6482,15 @@ fn notify_parent_child_left_waiting_inner(
         queue_parent_prompt_notice(core, &context.parent_session_id, proposal_id, outcome, &routing_notice,
             prompt_notice_text)
     } else {
-        state.adapters.lock().unwrap().get(&context.parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok())
+        crate::delegation_notify::deliver_routing_notice(
+            core, &context.parent_session_id, Some(child_session_id),
+            if prompt_worker_failed {
+                crate::delegation_notify::NoticeKind::WorkerStopped
+            } else {
+                crate::delegation_notify::NoticeKind::WorkerUnblocked
+            },
+            &routing_notice,
+        )
     };
     let event = agent::NormalizedEvent {
         kind: "delegation.blocked".into(),
@@ -6765,12 +6774,10 @@ fn notify_parent_worker_steered(
         "instruction": "The user sent this worker guidance directly. Treat it as an amendment to the objective you issued, not as a defect. Do not contradict it or re-delegate the same objective; keep waiting for the worker's typed result."
     })
     .to_string();
-    let notified = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(&context.parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let notified = crate::delegation_notify::deliver_routing_notice(
+        core, &context.parent_session_id, Some(child_session_id),
+        crate::delegation_notify::NoticeKind::WorkerSteeredByUser, &routing_notice,
+    );
     {
         let db = state.db.lock().unwrap();
         let _ = store::event(
@@ -6953,12 +6960,10 @@ fn report_worker_launch_awaiting_approval(
     })
     .to_string();
     let delivered = !is_direct_agent_turn(turn_id)
-        && state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+        && crate::delegation_notify::deliver_routing_notice(
+            core, parent_session_id, None,
+            crate::delegation_notify::NoticeKind::LaunchAwaitingApproval, &routing_notice,
+        );
     let db = state.db.lock().unwrap();
     let _ = store::event(
         &db,
@@ -7000,12 +7005,10 @@ pub fn report_delegation_approval_declined(
     })
     .to_string();
     let delivered = !is_direct_agent_turn(turn_id)
-        && state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+        && crate::delegation_notify::deliver_routing_notice(
+            core, parent_session_id, None,
+            crate::delegation_notify::NoticeKind::LaunchDeclined, &routing_notice,
+        );
     let db = state.db.lock().unwrap();
     let _ = session_forest::SessionForest::new(&db).append(
         parent_session_id,
@@ -7062,12 +7065,10 @@ pub fn report_approved_launch_adopted(
     })
     .to_string();
     let delivered = !is_direct_agent_turn(turn_id)
-        && state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+        && crate::delegation_notify::deliver_routing_notice(
+            core, parent_session_id, None,
+            crate::delegation_notify::NoticeKind::LaunchApproved, &routing_notice,
+        );
     let db = state.db.lock().unwrap();
     let _ = store::event(
         &db,
@@ -7105,12 +7106,10 @@ fn report_worker_launch_failure(
     })
     .to_string();
     let delivered = notify_provider
-        && state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+        && crate::delegation_notify::deliver_routing_notice(
+            core, parent_session_id, None,
+            crate::delegation_notify::NoticeKind::LaunchFailed, &routing_notice,
+        );
     let event = agent::NormalizedEvent {
         kind: "delegation.rejected".into(),
         item_id: Some(format!("launch-failed-{}", Uuid::new_v4())),
@@ -7929,12 +7928,10 @@ fn announce_failover(
         },
     })
     .to_string();
-    let delivered = core
-        .adapters
-        .lock()
-        .unwrap()
-        .get(parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&notice).is_ok());
+    let delivered = crate::delegation_notify::deliver_routing_notice(
+        core, parent_session_id, Some(child_session_id),
+        crate::delegation_notify::NoticeKind::WorkerRerouted, &notice,
+    );
     let db = core.db.lock().unwrap();
     let _ = session_forest::SessionForest::new(&db).append(
         parent_session_id,
@@ -16862,6 +16859,89 @@ mod prompt_mutation_runtime_tests {
         assert_eq!(child_handles.sent.lock().unwrap().len(), 1);
         assert!(parent_handles.sent.lock().unwrap().is_empty());
         assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 2);
+    }
+
+    fn notified_flags(core: &Arc<BridgeCore>) -> Vec<serde_json::Value> {
+        store::session_entries(&core.db.lock().unwrap(), "parent")
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.kind == "delegation.blocked")
+            .map(|entry| entry.payload["data"]["orchestratorNotified"].clone())
+            .collect()
+    }
+
+    fn approval_cycle(level: Option<bridge_protocol::messages::DelegationNotifyLevel>) -> (Vec<String>, Vec<serde_json::Value>) {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let parent_handles = attach(&core, "parent");
+        attach(&core, "child");
+        if let Some(level) = level {
+            crate::delegation_notify::save(
+                &core.db.lock().unwrap(),
+                &bridge_protocol::messages::SaveDelegationNotifySettingsParams { session_id: None, level: Some(level) },
+            )
+            .unwrap();
+        }
+        surface_child_approval_on_parent(&core, "child", &serde_json::json!({"text":"Run it?","command":"ls","cwd":"/repo"}));
+        notify_parent_child_left_waiting(&core, "child", "allowed_for_session");
+        let sent = parent_handles.sent.lock().unwrap().clone();
+        (sent, notified_flags(&core))
+    }
+
+    #[test]
+    fn notify_level_all_is_todays_behaviour() {
+        let (sent, flags) = approval_cycle(None);
+        assert!(sent[0].contains("bridge-worker-blocked-on-approval"));
+        assert!(sent[1].contains("bridge-worker-unblocked"));
+        assert_eq!(sent.len(), 2);
+        assert_eq!(flags, vec![serde_json::json!(true), serde_json::json!(true)]);
+    }
+
+    #[test]
+    fn notify_level_actionable_keeps_the_card_but_sends_no_turn() {
+        for level in [bridge_protocol::messages::DelegationNotifyLevel::Actionable, bridge_protocol::messages::DelegationNotifyLevel::ResultsOnly] {
+            let (sent, flags) = approval_cycle(Some(level));
+            assert!(sent.is_empty(), "{level:?} must not spend an orchestrator turn on informational notices");
+            assert_eq!(flags, vec![serde_json::json!(false), serde_json::json!(false)], "cards are still written and honest");
+        }
+    }
+
+    #[test]
+    fn a_session_override_beats_the_global_level() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let parent_handles = attach(&core, "parent");
+        attach(&core, "child");
+        {
+            let db = core.db.lock().unwrap();
+            crate::delegation_notify::save(&db, &bridge_protocol::messages::SaveDelegationNotifySettingsParams {
+                session_id: None, level: Some(bridge_protocol::messages::DelegationNotifyLevel::Actionable),
+            }).unwrap();
+            crate::delegation_notify::save(&db, &bridge_protocol::messages::SaveDelegationNotifySettingsParams {
+                session_id: Some("parent".into()), level: Some(bridge_protocol::messages::DelegationNotifyLevel::All),
+            }).unwrap();
+        }
+        surface_child_approval_on_parent(&core, "child", &serde_json::json!({"text":"Run it?","command":"ls","cwd":"/repo"}));
+        assert_eq!(parent_handles.sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn launch_failures_reach_the_orchestrator_at_every_level() {
+        for level in [
+            bridge_protocol::messages::DelegationNotifyLevel::All,
+            bridge_protocol::messages::DelegationNotifyLevel::Actionable,
+            bridge_protocol::messages::DelegationNotifyLevel::ResultsOnly,
+        ] {
+            let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+            let parent_handles = attach(&core, "parent");
+            crate::delegation_notify::save(
+                &core.db.lock().unwrap(),
+                &bridge_protocol::messages::SaveDelegationNotifySettingsParams { session_id: None, level: Some(level) },
+            )
+            .unwrap();
+            report_worker_launch_failure(&core, "parent", "spawn", "no route", true);
+            let sent = parent_handles.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1, "{level:?}");
+            assert!(sent[0].contains("bridge-worker-launch-failed"));
+        }
     }
 }
 
