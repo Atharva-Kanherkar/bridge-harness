@@ -1,5 +1,5 @@
 import { Dialog, DialogPopup } from "@/components/ui/dialog";
-import type { ClipboardEvent, KeyboardEvent } from "react";
+import type { ClipboardEvent, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, FileText, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
@@ -30,7 +30,7 @@ import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSna
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose, docked = false, tag = "aside", leading }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -61,7 +61,14 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   onRetryCompaction?: () => Promise<void>;
   /** Make the aside the active session and close the panel. */
   onPromote: () => void;
-  onClose: () => void;
+  /** Without it the panel has no close button (a docked panel stays put). */
+  onClose?: () => void;
+  /** Fill the host's column instead of floating over the app. */
+  docked?: boolean;
+  /** The small role word after the model picker. */
+  tag?: string;
+  /** Drawn above the first message, inside the scroll. */
+  leading?: ReactNode;
 }) {
   const activeTurnInput = useActiveTurnInput();
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities, activeTurnInput);
@@ -143,7 +150,10 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   // never a live frame.
   const forest = usePolledSessionForest(session.id);
 
+  // A docked panel shares the page: it neither grabs focus on mount nor
+  // claims Escape.
   useEffect(() => {
+    if (docked || !onClose) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (typeaheadOpenRef.current) return;
@@ -153,7 +163,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     window.addEventListener("keydown", onKeyDown);
     inputRef.current?.focus();
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [docked, onClose]);
 
   async function send() {
     const text = draft.trim();
@@ -249,9 +259,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     }
   }
 
-  return (
-    <Dialog open onOpenChange={next => { if (!next && !typeaheadOpenRef.current) onClose(); }}>
-      <DialogPopup showCloseButton={false} initialFocus={inputRef} aria-label={`Aside with ${harnessLabel(session.harness)}`} className="h-[min(720px,84dvh)] max-w-2xl">
+  const panel = <>
         <header className="flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border px-4 py-1.5">
           <HarnessMark harness={session.harness} live={working} size={15}/>
           <div className="min-w-0 flex-1">
@@ -277,11 +285,11 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
                     .finally(() => setChangingEffort(false));
                 } : undefined}
                 compact
-                roleLabel="Aside"
+                roleLabel={tag.charAt(0).toUpperCase() + tag.slice(1)}
                 placement="down"
                 maxWidthClassName="max-w-[220px]"
               />
-              <span className={cn("shrink-0 text-[11px] leading-tight", harnessTintClass(session.harness))}>aside</span>
+              {!docked && <span className={cn("shrink-0 text-[11px] leading-tight", harnessTintClass(session.harness))}>{tag}</span>}
             </div>
           </div>
           <button
@@ -289,18 +297,19 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             onClick={onPromote}
             className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="Continue this aside as a full chat"
+            aria-label="Open as chat"
           >
-            Open as chat
+            {!docked && "Open as chat"}
             <ArrowUpRight size={12} aria-hidden="true"/>
           </button>
-          <button
+          {onClose && <button
             type="button"
             onClick={onClose}
             aria-label="Close aside"
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X size={14} aria-hidden="true"/>
-          </button>
+          </button>}
         </header>
 
         <div className="relative min-h-0 flex-1">
@@ -316,6 +325,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             onResolve={onResolve}
             onAnswerQuestion={onAnswerQuestion}
             onRetryCompaction={onRetryCompaction}
+            leading={leading}
           />
         </div>
 
@@ -396,6 +406,17 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             />
           </div>
         </footer>
+  </>;
+
+  if (docked) {
+    return <section aria-label={`${tag.charAt(0).toUpperCase() + tag.slice(1)} with ${harnessLabel(session.harness)}`} className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background">
+      {panel}
+    </section>;
+  }
+  return (
+    <Dialog open onOpenChange={next => { if (!next && !typeaheadOpenRef.current) onClose?.(); }}>
+      <DialogPopup showCloseButton={false} initialFocus={inputRef} aria-label={`Aside with ${harnessLabel(session.harness)}`} className="h-[min(720px,84dvh)] max-w-2xl">
+        {panel}
       </DialogPopup>
     </Dialog>
   );

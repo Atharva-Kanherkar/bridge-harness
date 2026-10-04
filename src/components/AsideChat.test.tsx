@@ -106,6 +106,20 @@ describe("AsideChat", () => {
     expect(dialog().textContent).toContain("aside");
   });
 
+  it("docks into its host column without a dialog, a close button, or an Escape grab", async () => {
+    const onClose = vi.fn();
+    await mount({ docked: true, tag: "storage", onClose: undefined });
+    expect(document.body.querySelector('div[role="dialog"]')).toBeNull();
+    const panel = container.querySelector<HTMLElement>('section[aria-label="Storage with Claude"]')!;
+    expect(panel).toBeTruthy();
+    expect(panel.querySelector('[aria-label="Storage model: Claude Sonnet"]')).toBeTruthy();
+    expect(panel.querySelector('[aria-label="Close aside"]')).toBeNull();
+    expect(panel.querySelector('[aria-label="Open as chat"]')).toBeTruthy();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true })); });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(panel.querySelector("textarea"));
+  });
+
   it("switches the side chat's model through its header control", async () => {
     const onChangeModel = vi.fn();
     await mount({ working: false, onChangeModel });

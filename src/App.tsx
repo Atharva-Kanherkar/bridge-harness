@@ -111,6 +111,8 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
+import { readStorageChatId, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
@@ -451,6 +453,8 @@ function AppContent() {
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
   const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
+  const [storageChatId, setStorageChatId] = useState(readStorageChatId);
+  const [storageChatStarting, setStorageChatStarting] = useState(false);
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
@@ -1139,6 +1143,8 @@ function AppContent() {
     () => pending.filter(item => item.sessionId === asideLifecycle?.sessionId),
     [pending, asideLifecycle?.sessionId],
   );
+  const storageSession = useMemo(() => storageChatId ? state.sessions.find(candidate => candidate.id === storageChatId) : undefined, [storageChatId, state.sessions]);
+  const storagePending = useMemo(() => pending.filter(item => item.sessionId === storageChatId), [pending, storageChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
@@ -1846,6 +1852,71 @@ function AppContent() {
     setSelectedSessionId(undefined);
     return undefined;
   }
+
+  // The Storage page's standing chat: reuse it while it lives, else start a
+  // direct chat (no project, a private scratch dir) and remember it.
+  async function askStorage(prompt: string): Promise<void> {
+    if (storageSession) { await deliverPrompt(storageSession, prompt); return; }
+    if (newChatPendingRef.current) return;
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+    newChatPendingRef.current = true;
+    setStorageChatStarting(true);
+    setError(undefined);
+    try {
+      const { harness, model } = resolveDraftHarnessModel();
+      const next = await bridgeApi.createChat(harness, model, STORAGE_CHAT_TITLE);
+      const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
+      if (!created) throw new Error("Bridge created the storage chat but did not return its session");
+      setState(next);
+      writeStorageChatId(created.id);
+      setStorageChatId(created.id);
+      await deliverPrompt(created, prompt);
+    } finally {
+      newChatPendingRef.current = false;
+      setStorageChatStarting(false);
+    }
+  }
+  const storageCopilot: StorageCopilotHost = {
+    ask: prompt => void askStorage(prompt).catch(e => setError(errorMessage(e))),
+    render: (brief, selectedCount) => <StorageCopilot
+      selectedCount={selectedCount}
+      starting={storageChatStarting}
+      onAsk={question => void askStorage(brief(question)).catch(e => setError(errorMessage(e)))}
+      chat={storageSession && <AsideChat
+        docked
+        tag="storage"
+        session={storageSession}
+        adapters={adapters}
+        events={agentEvents}
+        pendingMessages={storagePending}
+        queuedFollowUpCount={queuedFollowUps(storageSession.id, state.events).length}
+        working={!!storageSession.activeTurnId || storageSession.status === "working"}
+        suggestionSettings={suggestionSettings}
+        modelSwitch={modelSwitch?.sessionId === storageSession.id ? modelSwitch : null}
+        onSend={(text, attachments) => deliverPrompt(storageSession, brief(text), attachments)}
+        onChangeEffort={async effort => {
+          setState(await bridgeApi.updateChatModel(storageSession.id, storageSession.harness, storageSession.model ?? null, effort));
+        }}
+        onChangeModel={async (harness, model) => {
+          setModelSwitch({ sessionId: storageSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
+          try { setState(await bridgeApi.updateChatModel(storageSession.id, harness, model)); }
+          finally { setModelSwitch(null); }
+        }}
+        onResolve={async (eventId, decision, optionId) => {
+          const result = await bridgeApi.resolveApproval(storageSession.id, eventId, decision, optionId);
+          await reload();
+          return result;
+        }}
+        onAnswerQuestion={async (eventId, action, answers) => {
+          const result = await bridgeApi.resolveQuestion(storageSession.id, eventId, action, answers);
+          await reload();
+          return result;
+        }}
+        onRetryCompaction={() => retryCompaction(storageSession.id)}
+        onPromote={() => openSession(storageSession.id)}
+      />}
+    />,
+  };
 
   // A `$harness` prefix (e.g. `$codex are we right?`) bypasses whatever
   // session is open and starts a fresh direct chat pinned to that harness,
@@ -3017,7 +3088,7 @@ function AppContent() {
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}
         onAddProject={() => setNewProjectOpen(true)}
-      /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} onAskBridge={prompt => { setView("workspace"); setParadigm("single"); void openNewChat(prompt); }} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+      /> : ["settings", "archives", "saved-setups", "briefing-settings"].includes(view) ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} key={view} contextual={view !== "settings"} initialSection={view === "archives" ? "archives" : view === "saved-setups" ? "agents" : view === "briefing-settings" ? "work" : settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onVoiceChanged={voice.retry} onHealthChange={invalidateHealth} availableUpdate={availableUpdate} onUpdate={setAvailableUpdate} onError={setError} storageCopilot={storageCopilot} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}

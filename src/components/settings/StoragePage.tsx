@@ -7,8 +7,9 @@
 // person asks for more; the backend refuses the few places that would break
 // macOS or Bridge, and says why per row.
 //
-// The copilot rail hands a question to a real Bridge chat, seeded with what
-// this page measured, so the agent can look deeper than a size listing can.
+// The copilot rail is a standing Bridge chat docked beside the listing. The
+// first question of each visit carries what this page measured, so the agent
+// can look deeper than a size listing can.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ import { bridgeApi as api } from "../../api";
 import type { DiskEntry, DiskListing, DiskOverview } from "../../types";
 import { cleanupTotal, diskBytes, displayPath, storageBriefing } from "../../diskSpace";
 import { GhostButton, PrimaryButton, TextButton } from "./kit";
+import type { StorageCopilotHost } from "./StorageCopilot";
 import { WorktreeStorage } from "./WorktreeStorage";
 
 const POLL_MS = 1500;
@@ -31,12 +33,6 @@ const ROOTS = [
   { label: "Whole disk", path: "/" },
 ] as const;
 
-const QUESTIONS = [
-  "What can I safely delete?",
-  "Find old node_modules and build folders across my projects",
-  "Why is System Data so large?",
-  "Clean up developer caches I don't need",
-];
 
 type Confirming = { entries: DiskEntry[]; permanent: boolean } | "empty-trash" | null;
 
@@ -235,47 +231,12 @@ function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onT
   </section>;
 }
 
-function Copilot({ selectedCount, onAsk }: { selectedCount: number; onAsk: (question: string) => void }) {
-  const [question, setQuestion] = useState("");
-  const submit = (text: string) => {
-    if (!text.trim()) return;
-    onAsk(text);
-    setQuestion("");
-  };
-  return <aside aria-label="Ask Bridge" className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-    <div>
-      <h3 className="text-ui font-medium text-foreground">Ask Bridge</h3>
-      <p className="mt-1 text-caption leading-relaxed text-muted-foreground">
-        Opens a chat with an agent that sees what this page measured. It can dig deeper, explain what something is, and clean up once you say yes.
-      </p>
-    </div>
-    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="space-y-2">
-      <textarea
-        aria-label="Ask about your storage"
-        value={question}
-        rows={3}
-        placeholder="What's using my space?"
-        onChange={event => setQuestion(event.target.value)}
-        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(question); } }}
-        className="w-full resize-none rounded-lg bg-muted/50 px-3 py-2 text-ui text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-      />
-      <div className="flex justify-end"><PrimaryButton type="submit" disabled={!question.trim()}>Ask</PrimaryButton></div>
-    </form>
-    <ul className="space-y-0.5">
-      {selectedCount > 0 && <li><button type="button" onClick={() => submit(`Tell me what the ${selectedCount} item${selectedCount === 1 ? "" : "s"} I selected are, and whether I can delete them.`)} className="w-full rounded-md px-2 py-1.5 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">Ask about the {selectedCount} selected</button></li>}
-      {QUESTIONS.map(text => <li key={text}>
-        <button type="button" onClick={() => submit(text)} className="w-full rounded-md px-2 py-1.5 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">{text}</button>
-      </li>)}
-    </ul>
-  </aside>;
-}
-
-export function StoragePage({ onError, title = "Storage", extra, onAskBridge }: {
+export function StoragePage({ onError, title = "Storage", extra, copilot }: {
   onError?: (message: string) => void;
   title?: string;
   extra?: ReactNode;
-  /** Start a Bridge chat with this first message. Without it there is no copilot. */
-  onAskBridge?: (prompt: string) => void;
+  /** The docked storage chat. Without it there is no copilot. */
+  copilot?: StorageCopilotHost;
 }) {
   const [overview, setOverview] = useState<DiskOverview | null>(null);
   const [home, setHome] = useState<DiskListing | null>(null);
@@ -355,14 +316,22 @@ export function StoragePage({ onError, title = "Storage", extra, onAskBridge }: 
     } catch (caught) { fail(caught); } finally { setBusy(false); }
   };
 
-  const ask = (question: string) => onAskBridge?.(storageBriefing({ question, overview, listing, selected: selection }));
+  // Only the first question of a visit carries the measurement; after that the
+  // chat already has it, and repeating it would bury the conversation.
+  const briefed = useRef(false);
+  const brief = (question: string) => {
+    if (briefed.current) return question;
+    briefed.current = true;
+    return storageBriefing({ question, overview, listing, selected: selection });
+  };
+  const ask = (question: string) => copilot?.ask(brief(question));
 
   return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
     <header className="mb-8">
       <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
       <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
     </header>
-    <div className={cn("grid gap-12", onAskBridge && "lg:grid-cols-[minmax(0,1fr)_16rem]")}>
+    <div className={cn("grid gap-12", copilot && "lg:grid-cols-[minmax(0,1fr)_22rem]")}>
       <div className="min-w-0 space-y-12">
         {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
         {!overview && !error && <p role="status" className="text-caption text-muted-foreground">Looking at your disk…</p>}
@@ -423,13 +392,13 @@ export function StoragePage({ onError, title = "Storage", extra, onAskBridge }: 
         <WorktreeStorage onError={onError} />
         {extra}
       </div>
-      {onAskBridge && <Copilot selectedCount={selection.length} onAsk={ask} />}
+      {copilot?.render(brief, selection.length)}
     </div>
 
     {selection.length > 0 && <div role="region" aria-label="Selection" className="sticky bottom-4 z-10 mx-auto mt-6 flex w-fit items-center gap-3 rounded-full bg-popover px-4 py-2 text-caption shadow-lg">
       <span className="tabular-nums text-foreground">{selection.length} selected · {diskBytes(selectedBytes)}</span>
       <TextButton onClick={() => setSelected(new Map())}>Clear</TextButton>
-      {onAskBridge && <TextButton onClick={() => ask(`Tell me what the ${selection.length} item${selection.length === 1 ? "" : "s"} I selected are, and whether I can delete them.`)}>Ask Bridge</TextButton>}
+      {copilot && <TextButton onClick={() => ask(`Tell me what the ${selection.length} item${selection.length === 1 ? "" : "s"} I selected are, and whether I can delete them.`)}>Ask Bridge</TextButton>}
       <TextButton tone="destructive" disabled={busy} onClick={() => setConfirming({ entries: selection, permanent: false })}>Move to Trash</TextButton>
     </div>}
   </div>;
