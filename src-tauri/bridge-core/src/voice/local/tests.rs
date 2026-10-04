@@ -269,6 +269,20 @@ fn engine_failures_release_the_take_and_emit_sanitized_errors() {
 }
 
 #[test]
+fn a_new_take_waits_for_the_previous_engine_to_release() {
+    let fake = Arc::new(FakeProvider::default());
+    let service = LocalVoiceService::new(Some(fake.clone()));
+    let bus = EventBus::new();
+    let first = service.start(params("draft"), bus.clone()).unwrap();
+    service.cancel(&first.voice_session_id);
+    // No wait_idle: the next press arrives while the worker is still unwinding.
+    let second = service.start(params("draft"), bus).unwrap();
+    assert_ne!(first.voice_session_id, second.voice_session_id);
+    service.cancel(&second.voice_session_id);
+    wait_idle(&service);
+}
+
+#[test]
 fn startup_timeout_holds_busy_until_late_engine_is_released() {
     let gate = Arc::new(Gate::default());
     let fake = Arc::new(FakeProvider {
@@ -277,6 +291,7 @@ fn startup_timeout_holds_busy_until_late_engine_is_released() {
     });
     let mut service = LocalVoiceService::new(Some(fake.clone()));
     service.limits.startup = Duration::from_millis(20);
+    service.limits.release = Duration::from_millis(20);
     let bus = EventBus::new();
     let mut events = bus.subscribe();
     assert!(service

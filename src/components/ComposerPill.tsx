@@ -183,6 +183,19 @@ export function ComposerPill({
   const hasAttachments = !!attachments && attachments.length > 0;
   // An image is a message on its own: a send with no text must stay possible.
   const canSend = !locked && !voiceBusy && (value.trim().length > 0 || hasAttachments);
+  // Enter stops or sends only if the composer has focus. Dictation starts from
+  // a pointer press that may leave focus nowhere, so take it back at both ends.
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const wasVoiceBusy = useRef(voiceBusy);
+  useEffect(() => {
+    if (wasVoiceBusy.current === voiceBusy) return;
+    wasVoiceBusy.current = voiceBusy;
+    const form = formRef.current;
+    if (!form || form.contains(document.activeElement)) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    textareaRef.current?.focus({ preventScroll: true });
+  }, [voiceBusy]);
   const submitLabel = steerable ? ACTIVE_ACTION_LABEL[activeAction] : "Send";
 
   useEffect(() => {
@@ -197,6 +210,7 @@ export function ComposerPill({
       {/* The pill's box also anchors any floating composer controls. */}
       <div data-composer-frame className="relative">
         <form
+          ref={formRef}
           className={cn(
             "relative flex flex-col rounded-xl",
             // Resting surface: one ladder step above the canvas, no blur. The
@@ -416,7 +430,8 @@ export function ComposerPill({
                     if (event.detail === 0) { if (voiceBusy) onVoiceStop(); else onVoiceStart(); }
                   }}
                   onKeyDown={event => {
-                    if (event.key === " " || event.key === "Enter") {
+                    // Enter is left to the native click so it never hijacks sending.
+                    if (event.key === " ") {
                       event.preventDefault();
                       if (!event.repeat && !voiceBusy) onVoiceStart();
                     }
