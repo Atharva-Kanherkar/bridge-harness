@@ -2748,8 +2748,8 @@ export const bridgeApi = {
     mockState.workspaces.push({ id, projectId: null, city: null, title, branch: null, path: null, status: "idle", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() });
     emitState(); return snapshot();
   },
-  createChat: async (harness: Harness, model: string | null, title: string | null): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/create_chat", { harness, model, title });
+  createChat: async (harness: Harness, model: string | null, title: string | null, purpose?: "storage"): Promise<BridgeState> => {
+    if (isTauri()) return call("sessions/create_chat", purpose ? { harness, model, title, purpose } : { harness, model, title });
     const id = crypto.randomUUID();
     mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title, kind: "direct", cwd: null }); emitState(); return snapshot();
   },

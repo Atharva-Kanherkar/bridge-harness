@@ -30,6 +30,9 @@ type Dependencies = {
 // Bounds include an in-flight frame. Never accumulate minutes of audio behind
 // a slow RPC or while the user/provider is still preparing a recording.
 export const VOICE_QUEUE_BYTES = 64_000;
+// The local engine loads a model before it is ready, which can take many
+// seconds. Audio spoken meanwhile is kept (bounded) so the first words survive.
+export const VOICE_PREROLL_BYTES = 640_000;
 export const VOICE_START_TIMEOUT_MS = 30_000;
 export const VOICE_RPC_TIMEOUT_MS = 10_000;
 export const VOICE_MAX_DURATION_MS = 120_000;
@@ -45,6 +48,8 @@ type Take = {
   capture?: VoiceCaptureHandle;
   releasing?: Promise<void>;
   ready: boolean;
+  /** Released before the provider was ready: finish (not cancel) once it is. */
+  stopRequested?: boolean;
   queue: VoiceChunk[];
   queuedBytes: number;
   totalBytes: number;
@@ -145,6 +150,7 @@ export class VoiceDictationController {
       this.timer(take, VOICE_MAX_DURATION_MS, () => { void this.stop(); });
       this.publish(take);
       this.pump(take);
+      if (take.stopRequested) { void this.stop(); return; }
     }
     if ((event.kind === "partial" || event.kind === "delta" || event.kind === "final") && typeof event.text === "string") {
       const transcript = applyVoiceTranscriptDraft(take.transcript, event.kind, event.text);
@@ -162,7 +168,13 @@ export class VoiceDictationController {
     if (!take || take.state === "stopping") return;
     // Releasing the button during a permission/startup prompt cancels that
     // generation. Its eventual capture/RPC result must only clean itself up.
-    if (!take.ready || !take.id) { this.cancel(); return; }
+    // A release while the model is still loading finishes the take once the
+    // provider is ready, so a quick hold keeps the words already spoken.
+    if (!take.ready || !take.id) {
+      if (take.state === "starting" && take.queuedBytes + take.totalBytes > 0) { take.stopRequested = true; return; }
+      this.cancel();
+      return;
+    }
     take.state = "stopping";
     this.publish(take);
     this.timer(take, VOICE_RPC_TIMEOUT_MS, () => this.fail(take, "Dictation did not finish in time. Your draft is unchanged."));
@@ -203,7 +215,7 @@ export class VoiceDictationController {
       this.fail(take, "Audio capture produced an invalid frame.");
       return;
     }
-    if (take.queuedBytes + bytes > VOICE_QUEUE_BYTES) {
+    if (take.queuedBytes + bytes > (take.ready ? VOICE_QUEUE_BYTES : VOICE_PREROLL_BYTES)) {
       this.fail(take, "Dictation cannot keep up with the microphone. Please retry.");
       return;
     }

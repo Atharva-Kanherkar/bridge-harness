@@ -5,11 +5,14 @@ import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
 import { isExternalUrl } from "../externalLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
+import { StoragePlanCard } from "./StoragePlanCard";
+import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
   | { kind: "diagram"; spec: string }
   | { kind: "mermaid"; code: string }
+  | { kind: "storage-plan"; body: string }
   | { kind: "math"; tex: string }
   | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
@@ -37,6 +40,7 @@ function fencedBlock(lang: string, body: string): Block {
   const key = lang.trim().toLowerCase();
   if (key === "diagram") return { kind: "diagram", spec: body };
   if (key === "mermaid") return { kind: "mermaid", code: body };
+  if (key === "storage-plan") return { kind: "storage-plan", body };
   if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
   if (key === "html") return { kind: "html", html: body };
   return { kind: "code", lang, body };
@@ -164,7 +168,19 @@ const MENTION = /(@[\w~@./-]+)/g;
 /** Plain text with live @mentions — the user-bubble renderer, where full
  *  markdown would be wrong but a file name should still be a link. */
 export function MentionText({ text }: { text: string }) {
-  return <TextRun text={text} />;
+  // A Storage chat folds what the page measured onto the end of a message.
+  // The person wrote the question, not the numbers, so the numbers fold away.
+  const { text: prose, snapshot } = splitSnapshot(text);
+  if (snapshot === null) return <TextRun text={text} />;
+  return <>
+    <TextRun text={prose} />
+    <details className="mt-1.5 text-caption text-muted-foreground">
+      <summary className="cursor-pointer list-none select-none rounded-full border border-border px-2 py-0.5 text-[11px] marker:hidden hover:text-foreground">
+        <span aria-hidden="true" className="mr-1 inline-block size-1.5 rounded-full bg-ctx-1 align-middle" />Storage page snapshot
+      </summary>
+      <pre aria-label={SNAPSHOT_FENCE} className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{snapshot}</pre>
+    </details>
+  </>;
 }
 
 function TextRun({ text }: { text: string }) {
@@ -453,6 +469,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
         if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
         if (block.kind === "mermaid") return <MermaidBlock key={index} code={block.code} />;
+        if (block.kind === "storage-plan") return <StoragePlanCard key={index} body={block.body} />;
         if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
         if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
         if (block.kind === "heading") {

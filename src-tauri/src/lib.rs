@@ -1533,9 +1533,10 @@ async fn create_chat(
     harness: Harness,
     model: Option<String>,
     title: Option<String>,
+    purpose: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref())
+    api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref(), purpose.as_deref())
 }
 
 /// Create a direct chat and return the exact identity committed by this call.

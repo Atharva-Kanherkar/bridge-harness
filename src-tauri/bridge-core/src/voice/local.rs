@@ -41,6 +41,7 @@ struct Limits {
     startup: Duration,
     rpc: Duration,
     lifetime: Duration,
+    release: Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -48,6 +49,7 @@ impl Default for Limits {
             startup: Duration::from_secs(30),
             rpc: Duration::from_secs(10),
             lifetime: Duration::from_secs(150),
+            release: Duration::from_secs(3),
         }
     }
 }
@@ -155,18 +157,27 @@ impl LocalVoiceService {
         let (commands, incoming) = mpsc::sync_channel(2);
         let (ready, readiness) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
-        {
+        // The previous take's helper may still be exiting right after its
+        // closing event; wait briefly for it instead of failing the next press.
+        let release_deadline = Instant::now() + self.limits.release;
+        let mut commands = Some(commands);
+        loop {
             let mut active = self.active.lock().unwrap();
-            if active.is_some() {
+            if active.is_none() {
+                *active = Some(Active {
+                    id: id.clone(),
+                    cancelled: cancelled.clone(),
+                    commands: commands.take().expect("registered once"),
+                });
+                break;
+            }
+            drop(active);
+            if Instant::now() >= release_deadline {
                 return Err(invalid(
                     "A dictation is active or still releasing its engine",
                 ));
             }
-            *active = Some(Active {
-                id: id.clone(),
-                cancelled: cancelled.clone(),
-                commands,
-            });
+            std::thread::sleep(Duration::from_millis(25));
         }
         let worker = Worker {
             id: id.clone(),

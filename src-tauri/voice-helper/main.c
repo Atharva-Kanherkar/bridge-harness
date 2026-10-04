@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
   config.model_config.transducer.decoder = decoder;
   config.model_config.transducer.joiner = joiner;
   config.model_config.tokens = tokens;
-  config.model_config.num_threads = 1;
+  config.model_config.num_threads = 4;
   config.model_config.provider = "cpu";
   config.decoding_method = "greedy_search";
   config.enable_endpoint = 0;

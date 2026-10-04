@@ -239,7 +239,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const agentPreferences = <>
     <SettingsGroup label="How Bridge works">
       <SettingsRow label="Model preferences" description="Choose models for chats and background tasks. Start with Bridge's defaults." onOpen={() => navigate("models")} />
-      <SettingsRow label="Saved setups" description="Reuse your own agent choices and instructions. Also available beside New Chat." onOpen={() => navigate("agents")} />
+      <SettingsRow label="Agents" description="Your own agents, plus Bridge's built-in ones. Pick one when you start a new chat." onOpen={() => navigate("agents")} />
     </SettingsGroup>
     <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced</summary><div className="mt-3">
       <SettingsGroup>

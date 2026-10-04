@@ -87,13 +87,28 @@ fn compile_orchestrator_prompt(
     compiler.compile()
 }
 
+#[cfg(test)]
 fn compile_session_prompt(
     stack: &prompt_sections::ResolvedPromptStack,
     configured_prompt: &str,
     checkpoint_context: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
+    compile_purposed_session_prompt(stack, configured_prompt, checkpoint_context, None)
+}
+
+/// A direct chat created for one job (`sessions.purpose`) carries that job's
+/// brief as one more stable section.
+fn compile_purposed_session_prompt(
+    stack: &prompt_sections::ResolvedPromptStack,
+    configured_prompt: &str,
+    checkpoint_context: Option<&str>,
+    purpose: Option<&str>,
+) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::DirectSession)?
         .project_rule("configured_project_rules", configured_prompt);
+    if let Some(brief) = crate::storage_agent::section(purpose) {
+        compiler = compiler.stable_section(crate::storage_agent::SECTION_ID, brief);
+    }
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
     }
@@ -278,6 +293,24 @@ fn orchestrator_context_event(
 mod prompt_section_tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_storage_chat_carries_its_brief_as_a_stable_section() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let stack = prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
+        let plain = compile_purposed_session_prompt(&stack, "", None, None).unwrap();
+        let storage = compile_purposed_session_prompt(
+            &stack,
+            "",
+            None,
+            Some(crate::storage_agent::PURPOSE),
+        )
+        .unwrap();
+        assert!(!plain.stable_prefix.contains("storage-plan"));
+        assert!(storage.stable_prefix.contains("```storage-plan"));
+        assert!(storage.stable_prefix.contains(crate::storage_agent::SECTION_ID));
+        assert_ne!(plain.metadata.prefix_hash, storage.metadata.prefix_hash);
+    }
 
     fn directive(role: delegation::WorkerRole) -> delegation::DelegationRequest {
         delegation::DelegationRequest {
@@ -1536,9 +1569,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
     ensure_session_not_archived(core, &session_id)?;
-    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode): (
+    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode, purpose): (
         String,
         String,
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -1548,9 +1582,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     ) = {
         let db = state.db.lock().unwrap();
         db.query_row(
-            "SELECT s.harness,s.kind,s.model,s.cwd,s.workspace_id,s.provider_session_id,s.effort,h.restoration_mode FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
+            "SELECT s.harness,s.kind,s.model,s.cwd,s.workspace_id,s.provider_session_id,s.effort,h.restoration_mode,s.purpose FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
             params![session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
         )?
     };
     // The one lifecycle entry point every start path reaches, including the
@@ -1725,7 +1759,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     let hot_check_prompt = if is_orchestrator {
         compile_orchestrator_prompt(&prompt_stack, &configured_prompt, None)?
     } else {
-        compile_session_prompt(&prompt_stack, &configured_prompt, None)?
+        compile_purposed_session_prompt(&prompt_stack, &configured_prompt, None, purpose.as_deref())?
     };
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
@@ -1859,7 +1893,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             if is_orchestrator {
                 compile_orchestrator_prompt(&prompt_stack, &configured_prompt, Some(context))
             } else {
-                compile_session_prompt(&prompt_stack, &configured_prompt, Some(context))
+                compile_purposed_session_prompt(&prompt_stack, &configured_prompt, Some(context), purpose.as_deref())
             }
             .map(|prompt| prompt.instructions().to_owned())
         })

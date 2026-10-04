@@ -250,6 +250,29 @@ impl BridgeCore {
         self.state_snapshot()
     }
 
+    /// A direct chat created for one job, which compiles that job's brief
+    /// into its system prompt (see `storage_agent`).
+    pub fn create_purposed_chat(
+        &self,
+        harness: &Harness,
+        model: Option<&str>,
+        title: Option<&str>,
+        purpose: Option<&str>,
+    ) -> Result<BridgeState, BridgeError> {
+        let Some(purpose) = purpose else {
+            return self.create_chat(harness, model, title);
+        };
+        if !crate::storage_agent::is_known_purpose(purpose) {
+            return Err(BridgeError::Invalid(format!("unknown chat purpose {purpose:?}")));
+        }
+        let id = self.create_chat_id(harness, model, title)?;
+        self.db.lock().unwrap().execute(
+            "UPDATE sessions SET purpose=?2 WHERE id=?1",
+            params![id, purpose],
+        )?;
+        self.state_snapshot()
+    }
+
     /// Create a direct chat and return the UUID used for that exact insert.
     pub fn create_chat_id(
         &self,
@@ -2788,6 +2811,23 @@ mod tests {
             cwd.contains("chats"),
             "direct chats run in a private scratch dir: {cwd}"
         );
+    }
+
+    #[test]
+    fn a_purposed_chat_records_its_purpose_and_refuses_unknown_ones() {
+        let (_scratch, core) = fixture();
+        core.create_purposed_chat(&Harness::Claude, None, Some("Storage"), Some("storage"))
+            .unwrap();
+        let purpose: Option<String> = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT purpose FROM sessions WHERE title='Storage'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(purpose.as_deref(), Some("storage"));
+        assert!(core
+            .create_purposed_chat(&Harness::Claude, None, None, Some("anything"))
+            .is_err());
     }
 
     #[test]

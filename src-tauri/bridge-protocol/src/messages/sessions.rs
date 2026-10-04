@@ -339,6 +339,10 @@ pub struct CreateChatParams {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// What the chat is for. `storage` adds the Storage page's brief to its
+    /// system prompt; absent is an ordinary chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
 }
 
 /// Create a direct chat with an exact identity result for concurrent clients.
@@ -1081,7 +1085,7 @@ mod tests {
 
     #[test]
     fn session_params_round_trip_and_omit_absent_options() {
-        let create = CreateChatParams { harness: HarnessId::parse("codex").unwrap(), model: None, title: None };
+        let create = CreateChatParams { harness: HarnessId::parse("codex").unwrap(), model: None, title: None, purpose: None };
         let wire = serde_json::to_value(&create).unwrap();
         assert_eq!(wire, json!({"harness": "codex"}), "absent options stay off the wire");
         assert_eq!(round_trip(&create), create);

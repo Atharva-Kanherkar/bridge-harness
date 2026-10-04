@@ -21,13 +21,13 @@ Bridge checks local sign-in facts. It does not verify your subscription, credits
 | Destination | Controls |
 | --- | --- |
 | General | Appearance, typing and history search, menu bar, updates |
-| Coding agents | Installation, sign-in, agent defaults, model preferences, saved setups |
+| Coding agents | Installation, sign-in, agent defaults, model preferences, agents |
 | Permissions | Action approvals and browser copies |
 | Data & storage | Import history and local disk cleanup |
 
 Background task limits, internal role instructions, and specialized display controls live under Advanced. Existing links still open their corresponding detail pages. Built-in role setups remain editable through Advanced; the ordinary saved-setup list shows your own setups.
 
-Saved setups are also beside New Chat. Archived chats and scheduled tasks open from the sidebar. Daily briefing settings open from the Work board.
+Agents are also beside New Chat. Archived chats and scheduled tasks open from the sidebar. Daily briefing settings open from the Work board.
 
 ## Marketplace
 
