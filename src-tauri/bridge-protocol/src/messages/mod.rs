@@ -46,6 +46,7 @@ mod sessions;
 mod skills;
 mod slash;
 mod state;
+mod storage;
 mod terminal;
 mod usage;
 mod work;
@@ -77,6 +78,7 @@ pub use sessions::*;
 pub use skills::*;
 pub use slash::*;
 pub use state::*;
+pub use storage::*;
 pub use terminal::*;
 pub use usage::*;
 pub use work::*;
@@ -304,6 +306,11 @@ typed_methods![
     (WorktreeUsageReport, _, WorktreeUsage),
     (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
     (SweepWorktrees, _, WorktreeSweepResult),
+    // disk space across the whole Mac
+    (StorageOverview, _, DiskOverview),
+    (ScanDirectory, ScanDirectoryParams, DiskListing),
+    (DeletePaths, DeletePathsParams, DiskDeleteResult),
+    (EmptyTrash, _, EmptyTrashResult),
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),

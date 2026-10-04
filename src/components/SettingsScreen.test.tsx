@@ -266,7 +266,11 @@ describe("SettingsScreen", () => {
         await render({ initialSection: section });
         const column = container.querySelector<HTMLElement>("[data-settings-column]");
         expect(column, SECTION_LABELS[section]).toBeTruthy();
-        widths.add([...column!.classList].find(name => name.startsWith("max-w-"))!);
+        const width = [...column!.classList].find(name => name.startsWith("max-w-"))!;
+        // The storage pages carry a disk explorer and a copilot rail side by
+        // side; they are the one deliberate exception.
+        if (section === "data" || section === "storage") expect(width, SECTION_LABELS[section]).toBe("max-w-page-wide");
+        else widths.add(width);
         await act(async () => root.unmount());
         container.remove();
         container = document.createElement("div");

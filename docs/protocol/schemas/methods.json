@@ -898,6 +898,34 @@
       "resultSchema": "worktree-sweep-result.json"
     },
     {
+      "command": "storage_overview",
+      "domain": "storage",
+      "method": "storage/storage_overview",
+      "paramsSchema": null,
+      "resultSchema": "disk-overview.json"
+    },
+    {
+      "command": "scan_directory",
+      "domain": "storage",
+      "method": "storage/scan_directory",
+      "paramsSchema": "scan-directory-params.json",
+      "resultSchema": "disk-listing.json"
+    },
+    {
+      "command": "delete_paths",
+      "domain": "storage",
+      "method": "storage/delete_paths",
+      "paramsSchema": "delete-paths-params.json",
+      "resultSchema": "disk-delete-result.json"
+    },
+    {
+      "command": "empty_trash",
+      "domain": "storage",
+      "method": "storage/empty_trash",
+      "paramsSchema": null,
+      "resultSchema": "empty-trash-result.json"
+    },
+    {
       "command": "summary",
       "domain": "usage",
       "method": "usage/summary",

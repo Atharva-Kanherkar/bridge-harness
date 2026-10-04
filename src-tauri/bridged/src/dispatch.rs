@@ -551,6 +551,16 @@ pub fn dispatch(
             reply(api::reclaim_worktree(core, &p.worktree_id, p.force))
         }
         MethodName::SweepWorktrees => reply(api::sweep_worktrees(core)),
+        MethodName::StorageOverview => reply(api::storage_overview(core)),
+        MethodName::ScanDirectory => {
+            let p: wire::ScanDirectoryParams = decode(method, params)?;
+            reply(api::scan_directory(core, &p))
+        }
+        MethodName::DeletePaths => {
+            let p: wire::DeletePathsParams = decode(method, params)?;
+            reply(api::delete_paths(core, &p))
+        }
+        MethodName::EmptyTrash => reply(api::empty_trash(core)),
         MethodName::ArchiveChat => {
             let p: wire::ArchiveChatParams = decode(method, params)?;
             reply(api::archive_chat(core, &p.session_id))

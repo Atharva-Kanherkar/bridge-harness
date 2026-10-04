@@ -861,6 +861,30 @@ async fn reclaim_worktree(
 }
 
 #[tauri::command]
+async fn storage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskOverview, BridgeError> {
+    let core = state.inner().clone();
+    blocking("storage overview", move || api::storage_overview(&core)).await
+}
+
+#[tauri::command]
+async fn scan_directory(path: Option<String>, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskListing, BridgeError> {
+    let core = state.inner().clone();
+    blocking("scan directory", move || api::scan_directory(&core, &bridge_protocol::messages::ScanDirectoryParams { path, refresh })).await
+}
+
+#[tauri::command]
+async fn delete_paths(paths: Vec<String>, permanent: bool, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DiskDeleteResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("delete paths", move || api::delete_paths(&core, &bridge_protocol::messages::DeletePathsParams { paths, permanent })).await
+}
+
+#[tauri::command]
+async fn empty_trash(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::EmptyTrashResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("empty trash", move || api::empty_trash(&core)).await
+}
+
+#[tauri::command]
 async fn sweep_worktrees(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::SweepOutcome, BridgeError> {
@@ -2828,6 +2852,10 @@ pub fn run() -> i32 {
             get_chat_search_settings,
             save_chat_search_settings,
             reclaim_worktree,
+            storage_overview,
+            scan_directory,
+            delete_paths,
+            empty_trash,
             sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,

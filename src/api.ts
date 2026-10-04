@@ -13,6 +13,7 @@ import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserClon
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
+import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
@@ -793,6 +794,58 @@ function mockUsageInsights(params: InsightsParams): UsageInsightsResult {
     },
   };
   return structuredClone(mockInsights);
+}
+
+// Storage mocks: a believable home folder, so `bun run dev` and the page's
+// tests exercise drilling in, protected rows, and deletion.
+const MOCK_HOME = "/Users/demo";
+const GB = 1_000_000_000;
+const mockDiskEntry = (parent: string, name: string, sizeBytes: number, kind = "directory", protectedReason: string | null = null): DiskEntry => ({
+  name, path: `${parent}/${name}`, kind, sizeBytes, itemCount: kind === "file" ? 1 : Math.round(sizeBytes / 40_000),
+  measuring: false, partial: false, modifiedAt: "2026-09-12T10:00:00Z", protectedReason,
+});
+const STANDARD = "A standard macOS folder. Delete what is inside it instead.";
+let mockDiskTree: Record<string, DiskEntry[]> = {
+  [MOCK_HOME]: [
+    mockDiskEntry(MOCK_HOME, "Library", 84 * GB, "directory", STANDARD),
+    mockDiskEntry(MOCK_HOME, "code", 41 * GB),
+    mockDiskEntry(MOCK_HOME, "Downloads", 18.4 * GB, "directory", STANDARD),
+    mockDiskEntry(MOCK_HOME, ".cache", 9.2 * GB),
+    mockDiskEntry(MOCK_HOME, "Movies", 6.1 * GB, "directory", STANDARD),
+    mockDiskEntry(MOCK_HOME, ".npm", 3.3 * GB),
+    mockDiskEntry(MOCK_HOME, "Documents", 2.2 * GB, "directory", STANDARD),
+    mockDiskEntry(MOCK_HOME, ".ssh", 24_000, "directory", "Holds your keys."),
+  ],
+  [`${MOCK_HOME}/Downloads`]: [
+    mockDiskEntry(`${MOCK_HOME}/Downloads`, "Xcode_16.4.xip", 11.9 * GB, "file"),
+    mockDiskEntry(`${MOCK_HOME}/Downloads`, "Docker.dmg", 2.1 * GB, "file"),
+    mockDiskEntry(`${MOCK_HOME}/Downloads`, "screen-recording.mov", 1.6 * GB, "file"),
+    mockDiskEntry(`${MOCK_HOME}/Downloads`, "invoice.pdf", 220_000, "file"),
+  ],
+  [`${MOCK_HOME}/code`]: [
+    mockDiskEntry(`${MOCK_HOME}/code`, "harness", 22 * GB),
+    mockDiskEntry(`${MOCK_HOME}/code`, "website", 12 * GB),
+    mockDiskEntry(`${MOCK_HOME}/code`, "experiments", 7 * GB),
+  ],
+};
+let mockTrashEmpty = false;
+const mockSuggestionSizes: Array<[string, string, string, string, string, string]> = [
+  ["xcode-derived-data", "Xcode build data", "developer", "Library/Developer/Xcode/DerivedData", "safe", "Intermediate build products. Xcode rebuilds them on the next build."],
+  ["simulators", "Simulator devices", "developer", "Library/Developer/CoreSimulator/Devices", "review", "Every simulator and the apps on it."],
+  ["docker", "Docker disk image", "developer", "Library/Containers/com.docker.docker/Data/vms", "review", "All images, containers, and volumes. `docker system prune` is gentler than deleting it."],
+  ["npm", "npm cache", "caches", ".npm", "safe", "Package tarballs npm can download again."],
+  ["xdg-cache", "Tool caches", "caches", ".cache", "safe", "Caches from command-line tools, including model downloads."],
+  ["app-caches", "App caches", "caches", "Library/Caches", "review", "Every app's cache. Apps rebuild them, though a few sign you out."],
+  ["downloads", "Downloads", "files", "Downloads", "review", "Installers and files you downloaded."],
+];
+const MOCK_SUGGESTION_BYTES: Record<string, number> = { "xcode-derived-data": 23.5 * GB, simulators: 14.2 * GB, docker: 31 * GB, npm: 3.3 * GB, "xdg-cache": 9.2 * GB, "app-caches": 12.8 * GB, downloads: 18.4 * GB };
+function mockDiskOverview(): DiskOverview {
+  return {
+    volume: { mountPoint: "/", totalBytes: 494 * GB, freeBytes: 19.4 * GB, usedBytes: 474.6 * GB },
+    home: MOCK_HOME,
+    measuring: false,
+    suggestions: mockSuggestionSizes.map(([id, label, group, relative, safety, description]) => ({ id, label, group, path: `${MOCK_HOME}/${relative}`, safety, description, sizeBytes: MOCK_SUGGESTION_BYTES[id] ?? 0, measuring: false })),
+  };
 }
 const mockWorktreeUsage: WorktreeUsage = {
   totalCount: 4, totalBytes: 2_780_823_552,
@@ -2194,6 +2247,39 @@ export const bridgeApi = {
   // What the worktrees cost. Read-only on purpose: reclaiming is the
   // retention sweep's decision, taken against a fresh safety classification,
   // not something a client can ask for out of band.
+  // Disk space across the whole Mac. Listings never wait on a walk: sizes
+  // still being measured come back null with `measuring` set, and the page
+  // asks again.
+  storageOverview: async (): Promise<DiskOverview> => {
+    if (isTauri()) return call("storage/storage_overview");
+    return mockDiskOverview();
+  },
+  scanDirectory: async (path: string | null, refresh = false): Promise<DiskListing> => {
+    if (isTauri()) return call("storage/scan_directory", { path, refresh });
+    const target = path ?? MOCK_HOME;
+    const entries = structuredClone(mockDiskTree[target] ?? []);
+    const parent = target === "/" ? null : target.slice(0, target.lastIndexOf("/")) || "/";
+    return { path: target, parent, sizeBytes: entries.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0), measuring: false, unreadable: null, entries, omittedCount: 0, omittedBytes: 0 };
+  },
+  deletePaths: async (paths: string[], permanent = false): Promise<DiskDeleteResult> => {
+    if (isTauri()) return call("storage/delete_paths", { paths, permanent });
+    const result: DiskDeleteResult = { deleted: [], failed: [], bytesFreed: 0, trashed: !permanent };
+    for (const path of paths) {
+      const parent = path.slice(0, path.lastIndexOf("/"));
+      const entry = mockDiskTree[parent]?.find(item => item.path === path);
+      if (!entry) { result.failed.push({ path, reason: "It no longer exists." }); continue; }
+      if (entry.protectedReason) { result.failed.push({ path, reason: entry.protectedReason }); continue; }
+      mockDiskTree = { ...mockDiskTree, [parent]: mockDiskTree[parent].filter(item => item.path !== path) };
+      result.deleted.push(path);
+      result.bytesFreed += entry.sizeBytes ?? 0;
+    }
+    return result;
+  },
+  emptyTrash: async (): Promise<EmptyTrashResult> => {
+    if (isTauri()) return call("storage/empty_trash");
+    mockTrashEmpty = true;
+    return { emptied: mockTrashEmpty, detail: null };
+  },
   listWorktrees: async (): Promise<WorktreeInventoryEntry[]> => {
     if (isTauri()) return call("worktrees/list_worktrees");
     return structuredClone(mockWorktrees);

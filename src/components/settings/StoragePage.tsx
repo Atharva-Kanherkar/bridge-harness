@@ -1,334 +1,436 @@
-// Storage: what Bridge's worktrees cost, and the only place a person can act on
-// one.
+// Storage: everything on this Mac, largest first, and the place a person can
+// delete what they no longer want.
 //
-// Reclaim follows the safety assessment. Explicit Delete lets a person
-// discard uncertain contents after confirmation; live use and pending worker
-// output remain protected by the backend.
+// The backend never waits on a folder walk. A listing comes back at once with
+// the sizes it already knows, so the page asks again while anything is still
+// being measured and the rows fill in. Deleting moves to the Trash unless the
+// person asks for more; the backend refuses the few places that would break
+// macOS or Bridge, and says why per row.
 //
-// Sizes are the last measurement, not a live figure. Measuring means walking a
-// directory that can hold a few hundred thousand files, which is the sweep's
-// job on its own schedule, so the page says when it last looked rather than
-// pretending to be current.
+// The copilot rail hands a question to a real Bridge chat, seeded with what
+// this page measured, so the agent can look deeper than a size listing can.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
-import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
-import { GhostButton, Select, SettingsGroup, SettingsPage, StatusPill, TextButton, type PillTone } from "./kit";
-import { harnessChartDot, harnessChartText } from "../harnessMarks";
-import { Search, RefreshCw, HardDrive, ShieldCheck } from "lucide-react";
+import type { DiskEntry, DiskListing, DiskOverview } from "../../types";
+import { cleanupTotal, diskBytes, displayPath, storageBriefing } from "../../diskSpace";
+import { GhostButton, PrimaryButton, TextButton } from "./kit";
+import { WorktreeStorage } from "./WorktreeStorage";
 
-// Repositories have no harness of their own, so the breakdown chart borrows
-// the same validated four-hue chart palette the usage board series wear,
-// cycling by rank rather than by identity — the one categorical palette this
-// codebase has signed off on, reused rather than a second one invented here.
-const PALETTE = ["codex", "cursor", "claude", "opencode"] as const;
-const swatch = (index: number) => PALETTE[index % PALETTE.length];
+const POLL_MS = 1500;
 
-/** A segmented meter bar across repositories, each wearing a palette hue,
- *  with a hover tooltip — the same reveal-once-on-mount motion as the meter's
- *  own bars, applied per segment instead of per window. */
-function RepoBreakdown({ repositories, totalBytes, onSelect }: {
-  repositories: WorktreeUsage["repositories"];
-  totalBytes: number;
-  onSelect: (repoRoot: string) => void;
+/** Achromatic by design: a frame hosting other brands stays neutral, so the
+ *  breakdown is a lightness ramp rather than a palette. */
+const RAMP = ["bg-foreground/80", "bg-foreground/60", "bg-foreground/45", "bg-foreground/32", "bg-foreground/22"];
+const OTHER = "bg-foreground/12";
+
+const ROOTS = [
+  { label: "Home", path: null },
+  { label: "Applications", path: "/Applications" },
+  { label: "Whole disk", path: "/" },
+] as const;
+
+const QUESTIONS = [
+  "What can I safely delete?",
+  "Find old node_modules and build folders across my projects",
+  "Why is System Data so large?",
+  "Clean up developer caches I don't need",
+];
+
+type Confirming = { entries: DiskEntry[]; permanent: boolean } | "empty-trash" | null;
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function SectionHeading({ title, detail, action }: { title: string; detail?: ReactNode; action?: ReactNode }) {
+  return <header className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    <h3 className="text-ui font-medium text-foreground">{title}</h3>
+    {detail && <span className="text-caption text-muted-foreground">{detail}</span>}
+    {action && <span className="ml-auto flex items-center gap-1">{action}</span>}
+  </header>;
+}
+
+function Size({ entry }: { entry: Pick<DiskEntry, "sizeBytes" | "measuring"> & { partial?: boolean } }) {
+  if (entry.sizeBytes === null || entry.sizeBytes === undefined) {
+    return <span className="text-muted-foreground motion-safe:animate-pulse">{entry.measuring ? "Measuring" : "—"}</span>;
+  }
+  return <span title={entry.partial ? "Some items inside could not be read, so this is a lower bound." : undefined}>
+    {entry.partial ? "≥ " : ""}{diskBytes(entry.sizeBytes)}
+  </span>;
+}
+
+/** Free space, and what fills the rest: the home folder's biggest children in
+ *  a lightness ramp, then everything else the volume reports as used. */
+function DiskSummary({ overview, home, onOpen, onEmptyTrash, busy }: {
+  overview: DiskOverview | null;
+  home: DiskListing | null;
+  onOpen: (path: string) => void;
+  onEmptyTrash: () => void;
+  busy: boolean;
 }) {
-  const [hover, setHover] = useState<number | null>(null);
-  const sorted = [...repositories].sort((a, b) => b.sizeBytes - a.sizeBytes);
-  if (sorted.length === 0 || totalBytes <= 0) return null;
-  // Raising tiny slivers to a visible minimum can push the total past 100%;
-  // rescale everything back down so the bar's widths still sum to 100% and
-  // large segments keep their true proportion instead of getting squeezed by
-  // flex-shrink.
-  const raw = sorted.map(repo => Math.max((repo.sizeBytes / totalBytes) * 100, repo.sizeBytes > 0 ? 0.5 : 0));
-  const rawTotal = raw.reduce((sum, value) => sum + value, 0);
-  const scale = rawTotal > 100 ? 100 / rawTotal : 1;
-  return <div className="border-t border-border/60 px-4 py-3">
-    <div className="relative flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
-      {sorted.map((repo, index) => {
-        const width = raw[index] * scale;
-        return <button
-          key={repo.repoRoot}
-          type="button"
-          aria-label={`${repoName(repo.repoRoot)}: ${bytes(repo.sizeBytes)}`}
-          onMouseEnter={() => setHover(index)}
-          onMouseLeave={() => setHover(current => (current === index ? null : current))}
-          onFocus={() => setHover(index)}
-          onBlur={() => setHover(current => (current === index ? null : current))}
-          onClick={() => onSelect(repo.repoRoot)}
-          className={cn("h-full origin-left cursor-pointer outline-none motion-safe:animate-[meter-fill_600ms_ease-out] first:rounded-l-full last:rounded-r-full", harnessChartDot(swatch(index)), hover === index && "brightness-110")}
-          style={{ width: `${width}%` }}
-        />;
-      })}
+  const volume = overview?.volume;
+  if (!volume) return null;
+  const top = (home?.entries ?? []).filter(entry => (entry.sizeBytes ?? 0) > 0).slice(0, RAMP.length);
+  const named = top.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0);
+  const other = Math.max(volume.usedBytes - named, 0);
+  const share = (value: number) => `${Math.max((value / volume.totalBytes) * 100, value > 0 ? 0.4 : 0)}%`;
+  const usedShare = volume.usedBytes / volume.totalBytes;
+  return <section aria-label="Disk">
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <span className="font-display text-4xl font-semibold tabular-nums tracking-tight text-foreground">{diskBytes(volume.freeBytes)}</span>
+      <span className="text-ui text-muted-foreground">free of {diskBytes(volume.totalBytes)}</span>
+      {usedShare > 0.9 && <span className="text-caption text-warning">Nearly full</span>}
+      <span className="ml-auto"><TextButton onClick={onEmptyTrash} disabled={busy}>Empty Trash</TextButton></span>
     </div>
-    {hover !== null && sorted[hover] && <div role="tooltip" className="u-glass-popover mt-2 inline-flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-caption">
-      <span className={cn("size-2 shrink-0 rounded-[3px]", harnessChartDot(swatch(hover)))} />
-      <span className="font-medium text-foreground">{repoName(sorted[hover].repoRoot)}</span>
-      <span className="tabular-nums text-muted-foreground">{sorted[hover].count} · {bytes(sorted[hover].sizeBytes)}{sorted[hover].overBudget ? " · Over limit" : ""}</span>
-    </div>}
-    <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
-      {sorted.map((repo, index) => <li key={repo.repoRoot}>
-        <button
-          type="button"
-          onClick={() => onSelect(repo.repoRoot)}
-          onMouseEnter={() => setHover(index)}
-          onMouseLeave={() => setHover(current => (current === index ? null : current))}
-          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
-        >
-          <span className={cn("size-2 shrink-0 rounded-[3px]", harnessChartDot(swatch(index)))} />
-          <span className={cn("truncate font-mono", harnessChartText(swatch(index)))} title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
-          <span className="shrink-0 tabular-nums text-muted-foreground">{repo.count} · {bytes(repo.sizeBytes)}{repo.overBudget ? " · Over limit" : ""}</span>
+    <div className="mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`${diskBytes(volume.usedBytes)} used of ${diskBytes(volume.totalBytes)}`}>
+      {top.map((entry, index) => <span key={entry.path} className={cn("h-full origin-left motion-safe:animate-[meter-fill_600ms_ease-out]", RAMP[index])} style={{ width: share(entry.sizeBytes ?? 0) }} />)}
+      <span className={cn("h-full", OTHER)} style={{ width: share(other) }} />
+    </div>
+    <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5">
+      {top.map((entry, index) => <li key={entry.path}>
+        <button type="button" onClick={() => onOpen(entry.path)} className="flex items-center gap-1.5 rounded text-caption text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+          <span className={cn("size-2 rounded-full", RAMP[index])} />
+          <span className="text-foreground">{entry.name}</span>
+          <span className="tabular-nums">{diskBytes(entry.sizeBytes)}</span>
         </button>
       </li>)}
+      <li className="flex items-center gap-1.5 text-caption text-muted-foreground">
+        <span className={cn("size-2 rounded-full", OTHER)} />
+        <span className="text-foreground">Apps, system, and other</span>
+        <span className="tabular-nums">{diskBytes(other)}</span>
+      </li>
     </ul>
-  </div>;
+  </section>;
 }
 
-function bytes(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let size = value;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return unit === 0 ? `${value} B` : `${size.toFixed(1)} ${units[unit]}`;
+function Suggestions({ overview, onOpen, onDelete, busy }: {
+  overview: DiskOverview;
+  onOpen: (path: string) => void;
+  onDelete: (entry: DiskEntry) => void;
+  busy: boolean;
+}) {
+  const rows = [...overview.suggestions].sort((a, b) => (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1));
+  if (rows.length === 0) return null;
+  const safe = cleanupTotal(overview.suggestions, "safe");
+  return <section aria-label="Cleanup suggestions">
+    <SectionHeading title="Worth a look" detail={safe > 0 ? `${diskBytes(safe)} rebuilds itself on demand` : undefined} />
+    <ul className="divide-y divide-border/50">
+      {rows.map(item => <li key={item.id} className="group flex items-center gap-4 py-2.5">
+        <button type="button" onClick={() => onOpen(item.path)} className="min-w-0 flex-1 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <p className="flex items-baseline gap-2">
+            <span className="text-ui text-foreground">{item.label}</span>
+            <span className={`text-caption ${item.safety === "safe" ? "text-success" : "text-muted-foreground"}`}>{item.safety === "safe" ? "Rebuilt automatically" : "Review first"}</span>
+          </p>
+          <p className="truncate text-caption text-muted-foreground">{item.description}</p>
+        </button>
+        <span className="w-20 shrink-0 text-right text-ui tabular-nums text-foreground"><Size entry={item} /></span>
+        <span className="flex w-28 shrink-0 justify-end opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+          <TextButton
+            tone="destructive"
+            disabled={busy || !item.sizeBytes}
+            ariaLabel={`Move ${item.label} to the Trash`}
+            onClick={() => onDelete({ name: item.label, path: item.path, kind: "directory", sizeBytes: item.sizeBytes, itemCount: null, measuring: item.measuring, partial: false, modifiedAt: null, protectedReason: null })}
+          >Move to Trash</TextButton>
+        </span>
+      </li>)}
+    </ul>
+  </section>;
 }
 
-function age(seconds: number): string {
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m idle`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h idle`;
-  return `${Math.floor(hours / 24)}d idle`;
+function Breadcrumb({ path, home, onOpen }: { path: string; home: string | undefined; onOpen: (path: string) => void }) {
+  const inHome = home && (path === home || path.startsWith(`${home}/`));
+  const base = inHome ? home : "";
+  const rest = path.slice(base.length).split("/").filter(Boolean);
+  const crumbs = [{ label: inHome ? "Home" : "Macintosh HD", path: base || "/" }, ...rest.map((part, index) => ({ label: part, path: `${base}/${rest.slice(0, index + 1).join("/")}` }))];
+  return <nav aria-label="Folder" className="flex min-w-0 flex-wrap items-center gap-1 text-caption">
+    {crumbs.map((crumb, index) => <span key={crumb.path} className="flex items-center gap-1">
+      {index > 0 && <span aria-hidden="true" className="text-muted-foreground/60">/</span>}
+      {index === crumbs.length - 1
+        ? <span className="text-foreground">{crumb.label}</span>
+        : <button type="button" onClick={() => onOpen(crumb.path)} className="rounded text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">{crumb.label}</button>}
+    </span>)}
+  </nav>;
 }
 
-/** Only two dispositions can be acted on; the rest exist to be explained. */
-const RECLAIMABLE = new Set(["reclaimable", "pushed_unmerged"]);
-
-/** Dispositions a person may override for a checkout they can see and chose
- *  themselves — never `retained`, which already means something else has a
- *  stake in it. Mirrors `is_removable`'s `force` branch in worktree_registry.rs. */
-const FORCIBLE = new Set(["at_risk", "unverifiable"]);
-
-const DISPOSITION_TONE: Record<string, PillTone> = {
-  reclaimable: "success",
-  pushed_unmerged: "info",
-  at_risk: "warning",
-  retained: "neutral",
-  unverifiable: "destructive",
-};
-
-const DISPOSITION_LABEL: Record<string, string> = {
-  reclaimable: "Reclaimable",
-  pushed_unmerged: "On a remote",
-  at_risk: "Holds work",
-  retained: "In use",
-  unverifiable: "Unreadable",
-};
-
-function repoName(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? path;
+function Explorer({ listing, overview, root, selected, busy, onRoot, onOpen, onToggle, onDelete, onRefresh }: {
+  listing: DiskListing | null;
+  overview: DiskOverview | null;
+  root: string | null;
+  selected: ReadonlyMap<string, DiskEntry>;
+  busy: boolean;
+  onRoot: (path: string | null) => void;
+  onOpen: (path: string) => void;
+  onToggle: (entry: DiskEntry) => void;
+  onDelete: (entry: DiskEntry) => void;
+  onRefresh: () => void;
+}) {
+  const largest = Math.max(...(listing?.entries ?? []).map(entry => entry.sizeBytes ?? 0), 1);
+  // At the top of the disk, what the walk cannot see (the sealed system
+  // volume's share, snapshots, purgeable space) is still part of "used".
+  const unseen = listing?.path === "/" && !listing.measuring && overview?.volume
+    ? Math.max(overview.volume.usedBytes - listing.sizeBytes, 0)
+    : 0;
+  return <section aria-label="Everything on this Mac">
+    <SectionHeading
+      title="Everything on this Mac"
+      detail={listing ? <>{diskBytes(listing.sizeBytes)}{listing.measuring ? " so far, still measuring" : ""}</> : undefined}
+      action={<>
+        {ROOTS.map(item => <TextButton key={item.label} onClick={() => onRoot(item.path)}>
+          <span className={cn((root ?? null) === item.path && "text-foreground")}>{item.label}</span>
+        </TextButton>)}
+        <TextButton onClick={onRefresh} disabled={busy} ariaLabel="Measure this folder again">Remeasure</TextButton>
+      </>}
+    />
+    {listing && <Breadcrumb path={listing.path} home={overview?.home} onOpen={onOpen} />}
+    {listing?.unreadable && <p className="mt-3 text-caption text-muted-foreground">{listing.unreadable}</p>}
+    <ul className="mt-2 divide-y divide-border/50">
+      {listing?.entries.map(entry => {
+        const folder = entry.kind === "directory" || entry.kind === "package";
+        const checked = selected.has(entry.path);
+        return <li key={entry.path} className={cn("group flex items-center gap-3 py-2", checked && "bg-accent/40")}>
+          <button
+            type="button"
+            role="checkbox"
+            aria-label={`Select ${entry.name}`}
+            aria-checked={checked}
+            disabled={Boolean(entry.protectedReason)}
+            onClick={() => onToggle(entry)}
+            className={cn("grid size-3.5 shrink-0 place-items-center rounded-[4px] outline-none ring-1 ring-inset transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30", checked ? "bg-foreground ring-foreground" : "ring-border hover:ring-muted-foreground")}
+          >
+            {checked && <span className="size-1.5 rounded-[2px] bg-background" />}
+          </button>
+          <div className="min-w-0 flex-1">
+            {folder
+              ? <button type="button" onClick={() => onOpen(entry.path)} className="block max-w-full truncate rounded text-left text-ui text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">{entry.name}</button>
+              : <span className="block truncate text-ui text-foreground">{entry.name}</span>}
+            <span className="mt-1 block h-0.5 rounded-full bg-muted">
+                      <span className="block h-full rounded-full bg-foreground/30" style={{ width: `${((entry.sizeBytes ?? 0) / largest) * 100}%` }} />
+            </span>
+          </div>
+          <span className="hidden w-24 shrink-0 text-right text-caption tabular-nums text-muted-foreground sm:block">
+            {folder && entry.itemCount ? `${entry.itemCount.toLocaleString()} item${entry.itemCount === 1 ? "" : "s"}` : ""}
+          </span>
+          <span className="w-20 shrink-0 text-right text-ui tabular-nums text-foreground"><Size entry={entry} /></span>
+          <span className="flex w-28 shrink-0 justify-end opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+            {entry.protectedReason
+              ? <span className="truncate text-caption text-muted-foreground" title={entry.protectedReason}>Protected</span>
+              : <TextButton tone="destructive" disabled={busy} ariaLabel={`Move ${entry.name} to the Trash`} onClick={() => onDelete(entry)}>Move to Trash</TextButton>}
+          </span>
+        </li>;
+      })}
+      {listing && listing.omittedCount > 0 && <li className="flex items-center gap-3 py-2 pl-6.5 text-caption text-muted-foreground">
+        <span className="flex-1">{listing.omittedCount.toLocaleString()} smaller items</span>
+        <span className="w-20 text-right tabular-nums">{diskBytes(listing.omittedBytes)}</span>
+        <span className="w-28" />
+      </li>}
+      {unseen > 0 && <li className="flex items-center gap-3 py-2 pl-6.5 text-caption text-muted-foreground">
+        <span className="flex-1">System volume, snapshots, and space macOS can purge</span>
+        <span className="w-20 text-right tabular-nums">{diskBytes(unseen)}</span>
+        <span className="w-28" />
+      </li>}
+    </ul>
+    {listing && !listing.unreadable && listing.entries.length === 0 && <p className="py-6 text-center text-caption text-muted-foreground">This folder is empty.</p>}
+  </section>;
 }
 
-export function StoragePage({ onError, title = "Disk usage", extra }: { onError?: (message: string) => void; title?: string; extra?: import("react").ReactNode }) {
-  const [usage, setUsage] = useState<WorktreeUsage | null>(null);
-  const [entries, setEntries] = useState<WorktreeInventoryEntry[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
+function Copilot({ selectedCount, onAsk }: { selectedCount: number; onAsk: (question: string) => void }) {
+  const [question, setQuestion] = useState("");
+  const submit = (text: string) => {
+    if (!text.trim()) return;
+    onAsk(text);
+    setQuestion("");
+  };
+  return <aside aria-label="Ask Bridge" className="space-y-4 lg:sticky lg:top-6 lg:self-start">
+    <div>
+      <h3 className="text-ui font-medium text-foreground">Ask Bridge</h3>
+      <p className="mt-1 text-caption leading-relaxed text-muted-foreground">
+        Opens a chat with an agent that sees what this page measured. It can dig deeper, explain what something is, and clean up once you say yes.
+      </p>
+    </div>
+    <form onSubmit={event => { event.preventDefault(); submit(question); }} className="space-y-2">
+      <textarea
+        aria-label="Ask about your storage"
+        value={question}
+        rows={3}
+        placeholder="What's using my space?"
+        onChange={event => setQuestion(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(question); } }}
+        className="w-full resize-none rounded-lg bg-muted/50 px-3 py-2 text-ui text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+      />
+      <div className="flex justify-end"><PrimaryButton type="submit" disabled={!question.trim()}>Ask</PrimaryButton></div>
+    </form>
+    <ul className="space-y-0.5">
+      {selectedCount > 0 && <li><button type="button" onClick={() => submit(`Tell me what the ${selectedCount} item${selectedCount === 1 ? "" : "s"} I selected are, and whether I can delete them.`)} className="w-full rounded-md px-2 py-1.5 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">Ask about the {selectedCount} selected</button></li>}
+      {QUESTIONS.map(text => <li key={text}>
+        <button type="button" onClick={() => submit(text)} className="w-full rounded-md px-2 py-1.5 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">{text}</button>
+      </li>)}
+    </ul>
+  </aside>;
+}
+
+export function StoragePage({ onError, title = "Storage", extra, onAskBridge }: {
+  onError?: (message: string) => void;
+  title?: string;
+  extra?: ReactNode;
+  /** Start a Bridge chat with this first message. Without it there is no copilot. */
+  onAskBridge?: (prompt: string) => void;
+}) {
+  const [overview, setOverview] = useState<DiskOverview | null>(null);
+  const [home, setHome] = useState<DiskListing | null>(null);
+  const [listing, setListing] = useState<DiskListing | null>(null);
+  const [path, setPath] = useState<string | null>(null);
+  const [root, setRoot] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Map<string, DiskEntry>>(new Map());
+  const [confirming, setConfirming] = useState<Confirming>(null);
+  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string>();
-  const [loading, setLoading] = useState(true);
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [repository, setRepository] = useState("");
-  const [sort, setSort] = useState("size");
-  const [confirming, setConfirming] = useState<{ entry: WorktreeInventoryEntry; force: boolean } | "sweep" | null>(null);
+  const pathRef = useRef(path);
+  pathRef.current = path;
 
-  const load = useCallback(async () => {
-    setLoading(true); setError(undefined);
-    try {
-      const [nextUsage, nextEntries] = await Promise.all([api.worktreeUsage(), api.listWorktrees()]);
-      setUsage(nextUsage);
-      setEntries(nextEntries);
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-      onError?.(error instanceof Error ? error.message : String(error));
-    } finally { setLoading(false); }
+  const fail = useCallback((caught: unknown) => {
+    setError(message(caught));
+    onError?.(message(caught));
   }, [onError]);
 
-  useEffect(() => { void load(); }, [load]);
-
-  const reclaim = async (entry: WorktreeInventoryEntry, force: boolean) => {
-    setConfirming(null); setError(undefined);
-    setBusy(entry.id);
-    setNote(null);
+  const load = useCallback(async (target: string | null, refresh = false) => {
     try {
-      const result = await api.reclaimWorktree(entry.id, force);
-      setNote(result.reclaimed
-        ? `${force ? "Deleted" : "Reclaimed"} ${bytes(result.bytesFreed)} from ${repoName(entry.path)}.`
-        : result.detail ?? "Nothing was reclaimed.");
-      await load();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-      onError?.(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(null);
-    }
+      const [nextOverview, nextListing] = await Promise.all([api.storageOverview(), api.scanDirectory(target, refresh)]);
+      // A slow answer for a folder the person already left must not land.
+      if (pathRef.current !== target) return;
+      setOverview(nextOverview);
+      setListing(nextListing);
+      if (nextListing.path === nextOverview.home) setHome(nextListing);
+      else if (!home || home.measuring) setHome(await api.scanDirectory(null));
+    } catch (caught) { fail(caught); }
+  }, [fail, home]);
+
+  useEffect(() => { void load(path); }, [path]); // eslint-disable-line react-hooks/exhaustive-deps -- reload on navigation only
+
+  const measuring = Boolean(overview?.measuring || listing?.measuring || home?.measuring);
+  useEffect(() => {
+    if (!measuring) return;
+    const timer = window.setTimeout(() => void load(pathRef.current), POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [measuring, overview, listing, home, load]);
+
+  const open = (next: string | null) => {
+    setPath(next);
+    setNote(null);
+    setConfirming(null);
+  };
+  const toggle = (entry: DiskEntry) => setSelected(current => {
+    const next = new Map(current);
+    if (next.has(entry.path)) next.delete(entry.path); else next.set(entry.path, entry);
+    return next;
+  });
+  const selection = useMemo(() => [...selected.values()], [selected]);
+  const selectedBytes = selection.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0);
+
+  const remove = async (entries: DiskEntry[], permanent: boolean) => {
+    setConfirming(null); setBusy(true); setError(undefined); setNote(null);
+    try {
+      const result = await api.deletePaths(entries.map(entry => entry.path), permanent);
+      const count = result.deleted.length;
+      const done = count === 0 ? "" : `${result.trashed ? "Moved" : "Deleted"} ${count} item${count === 1 ? "" : "s"}${result.bytesFreed ? `, ${diskBytes(result.bytesFreed)}` : ""}${result.trashed ? " to the Trash. Empty the Trash to get the space back." : "."}`;
+      const refused = result.failed.map(failure => `${failure.path.split("/").pop()}: ${failure.reason}`).join(" ");
+      setNote([done, refused].filter(Boolean).join(" ") || "Nothing was removed.");
+      setSelected(current => {
+        const next = new Map(current);
+        for (const deleted of result.deleted) next.delete(deleted);
+        return next;
+      });
+      await load(pathRef.current);
+    } catch (caught) { fail(caught); } finally { setBusy(false); }
   };
 
-  const sweep = async () => {
-    setConfirming(null); setError(undefined);
-    setBusy("sweep");
-    setNote(null);
+  const emptyTrash = async () => {
+    setConfirming(null); setBusy(true); setError(undefined); setNote(null);
     try {
-      const result = await api.sweepWorktrees();
-      setNote((result.removed === 0
-        ? "Nothing could be reclaimed safely under the current retention policy."
-        : `Reclaimed ${result.removed} checkout${result.removed === 1 ? "" : "s"}, freeing ${bytes(result.removedBytes)}.`)
-        + (result.measurementsTruncated ? ` ${result.measurementsTruncated} measurements were incomplete.` : "")
-        + (result.overBudgetBytes ? ` ${bytes(result.overBudgetBytes)} remains over budget and is protected.` : ""));
-      await load();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-      onError?.(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(null);
-    }
+      const result = await api.emptyTrash();
+      setNote(result.emptied ? "The Trash is empty." : result.detail ?? "The Trash was not emptied.");
+      await load(pathRef.current);
+    } catch (caught) { fail(caught); } finally { setBusy(false); }
   };
 
-  // The caps are per repository; `totalBytes` is the sum across all of them.
-  // Comparing the two labelled two 6 GiB repositories as over a 10 GiB limit
-  // when neither was, and said nothing about a repository over the *count* cap.
-  // The backend already decides this per repository.
-  const externalCount = entries.filter(entry => entry.state === "external").length;
-  const unmeasuredCount = entries.filter(entry => entry.sizeBytes === null).length;
-  const overBudget = usage?.repositories.some(repo => repo.overBudget) ?? false;
-  const visible = entries.filter(entry => {
-    if (repository && entry.repoRoot !== repository) return false;
-    if (filter === "external" && entry.state !== "external") return false;
-    if (filter === "reclaimable" && (entry.state === "external" || !RECLAIMABLE.has(entry.disposition ?? ""))) return false;
-    if (filter === "protected" && (entry.state === "external" || RECLAIMABLE.has(entry.disposition ?? ""))) return false;
-    return [entry.path, entry.branch, entry.repoRoot, entry.retainedReason, entry.ownerSessionId].some(value => value?.toLowerCase().includes(query.trim().toLowerCase()));
-  }).sort((a, b) => sort === "idle" ? b.idleSeconds - a.idleSeconds : sort === "name" ? (a.branch ?? a.path).localeCompare(b.branch ?? b.path) : (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1));
+  const ask = (question: string) => onAskBridge?.(storageBriefing({ question, overview, listing, selected: selection }));
 
-  return <SettingsPage
-    title={title}
-    description="See how much disk space Bridge uses and remove unused project copies. Your chat history is stored separately."
-    action={<GhostButton onClick={() => setConfirming("sweep")} disabled={busy !== null || loading} ariaLabel="Review safe cleanup">
-      {busy === "sweep" ? "Checking…" : "Check for cleanup"}
-    </GhostButton>}
-  >
-    {extra}
-    {error && <p role="alert" className="rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
-    {loading && <p role="status" className="text-xs text-muted-foreground">Loading storage inventory...</p>}
-    {usage && <SettingsGroup
-      label="Project copies"
-      note={`Automatic cleanup targets at most ${usage.maxPerRepo} Bridge-owned worktrees and ${bytes(usage.maxTotalBytes)} per repository. Over either limit it reclaims the least recently used checkouts it can prove are expendable, and reports the rest rather than forcing them.`}
-    >
-      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 px-4 py-3">
-        <HardDrive size={20} className="self-center text-muted-foreground" /><span className="text-3xl font-semibold tabular-nums text-foreground">{bytes(usage.totalBytes)}</span>
-        <span className="text-xs text-muted-foreground">
-          across {usage.totalCount} checkout{usage.totalCount === 1 ? "" : "s"}
-          {externalCount > 0 && `, including ${externalCount} external`}
-        </span>
-        {unmeasuredCount > 0 && <span className="text-xs text-muted-foreground">
-          {unmeasuredCount} checkout{unmeasuredCount === 1 ? "" : "s"} not yet measured; total includes measured sizes only
-        </span>}
-        {usage.reclaimableBytes > 0 && <span className="text-xs text-success">
-          {bytes(usage.reclaimableBytes)} reclaimable
-        </span>}
-        {usage.retainedCount > 0 && <span className="text-xs text-muted-foreground">
-          {usage.retainedCount} kept for a reason
-        </span>}
-        {overBudget && <StatusPill tone="warning">Over the limit</StatusPill>}
-      </div>
-      <RepoBreakdown repositories={usage.repositories} totalBytes={usage.totalBytes} onSelect={repo => setRepository(current => (current === repo ? "" : repo))} />
-    </SettingsGroup>}
+  return <div data-settings-column className="@container/settings mx-auto w-full max-w-page-wide px-5 pb-16 pt-6 sm:px-8">
+    <header className="mb-8">
+      <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
+      <p className="mt-1 text-ui leading-relaxed text-muted-foreground">What is using space on this Mac, and what you can let go of. Deleting moves to the Trash first.</p>
+    </header>
+    <div className={cn("grid gap-12", onAskBridge && "lg:grid-cols-[minmax(0,1fr)_16rem]")}>
+      <div className="min-w-0 space-y-12">
+        {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
+        {!overview && !error && <p role="status" className="text-caption text-muted-foreground">Looking at your disk…</p>}
+        <DiskSummary overview={overview} home={home} onOpen={open} onEmptyTrash={() => setConfirming("empty-trash")} busy={busy} />
 
-    <p className="flex gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck size={15} className="shrink-0" />External checkouts are never removed or counted against retention limits. Sweep protects dirty files and local-only commits. Confirmed Delete can discard dirty or unreadable checkouts. Live sessions and unadopted worker output remain protected.</p>
-    {note && <p role="status" className="px-1 text-xs text-muted-foreground">{note}</p>}
-    {confirming && <section aria-label="Confirm cleanup" className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-semibold">{confirming === "sweep" ? "Run safe cleanup?" : confirming.force ? `Delete ${confirming.entry.branch ?? repoName(confirming.entry.path)}?` : `Reclaim ${confirming.entry.branch ?? repoName(confirming.entry.path)}?`}</h3>
-      <p className="mt-2 break-words text-xs leading-relaxed text-muted-foreground">
-        {confirming === "sweep"
-          ? "Reassess checkouts and remove only those allowed by retention limits. Protected work stays."
-          : confirming.force
-            ? `${confirming.entry.path}. Bridge could not prove this checkout is safe to remove (${confirming.entry.retainedReason ?? "uncommitted or unproven work"}). Deleting it anyway discards anything not saved elsewhere.`
-            : `${confirming.entry.path}. This removes the checkout and its ignored build files, not chat history. Safety is checked again before removal.`}
-      </p>
-      <div className="mt-3 flex gap-2">
-        <GhostButton onClick={() => setConfirming(null)}>Cancel</GhostButton>
-        {confirming !== "sweep" && confirming.force
-          ? <TextButton tone="destructive" disabled={busy !== null} onClick={() => void reclaim(confirming.entry, true)}>Delete anyway</TextButton>
-          : <GhostButton disabled={busy !== null} onClick={() => confirming === "sweep" ? void sweep() : void reclaim(confirming.entry, false)}>Confirm cleanup</GhostButton>}
+        {note && <p role="status" className="-mt-6 text-caption text-muted-foreground">{note}</p>}
+        {confirming && <div role="group" aria-label="Confirm deletion" className="-mt-6 rounded-lg bg-muted/50 px-4 py-3">
+          {confirming === "empty-trash"
+            ? <>
+              <p className="text-ui font-medium text-foreground">Empty the Trash?</p>
+              <p className="mt-1 text-caption text-muted-foreground">Everything in it is deleted for good. macOS may ask once to let Bridge use Finder.</p>
+              <div className="mt-3 flex gap-2">
+                <GhostButton onClick={() => setConfirming(null)}>Cancel</GhostButton>
+                <TextButton tone="destructive" disabled={busy} onClick={() => void emptyTrash()}>Empty Trash</TextButton>
+              </div>
+            </>
+            : <>
+              <p className="text-ui font-medium text-foreground">
+                {confirming.permanent ? "Delete" : "Move"} {confirming.entries.length === 1 ? confirming.entries[0].name : `${confirming.entries.length} items`}{confirming.permanent ? " permanently?" : " to the Trash?"}
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {confirming.entries.slice(0, 5).map(entry => <li key={entry.path} className="flex gap-3 text-caption text-muted-foreground">
+                  <span className="min-w-0 flex-1 truncate font-mono">{displayPath(entry.path, overview?.home)}</span>
+                  <span className="shrink-0 tabular-nums">{diskBytes(entry.sizeBytes)}</span>
+                </li>)}
+                {confirming.entries.length > 5 && <li className="text-caption text-muted-foreground">and {confirming.entries.length - 5} more</li>}
+              </ul>
+              <p className="mt-2 text-caption text-muted-foreground">
+                {confirming.permanent ? "This cannot be undone." : "You can put them back from the Trash until you empty it."}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <GhostButton onClick={() => setConfirming(null)}>Cancel</GhostButton>
+                {confirming.permanent
+                  ? <TextButton tone="destructive" disabled={busy} onClick={() => void remove(confirming.entries, true)}>Delete permanently</TextButton>
+                  : <>
+                    <PrimaryButton disabled={busy} onClick={() => void remove(confirming.entries, false)}>Move to Trash</PrimaryButton>
+                    <TextButton tone="destructive" disabled={busy} onClick={() => setConfirming({ entries: confirming.entries, permanent: true })}>Delete permanently instead</TextButton>
+                  </>}
+              </div>
+            </>}
+        </div>}
+
+        {overview && <Suggestions overview={overview} onOpen={open} onDelete={entry => setConfirming({ entries: [entry], permanent: false })} busy={busy} />}
+
+        <Explorer
+          listing={listing}
+          overview={overview}
+          root={root}
+          selected={selected}
+          busy={busy}
+          onRoot={next => { setRoot(next); open(next); }}
+          onOpen={open}
+          onToggle={toggle}
+          onDelete={entry => setConfirming({ entries: [entry], permanent: false })}
+          onRefresh={() => void load(path, true)}
+        />
+
+        <WorktreeStorage onError={onError} />
+        {extra}
       </div>
-    </section>}
-    <div className="flex flex-wrap gap-2">
-      <label className="flex min-w-48 flex-1 items-center gap-2 rounded-lg border border-border bg-card px-3"><Search size={14} className="text-muted-foreground" /><input type="search" aria-label="Search worktrees" placeholder="Branch, path, or reason" value={query} onChange={event => setQuery(event.target.value)} className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none" /></label>
-      <Select label="Repository" value={repository} onChange={setRepository} width="w-44" options={[{ value: "", label: "All repositories" }, ...[...new Set(entries.map(entry => entry.repoRoot))].map(repo => ({ value: repo, label: repoName(repo), description: repo }))]} />
-      <Select label="Worktree status" value={filter} onChange={setFilter} width="w-36" options={[{ value: "all", label: "All checkouts" }, { value: "reclaimable", label: "Reclaimable" }, { value: "protected", label: "Protected" }, { value: "external", label: "External" }]} />
-      <Select label="Sort worktrees" value={sort} onChange={setSort} width="w-36" options={[{ value: "size", label: "Largest first" }, { value: "idle", label: "Longest idle" }, { value: "name", label: "Branch name" }]} />
-      <GhostButton disabled={loading || busy !== null} onClick={() => void load()} ariaLabel="Refresh inventory"><RefreshCw size={14} /></GhostButton>
+      {onAskBridge && <Copilot selectedCount={selection.length} onAsk={ask} />}
     </div>
 
-    <SettingsGroup label={`Checkouts (${visible.length})`} note={entries.length === 0 && !loading ? "Bridge has not created any worktrees yet." : "Sizes are logical bytes from the last measurement, not unique physical allocation. Refresh reloads inventory; Sweep remeasures it."}>
-      <ul className="divide-y divide-border/60">
-        {visible.map(entry => {
-          const external = entry.state === "external";
-          const disposition = entry.disposition ?? (external ? "retained" : "");
-          const actionable = !external && RECLAIMABLE.has(disposition);
-          // Bridge cannot prove these safe, but a person looking at the row
-          // can decide for themselves — never offered for a live session, an
-          // unadopted worker output, or a checkout Bridge did not create,
-          // since those stay "retained" and are never forcible.
-          const forcible = !external && !actionable && FORCIBLE.has(disposition);
-          return <li key={entry.id} className="flex flex-col gap-1 px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-sm font-medium text-foreground" title={entry.path}>
-                  {entry.branch ?? repoName(entry.path)}
-                </span>
-                <span className="shrink-0 text-[11px] uppercase tracking-wide text-muted-foreground">{entry.kind}</span>
-              </span>
-              <span className="flex shrink-0 items-center gap-3 text-xs tabular-nums text-muted-foreground">
-                <span>{age(entry.idleSeconds)}</span>
-                <span>{bytes(entry.sizeBytes)}</span>
-                {disposition && <StatusPill tone={DISPOSITION_TONE[disposition] ?? "neutral"}>
-                  {DISPOSITION_LABEL[disposition] ?? disposition}
-                </StatusPill>}
-              </span>
-            </div>
-            <p className="break-all font-mono text-[11px] text-muted-foreground">{entry.path}</p>
-            <p className="text-[11px] text-muted-foreground">{entry.sizeMeasuredAt ? `Measured ${new Date(entry.sizeMeasuredAt).toLocaleString()}` : "Not yet measured"}{entry.assessedAt ? ` · Assessed ${new Date(entry.assessedAt).toLocaleString()}` : " · Not yet assessed"}</p>
-            <div className="flex items-start justify-between gap-3">
-              <span className="min-w-0 text-xs text-muted-foreground">
-                {external
-                  ? "Not created by Bridge — shown for context, never reclaimed."
-                  : entry.retainedReason ?? entry.path}
-              </span>
-              {actionable && <GhostButton
-                onClick={() => setConfirming({ entry, force: false })}
-                disabled={busy !== null}
-                ariaLabel={`Reclaim ${entry.branch ?? entry.path}`}
-              >
-                {busy === entry.id ? "Reclaiming…" : "Reclaim"}
-              </GhostButton>}
-              {forcible && <TextButton
-                tone="destructive"
-                onClick={() => setConfirming({ entry, force: true })}
-                disabled={busy !== null}
-                ariaLabel={`Delete ${entry.branch ?? entry.path}`}
-              >
-                {busy === entry.id ? "Deleting…" : "Delete"}
-              </TextButton>}
-            </div>
-          </li>;
-        })}
-      </ul>
-      {!loading && entries.length > 0 && visible.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">No checkouts match these filters.</p>}
-    </SettingsGroup>
-  </SettingsPage>;
+    {selection.length > 0 && <div role="region" aria-label="Selection" className="sticky bottom-4 z-10 mx-auto mt-6 flex w-fit items-center gap-3 rounded-full bg-popover px-4 py-2 text-caption shadow-lg">
+      <span className="tabular-nums text-foreground">{selection.length} selected · {diskBytes(selectedBytes)}</span>
+      <TextButton onClick={() => setSelected(new Map())}>Clear</TextButton>
+      {onAskBridge && <TextButton onClick={() => ask(`Tell me what the ${selection.length} item${selection.length === 1 ? "" : "s"} I selected are, and whether I can delete them.`)}>Ask Bridge</TextButton>}
+      <TextButton tone="destructive" disabled={busy} onClick={() => setConfirming({ entries: selection, permanent: false })}>Move to Trash</TextButton>
+    </div>}
+  </div>;
 }
