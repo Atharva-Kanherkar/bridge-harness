@@ -601,6 +601,14 @@ pub fn dispatch(
             let p: wire::SaveChatSearchSettingsParams = decode(method, params)?;
             reply(api::save_chat_search_settings(core, &p))
         }
+        MethodName::GetDelegationNotifySettings => {
+            let p: wire::GetDelegationNotifySettingsParams = decode(method, params)?;
+            reply(api::get_delegation_notify_settings(core, &p))
+        }
+        MethodName::SaveDelegationNotifySettings => {
+            let p: wire::SaveDelegationNotifySettingsParams = decode(method, params)?;
+            reply(api::save_delegation_notify_settings(core, &p))
+        }
         MethodName::GetAttributionSettings => reply(api::get_attribution_settings(core)),
         MethodName::SaveAttributionSettings => {
             let p: wire::SaveAttributionSettingsParams = decode(method, params)?;

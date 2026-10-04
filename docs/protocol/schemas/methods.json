@@ -611,6 +611,20 @@
       "resultSchema": "attribution-settings.json"
     },
     {
+      "command": "get_delegation_notify_settings",
+      "domain": "config",
+      "method": "config/get_delegation_notify_settings",
+      "paramsSchema": "get-delegation-notify-settings-params.json",
+      "resultSchema": "delegation-notify-settings-view.json"
+    },
+    {
+      "command": "save_delegation_notify_settings",
+      "domain": "config",
+      "method": "config/save_delegation_notify_settings",
+      "paramsSchema": "save-delegation-notify-settings-params.json",
+      "resultSchema": "delegation-notify-settings-view.json"
+    },
+    {
       "command": "get_chat_search_settings",
       "domain": "config",
       "method": "config/get_chat_search_settings",
@@ -1726,7 +1740,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 21
+    "minor": 22
   },
   "reserved": {
     "cancel": "$/cancel",

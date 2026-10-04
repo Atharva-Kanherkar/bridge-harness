@@ -331,6 +331,8 @@ typed_methods![
     (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
     (GetAttributionSettings, _, AttributionSettings),
     (SaveAttributionSettings, SaveAttributionSettingsParams, AttributionSettings),
+    (GetDelegationNotifySettings, GetDelegationNotifySettingsParams, DelegationNotifySettingsView),
+    (SaveDelegationNotifySettings, SaveDelegationNotifySettingsParams, DelegationNotifySettingsView),
     (GetChatSearchSettings, _, ChatSearchSettings),
     (SaveChatSearchSettings, SaveChatSearchSettingsParams, ChatSearchSettings),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),

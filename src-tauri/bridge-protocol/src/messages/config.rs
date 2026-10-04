@@ -105,6 +105,58 @@ pub struct SaveAttributionSettingsParams {
     pub settings: AttributionSettings,
 }
 
+/// Which worker routing notices cost an orchestrator a model turn. Only
+/// changes what the orchestrator is told; the human transcript card is
+/// written at every level, and policy is never touched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DelegationNotifyLevel {
+    /// Every routing notice (the original behaviour).
+    #[default]
+    All,
+    /// Results, failures and anything the orchestrator must answer.
+    Actionable,
+    /// Only worker results and stops.
+    ResultsOnly,
+}
+
+/// The user's global opt-out level, applied to every orchestrator that has no
+/// override of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct DelegationNotifySettings {
+    pub level: DelegationNotifyLevel,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct GetDelegationNotifySettingsParams {
+    /// Orchestrator session whose effective level to resolve; absent returns
+    /// only the global level.
+    pub session_id: Option<String>,
+}
+
+/// `level` is what delivery will use for `session_id` (its override, else the
+/// global level); `session_override` is the orchestrator's own choice, if any.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct DelegationNotifySettingsView {
+    pub level: DelegationNotifyLevel,
+    pub global_level: DelegationNotifyLevel,
+    pub session_override: Option<DelegationNotifyLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveDelegationNotifySettingsParams {
+    /// Present: set (or, with a null `level`, clear) that orchestrator's
+    /// override. Absent: set the global level, which `level` must then carry.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub level: Option<DelegationNotifyLevel>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveWorkerSettingsParams { pub workspace_id: String, pub settings: WorkerSettings }

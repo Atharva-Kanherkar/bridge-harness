@@ -842,6 +842,16 @@ async fn save_reviewer_settings(settings: bridge_protocol::messages::ReviewerSet
 }
 
 #[tauri::command]
+async fn get_delegation_notify_settings(session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DelegationNotifySettingsView, BridgeError> {
+    api::get_delegation_notify_settings(state.inner(), &bridge_protocol::messages::GetDelegationNotifySettingsParams { session_id })
+}
+
+#[tauri::command]
+async fn save_delegation_notify_settings(session_id: Option<String>, level: Option<bridge_protocol::messages::DelegationNotifyLevel>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::DelegationNotifySettingsView, BridgeError> {
+    api::save_delegation_notify_settings(state.inner(), &bridge_protocol::messages::SaveDelegationNotifySettingsParams { session_id, level })
+}
+
+#[tauri::command]
 async fn get_attribution_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::AttributionSettings, BridgeError> {
     api::get_attribution_settings(state.inner())
 }
@@ -2916,6 +2926,8 @@ pub fn run() -> i32 {
             save_worker_settings,
             get_reviewer_settings,
             save_reviewer_settings,
+            get_delegation_notify_settings,
+            save_delegation_notify_settings,
             get_attribution_settings,
             save_attribution_settings,
             get_chat_search_settings,

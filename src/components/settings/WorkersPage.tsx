@@ -4,6 +4,7 @@ import type { AdapterDescriptor, Workspace } from "../../types";
 import type { WorkerSettings } from "../../protocol/generated/protocol";
 import { RouterSettingsDialog } from "../RouterSettingsDialog";
 import { GhostButton, Select, SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
+import { DelegationNotifySetting } from "./DelegationNotifySetting";
 import { ReviewerSettingsSection } from "./ReviewerSettingsSection";
 
 export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
@@ -56,6 +57,7 @@ export function WorkersPage({ adapters }: { adapters: AdapterDescriptor[] }) {
       <div className="flex flex-wrap items-center gap-3"><button type="submit" disabled={busy} className="rounded-lg bg-primary px-4 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50">{busy ? "Saving..." : "Save task settings"}</button>{saved && <span role="status" className="text-xs text-muted-foreground">Saved</span>}<GhostButton disabled={busy} onClick={() => setRouter(true)}>Advanced agent selection</GhostButton></div>
     </form>}
     {router && <RouterSettingsDialog open workspaceId={workspace} adapters={adapters} onClose={() => setRouter(false)} onError={setError} />}
+    <DelegationNotifySetting />
     <ReviewerSettingsSection adapters={adapters} />
   </SettingsPage>;
 }

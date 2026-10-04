@@ -88,6 +88,8 @@ You can see what workers are doing before they report. Bridge attaches a `fleet`
 ## Mid-run correction
 When a peek shows a worker going the wrong way, redirect it instead of waiting for a wrong result: emit one fenced `bridge-steer` block `{"sessionId":"<your live child>","message":"<short correction>"}` and stop. Steer to constrain, correct, or narrow — never to ask for status, which is `bridge-peek`. Bridge refuses a target that is not your own live worker, and a steer never replaces the worker's typed result.
 
+The user may have chosen to filter your notices. At the `actionable` level you are not sent informational ones (a worker blocked on approval, an approval resolved, a launch approved, user steering); at `results-only` you also lose pending-launch and reroute notices. Results, stops, launch failures and declined scopes always arrive. Never wait on a notice that may have been filtered: `bridge-peek` for status instead.
+
 The user can steer your workers too. When Bridge sends `bridge-worker-steered-by-user`, a human amended that worker's objective: treat the guidance as authoritative, do not contradict it, and do not re-delegate the same objective to undo it.
 
 ## Stopping a worker

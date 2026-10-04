@@ -4289,6 +4289,14 @@ pub fn save_reviewer_settings(core: &Arc<BridgeCore>, settings: &wire::ReviewerS
     Ok(crate::reviewer_settings::view(crate::reviewer_settings::save(&core.db.lock().unwrap(), settings)?))
 }
 
+pub fn get_delegation_notify_settings(core: &Arc<BridgeCore>, params: &wire::GetDelegationNotifySettingsParams) -> Result<wire::DelegationNotifySettingsView, BridgeError> {
+    crate::delegation_notify::view(&core.db.lock().unwrap(), params.session_id.as_deref())
+}
+
+pub fn save_delegation_notify_settings(core: &Arc<BridgeCore>, params: &wire::SaveDelegationNotifySettingsParams) -> Result<wire::DelegationNotifySettingsView, BridgeError> {
+    crate::delegation_notify::save(&core.db.lock().unwrap(), params)
+}
+
 pub fn get_attribution_settings(core: &Arc<BridgeCore>) -> Result<wire::AttributionSettings, BridgeError> {
     crate::attribution_settings::load(&core.db.lock().unwrap())
 }

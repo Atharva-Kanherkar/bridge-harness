@@ -132,6 +132,8 @@ methods![
     (SaveReviewerSettings, "config", "save_reviewer_settings"),
     (GetAttributionSettings, "config", "get_attribution_settings"),
     (SaveAttributionSettings, "config", "save_attribution_settings"),
+    (GetDelegationNotifySettings, "config", "get_delegation_notify_settings"),
+    (SaveDelegationNotifySettings, "config", "save_delegation_notify_settings"),
     (GetChatSearchSettings, "config", "get_chat_search_settings"),
     (SaveChatSearchSettings, "config", "save_chat_search_settings"),
     (ListArchivedChats, "sessions", "list_archived_chats"),
