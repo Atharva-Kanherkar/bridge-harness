@@ -19,7 +19,7 @@ bidirectional events — is RPC-shaped, so REST+SSE was considered and rejected.
 | Transport | Audience |
 | --- | --- |
 | Unix-domain socket | Local clients (Tauri shell, TUI, `bridge exec`) — served by `bridged` today |
-| WebSocket | Browser and remote clients (follow-on; the auth token and origin rules are designed for it) |
+| WebSocket | Browser and remote clients — `bridged --listen`, off by default; same handshake token, limits and events as the socket, plus an exact-match `Origin` allowlist |
 | Tauri invoke/event adapter | The desktop webview; proxied to `bridged` by default, in-process only in embedded fallback |
 | Plain HTTP | `/healthz` and `/readyz` only |
 
@@ -70,6 +70,32 @@ directory's sessions, stores, PTYs, and provider processes:
 ```bash
 bridged --data-dir ~/Library/Application\ Support/dev.bridge.deck
 ```
+
+## Remote transport (`--listen`)
+
+```bash
+bridged --listen 127.0.0.1:4319 --allowed-origin https://app.example.com
+```
+
+The same contract as the Unix socket, carried as WebSocket **text messages**
+(one JSON-RPC frame per message; no newline framing). Without `--listen` the
+daemon binds nothing but the Unix socket and the health listener.
+
+- **Auth.** The handshake token is mandatory, exactly as on the socket. A wrong
+  or missing token gets **2001 `unauthorized`** over the socket, then close.
+- **Origin.** An upgrade carrying an `Origin` header is refused with HTTP 403
+  unless it matches a `--allowed-origin` exactly (case-insensitive, no
+  wildcard, no path). An upgrade with no `Origin` is not a browser and is left
+  to the token. An empty allowlist therefore admits no browser at all.
+- **Loopback by default.** The listener is plaintext. Binding anything but a
+  loopback address requires `--allow-remote-bind`, intended for a TLS
+  terminator or tunnel in front of it; the token must never cross a network in
+  the clear.
+- **Limits.** Shared with the socket, not duplicated: the 1 MiB frame cap
+  (an oversized message closes the connection), the connection cap (beyond it,
+  HTTP 503 with the `overloaded` error body instead of an upgrade), and the
+  handshake deadline. Binary messages are not part of the protocol and close
+  the connection.
 
 ## Clients
 

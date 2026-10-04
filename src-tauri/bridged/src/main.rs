@@ -3,6 +3,7 @@
 //! ```text
 //! bridged --data-dir <path> [--socket <path>] [--health-addr <ip:port>|none]
 //!         [--browser-extension <path>]
+//!         [--listen <ip:port> [--allowed-origin <origin>]... [--allow-remote-bind]]
 //! ```
 
 use std::io::Write;
@@ -21,13 +22,14 @@ fn main() -> ExitCode {
     ) {
         return keychain_read_helper(&helper_args);
     }
-    let config = match parse_flags(std::env::args().skip(1)) {
-        Ok(config) => config,
+    let (config, remote_config) = match parse_flags(std::env::args().skip(1)) {
+        Ok(parsed) => parsed,
         Err(message) => {
             eprintln!("bridged: {message}");
             eprintln!(
                 "usage: bridged --data-dir <path> [--socket <path>] \
-                 [--health-addr <ip:port>|none] [--browser-extension <path>]"
+                 [--health-addr <ip:port>|none] [--browser-extension <path>] \
+                 [--listen <ip:port> [--allowed-origin <origin>]... [--allow-remote-bind]]"
             );
             return ExitCode::from(2);
         }
@@ -40,6 +42,15 @@ fn main() -> ExitCode {
             eprintln!("bridged: {error}");
             return ExitCode::FAILURE;
         }
+    };
+
+    let remote = match remote_config.as_ref().map(|config| daemon.bind_remote(config)) {
+        Some(Ok(listener)) => Some(listener),
+        Some(Err(error)) => {
+            eprintln!("bridged: {error}");
+            return ExitCode::FAILURE;
+        }
+        None => None,
     };
 
     // SIGINT/SIGTERM request a graceful shutdown; the accept loop polls the
@@ -64,7 +75,13 @@ fn main() -> ExitCode {
             .unwrap_or(&daemon.socket_path)
             .display()
     );
-    let served = bridged::serve(&daemon, listener);
+    if let Some(remote) = &remote {
+        eprintln!(
+            "bridged: remote WebSocket listener on {} (plaintext; token required)",
+            remote.local_addr().map(|addr| addr.to_string()).unwrap_or_default()
+        );
+    }
+    let served = bridged::serve_with_remote(&daemon, listener, remote);
     daemon.shutdown(bridged::DEFAULT_DRAIN_TIMEOUT);
     match served {
         Ok(()) => {
@@ -105,11 +122,16 @@ fn keychain_read_helper(args: &[String]) -> ExitCode {
     }
 }
 
-fn parse_flags(args: impl Iterator<Item = String>) -> Result<bridged::DaemonConfig, String> {
+fn parse_flags(
+    args: impl Iterator<Item = String>,
+) -> Result<(bridged::DaemonConfig, Option<bridged::RemoteConfig>), String> {
     let mut data_dir: Option<PathBuf> = None;
     let mut socket_path: Option<PathBuf> = None;
     let mut health: Option<String> = None;
     let mut browser_extension: Option<PathBuf> = None;
+    let mut listen: Option<String> = None;
+    let mut allowed_origins: Vec<String> = Vec::new();
+    let mut allow_remote_bind = false;
     let mut args = args.peekable();
     while let Some(flag) = args.next() {
         let mut value = |flag: &str| {
@@ -123,6 +145,9 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<bridged::DaemonConf
             "--browser-extension" => {
                 browser_extension = Some(PathBuf::from(value("--browser-extension")?))
             }
+            "--listen" => listen = Some(value("--listen")?),
+            "--allowed-origin" => allowed_origins.push(value("--allowed-origin")?),
+            "--allow-remote-bind" => allow_remote_bind = true,
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -143,13 +168,28 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<bridged::DaemonConf
         ),
     };
     let browser_extension_path = browser_extension.unwrap_or_else(default_browser_extension_path);
-    Ok(bridged::DaemonConfig {
-        data_dir,
-        socket_path,
-        health_addr,
-        browser_extension_path,
-        handshake_timeout: bridged::DEFAULT_HANDSHAKE_TIMEOUT,
-    })
+    let remote = match listen {
+        Some(addr) => {
+            let addr: SocketAddr = addr
+                .parse()
+                .map_err(|_| format!("--listen must be ip:port, got {addr}"))?;
+            Some(bridged::RemoteConfig::new(addr, allowed_origins, allow_remote_bind)?)
+        }
+        None if !allowed_origins.is_empty() || allow_remote_bind => {
+            return Err("--allowed-origin and --allow-remote-bind need --listen".into())
+        }
+        None => None,
+    };
+    Ok((
+        bridged::DaemonConfig {
+            data_dir,
+            socket_path,
+            health_addr,
+            browser_extension_path,
+            handshake_timeout: bridged::DEFAULT_HANDSHAKE_TIMEOUT,
+        },
+        remote,
+    ))
 }
 
 /// The bundled browser extension, resolved at runtime. `bridged` ships as a

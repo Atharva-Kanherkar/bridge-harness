@@ -1,8 +1,12 @@
-//! The socket server: accept loop, per-connection framing, the handshake
+//! The socket server: accept loops, per-connection framing, the handshake
 //! gate, request handling, and event forwarding.
 //!
-//! Framing is newline-delimited JSON — one complete JSON-RPC frame per line
-//! in both directions. Requests on a connection are handled sequentially in
+//! Two transports share one connection layer. The Unix socket frames
+//! newline-delimited JSON — one complete JSON-RPC frame per line in both
+//! directions. The optional remote listener (see [`crate::remote`]) carries the
+//! same frames as WebSocket text messages. Both reduce to a [`FrameSource`]
+//! and a [`FrameSink`], so the handshake gate, limits, dispatch and event
+//! forwarding below are written once. Requests on a connection are handled sequentially in
 //! arrival order; notifications from the event hub interleave between frames
 //! (each write holds the connection's writer lock for exactly one line).
 //!
@@ -31,26 +35,54 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Run the accept loop until shutdown is requested. Polling (rather than a
 /// blocking accept) lets the signal handler stop the loop without tricks.
 pub fn serve(daemon: &Daemon, listener: UnixListener) -> std::io::Result<()> {
+    serve_with_remote(daemon, listener, None)
+}
+
+/// [`serve`], plus the optional remote WebSocket listener on its own accept
+/// thread. Both transports draw from the same connection cap and stop on the
+/// same shutdown flag; a failure of either loop stops the other.
+pub fn serve_with_remote(
+    daemon: &Daemon,
+    listener: UnixListener,
+    remote: Option<crate::remote::RemoteListener>,
+) -> std::io::Result<()> {
+    std::thread::scope(|scope| {
+        let remote_loop = remote.map(|remote| {
+            scope.spawn(move || {
+                let result = crate::remote::serve_remote(daemon, remote);
+                if result.is_err() {
+                    daemon.state.shutting_down.store(true, Ordering::SeqCst);
+                }
+                result
+            })
+        });
+        let local = serve_unix(daemon, listener);
+        if local.is_err() {
+            daemon.state.shutting_down.store(true, Ordering::SeqCst);
+        }
+        let remote = match remote_loop {
+            Some(handle) => handle.join().unwrap_or_else(|_| {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "remote accept loop panicked"))
+            }),
+            None => Ok(()),
+        };
+        local.and(remote)
+    })
+}
+
+fn serve_unix(daemon: &Daemon, listener: UnixListener) -> std::io::Result<()> {
     listener.set_nonblocking(true)?;
     while !daemon.state.shutting_down.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _)) => {
                 let _ = stream.set_nonblocking(false);
-                if daemon.state.connections.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                if !admit(daemon) {
                     refuse_overloaded(stream);
                     continue;
                 }
-                daemon.state.connections.fetch_add(1, Ordering::SeqCst);
-                let core = daemon.core.clone();
-                let state = daemon.state.clone();
-                let events = daemon.events.clone();
-                std::thread::Builder::new()
-                    .name("bridged-connection".into())
-                    .spawn(move || {
-                        let _ = handle_connection(&core, &state, &events, stream);
-                        state.connections.fetch_sub(1, Ordering::SeqCst);
-                    })
-                    .expect("connection thread spawns");
+                spawn_connection(daemon, move |core, state, events| {
+                    handle_unix(core, state, events, stream)
+                });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(50));
@@ -61,25 +93,91 @@ pub fn serve(daemon: &Daemon, listener: UnixListener) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Reserve a connection slot, or report that the cap is reached. The slot is
+/// released by [`spawn_connection`] when the connection ends.
+pub(crate) fn admit(daemon: &Daemon) -> bool {
+    if daemon.state.connections.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+        return false;
+    }
+    daemon.state.connections.fetch_add(1, Ordering::SeqCst);
+    true
+}
+
+/// Run one admitted connection on its own thread and release its slot after.
+pub(crate) fn spawn_connection<F>(daemon: &Daemon, run: F)
+where
+    F: FnOnce(&Arc<BridgeCore>, &Arc<DaemonState>, &crate::EventHub) -> std::io::Result<()>
+        + Send
+        + 'static,
+{
+    let core = daemon.core.clone();
+    let state = daemon.state.clone();
+    let events = daemon.events.clone();
+    std::thread::Builder::new()
+        .name("bridged-connection".into())
+        .spawn(move || {
+            let _ = run(&core, &state, &events);
+            state.connections.fetch_sub(1, Ordering::SeqCst);
+        })
+        .expect("connection thread spawns");
+}
+
 /// One `overloaded` frame, then close — the defined refusal beyond the
 /// connection cap.
 fn refuse_overloaded(mut stream: UnixStream) {
-    let response = RpcResponse::error(
-        ResponseId::Null,
-        RpcError::new(ErrorCode::Overloaded, "the daemon is at its connection limit"),
-    );
-    let _ = write_frame(&mut stream, &response);
+    let _ = write_line(&mut stream, &overloaded_response());
 }
 
-fn write_frame<T: serde::Serialize>(writer: &mut impl Write, frame: &T) -> std::io::Result<()> {
+pub(crate) fn overloaded_response() -> RpcResponse {
+    RpcResponse::error(
+        ResponseId::Null,
+        RpcError::new(ErrorCode::Overloaded, "the daemon is at its connection limit"),
+    )
+}
+
+fn write_line<T: serde::Serialize>(writer: &mut impl Write, frame: &T) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(frame)?;
     line.push(b'\n');
     writer.write_all(&line)?;
     writer.flush()
 }
 
+/// Where a connection's frames are written. One implementation per transport;
+/// every write is one whole frame, serialised against concurrent writers.
+pub(crate) trait FrameSink: Send + Sync {
+    fn send(&self, frame: &[u8]) -> std::io::Result<()>;
+    /// Tear the connection down; the paired source then reads EOF.
+    fn close(&self);
+}
+
+/// Where a connection's frames are read from.
+pub(crate) trait FrameSource {
+    fn next(&mut self) -> std::io::Result<Frame>;
+}
+
+fn write_frame<T: serde::Serialize>(sink: &dyn FrameSink, frame: &T) -> std::io::Result<()> {
+    sink.send(&serde_json::to_vec(frame)?)
+}
+
+struct UnixSink(Mutex<UnixStream>);
+
+impl FrameSink for UnixSink {
+    fn send(&self, frame: &[u8]) -> std::io::Result<()> {
+        let mut line = Vec::with_capacity(frame.len() + 1);
+        line.extend_from_slice(frame);
+        line.push(b'\n');
+        let mut stream = self.0.lock().unwrap();
+        stream.write_all(&line)?;
+        stream.flush()
+    }
+
+    fn close(&self) {
+        let _ = self.0.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    }
+}
+
 /// One read attempt's outcome.
-enum Frame {
+pub(crate) enum Frame {
     /// A complete newline-terminated line.
     Line(Vec<u8>),
     /// The frame exceeded [`MAX_FRAME_BYTES`]; the connection must close.
@@ -103,7 +201,9 @@ impl FrameReader {
     fn new(stream: UnixStream) -> FrameReader {
         FrameReader { reader: BufReader::new(stream), buffer: Vec::new() }
     }
+}
 
+impl FrameSource for FrameReader {
     fn next(&mut self) -> std::io::Result<Frame> {
         loop {
             if self.buffer.len() > MAX_FRAME_BYTES {
@@ -137,21 +237,34 @@ impl FrameReader {
     }
 }
 
-fn handle_connection(
+/// Serve one Unix-socket connection.
+fn handle_unix(
     core: &Arc<BridgeCore>,
     state: &Arc<DaemonState>,
     events: &crate::EventHub,
     stream: UnixStream,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(POLL_INTERVAL))?;
-    let mut reader = FrameReader::new(stream.try_clone()?);
-    let writer = Arc::new(Mutex::new(stream));
+    let reader = FrameReader::new(stream.try_clone()?);
+    let sink: Arc<dyn FrameSink> = Arc::new(UnixSink(Mutex::new(stream)));
+    handle_connection(core, state, events, reader, sink)
+}
 
+/// The transport-independent connection: handshake gate, event forwarding,
+/// then the sequential request loop.
+pub(crate) fn handle_connection(
+    core: &Arc<BridgeCore>,
+    state: &Arc<DaemonState>,
+    events: &crate::EventHub,
+    mut reader: impl FrameSource,
+    writer: Arc<dyn FrameSink>,
+) -> std::io::Result<()> {
     // --- handshake gate --------------------------------------------------
     let response = match expect_handshake(state, &mut reader) {
         Ok(response) => response,
         Err(response) => {
-            let _ = write_frame(&mut *writer.lock().unwrap(), &response);
+            let _ = write_frame(&*writer, &response);
+            writer.close();
             return Ok(());
         }
     };
@@ -159,7 +272,7 @@ fn handle_connection(
     // published the instant after the response is sent must reach this
     // connection.
     let subscription = events.register();
-    write_frame(&mut *writer.lock().unwrap(), &response)?;
+    write_frame(&*writer, &response)?;
 
     // --- event forwarding ------------------------------------------------
     // The `closed` flag bounds the forwarder's lifetime: it polls between
@@ -174,9 +287,7 @@ fn handle_connection(
             loop {
                 match subscription.recv_timeout(POLL_INTERVAL) {
                     Ok(notification) => {
-                        if write_frame(&mut *forward_writer.lock().unwrap(), &notification)
-                            .is_err()
-                        {
+                        if write_frame(&*forward_writer, &notification).is_err() {
                             break;
                         }
                     }
@@ -192,9 +303,9 @@ fn handle_connection(
         .expect("event forwarder spawns");
 
     // --- request loop ------------------------------------------------------
-    let result = request_loop(core, state, &mut reader, &writer);
+    let result = request_loop(core, state, &mut reader, &*writer);
     closed.store(true, Ordering::SeqCst);
-    let _ = writer.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    writer.close();
     let _ = forwarder.join();
     result
 }
@@ -206,7 +317,7 @@ fn handle_connection(
 /// subscribed; `Err` carries the rejection to send before closing.
 fn expect_handshake(
     state: &DaemonState,
-    reader: &mut FrameReader,
+    reader: &mut impl FrameSource,
 ) -> Result<RpcResponse, RpcResponse> {
     let deadline = Instant::now() + state.handshake_timeout;
     let line = loop {
@@ -301,8 +412,8 @@ fn expect_handshake(
 fn request_loop(
     core: &Arc<BridgeCore>,
     state: &Arc<DaemonState>,
-    reader: &mut FrameReader,
-    writer: &Arc<Mutex<UnixStream>>,
+    reader: &mut impl FrameSource,
+    writer: &dyn FrameSink,
 ) -> std::io::Result<()> {
     loop {
         let line = match reader.next()? {
@@ -321,7 +432,7 @@ fn request_loop(
                         format!("request frame exceeds {MAX_FRAME_BYTES} bytes"),
                     ),
                 );
-                write_frame(&mut *writer.lock().unwrap(), &response)?;
+                write_frame(writer, &response)?;
                 return Ok(());
             }
             Frame::Line(line) => line,
@@ -330,7 +441,7 @@ fn request_loop(
             continue;
         }
         if let Some(response) = handle_frame(core, state, &line) {
-            write_frame(&mut *writer.lock().unwrap(), &response)?;
+            write_frame(writer, &response)?;
         }
     }
 }
