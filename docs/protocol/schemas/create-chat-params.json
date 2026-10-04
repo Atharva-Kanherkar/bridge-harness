@@ -18,6 +18,13 @@
         "null"
       ]
     },
+    "purpose": {
+      "description": "What the chat is for. `storage` adds the Storage page's brief to its system prompt; absent is an ordinary chat.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "title": {
       "type": [
         "string",

@@ -1370,8 +1370,9 @@ pub fn create_chat(
     harness: &Harness,
     model: Option<&str>,
     title: Option<&str>,
+    purpose: Option<&str>,
 ) -> Result<BridgeState, BridgeError> {
-    core.create_chat(harness, model, title)
+    core.create_purposed_chat(harness, model, title, purpose)
 }
 
 /// Return the identity from the insert instead of inferring it from a snapshot.

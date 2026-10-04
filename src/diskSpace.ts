@@ -32,41 +32,93 @@ export function displayPath(path: string, home: string | undefined): string {
   return path;
 }
 
-/** The first message of a storage chat: what Bridge measured, and the rules
- *  the agent works under. The person's question goes last. */
-export function storageBriefing({ question, overview, listing, selected }: {
-  question: string;
+export const SNAPSHOT_FENCE = "storage-snapshot";
+
+/** What the Storage page measured, as the agent reads it. Sent at the end of a
+ *  message only when it changed since the last one, so the chat never carries
+ *  the same numbers twice. The agent's brief is its system prompt, not this. */
+export function storageSnapshot({ overview, listing, home: homeListing, selected, trashed = [] }: {
   overview: DiskOverview | null;
   listing: DiskListing | null;
+  home?: DiskListing | null;
   selected: readonly DiskEntry[];
+  trashed?: readonly { path: string; sizeBytes: number | null }[];
 }): string {
   const home = overview?.home;
-  const lines: string[] = ["I want help freeing disk space on this Mac. Here is what Bridge's Storage page measured just now."];
+  const lines: string[] = [];
   if (overview?.volume) {
-    const { totalBytes, freeBytes } = overview.volume;
-    lines.push("", `Disk: ${diskBytes(freeBytes)} free of ${diskBytes(totalBytes)}.`);
+    const { totalBytes, freeBytes, usedBytes } = overview.volume;
+    lines.push(`Disk: ${diskBytes(freeBytes)} free of ${diskBytes(totalBytes)} (${Math.round((usedBytes / totalBytes) * 100)}% used).`);
   }
+  const homeTop = (homeListing?.entries ?? []).filter(entry => (entry.sizeBytes ?? 0) > 0).slice(0, 8);
+  if (homeTop.length > 0) lines.push(`Largest in ~: ${homeTop.map(entry => `${entry.name} ${diskBytes(entry.sizeBytes)}`).join(", ")}.`);
   const suggestions = [...(overview?.suggestions ?? [])]
     .filter(item => (item.sizeBytes ?? 0) > 0)
     .sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))
     .slice(0, 12);
   if (suggestions.length > 0) {
-    lines.push("", "Known cleanup candidates:");
+    lines.push("Known cleanup candidates:");
     for (const item of suggestions) lines.push(`- ${item.label}: ${diskBytes(item.sizeBytes)} at ${displayPath(item.path, home)} (${item.safety === "safe" ? "rebuilt on demand" : "review first"})`);
   }
-  if (listing && listing.entries.length > 0) {
-    lines.push("", `Largest items in ${displayPath(listing.path, home)}:`);
-    for (const entry of listing.entries.slice(0, 15)) lines.push(`- ${entry.name}${entry.kind === "directory" ? "/" : ""}: ${diskBytes(entry.sizeBytes)}`);
+  if (listing && listing.entries.length > 0 && listing.path !== homeListing?.path) {
+    lines.push(`Viewing ${displayPath(listing.path, home)} (${diskBytes(listing.sizeBytes)}${listing.measuring ? ", still measuring" : ""}):`);
+    for (const entry of listing.entries.slice(0, 12)) lines.push(`- ${entry.name}${entry.kind === "directory" ? "/" : ""}: ${diskBytes(entry.sizeBytes)}`);
   }
   if (selected.length > 0) {
-    lines.push("", "I have selected:");
+    lines.push("Selected on the page:");
     for (const entry of selected) lines.push(`- ${displayPath(entry.path, home)} (${diskBytes(entry.sizeBytes)})`);
   }
-  lines.push(
-    "",
-    "How to help: investigate with read-only commands first (du, find, ls). Explain what each large item is and whether it comes back on its own. Prefer the owning tool's own cleanup (brew cleanup, docker system prune, xcrun simctl delete unavailable, npm cache clean) over deleting its folder. Before deleting anything, list exactly what you will remove and how much it frees, and wait for me to say yes. Move things to the Trash rather than deleting outright unless I ask. Never touch system folders, keychains, or ~/.ssh.",
-    "",
-    `My question: ${question.trim()}`,
-  );
+  if (trashed.length > 0) {
+    lines.push("Moved to the Trash from your plans (Trash not yet emptied):");
+    for (const entry of trashed) lines.push(`- ${displayPath(entry.path, home)} (${diskBytes(entry.sizeBytes)})`);
+  }
   return lines.join("\n");
+}
+
+/** A message with the page's snapshot folded onto its end. */
+export function withSnapshot(question: string, snapshot: string): string {
+  const text = question.trim();
+  return snapshot ? `${text}\n\n\`\`\`${SNAPSHOT_FENCE}\n${snapshot}\n\`\`\`` : text;
+}
+
+/** Undo `withSnapshot` for display: the person sees what they typed and a chip. */
+export function splitSnapshot(text: string): { text: string; snapshot: string | null } {
+  const marker = `\`\`\`${SNAPSHOT_FENCE}\n`;
+  const at = text.lastIndexOf(marker);
+  if (at < 0) return { text, snapshot: null };
+  const body = text.slice(at + marker.length).replace(/\n?```\s*$/, "");
+  return { text: text.slice(0, at).trimEnd(), snapshot: body };
+}
+
+export interface StoragePlanItem { path: string; sizeBytes: number | null; why: string; safety: "safe" | "review" }
+export interface StoragePlanCommand { run: string; why: string; frees: number | null }
+export interface StoragePlan { title: string; items: StoragePlanItem[]; commands: StoragePlanCommand[] }
+
+const MAX_PLAN_ROWS = 20;
+const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
+const bytes = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+
+/** Parse the agent's ```storage-plan block. Anything malformed is dropped row
+ *  by row; a plan with nothing left (or a block still streaming in) is null. */
+export function parseStoragePlan(body: string, home: string | undefined): StoragePlan | null {
+  let raw: unknown;
+  try { raw = JSON.parse(body); } catch { return null; }
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const items = (Array.isArray(record.items) ? record.items : []).flatMap((item): StoragePlanItem[] => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    let path = text(row.path);
+    if (path.startsWith("~/")) { if (!home) return []; path = `${home}${path.slice(1)}`; }
+    if (!path.startsWith("/") || path === "/" || path.split("/").includes("..")) return [];
+    return [{ path, sizeBytes: bytes(row.sizeBytes), why: text(row.why), safety: row.safety === "safe" ? "safe" : "review" }];
+  }).slice(0, MAX_PLAN_ROWS);
+  const commands = (Array.isArray(record.commands) ? record.commands : []).flatMap((item): StoragePlanCommand[] => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const run = text(row.run);
+    return run ? [{ run, why: text(row.why), frees: bytes(row.frees) }] : [];
+  }).slice(0, MAX_PLAN_ROWS);
+  if (items.length === 0 && commands.length === 0) return null;
+  return { title: text(record.title) || "Cleanup plan", items, commands };
 }

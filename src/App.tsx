@@ -111,7 +111,7 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
-import { readStorageChatId, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
@@ -1864,7 +1864,7 @@ function AppContent() {
     setError(undefined);
     try {
       const { harness, model } = resolveDraftHarnessModel();
-      const next = await bridgeApi.createChat(harness, model, STORAGE_CHAT_TITLE);
+      const next = await bridgeApi.createChat(harness, model, STORAGE_CHAT_TITLE, STORAGE_CHAT_PURPOSE);
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) throw new Error("Bridge created the storage chat but did not return its session");
       setState(next);

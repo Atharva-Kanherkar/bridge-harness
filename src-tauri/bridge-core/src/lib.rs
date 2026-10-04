@@ -11,6 +11,7 @@ pub mod acp_registry;
 pub mod acp_session;
 pub mod adapters;
 pub mod disk_space;
+pub mod storage_agent;
 pub mod agent;
 pub mod agent_config;
 pub mod agent_integration;
