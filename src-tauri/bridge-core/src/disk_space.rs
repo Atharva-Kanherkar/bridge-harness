@@ -219,6 +219,13 @@ const LIBRARY_ROOTS: &[&str] = &[
 ];
 
 impl Guard {
+    /// The same guard with its own paths resolved, for comparing against a
+    /// resolved target (`/var` is `/private/var` once links are followed).
+    fn resolved(&self) -> Guard {
+        let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        Guard { home: real(&self.home), data_dir: real(&self.data_dir), worktrees: real(&self.worktrees) }
+    }
+
     pub fn protected_reason(&self, path: &Path) -> Option<String> {
         if !path.is_absolute() || path.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir)) {
             return Some("Not a plain absolute path.".into());
@@ -421,9 +428,17 @@ fn volume(path: &Path) -> Option<wire::DiskVolume> {
 pub fn delete(scanner: &Arc<Scanner>, guard: &Guard, paths: &[String], permanent: bool) -> wire::DiskDeleteResult {
     let mut result = wire::DiskDeleteResult { deleted: Vec::new(), failed: Vec::new(), bytes_freed: 0, trashed: !permanent };
     let mut failures = Vec::new();
+    let resolved_guard = guard.resolved();
     for raw in paths {
         let path = PathBuf::from(raw);
-        if let Some(reason) = guard.protected_reason(&path) {
+        // The text of a path can sit under the home folder while a symlinked
+        // folder inside it points anywhere, and a delete would follow it. Check
+        // where the path really is as well as what it says.
+        let refusal = guard.protected_reason(&path).or_else(|| match resolve_parent(&path) {
+            Some(real) => resolved_guard.protected_reason(&real),
+            None => Some("Bridge could not tell where this path really leads.".into()),
+        });
+        if let Some(reason) = refusal {
             failures.push(result_failure(raw, reason));
             continue;
         }
@@ -448,6 +463,13 @@ pub fn delete(scanner: &Arc<Scanner>, guard: &Guard, paths: &[String], permanent
     }
     result.failed = failures;
     result
+}
+
+/// The path with every folder above it resolved, the last component kept as
+/// is: deleting a symlink removes the link, so only its parents can redirect.
+fn resolve_parent(path: &Path) -> Option<PathBuf> {
+    let parent = std::fs::canonicalize(path.parent()?).ok()?;
+    Some(parent.join(path.file_name()?))
 }
 
 fn result_failure(path: &str, reason: String) -> wire::DiskDeleteFailure {
@@ -591,6 +613,30 @@ mod tests {
         assert!(result.bytes_freed >= 8192);
         assert_eq!(result.failed.len(), 2);
         assert!(!home.path().join("cache").exists());
+    }
+
+    #[test]
+    fn a_symlinked_folder_cannot_carry_a_delete_outside_the_home_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("precious"), b"keep").unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("link")).unwrap();
+        // And one that leads into Bridge's own data.
+        let guard = guard(home.path());
+        std::fs::create_dir_all(&guard.data_dir).unwrap();
+        std::fs::write(guard.data_dir.join("bridge.db"), b"db").unwrap();
+        std::os::unix::fs::symlink(&guard.data_dir, home.path().join("sneaky")).unwrap();
+        let scanner = Scanner::new();
+        let targets = [home.path().join("link/precious"), home.path().join("sneaky/bridge.db")].map(|path| path.display().to_string());
+        let result = delete(&scanner, &guard, &targets, true);
+        assert!(result.deleted.is_empty(), "{:?}", result.deleted);
+        assert_eq!(result.failed.len(), 2);
+        assert!(outside.path().join("precious").exists());
+        assert!(guard.data_dir.join("bridge.db").exists());
+        // The link itself is the person's to remove; that never follows it.
+        let link = home.path().join("link").display().to_string();
+        assert_eq!(delete(&scanner, &guard, &[link], true).deleted.len(), 1);
+        assert!(outside.path().join("precious").exists());
     }
 
     #[test]
