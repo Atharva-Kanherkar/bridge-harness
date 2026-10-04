@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../api";
 import { StoragePage } from "./StoragePage";
+import { StorageCopilot, type StorageCopilotHost } from "./StorageCopilot";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -19,8 +20,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function render(onAskBridge?: (prompt: string) => void) {
-  await act(async () => { root.render(<StoragePage onAskBridge={onAskBridge} />); });
+// The host app's half: the rail before a storage chat exists, sending through
+// `brief` exactly as App does.
+function copilotFor(ask: (prompt: string) => void): StorageCopilotHost {
+  return { ask, render: (brief, selectedCount) => <StorageCopilot selectedCount={selectedCount} onAsk={question => ask(brief(question))} /> };
+}
+
+async function render(ask?: (prompt: string) => void) {
+  await act(async () => { root.render(<StoragePage copilot={ask && copilotFor(ask)} />); });
   await act(async () => { await Promise.resolve(); });
 }
 
@@ -84,6 +91,24 @@ it("hands a question to a Bridge chat with what the page measured", async () => 
   expect(prompt).toContain("Docker disk image: 31.0 GB");
   expect(prompt).toContain("wait for me to say yes");
   expect(prompt).toContain("My question: What can I safely delete?");
+});
+
+it("briefs only the first question of a visit", async () => {
+  const ask = vi.fn();
+  await render(ask);
+  await act(async () => { button("What can I safely delete?")!.click(); });
+  await act(async () => { button("Why is System Data so large?")!.click(); });
+  expect(ask).toHaveBeenCalledTimes(2);
+  expect(ask.mock.calls[0][0]).toContain("My question: What can I safely delete?");
+  expect(ask.mock.calls[1][0]).toBe("Why is System Data so large?");
+});
+
+it("docks the storage chat in place of the intro once it exists", async () => {
+  await act(async () => {
+    root.render(<StoragePage copilot={{ ask: () => {}, render: () => <StorageCopilot selectedCount={0} onAsk={() => {}} chat={<section aria-label="Storage with Claude" />} /> }} />);
+  });
+  expect(host.querySelector("section[aria-label='Storage with Claude']")).not.toBeNull();
+  expect(host.querySelector("aside[aria-label='Ask Bridge']")).toBeNull();
 });
 
 it("has no copilot when nothing can open a chat", async () => {

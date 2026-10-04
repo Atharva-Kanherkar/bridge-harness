@@ -22,6 +22,7 @@ import { HarnessesPage, type HarnessDraft } from "./settings/HarnessesPage";
 import { PresetsPage, newAgent } from "./settings/PresetsPage";
 import { ModelsPage } from "./settings/ModelsPage";
 import { StoragePage } from "./settings/StoragePage";
+import type { StorageCopilotHost } from "./settings/StorageCopilot";
 import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
 import { WorkersPage } from "./settings/WorkersPage";
 import { ClonesPage } from "./settings/ClonesPage";
@@ -39,7 +40,7 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "general", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onHealthChange = () => undefined, contextual = false, availableUpdate, onUpdate = () => undefined, onError, onAskBridge }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onVoiceChanged?: () => void; contextual?: boolean; availableUpdate?: UpdateInfo; onUpdate?: (update: UpdateInfo | undefined) => void; onError: (message: string) => void; /** Start a Bridge chat with this first message (the storage copilot). */ onAskBridge?: (prompt: string) => void }) {
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "general", onModelSetupChange, onSuggestionSettingsChange, onVoiceChanged, onOpenWorkBoard, onHealthChange = () => undefined, contextual = false, availableUpdate, onUpdate = () => undefined, onError, storageCopilot }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onHealthChange?: () => void; onVoiceChanged?: () => void; contextual?: boolean; availableUpdate?: UpdateInfo; onUpdate?: (update: UpdateInfo | undefined) => void; onError: (message: string) => void; /** The storage page's docked chat. */ storageCopilot?: StorageCopilotHost }) {
   const [section, setSection] = useState<Section>(initialSection);
   useEffect(() => {
     let active = true;
@@ -275,7 +276,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
 
       {!contextual && section !== primarySection(section) && section !== "harnesses" && <div className="mx-auto w-full max-w-page px-5 pt-4 sm:px-8"><TextButton onClick={() => navigate(primarySection(section))}>Back to {SECTION_LABELS[primarySection(section)]}</TextButton></div>}
       {section === "general" && <AppearancePage title="General" extra={<><ActiveTurnInputSetting onError={onError} />{generalLinks}</>} />}
-      {section === "data" && <StoragePage title="Data & storage" extra={dataLinks} onError={onError} onAskBridge={onAskBridge} />}
+      {section === "data" && <StoragePage title="Data & storage" extra={dataLinks} onError={onError} copilot={storageCopilot} />}
       {section === "appearance" && <AppearancePage />}
       {section === "updates" && <UpdatesPage availableUpdate={availableUpdate} onUpdate={onUpdate} />}
       {section === "menuBar" && <MenuBarSettingsPage />}
@@ -294,7 +295,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
 
       {section === "prompts" && <PromptStudio />}
       {section === "import" && <ImportHarnessSection onError={onError} />}
-      {section === "storage" && <StoragePage onError={onError} onAskBridge={onAskBridge} />}
+      {section === "storage" && <StoragePage onError={onError} copilot={storageCopilot} />}
       {section === "archives" && <ArchivedChatsPage />}
       {section === "workers" && <WorkersPage adapters={adapters} />}
       {section === "clones" && <ClonesPage onError={onError} />}
