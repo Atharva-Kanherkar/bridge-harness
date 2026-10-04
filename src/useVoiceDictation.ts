@@ -1,8 +1,18 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { bridgeApi } from "./api";
-import type { VoiceProviderId } from "./protocol/generated/protocol";
+import type { VoiceCapabilitiesResult, VoiceProviderId, VoiceRecoveryAction } from "./protocol/generated/protocol";
 import { VoiceCapture } from "./voiceCapture";
 import { VoiceDictationController, type VoiceDraft, type VoiceView } from "./voiceDictation";
+
+// Composers that mount together share one local probe instead of racing two.
+let inflightLocalProbe: Promise<VoiceCapabilitiesResult> | undefined;
+function probeCapabilities(sessionId?: string): Promise<VoiceCapabilitiesResult> {
+  if (sessionId !== undefined) return bridgeApi.voiceCapabilities(sessionId);
+  inflightLocalProbe ??= bridgeApi.voiceCapabilities(undefined).finally(() => { inflightLocalProbe = undefined; });
+  return inflightLocalProbe;
+}
+
+type Capability = { scope: string; available: boolean; reason: string; recovery?: VoiceRecoveryAction };
 
 type Options = {
   ownerKey?: string;
@@ -11,7 +21,7 @@ type Options = {
   harness?: string;
   kind?: string;
   runtimeStatus?: string;
-  working: boolean;
+  working?: boolean;
   readDraft(): VoiceDraft;
   commit(text: string, caret: number): void;
 };
@@ -21,11 +31,16 @@ export function useVoiceDictation(options: Options) {
   const latest = useRef(options);
   latest.current = options;
   const [view, setView] = useState<VoiceView>({ state: "idle", preview: "" });
-  const [capability, setCapability] = useState({ scope: "", available: false, reason: "Checking dictation availability…" });
+  const [capability, setCapability] = useState<Capability>({ scope: "", available: false, reason: "Checking dictation availability…" });
   const [listening, setListening] = useState(false);
   const [subscriptionError, setSubscriptionError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
-  const scope = JSON.stringify([options.ownerKey, options.sessionId, options.provider, options.harness, options.kind, options.runtimeStatus, options.working, refresh]);
+  // Local speech never touches the chat, so only the experimental Codex
+  // transport re-probes (and cancels) as the session or its turn changes.
+  const bound = options.provider !== "local";
+  const sessionScope = bound ? [options.sessionId, options.harness, options.kind, options.runtimeStatus, options.working] : [];
+  const scope = JSON.stringify([options.provider, ...sessionScope, refresh]);
+  const cancelScope = JSON.stringify([options.ownerKey, options.sessionId, options.provider, ...sessionScope]);
   const [controller] = useState(() => new VoiceDictationController({
     transport: {
       start: bridgeApi.voiceStart,
@@ -66,32 +81,36 @@ export function useVoiceDictation(options: Options) {
   useEffect(() => {
     let current = true;
     setCapability({ scope, available: false, reason: "Checking dictation availability…" });
-    if (options.working) {
+    if (bound && options.working) {
       setCapability({ scope, available: false, reason: "Wait for the current turn to finish before dictating." });
       return;
     }
-    void bridgeApi.voiceCapabilities(options.sessionId).then(result => {
+    void probeCapabilities(bound ? options.sessionId : undefined).then(result => {
       if (!current) return;
       const provider = result.providers.find(item => item.provider === options.provider);
-      setCapability({ scope, available: !!options.ownerKey && provider?.state === "ready",
-        reason: provider?.unavailableReason ?? "No dictation provider is ready." });
+      setCapability({ scope, available: provider?.state === "ready",
+        reason: provider?.unavailableReason ?? "No dictation provider is ready.",
+        recovery: provider?.recoveryAction ?? undefined });
     }).catch(() => {
-      if (current) setCapability({ scope, available: false, reason: "Could not check dictation availability. Retry." });
+      if (current) setCapability({ scope, available: false, reason: "Could not check dictation availability. Retry.", recovery: "retry" });
     });
     return () => { current = false; };
-  }, [scope, options.ownerKey, options.sessionId, options.provider, options.harness, options.kind, options.runtimeStatus, options.working, refresh]);
+    // `scope` serializes every input this probe reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
 
   // Check every commit, including updates from shortcuts and restored drafts.
   useLayoutEffect(() => { controller.draftChanged(); });
-  useLayoutEffect(() => () => { controller.cancel(); }, [controller, options.ownerKey, options.sessionId, options.provider, options.harness, options.kind, options.runtimeStatus, options.working]);
+  useLayoutEffect(() => () => { controller.cancel(); }, [controller, cancelScope]);
 
   const currentCapability = capability.scope === scope;
-  const available = currentCapability && capability.available && listening;
+  const available = !!options.ownerKey && currentCapability && capability.available && listening;
 
   return {
     ...view,
     available,
     unavailableReason: subscriptionError ?? (!currentCapability ? "Checking dictation availability…" : capability.available && !listening ? "Connecting to dictation events…" : capability.reason),
+    recovery: subscriptionError ? "retry" as const : currentCapability ? capability.recovery : undefined,
     active: view.state === "starting" || view.state === "recording" || view.state === "stopping",
     start: () => available ? controller.start(options.provider) : Promise.resolve(),
     stop: () => controller.stop(),

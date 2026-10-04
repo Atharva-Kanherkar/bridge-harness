@@ -6,6 +6,7 @@ import type { ComposerAttachment } from "@/pasteAttachments";
 import type { BrowserSelectionContext } from "../browserSelection";
 import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceChip";
 import type { VoiceState } from "@/voiceDictation";
+import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
 
 export type ComposerPillProps = {
   value: string;
@@ -39,6 +40,8 @@ export type ComposerPillProps = {
   voicePreview?: string;
   voiceError?: string;
   voiceUnavailableReason?: string;
+  /** What the provider says fixes it; nothing is offered for transient states. */
+  voiceRecovery?: VoiceRecoveryAction;
   voiceProviderLabel?: string;
   onVoiceStart?: () => void;
   onVoiceStop?: () => void;
@@ -114,6 +117,7 @@ export function ComposerPill({
   voicePreview,
   voiceError,
   voiceUnavailableReason,
+  voiceRecovery,
   voiceProviderLabel,
   onVoiceStart,
   onVoiceStop,
@@ -150,6 +154,12 @@ export function ComposerPill({
   };
   const [, setCaretEpoch] = useState(0);
   const voiceBusy = voiceState === "starting" || voiceState === "recording" || voiceState === "stopping";
+  // Only a provider that needs setup links to settings. A busy turn or an
+  // in-flight probe is not a reason to set voice up again.
+  const recoveryAction = voiceError && voiceRecovery !== "setup" ? "retry" : voiceRecovery;
+  const recovery = recoveryAction === "setup" && onVoiceSetup ? { label: "Set up voice", run: onVoiceSetup }
+    : recoveryAction === "retry" && onVoiceRetry ? { label: "Retry voice", run: onVoiceRetry }
+    : undefined;
   const showSuggestion = !voiceBusy && !!suggestion && caretAtEnd();
   const noteCaret = () => {
     setCaretEpoch(n => n + 1);
@@ -428,7 +438,7 @@ export function ComposerPill({
                 </button>
               )}
               {voiceBusy && onVoiceCancel && <button type="button" onClick={onVoiceCancel} aria-label="Cancel dictation" title="Cancel dictation" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"><X className="h-4 w-4" aria-hidden="true" /></button>}
-              {!voiceBusy && (voiceError || !voiceAvailable) && (onVoiceSetup || onVoiceRetry) && <button type="button" onClick={onVoiceSetup ?? onVoiceRetry} title={voiceUnavailableReason} className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{onVoiceSetup ? "Set up voice" : "Retry voice"}</button>}
+              {!voiceBusy && recovery && <button type="button" onClick={recovery.run} title={voiceUnavailableReason} className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{recovery.label}</button>}
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling
                   the work. */}
