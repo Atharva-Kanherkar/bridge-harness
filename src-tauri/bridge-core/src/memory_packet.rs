@@ -19,9 +19,18 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-const MAX_PACKET_CHARS: usize = 4_000;
+pub(crate) const MAX_PACKET_CHARS: usize = 4_000;
 const EXCLUDE_UNSAFE: &str = "unsafe_body";
 const EXCLUDE_OVER_BUDGET: &str = "over_budget";
+/// The codes that say an active record was held back at the gate. The audit
+/// also codes records that were never eligible (proposed, superseded); those
+/// are not "left out" in any sense a reader cares about.
+pub(crate) const GATE_EXCLUSION_CODES: [&str; 4] = [
+    EXCLUDE_UNSAFE,
+    EXCLUDE_OVER_BUDGET,
+    EXCLUDE_CONFLICT_GROUP,
+    EXCLUDE_TRUNCATED,
+];
 /// A second member of a conflict group reaching the same packet is the failure
 /// the group exists to prevent, so the packet excludes it by code rather than
 /// trusting the ledger's one-active-member rule to have held.
@@ -181,7 +190,7 @@ fn render_body(body: &str) -> String {
         .join(" ")
 }
 
-fn unsafe_body(body: &str) -> bool {
+pub(crate) fn unsafe_body(body: &str) -> bool {
     let lowered = body.to_lowercase();
     lowered.contains("</bridge-")
         || lowered.contains("<bridge-")

@@ -111,6 +111,14 @@ export type {
   MemoryInjectionSettings,
   MemoryPacketAudit,
   MemoryPacketItem,
+  MemoryRecallStat,
+  MemoryRecallStats,
+  MemoryKindUse,
+  MemoryExclusionCount,
+  MemoryActivityEntry,
+  MemoryActivityLog,
+  MemoryInsightsReport,
+  MemoryInsightsResult,
   MeterProviderEntry,
   MeterRegistry,
   UsageLedgerRow,
@@ -224,43 +232,6 @@ export interface TerminalExit { sessionId: string; terminalId: string }
 
 /** `memory-changed` refetch hint: names the scope, never carries a record. */
 export interface MemoryChangedPayload { scopeKey: string }
-
-// ---------------------------------------------------------------------------
-// Memory aggregations. Read-only, display-only. Served today by the derived
-// mock layer in `api.ts`; the protocol-first `memory.recall_stats` Rust+daemon
-// method is the tracked follow-up, and these shapes are what it will return.
-// ---------------------------------------------------------------------------
-
-/** Per-record recall aggregation over the packet-injection audit. */
-export interface MemoryRecallStat {
-  id: string;
-  recalls: number;
-  /** Day bucket of the last recall (0 = 13 days ago … 13 = today), -1 if never. */
-  lastRecalledDay: number;
-  /** recalls / total injections — how often this record made the packet. */
-  inPacketRatio: number;
-  /** 14-day recall series, oldest first. */
-  daily: number[];
-}
-
-/** The recall-analytics payload for a scope. */
-export interface MemoryRecallStats {
-  perRecord: MemoryRecallStat[];
-  injectionsPerDay: number[];
-  budgetCharsUsed: number;
-  budgetCharsMax: number;
-}
-
-/** The closed consolidation op vocabulary from `memory_consolidation.rs`. */
-export type MemoryConsolidationOp = "merge" | "correct" | "expire" | "group" | "retire" | "keep";
-
-/** One entry in the consolidation log. */
-export interface MemoryConsolidationEntry {
-  op: MemoryConsolidationOp;
-  detail: string;
-  /** Day bucket, 0 = 13 days ago … 13 = today. */
-  day: number;
-}
 
 /** `session-startup` cold-start phase, observed at a real adapter launch
  *  boundary. Transient and best-effort: never replayed, never a timer. */

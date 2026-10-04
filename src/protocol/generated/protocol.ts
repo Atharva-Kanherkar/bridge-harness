@@ -110,6 +110,9 @@ export type BridgeMethod =
   | "memory/get_memory_injection"
   | "memory/set_memory_injection"
   | "memory/get_packet_audit"
+  | "memory/get_recall_stats"
+  | "memory/get_activity_log"
+  | "memory/get_insights"
   | "memory/list_memory_records_as_of"
   | "memory/get_consolidation_settings"
   | "memory/update_consolidation_settings"
@@ -355,6 +358,9 @@ export const BRIDGE_METHODS = [
   { method: "memory/get_memory_injection", domain: "memory", command: "get_memory_injection" },
   { method: "memory/set_memory_injection", domain: "memory", command: "set_memory_injection" },
   { method: "memory/get_packet_audit", domain: "memory", command: "get_packet_audit" },
+  { method: "memory/get_recall_stats", domain: "memory", command: "get_recall_stats" },
+  { method: "memory/get_activity_log", domain: "memory", command: "get_activity_log" },
+  { method: "memory/get_insights", domain: "memory", command: "get_insights" },
   { method: "memory/list_memory_records_as_of", domain: "memory", command: "list_memory_records_as_of" },
   { method: "memory/get_consolidation_settings", domain: "memory", command: "get_consolidation_settings" },
   { method: "memory/update_consolidation_settings", domain: "memory", command: "update_consolidation_settings" },
@@ -663,6 +669,9 @@ export interface BridgeMethodParams {
   "memory/get_memory_injection": undefined;
   "memory/set_memory_injection": SetMemoryInjectionParams;
   "memory/get_packet_audit": GetPacketAuditParams;
+  "memory/get_recall_stats": undefined;
+  "memory/get_activity_log": undefined;
+  "memory/get_insights": GetInsightsParams;
   "memory/list_memory_records_as_of": ListMemoryRecordsAsOfParams;
   "memory/get_consolidation_settings": undefined;
   "memory/update_consolidation_settings": UpdateConsolidationSettingsParams;
@@ -921,6 +930,9 @@ export interface BridgeMethodResults {
   "memory/get_memory_injection": MemoryInjectionSettings;
   "memory/set_memory_injection": MemoryInjectionSettings;
   "memory/get_packet_audit": MemoryPacketAudit;
+  "memory/get_recall_stats": MemoryRecallStats;
+  "memory/get_activity_log": MemoryActivityLog;
+  "memory/get_insights": MemoryInsightsResult;
   "memory/list_memory_records_as_of": ListMemoryRecordsResult;
   "memory/get_consolidation_settings": MemoryConsolidationSettings;
   "memory/update_consolidation_settings": MemoryConsolidationSettings;
@@ -1731,6 +1743,15 @@ export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "u
 
 export type MarketplaceProvider = "codex" | "claude";
 
+export interface MemoryActivityEntry {
+  applied: number;
+  at: string;
+  detail?: string | null;
+  refused: number;
+  source: string;
+  status: string;
+}
+
 export interface MemoryConsolidationRun {
   appliedCount: number;
   detail?: string | null;
@@ -1741,6 +1762,11 @@ export interface MemoryConsolidationRun {
   updatedAt: string;
 }
 
+export interface MemoryExclusionCount {
+  code: string;
+  count: number;
+}
+
 export interface MemoryExtractionRun {
   detail?: string | null;
   observedTokens: number;
@@ -1748,6 +1774,23 @@ export interface MemoryExtractionRun {
   spendMicrousd: number;
   status: string;
   updatedAt: string;
+}
+
+export interface MemoryInsightsReport {
+  headline: string;
+  highlights: UsageInsightHighlight[];
+  memoriesAnalysed: number;
+  recommendations: string[];
+  stats: MemoryRecallStats;
+  summary: string;
+  themes: UsageInsightTheme[];
+}
+
+export interface MemoryKindUse {
+  active: number;
+  kind: string;
+  recalled: number;
+  recalls: number;
 }
 
 export interface MemoryLedgerCapability {
@@ -1762,6 +1805,27 @@ export interface MemoryPacketItem {
   kind: string;
   reason: string;
   recordId: string;
+}
+
+export interface MemoryRecallStat {
+  daily: number[];
+  id: string;
+  inPacketRatio: number;
+  lastRecalledDay: number;
+  recalls: number;
+}
+
+export interface MemoryRecallStats {
+  activeRecords: number;
+  budgetCharsMax: number;
+  budgetCharsUsed: number;
+  byKind: MemoryKindUse[];
+  exclusions: MemoryExclusionCount[];
+  injectionsPerDay: number[];
+  packets: number;
+  packetsWithMemories: number;
+  perRecord: MemoryRecallStat[];
+  recalledRecords: number;
 }
 
 export interface MemoryRecord {
@@ -3712,6 +3776,23 @@ export interface MemoryPacketAudit {
   selected: MemoryPacketItem[];
   sessionId: string;
   tokenEstimate: number;
+}
+
+export interface MemoryActivityLog {
+  entries: MemoryActivityEntry[];
+}
+
+export interface GetInsightsParams {
+  refresh?: boolean;
+}
+
+export interface MemoryInsightsResult {
+  detail?: string | null;
+  generatedAt?: string | null;
+  harness?: string | null;
+  model?: string | null;
+  report?: MemoryInsightsReport | null;
+  status: UsageInsightsStatus;
 }
 
 export interface ListMemoryRecordsAsOfParams {

@@ -12,9 +12,9 @@ import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath, BrowserCloneStatus } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
-import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
+import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
-import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
+import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type { CloneSnapshot as WireCloneSnapshot, CloneBrowserKind, CloneInputEvent } from "./protocol/generated/protocol";
@@ -577,14 +577,14 @@ function buildMockAudit(ids: string[]): PacketInjection[] {
   return audit;
 }
 const mockPacketAudit = buildMockAudit(RECALL_ELIGIBLE);
-const mockConsolidationLog: MemoryConsolidationEntry[] = [
-  { op: "merge", detail: "2 worktree notes folded into one", day: 12 },
-  { op: "correct", detail: "mem_a5aa superseded the orange-accent decision", day: 11 },
-  { op: "keep", detail: "design-direction conflict resolved to the pinned winner", day: 9 },
-  { op: "expire", detail: "sprint-scoped onboarding note lapsed", day: 6 },
-  { op: "group", detail: "3 records tied under conflict-group design-direction", day: 4 },
-  { op: "retire", detail: "mem_d1c9 tombstoned", day: 2 },
+const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+const mockActivityLog: MemoryActivityEntry[] = [
+  { source: "extraction", status: "completed", applied: 2, refused: 0, at: daysAgo(0.1) },
+  { source: "consolidation", status: "completed", applied: 3, refused: 1, detail: "merged two worktree notes", at: daysAgo(1) },
+  { source: "extraction", status: "failed", applied: 0, refused: 0, detail: "the harness ended before answering", at: daysAgo(3) },
+  { source: "extraction", status: "completed", applied: 1, refused: 0, at: daysAgo(6) },
 ];
+let mockMemoryInsights: MemoryInsightsResult = { status: "empty" };
 let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "propose" };
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
@@ -2672,23 +2672,52 @@ export const bridgeApi = {
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
-  // Memory read-only aggregations. Display-only: they grant nothing and rank
-  // nothing. The protocol-first `memory.recall_stats` Rust+daemon method is the
-  // tracked follow-up; on the desktop host these return empty until that lands,
-  // and in the mock host they fold the deterministic audit above so the surface
-  // is fully exercisable.
+  // Memory read-only aggregations, folded from the retrieval audits and the run
+  // tables by the host. Display-only: they grant nothing and rank nothing. The
+  // mock host folds the deterministic audit above so the surface is exercisable.
   memoryRecallStats: async (scopeKey: string): Promise<MemoryRecallStats> => {
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
-    if (isTauri()) {
-      return { perRecord: [], injectionsPerDay: Array<number>(14).fill(0), budgetCharsUsed: 0, budgetCharsMax: PACKET_BUDGET_CHARS };
-    }
+    if (isTauri()) return call("memory/get_recall_stats");
     return deriveRecallStats(mockMemoryRecords.filter(record => record.scopeKey === trimmed), mockPacketAudit);
   },
-  memoryConsolidationLog: async (scopeKey: string): Promise<MemoryConsolidationEntry[]> => {
+  memoryActivityLog: async (scopeKey: string): Promise<MemoryActivityEntry[]> => {
     if (!scopeKey.trim()) throw new Error("Memory scope is required; it cannot be empty or NULL");
-    if (isTauri()) return [];
-    return structuredClone(mockConsolidationLog);
+    if (isTauri()) return (await call("memory/get_activity_log")).entries;
+    return structuredClone(mockActivityLog);
+  },
+  // Without `refresh` this reads the stored report; running the model is always
+  // an explicit action, because it sends memory text to the harness.
+  memoryInsights: (refresh: boolean): Promise<MemoryInsightsResult> => {
+    if (isTauri()) return call("memory/get_insights", { refresh });
+    return new Promise(resolve => setTimeout(() => {
+      if (!refresh) return resolve(structuredClone(mockMemoryInsights));
+      const stats = deriveRecallStats(mockMemoryRecords.filter(record => record.scopeKey === "account:local"), mockPacketAudit);
+      mockMemoryInsights = {
+        status: "ready",
+        generatedAt: new Date().toISOString(),
+        harness: "claude",
+        model: "claude-sonnet-5-5",
+        report: {
+          headline: "Most of what you pinned is reaching prompts",
+          summary: `${stats.recalledRecords} of ${stats.activeRecords} active memories reached a packet in the last 14 days. Preferences carry most of the weight; a few older facts have never been recalled.`,
+          highlights: [
+            { title: "Preferences do the work", detail: "Your preference pins are recalled far more often than facts.", tone: "good" },
+            { title: "Some memories sit idle", detail: "Several active memories were never recalled in 14 days.", tone: "watch" },
+            { title: "Review queue is growing", detail: "Suggested memories are waiting for a decision.", tone: "neutral" },
+          ],
+          themes: [
+            { label: "Workflow rules", share: 0.45, example: "how checks and commits are run" },
+            { label: "Design direction", share: 0.35, example: "visual language decisions" },
+            { label: "Environment facts", share: 0.2, example: "tooling and machine setup" },
+          ],
+          recommendations: ["Retire the memories that were never recalled and are no longer true.", "Merge the overlapping workflow notes into one pin."],
+          stats: { ...stats, perRecord: [] },
+          memoriesAnalysed: stats.activeRecords,
+        },
+      };
+      resolve(structuredClone(mockMemoryInsights));
+    }, refresh ? 900 : 0));
   },
   addProject: async (path: string): Promise<BridgeState> => {
     if (isTauri()) return call("projects/add_project", { path });

@@ -259,6 +259,120 @@ pub struct MemoryPacketAudit {
     pub created_at: Option<String>,
 }
 
+/// One record's recall history over the last 14 days of packet audits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRecallStat {
+    pub id: String,
+    pub recalls: i64,
+    /// Day bucket of the last recall (0 = 13 days ago, 13 = today); -1 if none.
+    pub last_recalled_day: i64,
+    /// recalls / packets built in the window.
+    pub in_packet_ratio: f64,
+    /// 14-day recall series, oldest first.
+    pub daily: Vec<i64>,
+}
+
+/// How many packets left a record out for one reason, as the audit coded it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExclusionCount {
+    pub code: String,
+    pub count: i64,
+}
+
+/// Active records of one kind and how many of them reached a packet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryKindUse {
+    pub kind: String,
+    pub active: i64,
+    /// Active records of this kind recalled at least once in the window.
+    pub recalled: i64,
+    pub recalls: i64,
+}
+
+/// Recall analytics for the account scope, folded from the retrieval audits.
+/// It measures delivery (what reached a prompt), not whether the model used it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRecallStats {
+    pub per_record: Vec<MemoryRecallStat>,
+    /// Packets built per day bucket, oldest first, 14 entries.
+    pub injections_per_day: Vec<i64>,
+    pub budget_chars_used: i64,
+    pub budget_chars_max: i64,
+    /// Packets built in the window, and how many carried at least one memory.
+    pub packets: i64,
+    pub packets_with_memories: i64,
+    pub active_records: i64,
+    /// Active records recalled at least once in the window.
+    pub recalled_records: i64,
+    pub by_kind: Vec<MemoryKindUse>,
+    pub exclusions: Vec<MemoryExclusionCount>,
+}
+
+/// One settled extraction or consolidation run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryActivityEntry {
+    /// `extraction` or `consolidation`.
+    pub source: String,
+    pub status: String,
+    /// Proposals written (extraction) or changes applied (consolidation).
+    pub applied: i64,
+    pub refused: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub at: String,
+}
+
+/// Settled runs, newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryActivityLog {
+    pub entries: Vec<MemoryActivityEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetInsightsParams {
+    /// Run the analysis again. Without it only the stored report is read, so
+    /// opening the tab never sends memory bodies to a provider.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// The Memory Insights report. `stats` and `kinds` are Bridge's own figures;
+/// the prose is the model's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryInsightsReport {
+    pub headline: String,
+    pub summary: String,
+    pub highlights: Vec<crate::messages::UsageInsightHighlight>,
+    pub themes: Vec<crate::messages::UsageInsightTheme>,
+    pub recommendations: Vec<String>,
+    pub stats: MemoryRecallStats,
+    pub memories_analysed: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryInsightsResult {
+    pub status: crate::messages::UsageInsightsStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<MemoryInsightsReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// What memory exists, so surfaces can be honest about what they do not own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

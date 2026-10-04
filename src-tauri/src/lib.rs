@@ -2212,6 +2212,33 @@ async fn update_extraction_settings(
 }
 
 #[tauri::command]
+async fn get_recall_stats(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecallStats, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory recall stats", move || api::get_recall_stats(&core)).await
+}
+
+#[tauri::command]
+async fn get_activity_log(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryActivityLog, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory activity log", move || api::get_activity_log(&core)).await
+}
+
+#[tauri::command]
+async fn get_insights(
+    refresh: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryInsightsResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::GetInsightsParams { refresh };
+    // Runs a harness turn: minutes of blocking work, so off the async runtime.
+    blocking("Get memory insights", move || api::get_memory_insights(&core, &params)).await
+}
+
+#[tauri::command]
 async fn get_consolidation_settings(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
@@ -3024,6 +3051,9 @@ pub fn run() -> i32 {
             set_memory_injection,
             get_packet_audit,
             list_memory_records_as_of,
+            get_recall_stats,
+            get_activity_log,
+            get_insights,
             get_consolidation_settings,
             update_consolidation_settings,
             interrupt_turn,

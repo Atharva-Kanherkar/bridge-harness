@@ -388,6 +388,12 @@ pub fn dispatch(
             let p: wire::ListMemoryRecordsAsOfParams = decode(method, params)?;
             reply(api::list_memory_records_as_of(core, &p.scope_key, &p.at))
         }
+        MethodName::GetRecallStats => reply(api::get_recall_stats(core)),
+        MethodName::GetActivityLog => reply(api::get_activity_log(core)),
+        MethodName::GetInsights => {
+            let p: wire::GetInsightsParams = decode(method, params)?;
+            reply(api::get_memory_insights(core, &p))
+        }
         MethodName::GetConsolidationSettings => reply(api::get_consolidation_settings(core)),
         MethodName::UpdateConsolidationSettings => {
             let p: wire::UpdateConsolidationSettingsParams = decode(method, params)?;

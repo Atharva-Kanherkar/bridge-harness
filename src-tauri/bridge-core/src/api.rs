@@ -1998,6 +1998,23 @@ fn consolidation_settings_wire(
     })
 }
 
+pub fn get_recall_stats(core: &Arc<BridgeCore>) -> Result<wire::MemoryRecallStats, BridgeError> {
+    crate::memory_activity::recall_stats(&core.db.lock().unwrap(), memory_ledger::account_memory_scope())
+}
+
+pub fn get_activity_log(core: &Arc<BridgeCore>) -> Result<wire::MemoryActivityLog, BridgeError> {
+    crate::memory_activity::activity_log(&core.db.lock().unwrap(), memory_ledger::account_memory_scope())
+}
+
+/// The Memory Insights tab: the stored report, or a fresh one from a headless
+/// harness turn. Blocking and bounded like `usage_insights`.
+pub fn get_memory_insights(
+    core: &Arc<BridgeCore>,
+    params: &wire::GetInsightsParams,
+) -> Result<wire::MemoryInsightsResult, BridgeError> {
+    crate::memory_insights::insights(core, params)
+}
+
 pub fn get_consolidation_settings(
     core: &Arc<BridgeCore>,
 ) -> Result<wire::MemoryConsolidationSettings, BridgeError> {

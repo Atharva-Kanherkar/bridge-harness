@@ -149,6 +149,11 @@ methods![
     (GetMemoryInjection, "memory", "get_memory_injection"),
     (SetMemoryInjection, "memory", "set_memory_injection"),
     (GetPacketAudit, "memory", "get_packet_audit"),
+    // read-only analytics over the retrieval audits and run tables; only
+    // `get_insights` with `refresh` starts a harness turn.
+    (GetRecallStats, "memory", "get_recall_stats"),
+    (GetActivityLog, "memory", "get_activity_log"),
+    (GetInsights, "memory", "get_insights"),
     // consolidation. Settings and reads only: a run is enqueued by a finished
     // turn and executed by the host that owns the data directory, never by a
     // client asking for one.

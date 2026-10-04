@@ -476,7 +476,7 @@ Return one fenced ```json object with exactly these keys:\n\
 /// does not resolve (uncertified version, malformed model, unsupported
 /// harness) is refused, never quietly swapped for a provider the user did not
 /// choose.
-fn selection(core: &Arc<BridgeCore>) -> Result<(String, String, Option<String>), wire::UsageInsightsResult> {
+pub(crate) fn selection(core: &Arc<BridgeCore>) -> Result<(String, String, Option<String>), wire::UsageInsightsResult> {
     let descriptors = core.adapter_registry.descriptors();
     let versions = |harness: &str| {
         descriptors
@@ -509,7 +509,7 @@ fn choose(
     }
 }
 
-fn empty(window_days: i64) -> wire::UsageInsightsResult {
+pub(crate) fn empty(window_days: i64) -> wire::UsageInsightsResult {
     wire::UsageInsightsResult {
         status: wire::UsageInsightsStatus::Empty,
         window_days,
@@ -553,6 +553,34 @@ fn run(core: &Arc<BridgeCore>, input: &InsightInput) -> Result<wire::UsageInsigh
         result.window_days = input.window_days;
         result
     })?;
+    let text = run_headless_turn(core, &harness, &model, effort.as_deref(), "Insights", "Usage insights", &instructions(), &task_prompt(input))
+        .map_err(|detail| failed(input.window_days, &harness, &model, detail))?;
+    let prose = parse_prose(&text).map_err(|detail| failed(input.window_days, &harness, &model, detail))?;
+    Ok(wire::UsageInsightsResult {
+        status: wire::UsageInsightsStatus::Ready,
+        window_days: input.window_days,
+        generated_at: Some(Utc::now().to_rfc3339()),
+        harness: Some(harness),
+        model: Some(model),
+        report: Some(assemble(input, prose)),
+        detail: None,
+    })
+}
+
+/// One tool-less, one-turn hidden session on the chosen harness: returns the
+/// model's answer text, or why there is none. Shared by every analysis that
+/// hands the model a digest and wants prose back, so the policy (no servers in
+/// scope, bounded wall time, a settled session row) lives in one place.
+pub(crate) fn run_headless_turn(
+    core: &Arc<BridgeCore>,
+    harness: &str,
+    model: &str,
+    effort: Option<&str>,
+    label: &str,
+    title: &str,
+    instructions: &str,
+    task: &str,
+) -> Result<String, String> {
     let limits = wire::WorkBriefLimits {
         max_wall_seconds: MAX_WALL_SECONDS,
         max_turns: 1,
@@ -561,30 +589,28 @@ fn run(core: &Arc<BridgeCore>, input: &InsightInput) -> Result<wire::UsageInsigh
         cost_ceiling_microusd: None,
     };
     // No servers in scope: the compiled policy admits no tool at all.
-    let policy = BriefingRuntimePolicy::compile_scoped(Vec::new(), limits)
-        .map_err(|error| failed(input.window_days, &harness, &model, error.reason()))?;
+    let policy = BriefingRuntimePolicy::compile_scoped(Vec::new(), limits).map_err(|error| error.reason())?;
 
     let session_id = Uuid::new_v4().to_string();
     let scratch = core.chat_scratch_dir(&session_id);
-    std::fs::create_dir_all(&scratch).map_err(|error| failed(input.window_days, &harness, &model, error.to_string()))?;
+    std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
     let cwd = scratch.to_string_lossy().to_string();
     {
         let db = core.db.lock().unwrap();
         db.execute(
             "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth)
-             VALUES(?1,NULL,?2,'Insights','working','reported',?3,?4,'Usage insights',?5,0)",
-            params![session_id, harness, model, BRIEFING_SESSION_KIND, cwd],
+             VALUES(?1,NULL,?2,?3,'working','reported',?4,?5,?6,?7,0)",
+            params![session_id, harness, label, model, BRIEFING_SESSION_KIND, title, cwd],
         )
-        .map_err(|error| failed(input.window_days, &harness, &model, error.to_string()))?;
+        .map_err(|error| error.to_string())?;
     }
-    let instructions = instructions();
     let started = core.adapter_registry.start(
-        &harness,
+        harness,
         StartRequest {
             cwd: &cwd,
-            model: Some(&model),
-            effort: effort.as_deref(),
-            instructions: Some(&instructions),
+            model: Some(model),
+            effort,
+            instructions: Some(instructions),
             write_mode: None,
             read_only_sandbox: None,
             briefing: Some(&policy),
@@ -595,7 +621,7 @@ fn run(core: &Arc<BridgeCore>, input: &InsightInput) -> Result<wire::UsageInsigh
         Ok(started) => started,
         Err(error) => {
             settle(core, &session_id, "failed");
-            return Err(failed(input.window_days, &harness, &model, error.to_string()));
+            return Err(error.to_string());
         }
     };
     let mut runtime = started.runtime;
@@ -622,10 +648,10 @@ fn run(core: &Arc<BridgeCore>, input: &InsightInput) -> Result<wire::UsageInsigh
             }
         }
     });
-    if let Err(error) = runtime.send_turn(&task_prompt(input)) {
+    if let Err(error) = runtime.send_turn(task) {
         runtime.stop(ShutdownReason::Failed);
         settle(core, &session_id, "failed");
-        return Err(failed(input.window_days, &harness, &model, error.to_string()));
+        return Err(error.to_string());
     }
     let deadline = Instant::now() + Duration::from_secs(MAX_WALL_SECONDS as u64);
     let mut text = String::new();
@@ -651,20 +677,11 @@ fn run(core: &Arc<BridgeCore>, input: &InsightInput) -> Result<wire::UsageInsigh
     if let Some(detail) = ended {
         runtime.stop(ShutdownReason::Failed);
         settle(core, &session_id, "failed");
-        return Err(failed(input.window_days, &harness, &model, detail));
+        return Err(detail);
     }
     runtime.stop(ShutdownReason::Completed);
     settle(core, &session_id, "idle");
-    let prose = parse_prose(&text).map_err(|detail| failed(input.window_days, &harness, &model, detail))?;
-    Ok(wire::UsageInsightsResult {
-        status: wire::UsageInsightsStatus::Ready,
-        window_days: input.window_days,
-        generated_at: Some(Utc::now().to_rfc3339()),
-        harness: Some(harness),
-        model: Some(model),
-        report: Some(assemble(input, prose)),
-        detail: None,
-    })
+    Ok(text)
 }
 
 /// Fold one sidecar line into the answer. Returns true when the turn is done.
@@ -735,7 +752,7 @@ pub fn parse_prose(answer: &str) -> Result<ModelProse, String> {
     Ok(prose)
 }
 
-fn fenced_json(answer: &str) -> Option<String> {
+pub(crate) fn fenced_json(answer: &str) -> Option<String> {
     let open = answer.find(FENCE)?;
     let after = &answer[open + FENCE.len()..];
     let body_start = after.find('\n')? + 1;
@@ -744,7 +761,7 @@ fn fenced_json(answer: &str) -> Option<String> {
     Some(body[..close].trim().to_owned())
 }
 
-fn bounded(text: &str, limit: usize) -> String {
+pub(crate) fn bounded(text: &str, limit: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= limit {
         return trimmed.to_owned();
@@ -754,7 +771,7 @@ fn bounded(text: &str, limit: usize) -> String {
     cut
 }
 
-fn tone(raw: Option<&str>) -> wire::UsageInsightTone {
+pub(crate) fn tone(raw: Option<&str>) -> wire::UsageInsightTone {
     match raw {
         Some("good") => wire::UsageInsightTone::Good,
         Some("watch") => wire::UsageInsightTone::Watch,
