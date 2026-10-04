@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The chip is audit-backed and absent at zero; clicking it opens Memory.
+// The note is audit-backed and absent at zero; clicking it opens Memory.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,17 +48,22 @@ describe("MemoryUsedChip", () => {
 
   it("counts from the audit without rendering a floating memory block", () => {
     mount(audit(2));
-    expect(container.textContent).toContain("Memory used (2)");
+    expect(container.textContent).toContain("Recalled 2 memories");
     expect(container.textContent).not.toContain("Pinned fact 0");
     expect(container.textContent).not.toContain("explicit pin");
     const button = container.querySelector("button")!;
     expect(button.getAttribute("aria-label")).toBe("Open Memory, 2 memories used in this session");
   });
 
-  it("opens Bridge Memory when the chip is clicked", () => {
+  it("says one memory, not one memories", () => {
+    mount(audit(1));
+    expect(container.textContent).toBe("Recalled 1 memory");
+  });
+
+  it("opens Bridge Memory when the note is clicked", () => {
     const onOpenMemory = vi.fn();
     mount(audit(3), onOpenMemory);
-    expect(container.textContent).toContain("Memory used (3)");
+    expect(container.textContent).toContain("Recalled 3 memories");
     act(() => {
       container.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });

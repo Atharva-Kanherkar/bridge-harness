@@ -1,10 +1,11 @@
-import { Pin } from "lucide-react";
 import type { MemoryPacketAudit } from "../types";
 
 /**
- * "Memory used (N)" above the composer — audit-backed, never inferred from
- * events, and absent at zero: a count that is always present is a count that
- * stops being read. The chip opens Bridge's Memory screen.
+ * "Recalled N memories" at the head of the transcript — audit-backed, never
+ * inferred from events, and absent at zero. Memory is injected once, when the
+ * session starts, so the note sits where that happened and scrolls away with
+ * it rather than floating over the composer for the life of the chat. It opens
+ * Bridge's Memory screen.
  */
 export function MemoryUsedChip({
   audit,
@@ -14,15 +15,17 @@ export function MemoryUsedChip({
   onOpenMemory: () => void;
 }) {
   if (!audit || audit.selected.length === 0) return null;
-  return <div className="mx-auto mb-2 flex w-full max-w-2xl justify-center px-4 sm:px-6">
+  const count = audit.selected.length;
+  return <div className="flex items-center gap-3 text-caption text-faint">
+    <span aria-hidden="true" className="h-px flex-1 bg-border" />
     <button
       type="button"
-      aria-label={`Open Memory, ${audit.selected.length} memories used in this session`}
+      aria-label={`Open Memory, ${count} ${count === 1 ? "memory" : "memories"} used in this session`}
       onClick={onOpenMemory}
-      className="u-glass-soft inline-flex h-[30px] items-center gap-2 rounded-full px-3.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      className="rounded-md px-1.5 py-0.5 transition-colors hover:text-foreground"
     >
-      <Pin size={12} aria-hidden="true" />
-      Memory used ({audit.selected.length})
+      Recalled {count} {count === 1 ? "memory" : "memories"}
     </button>
+    <span aria-hidden="true" className="h-px flex-1 bg-border" />
   </div>;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Clock, BookMarked,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -778,7 +778,7 @@ export function BridgeSidebar({
           {/* A terminal for every stream of work: named for what it is. */}
           <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
-          <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
+          <ActionRow icon={Library} label="Memory" onClick={onOpenMemory} active={memoryActive} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
           {onOpenGitplace && <ActionRow icon={GitPullRequest} label="Gitplace" onClick={onOpenGitplace} active={gitplaceActive} />}
         </nav>

@@ -2556,7 +2556,12 @@ export const bridgeApi = {
   },
   getPacketAudit: async (sessionId: string): Promise<MemoryPacketAudit> => {
     if (isTauri()) return call("memory/get_packet_audit", { sessionId });
-    return { sessionId, selected: [], tokenEstimate: 0 };
+    // The mock packet is the active recall-eligible pins, so the transcript's
+    // "Recalled N memories" note is exercisable under `bun run dev`.
+    const selected = mockMemoryRecords
+      .filter(record => record.status === "active" && RECALL_ELIGIBLE.includes(record.id))
+      .map(record => ({ recordId: record.id, body: record.body, kind: record.kind, reason: "explicit pin" }));
+    return { sessionId, selected, tokenEstimate: selected.reduce((sum, item) => sum + Math.ceil(item.body.length / 4), 0) };
   },
   getMemoryCapabilities: async (): Promise<MemoryCapabilities> => {
     if (isTauri()) return call("memory/get_memory_capabilities");
