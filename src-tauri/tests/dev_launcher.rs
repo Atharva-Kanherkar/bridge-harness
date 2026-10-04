@@ -61,7 +61,7 @@ fn native_helpers_are_ready_before_tauri_starts_and_arguments_stay_intact() {
         false,
     );
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(trace, "prepare:prepare:browser-host:dev\nprepare:prepare:daemon:dev\ntauri\narg:dev\narg:--no-watch\narg:--config\narg:path with spaces.json\n");
+    assert_eq!(trace, "prepare:prepare:browser-host:dev\nprepare:prepare:daemon:dev\nprepare:prepare:voice-helper\ntauri\narg:dev\narg:--no-watch\narg:--config\narg:path with spaces.json\n");
 }
 
 #[test]
