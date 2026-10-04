@@ -97,6 +97,74 @@
       ],
       "type": "string"
     },
+    "CredentialPolicy": {
+      "description": "Which credentials a deployment lets harnesses run on. Independent of [`ExecutionTopology`]: any topology can carry any policy.",
+      "oneOf": [
+        {
+          "description": "Whatever the user signed the harness in with, subscription included.",
+          "enum": [
+            "user-managed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Metered credentials only: an API key or a cloud-provider account. A consumer-subscription login is refused before the session starts.",
+          "enum": [
+            "api-key-only"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Only credentials the deployment's operator provisions through a cloud provider account. Gateway-issued credentials are not yet recognised.",
+          "enum": [
+            "enterprise-managed"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "DeploymentInfo": {
+      "description": "The deployment a daemon is running as, reported on `health/health`.",
+      "properties": {
+        "credentialPolicy": {
+          "$ref": "#/definitions/CredentialPolicy"
+        },
+        "topology": {
+          "$ref": "#/definitions/ExecutionTopology"
+        }
+      },
+      "required": [
+        "credentialPolicy",
+        "topology"
+      ],
+      "type": "object"
+    },
+    "ExecutionTopology": {
+      "description": "Where the runtime that owns a data directory runs. Informational: it says nothing about billing, which is [`CredentialPolicy`]'s job — location must not decide who pays.",
+      "oneOf": [
+        {
+          "description": "Inside the desktop app's own process.",
+          "enum": [
+            "embedded"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The `bridged` daemon on the user's machine.",
+          "enum": [
+            "local-daemon"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A runner executing on someone else's machine or a sandbox.",
+          "enum": [
+            "remote-runner"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "HealthWarning": {
       "description": "One actionable environment warning on the health response. Mirrors `bridge_core::health::HealthWarning`.",
       "properties": {
@@ -252,6 +320,18 @@
     },
     "database": {
       "type": "string"
+    },
+    "deployment": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/DeploymentInfo"
+        }
+      ],
+      "default": {
+        "credentialPolicy": "user-managed",
+        "topology": "embedded"
+      },
+      "description": "The active execution topology and credential policy. Defaulted so a document from an older daemon still parses."
     },
     "harnesses": {
       "additionalProperties": {

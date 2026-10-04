@@ -964,6 +964,7 @@ pub fn start_health_server(
                     "version": env!("CARGO_PKG_VERSION"),
                     "database": database,
                     "adapters": adapters,
+                    "deployment": crate::credential_policy::active(),
                     "harnesses": {
                         "claude": binary::resolve("claude").is_some(),
                         "codex": crate::codex_adapter::resolve_runtime().is_some(),

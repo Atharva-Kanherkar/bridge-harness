@@ -909,6 +909,7 @@ impl AdapterRegistry {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
         })?;
+        crate::credential_policy::gate_adapter(id)?;
         let descriptor = adapter.descriptor();
         if !descriptor.available {
             return Err(BridgeError::Invalid(
@@ -924,6 +925,7 @@ impl AdapterRegistry {
 
     pub fn start_completion(&self, id: &str, mut request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| BridgeError::Invalid(format!("No structured adapter is registered for {id}")))?;
+        crate::credential_policy::gate_adapter(id)?;
         let descriptor = adapter.descriptor();
         if !descriptor.available {
             return Err(BridgeError::Invalid(descriptor.unavailable_reason.unwrap_or_else(|| format!("{} is unavailable", descriptor.label))));
@@ -940,6 +942,7 @@ impl AdapterRegistry {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
         })?;
+        crate::credential_policy::gate_adapter(id)?;
         if request.fork && !adapter.supports_native_fork() {
             return Err(BridgeError::Invalid(format!(
                 "Adapter {id} does not support native thread forks"

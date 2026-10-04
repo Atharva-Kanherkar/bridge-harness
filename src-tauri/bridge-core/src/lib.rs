@@ -68,6 +68,7 @@ pub mod context_breakdown;
 pub mod context_inventory;
 pub mod context_windows;
 pub mod credential_broker;
+pub mod credential_policy;
 pub mod cursor_adapter;
 pub mod grok_adapter;
 pub mod delegation;
@@ -206,6 +207,8 @@ pub enum BridgeError {
     Adapter(String),
     #[error("PTY: {0}")]
     Pty(String),
+    #[error("Credential policy: {0}")]
+    CredentialPolicy(String),
 }
 impl Serialize for BridgeError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -227,6 +230,9 @@ impl From<&BridgeError> for bridge_protocol::ErrorCode {
             BridgeError::Io(_) => bridge_protocol::ErrorCode::Io,
             BridgeError::Adapter(_) => bridge_protocol::ErrorCode::Adapter,
             BridgeError::Pty(_) => bridge_protocol::ErrorCode::Pty,
+            BridgeError::CredentialPolicy(_) => {
+                bridge_protocol::ErrorCode::CredentialPolicyViolation
+            }
         }
     }
 }
@@ -258,6 +264,11 @@ mod tests {
             ),
             (BridgeError::Adapter("x".into()), ErrorCode::Adapter, 1004),
             (BridgeError::Pty("x".into()), ErrorCode::Pty, 1005),
+            (
+                BridgeError::CredentialPolicy("x".into()),
+                ErrorCode::CredentialPolicyViolation,
+                1006,
+            ),
         ];
         for (error, expected, expected_code) in cases {
             let mapped = ErrorCode::from(&error);

@@ -26,6 +26,7 @@ pub enum ErrorCode {
     Io,
     Adapter,
     Pty,
+    CredentialPolicyViolation,
     // Protocol lifecycle errors.
     IncompatibleProtocol,
     Unauthorized,
@@ -44,7 +45,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 24] = [
+    pub const ALL: [ErrorCode; 25] = [
         ErrorCode::ParseError,
         ErrorCode::InvalidRequest,
         ErrorCode::MethodNotFound,
@@ -56,6 +57,7 @@ impl ErrorCode {
         ErrorCode::Io,
         ErrorCode::Adapter,
         ErrorCode::Pty,
+        ErrorCode::CredentialPolicyViolation,
         ErrorCode::IncompatibleProtocol,
         ErrorCode::Unauthorized,
         ErrorCode::Cancelled,
@@ -84,6 +86,7 @@ impl ErrorCode {
             ErrorCode::Io => 1003,
             ErrorCode::Adapter => 1004,
             ErrorCode::Pty => 1005,
+            ErrorCode::CredentialPolicyViolation => 1006,
             ErrorCode::IncompatibleProtocol => 2000,
             ErrorCode::Unauthorized => 2001,
             ErrorCode::Cancelled => 2002,
@@ -131,6 +134,7 @@ impl ErrorCode {
             ErrorCode::VendorPrerequisiteMissing => "vendor_prerequisite_missing",
             ErrorCode::UninstallNotPermitted => "uninstall_not_permitted",
             ErrorCode::UnknownAgent => "unknown_agent",
+            ErrorCode::CredentialPolicyViolation => "credential_policy_violation",
         }
     }
 
@@ -163,6 +167,7 @@ impl ErrorCode {
             ErrorCode::VendorPrerequisiteMissing => "The vendor reported a prerequisite of its own, such as a login or an API key",
             ErrorCode::UninstallNotPermitted => "This installation cannot be removed in its current state",
             ErrorCode::UnknownAgent => "No built-in integration has that agent id",
+            ErrorCode::CredentialPolicyViolation => "The credential in use is not allowed by this deployment's credential policy",
         }
     }
 }
@@ -202,7 +207,8 @@ mod tests {
                 ErrorCode::Database,
                 ErrorCode::Io,
                 ErrorCode::Adapter,
-                ErrorCode::Pty
+                ErrorCode::Pty,
+                ErrorCode::CredentialPolicyViolation
             ]
         );
     }
