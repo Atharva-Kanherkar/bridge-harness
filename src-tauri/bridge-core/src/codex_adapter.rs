@@ -260,6 +260,11 @@ fn launch(
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
     crate::process_ledger::log_spawn_to_ready("codex", "initialize_response", spawned_at);
     write_value(&writer, &json!({"method":"initialized"}))?;
+    startup_messages.append(&mut verify_credential_policy(
+        &writer,
+        &mut reader,
+        crate::credential_policy::active().credential_policy,
+    )?);
     let (method, params, lifecycle_phase) = if let Some(thread_id) = resume_thread_id.filter(|_| fork) {
         (
             "thread/fork",
@@ -916,6 +921,36 @@ fn auth_state_from_environment(
     }
 }
 
+/// Enforce a restrictive credential policy before a thread opens, from what
+/// Codex itself reports via `account/read`. The default policy costs no extra
+/// round trip. Returns the unrelated frames read while waiting.
+fn verify_credential_policy(
+    writer: &Arc<Mutex<ChildStdin>>,
+    reader: &mut BufReader<ChildStdout>,
+    policy: crate::credential_policy::CredentialPolicy,
+) -> Result<Vec<Value>, BridgeError> {
+    if !policy.restricts() {
+        return Ok(Vec::new());
+    }
+    write_value(
+        writer,
+        &json!({"method":"account/read","id":3,"params":{"refreshToken":false}}),
+    )?;
+    let (response, skipped) = wait_for_response(reader, 3)?;
+    if response.get("error").is_some() {
+        return Err(BridgeError::Adapter(
+            "Codex could not report its account, so this deployment's credential policy cannot be \
+             verified. Check Codex's sign-in and start the session again."
+                .into(),
+        ));
+    }
+    let source = crate::credential_policy::codex_auth_source(
+        response.get("result").unwrap_or(&Value::Null),
+    );
+    crate::credential_policy::admit("Codex", policy, source)?;
+    Ok(skipped)
+}
+
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
     let mut writer = lock_writer(writer, "Codex")?;
     serde_json::to_writer(&mut *writer, value)
@@ -958,6 +993,73 @@ fn wait_for_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in app-server: answers `account/read` (id 3) with `reply` after
+    /// first emitting an unrelated notification.
+    fn fake_app_server(reply: &str) -> (Arc<Mutex<ChildStdin>>, BufReader<ChildStdout>, Child) {
+        let script = format!(
+            "read request; printf '%s\\n' '{{\"method\":\"noise\"}}'; printf '%s\\n' '{reply}'"
+        );
+        let mut child = Command::new("sh")
+            .args(["-c", &script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let reader = BufReader::new(child.stdout.take().unwrap());
+        (writer, reader, child)
+    }
+
+    fn verdict(reply: &str, policy: crate::credential_policy::CredentialPolicy) -> Result<usize, BridgeError> {
+        let (writer, mut reader, mut child) = fake_app_server(reply);
+        let result = verify_credential_policy(&writer, &mut reader, policy).map(|skipped| skipped.len());
+        let _ = child.wait();
+        result
+    }
+
+    #[test]
+    fn a_subscription_login_is_refused_under_api_key_only_before_a_thread_opens() {
+        use crate::credential_policy::CredentialPolicy;
+        let chatgpt = r#"{"id":3,"result":{"account":{"type":"chatgpt","email":"a@b.c","planType":"plus"}}}"#;
+        let error = verdict(chatgpt, CredentialPolicy::ApiKeyOnly).unwrap_err();
+        assert!(matches!(error, BridgeError::CredentialPolicy(_)), "{error}");
+        assert!(error.to_string().contains("a subscription login"));
+        // An API key passes and the unrelated frame is carried through.
+        let api_key = r#"{"id":3,"result":{"account":{"type":"apiKey"}}}"#;
+        assert_eq!(verdict(api_key, CredentialPolicy::ApiKeyOnly).unwrap(), 1);
+        // Signed out and a failed read both fail closed.
+        let signed_out = r#"{"id":3,"result":{"account":null}}"#;
+        assert!(matches!(
+            verdict(signed_out, CredentialPolicy::ApiKeyOnly),
+            Err(BridgeError::CredentialPolicy(_))
+        ));
+        let failed = r#"{"id":3,"error":{"code":-1,"message":"boom"}}"#;
+        assert!(matches!(
+            verdict(failed, CredentialPolicy::ApiKeyOnly),
+            Err(BridgeError::Adapter(_))
+        ));
+    }
+
+    #[test]
+    fn the_default_policy_asks_codex_nothing() {
+        use crate::credential_policy::CredentialPolicy;
+        // A server that never answers would hang a check that was not skipped.
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 5"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let skipped =
+            verify_credential_policy(&writer, &mut reader, CredentialPolicy::UserManaged).unwrap();
+        assert!(skipped.is_empty());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
     #[test]
     fn image_attachments_keep_native_shapes_and_order() {
         let images = vec![

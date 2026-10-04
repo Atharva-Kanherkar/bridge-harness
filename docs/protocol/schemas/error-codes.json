@@ -57,6 +57,11 @@
       "summary": "A terminal (PTY) operation failed"
     },
     {
+      "code": 1006,
+      "name": "credential_policy_violation",
+      "summary": "The credential in use is not allowed by this deployment's credential policy"
+    },
+    {
       "code": 2000,
       "name": "incompatible_protocol",
       "summary": "The client's protocol version is incompatible with this server"

@@ -11,6 +11,10 @@
 //!   the per-install token from `<data_dir>/daemon.token`, and it must arrive
 //!   within the handshake deadline — an unauthenticated peer cannot park on a
 //!   connection slot.
+//! - **Remote (opt-in)**: with `--listen`, the same contract over WebSocket
+//!   text messages ([`remote`]) — same handshake token, limits and event
+//!   stream, plus an exact-match browser `Origin` allowlist. Off by default:
+//!   without it nothing but the Unix socket and health listener is bound.
 //! - **Events**: one [`EventHub`] per daemon subscribes to the core bus and
 //!   fans out to per-connection bounded queues. A connection that falls
 //!   behind gets a `stream-lagged` marker plus the idempotent refetch hints
@@ -27,6 +31,7 @@
 
 mod dispatch;
 mod events;
+mod remote;
 mod server;
 
 use bridge_core::events::EventBus;
@@ -41,7 +46,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use events::EventHub;
-pub use server::serve;
+pub use remote::{RemoteConfig, RemoteListener};
+pub use server::{serve, serve_with_remote};
 
 /// Hard cap on a single request frame (one line). A frame beyond this is
 /// answered with `invalid_request` and the connection is closed.
@@ -152,6 +158,7 @@ pub enum StartupError {
     SocketBind { path: PathBuf, error: std::io::Error },
     SocketPermissions { path: PathBuf, error: std::io::Error },
     HealthBind { addr: SocketAddr, error: std::io::Error },
+    RemoteBind { addr: SocketAddr, error: std::io::Error },
 }
 
 impl std::fmt::Display for StartupError {
@@ -193,6 +200,11 @@ impl std::fmt::Display for StartupError {
                 formatter,
                 "could not bind the health listener at {addr}: {error} \
                  (pass --health-addr none to disable it)"
+            ),
+            StartupError::RemoteBind { addr, error } => write!(
+                formatter,
+                "could not bind the remote listener at {addr}: {error} \
+                 (drop --listen to serve the Unix socket only)"
             ),
         }
     }

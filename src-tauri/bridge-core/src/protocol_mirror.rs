@@ -1311,6 +1311,10 @@ fn result_payloads_mirror_core() {
             detail: "See \u{201c}macOS file access prompts\u{201d} in README.md.".into(),
             paths: vec!["/Users/dev/Documents/app".into()],
         }],
+        deployment: crate::credential_policy::DeploymentInfo {
+            topology: crate::credential_policy::ExecutionTopology::RemoteRunner,
+            credential_policy: crate::credential_policy::CredentialPolicy::ApiKeyOnly,
+        },
     });
     assert_mirrors::<wire::SessionForestDigestResult>(&crate::api::ForestDigest {
         digest: "v1:42:2026-08-20T00:00:00Z".into(),

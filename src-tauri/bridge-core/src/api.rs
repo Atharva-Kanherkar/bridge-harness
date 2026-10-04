@@ -57,6 +57,8 @@ pub struct Health {
     /// Actionable environment warnings (today: macOS TCC-protected project
     /// paths and ad-hoc code signing). Empty when the environment is clean.
     pub warnings: Vec<crate::health::HealthWarning>,
+    /// The execution topology and credential policy this process runs under.
+    pub deployment: crate::credential_policy::DeploymentInfo,
 }
 
 pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
@@ -83,6 +85,7 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
         snapshot_total_bytes,
         adapters,
         warnings: crate::health::macos_environment_warnings(core),
+        deployment: crate::credential_policy::active(),
     })
 }
 

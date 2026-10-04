@@ -560,6 +560,7 @@ export const ERROR_CODES = {
   io: 1003,
   adapter: 1004,
   pty: 1005,
+  credential_policy_violation: 1006,
   incompatible_protocol: 2000,
   unauthorized: 2001,
   cancelled: 2002,
@@ -1459,6 +1460,13 @@ export interface ContextWindowSegment {
 
 export type ContinuationFidelity = "native" | "projected_at_boundary" | "projected_mid_turn";
 
+export type CredentialPolicy = "user-managed" | "api-key-only" | "enterprise-managed";
+
+export interface DeploymentInfo {
+  credentialPolicy: CredentialPolicy;
+  topology: ExecutionTopology;
+}
+
 export interface DiskDeleteFailure {
   path: string;
   reason: string;
@@ -1507,6 +1515,8 @@ export interface EarlierContextWindow {
 export type Effort = "low" | "medium" | "high" | "xhigh";
 
 export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
+
+export type ExecutionTopology = "embedded" | "local-daemon" | "remote-runner";
 
 export interface ExternalImportArtifact {
   artifactId: string;
@@ -3016,6 +3026,7 @@ export interface HandshakeResponse {
 export interface HealthResult {
   adapters: AdapterDescriptor[];
   database: string;
+  deployment?: DeploymentInfo;
   harnesses: Record<string, boolean>;
   ok: boolean;
   snapshot_count: number;

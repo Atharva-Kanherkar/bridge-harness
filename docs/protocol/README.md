@@ -19,7 +19,7 @@ bidirectional events — is RPC-shaped, so REST+SSE was considered and rejected.
 | Transport | Audience |
 | --- | --- |
 | Unix-domain socket | Local clients (Tauri shell, TUI, `bridge exec`) — served by `bridged` today |
-| WebSocket | Browser and remote clients (follow-on; the auth token and origin rules are designed for it) |
+| WebSocket | Browser and remote clients — `bridged --listen`, off by default; same handshake token, limits and events as the socket, plus an exact-match `Origin` allowlist |
 | Tauri invoke/event adapter | The desktop webview; proxied to `bridged` by default, in-process only in embedded fallback |
 | Plain HTTP | `/healthz` and `/readyz` only |
 
@@ -70,6 +70,58 @@ directory's sessions, stores, PTYs, and provider processes:
 ```bash
 bridged --data-dir ~/Library/Application\ Support/dev.bridge.deck
 ```
+
+## Remote transport (`--listen`)
+
+```bash
+bridged --listen 127.0.0.1:4319 --allowed-origin https://app.example.com
+```
+
+The same contract as the Unix socket, carried as WebSocket **text messages**
+(one JSON-RPC frame per message; no newline framing). Without `--listen` the
+daemon binds nothing but the Unix socket and the health listener.
+
+- **Auth.** The handshake token is mandatory, exactly as on the socket. A wrong
+  or missing token gets **2001 `unauthorized`** over the socket, then close.
+- **Origin.** An upgrade carrying an `Origin` header is refused with HTTP 403
+  unless it matches a `--allowed-origin` exactly (case-insensitive, no
+  wildcard, no path). An upgrade with no `Origin` is not a browser and is left
+  to the token. An empty allowlist therefore admits no browser at all.
+- **Loopback by default.** The listener is plaintext. Binding anything but a
+  loopback address requires `--allow-remote-bind`, intended for a TLS
+  terminator or tunnel in front of it; the token must never cross a network in
+  the clear.
+- **Limits.** Shared with the socket, not duplicated: the 1 MiB frame cap
+  (an oversized message closes the connection), the connection cap (beyond it,
+  HTTP 503 with the `overloaded` error body instead of an upgrade), and the
+  handshake deadline. Binary messages are not part of the protocol and close
+  the connection.
+
+## Deployment and credential policy
+
+`health/health` reports `deployment { topology, credentialPolicy }`.
+`topology` (`embedded`, `local-daemon`, `remote-runner`) says where the runtime
+lives; `credentialPolicy` says which credentials harnesses may run on. They are
+independent: location never decides billing.
+
+```bash
+bridged --credential-policy api-key-only --topology remote-runner
+# or BRIDGE_CREDENTIAL_POLICY / BRIDGE_EXECUTION_TOPOLOGY
+```
+
+| Policy | Admits |
+| --- | --- |
+| `user-managed` (default) | anything the user signed in with |
+| `api-key-only` | an API key or a cloud-provider account |
+| `enterprise-managed` | a cloud-provider account the operator provisions |
+
+Enforced where a harness starts, not in the credential broker. Codex is asked
+`account/read` before its thread opens; Claude's launch environment is checked
+before the sidecar spawns, and a subscription token is neither injected nor
+inherited. Other adapters are refused under a restrictive policy because their
+credential source cannot be verified yet. A refusal is error **1006
+`credential_policy_violation`** naming the policy and what it requires. An
+unparseable `BRIDGE_CREDENTIAL_POLICY` fails closed to `api-key-only`.
 
 ## Clients
 
