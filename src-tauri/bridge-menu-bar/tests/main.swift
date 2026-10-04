@@ -442,6 +442,23 @@ for y in 0..<representation.pixelsHigh {
 }
 check(clear > 0 && ink > 0, "Icon must contain an alpha mask and visible ink")
 check(representation.colorAt(x: 0, y: 0)!.alphaComponent == 0, "Icon background must be transparent")
+func iconAlpha(_ x: CGFloat, _ y: CGFloat) -> CGFloat {
+    representation.colorAt(x: Int(x / 18 * CGFloat(representation.pixelsWide)),
+                           y: Int(y / 18 * CGFloat(representation.pixelsHigh)))!.alphaComponent
+}
+for y in 2...15 {
+    check(iconAlpha(4, CGFloat(y)) > 0.8, "Bridge B must retain its continuous stem at menu-bar scale")
+}
+check(iconAlpha(9, 6) < 0.1 && iconAlpha(9, 13) < 0.1,
+      "Bridge B must retain both transparent counters at menu-bar scale")
+if let destination = ProcessInfo.processInfo.environment["BRIDGE_ICON_RENDER_DIR"] {
+    let directory = URL(fileURLWithPath: destination, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    for (name, icon) in [("menu-bar", image), ("open-bridge", bridgeMenuIcon)] {
+        let bitmap = NSBitmapImageRep(data: icon.tiffRepresentation!)!
+        try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("\(name).png"))
+    }
+}
 
 // Favorites remain bounded while the independent native strip handles a future
 // provider catalog without inventing adapters or expanding the menu card.

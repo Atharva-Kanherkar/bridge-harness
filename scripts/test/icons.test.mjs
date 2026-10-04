@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
-import { canonicalizeIcns, verifyVisibleMark, verifyIcns, verifyIconDirectory } from "../verify-icons.mjs";
+import { canonicalizeIcns, verifyVisibleMark, verifyIcns, verifyIco, verifyIconDirectory } from "../verify-icons.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 function crc32(bytes) {
@@ -32,23 +32,43 @@ function solidPng(size, color) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(pixels)), chunk("IEND", Buffer.alloc(0))]);
 }
 
-test("committed icons contain the Bridge mark at every macOS scale", () => {
+test("committed icons contain the Bridge mark on every platform", () => {
   verifyIconDirectory(resolve(root, "src-tauri/icons"));
 });
 
+test("website, frontend, and native menu artwork stay in sync with the app icon", () => {
+  const source = readFileSync(resolve(root, "assets/bridge-icon.svg"), "utf8");
+  const path = source.match(/<path\b[^>]*\bd="([^"]+)"/)[1];
+  assert.ok(readFileSync(resolve(root, "src/brand/bridgeIcon.ts"), "utf8").includes(JSON.stringify(path)));
+  assert.ok(readFileSync(resolve(root, "src-tauri/bridge-menu-bar/swift/BridgeIconArtwork.swift"), "utf8").includes(`d="${path}"`));
+  const nativePng = readFileSync(resolve(root, "src-tauri/icons/icon.png"));
+  assert.deepEqual(readFileSync(resolve(root, "assets/bridge-icon.png")), nativePng);
+  assert.deepEqual(readFileSync(resolve(root, "landing/app/icon.png")), nativePng);
+  assert.deepEqual(readFileSync(resolve(root, "landing/app/favicon.ico")), readFileSync(resolve(root, "src-tauri/icons/icon.ico")));
+  assert.match(readFileSync(resolve(root, "index.html"), "utf8"), /rel="icon"[^>]*href="\/assets\/bridge-icon\.svg"/);
+});
+
+test("ICO verification inspects its small favicon frames and rejects invalid offsets", () => {
+  const icon = readFileSync(resolve(root, "src-tauri/icons/icon.ico"));
+  assert.doesNotThrow(() => verifyIco(icon));
+  const invalid = Buffer.from(icon);
+  invalid.writeUInt32LE(icon.length + 1, 18);
+  assert.throws(() => verifyIco(invalid), /truncated ICO frame/);
+});
+
 test("black tile regression and invisible transparent mark fail the release gate", () => {
-  assert.throws(() => verifyVisibleMark(solidPng(32, [17, 20, 17, 255]), "black"), /visible Doto mark/);
-  assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 0]), "transparent"), /visible Doto mark/);
+  assert.throws(() => verifyVisibleMark(solidPng(32, [17, 20, 17, 255]), "black"), /visible mark/);
+  assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 0]), "transparent"), /visible mark/);
   assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 255]), "solid"), /dark background/);
 });
 
-test("the Doto gate accepts white dots and rejects the retired colored artwork", () => {
+test("the icon gate accepts white marks and rejects the retired colored artwork", () => {
   const fixture = (color) => solidPng(32, (x, y) => {
     const dot = x >= 8 && x < 24 && y >= 6 && y < 26 && x % 4 < 2 && y % 4 < 2;
     return dot ? color : [0, 0, 0, 255];
   });
-  assert.doesNotThrow(() => verifyVisibleMark(fixture([255, 255, 255, 255]), "Doto"));
-  assert.throws(() => verifyVisibleMark(fixture([68, 227, 164, 255]), "old mark"), /visible Doto mark/);
+  assert.doesNotThrow(() => verifyVisibleMark(fixture([255, 255, 255, 255]), "Bridge"));
+  assert.throws(() => verifyVisibleMark(fixture([68, 227, 164, 255]), "old mark"), /visible mark/);
 });
 
 test("the macOS ICNS gate checks embedded pixels, not just file existence", () => {
@@ -70,7 +90,7 @@ test("the macOS ICNS gate checks embedded pixels, not just file existence", () =
   assert.ok(replaced);
   const corrupt = Buffer.concat([Buffer.alloc(8), ...parts]);
   corrupt.write("icns", 0); corrupt.writeUInt32BE(corrupt.length, 4);
-  assert.throws(() => verifyIcns(corrupt), /visible Doto mark/);
+  assert.throws(() => verifyIcns(corrupt), /visible mark/);
 });
 
 test("ICNS output is canonical even when Tauri changes entry order", () => {
