@@ -564,8 +564,10 @@ mod tests {
             "{\"tool\":\"find_chats\",\"terms\":[\"deploy\"],\"answer\":[{\"id\":\"aaaaaaaa\",\"why\":\"the catalog stall\"}]}",
             "{\"answer\":[{\"id\":\"cccccccc\",\"why\":\"late\"}]}",
         ]);
-        model.delay = Duration::from_millis(30);
-        let short = Budget { wall: Duration::from_millis(45), ..Budget::default() };
+        // Leave headroom for preparing the first prompt in a concurrent debug
+        // test run, while the second delayed turn still exceeds the deadline.
+        model.delay = Duration::from_secs(1);
+        let short = Budget { wall: Duration::from_millis(1_500), ..Budget::default() };
         let result = go(&db, &mut model, "plugins catalog", &short);
         let Outcome::Answered(hits) = &result.outcome else { panic!("{:?}", result.outcome) };
         assert_eq!(hits[0].0.session_id, "aaaaaaaa-0001", "the guess outlives the budget");
