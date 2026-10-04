@@ -425,55 +425,104 @@ fn volume(path: &Path) -> Option<wire::DiskVolume> {
 
 /// Delete or trash each path the guard allows. One refusal does not stop the
 /// rest; it comes back with its reason.
+///
+/// The text of a path can sit under the home folder while a symlinked folder
+/// inside it leads anywhere, and that folder can be swapped between a check
+/// and a delete. So the folder holding each target is opened once, the guard
+/// is asked about where that handle really is, and the delete or move then
+/// happens relative to the handle: nothing is resolved by path again.
 pub fn delete(scanner: &Arc<Scanner>, guard: &Guard, paths: &[String], permanent: bool) -> wire::DiskDeleteResult {
     let mut result = wire::DiskDeleteResult { deleted: Vec::new(), failed: Vec::new(), bytes_freed: 0, trashed: !permanent };
-    let mut failures = Vec::new();
     let resolved_guard = guard.resolved();
     for raw in paths {
         let path = PathBuf::from(raw);
-        // The text of a path can sit under the home folder while a symlinked
-        // folder inside it points anywhere, and a delete would follow it. Check
-        // where the path really is as well as what it says.
-        let refusal = guard.protected_reason(&path).or_else(|| match resolve_parent(&path) {
-            Some(real) => resolved_guard.protected_reason(&real),
-            None => Some("Bridge could not tell where this path really leads.".into()),
-        });
-        if let Some(reason) = refusal {
-            failures.push(result_failure(raw, reason));
-            continue;
-        }
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            failures.push(result_failure(raw, "It no longer exists.".into()));
-            continue;
-        };
-        let bytes = if meta.is_dir() { scanner.known_bytes(&path).unwrap_or(0) } else { meta.blocks() * 512 };
-        let outcome = if permanent {
-            if meta.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) }
-        } else {
-            move_to_trash(&guard.home, &path)
-        };
+        let outcome = guard
+            .protected_reason(&path)
+            .map_or_else(|| open_parent(guard, &path), Err)
+            .and_then(|parent| match resolved_guard.protected_reason(&parent.real.join(&parent.name)) {
+                Some(reason) => Err(reason),
+                None => Ok(parent),
+            })
+            .and_then(|parent| remove_at(scanner, &parent, &path, &guard.home, permanent));
         match outcome {
-            Ok(()) => {
+            Ok(bytes) => {
                 scanner.removed(&path, bytes);
                 result.bytes_freed += bytes;
                 result.deleted.push(raw.clone());
             }
-            Err(error) => failures.push(result_failure(raw, describe(&error, permanent))),
+            Err(reason) => result.failed.push(wire::DiskDeleteFailure { path: raw.clone(), reason }),
         }
     }
-    result.failed = failures;
     result
 }
 
-/// The path with every folder above it resolved, the last component kept as
-/// is: deleting a symlink removes the link, so only its parents can redirect.
-fn resolve_parent(path: &Path) -> Option<PathBuf> {
-    let parent = std::fs::canonicalize(path.parent()?).ok()?;
-    Some(parent.join(path.file_name()?))
+/// The folder holding a target, opened once, and where it really is.
+struct Parent {
+    dir: cap_std::fs::Dir,
+    real: PathBuf,
+    name: std::ffi::OsString,
 }
 
-fn result_failure(path: &str, reason: String) -> wire::DiskDeleteFailure {
-    wire::DiskDeleteFailure { path: path.into(), reason }
+/// Opens the parent of `path` beneath the home folder or `/Applications`.
+/// cap-std refuses any step, symlinked or not, that leaves that root.
+fn open_parent(guard: &Guard, path: &Path) -> Result<Parent, String> {
+    let root = if path.starts_with(&guard.home) { guard.home.clone() } else { PathBuf::from("/Applications") };
+    let relative = path.strip_prefix(&root).map_err(|_| "Outside the folders Bridge may delete from.".to_string())?;
+    let name = relative.file_name().ok_or_else(|| "Not a file or folder name.".to_string())?.to_owned();
+    let unreachable = |error: std::io::Error| format!("Bridge could not open the folder that holds it: {error}");
+    let root_dir = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority()).map_err(unreachable)?;
+    let dir = match relative.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        Some(parent) => root_dir.open_dir(parent).map_err(unreachable)?,
+        None => root_dir,
+    };
+    let real = handle_path(&dir).ok_or_else(|| "Bridge could not tell where this path really leads.".to_string())?;
+    Ok(Parent { dir, real, name })
+}
+
+/// Where an open directory handle really is, whatever path reached it.
+#[cfg(target_os = "macos")]
+fn handle_path(dir: &cap_std::fs::Dir) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes at most PATH_MAX bytes into the buffer.
+    if unsafe { libc::fcntl(dir.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } == -1 {
+        return None;
+    }
+    let length = buffer.iter().position(|byte| *byte == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buffer[..length])))
+}
+
+#[cfg(target_os = "linux")]
+fn handle_path(dir: &cap_std::fs::Dir) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", dir.as_raw_fd())).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn handle_path(_dir: &cap_std::fs::Dir) -> Option<PathBuf> {
+    None
+}
+
+/// Delete or trash `parent.name` relative to the handle. Returns the bytes
+/// freed, as far as they were measured.
+fn remove_at(scanner: &Arc<Scanner>, parent: &Parent, path: &Path, home: &Path, permanent: bool) -> Result<u64, String> {
+    let meta = parent.dir.symlink_metadata(&parent.name).map_err(|_| "It no longer exists.".to_string())?;
+    let bytes = if meta.is_dir() {
+        scanner.known_bytes(path).unwrap_or(0)
+    } else {
+        std::fs::symlink_metadata(parent.real.join(&parent.name)).map(|meta| meta.blocks() * 512).unwrap_or(0)
+    };
+    let outcome = if !permanent {
+        cap_std::fs::Dir::open_ambient_dir(home.join(".Trash"), cap_std::ambient_authority())
+            .and_then(|trash| move_into(&parent.dir, &parent.name, &trash, TRASH_NAME_ATTEMPTS))
+    } else if meta.is_dir() {
+        // cap-std removes a tree through handles without following links.
+        parent.dir.remove_dir_all(&parent.name)
+    } else {
+        parent.dir.remove_file(&parent.name)
+    };
+    outcome.map(|()| bytes).map_err(|error| describe(&error, permanent))
 }
 
 fn describe(error: &std::io::Error, permanent: bool) -> String {
@@ -487,24 +536,45 @@ fn describe(error: &std::io::Error, permanent: bool) -> String {
     }
 }
 
-/// A rename into `~/.Trash`, under a name nothing there already uses. macOS
-/// keeps the Trash unreadable to most apps, so a name that cannot be checked
-/// counts as taken: a rename onto an existing file would replace it silently.
-fn move_to_trash(home: &Path, path: &Path) -> std::io::Result<()> {
-    let trash = home.join(".Trash");
-    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".into());
-    let free = |candidate: &Path| matches!(std::fs::symlink_metadata(candidate), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
-    let mut destination = trash.join(&name);
-    if !free(&destination) {
-        let stamp = chrono::Local::now().format("%H.%M.%S");
-        destination = trash.join(format!("{name} {stamp}"));
-        let mut attempt = 2;
-        while !free(&destination) && attempt < 100 {
-            destination = trash.join(format!("{name} {stamp} {attempt}"));
-            attempt += 1;
+const TRASH_NAME_ATTEMPTS: usize = 1000;
+
+/// Move `name` into the Trash under a name nothing there uses. Each attempt
+/// is one atomic no-replace rename, so two moves of the same name at once can
+/// never overwrite each other; a taken name just tries the next one.
+fn move_into(from: &cap_std::fs::Dir, name: &std::ffi::OsStr, trash: &cap_std::fs::Dir, attempts: usize) -> std::io::Result<()> {
+    let base = name.to_string_lossy().into_owned();
+    let stamp = chrono::Local::now().format("%H.%M.%S").to_string();
+    for attempt in 0..attempts {
+        let candidate = match attempt {
+            0 => base.clone(),
+            1 => format!("{base} {stamp}"),
+            _ => format!("{base} {stamp} {attempt}"),
+        };
+        match rename_no_replace(from, name, trash, std::ffi::OsStr::new(&candidate)) {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            other => return other,
         }
     }
-    std::fs::rename(path, destination)
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "the Trash already holds too many items with this name"))
+}
+
+fn rename_no_replace(from: &cap_std::fs::Dir, from_name: &std::ffi::OsStr, to: &cap_std::fs::Dir, to_name: &std::ffi::OsStr) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let from_c = std::ffi::CString::new(from_name.as_bytes())?;
+    let to_c = std::ffi::CString::new(to_name.as_bytes())?;
+    #[cfg(target_os = "macos")]
+    // SAFETY: both names are NUL-terminated and both handles are open.
+    let status = unsafe { libc::renameatx_np(from.as_raw_fd(), from_c.as_ptr(), to.as_raw_fd(), to_c.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: both names are NUL-terminated and both handles are open.
+    let status = unsafe { libc::renameat2(from.as_raw_fd(), from_c.as_ptr(), to.as_raw_fd(), to_c.as_ptr(), libc::RENAME_NOREPLACE) };
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+    let status: i32 = {
+        let _ = (from, to, from_c, to_c);
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no atomic no-replace rename on this platform"));
+    };
+    if status == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
 /// Ask Finder to empty the Trash: Bridge cannot read it itself.
@@ -639,15 +709,82 @@ mod tests {
         assert!(outside.path().join("precious").exists());
     }
 
+    fn open(path: &Path) -> cap_std::fs::Dir {
+        cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority()).unwrap()
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn trashing_never_replaces_something_already_in_the_trash() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".Trash")).unwrap();
         std::fs::write(home.path().join(".Trash/report.pdf"), b"old").unwrap();
         std::fs::write(home.path().join("report.pdf"), b"new").unwrap();
-        move_to_trash(home.path(), &home.path().join("report.pdf")).unwrap();
+        move_into(&open(home.path()), "report.pdf".as_ref(), &open(&home.path().join(".Trash")), TRASH_NAME_ATTEMPTS).unwrap();
         assert_eq!(std::fs::read(home.path().join(".Trash/report.pdf")).unwrap(), b"old");
-        let names: Vec<_> = std::fs::read_dir(home.path().join(".Trash")).unwrap().flatten().map(|entry| entry.file_name()).collect();
-        assert_eq!(names.len(), 2);
+        assert_eq!(names(&home.path().join(".Trash")).len(), 2);
+    }
+
+    #[test]
+    fn concurrent_moves_of_the_same_name_both_survive() {
+        for _ in 0..25 {
+            let home = tempfile::tempdir().unwrap();
+            let trash = home.path().join(".Trash");
+            std::fs::create_dir_all(&trash).unwrap();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let movers: Vec<_> = ["one", "two"].into_iter().map(|source| {
+                let folder = home.path().join(source);
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::write(folder.join("report.pdf"), source).unwrap();
+                let (barrier, trash) = (Arc::clone(&barrier), trash.clone());
+                std::thread::spawn(move || {
+                    let (from, to) = (open(&folder), open(&trash));
+                    barrier.wait();
+                    move_into(&from, "report.pdf".as_ref(), &to, TRASH_NAME_ATTEMPTS).unwrap();
+                })
+            }).collect();
+            movers.into_iter().for_each(|mover| mover.join().unwrap());
+            let mut contents: Vec<_> = names(&trash).iter().map(|name| std::fs::read_to_string(trash.join(name)).unwrap()).collect();
+            contents.sort();
+            assert_eq!(contents, ["one", "two"]);
+        }
+    }
+
+    #[test]
+    fn a_trash_with_every_name_taken_refuses_rather_than_replacing() {
+        let home = tempfile::tempdir().unwrap();
+        let trash = home.path().join(".Trash");
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(home.path().join("a.txt"), b"new").unwrap();
+        std::fs::write(trash.join("a.txt"), b"old").unwrap();
+        // One attempt means only the plain name, which is taken.
+        assert!(move_into(&open(home.path()), "a.txt".as_ref(), &open(&trash), 1).is_err());
+        assert_eq!(std::fs::read(trash.join("a.txt")).unwrap(), b"old");
+        assert!(home.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn swapping_a_folder_for_a_symlink_after_the_check_cannot_redirect_the_delete() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("a")).unwrap();
+        std::fs::write(home.path().join("a/victim"), b"mine").unwrap();
+        std::fs::write(outside.path().join("victim"), b"keep").unwrap();
+        let guard = guard(home.path());
+        let target = home.path().join("a/victim");
+        let parent = open_parent(&guard, &target).unwrap();
+        assert_eq!(guard.resolved().protected_reason(&parent.real.join(&parent.name)), None);
+        // The race: after the check, the folder is moved away and replaced
+        // with a symlink to somewhere protected.
+        std::fs::rename(home.path().join("a"), home.path().join("a-moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), home.path().join("a")).unwrap();
+        remove_at(&Scanner::new(), &parent, &target, home.path(), true).unwrap();
+        assert!(outside.path().join("victim").exists(), "the delete followed the swapped symlink");
+        assert!(!home.path().join("a-moved/victim").exists());
     }
 }
