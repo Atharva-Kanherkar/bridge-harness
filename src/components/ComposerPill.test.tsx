@@ -196,6 +196,19 @@ describe("ComposerPill", () => {
     expect(onVoiceStart).not.toHaveBeenCalled();
   });
 
+  it("offers voice setup only when the provider needs it", () => {
+    const onVoiceSetup = vi.fn();
+    const recoveryButton = () => [...container.querySelectorAll("button")].find(button => /voice/.test(button.textContent ?? ""));
+    render({ voiceAvailable: false, voiceUnavailableReason: "Checking dictation availability…", onVoiceStart: vi.fn(), onVoiceStop: vi.fn(), onVoiceSetup, onVoiceRetry: vi.fn() });
+    expect(recoveryButton()).toBeUndefined();
+    render({ voiceAvailable: false, voiceRecovery: "setup", onVoiceStart: vi.fn(), onVoiceStop: vi.fn(), onVoiceSetup, onVoiceRetry: vi.fn() });
+    expect(recoveryButton()?.textContent).toBe("Set up voice");
+    act(() => recoveryButton()!.click());
+    expect(onVoiceSetup).toHaveBeenCalledTimes(1);
+    render({ voiceAvailable: true, voiceError: "Microphone access was denied", onVoiceStart: vi.fn(), onVoiceStop: vi.fn(), onVoiceSetup, onVoiceRetry: vi.fn() });
+    expect(recoveryButton()?.textContent).toBe("Retry voice");
+  });
+
   it.each(["starting", "recording", "stopping"] as const)("protects the draft and blocks Send while %s", voiceState => {
     const onSubmit = vi.fn();
     render({ value: "original draft", voiceAvailable: true, voiceState, voicePreview: "spoken preview", onSubmit, onAttachFiles: vi.fn(), onVoiceStart: vi.fn(), onVoiceStop: vi.fn(), onVoiceCancel: vi.fn() });

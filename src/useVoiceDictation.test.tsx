@@ -23,9 +23,9 @@ const captureStop = vi.fn();
 const commit = vi.fn();
 const available = { sessionId: "chat", providers: [{ provider: "codex", state: "ready" }] };
 
-function Harness({ harness = "codex", owner = "chat", provider = "codex", fresh = false }: { harness?: string; owner?: string; provider?: "local" | "codex"; fresh?: boolean }) {
+function Harness({ harness = "codex", owner = "chat", provider = "codex", fresh = false, working = false }: { harness?: string; owner?: string; provider?: "local" | "codex"; fresh?: boolean; working?: boolean }) {
   voice = useVoiceDictation({
-    ownerKey: owner, sessionId: fresh ? undefined : owner, provider, harness, kind: "direct", runtimeStatus: "idle", working: false,
+    ownerKey: owner, sessionId: fresh ? undefined : owner, provider, harness, kind: "direct", runtimeStatus: working ? "working" : "idle", working,
     readDraft: () => ({ ownerKey: owner, sessionId: fresh ? undefined : owner, text: "draft", revision: 0, selectionStart: 5, selectionEnd: 5 }),
     commit,
   });
@@ -119,4 +119,30 @@ it("never falls back to ready Codex when selected local speech needs setup", asy
   await act(async () => { await voice.start(); });
   expect(mocks.capture).not.toHaveBeenCalled();
   expect(mocks.voiceStart).not.toHaveBeenCalled();
+});
+
+it("probes local speech once and keeps a take across turns and harness changes", async () => {
+  mocks.voiceCapabilities.mockResolvedValue({ providers: [{ provider: "local", state: "ready" }] });
+  mocks.voiceStart.mockResolvedValue({ ownerKey: "chat", sessionId: "chat", voiceSessionId: "take", provider: "local",
+    encoding: "pcm_s16_le", sampleRate: 16_000, channels: 1, maxChunkBytes: 65536, maxSessionBytes: 4194304 });
+  await act(async () => root.render(<Harness provider="local" />));
+  await act(async () => { await voice.start(); });
+  act(() => listener({ ownerKey: "chat", sessionId: "chat", voiceSessionId: "take", provider: "local", kind: "started" }));
+  await act(async () => root.render(<Harness provider="local" working />));
+  await act(async () => root.render(<Harness provider="local" harness="claude" />));
+  expect(voice.state).toBe("recording");
+  expect(voice.available).toBe(true);
+  expect(mocks.voiceCancel).not.toHaveBeenCalled();
+  expect(mocks.voiceCapabilities).toHaveBeenCalledTimes(1);
+  expect(mocks.voiceCapabilities).toHaveBeenCalledWith(undefined);
+});
+
+it("reports setup as the recovery only when local speech needs it", async () => {
+  mocks.voiceCapabilities.mockResolvedValue({ providers: [{ provider: "local", state: "needsSetup", recoveryAction: "setup" }] });
+  await act(async () => root.render(<Harness provider="local" />));
+  expect(voice.recovery).toBe("setup");
+  mocks.voiceCapabilities.mockResolvedValue({ providers: [{ provider: "local", state: "ready" }] });
+  await act(async () => voice.retry());
+  expect(voice.available).toBe(true);
+  expect(voice.recovery).toBeUndefined();
 });

@@ -1234,10 +1234,6 @@ function AppContent() {
     ownerKey: composerOwnerRef.current,
     sessionId: session?.id,
     provider: "local",
-    harness: session?.harness,
-    kind: session?.kind,
-    runtimeStatus: session?.status,
-    working: turnActive,
     readDraft: () => {
       const draft = composerDraftRef.current;
       const textarea = composerRef.current;
@@ -3341,6 +3337,7 @@ function AppContent() {
                     voicePreview={voice.preview}
                     voiceError={voice.error}
                     voiceUnavailableReason={voice.unavailableReason}
+                    voiceRecovery={voice.recovery}
                     voiceProviderLabel="Local dictation · audio stays on this Mac"
                     onVoiceStart={() => void beginVoiceDictation()}
                     onVoiceStop={() => void voice.stop()}
@@ -3447,6 +3444,7 @@ function AppContent() {
         </section>
       </> : <Welcome
         accessControl={accessControl}
+        onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
         adapters={adapters}
         harness={(newChatDraft ?? resolveDraftHarnessModel()).harness}
         model={(newChatDraft ?? resolveDraftHarnessModel()).model}
@@ -3625,7 +3623,10 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
+const NEW_CHAT_VOICE_OWNER = "new-chat";
+
+function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, onVoiceSetup }: {
+  onVoiceSetup: () => void;
   slashCommands: import("./types").SlashCommand[];
   suggestionSettings?: SuggestionSettingsSnapshot;
   adapters: import("./types").AdapterDescriptor[];
@@ -3666,8 +3667,40 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
   const heroProject = projectName ?? workspace?.title;
   const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
   const sessionModeHintId = useId();
-  const [draft, setDraft] = useState("");
+  const [draft, setDraftValue] = useState("");
+  // Same revisioned draft as the chat composer: dictation must see edits that
+  // land between its start and its transcript.
+  const draftRef = useRef({ text: "", revision: 0 });
+  const setDraft = useCallback((change: string | ((current: string) => string)) => {
+    const current = draftRef.current;
+    const text = typeof change === "function" ? change(current.text) : change;
+    draftRef.current = { text, revision: current.revision + 1 };
+    setDraftValue(text);
+  }, []);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const voice = useVoiceDictation({
+    ownerKey: NEW_CHAT_VOICE_OWNER,
+    provider: "local",
+    readDraft: () => {
+      const current = draftRef.current;
+      const textarea = inputRef.current;
+      return { ...current, ownerKey: NEW_CHAT_VOICE_OWNER,
+        selectionStart: textarea?.selectionStart ?? current.text.length,
+        selectionEnd: textarea?.selectionEnd ?? current.text.length };
+    },
+    commit: (text, caret) => {
+      setDraft(text);
+      const revision = draftRef.current.revision;
+      requestAnimationFrame(() => {
+        if (draftRef.current.revision === revision && inputRef.current?.value === text) inputRef.current.setSelectionRange(caret, caret);
+      });
+    },
+  });
+  const beginVoice = () => {
+    if (!voice.available || voice.isActive()) return;
+    if (draftRef.current.text.trim() === "/voice") setDraft("");
+    void voice.start();
+  };
   const [selection, setSelection] = useState<[number, number]>();
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
@@ -3689,7 +3722,9 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const submit = () => {
+    if (voice.isActive()) { void voice.stop(); return; }
     const text = draft.trim();
+    if (text === "/voice" && attachments.length === 0) { beginVoice(); return; }
     const started = text || attachments.length > 0 ? onStartChat(text, attachments) : onStartChat();
     void started.then(cleared => { if (cleared) { setDraft(""); setAttachments([]); } });
   };
@@ -3757,6 +3792,18 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
       onAttachFiles={attachFiles}
       attachments={attachments}
       onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
+      voiceAvailable={voice.available}
+      voiceState={voice.state}
+      voicePreview={voice.preview}
+      voiceError={voice.error}
+      voiceUnavailableReason={voice.unavailableReason}
+      voiceRecovery={voice.recovery}
+      voiceProviderLabel="Local dictation · audio stays on this Mac"
+      onVoiceStart={beginVoice}
+      onVoiceStop={() => void voice.stop()}
+      onVoiceCancel={voice.cancel}
+      onVoiceRetry={voice.retry}
+      onVoiceSetup={onVoiceSetup}
       placeholder={canStartChat ? "Ask Bridge… / skills & commands · $ provider · paste a repo to open it" : "Paste a repo to open it, or install a model adapter to chat…"}
       // Opening a project (typing a bare repo URL, or the folder `+` below)
       // needs no adapter — only starting an actual chat turn does, and
