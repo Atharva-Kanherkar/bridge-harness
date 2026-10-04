@@ -185,6 +185,16 @@ describe("ComposerPill", () => {
     expect(onVoiceStop).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves Enter on the focused mic to the native click instead of starting dictation", () => {
+    const onVoiceStart = vi.fn();
+    render({ voiceAvailable: true, onVoiceStart, onVoiceStop: vi.fn() });
+    const mic = container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!;
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    act(() => { mic.dispatchEvent(event); });
+    expect(onVoiceStart).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it("keeps an unavailable mic discoverable with its actual reason", () => {
     const onVoiceStart = vi.fn();
     render({ voiceAvailable: false, voiceUnavailableReason: "Start the Codex chat before dictating", onVoiceStart, onVoiceStop: vi.fn() });

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VoiceTranscriptPayload } from "./api";
 import type { VoiceStartResult } from "./protocol/generated/protocol";
 import type { VoiceChunk } from "./voiceCapture";
-import { insertDictation, VoiceDictationController, VOICE_QUEUE_BYTES, VOICE_RPC_TIMEOUT_MS,
+import { insertDictation, VoiceDictationController, VOICE_PREROLL_BYTES, VOICE_QUEUE_BYTES, VOICE_RPC_TIMEOUT_MS,
   VOICE_START_TIMEOUT_MS, type VoiceDraft, type VoiceView } from "./voiceDictation";
 
 function deferred<T>() {
@@ -210,10 +210,40 @@ describe("dictation ownership", () => {
 });
 
 describe("dictation resource bounds", () => {
-  it("bounds queued audio while readiness is pending", async () => {
+  it("keeps speech spoken while the model loads, past the live queue bound", async () => {
     const s = setup();
     await s.controller.start("codex");
     s.deliver(pcm(VOICE_QUEUE_BYTES)); s.deliver();
+    expect(s.view().error).toBeUndefined();
+    s.event("started");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.transport.append).toHaveBeenCalled();
+  });
+
+  it("finishes rather than cancels when released before the provider is ready", async () => {
+    const s = setup();
+    await s.controller.start("codex");
+    s.deliver();
+    await s.controller.stop();
+    expect(s.transport.cancel).not.toHaveBeenCalled();
+    expect(s.view().state).toBe("starting");
+    s.event("started");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.transport.stop).toHaveBeenCalledWith("voice-1");
+  });
+
+  it("cancels a release before ready when no audio was captured", async () => {
+    const s = setup();
+    await s.controller.start("codex");
+    await s.controller.stop();
+    expect(s.view().state).toBe("idle");
+  });
+
+  it("bounds queued audio while readiness is pending", async () => {
+    const s = setup();
+    await s.controller.start("codex");
+    for (let sent = 0; sent < VOICE_PREROLL_BYTES; sent += 32_000) s.deliver(pcm(32_000));
+    s.deliver();
     expect(s.view().error).toMatch(/keep up/);
     expect(s.capture.stop).toHaveBeenCalledTimes(1);
     expect(s.transport.append).not.toHaveBeenCalled();
