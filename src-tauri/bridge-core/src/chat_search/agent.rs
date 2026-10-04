@@ -386,6 +386,8 @@ mod tests {
         replies: VecDeque<Result<String, String>>,
         prompts: Vec<String>,
         delay: Duration,
+        // From this turn on, the model holds the reply until the deadline.
+        stall_from: Option<usize>,
     }
 
     impl Scripted {
@@ -394,6 +396,7 @@ mod tests {
                 replies: replies.iter().map(|reply| Ok(reply.to_string())).collect(),
                 prompts: Vec::new(),
                 delay: Duration::ZERO,
+                stall_from: None,
             }
         }
     }
@@ -402,6 +405,9 @@ mod tests {
         fn turn(&mut self, text: &str, deadline: Instant) -> Result<ModelTurn, String> {
             self.prompts.push(text.to_owned());
             std::thread::sleep(self.delay);
+            if self.stall_from.is_some_and(|turn| self.prompts.len() >= turn) {
+                std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            }
             if Instant::now() >= deadline {
                 return Err("deadline".into());
             }
@@ -564,10 +570,10 @@ mod tests {
             "{\"tool\":\"find_chats\",\"terms\":[\"deploy\"],\"answer\":[{\"id\":\"aaaaaaaa\",\"why\":\"the catalog stall\"}]}",
             "{\"answer\":[{\"id\":\"cccccccc\",\"why\":\"late\"}]}",
         ]);
-        // Leave headroom for preparing the first prompt in a concurrent debug
-        // test run, while the second delayed turn still exceeds the deadline.
-        model.delay = Duration::from_secs(1);
-        let short = Budget { wall: Duration::from_millis(1_500), ..Budget::default() };
+        // The first turn answers at once and the second runs to the deadline,
+        // so a slow runner cannot spend the budget before the guess is in.
+        model.stall_from = Some(2);
+        let short = Budget { wall: Duration::from_secs(2), ..Budget::default() };
         let result = go(&db, &mut model, "plugins catalog", &short);
         let Outcome::Answered(hits) = &result.outcome else { panic!("{:?}", result.outcome) };
         assert_eq!(hits[0].0.session_id, "aaaaaaaa-0001", "the guess outlives the budget");
