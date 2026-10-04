@@ -8,7 +8,8 @@ Two slices of the cloud groundwork: the opt-in WebSocket transport on `bridged` 
 
 - Without `--listen`, `bridged` binds only the Unix socket and the health listener.
 - `--listen <ip:port>` adds a WebSocket transport carrying the same JSON-RPC contract: one frame per text message, same handshake gate, token, dispatch, limits and event forwarding as the Unix socket.
-- A wrong or missing token gets `2001 unauthorized` and the connection closes. A connection that upgrades and stays silent is reclaimed at the handshake deadline.
+- A wrong or missing token gets `2001 unauthorized` and the connection closes. The handshake deadline is one absolute budget from TCP accept covering the HTTP upgrade and the protocol handshake: a peer that drips header bytes, stays silent, or floods pings before authenticating is reclaimed at it, not at a per-read timeout.
+- The shared connection cap is reserved atomically across both accept loops, so it can never be exceeded.
 - An upgrade carrying an `Origin` not exactly on the `--allowed-origin` list is refused with HTTP 403. An upgrade with no `Origin` is admitted to the token check. There is no wildcard; a malformed origin is a startup error.
 - A non-loopback `--listen` address needs `--allow-remote-bind`.
 - An oversized or binary message ends the connection. Beyond the shared connection cap a peer gets HTTP 503 carrying the `overloaded` body.
@@ -36,6 +37,7 @@ Two slices of the cloud groundwork: the opt-in WebSocket transport on `bridged` 
 ## Integration Tests
 
 - `bridged/tests/remote.rs` — a real WebSocket client drives a daemon end to end (handshake, call, mutation, event interleave, param validation); the handshake gate holds; origins off the list get 403; oversized and binary messages close; both transports share one daemon and one connection cap, and slots release.
+- `remote.rs` also covers the deadline: `a_peer_dripping_http_header_bytes_cannot_outlive_the_handshake_deadline` and `a_peer_flooding_pings_before_authenticating_is_reclaimed_at_the_deadline` (both fail on the per-read-timeout implementation), and `server::tests` race two admissions at `cap - 1`.
 - `bridged/tests/deployment.rs` — a pinned deployment is reported on `health/health` and an unverifiable adapter is refused with `credential_policy_violation` before any process spawns.
 
 ## Out of scope

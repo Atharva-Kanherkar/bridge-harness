@@ -21,11 +21,11 @@ use crate::server::{
     admit, handle_connection, overloaded_response, spawn_connection, Frame, FrameSink, FrameSource,
 };
 use crate::{Daemon, StartupError, MAX_FRAME_BYTES};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::{header, StatusCode};
 use tungstenite::protocol::WebSocketConfig;
@@ -132,18 +132,25 @@ pub(crate) fn serve_remote(daemon: &Daemon, remote: RemoteListener) -> std::io::
                     continue;
                 }
                 let origins = remote.allowed_origins.clone();
+                // One absolute budget from accept: the HTTP upgrade and the
+                // protocol handshake that follows it draw from the same clock,
+                // so a peer cannot stretch either by dripping bytes.
+                let accepted_at = Instant::now();
                 spawn_connection(daemon, move |core, state, events| {
                     // The upgrade runs here, not in the accept loop, so a slow
-                    // peer cannot stall other connections; each read is bounded
-                    // by the handshake deadline.
-                    stream.set_read_timeout(Some(state.handshake_timeout))?;
+                    // peer cannot stall other connections.
+                    let deadline = accepted_at + state.handshake_timeout;
                     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-                    let Some(socket) = upgrade(stream, &origins) else {
+                    let stream = DeadlineStream { stream, deadline: Some(deadline) };
+                    let Some(mut socket) = upgrade(stream, &origins) else {
                         return Ok(());
                     };
-                    socket.get_ref().set_read_timeout(Some(POLL_INTERVAL))?;
+                    // Past the upgrade, reads poll; the handshake deadline is
+                    // then enforced by `expect_handshake` against `deadline`.
+                    socket.get_mut().deadline = None;
+                    socket.get_ref().stream.set_read_timeout(Some(POLL_INTERVAL))?;
                     let link = Arc::new(WsLink { socket: Mutex::new(socket) });
-                    handle_connection(core, state, events, WsSource(link.clone()), link)
+                    handle_connection(core, state, events, WsSource { link: link.clone(), deadline }, link)
                 });
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -168,7 +175,37 @@ fn refuse_overloaded(mut stream: TcpStream) {
     );
 }
 
-fn upgrade(stream: TcpStream, allowed: &[String]) -> Option<WebSocket<TcpStream>> {
+/// A `TcpStream` whose reads cannot outlive an absolute deadline. A per-read
+/// socket timeout alone lets a peer reset the clock with every byte it drips.
+struct DeadlineStream {
+    stream: TcpStream,
+    deadline: Option<Instant>,
+}
+
+impl Read for DeadlineStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(ErrorKind::TimedOut, "handshake deadline passed"));
+            }
+            self.stream.set_read_timeout(Some(remaining))?;
+        }
+        self.stream.read(buf)
+    }
+}
+
+impl Write for DeadlineStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+fn upgrade(stream: DeadlineStream, allowed: &[String]) -> Option<WebSocket<DeadlineStream>> {
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_FRAME_BYTES))
         .max_frame_size(Some(MAX_FRAME_BYTES));
@@ -206,15 +243,22 @@ fn origin_verdict(
 /// holds the lock only for one short, timed read at a time, so writes interleave
 /// between polls.
 struct WsLink {
-    socket: Mutex<WebSocket<TcpStream>>,
+    socket: Mutex<WebSocket<DeadlineStream>>,
 }
 
-struct WsSource(Arc<WsLink>);
+struct WsSource {
+    link: Arc<WsLink>,
+    deadline: Instant,
+}
 
 impl FrameSource for WsSource {
+    fn handshake_deadline(&self) -> Option<Instant> {
+        Some(self.deadline)
+    }
+
     fn next(&mut self) -> std::io::Result<Frame> {
         loop {
-            let message = self.0.socket.lock().unwrap().read();
+            let message = self.link.socket.lock().unwrap().read();
             match message {
                 Ok(Message::Text(text)) => return Ok(Frame::Line(text.as_bytes().to_vec())),
                 Ok(Message::Binary(_)) => {
@@ -223,8 +267,13 @@ impl FrameSource for WsSource {
                         "binary WebSocket messages are not part of the protocol",
                     ))
                 }
-                // Control frames: tungstenite queues the pong itself.
-                Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => continue,
+                // Control frames: tungstenite queues the pong itself. Return
+                // to the caller instead of looping, so a peer flooding pings
+                // cannot keep this read from ever checking the handshake
+                // deadline or shutdown.
+                Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {
+                    return Ok(Frame::Idle)
+                }
                 Ok(Message::Close(_)) => return Ok(Frame::Eof),
                 Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => return Ok(Frame::Eof),
                 Err(WsError::Capacity(_)) => return Ok(Frame::TooLong),
@@ -264,7 +313,7 @@ impl FrameSink for WsLink {
         let mut socket = self.socket.lock().unwrap();
         let _ = socket.close(None);
         let _ = socket.flush();
-        let _ = socket.get_ref().shutdown(std::net::Shutdown::Both);
+        let _ = socket.get_ref().stream.shutdown(std::net::Shutdown::Both);
     }
 }
 

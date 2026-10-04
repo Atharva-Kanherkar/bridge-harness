@@ -252,3 +252,90 @@ fn both_transports_serve_the_same_daemon_and_share_the_connection_cap() {
 
     running.stop();
 }
+
+fn wait_for_released_slots(running: &Running) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while running.daemon.state.connections.load(Ordering::SeqCst) > 0 {
+        assert!(std::time::Instant::now() < deadline, "the connection slot was never reclaimed");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn a_peer_dripping_http_header_bytes_cannot_outlive_the_handshake_deadline() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = Running::start(fixture.path()); // 600 ms handshake deadline
+    let mut stream = TcpStream::connect(running.addr).unwrap();
+    stream.set_nonblocking(true).unwrap();
+    let started = std::time::Instant::now();
+    let drip = b"GET / HTTP/1.1\r\nHost: x\r\nX-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let mut closed = false;
+    for byte in drip {
+        use std::io::{Read, Write};
+        if stream.write_all(&[*byte]).is_err() {
+            closed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let mut probe = [0u8; 64];
+        match stream.read(&mut probe) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            _ => {
+                closed = true;
+                break;
+            }
+        }
+        if started.elapsed() > Duration::from_secs(3) {
+            break;
+        }
+    }
+    assert!(closed, "a slow-drip peer held its connection past the deadline");
+    assert!(
+        started.elapsed() < Duration::from_millis(1800),
+        "reclaimed too late: {:?}",
+        started.elapsed()
+    );
+    wait_for_released_slots(&running);
+    running.stop();
+}
+
+#[test]
+fn a_peer_flooding_pings_before_authenticating_is_reclaimed_at_the_deadline() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = Running::start(fixture.path());
+    let mut socket = connect(running.addr, Some(ALLOWED_ORIGIN)).unwrap();
+    socket.get_ref().set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+    let started = std::time::Instant::now();
+    let mut closed = false;
+    while started.elapsed() < Duration::from_secs(3) {
+        if socket.send(Message::Ping(vec![1].into())).is_err() {
+            closed = true;
+            break;
+        }
+        match socket.read() {
+            Ok(Message::Close(_)) => {
+                closed = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => {
+                closed = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert!(closed, "a ping-flooding peer held its connection past the deadline");
+    assert!(started.elapsed() < Duration::from_millis(1800), "{:?}", started.elapsed());
+    wait_for_released_slots(&running);
+    running.stop();
+}

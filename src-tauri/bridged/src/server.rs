@@ -94,13 +94,17 @@ fn serve_unix(daemon: &Daemon, listener: UnixListener) -> std::io::Result<()> {
 }
 
 /// Reserve a connection slot, or report that the cap is reached. The slot is
-/// released by [`spawn_connection`] when the connection ends.
+/// released by [`spawn_connection`] when the connection ends. Both accept
+/// loops call this concurrently, so the check and the increment are one atomic
+/// step: two loops at `cap - 1` cannot both succeed.
 pub(crate) fn admit(daemon: &Daemon) -> bool {
-    if daemon.state.connections.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
-        return false;
-    }
-    daemon.state.connections.fetch_add(1, Ordering::SeqCst);
-    true
+    reserve_slot(&daemon.state.connections, MAX_CONNECTIONS)
+}
+
+fn reserve_slot(connections: &std::sync::atomic::AtomicUsize, cap: usize) -> bool {
+    connections
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| (count < cap).then_some(count + 1))
+        .is_ok()
 }
 
 /// Run one admitted connection on its own thread and release its slot after.
@@ -153,6 +157,13 @@ pub(crate) trait FrameSink: Send + Sync {
 /// Where a connection's frames are read from.
 pub(crate) trait FrameSource {
     fn next(&mut self) -> std::io::Result<Frame>;
+
+    /// An absolute handshake deadline this transport already started (the
+    /// WebSocket one starts at TCP accept, so the HTTP upgrade and the protocol
+    /// handshake share a single budget). `None` starts it at the first read.
+    fn handshake_deadline(&self) -> Option<Instant> {
+        None
+    }
 }
 
 fn write_frame<T: serde::Serialize>(sink: &dyn FrameSink, frame: &T) -> std::io::Result<()> {
@@ -319,7 +330,9 @@ fn expect_handshake(
     state: &DaemonState,
     reader: &mut impl FrameSource,
 ) -> Result<RpcResponse, RpcResponse> {
-    let deadline = Instant::now() + state.handshake_timeout;
+    let deadline = reader
+        .handshake_deadline()
+        .unwrap_or_else(|| Instant::now() + state.handshake_timeout);
     let line = loop {
         match reader.next() {
             Ok(Frame::Line(line)) => break line,
@@ -543,4 +556,42 @@ fn invalid_request_response(value: &Value, message: &str) -> RpcResponse {
         .map(ResponseId::from)
         .unwrap_or(ResponseId::Null);
     RpcResponse::error(id, RpcError::new(ErrorCode::InvalidRequest, message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn a_slot_is_reserved_only_below_the_cap() {
+        let count = AtomicUsize::new(0);
+        assert!(reserve_slot(&count, 2));
+        assert!(reserve_slot(&count, 2));
+        assert!(!reserve_slot(&count, 2));
+        assert_eq!(count.load(Ordering::SeqCst), 2, "a refusal must not leak a slot");
+    }
+
+    #[test]
+    fn racing_reservations_at_the_edge_admit_exactly_the_remaining_slots() {
+        for _ in 0..200 {
+            let cap = 32;
+            let count = Arc::new(AtomicUsize::new(cap - 1));
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let admitted: usize = (0..2)
+                .map(|_| {
+                    let (count, barrier) = (count.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        reserve_slot(&count, cap) as usize
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .sum();
+            assert_eq!(admitted, 1);
+            assert_eq!(count.load(Ordering::SeqCst), cap);
+        }
+    }
 }
