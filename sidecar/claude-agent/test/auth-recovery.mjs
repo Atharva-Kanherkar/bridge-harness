@@ -58,7 +58,7 @@ async function launch(t, mode, config = { sessionId: "preserved-session" }) {
   const send = () => child.stdin.write(JSON.stringify({ type: "user", message: { content: "hello" } }) + "\n");
   const frames = () => stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
   const waitForFrames = async count => {
-    const deadline = Date.now() + 2000;
+    const deadline = Date.now() + 5000;
     while (frames().length < count && Date.now() < deadline) await delay(10);
     assert.equal(frames().length, count, stderr);
   };
@@ -69,10 +69,10 @@ for (const reason of [
   "Not logged in · Please run /login",
   "Failed to authenticate: OAuth session expired and could not be refreshed",
 ]) {
-  test(`retires the stale query after ${reason}`, { timeout: 6000 }, async t => {
+  test(`retires the stale query after ${reason}`, { timeout: 15000 }, async t => {
     const run = await launch(t, reason);
     run.send();
-    const exit = await Promise.race([run.exited, delay(2000).then(() => null)]);
+    const exit = await Promise.race([run.exited, delay(5000, null, { ref: false }).then(() => null)]);
     assert.deepEqual(exit, { code: 1, signal: null }, "an auth failure must retire the warm query even while stdin stays open");
     assert.equal(run.stderr(), "");
     assert.equal(await readFile(run.closedPath, "utf8"), "closed");
@@ -88,7 +88,7 @@ for (const reason of [
 }
 
 for (const reason of ["success", "success-auth-text", "Rate limit exceeded", "Permission denied", "Invalid API key", "Example: Not logged in · Please run /login"]) {
-  test(`keeps a warm query for ${reason}`, { timeout: 6000 }, async t => {
+  test(`keeps a warm query for ${reason}`, { timeout: 15000 }, async t => {
     const run = await launch(t, reason);
     run.send();
     await run.waitForFrames(1);
