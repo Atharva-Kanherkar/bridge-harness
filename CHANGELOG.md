@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.9.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.8.0...v0.9.0) (2026-10-05)
+
+
+### Features
+
+* add supervised composer dictation ([#683](https://github.com/Atharva-Kanherkar/bridge-harness/issues/683)) ([037627b](https://github.com/Atharva-Kanherkar/bridge-harness/commit/037627b357b7b93e2f60d9396b6f505a52d96c19))
+* **bridged:** opt-in WebSocket listener and deployment credential policy ([#815](https://github.com/Atharva-Kanherkar/bridge-harness/issues/815)) ([aa0f663](https://github.com/Atharva-Kanherkar/bridge-harness/commit/aa0f6631da6d8b7fbe531fd55f384c6109d628c4))
+* **delegation:** opt out of informational worker notices ([#818](https://github.com/Atharva-Kanherkar/bridge-harness/issues/818)) ([db0a778](https://github.com/Atharva-Kanherkar/bridge-harness/commit/db0a7781d218f04d89f55df4dc8cbf59725c2594))
+* **memory:** real recall analytics, run log, and Insights tab ([#812](https://github.com/Atharva-Kanherkar/bridge-harness/issues/812)) ([3520c79](https://github.com/Atharva-Kanherkar/bridge-harness/commit/3520c799a53502b5c1ca5e2e3008ba6891312d58))
+* **new-chat:** choose an agent when starting a chat ([#814](https://github.com/Atharva-Kanherkar/bridge-harness/issues/814)) ([62006af](https://github.com/Atharva-Kanherkar/bridge-harness/commit/62006af5b6d32e0ff485797d733606e004658b60))
+* **storage:** dock a standing chat beside the storage page ([#811](https://github.com/Atharva-Kanherkar/bridge-harness/issues/811)) ([9e188ef](https://github.com/Atharva-Kanherkar/bridge-harness/commit/9e188efa49062269e2ad75ac0edd17fad0a55f7b))
+* **storage:** give the storage agent its own system prompt, plan cards, and a grid layout ([#813](https://github.com/Atharva-Kanherkar/bridge-harness/issues/813)) ([e0a52a1](https://github.com/Atharva-Kanherkar/bridge-harness/commit/e0a52a12abbf7186df7fb1aee2f228cec140a170))
+
+
+### Bug Fixes
+
+* **dictation:** survive model load, honor early release, free Enter, retry back-to-back takes ([#816](https://github.com/Atharva-Kanherkar/bridge-harness/issues/816)) ([16c4ddc](https://github.com/Atharva-Kanherkar/bridge-harness/commit/16c4ddc749e2b4679aa42c8ba2de8346015168ba))
+* **memory:** show a loading skeleton instead of a blank pin list ([#810](https://github.com/Atharva-Kanherkar/bridge-harness/issues/810)) ([cd8a605](https://github.com/Atharva-Kanherkar/bridge-harness/commit/cd8a605ed6c6b7f978fc046b8440aabcb632d39e))
+* **updater:** rotate the updater public key ([#819](https://github.com/Atharva-Kanherkar/bridge-harness/issues/819)) ([e3a4337](https://github.com/Atharva-Kanherkar/bridge-harness/commit/e3a433789f1dc5c7c17e50f7dfeec2aecc807fc5))
+* **voice:** keep dictation available across turns and on new chats ([#808](https://github.com/Atharva-Kanherkar/bridge-harness/issues/808)) ([e2a52e8](https://github.com/Atharva-Kanherkar/bridge-harness/commit/e2a52e8186343a6a2b7b7cba126772cd8d87fa25))
+
 ## [0.8.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.7.0...v0.8.0) (2026-10-04)
 
 
