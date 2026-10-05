@@ -13,7 +13,11 @@ import { writeFileSync } from "node:fs";
 export function query({ prompt, options }) {
   writeFileSync(process.env.FIXTURE_OPTIONS, JSON.stringify(options));
   return {
-    close() { writeFileSync(process.env.FIXTURE_CLOSED, "closed"); },
+    async close() {
+      // The installed SDK flushes its transcript before closing its process.
+      await new Promise(resolve => setTimeout(resolve, 30));
+      writeFileSync(process.env.FIXTURE_CLOSED, "closed");
+    },
     async *[Symbol.asyncIterator]() {
       for await (const message of prompt) {
         const mode = process.env.FIXTURE_MODE;

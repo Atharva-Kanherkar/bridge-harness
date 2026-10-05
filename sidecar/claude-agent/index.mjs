@@ -174,9 +174,10 @@ try {
   for await (const message of run) {
     await writeFrame(message);
     if (needsFreshLoginQuery(message)) {
-      // close() is synchronous in the SDK. An already-broken query may throw;
-      // the typed failure above is the sole error frame the parent needs.
-      try { run.close(); } catch {}
+      // Some SDK versions return async cleanup despite typing close() as void.
+      // Wait for the transcript flush and child shutdown before exiting. The
+      // typed failure above remains the sole error frame if cleanup rejects.
+      try { await run.close(); } catch {}
       process.exit(1);
     }
     if (message?.type === "result") reportContextUsage();
