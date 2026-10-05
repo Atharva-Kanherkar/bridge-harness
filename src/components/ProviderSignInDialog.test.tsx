@@ -80,6 +80,49 @@ describe("provider sign-in dialog", () => {
     expect(buttonByText("Done")).toBeDefined();
   });
 
+  it("confirms browser sign-in before the vendor terminal exits and retries once", async () => {
+    vi.spyOn(bridgeApi, "health").mockResolvedValue(healthWith("signed_in"));
+    const onRetry = vi.fn();
+    const onClose = vi.fn();
+    await open({ onRetry, onClose });
+    act(() => emitChunk({ sessionId: "provider-login", terminalId: "claude", data: "Visit https://claude.ai/oauth/authorize" } as TerminalChunk));
+    expect(buttonByText("Check sign-in")).toBeDefined();
+    act(() => buttonByText("Check sign-in")!.click());
+    await flush();
+    expect(document.body.textContent).toContain("Signed in to Claude Code");
+    expect(bridgeApi.cancelProviderLogin).toHaveBeenCalledWith("claude");
+    act(() => buttonByText("Retry message")!.click());
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["unknown", "missing", "unavailable"] as const)("does not trust %s health when the vendor has not exited", async state => {
+    vi.spyOn(bridgeApi, "health").mockImplementation(async () => {
+      if (state === "unavailable") throw new Error("unavailable");
+      return state === "missing" ? { adapters: [] } as unknown as Health : healthWith(state);
+    });
+    await open({ onRetry: vi.fn() });
+    act(() => buttonByText("Check sign-in")!.click());
+    await flush();
+    expect(document.body.textContent).toContain("Couldn't confirm sign-in");
+    expect(buttonByText("Retry message")).toBeUndefined();
+    act(() => buttonByText("Check again")!.click());
+    await flush();
+    expect(document.body.textContent).toContain("Couldn't confirm sign-in");
+  });
+
+  it("does not offer a message retry when a manual check still reports signed out", async () => {
+    vi.spyOn(bridgeApi, "health").mockResolvedValue(healthWith("signed_out"));
+    await open({ onRetry: vi.fn() });
+    act(() => buttonByText("Check sign-in")!.click());
+    await flush();
+    expect(document.body.textContent).toContain("Sign-in didn't finish");
+    expect(buttonByText("Retry message")).toBeUndefined();
+    act(() => buttonByText("Try again")!.click());
+    await flush();
+    expect(bridgeApi.startProviderLogin).toHaveBeenCalledTimes(2);
+  });
+
   it("reports a failed sign-in when the provider is still signed out", async () => {
     vi.spyOn(bridgeApi, "health").mockResolvedValue(healthWith("signed_out"));
     await open({ onRetry: vi.fn() });

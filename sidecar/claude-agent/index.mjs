@@ -158,10 +158,28 @@ function reportContextUsage() {
     .finally(() => { contextRead = null; });
 }
 
+// A streaming query caches Claude's credential state. Browser login updates
+// the vendor store, but cannot repair that already-running query. Retire only
+// a failed subscription-auth result, after forwarding it intact, so Bridge's
+// normal EOF cleanup lets the next turn resume this session in a fresh query.
+function needsFreshLoginQuery(message) {
+  return message?.type === "result"
+    && (message.is_error === true || message.subtype?.startsWith("error"))
+    && typeof message.result === "string"
+    && /^(?:not (?:logged|signed) in\b|failed to authenticate:.*\b(?:oauth|session|access token|refresh token)\b|(?:your )?(?:oauth (?:session|token)|access token|refresh token|session|credentials?)\b.{0,80}\b(?:expired|revoked)\b)/i.test(message.result.trim());
+}
+
 // Pump SDK messages straight to stdout as newline JSON.
 try {
   for await (const message of run) {
     await writeFrame(message);
+    if (needsFreshLoginQuery(message)) {
+      // Some SDK versions return async cleanup despite typing close() as void.
+      // Wait for the transcript flush and child shutdown before exiting. The
+      // typed failure above remains the sole error frame if cleanup rejects.
+      try { await run.close(); } catch {}
+      process.exit(1);
+    }
     if (message?.type === "result") reportContextUsage();
   }
 } catch (error) {
