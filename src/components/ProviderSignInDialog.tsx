@@ -16,14 +16,16 @@ const FAILED_LOGIN = /\b(?:login|sign-?in|authentication|oauth)\b.{0,40}\b(?:fai
 
 /** Health's auth probe can lag a successful login (Claude reads it from the
  * Keychain), so only an explicit signed-out answer counts as a failure. A
- * provider that reports `unknown` after a clean exit is trusted; a health
- * read that failed, or never mentioned the provider, proves nothing. */
-export async function providerSignInOutcome(provider: string, output: string): Promise<Outcome> {
+ * provider that reports `unknown` after a clean exit is trusted; a manual
+ * check while the vendor is running requires an explicit signed-in answer.
+ * A health read that failed, or never mentioned the provider, proves nothing. */
+export async function providerSignInOutcome(provider: string, output: string, vendorExited = true): Promise<Outcome> {
   if (FAILED_LOGIN.test(output)) return "failed";
   const health = await bridgeApi.health().catch(() => null);
   const state = health?.adapters.find(adapter => adapter.id === provider)?.authState;
   if (!state) return "unconfirmed";
-  return state === "signed_out" ? "failed" : "signed-in";
+  if (state === "signed_out") return "failed";
+  return state === "signed_in" || vendorExited ? "signed-in" : "unconfirmed";
 }
 
 /** Sign-in raised by a failed turn. It confirms the result before closing so
@@ -41,13 +43,15 @@ export function ProviderSignInDialog({ provider, label, onRetry, onAuthChanged, 
   // verdict onto the next sign-in.
   const runRef = useRef(0);
   const outputRef = useRef("");
+  const vendorExitedRef = useRef(false);
   const close = () => { runRef.current += 1; setPhase("signing-in"); onClose(); };
-  const exited = (output: string) => {
+  const check = (output: string, vendorExited: boolean) => {
     if (!provider) return;
     outputRef.current = output;
-    const run = runRef.current;
+    vendorExitedRef.current = vendorExited;
+    const run = ++runRef.current;
     setPhase("checking");
-    void providerSignInOutcome(provider, output).then(outcome => {
+    void providerSignInOutcome(provider, output, vendorExited).then(outcome => {
       onAuthChanged();
       if (runRef.current === run) setPhase(outcome);
     });
@@ -83,7 +87,7 @@ export function ProviderSignInDialog({ provider, label, onRetry, onAuthChanged, 
           ? <p className="flex items-center gap-2 text-[12px] text-muted-foreground" role="status">
             <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> Checking your {label} sign-in…
           </p>
-          : <ProviderLoginPane key={attempt} bare provider={provider} label={label} onClose={close} onExited={exited} />}
+          : <ProviderLoginPane key={attempt} bare provider={provider} label={label} onClose={close} onExited={output => check(output, true)} />}
       </DialogPanel>}
       <DialogFooter variant="bare">
         {phase === "signed-in"
@@ -99,9 +103,12 @@ export function ProviderSignInDialog({ provider, label, onRetry, onAuthChanged, 
             : phase === "unconfirmed"
               ? <>
                 <Button variant="ghost" onClick={close}>Close</Button>
-                <Button onClick={() => exited(outputRef.current)}>Check again</Button>
+                <Button onClick={() => check(outputRef.current, vendorExitedRef.current)}>Check again</Button>
               </>
-              : <Button variant="ghost" onClick={close}>Cancel</Button>}
+              : <>
+                <Button variant="ghost" onClick={close}>Cancel</Button>
+                {phase === "signing-in" && <Button onClick={() => check("", false)}>Check sign-in</Button>}
+              </>}
       </DialogFooter>
     </DialogContent>
   </Dialog>;
