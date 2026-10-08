@@ -267,9 +267,16 @@ fn launch(
     // reaches them — the discovered/connected server map below is the only way
     // they ever see a connector. A non-networked read-only sandbox has no route
     // to reach any MCP server anyway, so it gets none.
+    // An interactive chat also gets Bridge's own `visualize` server. It is a
+    // local stdio process with no sign-in, so it carries none of the
+    // connector handshake cost described on `sidecar_mcp_servers`.
+    let visualize = crate::mcp_apps::attaches_to(write_mode, read_only_sandbox, briefing)
+        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .flatten();
     let launch_mcp_servers = sidecar_mcp_servers(
         briefing_config.is_some() || (read_only_sandbox.is_some() && network_allowed),
         &sdk_configuration.mcp_servers,
+        visualize.as_ref(),
     );
     let launch_configuration = crate::marketplace::ClaudeSdkConfiguration {
         plugins: launch_plugins.clone(),
@@ -932,15 +939,25 @@ impl AdapterRuntime for ClaudeRuntime {
 /// `mcp list` calls connected. Only a briefing run keeps the explicit list: it
 /// runs under `strictMcpConfig`, so the declared servers are the only ones it
 /// can reach at all.
+///
+/// `visualize` is Bridge's own server, passed only for interactive chats; it
+/// never joins a briefing's list.
 fn sidecar_mcp_servers(
     briefing: bool,
     discovered: &std::collections::BTreeMap<String, Value>,
+    visualize: Option<&crate::mcp_apps::ServerLaunch>,
 ) -> std::collections::BTreeMap<String, Value> {
     if briefing {
-        discovered.clone()
-    } else {
-        std::collections::BTreeMap::new()
+        return discovered.clone();
     }
+    visualize
+        .map(|launch| {
+            std::collections::BTreeMap::from([(
+                crate::mcp_apps::tool::SERVER_NAME.to_owned(),
+                launch.claude_entry(),
+            )])
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn claude_context_inventory(
@@ -1154,8 +1171,40 @@ mod tests {
             "claude.ai Notion".to_string(),
             json!({"type": "http", "url": "https://mcp.example/notion"}),
         )]);
-        assert!(sidecar_mcp_servers(false, &discovered).is_empty());
-        assert_eq!(sidecar_mcp_servers(true, &discovered), discovered);
+        assert!(sidecar_mcp_servers(false, &discovered, None).is_empty());
+        assert_eq!(sidecar_mcp_servers(true, &discovered, None), discovered);
+    }
+
+    fn visualize_launch() -> crate::mcp_apps::ServerLaunch {
+        crate::mcp_apps::ServerLaunch {
+            command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
+            args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+        }
+    }
+
+    #[test]
+    fn claude_chat_sessions_get_the_bridge_server() {
+        let discovered = std::collections::BTreeMap::from([(
+            "claude.ai Notion".to_string(),
+            json!({"type": "http", "url": "https://mcp.example/notion"}),
+        )]);
+        let servers = sidecar_mcp_servers(false, &discovered, Some(&visualize_launch()));
+        assert_eq!(servers.keys().collect::<Vec<_>>(), vec!["bridge"]);
+        assert_eq!(servers["bridge"]["type"], "stdio");
+        assert_eq!(servers["bridge"]["args"][0], crate::mcp_apps::HELPER_FLAG);
+    }
+
+    #[test]
+    fn claude_workers_and_briefings_do_not_get_the_bridge_server() {
+        let discovered = std::collections::BTreeMap::from([(
+            "claude.ai Notion".to_string(),
+            json!({"type": "http", "url": "https://mcp.example/notion"}),
+        )]);
+        // A briefing's list is exactly its discovered connectors.
+        assert_eq!(sidecar_mcp_servers(true, &discovered, Some(&visualize_launch())), discovered);
+        // Workers never resolve a launch: the attach rule refuses them first.
+        assert!(!crate::mcp_apps::attaches_to(Some(WriteMode::Isolated), None, None));
+        assert!(!crate::mcp_apps::attaches_to(Some(WriteMode::Shared), None, None));
     }
 
     #[test]
