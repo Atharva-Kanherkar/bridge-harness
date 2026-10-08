@@ -57,7 +57,7 @@ document block: {\"family\": \"document\", \"form\": ..., \"sourceIds\"?: [...],
   glossary {items: [{term, definition}]}
 
 diagram block: {\"family\": \"diagram\", \"form\": \"grid\", \"graph\": {\"nodes\": [{id, label?, row, col, emphasis?: default|muted|active, marker?: none|checkpoint|tip|continues}], \"edges\": [{from, to, curve?, emphasis?}], \"caption\", \"ariaLabel\"}}
-  Place nodes by row and col. Achromatic; one \"active\" path at most, for the thing the reader should follow; \"muted\" for paths that are not the point.
+  Place nodes by row and col; keep labels to 18 characters. Achromatic; one \"active\" path at most, for the thing the reader should follow; \"muted\" for paths that are not the point.
 
 AFTER THE CALL
 On success, do not restate the visual's values in prose: say what matters and why. If the call is refused, fix every listed problem and call once more; if it is refused again, answer in text.";

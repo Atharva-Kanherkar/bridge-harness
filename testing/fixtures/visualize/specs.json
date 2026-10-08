@@ -978,7 +978,10 @@
             "encoding": {
               "x": {
                 "field": "usd",
-                "type": "quantitative"
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
               },
               "color": {
                 "field": "harness"
@@ -1185,7 +1188,7 @@
                 "id": "d",
                 "row": 2,
                 "col": 1,
-                "label": "denied with a reason",
+                "label": "denied, reason",
                 "emphasis": "muted"
               },
               {
@@ -1199,7 +1202,7 @@
                 "id": "w",
                 "row": 3,
                 "col": 0,
-                "label": "worker in its worktree",
+                "label": "worker worktree",
                 "emphasis": "active",
                 "marker": "tip"
               },
@@ -1207,7 +1210,7 @@
                 "id": "v",
                 "row": 4,
                 "col": 0,
-                "label": "verified and adopted",
+                "label": "verified, adopted",
                 "emphasis": "active",
                 "marker": "checkpoint"
               }
