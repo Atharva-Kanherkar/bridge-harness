@@ -35,14 +35,14 @@ At most one visual per turn unless the user asked for several.";
 
 const GROUNDING: &str = "GROUNDING (required)
 - Declare every source in \"sources\": {id, kind, ref, title?}. kind \"web\": ref is the exact URL you fetched. \"tool\": ref names the tool call that returned the values. \"file\": ref is the workspace path. \"user\": the user gave the numbers. \"computed\": ref is the formula and \"from\" lists the source ids it reads. \"estimate\": ref states the basis in a few words.
-- Every chart, metric, table and compare block lists its sources in \"sourceIds\". Every findings item lists its own.
+- Every chart, metric, table and compare block lists its sources in its own \"sourceIds\" (inside the block, not at the top level). Every findings item lists its own. With a single declared source, a block that names none cites it.
 - Copy values exactly as the source states them. A value you had to estimate gets \"estimate\": true on its row or item and cites an estimate source; Bridge draws it dashed and labelled. Never present an estimate as a fact.";
 
 const SHAPE: &str = "SHAPE
 {\"version\": 1, \"title\": \"...\", \"subtitle\"?, \"layout\"?: \"stack\"|\"grid\", \"blocks\": [1 to 6 blocks], \"sources\"?: [...], \"followUps\"?: [up to 4 short questions the user may ask next], \"notes\"?: [...], \"redraw\"?: true}
 
 chart block: {\"family\": \"chart\", \"form\": ..., \"sourceIds\": [...], \"vegaLite\": {\"mark\": ..., \"data\": {\"values\": [{field: value}, ...]}, \"encoding\": {\"x\": {\"field\", \"type\"}, \"y\": {...}, \"color\"?: {\"field\"}}}, \"colors\"?: {\"<series value>\": COLOR}}
-  A Vega-Lite subset: inline data.values only; no transform, config, params, layer, concat or url. Pre-compute aggregates. Marks: bar for bar, stacked-bar, grouped-bar, proportion, waterfall and funnel; line; area; point for scatter; rect for heatmap. stacked-bar and grouped-bar need color (the series). proportion needs color (the parts) and x (their size). heatmap needs x, y and color (the measure). waterfall: x is the step, y the signed change, and running totals carry \"total\": true. funnel: one axis is the ordered steps, the other the count.
+  A Vega-Lite subset: inline data.values only; no transform, config, params, layer, concat or url. Pre-compute aggregates. Marks: bar for bar, stacked-bar, grouped-bar, waterfall and funnel; bar or arc for proportion (it always draws as one split bar, never a pie); line; area; point for scatter; rect for heatmap. stacked-bar and grouped-bar need color (the series). proportion needs color (the parts) and x (their size). heatmap needs x, y and color (the measure). waterfall: x is the step, y the signed change, and running totals carry \"total\": true. funnel: one axis is the ordered steps, the other the count.
 
 document block: {\"family\": \"document\", \"form\": ..., \"sourceIds\"?: [...], \"content\": {...}}
   metric {items: [{label, value, delta?, tone?: positive|negative|neutral, note?, estimate?}]}, always next to another block
@@ -103,7 +103,7 @@ pub fn input_schema() -> Value {
                         "family": {"type": "string", "enum": catalog::FAMILIES},
                         "form": {"type": "string", "enum": forms},
                         "title": {"type": "string", "maxLength": 80},
-                        "sourceIds": {"type": "array", "items": {"type": "string"}},
+                        "sourceIds": {"type": "array", "items": {"type": "string"}, "description": "ids from the top-level sources this block's facts come from; required on chart, metric, table and compare blocks when there is more than one source"},
                         "vegaLite": {"type": "object", "description": "chart blocks: mark, data.values, encoding"},
                         "colors": {"type": "object", "additionalProperties": {"type": "string", "enum": COLORS}},
                         "content": {"type": "object", "description": "document blocks"},

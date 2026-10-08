@@ -17,7 +17,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { cn } from "@/lib/utils";
-import viewHtml from "./visual/generated/visual.html?raw";
 
 export const VIEW_CSP = [
   "default-src 'none'",
@@ -32,7 +31,7 @@ export const VIEW_CSP = [
 ].join("; ");
 
 /** The view document with its CSP placed before anything that could load. */
-export function viewDocument(html = viewHtml): string {
+export function viewDocument(html: string): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${VIEW_CSP}">`;
   return html.replace(/<head>/i, `<head>\n${meta}`);
 }
@@ -108,7 +107,12 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
     if (!node) return;
     let cancelled = false;
     void (async () => {
-      const { AppBridge, PostMessageTransport } = await import("@modelcontextprotocol/ext-apps/app-bridge");
+      // Both load on the first visual, not with the app: the view alone is
+      // over half a megabyte.
+      const [{ AppBridge, PostMessageTransport }, { default: viewHtml }] = await Promise.all([
+        import("@modelcontextprotocol/ext-apps/app-bridge"),
+        import("./visual/generated/visual.html?raw"),
+      ]);
       const target = node.contentWindow;
       if (cancelled || !target) return;
       const app = new AppBridge(
@@ -146,7 +150,7 @@ export function McpAppFrame({ input, theme, displayMode = "inline", actions, cla
       }
       bridge.current = app as unknown as Bridge;
       // Only now that the bridge listens does the view get its document.
-      node.srcdoc = viewDocument();
+      node.srcdoc = viewDocument(viewHtml);
     })();
     return () => {
       cancelled = true;

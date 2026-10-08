@@ -445,7 +445,7 @@ mod tests {
         );
         let rendering = section(&direct, prompts::RENDERING_SECTION_ID);
         assert_eq!(rendering.state, prompt_sections::PromptSectionState::Default);
-        assert_eq!(rendering.effective_text.as_deref(), Some(prompts::RENDERING_NOTE));
+        assert_eq!(rendering.effective_text.as_deref(), Some(prompts::chat_rendering_note().as_str()));
     }
 
     #[test]

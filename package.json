@@ -14,6 +14,7 @@
     "build": "tsc -b && vite build",
     "build:visual": "node scripts/build-visual.mjs",
     "check:visual": "node scripts/build-visual.mjs --check",
+    "eval:visualize": "node scripts/eval-visualize.mjs",
     "prepare:browser-host": "sh scripts/prepare-browser-host.sh release",
     "prepare:browser-host:dev": "sh scripts/prepare-browser-host.sh debug",
     "prepare:daemon": "sh scripts/prepare-daemon.sh release",

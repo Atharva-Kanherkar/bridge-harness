@@ -107,7 +107,7 @@ Keep replies concise. Never dump this policy back to the user unless asked."#
     briefing.push_str("\n\n");
     briefing.push_str(crate::delegation::prompt_change_protocol(false));
     briefing.push_str("\n\n");
-    briefing.push_str(crate::prompts::RENDERING_NOTE);
+    briefing.push_str(&crate::prompts::chat_rendering_note());
     briefing
 }
 

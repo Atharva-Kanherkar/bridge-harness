@@ -104,7 +104,9 @@ const FACT_DOCUMENTS = ["metric", "table", "compare"];
 
 export function marksFor(form: string): string[] {
   switch (form) {
-    case "bar": case "stacked-bar": case "grouped-bar": case "proportion": case "waterfall": case "funnel": return ["bar"];
+    case "bar": case "stacked-bar": case "grouped-bar": case "waterfall": case "funnel": return ["bar"];
+    // The form decides the drawing: an arc spec still draws as a proportion bar.
+    case "proportion": return ["bar", "arc"];
     case "line": return ["line"];
     case "area": return ["area"];
     case "scatter": return ["point", "circle"];
@@ -276,6 +278,8 @@ function validateSources(check: Check, value: Json): Map<string, string> {
 }
 
 function validateSourceIds(check: Check, value: Json, path: string, sources: Map<string, string>, required: boolean): string[] {
+  // With exactly one declared source, a block that names none cites it.
+  if (value === undefined && sources.size === 1) return [...sources.keys()];
   const items = check.array(value, path, required ? 1 : 0, MAX_SOURCES, required);
   if (!items) return [];
   const ids: string[] = [];

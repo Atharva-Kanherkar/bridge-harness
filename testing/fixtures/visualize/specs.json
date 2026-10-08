@@ -1590,6 +1590,105 @@
     }
   },
   {
+    "name": "a lone source is cited by default",
+    "valid": true,
+    "spec": {
+      "version": 1,
+      "title": "Signups",
+      "sources": [
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "day": "Mon",
+                  "n": 120
+                },
+                {
+                  "day": "Tue",
+                  "n": 135
+                },
+                {
+                  "day": "Wed",
+                  "n": 160
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "day"
+              },
+              "y": {
+                "field": "n"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "proportion with an arc mark",
+    "valid": true,
+    "spec": {
+      "version": 1,
+      "title": "Browser share",
+      "sources": [
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "proportion",
+          "vegaLite": {
+            "mark": {
+              "type": "arc"
+            },
+            "data": {
+              "values": [
+                {
+                  "b": "Chrome",
+                  "s": 64
+                },
+                {
+                  "b": "Safari",
+                  "s": 19
+                },
+                {
+                  "b": "Other",
+                  "s": 17
+                }
+              ]
+            },
+            "encoding": {
+              "theta": {
+                "field": "s",
+                "type": "quantitative"
+              },
+              "color": {
+                "field": "b"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
     "name": "version must be 1",
     "spec": {
       "version": 2,

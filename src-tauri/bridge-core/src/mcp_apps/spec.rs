@@ -79,7 +79,10 @@ impl SpecError {
 /// The marks a chart form may use.
 pub fn marks_for(form: &str) -> &'static [&'static str] {
     match form {
-        "bar" | "stacked-bar" | "grouped-bar" | "proportion" | "waterfall" | "funnel" => &["bar"],
+        "bar" | "stacked-bar" | "grouped-bar" | "waterfall" | "funnel" => &["bar"],
+        // The form decides the drawing: an arc spec still draws as a
+        // proportion bar, never a pie.
+        "proportion" => &["bar", "arc"],
         "line" => &["line"],
         "area" => &["area"],
         "scatter" => &["point", "circle"],
@@ -269,6 +272,12 @@ impl Sources {
     fn kind(&self, id: &str) -> Option<&str> {
         self.kinds.get(id).map(String::as_str)
     }
+
+    /// With exactly one declared source, a block that names none cites it:
+    /// there is nothing else it could mean.
+    fn only(&self) -> Option<&str> {
+        (self.kinds.len() == 1).then(|| self.kinds.keys().next().map(String::as_str)).flatten()
+    }
 }
 
 fn validate_sources(check: &mut Check, value: Option<&Value>) -> Sources {
@@ -332,6 +341,11 @@ fn validate_sources(check: &mut Check, value: Option<&Value>) -> Sources {
 }
 
 fn validate_source_ids(check: &mut Check, value: Option<&Value>, path: &str, sources: &Sources, required: bool) -> Vec<String> {
+    if value.is_none() {
+        if let Some(only) = sources.only() {
+            return vec![only.to_owned()];
+        }
+    }
     let min = usize::from(required);
     let Some(items) = check.array(value, path, min, MAX_SOURCES, required) else {
         return Vec::new();
@@ -971,6 +985,7 @@ mod tests {
     #[test]
     fn fact_blocks_must_cite_declared_sources() {
         let mut spec = bar();
+        spec["sources"].as_array_mut().unwrap().push(json!({"id": "notes", "kind": "user", "ref": "pasted"}));
         spec["blocks"][0].as_object_mut().unwrap().remove("sourceIds");
         assert_eq!(paths(&spec), vec!["blocks[0].sourceIds"]);
         let mut spec = bar();
@@ -983,10 +998,28 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_source_is_cited_by_default_and_several_are_not() {
+        let mut spec = bar();
+        spec["blocks"][0].as_object_mut().unwrap().remove("sourceIds");
+        assert_eq!(paths(&spec), Vec::<String>::new());
+        spec["sources"].as_array_mut().unwrap().push(json!({"id": "other", "kind": "user", "ref": "pasted"}));
+        assert_eq!(paths(&spec), vec!["blocks[0].sourceIds"]);
+    }
+
+    #[test]
+    fn a_proportion_accepts_an_arc_mark() {
+        let spec = json!({"version": 1, "title": "t", "sources": [{"id": "s", "kind": "user", "ref": "pasted"}],
+            "blocks": [{"family": "chart", "form": "proportion", "vegaLite": {"mark": "arc",
+                "data": {"values": [{"k": "a", "v": 1}, {"k": "b", "v": 2}]},
+                "encoding": {"theta": {"field": "v"}, "color": {"field": "k"}}}}]});
+        assert_eq!(paths(&spec), Vec::<String>::new());
+    }
+
+    #[test]
     fn findings_items_cite_per_item() {
         let spec = json!({
             "version": 1, "title": "t",
-            "sources": [{"id": "a", "kind": "web", "ref": "https://example.com"}],
+            "sources": [{"id": "a", "kind": "web", "ref": "https://example.com"}, {"id": "b", "kind": "web", "ref": "https://example.org"}],
             "blocks": [{"family": "document", "form": "findings", "content": {"items": [
                 {"text": "cited", "sourceIds": ["a"]},
                 {"text": "uncited"}
