@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.9.0...v0.10.0) (2026-10-08)
+
+
+### Features
+
+* render charts, diagrams and sourced findings inline with MCP Apps ([#824](https://github.com/Atharva-Kanherkar/bridge-harness/issues/824)) ([270156f](https://github.com/Atharva-Kanherkar/bridge-harness/commit/270156f321a904d6dcee8fa117fa41f08c8855b2))
+
+
+### Bug Fixes
+
+* **auth:** recover Claude chats after browser sign-in ([#820](https://github.com/Atharva-Kanherkar/bridge-harness/issues/820)) ([0ae9639](https://github.com/Atharva-Kanherkar/bridge-harness/commit/0ae963905c3c181773123aa7d7e45dd29da3f664))
+* **claude:** stop drawing each thought twice ([#822](https://github.com/Atharva-Kanherkar/bridge-harness/issues/822)) ([4e72ae6](https://github.com/Atharva-Kanherkar/bridge-harness/commit/4e72ae682c6cfa52cfef15cf286c4b7c3d181846))
+
 ## [0.9.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.8.0...v0.9.0) (2026-10-05)
 
 
