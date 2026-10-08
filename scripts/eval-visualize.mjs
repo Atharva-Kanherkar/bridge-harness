@@ -11,7 +11,7 @@
 // how to call `visualize`. Prior turns of a multi-turn case are given as a
 // transcript in the prompt. Results land in testing/evals/visualize/results/.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,9 +30,20 @@ const concurrency = Number(flag("concurrency", "3"));
 const category = flag("category", undefined);
 const ids = flag("ids", undefined)?.split(",");
 
+/**
+ * The bridged binary to serve the tool, copied aside so a concurrent cargo
+ * build relinking target/debug/bridged cannot pull it out from under a run.
+ */
 function resolveServer() {
   const explicit = flag("server", process.env.BRIDGE_VISUALIZE_MCP_BIN);
   if (explicit) return explicit;
+  const pinned = join(mkdtempSync(join(tmpdir(), "visualize-eval-bin-")), "bridged");
+  copyFileSync(locateServer(), pinned);
+  chmodSync(pinned, 0o755);
+  return pinned;
+}
+
+function locateServer() {
   const target = JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--no-deps", "--manifest-path", join(root, "src-tauri/Cargo.toml")], { encoding: "utf8" })).target_directory;
   const binary = join(target, "debug", "bridged");
   if (!existsSync(binary)) throw new Error(`build it first: cargo build -p bridged (looked for ${binary})`);
@@ -83,8 +94,12 @@ async function observeClaude(testCase, server, note, cwd) {
   const calls = new Map();
   let reply = "";
   let result;
+  let connected = false;
   for (const event of lines(stdout)) {
     if (event.type === "result") result = event;
+    if (event.type === "system" && event.subtype === "init") {
+      connected = (event.mcp_servers ?? []).some(server => server.name === "bridge" && server.status === "connected");
+    }
     for (const part of event.message?.content ?? []) {
       if (part.type === "tool_use" && part.name === "mcp__bridge__visualize") calls.set(part.id, { input: part.input, refused: false });
       if (part.type === "tool_result" && calls.has(part.tool_use_id)) {
@@ -97,9 +112,13 @@ async function observeClaude(testCase, server, note, cwd) {
   }
   // A run that never produced a successful result is the harness failing,
   // not the model deciding: it must not score as "chose not to draw".
-  const error = code !== 0 || !result || result.is_error || String(result.subtype ?? "").startsWith("error")
-    ? `exit ${code}; ${result ? `${result.subtype}: ${String(result.result ?? "").slice(0, 200)}` : "no result event"}; ${stderr.slice(0, 200)}`
-    : undefined;
+  // Without the server the model cannot call the tool, so the run says
+  // nothing about its decision.
+  const error = !connected
+    ? "the bridge MCP server was not connected"
+    : code !== 0 || !result || result.is_error || String(result.subtype ?? "").startsWith("error")
+      ? `exit ${code}; ${result ? `${result.subtype}: ${String(result.result ?? "").slice(0, 200)}` : "no result event"}; ${stderr.slice(0, 200)}`
+      : undefined;
   return { calls: [...calls.values()], reply, error };
 }
 
@@ -125,7 +144,10 @@ async function observeCodex(testCase, server, note, cwd) {
     }
     if (item.type === "agent_message" && event.type === "item.completed") reply = item.text ?? "";
   }
-  const error = code !== 0 || !completed || failure ? `exit ${code}; ${failure || "no turn.completed"}; ${stderr.slice(-200)}` : undefined;
+  const serverFailed = /MCP client for `?bridge`? failed|bridge.*failed to start/i.test(stderr);
+  const error = serverFailed
+    ? "the bridge MCP server failed to start"
+    : code !== 0 || !completed || failure ? `exit ${code}; ${failure || "no turn.completed"}; ${stderr.slice(-200)}` : undefined;
   return { calls: [...calls.values()], reply, error };
 }
 

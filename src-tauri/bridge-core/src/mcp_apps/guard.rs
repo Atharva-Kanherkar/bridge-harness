@@ -36,11 +36,23 @@ pub fn fingerprint(spec: &Value) -> String {
                     serde_json::json!([
                         block["family"],
                         block["form"],
-                        block.pointer("/vegaLite/data/values").cloned().unwrap_or(Value::Null),
-                        block.pointer("/vegaLite/encoding").cloned().unwrap_or(Value::Null),
+                        block
+                            .pointer("/vegaLite/data/values")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        block
+                            .pointer("/vegaLite/encoding")
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         block.get("content").cloned().unwrap_or(Value::Null),
-                        block.pointer("/graph/nodes").cloned().unwrap_or(Value::Null),
-                        block.pointer("/graph/edges").cloned().unwrap_or(Value::Null),
+                        block
+                            .pointer("/graph/nodes")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        block
+                            .pointer("/graph/edges")
+                            .cloned()
+                            .unwrap_or(Value::Null),
                     ])
                 })
                 .collect()
@@ -134,7 +146,9 @@ mod tests {
             guard.remember(&spec(json!([{"k": "a", "v": at}])));
         }
         assert!(guard.check(&oldest).is_ok());
-        assert!(guard.check(&spec(json!([{"k": "a", "v": REMEMBERED}]))).is_err());
+        assert!(guard
+            .check(&spec(json!([{"k": "a", "v": REMEMBERED}])))
+            .is_err());
     }
 
     #[test]

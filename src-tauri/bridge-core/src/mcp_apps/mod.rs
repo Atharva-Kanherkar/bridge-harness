@@ -23,9 +23,9 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
+use crate::briefing_policy::BriefingRuntimePolicy;
 use crate::delegation::WriteMode;
 use crate::worker_sandbox::ReadOnlySandbox;
-use crate::briefing_policy::BriefingRuntimePolicy;
 
 /// The `bridged` flag that turns it into this stdio server.
 pub const HELPER_FLAG: &str = "--bridge-mcp-visualize";
@@ -41,13 +41,23 @@ pub fn canonical_json(value: &Value) -> String {
             keys.sort();
             let fields: Vec<String> = keys
                 .into_iter()
-                .map(|key| format!("{}:{}", Value::String(key.clone()), canonical_json(&map[key])))
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        Value::String(key.clone()),
+                        canonical_json(&map[key])
+                    )
+                })
                 .collect();
             format!("{{{}}}", fields.join(","))
         }
         Value::Array(items) => format!(
             "[{}]",
-            items.iter().map(canonical_json).collect::<Vec<_>>().join(",")
+            items
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",")
         ),
         other => other.to_string(),
     }
@@ -116,7 +126,10 @@ impl ServerLaunch {
         let args: Vec<String> = self.args.iter().map(|arg| toml_string(arg)).collect();
         let name = tool::SERVER_NAME;
         vec![
-            format!("mcp_servers.{name}.command={}", toml_string(&self.command.to_string_lossy())),
+            format!(
+                "mcp_servers.{name}.command={}",
+                toml_string(&self.command.to_string_lossy())
+            ),
             format!("mcp_servers.{name}.args=[{}]", args.join(",")),
         ]
     }
@@ -164,7 +177,10 @@ mod tests {
     #[test]
     fn canonical_json_sorts_keys_at_every_depth() {
         let a = json!({"b": 1, "a": {"d": [1, {"z": 0, "y": 1}], "c": null}});
-        assert_eq!(canonical_json(&a), r#"{"a":{"c":null,"d":[1,{"y":1,"z":0}]},"b":1}"#);
+        assert_eq!(
+            canonical_json(&a),
+            r#"{"a":{"c":null,"d":[1,{"y":1,"z":0}]},"b":1}"#
+        );
     }
 
     #[test]
@@ -196,14 +212,18 @@ mod tests {
         assert_eq!(merged["mcp"]["mine"]["url"], "https://a");
         assert_eq!(merged["mcp"]["bridge"]["type"], "local");
         assert_eq!(merged["mcp"]["bridge"]["command"][1], HELPER_FLAG);
-        let fresh: Value = serde_json::from_str(&merge_opencode_config(Some("not json"), &launch())).unwrap();
+        let fresh: Value =
+            serde_json::from_str(&merge_opencode_config(Some("not json"), &launch())).unwrap();
         assert_eq!(fresh["mcp"]["bridge"]["enabled"], true);
     }
 
     #[test]
-    fn an_explicit_binary_that_does_not_exist_leaves_the_tool_off() {
+    fn no_server_is_attached_when_the_helper_binary_cannot_be_resolved() {
+        // Every adapter attaches through `ServerLaunch::resolve`; `None` means
+        // the session starts without the tool rather than failing.
         std::env::set_var(BIN_ENV, "/nowhere/bridged");
         assert_eq!(helper_binary(), None);
+        assert_eq!(ServerLaunch::resolve(), None);
         std::env::remove_var(BIN_ENV);
     }
 }

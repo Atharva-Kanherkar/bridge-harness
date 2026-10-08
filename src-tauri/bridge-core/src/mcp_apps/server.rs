@@ -41,13 +41,20 @@ fn block_summary(block: &Value) -> String {
             format!("{rows} row{}", if rows == 1 { "" } else { "s" })
         }
         Some("diagram") => {
-            let nodes = block.pointer("/graph/nodes").and_then(Value::as_array).map_or(0, Vec::len);
+            let nodes = block
+                .pointer("/graph/nodes")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
             format!("{nodes} nodes")
         }
         _ => {
             let items = ["items", "rows", "options", "pros"]
                 .iter()
-                .find_map(|key| block.pointer(&format!("/content/{key}")).and_then(Value::as_array))
+                .find_map(|key| {
+                    block
+                        .pointer(&format!("/content/{key}"))
+                        .and_then(Value::as_array)
+                })
                 .map_or(1, Vec::len);
             format!("{items} item{}", if items == 1 { "" } else { "s" })
         }
@@ -56,13 +63,22 @@ fn block_summary(block: &Value) -> String {
 }
 
 fn refusal(errors: &[spec::SpecError]) -> Value {
-    let mut text = String::from("The visual was not drawn. Fix every item below and call visualize once more:\n");
+    let mut text = String::from(
+        "The visual was not drawn. Fix every item below and call visualize once more:\n",
+    );
     for error in errors.iter().take(spec::MAX_REPORTED) {
-        let path = if error.path.is_empty() { "spec" } else { error.path.as_str() };
+        let path = if error.path.is_empty() {
+            "spec"
+        } else {
+            error.path.as_str()
+        };
         text.push_str(&format!("- {path}: {}\n", error.message));
     }
     if errors.len() > spec::MAX_REPORTED {
-        text.push_str(&format!("- and {} more like these\n", errors.len() - spec::MAX_REPORTED));
+        text.push_str(&format!(
+            "- and {} more like these\n",
+            errors.len() - spec::MAX_REPORTED
+        ));
     }
     json!({"content": [{"type": "text", "text": text.trim_end()}], "isError": true})
 }
@@ -97,7 +113,11 @@ impl VisualServer {
     /// Handle one JSON-RPC message. `None` for notifications.
     pub fn handle(&mut self, message: &Value) -> Option<Value> {
         let Some(object) = message.as_object() else {
-            return Some(failure(&Value::Null, -32600, "expected a JSON-RPC request object"));
+            return Some(failure(
+                &Value::Null,
+                -32600,
+                "expected a JSON-RPC request object",
+            ));
         };
         let method = object.get("method").and_then(Value::as_str).unwrap_or("");
         let Some(id) = object.get("id") else {
@@ -215,11 +235,23 @@ mod tests {
     #[test]
     fn initialize_echoes_a_supported_protocol_version_and_declares_tools_and_resources() {
         let mut server = VisualServer::default();
-        let response = server.handle(&request(1, "initialize", json!({"protocolVersion": "2025-06-18"}))).unwrap();
+        let response = server
+            .handle(&request(
+                1,
+                "initialize",
+                json!({"protocolVersion": "2025-06-18"}),
+            ))
+            .unwrap();
         assert_eq!(response["result"]["protocolVersion"], "2025-06-18");
         assert!(response["result"]["capabilities"]["tools"].is_object());
         assert!(response["result"]["capabilities"]["resources"].is_object());
-        let response = server.handle(&request(2, "initialize", json!({"protocolVersion": "1999-01-01"}))).unwrap();
+        let response = server
+            .handle(&request(
+                2,
+                "initialize",
+                json!({"protocolVersion": "1999-01-01"}),
+            ))
+            .unwrap();
         assert_eq!(response["result"]["protocolVersion"], PROTOCOL_VERSIONS[0]);
     }
 
@@ -238,14 +270,21 @@ mod tests {
     fn tools_call_valid_returns_a_summary() {
         let mut server = VisualServer::default();
         let response = server
-            .handle(&request(1, "tools/call", json!({"name": "visualize", "arguments": bar(three())})))
+            .handle(&request(
+                1,
+                "tools/call",
+                json!({"name": "visualize", "arguments": bar(three())}),
+            ))
             .unwrap();
         let result = &response["result"];
         assert_eq!(result["isError"], false);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"Spend\" (bar, 3 rows)"), "{text}");
         assert!(text.contains("Do not restate"), "{text}");
-        assert!(result.get("structuredContent").is_none(), "the spec is already in the input; do not echo it back");
+        assert!(
+            result.get("structuredContent").is_none(),
+            "the spec is already in the input; do not echo it back"
+        );
     }
 
     #[test]
@@ -255,7 +294,11 @@ mod tests {
         spec["version"] = json!(3);
         spec["blocks"][0]["colors"] = json!({"a": "#fff"});
         let response = server
-            .handle(&request(1, "tools/call", json!({"name": "visualize", "arguments": spec})))
+            .handle(&request(
+                1,
+                "tools/call",
+                json!({"name": "visualize", "arguments": spec}),
+            ))
             .unwrap();
         assert_eq!(response["result"]["isError"], true);
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -267,46 +310,84 @@ mod tests {
     fn a_lint_failure_and_a_repeat_are_refusals_too() {
         let mut server = VisualServer::default();
         let call = |server: &mut VisualServer, spec: Value| {
-            server.handle(&request(1, "tools/call", json!({"name": "visualize", "arguments": spec}))).unwrap()["result"].clone()
+            server
+                .handle(&request(
+                    1,
+                    "tools/call",
+                    json!({"name": "visualize", "arguments": spec}),
+                ))
+                .unwrap()["result"]
+                .clone()
         };
-        assert_eq!(call(&mut server, bar(json!([{"k": "a", "v": 1}])))["isError"], true);
+        assert_eq!(
+            call(&mut server, bar(json!([{"k": "a", "v": 1}])))["isError"],
+            true
+        );
         assert_eq!(call(&mut server, bar(three()))["isError"], false);
         let again = call(&mut server, bar(three()));
         assert_eq!(again["isError"], true);
-        assert!(again["content"][0]["text"].as_str().unwrap().contains("already seen"));
+        assert!(again["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("already seen"));
     }
 
     #[test]
     fn tools_call_unknown_tool_is_a_jsonrpc_error() {
         let mut server = VisualServer::default();
-        let response = server.handle(&request(1, "tools/call", json!({"name": "paint"}))).unwrap();
+        let response = server
+            .handle(&request(1, "tools/call", json!({"name": "paint"})))
+            .unwrap();
         assert_eq!(response["error"]["code"], -32602);
     }
 
     #[test]
     fn resources_list_has_ui_bridge_visual() {
         let mut server = VisualServer::default();
-        let response = server.handle(&request(1, "resources/list", json!({}))).unwrap();
-        assert_eq!(response["result"]["resources"][0]["uri"], "ui://bridge/visual");
-        assert_eq!(response["result"]["resources"][0]["mimeType"], "text/html;profile=mcp-app");
+        let response = server
+            .handle(&request(1, "resources/list", json!({})))
+            .unwrap();
+        assert_eq!(
+            response["result"]["resources"][0]["uri"],
+            "ui://bridge/visual"
+        );
+        assert_eq!(
+            response["result"]["resources"][0]["mimeType"],
+            "text/html;profile=mcp-app"
+        );
     }
 
     #[test]
     fn resources_read_returns_the_bundled_view_as_mcp_app_html() {
         let mut server = VisualServer::default();
-        let response = server.handle(&request(1, "resources/read", json!({"uri": "ui://bridge/visual"}))).unwrap();
+        let response = server
+            .handle(&request(
+                1,
+                "resources/read",
+                json!({"uri": "ui://bridge/visual"}),
+            ))
+            .unwrap();
         let content = &response["result"]["contents"][0];
         assert_eq!(content["mimeType"], "text/html;profile=mcp-app");
-        assert!(content["text"].as_str().unwrap().starts_with("<!doctype html>"));
-        let missing = server.handle(&request(2, "resources/read", json!({"uri": "ui://other"}))).unwrap();
+        assert!(content["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("<!doctype html>"));
+        let missing = server
+            .handle(&request(2, "resources/read", json!({"uri": "ui://other"})))
+            .unwrap();
         assert!(missing["error"].is_object());
     }
 
     #[test]
     fn notifications_get_no_response_and_unknown_methods_get_32601() {
         let mut server = VisualServer::default();
-        assert!(server.handle(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).is_none());
-        let response = server.handle(&request(9, "sampling/createMessage", json!({}))).unwrap();
+        assert!(server
+            .handle(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .is_none());
+        let response = server
+            .handle(&request(9, "sampling/createMessage", json!({})))
+            .unwrap();
         assert_eq!(response["error"]["code"], -32601);
     }
 

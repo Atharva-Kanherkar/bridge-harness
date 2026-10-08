@@ -65,13 +65,17 @@ On success, do not restate the visual's values in prose: say what matters and wh
 /// The tool description, listing exactly the forms this build draws.
 pub fn description() -> String {
     let colors = COLORS.join("|");
-    let mut forms = String::from("PICK THE FORM BY THE QUESTION AND THE DATA'S SHAPE, NEVER BY HABIT\n");
+    let mut forms =
+        String::from("PICK THE FORM BY THE QUESTION AND THE DATA'S SHAPE, NEVER BY HABIT\n");
     for family in catalog::FAMILIES {
         let available: Vec<_> = catalog::available()
             .filter(|info| info.family == *family)
             .collect();
         for info in available {
-            forms.push_str(&format!("- {}/{}: {}\n", info.family, info.form, info.answers));
+            forms.push_str(&format!(
+                "- {}/{}: {}\n",
+                info.family, info.form, info.answers
+            ));
         }
     }
     forms.push_str("If two forms fit, use the one with fewer marks. Never a pie chart.");
@@ -183,7 +187,10 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing {needle:?}");
         }
-        assert!(!text.contains('\u{2014}'), "no em dashes in model-facing text");
+        assert!(
+            !text.contains('\u{2014}'),
+            "no em dashes in model-facing text"
+        );
     }
 
     #[test]

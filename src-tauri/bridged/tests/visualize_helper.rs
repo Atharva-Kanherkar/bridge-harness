@@ -26,19 +26,23 @@ fn bridged_helper_flag_serves_stdio() {
         serde_json::from_str(&line).expect("one JSON response per line")
     };
 
-    let init = ask(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}}));
+    let init = ask(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}}),
+    );
     assert_eq!(init["result"]["serverInfo"]["name"], "bridge");
     let tools = ask(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
     assert_eq!(tools["result"]["tools"][0]["name"], "visualize");
-    let call = ask(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "visualize", "arguments": {
-        "version": 1, "title": "Spend",
-        "sources": [{"id": "s", "kind": "user", "ref": "the user's numbers"}],
-        "blocks": [{"family": "chart", "form": "bar", "sourceIds": ["s"], "vegaLite": {
-            "mark": "bar",
-            "data": {"values": [{"k": "a", "v": 1}, {"k": "b", "v": 2}, {"k": "c", "v": 3}]},
-            "encoding": {"x": {"field": "k"}, "y": {"field": "v"}}
-        }}]
-    }}}));
+    let call = ask(
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "visualize", "arguments": {
+            "version": 1, "title": "Spend",
+            "sources": [{"id": "s", "kind": "user", "ref": "the user's numbers"}],
+            "blocks": [{"family": "chart", "form": "bar", "sourceIds": ["s"], "vegaLite": {
+                "mark": "bar",
+                "data": {"values": [{"k": "a", "v": 1}, {"k": "b", "v": 2}, {"k": "c", "v": 3}]},
+                "encoding": {"x": {"field": "k"}, "y": {"field": "v"}}
+            }}]
+        }}}),
+    );
     assert_eq!(call["result"]["isError"], false, "{call}");
 
     drop(stdin);
