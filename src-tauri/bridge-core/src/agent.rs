@@ -1352,6 +1352,33 @@ fn claude_thinking_id(message_id: &str, index: u64) -> String {
     }
 }
 
+/// The streamed block a snapshot's thinking part is.
+///
+/// The SDK snapshots one content block per assistant message, so the part sits
+/// at array index 0 while the stream filed it under its real content index.
+/// Keying the snapshot by array position alone persisted the thought twice.
+fn streamed_claude_thinking_id(
+    state: &ClaudeStreamState,
+    message_id: &str,
+    thinking: &str,
+) -> Option<String> {
+    let prefix = format!("reasoning-{message_id}");
+    let block_prefix = format!("{prefix}-block-");
+    let mut prefixed = None;
+    for (id, block) in &state.thinking_blocks {
+        if *id != prefix && !id.starts_with(&block_prefix) {
+            continue;
+        }
+        if block.text == thinking {
+            return Some(id.clone());
+        }
+        if !block.completed && !block.text.is_empty() && thinking.starts_with(&block.text) {
+            prefixed = Some(id.clone());
+        }
+    }
+    prefixed
+}
+
 fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option<NormalizedEvent> {
     if block.completed {
         return None;
@@ -1898,7 +1925,8 @@ fn normalize_claude_assistant(
             "thinking" => {
                 if let Some(thinking) = part.get("thinking").and_then(Value::as_str) {
                     if !thinking.is_empty() {
-                        let id = claude_thinking_id(&message_id, block_index as u64);
+                        let id = streamed_claude_thinking_id(state, &message_id, thinking)
+                            .unwrap_or_else(|| claude_thinking_id(&message_id, block_index as u64));
                         let block = state.thinking_blocks.entry(id.clone()).or_default();
                         if block.text != thinking {
                             block.text = thinking.to_owned();
@@ -3214,6 +3242,36 @@ mod tests {
         );
         assert_eq!(late.len(), 1);
         assert_eq!(state.active_message_id.as_deref(), Some("m2"));
+    }
+
+    #[test]
+    fn claude_per_block_snapshot_settles_the_streamed_thought_once() {
+        let mut state = ClaudeStreamState::default();
+        let stream = |event: Value| json!({"type":"stream_event","event":event});
+        normalize_claude_message_with_state(
+            &stream(json!({"type":"message_start","message":{"id":"m"}})),
+            &mut state,
+        );
+        let delta = normalize_claude_message_with_state(
+            &stream(json!({"type":"content_block_delta","index":1,
+                "delta":{"type":"thinking_delta","thinking":"Confirmed."}})),
+            &mut state,
+        );
+        // The SDK snapshots the block alone, so it sits at array index 0.
+        let snapshot = normalize_claude_message_with_state(
+            &json!({"type":"assistant","message":{"id":"m","content":[
+                {"type":"thinking","thinking":"Confirmed."}
+            ]}}),
+            &mut state,
+        );
+        let stop = normalize_claude_message_with_state(
+            &stream(json!({"type":"content_block_stop","index":1})),
+            &mut state,
+        );
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].kind, "reasoning.completed");
+        assert_eq!(snapshot[0].item_id, delta[0].item_id);
+        assert!(stop.is_empty());
     }
 
     #[test]
