@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { DiagramFigure } from "@/components/DiagramFigure";
 import type { DiagramSpec } from "@/components/DiagramFigure";
 import type { VisualBlock, VisualSource, VisualSpec } from "../spec";
-import { ChartView } from "./charts";
+import { ChartHeight, ChartView } from "./charts";
 import { Cites, DocumentView } from "./documents";
 
 export interface VisualActions {
@@ -56,10 +56,15 @@ function Block({ block, numbers, citeBlocks }: { block: VisualBlock; numbers: Ma
   );
 }
 
-export function VisualView({ spec, actions = {}, showTitle = true }: { spec: VisualSpec; actions?: VisualActions; showTitle?: boolean }) {
+export function VisualView({ spec, actions = {}, showTitle = true, fullscreen = false }: { spec: VisualSpec; actions?: VisualActions; showTitle?: boolean; fullscreen?: boolean }) {
   const numbers = useMemo(() => new Map((spec.sources ?? []).map((source, at) => [source.id, at + 1])), [spec.sources]);
   const grid = spec.layout === "grid" && spec.blocks.length > 1;
+  // Fullscreen gives a single chart most of the frame; several share it.
+  const height = fullscreen && typeof window !== "undefined"
+    ? Math.round(Math.min(640, Math.max(280, (window.innerHeight - 220) / Math.max(1, grid ? 1 : spec.blocks.length))))
+    : 240;
   return (
+    <ChartHeight.Provider value={height}>
     <article className="text-foreground" aria-label={spec.title}>
       <div className="px-5 pt-4 pb-4">
         {showTitle && (
@@ -113,5 +118,6 @@ export function VisualView({ spec, actions = {}, showTitle = true }: { spec: Vis
         </footer>
       )}
     </article>
+    </ChartHeight.Provider>
   );
 }

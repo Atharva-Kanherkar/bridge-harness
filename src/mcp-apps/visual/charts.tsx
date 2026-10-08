@@ -5,13 +5,16 @@
  * never read as facts.
  */
 
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ChartBlock } from "../spec";
 import { cellOf, channel, linear, niceTicks, prepare, seriesColors, SINGLE_SERIES, type Prepared } from "./data";
 import { formatCategory, formatNumber, parseTemporal } from "./format";
 
 const AXIS = 11;
 const CHAR = 6.4;
+
+/** The plot height cartesian charts draw at: 240 inline, more in fullscreen. */
+export const ChartHeight = createContext(240);
 
 function useWidth(fallback = 640) {
   const ref = useRef<HTMLDivElement>(null);
@@ -124,7 +127,7 @@ function VerticalBars({ block, prepared }: { block: ChartBlock; prepared: Prepar
   const colors = useMemo(() => seriesColors(prepared.series, block.colors), [prepared, block.colors]);
   const grouped = block.form === "grouped-bar";
   const waterfall = block.form === "waterfall";
-  const height = 240;
+  const height = useContext(ChartHeight);
   const pad = { top: 12, right: 8, bottom: 26, left: 48 };
   const innerW = width - pad.left - pad.right;
   const innerH = height - pad.top - pad.bottom;
@@ -325,7 +328,7 @@ function Lines({ block, prepared }: { block: ChartBlock; prepared: Prepared }) {
   const colors = useMemo(() => seriesColors(prepared.series, block.colors), [prepared, block.colors]);
   const area = block.form === "area";
   const stacked = area && prepared.series.length > 1;
-  const height = 240;
+  const height = useContext(ChartHeight);
   const pad = { top: 16, right: 16, bottom: 26, left: 48 };
   const innerW = width - pad.left - pad.right;
 
@@ -420,7 +423,7 @@ function Scatter({ block }: { block: ChartBlock }) {
   const rows = block.vegaLite.data.values.filter(row => typeof row[xField] === "number" && typeof row[yField] === "number");
   const series = seriesField ? [...new Set(rows.map(row => String(row[seriesField])))] : [SINGLE_SERIES];
   const colors = seriesColors(series, block.colors);
-  const height = 260;
+  const height = useContext(ChartHeight) + 20;
   const pad = { top: 12, right: 16, bottom: 34, left: 48 };
   const xs = rows.map(row => row[xField] as number);
   const ys = rows.map(row => row[yField] as number);

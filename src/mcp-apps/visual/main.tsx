@@ -39,7 +39,10 @@ const root = createRoot(mount);
 
 const app = new App({ name: "bridge-visual", version: "1.0.0" }, {}, { autoResize: true });
 
+let lastInput: unknown;
+
 function draw(input: unknown) {
+  lastInput = input;
   const parsed = parseVisualSpec(input);
   if (!parsed.ok) {
     root.render(
@@ -53,6 +56,7 @@ function draw(input: unknown) {
     <VisualView
       spec={parsed.spec}
       showTitle={showTitle}
+      fullscreen={app.getHostContext()?.displayMode === "fullscreen"}
       actions={{
         ask: text => void app.sendMessage({ role: "user", content: [{ type: "text", text }] }),
         open: url => void app.openLink({ url }),
@@ -62,6 +66,12 @@ function draw(input: unknown) {
 }
 
 app.ontoolinput = ({ arguments: input }) => draw(input);
-app.onhostcontextchanged = context => applyTheme(context.theme);
+app.onhostcontextchanged = context => {
+  applyTheme(context.theme);
+  if (context.displayMode && lastInput !== undefined) draw(lastInput);
+};
 
-void app.connect().then(() => applyTheme(app.getHostContext()?.theme));
+void app.connect().then(() => {
+  applyTheme(app.getHostContext()?.theme);
+  if (lastInput !== undefined) draw(lastInput);
+});
