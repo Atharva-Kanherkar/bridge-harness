@@ -499,6 +499,30 @@ function agentEvent(id: number, sessionId: string, kind: string, fields: Partial
 function forestEntry(id: string, sessionId: string, sequence: number, kind: string, payload: Record<string, unknown>, parentEntryId: string | null): SessionEntry {
   return { id, sessionId, parentEntryId, sequence, semanticSchemaVersion: 2, kind, payload, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: now };
 }
+const MOCK_VISUAL_DAYS = ["2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01"];
+const MOCK_VISUAL_SPEND: Record<string, number[]> = {
+  Claude: [0.12, 0.15, 0.08, 0.1, 0.18, 0.48, 0.14],
+  Codex: [0.07, 0.09, 0.06, 0.1, 0.08, 0.21, 0.09],
+  OpenCode: [0.02, 0.01, 0.03, 0.02, 0.01, 0.05, 0.02],
+};
+const MOCK_VISUAL = {
+  version: 1,
+  title: "Daily spend by harness",
+  subtitle: "Sep 25 to Oct 1, at API rates",
+  sources: [{ id: "ledger", kind: "tool", ref: "usage_summary, 7 days", title: "Bridge usage ledger" }],
+  blocks: [{
+    family: "chart",
+    form: "stacked-bar",
+    sourceIds: ["ledger"],
+    colors: { Claude: "claude", Codex: "codex", OpenCode: "opencode" },
+    vegaLite: {
+      mark: "bar",
+      data: { values: MOCK_VISUAL_DAYS.flatMap((day, at) => Object.entries(MOCK_VISUAL_SPEND).map(([harness, usd]) => ({ day, harness, usd: usd[at] }))) },
+      encoding: { x: { field: "day", type: "temporal" }, y: { field: "usd", type: "quantitative", axis: { format: "$.2f" } }, color: { field: "harness" } },
+    },
+  }],
+  followUps: ["Split Sep 30 by model", "Show tokens instead"],
+};
 const demoEntries: SessionEntry[] = [
   forestEntry("entry-1", "session-1", 1, "user.message", { text: "Build the structured session supervisor.", itemId: "user-1" }, null),
   forestEntry("entry-2", "session-1", 2, "checkpoint", { schemaVersion: 1, summary: "Policy and schema decisions are durable", decisions: ["SQLite is authoritative"] }, "entry-1"),
@@ -531,7 +555,12 @@ const demoEntries: SessionEntry[] = [
   // different facts on purpose: this one is the provider's context actually
   // shrinking, that one is Bridge saving a summary for a later cold start.
   forestEntry("entry-14b", "session-1", 18, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "codex", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13d"),
-  forestEntry("entry-raw", "session-1", 19, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
+  // A visual drawn by Bridge's own `visualize` tool, so `bun run dev` shows the
+  // MCP Apps card the way a Claude chat delivers it.
+  forestEntry("entry-15b", "session-1", 19, "user.message", { text: "Chart what this week cost, by harness. Where did the spike come from?", itemId: "user-visual" }, "entry-14b"),
+  forestEntry("entry-16b", "session-1", 20, "tool.completed", { status: "completed", title: "mcp__bridge__visualize", data: { type: "tool_use", name: "mcp__bridge__visualize", input: MOCK_VISUAL, aggregatedOutput: "Shown to the user inline: \"Daily spend by harness\" (stacked-bar, 21 rows). Do not restate its values in prose; say what matters and why." } }, "entry-15b"),
+  forestEntry("entry-17b", "session-1", 21, "assistant.message", { text: "The spike is Sep 30, at roughly three times the daily average, and most of it is Claude: one long refactor that compacted twice." }, "entry-16b"),
+  forestEntry("entry-raw", "session-1", 22, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-17b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a

@@ -199,6 +199,14 @@ fn launch(
             "networkAccess": sandbox.network_allowed(),
         })
     });
+    // Root-level overrides, ahead of the subcommand: an interactive chat gets
+    // Bridge's `visualize` server alongside the user's own servers.
+    let visualize = crate::mcp_apps::attaches_to(write_mode, read_only_sandbox, briefing)
+        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .flatten();
+    for value in chat_config_overrides(visualize.as_ref()) {
+        command.args(["-c", &value]);
+    }
     command
         .args(["app-server", "--listen", "stdio://"])
         .current_dir(std::path::Path::new(cwd))
@@ -332,6 +340,23 @@ fn prepare_isolated_codex_home(
         sandbox.output_dir(),
     )?;
     Ok(isolated_root)
+}
+
+/// Codex's bundled `visualize` plugin draws by writing an HTML file and
+/// emitting a directive only Codex Desktop renders; in Bridge it shows as
+/// stray text. With Bridge's own server attached, a chat should not have two
+/// tools competing for one decision.
+const CODEX_BUNDLED_VISUALIZE_OFF: &str = "plugins.visualize@openai-bundled.enabled=false";
+
+/// `-c` values for a session: none for a worker, Bridge's `visualize` server
+/// (and the bundled plugin it supersedes switched off) for a chat that has it.
+fn chat_config_overrides(visualize: Option<&crate::mcp_apps::ServerLaunch>) -> Vec<String> {
+    let Some(launch) = visualize else {
+        return Vec::new();
+    };
+    let mut overrides = launch.codex_overrides();
+    overrides.push(CODEX_BUNDLED_VISUALIZE_OFF.to_owned());
+    overrides
 }
 
 fn sandbox_settings(write_mode: Option<WriteMode>) -> (&'static str, &'static str) {
@@ -1666,4 +1691,28 @@ mod tests {
         assert!(empty.supported_effort_levels.unwrap().is_empty());
         assert!(discovered_model_from_row(&json!({"id": "hidden", "displayName": "Hidden", "hidden": true})).is_none());
     }
+
+    #[test]
+    fn codex_chat_sessions_get_mcp_servers_bridge_overrides() {
+        let launch = crate::mcp_apps::ServerLaunch {
+            command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
+            args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+        };
+        let overrides = chat_config_overrides(Some(&launch));
+        assert_eq!(
+            overrides,
+            vec![
+                r#"mcp_servers.bridge.command="/Applications/Bridge.app/Contents/MacOS/bridged""#.to_owned(),
+                r#"mcp_servers.bridge.args=["--bridge-mcp-visualize"]"#.to_owned(),
+                "plugins.visualize@openai-bundled.enabled=false".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_workers_do_not_get_the_overrides() {
+        assert!(chat_config_overrides(None).is_empty());
+        assert!(!crate::mcp_apps::attaches_to(Some(WriteMode::Isolated), None, None));
+    }
+
 }

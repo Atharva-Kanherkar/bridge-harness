@@ -1,0 +1,2857 @@
+[
+  {
+    "name": "bar · spend by harness",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "stacked-bar · daily spend",
+    "spec": {
+      "version": 1,
+      "title": "Daily spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "stacked-bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "colors": {
+            "Claude": "claude",
+            "Codex": "codex",
+            "OpenCode": "opencode"
+          },
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "day": "2026-09-25",
+                  "harness": "Claude",
+                  "usd": 0.12
+                },
+                {
+                  "day": "2026-09-25",
+                  "harness": "Codex",
+                  "usd": 0.07
+                },
+                {
+                  "day": "2026-09-25",
+                  "harness": "OpenCode",
+                  "usd": 0.02
+                },
+                {
+                  "day": "2026-09-26",
+                  "harness": "Claude",
+                  "usd": 0.15
+                },
+                {
+                  "day": "2026-09-26",
+                  "harness": "Codex",
+                  "usd": 0.09
+                },
+                {
+                  "day": "2026-09-26",
+                  "harness": "OpenCode",
+                  "usd": 0.01
+                },
+                {
+                  "day": "2026-09-27",
+                  "harness": "Claude",
+                  "usd": 0.08
+                },
+                {
+                  "day": "2026-09-27",
+                  "harness": "Codex",
+                  "usd": 0.06
+                },
+                {
+                  "day": "2026-09-27",
+                  "harness": "OpenCode",
+                  "usd": 0.03
+                },
+                {
+                  "day": "2026-09-28",
+                  "harness": "Claude",
+                  "usd": 0.1
+                },
+                {
+                  "day": "2026-09-28",
+                  "harness": "Codex",
+                  "usd": 0.1
+                },
+                {
+                  "day": "2026-09-28",
+                  "harness": "OpenCode",
+                  "usd": 0.02
+                },
+                {
+                  "day": "2026-09-29",
+                  "harness": "Claude",
+                  "usd": 0.18
+                },
+                {
+                  "day": "2026-09-29",
+                  "harness": "Codex",
+                  "usd": 0.08
+                },
+                {
+                  "day": "2026-09-29",
+                  "harness": "OpenCode",
+                  "usd": 0.01
+                },
+                {
+                  "day": "2026-09-30",
+                  "harness": "Claude",
+                  "usd": 0.48
+                },
+                {
+                  "day": "2026-09-30",
+                  "harness": "Codex",
+                  "usd": 0.21
+                },
+                {
+                  "day": "2026-09-30",
+                  "harness": "OpenCode",
+                  "usd": 0.05
+                },
+                {
+                  "day": "2026-10-01",
+                  "harness": "Claude",
+                  "usd": 0.14
+                },
+                {
+                  "day": "2026-10-01",
+                  "harness": "Codex",
+                  "usd": 0.09
+                },
+                {
+                  "day": "2026-10-01",
+                  "harness": "OpenCode",
+                  "usd": 0.02
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "day",
+                "type": "temporal"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              },
+              "color": {
+                "field": "harness"
+              }
+            }
+          }
+        }
+      ],
+      "subtitle": "Sep 25 to Oct 1, at API rates",
+      "followUps": [
+        "Split Sep 30 by model",
+        "Show tokens instead"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "grouped-bar · tests by suite",
+    "spec": {
+      "version": 1,
+      "title": "Test time by suite",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "grouped-bar",
+          "sourceIds": [
+            "u"
+          ],
+          "colors": {
+            "before": "neutral",
+            "after": "accent"
+          },
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "suite": "Rust",
+                  "run": "before",
+                  "seconds": 212
+                },
+                {
+                  "suite": "Rust",
+                  "run": "after",
+                  "seconds": 148
+                },
+                {
+                  "suite": "Vitest",
+                  "run": "before",
+                  "seconds": 96
+                },
+                {
+                  "suite": "Vitest",
+                  "run": "after",
+                  "seconds": 61
+                },
+                {
+                  "suite": "Sidecar",
+                  "run": "before",
+                  "seconds": 14
+                },
+                {
+                  "suite": "Sidecar",
+                  "run": "after",
+                  "seconds": 12
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "suite",
+                "type": "nominal"
+              },
+              "y": {
+                "field": "seconds",
+                "type": "quantitative"
+              },
+              "color": {
+                "field": "run"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "line · solar with an estimate",
+    "spec": {
+      "version": 1,
+      "title": "Solar module prices",
+      "subtitle": "US dollars per watt",
+      "sources": [
+        {
+          "id": "iea",
+          "kind": "web",
+          "ref": "https://www.iea.org/reports/renewables-2024",
+          "title": "IEA Renewables 2024"
+        },
+        {
+          "id": "irena",
+          "kind": "web",
+          "ref": "https://www.irena.org/Publications/2024/Renewable-power-generation-costs",
+          "title": "IRENA generation costs"
+        },
+        {
+          "id": "pvm",
+          "kind": "estimate",
+          "ref": "mid-year index from one source",
+          "title": "pv-magazine module index"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "line",
+          "sourceIds": [
+            "iea",
+            "irena",
+            "pvm"
+          ],
+          "vegaLite": {
+            "mark": "line",
+            "data": {
+              "values": [
+                {
+                  "year": "2015",
+                  "usd": 0.62
+                },
+                {
+                  "year": "2016",
+                  "usd": 0.48
+                },
+                {
+                  "year": "2017",
+                  "usd": 0.39
+                },
+                {
+                  "year": "2018",
+                  "usd": 0.3
+                },
+                {
+                  "year": "2019",
+                  "usd": 0.25
+                },
+                {
+                  "year": "2020",
+                  "usd": 0.21
+                },
+                {
+                  "year": "2021",
+                  "usd": 0.27
+                },
+                {
+                  "year": "2022",
+                  "usd": 0.26
+                },
+                {
+                  "year": "2023",
+                  "usd": 0.15
+                },
+                {
+                  "year": "2024",
+                  "usd": 0.11
+                },
+                {
+                  "year": "2025",
+                  "usd": 0.1,
+                  "estimate": true
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "year",
+                "type": "temporal"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        },
+        {
+          "family": "document",
+          "form": "findings",
+          "content": {
+            "items": [
+              {
+                "text": "Prices fell 84% in ten years; about four fifths of that drop came before 2020.",
+                "sourceIds": [
+                  "iea",
+                  "irena"
+                ]
+              },
+              {
+                "text": "2021 is the one reversal: a polysilicon shortage pushed prices up about 29% on 2020.",
+                "sourceIds": [
+                  "irena"
+                ]
+              },
+              {
+                "text": "2025 is a mid-year figure from a single source.",
+                "sourceIds": [
+                  "pvm"
+                ],
+                "estimate": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "area · context window",
+    "spec": {
+      "version": 1,
+      "title": "Context window over the session",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "area",
+          "sourceIds": [
+            "u"
+          ],
+          "vegaLite": {
+            "mark": "area",
+            "data": {
+              "values": [
+                {
+                  "turn": "1",
+                  "tokens": 8000
+                },
+                {
+                  "turn": "2",
+                  "tokens": 14000
+                },
+                {
+                  "turn": "3",
+                  "tokens": 22000
+                },
+                {
+                  "turn": "4",
+                  "tokens": 31000
+                },
+                {
+                  "turn": "5",
+                  "tokens": 38000
+                },
+                {
+                  "turn": "6",
+                  "tokens": 52000
+                },
+                {
+                  "turn": "7",
+                  "tokens": 61000
+                },
+                {
+                  "turn": "8",
+                  "tokens": 23000
+                },
+                {
+                  "turn": "9",
+                  "tokens": 29000
+                },
+                {
+                  "turn": "10",
+                  "tokens": 41000
+                },
+                {
+                  "turn": "11",
+                  "tokens": 55000
+                },
+                {
+                  "turn": "12",
+                  "tokens": 68000
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "turn",
+                "type": "ordinal",
+                "title": "Turn"
+              },
+              "y": {
+                "field": "tokens",
+                "type": "quantitative",
+                "axis": {
+                  "format": "s"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "notes": [
+        "Turn 8 is the compaction."
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "scatter · latency vs size",
+    "spec": {
+      "version": 1,
+      "title": "Latency against prompt size",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "scatter",
+          "sourceIds": [
+            "ledger"
+          ],
+          "colors": {
+            "Claude": "claude",
+            "Codex": "codex",
+            "OpenCode": "opencode"
+          },
+          "vegaLite": {
+            "mark": "point",
+            "data": {
+              "values": [
+                {
+                  "kTokens": 4,
+                  "seconds": 1.2,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 10,
+                  "seconds": 1.91,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 16,
+                  "seconds": 2.62,
+                  "harness": "OpenCode"
+                },
+                {
+                  "kTokens": 22,
+                  "seconds": 2.33,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 28,
+                  "seconds": 3.04,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 34,
+                  "seconds": 2.75,
+                  "harness": "OpenCode"
+                },
+                {
+                  "kTokens": 40,
+                  "seconds": 3.46,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 46,
+                  "seconds": 4.17,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 52,
+                  "seconds": 3.88,
+                  "harness": "OpenCode"
+                },
+                {
+                  "kTokens": 58,
+                  "seconds": 4.59,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 64,
+                  "seconds": 4.3,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 70,
+                  "seconds": 5.01,
+                  "harness": "OpenCode"
+                },
+                {
+                  "kTokens": 76,
+                  "seconds": 5.72,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 82,
+                  "seconds": 5.43,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 88,
+                  "seconds": 6.14,
+                  "harness": "OpenCode"
+                },
+                {
+                  "kTokens": 94,
+                  "seconds": 5.85,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 100,
+                  "seconds": 6.56,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 106,
+                  "seconds": 7.27,
+                  "harness": "OpenCode"
+                },
+                {
+                  "kTokens": 112,
+                  "seconds": 6.98,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 118,
+                  "seconds": 7.69,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 124,
+                  "seconds": 7.4,
+                  "harness": "OpenCode"
+                },
+                {
+                  "kTokens": 130,
+                  "seconds": 8.11,
+                  "harness": "Claude"
+                },
+                {
+                  "kTokens": 136,
+                  "seconds": 8.82,
+                  "harness": "Codex"
+                },
+                {
+                  "kTokens": 142,
+                  "seconds": 8.53,
+                  "harness": "OpenCode"
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "kTokens",
+                "type": "quantitative",
+                "title": "Prompt (k tokens)"
+              },
+              "y": {
+                "field": "seconds",
+                "type": "quantitative",
+                "title": "First token (s)"
+              },
+              "color": {
+                "field": "harness"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "heatmap · activity by hour",
+    "spec": {
+      "version": 1,
+      "title": "When agents run",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "heatmap",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "rect",
+            "data": {
+              "values": [
+                {
+                  "day": "Mon",
+                  "hour": "9:00",
+                  "runs": 0
+                },
+                {
+                  "day": "Mon",
+                  "hour": "11:00",
+                  "runs": 5
+                },
+                {
+                  "day": "Mon",
+                  "hour": "13:00",
+                  "runs": 10
+                },
+                {
+                  "day": "Mon",
+                  "hour": "15:00",
+                  "runs": 4
+                },
+                {
+                  "day": "Mon",
+                  "hour": "17:00",
+                  "runs": 9
+                },
+                {
+                  "day": "Mon",
+                  "hour": "19:00",
+                  "runs": 3
+                },
+                {
+                  "day": "Tue",
+                  "hour": "9:00",
+                  "runs": 3
+                },
+                {
+                  "day": "Tue",
+                  "hour": "11:00",
+                  "runs": 8
+                },
+                {
+                  "day": "Tue",
+                  "hour": "13:00",
+                  "runs": 2
+                },
+                {
+                  "day": "Tue",
+                  "hour": "15:00",
+                  "runs": 7
+                },
+                {
+                  "day": "Tue",
+                  "hour": "17:00",
+                  "runs": 1
+                },
+                {
+                  "day": "Tue",
+                  "hour": "19:00",
+                  "runs": 6
+                },
+                {
+                  "day": "Wed",
+                  "hour": "9:00",
+                  "runs": 6
+                },
+                {
+                  "day": "Wed",
+                  "hour": "11:00",
+                  "runs": 0
+                },
+                {
+                  "day": "Wed",
+                  "hour": "13:00",
+                  "runs": 5
+                },
+                {
+                  "day": "Wed",
+                  "hour": "15:00",
+                  "runs": 10
+                },
+                {
+                  "day": "Wed",
+                  "hour": "17:00",
+                  "runs": 4
+                },
+                {
+                  "day": "Wed",
+                  "hour": "19:00",
+                  "runs": 9
+                },
+                {
+                  "day": "Thu",
+                  "hour": "9:00",
+                  "runs": 9
+                },
+                {
+                  "day": "Thu",
+                  "hour": "11:00",
+                  "runs": 3
+                },
+                {
+                  "day": "Thu",
+                  "hour": "13:00",
+                  "runs": 8
+                },
+                {
+                  "day": "Thu",
+                  "hour": "15:00",
+                  "runs": 2
+                },
+                {
+                  "day": "Thu",
+                  "hour": "17:00",
+                  "runs": 7
+                },
+                {
+                  "day": "Thu",
+                  "hour": "19:00",
+                  "runs": 1
+                },
+                {
+                  "day": "Fri",
+                  "hour": "9:00",
+                  "runs": 1
+                },
+                {
+                  "day": "Fri",
+                  "hour": "11:00",
+                  "runs": 6
+                },
+                {
+                  "day": "Fri",
+                  "hour": "13:00",
+                  "runs": 0
+                },
+                {
+                  "day": "Fri",
+                  "hour": "15:00",
+                  "runs": 5
+                },
+                {
+                  "day": "Fri",
+                  "hour": "17:00",
+                  "runs": 10
+                },
+                {
+                  "day": "Fri",
+                  "hour": "19:00",
+                  "runs": 4
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "hour",
+                "type": "ordinal"
+              },
+              "y": {
+                "field": "day",
+                "type": "nominal"
+              },
+              "color": {
+                "field": "runs",
+                "type": "quantitative"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "proportion · cost share",
+    "spec": {
+      "version": 1,
+      "title": "Where the money went",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "proportion",
+          "sourceIds": [
+            "ledger"
+          ],
+          "colors": {
+            "Claude": "claude",
+            "Codex": "codex",
+            "OpenCode": "opencode"
+          },
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 4.17
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 2.6
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.56
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              },
+              "color": {
+                "field": "harness"
+              }
+            }
+          }
+        },
+        {
+          "family": "document",
+          "form": "metric",
+          "sourceIds": [
+            "ledger"
+          ],
+          "content": {
+            "items": [
+              {
+                "label": "Total at API rates",
+                "value": "$7.33",
+                "estimate": false
+              },
+              {
+                "label": "Requests",
+                "value": 605
+              },
+              {
+                "label": "Cache saved",
+                "value": "$12.19",
+                "tone": "positive"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "waterfall · monthly change",
+    "spec": {
+      "version": 1,
+      "title": "What moved the bill",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "waterfall",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "step": "August",
+                  "usd": 60,
+                  "total": true
+                },
+                {
+                  "step": "More Claude",
+                  "usd": 28
+                },
+                {
+                  "step": "New seats",
+                  "usd": 18
+                },
+                {
+                  "step": "Cache hits",
+                  "usd": -22
+                },
+                {
+                  "step": "Refunds",
+                  "usd": -9
+                },
+                {
+                  "step": "September",
+                  "usd": 75,
+                  "total": true
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "step",
+                "type": "ordinal"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$,.0f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "funnel · onboarding",
+    "spec": {
+      "version": 1,
+      "title": "Onboarding drop-off",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "funnel",
+          "sourceIds": [
+            "u"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "step": "Opened Bridge",
+                  "people": 1000
+                },
+                {
+                  "step": "Connected a repo",
+                  "people": 460
+                },
+                {
+                  "step": "Ran an agent",
+                  "people": 310
+                },
+                {
+                  "step": "Merged a PR",
+                  "people": 180
+                }
+              ]
+            },
+            "encoding": {
+              "y": {
+                "field": "step",
+                "type": "ordinal"
+              },
+              "x": {
+                "field": "people",
+                "type": "quantitative"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "grid diagram · approval flow",
+    "spec": {
+      "version": 1,
+      "title": "How a worker gets approved",
+      "blocks": [
+        {
+          "family": "diagram",
+          "form": "grid",
+          "graph": {
+            "caption": "Every worker passes the policy engine before it spawns.",
+            "ariaLabel": "orchestrator to policy engine to approval to worker to verification",
+            "nodes": [
+              {
+                "id": "o",
+                "row": 0,
+                "col": 0,
+                "label": "orchestrator asks",
+                "emphasis": "active"
+              },
+              {
+                "id": "p",
+                "row": 1,
+                "col": 0,
+                "label": "policy engine",
+                "emphasis": "active"
+              },
+              {
+                "id": "d",
+                "row": 2,
+                "col": 1,
+                "label": "denied, reason",
+                "emphasis": "muted"
+              },
+              {
+                "id": "a",
+                "row": 2,
+                "col": 0,
+                "label": "your approval",
+                "emphasis": "active"
+              },
+              {
+                "id": "w",
+                "row": 3,
+                "col": 0,
+                "label": "worker worktree",
+                "emphasis": "active",
+                "marker": "tip"
+              },
+              {
+                "id": "v",
+                "row": 4,
+                "col": 0,
+                "label": "verified, adopted",
+                "emphasis": "active",
+                "marker": "checkpoint"
+              }
+            ],
+            "edges": [
+              {
+                "from": "o",
+                "to": "p",
+                "emphasis": "active"
+              },
+              {
+                "from": "p",
+                "to": "a",
+                "emphasis": "active"
+              },
+              {
+                "from": "p",
+                "to": "d",
+                "curve": true,
+                "emphasis": "muted"
+              },
+              {
+                "from": "a",
+                "to": "w",
+                "emphasis": "active"
+              },
+              {
+                "from": "w",
+                "to": "v",
+                "emphasis": "active"
+              }
+            ]
+          }
+        },
+        {
+          "family": "document",
+          "form": "steps",
+          "content": {
+            "items": [
+              {
+                "title": "Policy engine",
+                "body": "Checks tier, write scope, depth and budget."
+              },
+              {
+                "title": "Approval",
+                "body": "Only when the tier needs it."
+              },
+              {
+                "title": "Verification",
+                "body": "Checks run against the worker's revision."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "cards · open PRs",
+    "spec": {
+      "version": 1,
+      "title": "Open pull requests",
+      "blocks": [
+        {
+          "family": "document",
+          "form": "cards",
+          "content": {
+            "items": [
+              {
+                "title": "feat(visualize): MCP Apps visuals",
+                "body": "Adds the visualize tool and its view.",
+                "meta": "draft",
+                "tags": [
+                  "frontend",
+                  "rust"
+                ]
+              },
+              {
+                "title": "fix(claude): thoughts drawn twice",
+                "meta": "merged"
+              },
+              {
+                "title": "chore: bump the Agent SDK",
+                "body": "Pins 0.3.284.",
+                "tags": [
+                  "deps"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "compare · plans",
+    "spec": {
+      "version": 1,
+      "title": "Which plan fits",
+      "sources": [
+        {
+          "id": "pricing",
+          "kind": "web",
+          "ref": "https://example.com/pricing",
+          "title": "Pricing page"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "document",
+          "form": "compare",
+          "sourceIds": [
+            "pricing"
+          ],
+          "content": {
+            "criteria": [
+              "Price",
+              "Agents",
+              "Workers",
+              "Evals"
+            ],
+            "options": [
+              {
+                "name": "Starter",
+                "values": {
+                  "Price": "$12",
+                  "Agents": true,
+                  "Workers": false,
+                  "Evals": false
+                }
+              },
+              {
+                "name": "Team",
+                "highlight": true,
+                "summary": "Best fit for three people.",
+                "values": {
+                  "Price": "$45",
+                  "Agents": true,
+                  "Workers": true,
+                  "Evals": true
+                }
+              },
+              {
+                "name": "Solo",
+                "values": {
+                  "Price": "$20",
+                  "Agents": true,
+                  "Workers": true,
+                  "Evals": false
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "table · slowest tests",
+    "spec": {
+      "version": 1,
+      "title": "Slowest tests",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "document",
+          "form": "table",
+          "sourceIds": [
+            "ledger"
+          ],
+          "content": {
+            "columns": [
+              {
+                "key": "test",
+                "label": "Test"
+              },
+              {
+                "key": "suite",
+                "label": "Suite"
+              },
+              {
+                "key": "seconds",
+                "label": "Seconds",
+                "align": "right",
+                "format": "number"
+              }
+            ],
+            "rows": [
+              {
+                "test": "golden.render",
+                "suite": "vitest",
+                "seconds": 18.2
+              },
+              {
+                "test": "flood.perf",
+                "suite": "vitest",
+                "seconds": 12.9
+              },
+              {
+                "test": "worktree_reclaim",
+                "suite": "cargo",
+                "seconds": 9.4
+              },
+              {
+                "test": "policy_replay",
+                "suite": "cargo",
+                "seconds": 7.7
+              },
+              {
+                "test": "briefing",
+                "suite": "node",
+                "seconds": 3.1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "callout and checklist · release",
+    "spec": {
+      "version": 1,
+      "title": "Release readiness",
+      "blocks": [
+        {
+          "family": "document",
+          "form": "callout",
+          "content": {
+            "tone": "warning",
+            "title": "Notarization is pending",
+            "body": "The DMG cannot ship until Apple finishes notarizing it."
+          }
+        },
+        {
+          "family": "document",
+          "form": "checklist",
+          "content": {
+            "items": [
+              {
+                "text": "Build is green",
+                "done": true
+              },
+              {
+                "text": "Changelog written",
+                "done": true
+              },
+              {
+                "text": "DMG notarized",
+                "done": false
+              },
+              {
+                "text": "Release notes posted",
+                "done": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "pros-cons and glossary · daemon mode",
+    "spec": {
+      "version": 1,
+      "title": "Daemon mode or embedded",
+      "layout": "grid",
+      "blocks": [
+        {
+          "family": "document",
+          "form": "pros-cons",
+          "content": {
+            "pros": [
+              "Sessions survive an app restart",
+              "One owner for the data directory"
+            ],
+            "cons": [
+              "A stale daemon serves old methods",
+              "One more process to supervise"
+            ]
+          }
+        },
+        {
+          "family": "document",
+          "form": "glossary",
+          "content": {
+            "items": [
+              {
+                "term": "Daemon",
+                "definition": "bridged, the process that owns the data directory."
+              },
+              {
+                "term": "Embedded",
+                "definition": "The runtime inside the app process."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "markup in strings is just text",
+    "valid": true,
+    "spec": {
+      "version": 1,
+      "title": "<img src=x onerror=alert(1)>",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "<script>alert(1)</script>",
+                  "usd": 1
+                },
+                {
+                  "harness": "b",
+                  "usd": 2
+                },
+                {
+                  "harness": "c",
+                  "usd": 3
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "a lone source is cited by default",
+    "valid": true,
+    "spec": {
+      "version": 1,
+      "title": "Signups",
+      "sources": [
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "day": "Mon",
+                  "n": 120
+                },
+                {
+                  "day": "Tue",
+                  "n": 135
+                },
+                {
+                  "day": "Wed",
+                  "n": 160
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "day"
+              },
+              "y": {
+                "field": "n"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "proportion with an arc mark",
+    "valid": true,
+    "spec": {
+      "version": 1,
+      "title": "Browser share",
+      "sources": [
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "proportion",
+          "vegaLite": {
+            "mark": {
+              "type": "arc"
+            },
+            "data": {
+              "values": [
+                {
+                  "b": "Chrome",
+                  "s": 64
+                },
+                {
+                  "b": "Safari",
+                  "s": 19
+                },
+                {
+                  "b": "Other",
+                  "s": 17
+                }
+              ]
+            },
+            "encoding": {
+              "theta": {
+                "field": "s",
+                "type": "quantitative"
+              },
+              "color": {
+                "field": "b"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "version must be 1",
+    "spec": {
+      "version": 2,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "version"
+    ]
+  },
+  {
+    "name": "title is required",
+    "spec": {
+      "version": 1,
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "title"
+    ]
+  },
+  {
+    "name": "no blocks",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": []
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks"
+    ]
+  },
+  {
+    "name": "unknown family",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "poster",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].family"
+    ]
+  },
+  {
+    "name": "form outside its family",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "steps",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].form"
+    ]
+  },
+  {
+    "name": "form not available yet",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "map",
+          "form": "choropleth",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].form"
+    ]
+  },
+  {
+    "name": "data url",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "url": "https://example.com/x.csv"
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].vegaLite.data.url",
+      "blocks[0].vegaLite.data.values"
+    ]
+  },
+  {
+    "name": "transform",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            },
+            "transform": [
+              {
+                "filter": "datum.usd > 1"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].vegaLite.transform"
+    ]
+  },
+  {
+    "name": "mark disagrees with form",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "line",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].vegaLite.mark"
+    ]
+  },
+  {
+    "name": "hex colour",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          },
+          "colors": {
+            "Claude": "#ff0000"
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].colors.Claude"
+    ]
+  },
+  {
+    "name": "missing field",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "cost",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].vegaLite.encoding.y.field"
+    ]
+  },
+  {
+    "name": "uncited chart",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].sourceIds"
+    ]
+  },
+  {
+    "name": "unknown source id",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "nope"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].sourceIds[0]"
+    ]
+  },
+  {
+    "name": "web source not a URL",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "web",
+          "ref": "iea.org"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "sources[0].ref"
+    ]
+  },
+  {
+    "name": "nested row value",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": {
+                    "amount": 1
+                  }
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].vegaLite.data.values[0].usd"
+    ]
+  },
+  {
+    "name": "control character",
+    "spec": {
+      "version": 1,
+      "title": "Spend\u0007",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "title"
+    ]
+  },
+  {
+    "name": "unknown top-level field",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "type": "chart"
+    },
+    "valid": false,
+    "errorPaths": [
+      "type"
+    ]
+  },
+  {
+    "name": "estimate row without an estimate source",
+    "spec": {
+      "version": 1,
+      "title": "Spend by harness",
+      "sources": [
+        {
+          "id": "ledger",
+          "kind": "tool",
+          "ref": "usage_summary call, 7 days",
+          "title": "Bridge usage ledger"
+        },
+        {
+          "id": "u",
+          "kind": "user",
+          "ref": "numbers the user pasted"
+        }
+      ],
+      "blocks": [
+        {
+          "family": "chart",
+          "form": "bar",
+          "sourceIds": [
+            "ledger"
+          ],
+          "vegaLite": {
+            "mark": "bar",
+            "data": {
+              "values": [
+                {
+                  "harness": "Claude",
+                  "usd": 1.96,
+                  "estimate": true
+                },
+                {
+                  "harness": "Codex",
+                  "usd": 1.18
+                },
+                {
+                  "harness": "OpenCode",
+                  "usd": 0.27
+                }
+              ]
+            },
+            "encoding": {
+              "x": {
+                "field": "harness",
+                "type": "nominal",
+                "sort": "-y"
+              },
+              "y": {
+                "field": "usd",
+                "type": "quantitative",
+                "axis": {
+                  "format": "$.2f"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].sourceIds"
+    ]
+  },
+  {
+    "name": "findings item uncited",
+    "valid": false,
+    "errorPaths": [
+      "blocks[0].content.items[0].sourceIds"
+    ],
+    "spec": {
+      "version": 1,
+      "title": "t",
+      "blocks": [
+        {
+          "family": "document",
+          "form": "findings",
+          "content": {
+            "items": [
+              {
+                "text": "uncited claim"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+]

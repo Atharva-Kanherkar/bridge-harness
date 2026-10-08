@@ -156,6 +156,15 @@ pub fn resume_with_settings(
     )
 }
 
+/// The `OPENCODE_CONFIG_CONTENT` a session runs with: unchanged for a worker,
+/// and with Bridge's `visualize` server merged in for a chat that has it.
+fn chat_config_content(
+    visualize: Option<&crate::mcp_apps::ServerLaunch>,
+    existing: Option<&str>,
+) -> Option<String> {
+    visualize.map(|launch| crate::mcp_apps::merge_opencode_config(existing, launch))
+}
+
 fn launch(
     request: StartRequest<'_>,
     resume_session_id: Option<&str>,
@@ -188,6 +197,18 @@ fn launch(
         &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
     );
     binary::hydrate_command_path(&mut command);
+    // An interactive chat gets Bridge's `visualize` server, merged into
+    // whatever inline config the user already passes OpenCode.
+    let visualize = (!completion_only
+        && crate::mcp_apps::attaches_to(request.write_mode, request.read_only_sandbox, request.briefing))
+        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .flatten();
+    if let Some(config) = chat_config_content(
+        visualize.as_ref(),
+        std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
+    ) {
+        command.env("OPENCODE_CONFIG_CONTENT", config);
+    }
     command
         .current_dir(request.cwd)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
@@ -2728,4 +2749,25 @@ mod model_variant_tests {
         assert_eq!(model.variants, ["low", "ultra"]);
         assert!(normalize_model("test", &json!({"id":"plain"})).unwrap().variants.is_empty());
     }
+
+    #[test]
+    fn opencode_chat_sessions_get_mcp_bridge_in_config_content() {
+        let launch = crate::mcp_apps::ServerLaunch {
+            command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
+            args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+        };
+        let content: serde_json::Value = serde_json::from_str(
+            &chat_config_content(Some(&launch), Some(r#"{"theme":"system"}"#)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(content["theme"], "system");
+        assert_eq!(content["mcp"]["bridge"]["type"], "local");
+        assert_eq!(content["mcp"]["bridge"]["command"][1], crate::mcp_apps::HELPER_FLAG);
+    }
+
+    #[test]
+    fn opencode_workers_do_not() {
+        assert_eq!(chat_config_content(None, Some(r#"{"theme":"system"}"#)), None);
+    }
+
 }

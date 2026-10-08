@@ -877,6 +877,12 @@ function AppContent() {
     });
     composerRef.current?.focus();
   }
+  // A follow-up a visual proposed: it lands in the composer for the reader to
+  // edit or send. Nothing a view asks for is ever sent on its own.
+  const followUpToComposer = useCallback((text: string) => {
+    setComposer(current => current.trim() ? `${current.trimEnd()}\n${text}` : text);
+    composerRef.current?.focus();
+  }, [setComposer]);
   function revealEntryInConversation(entryId: string) {
     // The conversation sits beside the dock, so reveal scrolls and highlights
     // rather than navigates — the same jump recall search uses. An expanded
@@ -3248,6 +3254,7 @@ function AppContent() {
                    queuedFollowUps={queuedFollowUpCount}
                    onResolve={resolveApproval}
                    onAnswerQuestion={resolveQuestion}
+                   onFollowUp={followUpToComposer}
                    onAskAside={quoted => {
                      // Selecting transcript prose and asking aside: the same
                      // side-chat contract as /btw, with the excerpt quoted as

@@ -24,6 +24,18 @@ fn main() -> ExitCode {
     ) {
         return keychain_read_helper(&helper_args);
     }
+    // The `bridge` MCP server a chat harness spawns for the `visualize` tool:
+    // stdio JSON-RPC until the harness closes stdin. Never touches the data
+    // directory, so it runs alongside the daemon that owns it.
+    if helper_args.first().map(String::as_str) == Some(bridge_core::mcp_apps::HELPER_FLAG) {
+        return match bridge_core::mcp_apps::serve_stdio() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("bridged: visualize server stopped: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let (config, remote_config, deployment) = match parse_flags(std::env::args().skip(1)) {
         Ok(parsed) => parsed,
         Err(message) => {

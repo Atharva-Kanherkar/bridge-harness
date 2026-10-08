@@ -17,6 +17,7 @@
  */
 
 import type { ConversationItem, ConversationItemType } from "./item";
+import { isVisualItem } from "./visual";
 
 /** One top-level entry of the transcript. */
 export type Rendered =
@@ -161,6 +162,14 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
     // The switch is a normalized item type, so grouping keys off `type` —
     // never off a payload field.
     if (item.data.staleBase === true || item.type === "model-change") {
+      closeGroup();
+      pushItem(item);
+      continue;
+    }
+
+    // A visual is something to read, like prose: it closes the run and stands
+    // on its own, whether it is still being drawn, drawn, or refused.
+    if (isVisualItem(item)) {
       closeGroup();
       pushItem(item);
       continue;

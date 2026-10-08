@@ -11,6 +11,9 @@ import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
+import { VisualActionsContext, VisualCall } from "./VisualCall";
+import { isVisualItem } from "../transcript/visual";
+import { openExternalUrl } from "../externalLinks";
 import { harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
@@ -783,7 +786,7 @@ const ACTIVE_SESSION_STATUSES = new Set(["starting", "working", "waiting", "chec
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -842,6 +845,12 @@ export const AgentConversation = memo(function AgentConversation({ session, even
 
   // Every file name in the transcript resolves against this one set; without
   // an opener the transcript renders exactly as before.
+  // What a visual in this transcript may do. A read-only history can open a
+  // source but cannot propose a follow-up into a composer it does not have.
+  const visualActions = useMemo(() => ({
+    ask: readOnly ? undefined : onFollowUp,
+    open: (url: string) => void openExternalUrl(url),
+  }), [readOnly, onFollowUp]);
   const fileLinks = useMemo<FileLinks | null>(() => {
     if (!onOpenFile || !workspaceFiles?.length) return null;
     const paths = new Set(workspaceFiles);
@@ -924,7 +933,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     if (item.type === "message" && item.role === "assistant") latestReplyKey = item.key;
   }
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -954,7 +963,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
           : <TranscriptRow
               key={entry.key}
-              tone={entry.item.type === "error" || entry.item.status === "failed" ? "alert" : "quiet"}
+              tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
               id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
@@ -982,7 +991,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           would stop re-pinning the reader at the bottom. The chip itself is
           position:fixed, so its DOM position is invisible. */}
       {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
-  </ScrollFollow></FileLinkContext.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
+  </ScrollFollow></VisualActionsContext.Provider></FileLinkContext.Provider></ShowThinking.Provider></TranscriptHarness.Provider>;
 });
 
 /// Whether the current document selection holds selectable prose worth asking
@@ -1448,6 +1457,7 @@ function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, aut
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
+  if (isVisualItem(item)) return <VisualCall item={item} turnActive={turnActive}/>;
   return <ActivityGroup items={[item]} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/>;
 }
 

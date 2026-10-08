@@ -120,3 +120,11 @@ test("catalogue discovery does not start project integrations", async () => {
   const { catalogOptions } = await import("../options.mjs");
   assert.deepEqual(catalogOptions(), { settingSources: [], strictMcpConfig: true, mcpServers: {}, plugins: [], tools: [] });
 });
+
+test("a chat carries Bridge's stdio visualize server through to the SDK", () => {
+  const mcpServers = { bridge: { type: "stdio", command: "/Applications/Bridge.app/Contents/MacOS/bridged", args: ["--bridge-mcp-visualize"] } };
+  const options = buildOptions({ ...base, writeMode: null, instructions: null, resume: false, mcpServers });
+  assert.deepEqual(options.mcpServers, mcpServers);
+  assert.equal(options.strictMcpConfig, false);
+  assert.equal(options.permissionMode, "bypassPermissions");
+});

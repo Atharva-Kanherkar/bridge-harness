@@ -106,7 +106,7 @@ pub fn default_sections(target: PromptTarget, worker_depth: i64) -> Vec<PromptDe
         }],
         PromptTarget::DirectSession => vec![PromptDefaultSection {
             id: RENDERING_SECTION_ID,
-            text: RENDERING_NOTE.to_owned(),
+            text: chat_rendering_note(),
         }],
     };
     if target != PromptTarget::DirectSession {
@@ -195,9 +195,33 @@ Bridge renders your replies inline — no external or headless browser is involv
 - HTML: put markup in a ```html fenced code block; it renders in a fully sandboxed iframe (no scripts run), so treat it as layout, not a live app.
 Reach for these when a diagram, formula, or formatted layout communicates better than plain prose; otherwise keep replies in plain markdown.";
 
+/// What a chat session needs to know about Bridge's own `visualize` tool.
+/// Chat prompts only: workers never get the tool, so their briefing keeps the
+/// plain rendering note. The when-and-when-not rubric lives in the tool's own
+/// description, which the model reads at the moment it decides.
+pub const VISUALIZE_NOTE: &str = "## Visuals in the Bridge chat UI
+For a chart, research findings with their sources, a comparison, or a diagram that carries the answer better than prose, call the `visualize` tool (MCP server `bridge`) with data, and Bridge draws it under your message. Image files, matplotlib output and HTML files you write do not display in this chat. The tool's description says when to call it and when not to: most turns need no visual, and one number or a short list never does.";
+
+/// The rendering note a chat session gets: the inline formats plus the
+/// `visualize` tool.
+pub fn chat_rendering_note() -> String {
+    format!("{RENDERING_NOTE}\n\n{VISUALIZE_NOTE}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendering_note_points_to_the_visualize_tool() {
+        let note = chat_rendering_note();
+        assert!(note.starts_with(RENDERING_NOTE));
+        for needle in ["`visualize`", "`bridge`", "do not display", "most turns need no visual"] {
+            assert!(note.contains(needle), "missing {needle:?}");
+        }
+        assert!(!VISUALIZE_NOTE.contains('\u{2014}'), "no em dashes in model-facing text");
+        assert!(!RENDERING_NOTE.contains("visualize"), "workers share RENDERING_NOTE and never get the tool");
+    }
 
     #[test]
     fn rendering_note_lists_every_supported_format() {
@@ -240,7 +264,7 @@ mod tests {
         let direct_defaults = default_sections(PromptTarget::DirectSession, 0);
         assert_eq!(direct_defaults.len(), 1);
         assert_eq!(direct_defaults[0].id, RENDERING_SECTION_ID);
-        assert_eq!(direct_defaults[0].text, RENDERING_NOTE);
+        assert_eq!(direct_defaults[0].text, chat_rendering_note());
     }
 
     #[test]

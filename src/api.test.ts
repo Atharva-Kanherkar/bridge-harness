@@ -84,7 +84,7 @@ describe("SQLite-shaped mock observability", () => {
     expect(fork).toMatchObject({ parentSessionId: null, depth: 0, forkParentSessionId: "session-1", forkParentEntryId: "entry-5a", label: "Alternate path", restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", status: "idle", providerSessionId: null, activeTurnId: null });
     // The parent forest is untouched by the fork.
     const parent = await bridgeApi.sessionForest("session-1");
-    expect(parent.entries).toHaveLength(19);
+    expect(parent.entries).toHaveLength(22);
     expect(parent.head?.activeEntryId).toBe("entry-raw");
     await expect(bridgeApi.forkSession("session-1", "missing-entry", null, null, null, "shared")).rejects.toThrow("not in this session");
     await expect(bridgeApi.forkSession("session-1w", "entry-1", null, null, null, "shared")).rejects.toThrow("Worker sessions cannot be forked");

@@ -235,7 +235,7 @@ function InlineMath({ tex }: { tex: string }) {
  * Mermaid bakes theme colors into its SVG, while the sandboxed iframe cannot
  * inherit our tokens. Both follow the document's active theme explicitly.
  */
-function useDarkTheme(): boolean {
+export function useDarkTheme(): boolean {
   const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
   useEffect(() => {
     const sync = () => setDark(document.documentElement.classList.contains("dark"));

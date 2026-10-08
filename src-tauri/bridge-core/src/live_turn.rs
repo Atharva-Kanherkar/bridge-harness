@@ -351,7 +351,7 @@ mod prompt_section_tests {
 
     fn legacy_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
         prompt_compiler::PromptCompiler::new("session")
-            .stable_section("rendering_note", prompts::RENDERING_NOTE)
+            .stable_section("rendering_note", prompts::chat_rendering_note())
             .project_rule("configured_project_rules", configured_prompt)
             .compile()
             .unwrap()

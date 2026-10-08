@@ -128,6 +128,12 @@ something.
 5. **A live group is legible while it is live.** It says what is happening now,
    and it settles into its summary without the row changing identity or the
    scroll position jumping.
+6. **A visual is something to read, not tool work.** A call to the `bridge`
+   server's `visualize` tool closes the run it interrupts and stands on its own
+   row, whether it is still being written, drawn, or refused. It is recognised
+   by server and tool name, never by harness. A refused call is one quiet line
+   that opens to the server's reasons; it never takes the alert tone, because
+   the model is expected to fix it on its next call.
 6. **An interleaved thought does not shatter a run.** A thought between two tool
    calls is a thought, not a boundary: the tool work either side of it belongs to
    one run of work.
