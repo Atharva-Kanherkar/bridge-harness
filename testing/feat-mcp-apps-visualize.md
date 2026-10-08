@@ -130,7 +130,9 @@ Shared fixtures: `testing/fixtures/visualize/specs.json`, a list of
 - `tools_list_has_visualize_with_ui_meta_and_read_only_annotations`
 - `the_tool_description_lists_exactly_the_available_forms`
 - `the_input_schema_uses_no_oneof` — portable across Claude, Codex, OpenCode.
-- `tools_call_valid_returns_a_summary_and_structured_content`
+- `tools_call_valid_returns_a_summary` — text only, no `structuredContent`:
+  the spec is already the tool input, and some harnesses forward
+  structured content to the model as tokens.
 - `tools_call_invalid_returns_is_error_listing_every_path`
 - `tools_call_unknown_tool_is_a_jsonrpc_error`
 - `resources_list_has_ui_bridge_visual`
