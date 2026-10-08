@@ -92,7 +92,13 @@ Shared fixtures: `testing/fixtures/visualize/specs.json`, a list of
 - `the_mark_must_agree_with_the_form` — `form: "line"` with `mark: "bar"`.
 - `colors_must_come_from_the_enum` — `"#ff0000"` is rejected.
 - `fact_blocks_must_cite_declared_sources` — chart, metric, table, compare
-  without `sourceIds`; and a `sourceIds` entry with no matching `sources[].id`.
+  without `sourceIds` when more than one source is declared; and a
+  `sourceIds` entry with no matching `sources[].id`.
+- `a_lone_source_is_cited_by_default_and_several_are_not` — with exactly one
+  declared source a block that names none cites it (the eval showed models
+  omitting the obvious citation on the first try).
+- `a_proportion_accepts_an_arc_mark` — the form decides the drawing; an arc
+  spec still draws as one split bar, never a pie.
 - `findings_items_cite_per_item`
 - `web_sources_must_be_http_urls`
 - `computed_sources_must_name_existing_inputs`
