@@ -106,6 +106,7 @@ pub mod model;
 pub mod model_catalog;
 pub mod model_profiles;
 pub mod opencode_adapter;
+pub mod pi_adapter;
 pub mod orchestrator;
 pub mod ownership;
 pub mod policy;
