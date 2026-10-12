@@ -17,6 +17,9 @@ pub(super) struct StreamState {
     message_order: VecDeque<String>,
     finished_tools: HashSet<String>,
     tools: HashMap<String, (String, Value)>,
+    /// A manual compaction already settled its turn from `compaction_end`;
+    /// the command's own response must not settle or report it again.
+    compaction_settled: bool,
 }
 fn string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
@@ -206,6 +209,21 @@ impl StreamState {
                 }
                 events
             }
+            // A prompt Pi refused during preflight never started a run. A
+            // refused steer leaves the active run in charge of the turn.
+            "bridge_prompt_rejected" => {
+                let error = event(
+                    "error",
+                    None,
+                    Some("Pi did not accept the message; check Pi's model and provider setup, then try again".into()),
+                    if self.active { "rejected" } else { "failed" },
+                    json!({}),
+                );
+                if self.active {
+                    return vec![error];
+                }
+                vec![event("turn.completed", None, None, "failed", json!({})), error]
+            }
             "bridge_error" => {
                 self.failed = true;
                 self.active = false;
@@ -364,31 +382,68 @@ impl StreamState {
                 ));
                 vec![output]
             }
-            "compaction_start" => vec![agent::native_compacting("pi")],
-            "bridge_compaction_error" => vec![event(
-                "error",
-                None,
-                Some("Pi rejected context compaction; check its provider setup".into()),
-                "failed",
-                json!({}),
-            )],
+            "compaction_start" => {
+                if value["reason"] == "manual" {
+                    self.compaction_settled = false;
+                }
+                vec![agent::native_compacting("pi")]
+            }
+            // Bridge marks a forwarded /compact as a running turn, but Pi runs
+            // manual compaction outside any agent run: no agent_settled follows.
+            // Its compaction_end is the turn boundary; the command response
+            // only matters when no compaction_end arrived.
+            "bridge_compaction_response" => {
+                if std::mem::take(&mut self.compaction_settled) || value["success"] == true {
+                    return vec![];
+                }
+                vec![
+                    event(
+                        "error",
+                        None,
+                        Some("Pi rejected context compaction; check its provider setup".into()),
+                        "failed",
+                        json!({}),
+                    ),
+                    event("turn.completed", None, None, "failed", json!({})),
+                ]
+            }
             "compaction_end" => {
-                if value["aborted"] == true || value.get("result").is_none() {
-                    return vec![event(
-                        if self.active { "error" } else { "error" },
+                let manual = value["reason"] == "manual" && !self.active;
+                let aborted = value["aborted"] == true;
+                let failed = aborted || value["result"].is_null();
+                let mut events = Vec::new();
+                if !failed {
+                    events.push(event(
+                        "context.compacted",
+                        None,
+                        None,
+                        "completed",
+                        json!({"harness":"pi","preTokens":value.pointer("/result/tokensBefore"),"postTokens":value.pointer("/result/estimatedTokensAfter"),"willRetry":value["willRetry"] == true}),
+                    ));
+                } else if !(manual && aborted) {
+                    events.push(event(
+                        "error",
                         None,
                         Some("Pi context compaction did not complete".into()),
                         if self.active { "retrying" } else { "failed" },
                         json!({}),
-                    )];
+                    ));
                 }
-                vec![event(
-                    "context.compacted",
-                    None,
-                    None,
-                    "completed",
-                    json!({"harness":"pi","preTokens":value.pointer("/result/tokensBefore"),"postTokens":value.pointer("/result/estimatedTokensAfter"),"willRetry":value["willRetry"] == true}),
-                )]
+                if manual {
+                    self.compaction_settled = true;
+                    events.push(event(
+                        "turn.completed",
+                        None,
+                        None,
+                        match (failed, aborted) {
+                            (false, _) => "completed",
+                            (true, true) => "interrupted",
+                            (true, false) => "failed",
+                        },
+                        json!({}),
+                    ));
+                }
+                events
             }
             "auto_retry_start"
             | "summarization_retry_scheduled"
@@ -512,5 +567,43 @@ mod tests {
             state.normalize(&json!({"type":"extension_error","error":"SECRET"}))
         )
         .contains("SECRET"));
+    }
+    #[test]
+    fn manual_compaction_settles_its_turn_exactly_once() {
+        let mut state = StreamState::default();
+        state.normalize(&json!({"type":"compaction_start","reason":"manual"}));
+        let failed = state.normalize(&json!({"type":"compaction_end","reason":"manual","aborted":false,"willRetry":false,"errorMessage":"SECRET"}));
+        assert_eq!(
+            failed
+                .iter()
+                .map(|event| (event.kind.as_str(), event.status.as_deref()))
+                .collect::<Vec<_>>(),
+            [("error", Some("failed")), ("turn.completed", Some("failed"))]
+        );
+        assert!(!format!("{failed:?}").contains("SECRET"));
+        assert!(state
+            .normalize(&json!({"type":"bridge_compaction_response","success":false}))
+            .is_empty());
+        state.normalize(&json!({"type":"compaction_start","reason":"manual"}));
+        let stopped = state.normalize(&json!({"type":"compaction_end","reason":"manual","aborted":true}));
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].status.as_deref(), Some("interrupted"));
+        state.normalize(&json!({"type":"bridge_compaction_response","success":false}));
+        // Refused before Pi started compacting: the response is the boundary.
+        let refused = state.normalize(&json!({"type":"bridge_compaction_response","success":false}));
+        assert_eq!(refused.last().unwrap().kind, "turn.completed");
+    }
+    #[test]
+    fn a_refused_steer_does_not_end_the_active_run() {
+        let mut state = StreamState::default();
+        state.normalize(&json!({"type":"agent_start"}));
+        let refused = state.normalize(&json!({"type":"bridge_prompt_rejected"}));
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].kind, "error");
+        assert_eq!(refused[0].status.as_deref(), Some("rejected"));
+        assert_eq!(
+            state.normalize(&json!({"type":"agent_settled"}))[0].kind,
+            "turn.completed"
+        );
     }
 }

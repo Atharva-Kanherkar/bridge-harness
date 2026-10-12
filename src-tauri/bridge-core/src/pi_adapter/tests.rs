@@ -50,6 +50,7 @@ for line in sys.stdin.buffer:
     elif typ=='set_thinking_level': level=cmd['level'];data=None
     elif typ=='prompt':
         if MODE=='handled': data={'disposition':'handled'}
+        elif MODE=='reject-prompt': data=None
         elif streaming: data={'disposition':'queued'}
         else:
             streaming=True
@@ -63,7 +64,7 @@ for line in sys.stdin.buffer:
     elif typ=='abort':
         if not globals().get('approval_cancelled',False): time.sleep(15)
         emit({'type':'agent_settled','aborted':True});streaming=False;data=None
-    elif typ=='compact': emit({'type':'compaction_start','reason':'manual'});emit({'type':'compaction_end','result':{'tokensBefore':100,'estimatedTokensAfter':10},'willRetry':False});data={'summary':'Summary'}
+    elif typ=='compact': emit({'type':'compaction_start','reason':'manual'});emit({'type':'compaction_end','reason':'manual','result':{'tokensBefore':100,'estimatedTokensAfter':10},'willRetry':False});data={'summary':'Summary'}
     elif typ=='pressure':
         for i in range(2200): emit({'type':'message_update','assistantMessageEvent':{'type':'text_delta','contentIndex':0,'delta':'x'}})
         data={'done':True}
@@ -75,7 +76,7 @@ for line in sys.stdin.buffer:
         previous=None;continue
     else: data=None
     emit({'type':'queue_update','steering':[],'followUp':[]})
-    emit({'type':'response','id':rid,'command':'WRONG' if MODE=='wrong-command' else typ,'success':typ!='reject','data':data,'error':'SECRET'})
+    emit({'type':'response','id':rid,'command':'WRONG' if MODE=='wrong-command' else typ,'success':typ!='reject' and not (MODE=='reject-prompt' and typ=='prompt'),'data':data,'error':'SECRET'})
     if MODE=='duplicates': emit({'type':'response','id':rid,'command':typ,'success':True,'data':{'wrong':'duplicate'}})
 "#;
     std::fs::write(
@@ -198,7 +199,18 @@ fn fake_pi_user_journey_streams_permissions_settlement_interrupt_resume_and_shut
     let interrupted = read_until(&mut reader, "agent_settled");
     assert_eq!(interrupted.last().unwrap()["event"]["aborted"], true);
     runtime.compact_native(Some("Keep decisions")).unwrap();
-    read_until(&mut reader, "compaction_end");
+    // Manual compaction runs outside an agent run, so its end is the boundary
+    // that returns the Bridge session to ready.
+    let mut compaction = normalize::StreamState::default();
+    let compacted = read_until(&mut reader, "compaction_end")
+        .iter()
+        .flat_map(|value| compaction.normalize(&value["event"]))
+        .collect::<Vec<_>>();
+    assert!(compacted.iter().any(|event| event.kind == "context.compacted"));
+    assert_eq!(compacted.last().unwrap().kind, "turn.completed");
+    assert_eq!(compacted.last().unwrap().status.as_deref(), Some("completed"));
+    let response = read_until(&mut reader, "bridge_compaction_response");
+    assert!(compaction.normalize(&response.last().unwrap()["event"]).is_empty());
     assert!(runtime
         .send_turn_with_context(
             "Key",
@@ -366,6 +378,36 @@ fn handled_prompts_finish_and_drop_reaps_the_child() {
     drop(runtime);
     assert!(crate::adapters::process_identity(pid).is_none());
 }
+#[cfg(unix)]
+#[test]
+fn rejected_prompts_settle_the_turn_instead_of_blocking_the_sender() {
+    let (directory, path) = fake("reject-prompt");
+    let cwd = directory.path().to_str().unwrap();
+    let (runtime, mut reader) =
+        PiRuntime::open(&path, directory.path(), request(cwd), None, true).unwrap();
+    runtime.send_turn("Hello").unwrap();
+    let events = read_until(&mut reader, "bridge_prompt_rejected");
+    let settled = normalize::StreamState::default().normalize(&events.last().unwrap()["event"]);
+    assert_eq!(
+        settled
+            .iter()
+            .map(|event| (event.kind.as_str(), event.status.as_deref()))
+            .collect::<Vec<_>>(),
+        [("turn.completed", Some("failed")), ("error", Some("failed"))]
+    );
+    assert!(!format!("{settled:?}").contains("SECRET"));
+}
+#[test]
+fn oversized_catalogs_keep_the_default_model_instead_of_failing() {
+    let models = (0..400)
+        .map(|index| json!({"provider":"openrouter","id":format!("vendor/model-{index}")}))
+        .collect::<Vec<_>>();
+    let candidates =
+        model_candidates(&json!({ "models": models }), Some("openrouter/vendor/model-399"))
+            .unwrap();
+    assert_eq!(candidates.len(), model_catalog::MAX_CATALOG_ENTRIES);
+    assert_eq!(candidates[0].id, "openrouter/vendor/model-399");
+}
 #[test]
 fn catalog_and_execution_policy_fail_closed() {
     for data in [
@@ -373,7 +415,7 @@ fn catalog_and_execution_policy_fail_closed() {
         json!({"models":[{"provider":"bad/provider","id":"one"}]}),
         json!({"models":[{"provider":"p","id":"m"},{"provider":"p","id":"m"}]}),
     ] {
-        assert!(model_candidates(&data).is_err());
+        assert!(model_candidates(&data, None).is_err());
     }
     let mut request = request("/tmp");
     for mode in [WriteMode::ReadOnly, WriteMode::Shared, WriteMode::Isolated] {
@@ -494,6 +536,7 @@ fn registry_and_config_use_the_proven_pi_adapter_and_exact_model_selection() {
     let adapter = PiAdapter {
         profile: Arc::new(RwLock::new(Some(Ok(profile)))),
         discovering: Arc::new(AtomicBool::new(false)),
+        rediscover: Arc::new(AtomicBool::new(false)),
         notify: None,
         streams: Mutex::new(HashMap::new()),
     };

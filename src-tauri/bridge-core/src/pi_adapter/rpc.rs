@@ -255,41 +255,40 @@ impl Process {
                 if value["type"] == "response" {
                     let id = value["id"].as_str().unwrap_or("");
                     let pending = shared.pending.lock().unwrap().remove(id);
-                    if let Some(pending) = pending {
-                        let response = if value["command"] != pending.command
-                            || !value["success"].is_boolean()
-                        {
-                            Err(format!(
-                                "Pi returned an incompatible response for {}",
-                                pending.command
-                            ))
-                        } else if value["success"] != true {
-                            // Provider errors may contain headers, tokens or credential values.
-                            Err(format!(
-                                "Pi rejected {}; check its CLI/provider configuration",
-                                pending.command
-                            ))
-                        } else {
-                            Ok(value.get("data").cloned().unwrap_or(Value::Null))
-                        };
-                        let handled = pending.command == "prompt"
-                            && value.pointer("/data/disposition").and_then(Value::as_str)
-                                == Some("handled")
-                            && response.is_ok();
-                        if let Some(reply) = pending.reply {
+                    // Late/duplicate responses cannot satisfy another command.
+                    let Some(pending) = pending else { continue };
+                    let response = if value["command"] != pending.command
+                        || !value["success"].is_boolean()
+                    {
+                        Err(format!(
+                            "Pi returned an incompatible response for {}",
+                            pending.command
+                        ))
+                    } else if value["success"] != true {
+                        // Provider errors may contain headers, tokens or credential values.
+                        Err(format!(
+                            "Pi rejected {}; check its CLI/provider configuration",
+                            pending.command
+                        ))
+                    } else {
+                        Ok(value.get("data").cloned().unwrap_or(Value::Null))
+                    };
+                    // Asynchronous commands report their outcome through the
+                    // event stream, where the normalizer can settle the turn.
+                    value = match (pending.reply, pending.command.as_str(), response) {
+                        (Some(reply), _, response) => {
                             let _ = reply.send(response);
-                            if !handled {
-                                continue;
-                            }
-                            value = json!({"type":"bridge_handled"});
-                        } else if response.is_err() {
-                            value = json!({"type":"bridge_compaction_error"});
-                        } else {
                             continue;
                         }
-                    } else {
-                        continue;
-                    } // late/duplicate responses cannot satisfy another command
+                        (None, "prompt", Ok(data)) if data["disposition"] == "handled" => {
+                            json!({"type":"bridge_handled"})
+                        }
+                        (None, "prompt", Ok(_)) => continue,
+                        (None, "prompt", Err(_)) => json!({"type":"bridge_prompt_rejected"}),
+                        (None, _, response) => {
+                            json!({"type":"bridge_compaction_response","success":response.is_ok()})
+                        }
+                    };
                 }
                 if value["type"] == "extension_ui_request" {
                     if value["method"] == "notify" && value["message"] == super::READY {

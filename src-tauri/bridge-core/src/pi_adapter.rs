@@ -202,15 +202,15 @@ fn model_identity(model: &Value) -> Result<String, BridgeError> {
         .ok_or_else(|| invalid("Pi catalog contains an invalid model ID"))?;
     Ok(format!("{provider}/{id}"))
 }
-fn model_candidates(data: &Value) -> Result<Vec<CatalogCandidate>, BridgeError> {
+fn model_candidates(
+    data: &Value,
+    preferred: Option<&str>,
+) -> Result<Vec<CatalogCandidate>, BridgeError> {
     let models = data["models"]
         .as_array()
         .ok_or_else(|| invalid("Pi returned an incompatible model catalog"))?;
-    if models.len() > model_catalog::MAX_CATALOG_ENTRIES {
-        return Err(invalid("Pi model catalog exceeds Bridge's entry limit"));
-    }
     let mut ids = HashSet::new();
-    models
+    let mut candidates = models
         .iter()
         .map(|model| {
             let id = model_identity(model)?;
@@ -234,7 +234,18 @@ fn model_candidates(data: &Value) -> Result<Vec<CatalogCandidate>, BridgeError> 
                 0,
             ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    // A single aggregator key (OpenRouter lists ~400 models) exceeds Bridge's
+    // catalog limit. Keep Pi's own default and the first entries rather than
+    // making Pi unavailable.
+    if let Some(index) =
+        preferred.and_then(|id| candidates.iter().position(|candidate| candidate.id == id))
+    {
+        let preferred = candidates.remove(index);
+        candidates.insert(0, preferred);
+    }
+    candidates.truncate(model_catalog::MAX_CATALOG_ENTRIES);
+    Ok(candidates)
 }
 fn select_model(client: &rpc::Client, id: &str) -> Result<Vec<String>, BridgeError> {
     let (provider, model_id) = id
@@ -273,6 +284,7 @@ fn select_model(client: &rpc::Client, id: &str) -> Result<Vec<String>, BridgeErr
 pub struct PiAdapter {
     profile: Arc<RwLock<Option<Result<Profile, String>>>>,
     discovering: Arc<AtomicBool>,
+    rediscover: Arc<AtomicBool>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
     streams: Mutex<HashMap<String, normalize::StreamState>>,
 }
@@ -281,6 +293,7 @@ impl PiAdapter {
         let adapter = Self {
             profile: Arc::new(RwLock::new(None)),
             discovering: Arc::new(AtomicBool::new(false)),
+            rediscover: Arc::new(AtomicBool::new(false)),
             notify,
             streams: Mutex::new(HashMap::new()),
         };
@@ -316,7 +329,7 @@ impl PiAdapter {
             .process
             .client
             .command(json!({"type":"get_available_models"}), COMMAND_TIMEOUT)?;
-        let mut candidates = model_candidates(&data)?;
+        let mut candidates = model_candidates(&data, default_model.as_deref())?;
         let deadline = Instant::now() + Duration::from_secs(60);
         for candidate in &mut candidates {
             if Instant::now() >= deadline {
@@ -510,20 +523,28 @@ impl HarnessAdapter for PiAdapter {
         self.streams.lock().unwrap().remove(id);
     }
     fn refresh_availability(&self) {
+        self.rediscover.store(true, Ordering::Release);
         if self.discovering.swap(true, Ordering::AcqRel) {
             return;
         }
         let profile = self.profile.clone();
         let discovering = self.discovering.clone();
+        let rediscover = self.rediscover.clone();
         let notify = self.notify.clone();
-        thread::spawn(move || {
+        thread::spawn(move || loop {
+            rediscover.store(false, Ordering::Release);
             let result = system_executable()
                 .and_then(|executable| Self::discover(&executable))
                 .map_err(|error| error.to_string());
             *profile.write().unwrap() = Some(result);
             discovering.store(false, Ordering::Release);
-            if let Some(notify) = notify {
+            if let Some(notify) = &notify {
                 notify();
+            }
+            // A refresh asked for mid-discovery (say, right after configuring a
+            // provider in pi) must not be answered with the older result.
+            if !rediscover.load(Ordering::Acquire) || discovering.swap(true, Ordering::AcqRel) {
+                break;
             }
         });
     }
@@ -617,6 +638,9 @@ impl PiRuntime {
         if text.trim_start().starts_with(['/', '!']) {
             return Err(invalid("Pi slash commands and direct shell input are unavailable in Bridge. Use plain text or Bridge's compaction control."));
         }
+        // Pi answers a prompt only after preflight, which can include a
+        // pre-prompt compaction. Waiting for it here would hold the adapter
+        // map for that long; the reader settles a rejection instead.
         let mut command = json!({"type":"prompt","message":text,"streamingBehavior":"steer"});
         if let Some(images) = images {
             if !self.images {
@@ -627,8 +651,7 @@ impl PiRuntime {
                 .map(|image| json!({"type":"image","data":image.base64_data,"mimeType":image.media_type}))
                 .collect::<Vec<_>>());
         }
-        self.process.client.command(command, COMMAND_TIMEOUT)?;
-        Ok(())
+        self.process.client.command_async(command)
     }
 }
 impl AdapterRuntime for PiRuntime {

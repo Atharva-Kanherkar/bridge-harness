@@ -15,7 +15,7 @@ for (const toolName of ['read', 'bash', 'edit', 'write', 'unknown']) {
       assert.equal(result?.block, answer === true ? undefined : true);
       assert.deepEqual(JSON.parse(asked[0]), { bridgePermission: 1, toolCallId: 'call-1', toolName });
       assert.deepEqual(JSON.parse(asked[1]), { command: 'echo ok' });
-      assert.equal(asked[2].timeout, 120000);
+      assert.equal(asked[2].timeout, undefined);
     }
   });
 }

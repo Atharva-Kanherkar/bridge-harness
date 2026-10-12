@@ -9,7 +9,9 @@ export default function bridgePermissions(pi) {
     try {
       if (ctx.mode !== "rpc" || !ctx.hasUI) return { block: true, reason: "Bridge permission channel unavailable" };
       const title = JSON.stringify({ bridgePermission: 1, toolCallId: event.toolCallId, toolName: event.toolName });
-      const allowed = await ctx.ui.confirm(title, JSON.stringify(event.input), { timeout: 120000, signal: ctx.signal });
+      // No timeout: an expired dialog would deny the tool while Bridge still
+      // shows a live approval card. Interrupting the run aborts the wait.
+      const allowed = await ctx.ui.confirm(title, JSON.stringify(event.input), { signal: ctx.signal });
       if (allowed === true) return undefined;
     } catch {
       // An extension exception must never become an implicit tool grant.
