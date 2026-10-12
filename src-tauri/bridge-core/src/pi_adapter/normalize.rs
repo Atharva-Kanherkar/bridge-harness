@@ -319,7 +319,7 @@ impl StreamState {
                     // only agent_settled turns the terminal failure into idle.
                     self.failed = true;
                     events.push(event(
-                        "provider.status",
+                        "error",
                         None,
                         Some("Pi provider request failed; check Pi's provider setup".into()),
                         "retrying",
@@ -375,11 +375,7 @@ impl StreamState {
             "compaction_end" => {
                 if value["aborted"] == true || value.get("result").is_none() {
                     return vec![event(
-                        if self.active {
-                            "provider.status"
-                        } else {
-                            "error"
-                        },
+                        if self.active { "error" } else { "error" },
                         None,
                         Some("Pi context compaction did not complete".into()),
                         if self.active { "retrying" } else { "failed" },
@@ -397,7 +393,7 @@ impl StreamState {
             "auto_retry_start"
             | "summarization_retry_scheduled"
             | "summarization_retry_attempt_start" => vec![event(
-                "provider.status",
+                "error",
                 None,
                 Some("Pi is retrying the provider request".into()),
                 "retrying",
@@ -406,16 +402,14 @@ impl StreamState {
             "auto_retry_end" if value["success"] == false => {
                 self.failed = true;
                 vec![event(
-                    "provider.status",
+                    "error",
                     None,
                     Some("Pi exhausted its provider retries".into()),
                     "retrying",
                     json!({}),
                 )]
             }
-            "auto_retry_end" | "summarization_retry_finished" => {
-                vec![event("provider.status", None, None, "working", json!({}))]
-            }
+            "auto_retry_end" | "summarization_retry_finished" => vec![],
             "extension_error" => {
                 self.failed = true;
                 self.active = false;

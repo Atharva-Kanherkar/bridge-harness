@@ -469,16 +469,16 @@ fn retry_errors_cannot_finish_a_run_until_settled() {
     let mut state = normalize::StreamState::default();
     state.normalize(&json!({"type":"agent_start"}));
     let events=state.normalize(&json!({"type":"message_end","message":{"role":"assistant","timestamp":42,"content":[],"stopReason":"error","errorMessage":"SECRET"}}));
-    assert!(events
-        .iter()
-        .all(|event| event.kind != "error" && event.kind != "turn.completed"));
+    assert!(events.iter().all(|event| !(event.kind == "error"
+        && event.status.as_deref() == Some("failed"))
+        && event.kind != "turn.completed"));
     assert!(state
         .normalize(&json!({"type":"agent_end","willRetry":true}))
         .is_empty());
     assert!(state
         .normalize(&json!({"type":"auto_retry_end","success":false,"finalError":"SECRET"}))
         .iter()
-        .all(|event| event.kind != "error"));
+        .all(|event| event.kind != "error" || event.status.as_deref() == Some("retrying")));
     let settled = state.normalize(&json!({"type":"agent_settled","aborted":false}));
     assert_eq!(settled[0].kind, "turn.completed");
     assert_eq!(settled[0].status.as_deref(), Some("failed"));
@@ -542,7 +542,7 @@ fn delayed_duplicate_completion_does_not_double_count_between_runs() {
     assert!(state.normalize(&old).is_empty());
     let recovering =
         state.normalize(&json!({"type":"compaction_end","aborted":true,"willRetry":true}));
-    assert!(recovering
-        .iter()
-        .all(|event| event.kind != "error" && event.kind != "turn.completed"));
+    assert!(recovering.iter().all(|event| !(event.kind == "error"
+        && event.status.as_deref() == Some("failed"))
+        && event.kind != "turn.completed"));
 }
