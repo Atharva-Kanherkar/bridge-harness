@@ -65,6 +65,7 @@ const TINTS: Record<string, string> = {
   codex: "text-foreground",
   cursor: "text-foreground",
   grok: "text-foreground",
+  pi: "text-foreground",
 };
 
 /** The same tints as backgrounds: the effort control's fill and its marks. */
@@ -74,6 +75,7 @@ const FILLS: Record<string, string> = {
   codex: "bg-foreground",
   cursor: "bg-foreground",
   grok: "bg-foreground",
+  pi: "bg-foreground",
 };
 
 /** The fill class for a harness id — muted ink for one Bridge does not know. */
@@ -134,6 +136,8 @@ function figure(harness?: string | null) {
         <path d={OPENCODE_FRAME_PATH} fill="currentColor" fillRule="evenodd" />
         <rect x="7.2" y="9.6" width="9.6" height="9.6" className="fill-current opacity-45" />
       </>;
+    case "pi":
+      return <path d="M4 7h16M7 7v13M17 7v13" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />;
     case "grok":
       return <g transform="scale(0.0234375)">{GROK_PATHS.map(d => <path key={d.slice(0, 24)} d={d} fill="currentColor" />)}</g>;
     case "bridge":

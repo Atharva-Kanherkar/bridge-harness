@@ -9,7 +9,7 @@ export function tierRuntimeLabel(tier?: CapabilityTier | null, model?: string | 
   return `${routing}${effort ? ` · ${effort}` : ""} · runtime ${modelLabel(model)}`;
 }
 
-const BUILTIN_HARNESS_LABELS: Record<string, string> = { bridge: "Bridge", claude: "Claude", codex: "Codex", cursor: "Cursor", opencode: "OpenCode", shell: "Shell" };
+const BUILTIN_HARNESS_LABELS: Record<string, string> = { bridge: "Bridge", claude: "Claude", codex: "Codex", cursor: "Cursor", opencode: "OpenCode", pi: "Pi", shell: "Shell" };
 
 /**
  * Display name for a harness id.
