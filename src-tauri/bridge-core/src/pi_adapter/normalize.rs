@@ -1,6 +1,6 @@
 use crate::agent::{self, NormalizedEvent};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// One state per supervised Pi session. Provider timestamps give messages
 /// stable IDs across resume; the nonce also makes timestamp-less frames safe.
@@ -14,6 +14,7 @@ pub(super) struct StreamState {
     blocks: HashMap<String, (String, String)>,
     terminals: HashMap<String, String>,
     finished_messages: HashSet<String>,
+    message_order: VecDeque<String>,
     finished_tools: HashSet<String>,
     tools: HashMap<String, (String, Value)>,
 }
@@ -169,7 +170,7 @@ impl StreamState {
                 self.failed = false;
                 // Bound deduplication history while retaining the current run.
                 self.terminals.clear();
-                self.finished_messages.clear();
+
                 self.finished_tools.clear();
                 vec![event("turn.started", None, None, "working", json!({}))]
             }
@@ -180,11 +181,7 @@ impl StreamState {
                 }
                 self.active = false;
                 let mut events = self.flush();
-                let kind = if self.failed {
-                    "turn.failed"
-                } else {
-                    "turn.completed"
-                };
+                let kind = "turn.completed";
                 events.push(event(
                     kind,
                     None,
@@ -198,14 +195,24 @@ impl StreamState {
                     },
                     json!({}),
                 ));
+                if self.failed {
+                    events.push(event(
+                        "error",
+                        None,
+                        Some("Pi run failed; check Pi's provider configuration".into()),
+                        "failed",
+                        json!({}),
+                    ));
+                }
                 events
             }
             "bridge_error" => {
                 self.failed = true;
                 self.active = false;
                 let mut events = self.flush();
+                events.push(event("turn.completed", None, None, "failed", json!({})));
                 events.push(event(
-                    "turn.failed",
+                    "error",
                     None,
                     Some(string(value, "message")),
                     "failed",
@@ -275,6 +282,12 @@ impl StreamState {
                 if !self.finished_messages.insert(id.clone()) {
                     return vec![];
                 }
+                self.message_order.push_back(id.clone());
+                if self.message_order.len() > 2048 {
+                    if let Some(old) = self.message_order.pop_front() {
+                        self.finished_messages.remove(&old);
+                    }
+                }
                 let mut events = Vec::new();
                 for (index, block) in message["content"]
                     .as_array()
@@ -306,17 +319,17 @@ impl StreamState {
                     // only agent_settled turns the terminal failure into idle.
                     self.failed = true;
                     events.push(event(
-                        "error",
+                        "provider.status",
                         None,
                         Some("Pi provider request failed; check Pi's provider setup".into()),
-                        "failed",
+                        "retrying",
                         json!({}),
                     ));
                 } else if message["stopReason"] != "aborted" {
                     self.failed = false;
                 }
                 if let Some(usage) = message.get("usage").filter(|usage| usage.is_object()) {
-                    let data = json!({"input_tokens":usage["input"].as_u64().unwrap_or(0),"output_tokens":usage["output"].as_u64().unwrap_or(0),"cache_read_tokens":usage["cacheRead"].as_u64().unwrap_or(0),"cache_write_tokens":usage["cacheWrite"].as_u64().unwrap_or(0),"totalCostUsd":usage.pointer("/cost/total").and_then(Value::as_f64),"model":message["model"],"provider":message["provider"],"messageId":id});
+                    let data = json!({"total_tokens":usage["totalTokens"].as_u64(),"input_tokens":usage["input"].as_u64().unwrap_or(0),"output_tokens":usage["output"].as_u64().unwrap_or(0),"cache_read_tokens":usage["cacheRead"].as_u64().unwrap_or(0),"cache_write_tokens":usage["cacheWrite"].as_u64().unwrap_or(0),"totalCostUsd":usage.pointer("/cost/total").and_then(Value::as_f64),"model":message["model"],"provider":message["provider"],"messageId":id});
                     events.push(event(
                         "usage.updated",
                         Some(format!("{id}-usage")),
@@ -339,7 +352,7 @@ impl StreamState {
                     return vec![];
                 }
                 let mut output = event(
-                    "approval.requested",
+                    "permission.requested",
                     title["toolCallId"].as_str().map(str::to_owned),
                     value["message"].as_str().map(str::to_owned),
                     "pending",
@@ -352,13 +365,24 @@ impl StreamState {
                 vec![output]
             }
             "compaction_start" => vec![agent::native_compacting("pi")],
+            "bridge_compaction_error" => vec![event(
+                "error",
+                None,
+                Some("Pi rejected context compaction; check its provider setup".into()),
+                "failed",
+                json!({}),
+            )],
             "compaction_end" => {
                 if value["aborted"] == true || value.get("result").is_none() {
                     return vec![event(
-                        "error",
+                        if self.active {
+                            "provider.status"
+                        } else {
+                            "error"
+                        },
                         None,
                         Some("Pi context compaction did not complete".into()),
-                        "failed",
+                        if self.active { "retrying" } else { "failed" },
                         json!({}),
                     )];
                 }
@@ -382,10 +406,10 @@ impl StreamState {
             "auto_retry_end" if value["success"] == false => {
                 self.failed = true;
                 vec![event(
-                    "error",
+                    "provider.status",
                     None,
                     Some("Pi exhausted its provider retries".into()),
-                    "failed",
+                    "retrying",
                     json!({}),
                 )]
             }
@@ -394,15 +418,20 @@ impl StreamState {
             }
             "extension_error" => {
                 self.failed = true;
-                vec![event(
-                    "error",
-                    None,
-                    Some(
-                        "Pi's Bridge permission extension failed; tool execution was denied".into(),
+                self.active = false;
+                vec![
+                    event("turn.completed", None, None, "failed", json!({})),
+                    event(
+                        "error",
+                        None,
+                        Some(
+                            "Pi's Bridge permission extension failed; tool execution was denied"
+                                .into(),
+                        ),
+                        "failed",
+                        json!({}),
                     ),
-                    "failed",
-                    json!({}),
-                )]
+                ]
             }
             _ => vec![],
         }
@@ -482,7 +511,7 @@ mod tests {
         assert_eq!(compact[0].kind, "context.compacted");
         assert_eq!(compact[0].data["preTokens"], 100);
         let approval=state.normalize(&json!({"type":"extension_ui_request","method":"confirm","id":"p","title":"{\"bridgePermission\":1,\"toolCallId\":\"t\",\"toolName\":\"read\"}","message":"{}"}));
-        assert_eq!(approval[0].kind, "approval.requested");
+        assert_eq!(approval[0].kind, "permission.requested");
         assert_eq!(approval[0].data["requestId"], "p");
         assert!(!format!(
             "{:?}",

@@ -39,3 +39,15 @@ test('user input cannot reload the gate or bypass it with direct bash', () => {
   assert.equal(handlers.get('input')({ text: 'Review /file and explain' }).action, 'continue');
   assert.equal(handlers.get('user_bash')().result.exitCode, 1);
 });
+
+test('run cancellation reaches the pending approval and denies the tool', async () => {
+  const controller = new AbortController();
+  const { handlers, ctx } = fixture((_title, _message, options) => new Promise(resolve => {
+    assert.equal(options.signal, controller.signal);
+    options.signal.addEventListener('abort', () => resolve(false), { once: true });
+  }));
+  ctx.signal = controller.signal;
+  const pending = handlers.get('tool_call')({ toolName: 'bash', toolCallId: 't', input: {} }, ctx);
+  controller.abort();
+  assert.equal((await pending).block, true);
+});

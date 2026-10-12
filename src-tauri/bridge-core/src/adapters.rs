@@ -6,7 +6,7 @@ use crate::{
     grok_adapter,
     model::{AdapterDescriptor, CapabilityTier, SandboxMode},
     model_catalog::{self, CatalogCandidate},
-    opencode_adapter,
+    opencode_adapter, pi_adapter,
     worker_sandbox::ReadOnlySandbox,
     BridgeError,
 };
@@ -130,6 +130,10 @@ pub trait AdapterRuntime: Send {
     fn context_inventory(&self) -> Vec<crate::context_inventory::AdapterContextInventory> {
         Vec::new()
     }
+    /// Whether hidden application context can be delivered without exposing it
+    /// as visible user text. Hosts omit optional capabilities and do not record
+    /// delivery when a runtime opts out; actual credential turns still refuse.
+    fn supports_trusted_turn_context(&self) -> bool { true }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError>;
     /// Send a user turn with trusted, application-owned context that must not
     /// be folded into the visible user message. Providers that cannot attach
@@ -840,7 +844,8 @@ impl AdapterRegistry {
         registry.register(Box::new(cursor_adapter::CursorAdapter::new(
             on_discovered.clone(),
         )))?;
-        registry.register(Box::new(grok_adapter::GrokAdapter::new(on_discovered)))?;
+        registry.register(Box::new(grok_adapter::GrokAdapter::new(on_discovered.clone())))?;
+        registry.register(Box::new(pi_adapter::PiAdapter::new(on_discovered)))?;
         Ok(registry)
     }
 
@@ -2436,7 +2441,7 @@ mod tests {
         for other in registry
             .descriptors()
             .into_iter()
-            .filter(|descriptor| !matches!(descriptor.id.as_str(), "opencode" | "cursor" | "grok"))
+            .filter(|descriptor| !matches!(descriptor.id.as_str(), "opencode" | "cursor" | "grok" | "pi"))
         {
             assert!(
                 other.supports_sandbox(SandboxMode::ReadOnly),

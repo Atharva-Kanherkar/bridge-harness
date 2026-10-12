@@ -287,7 +287,7 @@ impl AdapterContextInventory {
     }
 }
 
-pub const CONTEXT_INVENTORY_ADAPTERS: [&str; 5] = ["claude", "codex", "cursor", "grok", "opencode"];
+pub const CONTEXT_INVENTORY_ADAPTERS: [&str; 6] = ["claude", "codex", "cursor", "grok", "opencode", "pi"];
 
 /// Static fail-closed contract used by registry conformance and by callers that
 /// need the lifecycle shape before a provider process exists.
@@ -304,6 +304,11 @@ pub fn adapter_context_inventory_contract(
         "cursor" => crate::cursor_adapter::cursor_context_inventory(lifecycle_phase),
         "grok" => crate::grok_adapter::grok_context_inventory(lifecycle_phase),
         "opencode" => crate::opencode_adapter::opencode_context_inventory(lifecycle_phase),
+        "pi" => [ContextInventoryScope::Catalog, ContextInventoryScope::TurnPresented]
+            .into_iter().map(|scope| AdapterContextInventory::new("pi", scope, lifecycle_phase,
+                ContextSegmentClass::ALL.into_iter().map(|class| ContextSegmentObservation::unavailable(class,
+                    "Pi RPC does not report provider-owned context inventory; discovered resources and hidden per-turn context are disabled")).collect()))
+            .collect(),
         unknown => Err(BridgeError::Invalid(format!(
             "Adapter {unknown} has no provider context inventory contract"
         ))),

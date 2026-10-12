@@ -44,6 +44,7 @@ ed25519-dalek = "2"
 base64 = "0.22"
 regex = "1"
 shell-words = "1.1"
+semver = "1"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 zeroize = "1"
 cap-std = "4.0.2"
