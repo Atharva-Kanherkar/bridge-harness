@@ -36,7 +36,7 @@ The full suite uses `NODE_OPTIONS=--no-experimental-webstorage` for the document
 
 ## Playwright validation
 
-After the user requested local Playwright testing, an isolated Chrome for Testing browser exercised the running app. Voice API calls were forwarded to a fresh real daemon with the installed model; a public WAV supplied a virtual MediaStream. Production VoiceCapture, AudioWorklet, resampler, controller, hooks and UI ran unchanged. Other app data used the existing browser-preview fixtures. No signed-in browser or physical microphone was used.
+An isolated Chrome for Testing browser exercised the running app. Voice API calls were forwarded to a fresh real daemon with the installed model; a public WAV supplied a virtual MediaStream. Production VoiceCapture, AudioWorklet, resampler, controller, hooks and UI ran unchanged. Other app data used the existing browser-preview fixtures. No signed-in browser or physical microphone was used.
 
 Passed: settings microphone capture/finalization, removal disabled during capture, keyboard Cancel, selected-span insertion with surrounding text preserved, Send blocked during recording, Enter-to-finish, writing focus restored, early pointer release with immediate capture teardown, silent-take feedback, consecutive cancellation, keyboard Space release after focus moved, simulated permission-denial recovery, reduced-motion spinner behavior, single-surface previews, and Graphite/Paper rendering including the 420 px minimum-width layout. Ten opened virtual captures were released; no provider error events or native coding sessions were created.
 
