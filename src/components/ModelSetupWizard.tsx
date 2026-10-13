@@ -48,7 +48,7 @@ function AgentConnection({ agent, adapter, busy, error, loginOpen, onInstall, on
     <div className="mt-4 space-y-2 border-t border-border pt-3">
       {busy ? <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle size={14} className="animate-spin" />{busy}…</p>
       : missing ? supportedInstall ? <><p className="text-xs text-muted-foreground">Bridge will download and manage a separate copy for you.</p><button type="button" onClick={onInstall} className="min-h-9 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground">Install with Bridge</button></>
-        : <p className="text-xs text-warning">Bridge cannot install this agent on this computer. Install it using the vendor's instructions, then check again, or go back and choose another agent.</p>
+        : <><p className="text-xs text-warning">Bridge cannot install this agent on this computer. Install it using the vendor's instructions, then check again, or go back and choose another agent.</p>{adapter?.unavailableReason && <p className="text-xs text-muted-foreground">{adapter.unavailableReason}</p>}</>
       : broken ? supportedInstall ? <button type="button" onClick={onRepair} className="min-h-9 rounded-lg border border-border px-3 text-xs">Repair installation</button>
         : <p className="text-xs text-warning">This installation needs attention. Repair it using the vendor's instructions, then check again.</p>
       : ready ? <p className="text-xs font-medium text-success">Sign-in found</p>

@@ -76,6 +76,23 @@ describe("first-run choose and connect", () => {
     expect(bridgeApi.saveModelProfiles).not.toHaveBeenCalled();
     expect(host.querySelector('[role="alert"]')).toBeTruthy();
   });
+  it("offers Pi, a runtime-catalog agent Bridge does not manage, and finishes once Pi reports a usable model", async () => {
+    const pi: AdapterDescriptor = { id: "pi", label: "Pi", available: true, authState: "signed_in", version: "1.1.0", capabilities: [], defaultModel: "openrouter/vendor/model",
+      models: [{ id: "openrouter/vendor/model", label: "Model · openrouter", tier: "standard", defaultForTier: true, supportedEffortLevels: ["off", "low", "high"] }] };
+    agents = [installed]; adapters = [codex, pi];
+    await render(); await select("Pi"); await click("Continue"); await click("Start using Bridge");
+    expect(complete).toHaveBeenCalledOnce();
+    const profiles = vi.mocked(bridgeApi.saveModelProfiles).mock.calls[0][0];
+    expect(profiles.every(profile => profile.provider === "pi" && profile.model === "openrouter/vendor/model")).toBe(true);
+  });
+  it("shows Pi's own install guidance when Bridge cannot install it", async () => {
+    agents = [installed];
+    adapters = [codex, { id: "pi", label: "Pi", available: false, authState: "unknown", capabilities: [], models: [],
+      unavailableReason: "Pi is not installed. Install @earendil-works/pi-coding-agent and configure providers with pi, then refresh Coding agents." }];
+    await render(); await select("Pi"); await click("Continue");
+    expect(host.textContent).toContain("Install @earendil-works/pi-coding-agent");
+    expect(button("Start using Bridge").disabled).toBe(true);
+  });
   it.each(["signed_out", "unknown"] as const)("blocks %s sign-in instead of calling it ready", async authState => {
     adapters = [{ ...codex, authState }];
     await render(); await select("Codex"); await click("Continue");

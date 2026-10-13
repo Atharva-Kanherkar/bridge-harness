@@ -472,7 +472,11 @@ impl HarnessAdapter for PiAdapter {
                 .iter()
                 .any(|model| model.available && model.compatible)
         });
-        AdapterDescriptor { id: "pi".into(), label: "Pi".into(), available, auth_state: AuthState::Unknown, version: profile.map(|profile| profile.version.clone()), capabilities: CAPABILITIES.iter().map(|value| (*value).into()).collect(), sandbox_modes: SANDBOXES.to_vec(), unavailable_reason: (!available).then(|| reason.clone().unwrap_or_else(|| if profile.is_some() { "Pi has no usable configured model; configure a provider with pi and refresh Coding agents".into() } else { "Pi discovery has not completed; install/configure pi and refresh Coding agents".into() })), models: profile.map(|profile| profile.models.clone()).unwrap_or_default(), default_model: profile.and_then(|profile| profile.default_model.clone()), model_catalog: ModelCatalogDiagnostics { source: ModelCatalogSource::RuntimeApi, fetched_at: None, expires_at: None, stale: false, last_error: reason } }
+        // A usable model means Pi accepted set_model, which checks the
+        // provider's credential (keyless local providers pass too). Never
+        // report signed-out: Bridge has no Pi sign-in flow to offer.
+        let auth_state = if available { AuthState::SignedIn } else { AuthState::Unknown };
+        AdapterDescriptor { id: "pi".into(), label: "Pi".into(), available, auth_state, version: profile.map(|profile| profile.version.clone()), capabilities: CAPABILITIES.iter().map(|value| (*value).into()).collect(), sandbox_modes: SANDBOXES.to_vec(), unavailable_reason: (!available).then(|| reason.clone().unwrap_or_else(|| if profile.is_some() { "Pi has no usable configured model; configure a provider with pi and refresh Coding agents".into() } else { "Pi discovery has not completed; install/configure pi and refresh Coding agents".into() })), models: profile.map(|profile| profile.models.clone()).unwrap_or_default(), default_model: profile.and_then(|profile| profile.default_model.clone()), model_catalog: ModelCatalogDiagnostics { source: ModelCatalogSource::RuntimeApi, fetched_at: None, expires_at: None, stale: false, last_error: reason } }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         self.launch(request, None, false)

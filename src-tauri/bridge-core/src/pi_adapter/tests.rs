@@ -542,6 +542,8 @@ fn registry_and_config_use_the_proven_pi_adapter_and_exact_model_selection() {
     };
     let descriptor = adapter.descriptor();
     assert!(descriptor.available);
+    // Onboarding requires signed_in; a usable model proves Pi's provider auth.
+    assert_eq!(descriptor.auth_state, AuthState::SignedIn);
     assert_eq!(descriptor.sandbox_modes, SANDBOXES);
     let mut registry = crate::adapters::AdapterRegistry::empty();
     registry.register(Box::new(adapter)).unwrap();
