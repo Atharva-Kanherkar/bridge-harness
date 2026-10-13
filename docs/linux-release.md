@@ -19,9 +19,11 @@ The Linux binaries target Ubuntu 24.04 (glibc 2.39) and newer compatible distrib
 
 The Arch recipe is a CI packaging template. CI adds the exact local artifact name and checksums; it is not a published AUR package.
 
-## Known blocker: read-only workers
+## Read-only workers
 
-Linux and Arch are **experimental candidates**. OS-enforced read-only research and verification workers currently require macOS Seatbelt. Linux rejects these launches rather than running them without isolation. A Linux sandbox implementation and native isolation tests are required before promoting these candidates to stable. Ordinary chat and write-capable workers do not use this boundary.
+Research and verification workers run under [Landlock](https://docs.kernel.org/userspace-api/landlock.html), the kernel's unprivileged sandbox, the way macOS runs them under Seatbelt. The workspace and everything else on disk are read-only to the worker; it may write only to its own output directory and to the character devices a child spawn needs. With `BRIDGE_READ_ONLY_NETWORK=deny`, TCP connect and bind are denied too.
+
+This needs Landlock ABI 3 or newer (Linux 6.2+), and ABI 4 (Linux 6.7+) for network denial. Current Arch and Ubuntu 24.04 HWE kernels qualify. On an older kernel, or one built without Landlock, Bridge refuses to start read-only workers rather than running them unisolated. Ordinary chat and write-capable workers do not use this boundary. The behavior is covered by `worker_sandbox` tests that run on a real Linux kernel.
 
 ## Before calling a Linux release stable
 

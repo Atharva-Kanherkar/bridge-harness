@@ -66,9 +66,53 @@ fn system_executable() -> Result<PathBuf, BridgeError> {
     binary::resolve("pi").ok_or_else(|| invalid("Pi is not installed. Install @earendil-works/pi-coding-agent and configure providers with pi, then refresh Coding agents."))
 }
 
+/// Budget for the one retry after a `--version` timeout. Omarchy's lazy
+/// launchers (`~/.local/bin/pi` running `mise use -g` then `mise x`) install
+/// the tool on their first run, which takes far longer than a version read.
+const FIRST_RUN_TIMEOUT: Duration = Duration::from_secs(180);
+
 /// --version must have a deadline as well; do not let a wrong PATH executable
-/// wedge discovery or a desktop launch. Its output is never a diagnostic.
+/// wedge discovery or a desktop launch. Its output is never a diagnostic. A
+/// timeout is retried once with a longer budget, so a launcher that installs
+/// on first use is not reported as unavailable; a failure is not retried.
 fn version(executable: &Path, cwd: &str) -> Result<String, BridgeError> {
+    version_with_retry(executable, cwd, COMMAND_TIMEOUT, FIRST_RUN_TIMEOUT)
+}
+
+fn version_with_retry(executable: &Path, cwd: &str, first: Duration, retry: Duration) -> Result<String, BridgeError> {
+    match version_within(executable, cwd, first) {
+        Err(VersionProbe::TimedOut) => version_within(executable, cwd, retry).map_err(VersionProbe::into_error),
+        result => result.map_err(VersionProbe::into_error),
+    }
+}
+
+enum VersionProbe {
+    TimedOut,
+    Failed(BridgeError),
+}
+
+impl VersionProbe {
+    fn into_error(self) -> BridgeError {
+        match self {
+            Self::TimedOut => invalid("Pi --version failed or timed out; check the executable on PATH"),
+            Self::Failed(error) => error,
+        }
+    }
+}
+
+impl From<std::io::Error> for VersionProbe {
+    fn from(error: std::io::Error) -> Self {
+        Self::Failed(error.into())
+    }
+}
+
+impl From<BridgeError> for VersionProbe {
+    fn from(error: BridgeError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+fn version_within(executable: &Path, cwd: &str, timeout: Duration) -> Result<String, VersionProbe> {
     let mut command = crate::adapters::supervised_command(executable, ["--version"]);
     binary::hydrate_command_path(&mut command);
     crate::adapters::configure_process_group(&mut command);
@@ -92,7 +136,7 @@ fn version(executable: &Path, cwd: &str) -> Result<String, BridgeError> {
         }
         let _ = tx.send(bytes);
     });
-    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -103,21 +147,23 @@ fn version(executable: &Path, cwd: &str) -> Result<String, BridgeError> {
     crate::adapters::terminate_process_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    if !status.is_some_and(|status| status.success()) {
-        return Err(invalid(
-            "Pi --version failed or timed out; check the executable on PATH",
-        ));
+    match status {
+        None => return Err(VersionProbe::TimedOut),
+        Some(status) if !status.success() => {
+            return Err(VersionProbe::Failed(invalid("Pi --version failed or timed out; check the executable on PATH")));
+        }
+        Some(_) => {}
     }
     let bytes = rx
         .recv_timeout(Duration::from_secs(1))
-        .map_err(|_| invalid("Pi did not close its version output"))?;
+        .map_err(|_| VersionProbe::Failed(invalid("Pi did not close its version output")))?;
     let text = String::from_utf8_lossy(&bytes);
     let value = text.trim().strip_prefix("pi ").unwrap_or(text.trim());
     let parsed = semver::Version::parse(value).map_err(|_| {
         invalid("Pi reported an unreadable version; install the Pi coding-agent CLI")
     })?;
     if parsed.major != 1 || parsed.minor < 1 {
-        return Err(invalid("Pi RPC requires Pi 1.1+ with project-trust controls and agent_settled; update the Pi CLI"));
+        return Err(invalid("Pi RPC requires Pi 1.1+ with project-trust controls and agent_settled; update the Pi CLI").into());
     }
     Ok(parsed.to_string())
 }
