@@ -25,12 +25,14 @@
     --text-caption--line-height: 1.5;
     --text-title: 1.5rem;
     --text-title--line-height: 1.25;
-    --font-family-display: "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
-    --font-family-sans: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
-    --font-display: "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    /* `--skin-font` is unset except under the Omarchy skin, which follows the
+       system monospace everywhere (see src/omarchy.ts). */
+    --font-family-display: var(--skin-font, "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
+    --font-family-sans: var(--skin-font, "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
+    --font-display: var(--skin-font, "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
     --font-heading: var(--font-display);
-    --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    --font-sans: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: var(--skin-font, "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+    --font-sans: var(--skin-font, "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif);
     --color-selection: var(--selection);
     --color-selection-foreground: var(--selection-foreground);
     --shadow-control: var(--control-shadow);

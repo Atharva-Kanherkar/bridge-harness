@@ -13,6 +13,7 @@ import { useAutoExpandEditActivity, useShowThinking } from "../../transcriptSett
 import { SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./kit";
 import { cn } from "@/lib/utils";
 import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
+import { useOmarchyTheme } from "../../omarchy";
 
 /** A tile previews either two swatches or a drawn figure, never both. */
 type Tile<T> = { id: T; label: string; hint: string } & ({ swatches: [string, string]; preview?: undefined } | { preview: ReactNode; swatches?: undefined });
@@ -27,6 +28,10 @@ const SKINS: Tile<ThemeSkin>[] = [
   { id: "graphite", label: "Solid", hint: "Solid window background", swatches: ["bg-foreground/[0.08]", "bg-foreground/[0.16]"] },
   { id: "vibrancy", label: "Vibrancy", hint: "Sidebar tinted by your desktop", swatches: ["bg-foreground/[0.04]", "bg-info/25"] },
 ];
+
+/* Only offered when the shell has detected Omarchy. The swatches are the live
+   theme's own ground and accent, so the tile previews whatever theme is on. */
+const OMARCHY_SKIN: Tile<ThemeSkin> = { id: "omarchy", label: "Omarchy", hint: "Follows your Omarchy theme", swatches: ["bg-sidebar", "bg-primary"] };
 
 /* Static previews of the three thinking controls, drawn in the page's ink so
    the tile reads as a form, not as the live control. */
@@ -121,16 +126,23 @@ export function AppearancePage({ title = "Appearance", extra }: { title?: string
   const [showThinking, setShowThinking] = useShowThinking();
   const [autoExpandEditActivity, setAutoExpandEditActivity] = useAutoExpandEditActivity();
   const [zoom, setZoom] = useZoomLevel();
+  const omarchy = useOmarchyTheme();
+  const skins = omarchy ? [OMARCHY_SKIN, ...SKINS] : SKINS;
+  // A stored `omarchy` without a payload renders as Graphite, so say so.
+  const shownSkin: ThemeSkin = skin === "omarchy" && !omarchy ? "graphite" : skin;
+  const onOmarchy = shownSkin === "omarchy" && omarchy;
   return <SettingsPage
     title={title}
-    description={`Bridge follows macOS by default. Currently showing ${resolved === "dark" ? "graphite" : "paper"}.`}
+    description={onOmarchy
+      ? `Following your Omarchy theme${omarchy.themeName ? ` (${omarchy.themeName})` : ""}. Switch themes in Omarchy and Bridge retints.`
+      : `Bridge follows macOS by default. Currently showing ${resolved === "dark" ? "graphite" : "paper"}.`}
   >
     {extra}
-    <SettingsGroup label="Mode">
+    <SettingsGroup label="Mode" note={onOmarchy ? "Your Omarchy theme decides light or dark" : undefined}>
       <TileGrid name="Mode" tiles={MODES} value={preference} onChange={setPreference} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
     <SettingsGroup label="Window background" note="Solid or tinted by your desktop">
-      <TileGrid name="Shell" tiles={SKINS} value={skin} onChange={setSkin} columns="@min-[480px]/settings:grid-cols-2" />
+      <TileGrid name="Shell" tiles={skins} value={shownSkin} onChange={setSkin} columns={omarchy ? "@min-[580px]/settings:grid-cols-3" : "@min-[480px]/settings:grid-cols-2"} />
     </SettingsGroup>
     <SettingsGroup label="Conversation" note="What appears while your agent works">
       <SettingsRow

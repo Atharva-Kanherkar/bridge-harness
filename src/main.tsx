@@ -8,8 +8,11 @@ import "./index.css";
 import { App } from "./App";
 import { dismissBootSplash } from "./bootSplash";
 import { installExternalLinkHandler } from "./externalLinks";
+import { startOmarchyThemeSync } from "./omarchy";
 
 installExternalLinkHandler();
+// Inert outside Tauri and on any desktop without Omarchy.
+startOmarchyThemeSync();
 
 if ("__TAURI_INTERNALS__" in window) document.documentElement.dataset.tauri = "";
 
