@@ -84,3 +84,98 @@ it("Escape cancels without applying provisional speech", async () => {
   expect(mocks.voiceCancel).toHaveBeenCalledWith("microphone-test");
   expect(input().value).toBe("");
 });
+
+it("Escape cancels from the focused microphone button and restores transcript focus", async () => {
+  const mic = button("Hold to dictate");
+  mic.focus();
+  await act(async () => mic.click());
+  event("started"); event("partial", "discard this");
+  expect(document.activeElement).toBe(mic);
+  act(() => mic.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+  expect(mocks.voiceCancel).toHaveBeenCalledWith("microphone-test");
+  expect(input().value).toBe("");
+  expect(document.activeElement).toBe(input());
+});
+
+it.each(["Enter", "Escape"])("pointer start from body makes %s available without selecting the transcript", async key => {
+  const mic = button("Hold to dictate");
+  mic.setPointerCapture = vi.fn();
+  mic.hasPointerCapture = () => true;
+  mic.releasePointerCapture = vi.fn();
+  expect(document.activeElement).toBe(document.body);
+  await act(async () => mic.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true, cancelable: true })));
+  act(() => mic.dispatchEvent(new MouseEvent("pointerup", { button: 0, bubbles: true })));
+  event("started"); event("partial", "microphone words");
+  expect(document.activeElement).toBe(input());
+  await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+  if (key === "Escape") {
+    expect(mocks.voiceCancel).toHaveBeenCalledWith("microphone-test");
+    expect(input().value).toBe("");
+  } else {
+    expect(mocks.voiceStop).toHaveBeenCalledWith("microphone-test");
+    expect(host.textContent).toContain("Finishing…");
+  }
+});
+
+it("preserves Enter activation of Cancel instead of finishing", async () => {
+  await act(async () => button("Hold to dictate").click());
+  event("started");
+  const cancel = button("Cancel dictation");
+  cancel.focus();
+  const key = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  act(() => cancel.dispatchEvent(key));
+  expect(key.defaultPrevented).toBe(false);
+  expect(mocks.voiceStop).not.toHaveBeenCalled();
+  // jsdom does not synthesize native button activation from Enter.
+  act(() => cancel.click());
+  expect(mocks.voiceCancel).toHaveBeenCalledWith("microphone-test");
+  expect(document.activeElement).toBe(input());
+});
+
+it("preserves microphone focus and Space release when starting from the keyboard", async () => {
+  const mic = button("Hold to dictate");
+  mic.focus();
+  await act(async () => mic.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })));
+  event("started");
+  expect(document.activeElement).toBe(mic);
+  await act(async () => mic.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true, cancelable: true })));
+  expect(mocks.voiceStop).toHaveBeenCalledTimes(1);
+});
+
+it("keeps Escape available after the stopping button loses browser focus", async () => {
+  const mic = button("Hold to dictate");
+  mic.focus();
+  await act(async () => mic.click());
+  event("started");
+  // Browsers blur a focused button when stopping disables it; jsdom does not.
+  mic.blur();
+  await act(async () => mic.click());
+  expect(mic.disabled).toBe(true);
+  expect(document.activeElement).toBe(input());
+  act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+  expect(mocks.voiceCancel).toHaveBeenCalledWith("microphone-test");
+});
+
+it("leaves unrelated settings focus alone when the test finishes", async () => {
+  await act(async () => button("Hold to dictate").click());
+  event("started");
+  const other = document.createElement("button");
+  host.append(other);
+  other.focus();
+  event("closed");
+  expect(document.activeElement).toBe(other);
+});
+
+it("ignores composing shortcut keys", async () => {
+  const mic = button("Hold to dictate");
+  mic.focus();
+  await act(async () => mic.click());
+  event("started");
+  for (const key of ["Enter", "Escape"]) {
+    const composing = new KeyboardEvent("keydown", { key, isComposing: true, bubbles: true, cancelable: true });
+    act(() => mic.dispatchEvent(composing));
+    expect(composing.defaultPrevented).toBe(false);
+  }
+  expect(mocks.voiceStop).not.toHaveBeenCalled();
+  expect(mocks.voiceCancel).not.toHaveBeenCalled();
+});

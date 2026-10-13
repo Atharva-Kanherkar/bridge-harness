@@ -14,6 +14,7 @@ Reviewed against `testing/fix-voice-flow-polish.md` on 2026-10-13.
 - Space release after focus moved could leave recording active. Shared controls track the release at window level and clear stale holds between takes.
 - Setup probes could overlap and apply stale responses after newer status/removal results. Polling is sequential, requests carry a generation, mutations are guarded, and initial status failures expose Retry.
 - Silent takes had no feedback, platform microphone errors had no recovery instructions, and identical partials repainted the app. These now produce useful feedback and avoid redundant updates; input-meter updates are capped at five per second.
+- Review follow-up: the microphone test advertised shortcuts that only worked in its textarea. Container-level handling now supports Escape from either voice button and Enter from the transcript, while preserving native Enter activation of Cancel and keyboard Space holds. State transitions restore transcript focus when pointer start leaves focus on the body or disabling Stop blurs it during finalization; unrelated settings focus is preserved.
 
 ## UI changes
 
@@ -24,9 +25,9 @@ Voice settings show the setup action and storage disclosure together, keep techn
 ## Verification
 
 - `bun run build`: passed on final application source; self-contained `voiceCaptureWorklet-*.js` emitted.
-- Focused frontend voice/capture/hook/composer/settings suites: 112 tests passed across six files.
+- Focused frontend voice/capture/hook/composer/settings suites: 120 tests passed across six files after the review follow-up.
 - Focused native voice suite: 31 tests passed.
-- Full `bun run test`: passed on final application source. Frontend: 3,325 tests across 261 files. Core Rust: 3,081 passed, 17 existing credential-dependent/benchmark tests ignored. Remaining Rust workspace, integration, sidecar, release and documentation suites passed.
+- Full `bun run test`: passed. Core Rust: 3,081 passed, 17 existing credential-dependent/benchmark tests ignored. Remaining Rust workspace, integration, sidecar, release and documentation suites passed. The frontend suite was repeated after the review follow-up's final focus correction: 3,333 tests passed across 261 files.
 - Native helper compiled with `-Wall -Wextra -Werror`.
 - Production helper with the installed model: three speech takes (6.625 s, 16.715 s, 6.625 s), every reference word matched after case/punctuation normalization; one second of silence produced no words. Helper readiness measured 0.72–1.19 s in this fixture run. These are model/helper measurements, not microphone-to-screen latency.
 - Final real daemon JSON-RPC smoke: passed. Three consecutive speech takes matched all 84 reference words; three immediate startup cancel/restart sequences passed. Take admission returned in 0.14–0.82 ms and cancel RPCs returned in 0.09–0.13 ms in this run. State inspection confirmed zero coding sessions. No credentials or downloads were required. These RPC timings do not measure full helper reaping or microphone latency.
@@ -45,6 +46,14 @@ Screenshots:
 - [Recording in Graphite](voice-flow-polish/recording-graphite.png)
 - [Voice settings in Paper](voice-flow-polish/settings-paper.png)
 - [Voice settings at 420 px](voice-flow-polish/settings-420.png)
+
+### Review follow-up keyboard verification
+
+Eight new component regressions cover focused-button Escape, pointer-start Enter/Escape, native Cancel activation, Space release, focus after disabling Stop, unrelated settings focus and composing input. Four failed against the reviewed version; the stopping-focus regression also failed against the first fix.
+
+Local Playwright exercised the rendered production microphone-test component and hook with stubbed capture/provider calls, using real pointer and keyboard events. Confirmed Escape from the focused mic, pointer-start focus and Enter-to-finish, Enter on Cancel without calling Stop, Space hold/release, and Escape after the Stop button becomes disabled. Five captures were released and five cancellation calls were observed. These checks verify keyboard/focus behavior, not audio quality or native permissions.
+
+The complete frontend suite was repeated after the final focus correction: 3,333 tests passed across 261 files.
 
 ## Remaining acceptance and confidence
 
