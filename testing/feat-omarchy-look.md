@@ -124,3 +124,91 @@ recorded in the PR as not yet run (no Linux machine in this session).
   mock mode under tokyo-night and rose-pine.
 - `curl -s localhost:3000/?omarchy=tokyo-night | grep data-omarchy` shows the
   pre-paint script is in the HTML.
+
+---
+
+# Part 2: the rest of the Omarchy edition (Phases 0, 2, 3, 4)
+
+Locked before implementation, same branch. Linux-only code is compiled and
+tested in a Linux container (Docker, kernel 6.12, Landlock ABI 6); anything a
+container cannot exercise (Hyprland, Quickshell, a notification daemon) is
+listed under Manual.
+
+## Functional Behavior
+
+### Phase 0: Linux baseline
+- **Keycaps.** `src/lib/platform.ts` exports `isMacPlatform()` and
+  `formatShortcut(keys)`. On macOS `["mod","shift","k"]` renders `⌘⇧K`; elsewhere
+  `Ctrl+Shift+K`. No `⌘` literal remains in non-test `src/` files outside the helper.
+- **Landlock read-only workers.** On Linux, `worker_sandbox::command` builds a
+  Landlock ruleset in the parent and applies it in the child before exec
+  (`PR_SET_NO_NEW_PRIVS` + `landlock_restrict_self`, both async-signal-safe).
+  Reads and execution are allowed everywhere; writes only under the worker
+  output dir and the same device exemptions as the seatbelt profile
+  (`/dev/null`, `/dev/zero`, `/dev/ptmx`, `/dev/pts`, `/dev/tty`). When
+  `runtime_network_denied`, TCP connect and bind are denied (ABI 4+). Fails
+  closed with the existing error style when the kernel lacks Landlock, when
+  ABI < 3 (truncate is unrestricted before 3), or when network denial is
+  required and ABI < 4. The parent-death watchdog wrapper still runs.
+  `docs/linux-release.md` "Known blocker" is removed.
+- **Lazy agent launchers.** A version probe that times out on the first try is
+  retried once with a longer budget, so a mise-backed launcher that installs
+  its tool on first run is not reported unavailable.
+- **NVIDIA on Wayland.** When `/proc/driver/nvidia` exists and the session is
+  Wayland, the shell sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before the
+  webview starts, unless the user already set it.
+
+### Phase 2: desktop integration
+- **Hyprland chrome.** Under `HYPRLAND_INSTANCE_SIGNATURE` the main window has
+  no decorations and no transparency; the app id / WM class is `bridge`.
+- **argv routing.** `bridge-deck --open <sessionId>`, `--new-chat [--project <path>]`,
+  `--quick`, `--approvals`, and `--omarchy <setup|remove|retint>` are parsed by one
+  pure function; in a second instance they are forwarded through the
+  single-instance plugin to the running app as a `bridge-launch` event.
+- **Omarchy setup/remove.** `bridge-deck --omarchy setup [--hyprland]` writes only
+  under `~/.config`: the `theme-set.d` hook, a `bridge` subtree merged into
+  `omarchy/extensions/omarchy-menu.jsonc`, the Quickshell plugin under
+  `omarchy/plugins/app.bridge.status/`, and with `--hyprland` a
+  `hypr/bridge.lua` plus one `require` line in the user's Hyprland config.
+  It is idempotent. Every user file it modifies is backed up first;
+  `--omarchy remove` restores those byte for byte and deletes everything it created.
+- **Notifications (Linux).** Approvals raise a freedesktop notification
+  (`notify-rust`, urgency critical, app name `Bridge`) with actions
+  `allow-once`, `decline`, `open`. An action resolves through the same
+  `resolve_approval` path as the in-app button; a second resolution of the same
+  approval is a no-op reported as "handled already".
+- **Quick prompt.** `--quick` toggles a second webview labelled `quick`
+  (composer only). Esc hides it; the session keeps running.
+
+### Phase 3: Quickshell plugin + CLI
+- **CLI.** `bridge status --json [--watch]` prints
+  `{ running, working, waiting, sessions:[...] }` (one NDJSON line per change
+  with `--watch`); `bridge sessions --json` lists sessions;
+  `bridge approval <allow-once|decline> <sessionId> <eventId>` resolves one.
+  All built from existing protocol methods; no new wire method.
+- **Plugin.** `integrations/omarchy/plugin/` holds `manifest.json`
+  (`schemaVersion: 1`, `id: "app.bridge.status"`, `kinds: ["bar-widget","panel"]`),
+  `BarWidget.qml` (working and waiting counts, hidden when `bridged` is not
+  running) and `Panel.qml` (Needs you with Allow once / Decline / Open, then
+  Working). The QML only runs the `bridge` CLI; it holds no secrets.
+
+### Phase 4: distribution
+- `.desktop` actions `new-chat`, `quick-prompt`, `approvals`, `mission-control`.
+- `packaging/arch/PKGBUILD` gains `hyprland` and `quickshell` as `optdepends` only.
+- `docs/omarchy.md`: install, setup, what is written where, removal, troubleshooting.
+
+## Unit Tests
+- `src/lib/platform.test.ts`: mac and linux rendering; a lint test that fails on a `⌘` literal outside the helper.
+- `worker_sandbox.rs` (Linux, run in Docker): write outside the output dir fails with EACCES; write inside succeeds; `/dev/null` writes succeed; TCP connect fails when network is denied and succeeds otherwise; ABI gating returns the fail-closed error.
+- `health`/probe: a probe that times out once and then succeeds is reported available.
+- `launch.rs`: argv parsing for every flag, unknown flags ignored, `--omarchy` subcommands validated.
+- `omarchy_setup.rs`: setup then remove on a temp `$HOME` with pre-existing `omarchy-menu.jsonc` and Hyprland config leaves them byte-identical; setup twice is a no-op; nothing is written outside `~/.config`.
+- `bridge` CLI: `status` and `approval` argument parsing and JSON shape against an in-process daemon.
+- Notification action mapping: `allow-once` → `accept`, `decline` → `decline`; a double resolution is a no-op.
+- Plugin: `manifest.json` validates against the fields above.
+
+## Integration / Smoke
+- `bun run test`, `bun run build` green; Linux container: `cargo test -p bridge-core worker_sandbox` green.
+
+## Manual (not possible in this session)
+- On Omarchy 4: setup from the UI path, bar widget counts, notification actions, `SUPER+SHIFT+CTRL+B` quick prompt, `hyprctl clients` shows class `bridge`, NVIDIA and Intel/AMD at 1x/2x. Recorded in the PR as not yet run.
