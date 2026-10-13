@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
+import { act, useLayoutEffect } from "react";
+import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applySkin, applyTheme, isThemeSkin, readThemeSkin, SKIN_STORAGE_KEY } from "./theme";
+import { applySkin, applyTheme, isThemeSkin, readThemeSkin, SKIN_STORAGE_KEY, useThemePreference } from "./theme";
 import { clearOmarchyTheme, parseOmarchyPayload, receiveOmarchyTheme, resetOmarchyTheme, skinFontStack, SKIN_FONT_PROPERTY } from "./omarchy";
 import { OMARCHY_TOKEN_NAMES } from "./lib/omarchyTheme";
 
@@ -87,5 +89,31 @@ describe("parseOmarchyPayload", () => {
   it("keeps a hostile font name to one quoted family", () => {
     expect(skinFontStack('Evil"; color: red; "')).toBe('"Evil; color: red; ", ui-monospace, monospace');
     expect(skinFontStack(null)).toBe("ui-monospace, monospace");
+  });
+});
+
+describe("startup", () => {
+  it("does not miss a payload that lands between render and the hook's subscription", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    let seen = "";
+    function Consumer() {
+      seen = useThemePreference().skin;
+      return null;
+    }
+    // Layout effects run before passive ones, so this delivers the payload
+    // after render but before useThemePreference subscribes.
+    function EarlyShell() {
+      useLayoutEffect(() => receiveOmarchyTheme(ROSE_PINE), []);
+      return null;
+    }
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<><Consumer /><EarlyShell /></>);
+    });
+    expect(seen).toBe("omarchy");
+    expect(document.documentElement.dataset.skin).toBe("omarchy");
+    expect(document.documentElement.style.getPropertyValue("--background")).toBe("#faf4ed");
+    act(() => root.unmount());
   });
 });

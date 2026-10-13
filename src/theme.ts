@@ -261,13 +261,20 @@ export function useThemePreference(): {
   }, []);
 
   // An Omarchy payload can make `omarchy` the default skin, and every theme
-  // switch repaints it, so re-read and re-apply whenever one arrives.
-  useEffect(() => onOmarchyTheme(() => {
-    const next = readThemeSkin();
-    setSkinState(next);
-    applySkin(next);
-    setResolved(applyTheme(readThemePreference()));
-  }), []);
+  // switch repaints it, so re-read and re-apply whenever one arrives. The
+  // first payload can land between render and this effect, with nobody
+  // listening, so sync once on subscribe too.
+  useEffect(() => {
+    const sync = () => {
+      const next = readThemeSkin();
+      setSkinState(next);
+      applySkin(next);
+      setResolved(applyTheme(readThemePreference()));
+    };
+    const unsubscribe = onOmarchyTheme(sync);
+    if (currentOmarchyTheme()) sync();
+    return unsubscribe;
+  }, []);
 
   const setPreference = useCallback((next: ThemePreference) => {
     writeThemePreference(next);
