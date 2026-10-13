@@ -51,10 +51,11 @@ function Row({ session }: { session: SidebarSession }) {
 export default function Sidebar({ activeNav }: { activeNav: "chats" | "mission" }) {
   return (
     <aside className="flex min-h-0 flex-col border-r border-sidebar-border bg-sidebar max-md:hidden">
-      <div className="flex h-11 shrink-0 items-center gap-1.5 pl-3.5 pr-1.5">
-        <span className="size-3 rounded-full bg-[#ff5f57]" aria-hidden="true" />
-        <span className="size-3 rounded-full bg-[#febc2e]" aria-hidden="true" />
-        <span className="size-3 rounded-full bg-[#28c840]" aria-hidden="true" />
+      {/* Hyprland draws no title bar, so Omarchy mode drops the traffic lights. */}
+      <div className="flex h-11 shrink-0 items-center gap-1.5 pl-3.5 pr-1.5 omarchy:h-3">
+        <span className="size-3 rounded-full bg-[#ff5f57] omarchy:hidden" aria-hidden="true" />
+        <span className="size-3 rounded-full bg-[#febc2e] omarchy:hidden" aria-hidden="true" />
+        <span className="size-3 rounded-full bg-[#28c840] omarchy:hidden" aria-hidden="true" />
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-1">
@@ -62,7 +63,8 @@ export default function Sidebar({ activeNav }: { activeNav: "chats" | "mission" 
           <span className="inline-flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[7px] border border-border-card bg-card px-2.5 text-[13px] font-medium text-foreground">
             <SquarePen size={14} className="shrink-0" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">New Chat</span>
-            <span className="text-[11px] font-normal text-muted-foreground">⌘N</span>
+            <span className="text-[11px] font-normal text-muted-foreground omarchy:hidden">⌘N</span>
+            <span className="hidden text-[11px] font-normal text-muted-foreground omarchy:inline">Ctrl N</span>
           </span>
           <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground">
             <Search size={14} aria-hidden="true" />

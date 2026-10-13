@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import OmarchyField from "./omarchy/OmarchyField";
 
 /*
  * A dot lattice that lights up around the pointer. The dim layer is drawn everywhere; the
@@ -51,7 +52,9 @@ export default function HeroBackdrop() {
       aria-hidden="true"
       className="pointer-events-none absolute inset-0 overflow-hidden [--glow:0] [--mx:50%] [--my:34%]"
     >
-      <div className="absolute inset-0 bg-dots [mask-image:radial-gradient(85%_75%_at_50%_35%,black_45%,transparent_85%)]" />
+      {/* Omarchy mode swaps the round lattice for omarchy.org's square pixel field. */}
+      <OmarchyField />
+      <div className="absolute inset-0 bg-dots omarchy:hidden [mask-image:radial-gradient(85%_75%_at_50%_35%,black_45%,transparent_85%)]" />
 
       {/* The bloom the buttons wear, following the cursor. */}
       <div
@@ -60,7 +63,7 @@ export default function HeroBackdrop() {
       />
 
       {/* Ink showing through only the dots near the pointer. */}
-      <div className="dot-spot absolute inset-0 bg-foreground opacity-[var(--glow)] transition-opacity duration-700" />
+      <div className="dot-spot absolute inset-0 omarchy:hidden bg-foreground opacity-[var(--glow)] transition-opacity duration-700" />
       <div className="absolute inset-x-0 bottom-0 h-32 bg-linear-to-t from-background to-transparent" />
     </div>
   );

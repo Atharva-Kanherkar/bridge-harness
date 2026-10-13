@@ -307,7 +307,7 @@ export default function AppDemo() {
         id="scene-panel"
         role="tabpanel"
         aria-labelledby={`scene-tab-${scene.id}`}
-        className="overflow-hidden rounded-xl border border-border-card bg-background shadow-[0_0_0_1px_#000,0_30px_90px_-30px_rgba(0,0,0,0.9)]"
+        className="overflow-hidden rounded-xl border border-border-card bg-background shadow-[0_0_0_1px_#000,0_30px_90px_-30px_rgba(0,0,0,0.9)] omarchy:border-2 omarchy:border-primary omarchy:shadow-none"
       >
         <div
           className={`grid h-[440px] sm:h-[520px] lg:h-[620px] ${

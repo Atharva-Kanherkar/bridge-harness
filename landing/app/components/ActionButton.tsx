@@ -40,7 +40,7 @@ export default function ActionButton({
     <>
       <span aria-hidden="true" className={`absolute -inset-1 rounded-2xl ${EDGE} opacity-0 blur-lg transition-opacity duration-500 group-hover:opacity-25`} />
       {!primary && <span aria-hidden="true" className={`absolute inset-0 rounded-xl ${EDGE} opacity-55 transition-opacity duration-500 group-hover:opacity-100`} />}
-      <span className={`relative z-10 block rounded-xl ${primary ? "bg-foreground text-background group-hover:bg-foreground/90" : "bg-background"} ${s.pad}`}>
+      <span className={`relative z-10 block rounded-xl ${primary ? "bg-foreground text-background group-hover:bg-foreground/90 omarchy:bg-primary omarchy:text-primary-foreground" : "bg-background"} ${s.pad}`}>
         <span className={`relative z-10 flex items-center ${s.gap}`}>
           <span className={`${s.text} font-pixel uppercase tracking-[0.1em] transition-transform duration-500 group-hover:translate-x-0.5`}>{label}</span>
           <svg
@@ -62,7 +62,7 @@ export default function ActionButton({
   );
 
   const className =
-    "relative inline-block rounded-xl p-px font-semibold leading-6 text-foreground shadow-lg shadow-black/60 transition-transform duration-300 ease-in-out hover:scale-[1.03] active:scale-95";
+    "relative inline-block rounded-xl p-px font-semibold leading-6 text-foreground shadow-lg shadow-black/60 omarchy:shadow-none transition-transform duration-300 ease-in-out hover:scale-[1.03] active:scale-95";
 
   return (
     <span className="group relative inline-block">

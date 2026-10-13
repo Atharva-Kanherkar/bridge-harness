@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Doto, Geist_Mono, Inter } from "next/font/google";
+import { Doto, Geist_Mono, Inter, JetBrains_Mono } from "next/font/google";
+import { prepaintScript } from "./lib/omarchySkin";
 import "./globals.css";
 
 const inter = Inter({
@@ -19,6 +20,12 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Omarchy's own UI face (omarchy.org sets everything in it), for the Omarchy mode.
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-jetbrains",
+  subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
   title: {
     default: "Bridge · Delegate the coding. Keep the judgment.",
@@ -31,7 +38,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${inter.variable} ${doto.variable} ${geistMono.variable} h-full antialiased`}>
+    // The pre-paint script stamps Omarchy mode on <html> before hydration, hence the warning opt-out.
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} ${doto.variable} ${geistMono.variable} ${jetbrainsMono.variable} h-full antialiased`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: prepaintScript() }} />
+      </head>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );
