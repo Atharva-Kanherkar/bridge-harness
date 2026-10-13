@@ -161,6 +161,12 @@ fn follow<R: tauri::Runtime>(app: &tauri::AppHandle<R>, current: PathBuf) {
         }
     });
 
+    // Also push once now. Whichever side is up first, the webview gets the
+    // palette: if its request beat this listener, it was already listening.
+    if let Some(payload) = read_theme(&current, system_font()) {
+        let _ = app.emit(THEME_EVENT, payload);
+    }
+
     let poll_app = app.clone();
     let _ = std::thread::Builder::new().name("omarchy-theme".into()).spawn(move || {
         let mut last = stamp(&current);
