@@ -186,6 +186,9 @@ listed under Manual.
   with `--watch`); `bridge sessions --json` lists sessions;
   `bridge approval <allow-once|decline> <sessionId> <eventId>` resolves one.
   All built from existing protocol methods; no new wire method.
+  On Linux it ships as `bridge-cli`: `/usr/bin/bridge` belongs to iproute2's
+  network `bridge` tool on Arch (and on merged-/usr Debian), so the package
+  would conflict.
 - **Plugin.** `integrations/omarchy/plugin/` holds `manifest.json`
   (`schemaVersion: 1`, `id: "app.bridge.status"`, `kinds: ["bar-widget","panel"]`),
   `BarWidget.qml` (working and waiting counts, hidden when `bridged` is not
