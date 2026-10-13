@@ -5,7 +5,7 @@
 
 export type LaunchRequest =
   | { kind: "open"; sessionId: string }
-  | { kind: "new-chat"; project: string | null }
+  | { kind: "new-chat"; project: string | null; prompt: string | null }
   | { kind: "quick" }
   | { kind: "approvals" }
   | { kind: "mission-control" };
@@ -21,7 +21,11 @@ export function parseLaunch(raw: unknown): LaunchRequest | null {
     case "open":
       return typeof value.sessionId === "string" && value.sessionId ? { kind: "open", sessionId: value.sessionId } : null;
     case "new-chat":
-      return { kind: "new-chat", project: typeof value.project === "string" && value.project ? value.project : null };
+      return {
+        kind: "new-chat",
+        project: typeof value.project === "string" && value.project ? value.project : null,
+        prompt: typeof value.prompt === "string" && value.prompt.trim() ? value.prompt.trim() : null,
+      };
     case "quick":
     case "approvals":
     case "mission-control":

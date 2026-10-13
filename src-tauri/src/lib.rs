@@ -15,6 +15,7 @@ pub mod omarchy_setup;
 pub mod launch;
 pub mod linux_desktop;
 pub mod notifications;
+pub mod quick_prompt;
 mod diagnostics;
 mod nightly_updater;
 
@@ -2602,6 +2603,11 @@ impl Drop for DaemonHostRuntime {
 /// Route a launch request: the quick prompt is a window of its own, the rest
 /// are views the webview opens.
 fn deliver_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, launch: launch::Launch) {
+    if matches!(launch, launch::Launch::Quick) {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || quick_prompt::toggle(&handle));
+        return;
+    }
     let _ = app.emit(launch::LAUNCH_EVENT, launch);
 }
 
@@ -2695,6 +2701,7 @@ fn select_host(
     omarchy::install(app.handle());
     // Linux notifications with Allow once / Decline / Open.
     notifications::install(app.handle());
+    quick_prompt::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
         bundled_extension
@@ -3143,6 +3150,11 @@ pub fn run() -> i32 {
             let launch = launch::parse(args.get(1..).unwrap_or_default());
             if let Some(launch::Launch::Omarchy { action: launch::OmarchyAction::Retint, .. }) = launch {
                 omarchy::retint(app);
+                return;
+            }
+            // The quick prompt floats over your work; it must not raise Bridge.
+            if let Some(launch::Launch::Quick) = launch {
+                deliver_launch(app, launch::Launch::Quick);
                 return;
             }
             if let Some(window) = app.get_webview_window("main") {

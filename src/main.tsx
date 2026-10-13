@@ -24,6 +24,17 @@ if (preview === "right-rail") {
     root.render(<RightRailPreview />);
     dismissBootSplash();
   });
+} else if (params.get("window") === "quick") {
+  // The floating quick prompt (bridge-deck --quick). Like the meter, it must
+  // not mount App: it is one composer that hands its text to the main window.
+  document.documentElement.dataset.surface = "quick";
+  void Promise.all([import("./components/QuickPrompt"), import("./theme")]).then(([{ QuickPrompt }, { followThemeAcrossWindows, applyTheme, applySkin, readThemePreference, readThemeSkin }]) => {
+    applyTheme(readThemePreference());
+    applySkin(readThemeSkin());
+    followThemeAcrossWindows();
+    root.render(<QuickPrompt />);
+    dismissBootSplash();
+  });
 } else if (params.get("window") === "meter") {
   // The menu-bar meter runs in its own borderless window off the same bundle.
   // It must not mount App: that would boot a second copy of the whole desktop

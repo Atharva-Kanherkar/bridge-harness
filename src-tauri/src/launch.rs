@@ -31,6 +31,8 @@ pub enum Launch {
     },
     NewChat {
         project: Option<String>,
+        /// Text to start the chat with (the quick prompt's submit).
+        prompt: Option<String>,
     },
     Quick,
     Approvals,
@@ -60,7 +62,7 @@ pub fn parse<S: AsRef<str>>(args: &[S]) -> Option<Launch> {
                     return Some(Launch::Open { session_id });
                 }
             }
-            "--new-chat" => return Some(Launch::NewChat { project: value_after("--project") }),
+            "--new-chat" => return Some(Launch::NewChat { project: value_after("--project"), prompt: None }),
             "--quick" => return Some(Launch::Quick),
             "--approvals" => return Some(Launch::Approvals),
             "--mission-control" => return Some(Launch::MissionControl),
@@ -100,10 +102,10 @@ mod tests {
     #[test]
     fn every_entry_point_parses() {
         assert_eq!(parse(&["--open", "abc-123"]), Some(Launch::Open { session_id: "abc-123".into() }));
-        assert_eq!(parse(&["--new-chat"]), Some(Launch::NewChat { project: None }));
+        assert_eq!(parse(&["--new-chat"]), Some(Launch::NewChat { project: None, prompt: None }));
         assert_eq!(
             parse(&["--new-chat", "--project", "/home/me/Work/app"]),
-            Some(Launch::NewChat { project: Some("/home/me/Work/app".into()) })
+            Some(Launch::NewChat { project: Some("/home/me/Work/app".into()), prompt: None })
         );
         assert_eq!(parse(&["--quick"]), Some(Launch::Quick));
         assert_eq!(parse(&["--approvals"]), Some(Launch::Approvals));
@@ -129,8 +131,8 @@ mod tests {
     fn the_webview_payload_is_camel_cased_and_tagged() {
         let open = serde_json::to_value(Launch::Open { session_id: "s1".into() }).unwrap();
         assert_eq!(open, serde_json::json!({ "kind": "open", "sessionId": "s1" }));
-        let chat = serde_json::to_value(Launch::NewChat { project: Some("/p".into()) }).unwrap();
-        assert_eq!(chat, serde_json::json!({ "kind": "new-chat", "project": "/p" }));
+        let chat = serde_json::to_value(Launch::NewChat { project: Some("/p".into()), prompt: Some("hi".into()) }).unwrap();
+        assert_eq!(chat, serde_json::json!({ "kind": "new-chat", "project": "/p", "prompt": "hi" }));
         assert_eq!(serde_json::to_value(Launch::MissionControl).unwrap(), serde_json::json!({ "kind": "mission-control" }));
     }
 

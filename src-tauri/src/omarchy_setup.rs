@@ -364,6 +364,13 @@ pub fn run_cli(action: crate::launch::OmarchyAction, hyprland: bool) -> i32 {
 }
 
 #[cfg(test)]
+pub(crate) mod tests_support {
+    pub fn hypr_module_for_test() -> String {
+        super::hypr_module("bridge-deck")
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

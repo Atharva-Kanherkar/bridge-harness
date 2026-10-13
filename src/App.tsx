@@ -2943,6 +2943,7 @@ function AppContent() {
       if (waiting) openSession(waiting);
       else { setView("mission-control"); setParadigm("single"); }
     } else if (launch.kind === "mission-control") { setView("mission-control"); setParadigm("single"); }
+    else if (launch.kind === "new-chat" && launch.prompt) void startChatOrShortcut(launch.prompt);
     else commandRef.current("new-chat");
   };
   useEffect(() => {
