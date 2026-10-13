@@ -10,6 +10,7 @@ pub mod menu;
 pub mod meter_tray;
 mod menu_bar;
 pub mod window_chrome;
+pub mod omarchy;
 mod diagnostics;
 mod nightly_updater;
 
@@ -2663,6 +2664,8 @@ fn select_host(
             }
         });
     });
+    // Omarchy theme sync. Linux-only and inert unless Omarchy is detected.
+    omarchy::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
         bundled_extension
