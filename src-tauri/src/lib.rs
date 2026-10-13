@@ -14,6 +14,7 @@ pub mod omarchy;
 pub mod omarchy_setup;
 pub mod launch;
 pub mod linux_desktop;
+pub mod notifications;
 mod diagnostics;
 mod nightly_updater;
 
@@ -2692,6 +2693,8 @@ fn select_host(
     });
     // Omarchy theme sync. Linux-only and inert unless Omarchy is detected.
     omarchy::install(app.handle());
+    // Linux notifications with Allow once / Decline / Open.
+    notifications::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
         bundled_extension

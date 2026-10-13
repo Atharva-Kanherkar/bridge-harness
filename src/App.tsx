@@ -117,6 +117,9 @@ import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFrom
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { approvalTarget, type LaunchRequest } from "./launch";
+import { ACTION_EVENT, parseNotificationAction, pendingApprovalEventId } from "./nativeNotify";
+import { readWireKind } from "./transcript/wire";
+import { isMacPlatform } from "./lib/platform";
 import { installZoom, nudgeZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
@@ -665,6 +668,39 @@ function AppContent() {
       display.dispose();
     };
   }, [invalidateHealth, liveReplay, openMeter, refreshMeter, reload]);
+  // On Linux a waiting session's notification can answer its approval in
+  // place; find which approval, if any, before posting.
+  const notifyWithActions = useCallback(async (kind: string, sessionId: string, headline: string, detail: string) => {
+    let approvalEventId: number | null = null;
+    if (kind === "needs-you" && !isMacPlatform()) {
+      approvalEventId = await bridgeApi.replaySessionEvents(sessionId, 0, 200, true)
+        .then(events => pendingApprovalEventId(events.map(event => ({ sequence: event.sequence, kind: readWireKind(event.kind), data: event.data }))))
+        .catch(() => null);
+    }
+    await notifyAttention(headline, detail, { sessionId, approvalEventId });
+  }, []);
+  // A notification button clicked: resolve through the in-app card's path.
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window) || isMacPlatform()) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void import("@tauri-apps/api/event").then(({ listen }) => listen(ACTION_EVENT, async event => {
+      const action = parseNotificationAction(event.payload);
+      if (!action) return;
+      if (action.action === "open") { openSessionRef.current(action.sessionId); return; }
+      try {
+        const result = await bridgeApi.resolveApproval(action.sessionId, action.eventId, action.action === "allow-once" ? "accept" : "decline");
+        if (result.disposition === "alreadyResolved") void notifyAttention("Handled already", "That approval was answered somewhere else.");
+        await reload();
+      } catch (error) {
+        setError(errorMessage(error));
+      }
+    })).then(dispose => {
+      if (cancelled) dispose();
+      else unlisten = dispose;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [reload]);
   // Attention notifications: diff every `state.sessions` refresh for status
   // transitions across visible sessions (hidden kinds filtered inside
   // `diffAttentionEvents`), not just the open one, so a background chat that
@@ -682,7 +718,7 @@ function AppContent() {
       const copy = attentionCopy(event);
       const key = attentionToastKey(event);
       nextToasts.push({ key, sessionId: event.session.id, copy, firedAt: Date.now() });
-      void notifyAttention(copy.headline, copy.detail);
+      void notifyWithActions(event.kind, event.session.id, copy.headline, copy.detail);
     }
     setAttentionToasts(current => {
       // A chat can revisit the same key (waiting → working → waiting) before
@@ -1555,6 +1591,9 @@ function AppContent() {
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
   }
+
+  const openSessionRef = useRef(openSession);
+  openSessionRef.current = openSession;
 
   // Rewind a conversation head to an earlier entry. The confirmation lives
   // at the call site (window.confirm in the hover affordance); this runs the
