@@ -7,7 +7,8 @@ describe("isMacPlatform", () => {
   it("is Linux or Windows only when the platform says so", () => {
     expect(isMacPlatform({ platform: "MacIntel" })).toBe(true);
     expect(isMacPlatform({ platform: "" })).toBe(true);
-    expect(isMacPlatform(undefined)).toBe(true);
+    // No platform at all (an empty navigator) keeps the macOS rendering.
+    expect(isMacPlatform({})).toBe(true);
     expect(isMacPlatform({ platform: "Linux x86_64" })).toBe(false);
     expect(isMacPlatform({ platform: "Win32" })).toBe(false);
     expect(isMacPlatform({ platform: "", userAgentData: { platform: "Linux" } })).toBe(false);
