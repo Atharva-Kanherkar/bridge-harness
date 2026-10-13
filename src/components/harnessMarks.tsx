@@ -14,7 +14,8 @@
 // requirement for the fifth.
 //
 // Color rules, from the design: Claude and OpenCode carry one tint each; OpenAI
-// is drawn in the foreground ink and never in a green; Cursor keeps its own five
+// is drawn in the foreground ink and never in a green; Pi wears its own
+// one-colour variant in the same ink; Cursor keeps its own five
 // facet greys, which invert between Graphite and Paper through the
 // `--cursor-facet-*` tokens in `src/index.css`.
 
@@ -29,6 +30,15 @@ const CLAUDE_PATH = "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-
 
 /** OpenCode's frame. The inner block is the same ink at 45%. */
 const OPENCODE_FRAME_PATH = "M2.4 0h19.2v24H2.4zM7.2 4.8v14.4h9.6V4.8z";
+
+/** Pi's mark, from its one-colour variant (pi.dev/favicon.svg, a 560 grid in
+ *  140-unit steps), inset to 20 units. The coloured logo is the same geometry;
+ *  its three hues would be the loudest thing in achromatic chrome. */
+const PI_PATHS = [
+  "M17 12H12V7H2V2H17V12Z",
+  "M22 22H17V12H22V22Z",
+  "M7 22H2V7H7V12H12V17H7V22Z",
+];
 
 /** xAI's mark, worn by Grok Build. Drawn on a 1024 grid, scaled into the 24 box. */
 const GROK_PATHS = [
@@ -137,7 +147,7 @@ function figure(harness?: string | null) {
         <rect x="7.2" y="9.6" width="9.6" height="9.6" className="fill-current opacity-45" />
       </>;
     case "pi":
-      return <path d="M4 7h16M7 7v13M17 7v13" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />;
+      return <>{PI_PATHS.map(d => <path key={d} d={d} fill="currentColor" />)}</>;
     case "grok":
       return <g transform="scale(0.0234375)">{GROK_PATHS.map(d => <path key={d.slice(0, 24)} d={d} fill="currentColor" />)}</g>;
     case "bridge":
