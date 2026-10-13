@@ -182,8 +182,8 @@ impl LocalVoiceService {
         let worker = Worker {
             id: id.clone(),
             params: params.clone(),
-            cancelled,
-            events,
+            cancelled: cancelled.clone(),
+            events: events.clone(),
             active: self.active.clone(),
             deadline: Instant::now() + self.limits.lifetime,
         };
@@ -197,14 +197,45 @@ impl LocalVoiceService {
             // Builder drops its closure (and Worker guard) on spawn failure.
             return Err(invalid("Could not start the local dictation worker"));
         }
-        match readiness.recv_timeout(self.limits.startup) {
-            Ok(Ok(())) => Ok(start_result(id, params)),
-            Ok(Err(message)) => Err(invalid(message)),
-            Err(_) => {
-                self.cancel(&id);
-                Err(invalid("Local dictation did not become ready in time"))
-            }
+        // Admission returns the opaque ID immediately. The separate Started
+        // event means model readiness; clients can cancel the admitted lease
+        // while the helper is still loading, without a new protocol field.
+        let timeout_id = id.clone();
+        let timeout_params = params.clone();
+        let active = self.active.clone();
+        let startup = self.limits.startup;
+        let watchdog = std::thread::Builder::new()
+            .name("bridge-dictation-startup".into())
+            .spawn(move || {
+                if !matches!(
+                    readiness.recv_timeout(startup),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    return;
+                }
+                let active = active.lock().unwrap();
+                if let Some(take) = active
+                    .as_ref()
+                    .filter(|take| take.id == timeout_id && !cancelled.load(Ordering::Acquire))
+                {
+                    events.publish(CoreEvent::VoiceTranscript(wire::VoiceTranscriptEvent {
+                        voice_session_id: timeout_id,
+                        owner_key: timeout_params.owner_key,
+                        session_id: timeout_params.session_id,
+                        provider: wire::VoiceProviderId::Local,
+                        kind: wire::VoiceTranscriptKind::Error,
+                        text: None,
+                        error: Some("Local dictation did not become ready in time".into()),
+                    }));
+                    cancelled.store(true, Ordering::Release);
+                    let _ = take.commands.try_send(Command::Cancel);
+                }
+            });
+        if watchdog.is_err() {
+            self.cancel(&id);
+            return Err(invalid("Could not supervise local dictation startup"));
         }
+        Ok(start_result(id, params))
     }
 
     fn request(
