@@ -9,6 +9,7 @@ import DownloadButtons from "./components/DownloadButtons";
 import GithubButton from "./components/GithubButton";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
+import OmarchyPromo from "./components/omarchy/OmarchyPromo";
 
 export default function Home() {
   return (
@@ -63,6 +64,7 @@ export default function Home() {
 
       <Faq />
       <SiteFooter />
+      <OmarchyPromo />
     </div>
   );
 }

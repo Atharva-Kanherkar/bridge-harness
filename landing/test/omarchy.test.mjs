@@ -106,6 +106,9 @@ test("the copy claims only what ships", () => {
   const banner = page.slice(page.indexOf("Made for Omarchy"), page.indexOf("Made for Omarchy") + 120);
   assert.match(banner, /colors and font from your theme/);
   assert.doesNotMatch(page, /notification|quickshell|\bAUR\b|waybar/i);
+  const promo = readFileSync(new URL("../app/components/omarchy/OmarchyPromo.tsx", import.meta.url), "utf8");
+  assert.match(promo, /colors and font from your theme/);
+  assert.doesNotMatch(promo, /notification|quickshell|\bAUR\b|waybar/i);
 });
 
 test("a choice made after a deep link survives reload", () => {
