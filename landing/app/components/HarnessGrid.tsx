@@ -12,6 +12,7 @@ const harnesses = [
   { id: "cursor", name: "Cursor" },
   { id: "opencode", name: "OpenCode" },
   { id: "grok", name: "Grok" },
+  { id: "pi", name: "Pi" },
 ];
 
 export default function HarnessGrid() {
@@ -31,7 +32,7 @@ export default function HarnessGrid() {
         <div className="reveal relative mt-14">
           <CornerTicks />
 
-          <div className="grid gap-px overflow-hidden rounded-xl border border-border-card bg-border sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid gap-px overflow-hidden rounded-xl border border-border-card bg-border sm:grid-cols-3 lg:grid-cols-6">
             {harnesses.map(harness => (
               <div
                 key={harness.id}
