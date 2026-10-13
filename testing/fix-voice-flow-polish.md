@@ -1,6 +1,7 @@
 # fix/voice-flow-polish: Test contract
 
 ## Functional Behavior
+- Return the local take ID before model loading finishes so startup cancellation can reach the native helper. Preserve native startup deadlines, lease ownership, sanitized errors and late-event rejection.
 - Releasing push-to-talk closes microphone capture immediately, including while the engine loads. Flush and retain the tail of short takes; never record beyond release.
 - Preserve bounded startup audio while it drains after readiness. Enforce the live queue bound on additional backlog without rejecting previously admitted audio.
 - Deliver every captured frame in order before finalizing. Give completion its own deadline after audio delivery; keep startup, flush and append deadlines bounded.
@@ -12,6 +13,7 @@
 - Preserve Tailwind v4 tokens, app chrome, keyboard accessibility, reduced-motion support and existing non-voice composer behavior.
 
 ## Unit Tests
+- Native regressions prove immediate take admission, cancellation during model startup, timeout cleanup, consecutive takes and asynchronous engine-load errors.
 - Controller regressions reproduce early release/tail flush, preroll-to-live draining, delivery vs finish deadlines, stale generations, no-speech completion and cancellation.
 - Capture regressions verify permission/device errors, cleanup and audio activity from PCM.
 - Hook/composer regressions cover production integration, focus, keyboard hold/release, button activation and inline preview without draft mutation.
