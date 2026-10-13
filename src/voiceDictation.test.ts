@@ -42,6 +42,7 @@ function setup() {
     captureError: (error: Error) => captureError(error),
     edit: (changes: Partial<VoiceDraft>) => { draft = { ...draft, ...changes, revision: draft.revision + 1 }; },
     view: () => changed.mock.calls.at(-1)![0],
+    changes: changed,
     ready: async () => { await controller.start("codex"); event("started"); },
   };
 }
@@ -74,6 +75,47 @@ describe("dictation ownership", () => {
     s.event("final", { ...scope, text: "write a cache" });
     s.event("closed", scope);
     expect(s.commit).toHaveBeenCalledWith("before write a cache after\n", 20);
+  });
+
+  it("projects speech at the captured selection without mutating the draft or republishing identical hypotheses", async () => {
+    const s = setup();
+    await s.ready();
+    s.event("partial", { text: "spoken text" });
+    expect(s.view().draftPreview).toBe("before spoken text after\n");
+    const count = s.changes.mock.calls.length;
+    s.event("partial", { text: "spoken text" });
+    expect(s.changes).toHaveBeenCalledTimes(count);
+    expect(s.commit).not.toHaveBeenCalled();
+    s.controller.cancel();
+    expect(s.view()).toEqual({ state: "idle", preview: "" });
+  });
+
+  it("reports a silent take without replacing text and clears the notice on retry", async () => {
+    const s = setup();
+    await s.ready(); s.deliver();
+    await s.controller.stop();
+    s.event("final", { text: "" }); s.event("closed");
+    expect(s.view().notice).toMatch(/No speech/);
+    expect(s.commit).not.toHaveBeenCalled();
+    s.controller.cancel();
+    expect(s.view().notice).toBeUndefined();
+  });
+
+  it("limits input-meter updates and ignores callbacks after capture releases", async () => {
+    const s = setup();
+    await s.ready();
+    s.deliver({ ...pcm(), level: 0.3 });
+    expect(s.view().audioLevel).toBe(0.4);
+    s.deliver({ ...pcm(), level: 0.8 });
+    expect(s.view().audioLevel).toBe(0.4);
+    await vi.advanceTimersByTimeAsync(200);
+    s.deliver({ ...pcm(), level: 0.8 });
+    expect(s.view().audioLevel).toBe(0.8);
+    await s.controller.stop();
+    const delivered = s.transport.append.mock.calls.length;
+    s.deliver();
+    expect(s.transport.append).toHaveBeenCalledTimes(delivered);
+    s.controller.cancel();
   });
 
   it("accepts an empty final that retracts an inaccurate partial", async () => {
@@ -226,10 +268,64 @@ describe("dictation resource bounds", () => {
     s.deliver();
     await s.controller.stop();
     expect(s.transport.cancel).not.toHaveBeenCalled();
-    expect(s.view().state).toBe("starting");
+    expect(s.view().state).toBe("stopping");
+    expect(s.capture.stop).toHaveBeenCalledTimes(1);
     s.event("started");
     await vi.advanceTimersByTimeAsync(0);
     expect(s.transport.stop).toHaveBeenCalledWith("voice-1");
+  });
+
+  it("releases capture while startup is pending and delivers its flushed short tail", async () => {
+    const s = setup();
+    const started = deferred<VoiceStartResult>();
+    s.transport.start.mockReturnValueOnce(started.promise);
+    s.capture.stop.mockImplementationOnce(async () => { s.deliver(pcm(200)); });
+    const starting = s.controller.start("codex");
+    await vi.advanceTimersByTimeAsync(0);
+    await s.controller.stop();
+    expect(s.capture.stop).toHaveBeenCalledTimes(1);
+    expect(s.view().state).toBe("stopping");
+    expect(s.transport.cancel).not.toHaveBeenCalled();
+    started.resolve(contract);
+    s.event("started");
+    await starting;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.transport.append).toHaveBeenCalledWith("voice-1", 0, pcm(200).data, 100);
+    expect(s.transport.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps admitted preroll while it drains without weakening the live backlog bound", async () => {
+    const s = setup();
+    const append = deferred<void>();
+    s.transport.append.mockReturnValueOnce(append.promise);
+    await s.controller.start("codex");
+    s.deliver(pcm(VOICE_QUEUE_BYTES)); s.deliver();
+    s.event("started");
+    s.deliver();
+    expect(s.view().error).toBeUndefined();
+    append.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.transport.append).toHaveBeenCalledTimes(3);
+    const slow = deferred<void>();
+    s.transport.append.mockReturnValueOnce(slow.promise);
+    s.deliver(pcm(VOICE_QUEUE_BYTES)); s.deliver();
+    expect(s.view().error).toMatch(/keep up/);
+    slow.resolve();
+  });
+
+  it("gives finalization its own deadline after a healthy audio queue drains", async () => {
+    const s = setup();
+    await s.ready();
+    s.transport.append.mockImplementation(() => new Promise<void>(resolve => setTimeout(resolve, 6000)));
+    s.deliver(); s.deliver();
+    const stopping = s.controller.stop();
+    await vi.advanceTimersByTimeAsync(12000);
+    await stopping;
+    expect(s.view().error).toBeUndefined();
+    expect(s.transport.stop).toHaveBeenCalledTimes(1);
+    s.event("final", { text: "complete take" });
+    s.event("closed");
+    expect(s.commit).toHaveBeenCalledWith("before complete take after\n", 20);
   });
 
   it("cancels a release before ready when no audio was captured", async () => {
