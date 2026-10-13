@@ -28,10 +28,12 @@ if (preview === "right-rail") {
   // The floating quick prompt (bridge-deck --quick). Like the meter, it must
   // not mount App: it is one composer that hands its text to the main window.
   document.documentElement.dataset.surface = "quick";
-  void Promise.all([import("./components/QuickPrompt"), import("./theme")]).then(([{ QuickPrompt }, { followThemeAcrossWindows, applyTheme, applySkin, readThemePreference, readThemeSkin }]) => {
-    applyTheme(readThemePreference());
-    applySkin(readThemeSkin());
+  void Promise.all([import("./components/QuickPrompt"), import("./theme"), import("./omarchy")]).then(([{ QuickPrompt }, { followThemeAcrossWindows, applyTheme, applySkin, readThemePreference, readThemeSkin }, { onOmarchyTheme }]) => {
+    const paint = () => { applySkin(readThemeSkin()); applyTheme(readThemePreference()); };
+    paint();
     followThemeAcrossWindows();
+    // The Omarchy palette arrives after boot and on every theme switch.
+    onOmarchyTheme(paint);
     root.render(<QuickPrompt />);
     dismissBootSplash();
   });
