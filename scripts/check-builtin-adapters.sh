@@ -42,6 +42,10 @@ run_exact "$prefix::built_in_contract_matches_adapter_descriptors"
 run_exact "$prefix::compatibility_report_is_deterministic_and_schema_versioned"
 run_exact "$prefix::representative_provider_streams_match_normalized_snapshots"
 
+# Pi's native RPC and permission boundary have their own supervised fixture.
+run_exact "pi_adapter::tests::fake_pi_user_journey_streams_permissions_settlement_interrupt_resume_and_shutdown"
+run_exact "pi_adapter::tests::catalog_and_execution_policy_fail_closed"
+
 # Briefing standing is certified separately from the compatibility report above,
 # by the shared adversarial suite. An adapter cannot advertise support without it.
 briefing_prefix=briefing_conformance::tests

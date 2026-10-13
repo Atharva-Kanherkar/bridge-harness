@@ -146,6 +146,7 @@ pub enum Harness {
     Cursor,
     Grok,
     OpenCode,
+    Pi,
     Shell,
     /// Any other agent — installed from the registry and run through a
     /// generic transport. Its id is validated on construction.
@@ -183,6 +184,7 @@ impl Harness {
             Self::Cursor => Cow::Borrowed("cursor"),
             Self::Grok => Cow::Borrowed("grok"),
             Self::OpenCode => Cow::Borrowed("opencode"),
+            Self::Pi => Cow::Borrowed("pi"),
             Self::Shell => Cow::Borrowed("shell"),
             Self::Agent(agent) => Cow::Owned(agent.as_str().to_owned()),
             Self::Unknown(raw) => Cow::Owned(raw.clone()),
@@ -213,6 +215,7 @@ impl Harness {
             Self::Cursor => Cow::Borrowed("Cursor"),
             Self::Grok => Cow::Borrowed("Grok Build"),
             Self::OpenCode => Cow::Borrowed("OpenCode"),
+            Self::Pi => Cow::Borrowed("Pi"),
             Self::Shell => Cow::Borrowed("Shell"),
             // An agent Bridge has no bespoke adapter for has no display name
             // of Bridge's invention; the id the user installed it by is what
@@ -234,6 +237,7 @@ impl From<HarnessId> for Harness {
             "cursor" => Self::Cursor,
             "grok" => Self::Grok,
             "opencode" => Self::OpenCode,
+            "pi" => Self::Pi,
             "shell" => Self::Shell,
             _ => Self::Agent(id),
         }

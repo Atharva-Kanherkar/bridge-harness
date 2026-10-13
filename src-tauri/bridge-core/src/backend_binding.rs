@@ -179,6 +179,7 @@ impl std::error::Error for BackendError {}
 /// `the_backend_table_and_the_built_in_contracts_cannot_drift` can compare the
 /// two rather than trust that they agree.
 const BUILT_IN_BACKENDS: &[(&str, &str, BackendKind, &str)] = &[
+    ("pi", "pi.rpc", BackendKind::StructuredServer, "pi_rpc_stdio"),
     (
         "claude",
         "claude.agent-sdk",
@@ -908,6 +909,7 @@ mod tests {
             ("cursor", "cursor.acp", BackendKind::Acp),
             ("grok", "grok.acp", BackendKind::Acp),
             ("opencode", "opencode.server", BackendKind::StructuredServer),
+            ("pi", "pi.rpc", BackendKind::StructuredServer),
         ];
         assert_eq!(
             resolver.agents().count(),

@@ -144,6 +144,32 @@
       "modelSource": "runtime_catalog",
       "modelIds": [],
       "defaultModelId": null
+    },
+    {
+      "id": "pi",
+      "label": "Pi",
+      "transport": "pi_rpc_stdio",
+      "runtimeSource": "pi --mode rpc with Bridge permission extension",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_runtime_available",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "tools",
+        "commands",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt",
+        "steering"
+      ],
+      "sandboxModes": [
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": null
     }
   ]
 }

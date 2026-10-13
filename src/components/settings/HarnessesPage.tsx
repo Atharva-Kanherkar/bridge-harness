@@ -14,6 +14,7 @@
 
 import { useMemo, type ReactNode } from "react";
 import type { AdapterDescriptor, HarnessConfig, OpenCodeCatalog, ReasoningEffort } from "../../types";
+import { advertisedEfforts } from "../../modelProfiles";
 import { HarnessMark } from "../harnessMarks";
 import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../ManagedAgentsPanel";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "../OpenCodeHarnessSettings";
@@ -67,6 +68,15 @@ export function HarnessesPage(props: Shared & {
     description="Use coding agents already on your computer, or let Bridge install a separate copy. Open an agent to manage sign-in and defaults for new chats."
   >
     <ManagedAgentRows state={managed} adapters={adapters} onOpen={onOpenDetail} onAuthenticationChanged={onAuthenticationChanged} />
+    {harnesses.filter(harness => harness.id === "pi").map(harness => {
+      const adapter = adapters.find(adapter => adapter.id === harness.id);
+      return <SettingsGroup key={harness.id} label="Pi">
+        <SettingsRow lead={<HarnessMark harness="pi" size={14} />} label="Pi" openLabel="Configure Pi"
+          description={adapter?.available ? "Models and sign-in managed in Pi" : adapter?.unavailableReason ?? "Checking Pi availability"}
+          onOpen={() => onOpenDetail(harness.id)}
+          control={<StatusPill tone={adapter?.available ? "success" : "neutral"}>{adapter?.available ? "Available" : "Unavailable"}</StatusPill>} />
+      </SettingsGroup>;
+    })}
     {props.preferences}
     {bridge && <details className="text-ui"><summary className="cursor-pointer text-muted-foreground">Advanced Bridge defaults</summary><div className="mt-3"><SettingsGroup label="Defaults" note="Bridge's own routing">
       <SettingsRow
@@ -90,6 +100,10 @@ function HarnessDetail({
   const draft = drafts[harness.id] ?? {};
   const isOpenCode = harness.id === "opencode";
   const isBridge = harness.id === "bridge";
+  const isPi = harness.id === "pi";
+  const descriptor = adapters.find(adapter => adapter.id === harness.id);
+  const selectedModel = descriptor?.models.find(model => model.id === (harness.defaultModel ?? descriptor.defaultModel));
+  const efforts = isPi ? advertisedEfforts(selectedModel) : EFFORTS;
   const advanced = (harness.advanced ?? {}) as OpenCodeAdvancedSettings;
   const storedAdvancedText = JSON.stringify(harness.advanced ?? {}, null, 2);
   const dirty = draft.systemPrompt !== undefined || draft.advancedText !== undefined || draft.executablePath !== undefined;
@@ -142,6 +156,12 @@ function HarnessDetail({
   >
     {!isBridge && <ManagedAgentDetail state={managed} agentId={harness.id} adapters={adapters} onAuthenticationChanged={onAuthenticationChanged} />}
 
+    {isPi && <SettingsGroup label="Runtime" note={<StatusPill tone={descriptor?.available ? "success" : "neutral"}>{descriptor?.available ? `Pi ${descriptor.version ?? ""}` : "Unavailable"}</StatusPill>}>
+      <SettingsRow label="Provider setup" description="Install @earendil-works/pi-coding-agent, then configure local or hosted models and sign-in with pi."
+        control={<TextButton disabled={busy} onClick={onAuthenticationChanged}>Refresh Pi</TextButton>} />
+      {descriptor?.unavailableReason && <SettingsBlockRow><p role="status" className="text-ui text-muted-foreground">{descriptor.unavailableReason}</p></SettingsBlockRow>}
+      <SettingsBlockRow><p className="text-ui text-muted-foreground">Pi runs with full access and asks Bridge to approve each tool. Scoped sandboxes, project extensions, and hidden memory or credential context are unavailable.</p></SettingsBlockRow>
+    </SettingsGroup>}
     <SettingsGroup label="New chats">
       <SettingsRow
         label="Enabled"
@@ -162,18 +182,23 @@ function HarnessDetail({
           value={harness.defaultModel ?? ""}
           disabled={busy || isBridge}
           options={[{ value: "", label: "Automatic" }, ...options]}
-          onChange={value => void persist({ defaultModel: value || null }, "model")}
+          onChange={value => {
+            const nextModel = descriptor?.models.find(model => model.id === (value || descriptor.defaultModel));
+            const effort = isPi && harness.effort && !advertisedEfforts(nextModel).includes(harness.effort) ? null : harness.effort;
+            void persist({ defaultModel: value || null, ...(isPi ? { effort } : {}) }, "model");
+          }}
         />}
       />
       <SettingsRow
+        description={isPi && efforts.length === 0 ? "Pi uses this model’s own thinking setting." : undefined}
         label="Thinking level"
         saved={isFlashed("effort")}
         control={<Select
           label={`${harness.label} default effort`}
           value={harness.effort ?? ""}
-          disabled={busy}
+          disabled={busy || (isPi && efforts.length === 0)}
           width="w-40"
-          options={[{ value: "", label: "Role default" }, ...EFFORTS.map(value => ({ value, label: value }))]}
+          options={[{ value: "", label: "Role default" }, ...efforts.map(value => ({ value, label: value }))]}
           onChange={value => void persist({ effort: (value || null) as ReasoningEffort | null }, "effort")}
         />}
       />

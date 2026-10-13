@@ -9,12 +9,13 @@ const markup = (harness?: string | null, live = false) =>
 
 describe("HarnessMark", () => {
   it("gives each built-in harness its own figure", () => {
-    const drawn = ["claude", "codex", "opencode", "cursor"].map(harness => markup(harness));
-    for (const [index, harness] of ["claude", "codex", "opencode", "cursor"].entries()) {
+    const harnesses = ["claude", "codex", "opencode", "cursor", "pi"];
+    const drawn = harnesses.map(harness => markup(harness));
+    for (const [index, harness] of harnesses.entries()) {
       expect(drawn[index]).toContain(`data-harness="${harness}"`);
     }
-    // Four distinct figures, so no two harnesses read as the same agent.
-    expect(new Set(drawn.map(html => html.replace(/data-harness="[^"]*"/, "")))).toHaveLength(4);
+    // Distinct figures, so no two harnesses read as the same agent.
+    expect(new Set(drawn.map(html => html.replace(/data-harness="[^"]*"/, "")))).toHaveLength(harnesses.length);
   });
 
   // The marks are the vendors' own paths now, not shapes Bridge generated from
@@ -25,6 +26,10 @@ describe("HarnessMark", () => {
     expect(markup("claude")).toContain("m4.7144 15.9555");
     expect(markup("opencode")).toContain("M2.4 0h19.2v24H2.4z");
     expect(markup("cursor")).toContain("12.00 3.40 19.45 7.70 4.55 7.70");
+    // Pi's published one-colour mark, scaled from its 560 grid.
+    expect(markup("pi")).toContain("M7 22H2V7H7V12H12V17H7V22Z");
+    expect(markup("pi")).toContain("text-foreground");
+    expect(markup("pi")).not.toContain("text-harness-");
   });
 
   it("renders OpenAI in the page ink and never in a harness tint", () => {

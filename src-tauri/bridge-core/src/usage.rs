@@ -22,6 +22,7 @@ pub enum UsageProvider {
     Codex,
     Claude,
     OpenCode,
+    Pi,
     /// Cursor, Grok, and any other Agent Client Protocol agent.
     Acp,
     Other,
@@ -33,6 +34,7 @@ impl UsageProvider {
             "codex" => Self::Codex,
             "claude" => Self::Claude,
             "opencode" => Self::OpenCode,
+            "pi" => Self::Pi,
             "cursor" | "grok" => Self::Acp,
             _ => Self::Other,
         }
@@ -67,6 +69,7 @@ pub fn normalize(source: &str, data: &Value) -> Vec<UsageRecord> {
         UsageProvider::Claude => normalize_claude(data),
         UsageProvider::OpenCode => normalize_opencode(data).into_iter().collect(),
         UsageProvider::Acp => normalize_acp(data).into_iter().collect(),
+        UsageProvider::Pi => normalize_pi(data).into_iter().collect(),
         UsageProvider::Other => normalize_generic(data).into_iter().collect(),
     }
 }
@@ -330,6 +333,20 @@ fn normalize_acp(data: &Value) -> Option<UsageRecord> {
         reported_cost_microusd,
         provider_record_id: None,
     })
+}
+
+/// Pi reports exclusive input and separate cache buckets, regardless of the
+/// upstream provider. Preserve the provider's total and request identity.
+fn normalize_pi(data: &Value) -> Option<UsageRecord> {
+    let input=integer(data,&["input_tokens"]);
+    let output=integer(data,&["output_tokens"]);
+    let cache_read=integer(data,&["cache_read_tokens"]);
+    let cache_write=integer(data,&["cache_write_tokens"]);
+    if input.is_none() && output.is_none() { return None; }
+    let mut tokens=anthropic_tokens(input,cache_read,cache_write,output);
+    tokens.provider_reported_total_tokens=integer(data,&["total_tokens"]);
+    tokens.exact_total_formula=if tokens.provider_reported_total_tokens.is_some() { ExactTotalFormula::ProviderReported } else { ExactTotalFormula::NoExactFormula };
+    Some(UsageRecord { model: match (string(data,&["provider"]),string(data,&["model"])) { (Some(provider),Some(model)) => Some(format!("{provider}/{model}")), (_,model)=>model }, tokens, reported_cost_microusd:decimal(data,&["totalCostUsd"]).and_then(usd_to_microusd), provider_record_id:string(data,&["messageId"]), ..UsageRecord::default() })
 }
 
 /// A harness this module does not know: the alias search the ledger has

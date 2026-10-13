@@ -188,6 +188,14 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         model_ids: &[],
         default_model_id: None,
     },
+    BuiltInAgentContract {
+        id: "pi", label: "Pi", transport: "pi_rpc_stdio",
+        runtime_source: "pi --mode rpc with Bridge permission extension",
+        credential_owner: CredentialOwner::Vendor,
+        native_resume: NativeResumeContract::WhenRuntimeAvailable,
+        capabilities: crate::pi_adapter::CAPABILITIES, sandbox_modes: crate::pi_adapter::SANDBOXES,
+        model_source: ModelSource::RuntimeCatalog, model_ids: &[], default_model_id: None,
+    },
 ];
 
 pub fn built_in_agent_contracts() -> &'static [BuiltInAgentContract] {
@@ -333,7 +341,7 @@ mod builtin_compatibility_tests {
             .iter()
             .map(|agent| agent.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["claude", "codex", "cursor", "grok", "opencode"]);
+        assert_eq!(ids, ["claude", "codex", "cursor", "grok", "opencode", "pi"]);
         assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
     }
 
@@ -419,7 +427,7 @@ mod builtin_compatibility_tests {
         assert_eq!(actual, expected);
         let value: serde_json::Value = serde_json::from_str(&actual).unwrap();
         assert_eq!(value["schemaVersion"], SCHEMA_VERSION);
-        assert_eq!(value["agents"].as_array().unwrap().len(), 5);
+        assert_eq!(value["agents"].as_array().unwrap().len(), 6);
         let lowercase = actual.to_ascii_lowercase();
         for forbidden in [
             "api_key",

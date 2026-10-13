@@ -7230,15 +7230,19 @@ pub fn deliver_worker_objective(
         session: session_frame.as_ref().map(session_context::SessionContext::text),
         credentials: None,
     };
-    core.adapters
+    let delivered_context = core.adapters
         .lock()
         .unwrap()
         .get(session_id)
         .ok_or_else(|| {
             BridgeError::Invalid("Worker runtime disappeared before objective delivery".into())
         })
-        .and_then(|runtime| deliver_sanitized_turn(runtime.as_ref(), objective, context))?;
-    if let Some(frame) = &session_frame {
+        .and_then(|runtime| {
+            let supported = runtime.supports_trusted_turn_context();
+            deliver_sanitized_turn(runtime.as_ref(), objective, if supported { context } else { adapters::TurnContext::default() })?;
+            Ok(supported)
+        })?;
+    if let Some(frame) = session_frame.as_ref().filter(|_| delivered_context) {
         core.session_context
             .lock()
             .unwrap()
@@ -10864,16 +10868,18 @@ fn deliver_prepared_input(
     let runtime = adapters
         .get(session_id)
         .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
+    let supports_context = runtime.supports_trusted_turn_context();
+    let session_frame = session_frame.filter(|_| supports_context);
     let credential_context = state
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
-    let browser_context = state.browser_bridge.capability_context(session_id, runtime.process_id());
+    let browser_context = supports_context.then(|| state.browser_bridge.capability_context(session_id, runtime.process_id())).flatten();
     // Two clone capabilities. The "ask for a clone" one is offered every turn so
     // the agent can request a signed-in browser; the drive tool is added only
     // once a clone exists (after the person approved), the same way the attached
     // tab works.
     #[cfg(target_os = "macos")]
-    let clone_context: Option<String> = {
+    let clone_context: Option<String> = if supports_context {
         let request = state
             .browser_clone_orchestrator
             .request_capability_context(session_id, runtime.process_id());
@@ -10884,7 +10890,7 @@ fn deliver_prepared_input(
             (Some(request), Some(drive)) => Some(format!("{request}\n\n{drive}")),
             (request, drive) => request.or(drive),
         }
-    };
+    } else { None };
     #[cfg(not(target_os = "macos"))]
     let clone_context: Option<String> = None;
     let application_context = [credential_context, browser_context, clone_context]
