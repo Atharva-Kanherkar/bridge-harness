@@ -24,7 +24,7 @@
       "binaries/bridge-browser-host",
       "binaries/bridged",
       "binaries/bridge-voice-helper",
-      "binaries/bridge"
+      "binaries/bridge-cli"
     ]
   }
 }

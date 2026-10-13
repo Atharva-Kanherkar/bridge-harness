@@ -5,7 +5,7 @@ import qs.Commons
 import qs.Ui
 
 // Bridge in the Omarchy bar: one icon with the number of agents working, lit
-// when any is waiting for you. It reads `bridge status --json --watch` (one
+// when any is waiting for you. It reads `bridge-cli status --json --watch` (one
 // JSON object per line) and never touches Bridge's database or socket; the
 // CLI does the authenticated handshake, so this file holds no secrets.
 //
@@ -37,7 +37,7 @@ BarWidget {
 
   Process {
     id: status
-    command: ["bridge", "status", "--json", "--watch"]
+    command: ["bridge-cli", "status", "--json", "--watch"]
     running: true
     stdout: SplitParser { onRead: function(line) { root.apply(line) } }
     // bridged stopped, or the CLI is missing: hide, then try again.

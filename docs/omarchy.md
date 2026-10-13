@@ -64,13 +64,14 @@ own files in is left alone).
 
 ## Command line
 
-The bar and the menu use these; they are handy in scripts too.
+The bar uses these; they are handy in scripts too. The CLI installs as
+`bridge-cli` because `/usr/bin/bridge` is iproute2's network bridge tool.
 
 ```sh
-bridge status --json            # {"running":true,"working":2,"waiting":1,"sessions":[...]}
-bridge status --json --watch    # one line per change
-bridge sessions --json
-bridge approval allow-once <sessionId> <eventId>   # also: allow-session, decline
+bridge-cli status --json            # {"running":true,"working":2,"waiting":1,"sessions":[...]}
+bridge-cli status --json --watch    # one line per change
+bridge-cli sessions --json
+bridge-cli approval allow-once <sessionId> <eventId>   # also: allow-session, decline
 
 bridge-deck --open <sessionId>
 bridge-deck --new-chat [--project <path>]
@@ -79,8 +80,8 @@ bridge-deck --approvals
 bridge-deck --mission-control
 ```
 
-`bridge status` never starts Bridge: with the app closed it prints
-`"running": false`. `bridge approval` goes through the same resolution path as
+`bridge-cli status` never starts Bridge: with the app closed it prints
+`"running": false`. `bridge-cli approval` goes through the same resolution path as
 the in-app approval card, so the policy engine stays the only authority.
 
 ## Troubleshooting
@@ -97,7 +98,7 @@ the in-app approval card, so the policy engine stays the only authority.
   and ABI 4 (Linux 6.7+) with `BRIDGE_READ_ONLY_NETWORK=deny`. Current Arch
   kernels qualify. See [`linux-release.md`](linux-release.md).
 - **No bar widget.** Run `omarchy plugin enable app.bridge.status`, or check
-  that `bridge status --json` prints a line.
+  that `bridge-cli status --json` prints a line.
 - **The theme did not change.** The theme hook and Bridge's own watcher both
   read `~/.local/state/omarchy/current/theme`; `bridge-deck --omarchy retint`
   forces a refresh.
