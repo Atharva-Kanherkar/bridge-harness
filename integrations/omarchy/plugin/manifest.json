@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "app.bridge.status",
+  "name": "Bridge",
+  "version": "1.0.0",
+  "author": "Bridge",
+  "license": "MIT",
+  "description": "How many coding agents Bridge is running, and how many are waiting for you.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Bridge",
+    "description": "Working and waiting agent counts. Click to review approvals or open Mission Control; right-click for a quick prompt.",
+    "category": "Development",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

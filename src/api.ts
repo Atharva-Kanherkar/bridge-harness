@@ -4,6 +4,7 @@ import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { LAUNCH_EVENT, LAUNCH_REQUEST_EVENT, parseLaunch, type LaunchRequest } from "./launch";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
@@ -3066,6 +3067,19 @@ export const bridgeApi = {
   onMenuCommand: (handler: (id: CommandId) => void): Promise<UnlistenFn> =>
     isTauri()
       ? listen<CommandId>(MENU_COMMAND_EVENT, event => handler(event.payload))
+      : Promise.resolve(() => {}),
+  /** `bridge-deck --open/--new-chat/...`, from a second launch or the one
+   *  this window booted with (asked for once the listener is up). */
+  onLaunch: (handler: (launch: LaunchRequest) => void): Promise<UnlistenFn> =>
+    isTauri()
+      ? listen(LAUNCH_EVENT, event => {
+        const launch = parseLaunch(event.payload);
+        if (launch) handler(launch);
+      }).then(async unlisten => {
+        const { emit } = await import("@tauri-apps/api/event");
+        await emit(LAUNCH_REQUEST_EVENT);
+        return unlisten;
+      })
       : Promise.resolve(() => {}),
   /** In-app ⌥⌘F. Not a protocol method — the shell listens on this event name. */
   notifyLayoutFullscreen: (on: boolean): void => {

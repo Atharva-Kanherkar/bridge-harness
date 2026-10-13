@@ -149,6 +149,19 @@ pub fn install<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// Re-send the current theme now. Omarchy's `theme-set.d` hook calls this
+/// through `bridge-deck --omarchy retint`, as a backstop to the poll.
+pub fn retint<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Emitter;
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+    if let Some(payload) = read_theme(&current_dir(&home), system_font()) {
+        let _ = app.emit(THEME_EVENT, payload);
+    }
+}
+
 /// Compiled on every platform so it type-checks on macOS CI too; only
 /// `install` decides whether it runs.
 fn follow<R: tauri::Runtime>(app: &tauri::AppHandle<R>, current: PathBuf) {

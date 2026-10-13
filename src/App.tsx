@@ -116,6 +116,7 @@ import { StorageCopilot, type StorageCopilotHost } from "./components/settings/S
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, isWindowLevel, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { approvalTarget, type LaunchRequest } from "./launch";
 import { installZoom, nudgeZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
@@ -2893,6 +2894,27 @@ function AppContent() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [dispatchDock]);
+
+  // Command-line launches (desktop actions, notifications, the Omarchy bar).
+  const launchRef = useRef<(launch: LaunchRequest) => void>(() => {});
+  launchRef.current = launch => {
+    if (launch.kind === "open") openSession(launch.sessionId);
+    else if (launch.kind === "approvals") {
+      const waiting = approvalTarget(state.sessions);
+      if (waiting) openSession(waiting);
+      else { setView("mission-control"); setParadigm("single"); }
+    } else if (launch.kind === "mission-control") { setView("mission-control"); setParadigm("single"); }
+    else commandRef.current("new-chat");
+  };
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void bridgeApi.onLaunch(launch => launchRef.current(launch)).then(dispose => {
+      if (cancelled) dispose();
+      else unlisten = dispose;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   // A menu pick carries the same command id a chord does, so both land on the
   // same handler. Outside the desktop shell there is no menu and no listener.
