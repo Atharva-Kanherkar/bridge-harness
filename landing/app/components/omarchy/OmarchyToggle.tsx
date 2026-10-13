@@ -43,7 +43,8 @@ export default function OmarchyToggle() {
         }`}
       >
         <span aria-hidden="true" className={`size-2 ${on ? "bg-primary-foreground" : "bg-current"}`} />
-        Omarchy
+        {/* On a phone the theme menu sits beside it, so the lit square alone says "on". */}
+        <span className={on ? "max-sm:sr-only" : undefined}>Omarchy</span>
       </button>
       {on && (
         <button
@@ -52,13 +53,13 @@ export default function OmarchyToggle() {
           aria-expanded={open}
           aria-label="Choose an Omarchy theme"
           onClick={() => setOpen(value => !value)}
-          className="grid size-7 place-items-center rounded-md border border-border-card text-muted-foreground hover:text-foreground max-sm:hidden"
+          className="grid size-7 place-items-center rounded-md border border-border-card text-muted-foreground hover:text-foreground"
         >
           <Palette size={14} aria-hidden="true" />
         </button>
       )}
       {on && open && (
-        <div role="menu" aria-label="Omarchy themes" className="absolute right-0 top-9 z-50 max-h-[70vh] w-60 overflow-y-auto rounded-md border border-border-card bg-popover p-1 shadow-xl">
+        <div role="menu" aria-label="Omarchy themes" className="absolute right-0 top-9 z-50 max-h-[70vh] w-60 overflow-y-auto max-sm:fixed max-sm:inset-x-4 max-sm:top-16 max-sm:w-auto rounded-md border border-border-card bg-popover p-1 shadow-xl">
           {OMARCHY_THEMES.map(option => (
             <button
               key={option.name}

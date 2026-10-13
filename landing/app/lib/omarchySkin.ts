@@ -3,8 +3,8 @@
 //
 // Tokens are computed at build time, and an inline script applies the stored
 // choice before first paint so a reload never flashes Graphite. The script
-// also leaves a tiny controller on `window` that the toggle and the theme
-// strip call; React never owns these attributes, so hydration never fights.
+// also leaves a tiny controller on `window` that the header toggle and its
+// theme menu call; React never owns these attributes, so hydration never fights.
 
 import { DEFAULT_OMARCHY_THEME, OMARCHY_THEMES } from "../content/omarchyThemes";
 import { OMARCHY_TOKEN_NAMES, omarchyTokens } from "./omarchyTheme";

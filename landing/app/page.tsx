@@ -9,7 +9,6 @@ import DownloadButtons from "./components/DownloadButtons";
 import GithubButton from "./components/GithubButton";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
-import OmarchyThemeStrip from "./components/omarchy/OmarchyThemeStrip";
 
 export default function Home() {
   return (
@@ -45,7 +44,6 @@ export default function Home() {
               <DownloadButtons />
               <GithubButton />
             </div>
-            <OmarchyThemeStrip />
           </div>
 
           <div style={{ "--i": 3 } as React.CSSProperties} className="enter mt-10 sm:mt-12">
