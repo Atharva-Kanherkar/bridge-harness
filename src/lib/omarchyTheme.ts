@@ -24,6 +24,71 @@ export function isHexColor(value: unknown): value is string {
   return typeof value === "string" && HEX.test(value);
 }
 
+/** `#rgb`, `#rrggbb` or `#rrggbbaa` as `#rrggbb`, so it can be mixed. */
+function sixDigit(hex: string): string {
+  const digits = hex.slice(1);
+  return digits.length === 3 ? `#${[...digits].map(d => d + d).join("")}` : `#${digits.slice(0, 6)}`;
+}
+
+/** Mix targets for derived shades, as channels (the design gate keeps hex out of source). */
+const BLACK = 0;
+const WHITE = 255;
+
+/** Omarchy's `mix_color` toward black or white: a straight sRGB blend, rounded half up. */
+function mixHex(start: string, toward: number, amount: number): string {
+  const a = sixDigit(start);
+  const channel = (i: number) => {
+    const from = parseInt(a.slice(i, i + 2), 16);
+    return Math.floor(from * (1 - amount) + toward * amount + 0.5).toString(16).padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`.toLowerCase();
+}
+
+/**
+ * Resolve a palette the way Omarchy's own `omarchy-theme-color` does, so older
+ * themes read the same in Bridge as everywhere else on the desktop: short
+ * names (`bg`, `fg`, ...), ANSI `color0`..`color15` from palettes generated
+ * by `omarchy-theme-colors-from-alacritty`, `purple`, and derived shades.
+ * Canonical names win when a theme defines both. Mirrors basecamp/omarchy
+ * `bin/omarchy-theme-color` at 7dd477b; Omarchy derives no `accent`.
+ */
+export function resolveOmarchyColors(input: Record<string, string>): Record<string, string> {
+  const c: Record<string, string> = { ...input };
+  const alias = (key: string, from: string) => {
+    if (!c[key] && c[from]) c[key] = c[from];
+  };
+  const legacyNames: Record<string, string> = {
+    background: "bg", dark_background: "dark_bg", darker_background: "darker_bg", lighter_background: "lighter_bg",
+    foreground: "fg", dark_foreground: "dark_fg", light_foreground: "light_fg", bright_foreground: "bright_fg",
+  };
+  for (const [key, from] of Object.entries(legacyNames)) alias(key, from);
+  alias("background", "color0");
+  alias("foreground", "color7");
+  const ansi: Record<string, string> = {
+    red: "color1", green: "color2", yellow: "color3", blue: "color4", magenta: "color5", cyan: "color6",
+    bright_red: "color9", bright_green: "color10", bright_yellow: "color11", bright_blue: "color12",
+    bright_magenta: "color13", bright_cyan: "color14",
+  };
+  for (const [key, from] of Object.entries(ansi)) alias(key, from);
+  alias("magenta", "purple");
+  alias("bright_magenta", "bright_purple");
+  if (!c.background || !c.foreground) return c;
+
+  c.light_foreground ||= c.color7 || c.foreground;
+  c.bright_foreground ||= c.color15 || c.foreground;
+  c.lighter_background ||= c.color0 || c.background;
+  c.dark_foreground ||= c.color8 || c.foreground;
+  c.muted ||= c.color8 || c.dark_foreground;
+  c.selection ||= c.selection_background || c.color8 || c.color0 || c.background;
+  if (c.yellow) c.orange ||= c.yellow;
+  c.dark_background ||= mixHex(c.background, BLACK, 0.25);
+  c.darker_background ||= mixHex(c.background, BLACK, 0.5);
+  for (const hue of ["red", "yellow", "green", "cyan", "blue", "magenta"]) {
+    if (c[hue]) c[`bright_${hue}`] ||= mixHex(c[hue], WHITE, 0.2);
+  }
+  return c;
+}
+
 /* A role reads the first key the theme defines. Omarchy themes are not
    uniform: `white`, `solitude` and `last-horizon` ship without `orange`. */
 const ROLE_FALLBACKS: Record<string, string[]> = {
@@ -126,10 +191,11 @@ export const OMARCHY_TOKEN_NAMES: readonly string[] = Object.keys(TOKENS);
  * colours everything else derives from.
  */
 export function omarchyTokens(palette: OmarchyPalette): Record<string, string> {
-  const colors: Record<string, string> = {};
+  const raw: Record<string, string> = {};
   for (const [key, value] of Object.entries(palette.colors)) {
-    if (isHexColor(value)) colors[key] = value;
+    if (isHexColor(value)) raw[key] = value;
   }
+  const colors = resolveOmarchyColors(raw);
   if (!colors.background || !colors.foreground || !(colors.accent ?? colors.blue)) return {};
   const role = (name: Role) => {
     for (const key of ROLE_FALLBACKS[name]) {

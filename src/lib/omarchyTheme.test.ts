@@ -66,11 +66,54 @@ describe("omarchyTokens", () => {
     expect(OMARCHY_TOKEN_NAMES.some(name => name.startsWith("--harness-") || name.startsWith("--chart-"))).toBe(false);
   });
 
-  it("falls back when a theme ships without orange", () => {
+  it("falls back the way Omarchy does when a theme ships without orange", () => {
     const white = loadTheme("white");
     expect(white.colors.orange).toBeUndefined();
-    const tokens = omarchyTokens(white);
-    expect(tokens["--syn-number"]).toBe(white.colors.bright_yellow ?? white.colors.yellow);
+    // omarchy-theme-color: orange = yellow.
+    expect(omarchyTokens(white)["--syn-number"]).toBe(white.colors.yellow);
+  });
+
+  it("reads legacy palettes the way Omarchy resolves them", () => {
+    // The exact shape omarchy-theme-colors-from-alacritty writes.
+    const ansi = ["#1d2021", "#cc241d", "#98971a", "#d79921", "#458588", "#b16286", "#689d6a", "#a89984",
+      "#928374", "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c", "#ebdbb2"];
+    const colors: Record<string, string> = { background: "#282828", foreground: "#d4be98", accent: "#7daea3", selection: "#3c3836" };
+    ansi.forEach((hex, i) => { colors[`color${i}`] = hex; });
+    const tokens = omarchyTokens({ mode: "dark", colors });
+    expect(tokens["--destructive"]).toBe("#cc241d");
+    expect(tokens["--success"]).toBe("#98971a");
+    expect(tokens["--warning"]).toBe("#d79921");
+    expect(tokens["--info"]).toBe("#458588");
+    expect(tokens["--syn-keyword"]).toBe("#b16286");
+    expect(tokens["--syn-tag"]).toBe("#689d6a");
+    expect(tokens["--syn-operator"]).toBe("#8ec07c");
+    expect(tokens["--syn-number"]).toBe("#d79921");
+    expect(tokens["--foreground"]).toBe("#ebdbb2");
+    expect(tokens["--faint"]).toBe("#928374");
+    expect(tokens["--popover"]).toBe("#1d2021");
+    // Shades Omarchy derives: background mixed 25% and 50% toward black.
+    expect(tokens["--sidebar"]).toBe("#1e1e1e");
+    expect(tokens["--code"]).toBe("#141414");
+  });
+
+  it("reads short legacy names and ANSI-only backgrounds", () => {
+    const short = omarchyTokens({ mode: "dark", colors: { bg: "#101010", fg: "#e0e0e0", accent: "#ff8800", purple: "#aa55ff" } });
+    expect(short["--background"]).toBe("#101010");
+    expect(short["--body"]).toBe("#e0e0e0");
+    expect(short["--syn-keyword"]).toBe("#aa55ff");
+    const ansiOnly = omarchyTokens({ mode: "dark", colors: { color0: "#000000", color7: "#cccccc", color4: "#3366ff" } });
+    expect(ansiOnly["--background"]).toBe("#000000");
+    expect(ansiOnly["--primary"]).toBe("#3366ff");
+  });
+
+  it("leaves every shipped theme's own keys untouched", () => {
+    for (const name of themeNames) {
+      const theme = loadTheme(name);
+      const tokens = omarchyTokens(theme);
+      expect(tokens["--background"], name).toBe(theme.colors.background);
+      expect(tokens["--sidebar"], name).toBe(theme.colors.dark_background);
+      expect(tokens["--destructive"], name).toBe(theme.colors.red);
+    }
   });
 
   it("uses heavier lines on light themes", () => {

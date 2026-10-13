@@ -77,7 +77,8 @@ pub fn parse_colors(text: &str, light_marker: bool) -> Option<(&'static str, BTr
         Some("light") => "light",
         Some(_) => "dark",
         None if light_marker => "light",
-        None => match colors.get("background").map(String::as_str) {
+        // Omarchy resolves `bg` and ANSI `color0` to the background too.
+        None => match ["background", "bg", "color0"].iter().find_map(|key| colors.get(*key)).map(String::as_str) {
             Some(bg) if bg.len() == 7 => {
                 let channel = |i: usize| u32::from_str_radix(&bg[i..i + 2], 16).unwrap_or(0);
                 if channel(1) + channel(3) + channel(5) > 382 { "light" } else { "dark" }
@@ -240,6 +241,8 @@ mod tests {
         assert_eq!(mode("background = \"#808080\"", false), "light");
         assert_eq!(mode("background = \"#7f7f7f\"", false), "dark");
         assert_eq!(mode("accent = \"#ffffff\"", false), "dark");
+        assert_eq!(mode("color0 = \"#fffaf3\"\ncolor7 = \"#575279\"", false), "light", "legacy ANSI palette");
+        assert_eq!(mode("bg = \"#eeeeee\"", false), "light", "legacy short name");
     }
 
     #[test]
