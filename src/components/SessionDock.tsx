@@ -12,6 +12,7 @@ import {
   type DockPaneId,
   type DockState,
 } from "../dockLayout";
+import { formatShortcut } from "@/lib/platform";
 
 // The trailing dock: a resizable pane that sits beside the conversation and
 // never on top of it. This component is presentational — layout state comes in
@@ -154,7 +155,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     tabIndex={active ? 0 : -1}
                     aria-selected={active}
                     aria-label={pane.label}
-                    title={`${pane.label}  ⌥⌘${index + 1}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
+                    title={`${pane.label}  ${formatShortcut({ meta: true, alt: true }, String(index + 1))}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
                     onClick={() => onAction({ type: "open-pane", pane: pane.id })}
                     onKeyDown={event => {
                       let next = index;
@@ -197,7 +198,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
               onClick={() => onAction({ type: "toggle-expanded" })}
               aria-pressed={state.expanded}
               aria-label={state.expanded ? "Restore dock" : "Expand dock"}
-              title={state.expanded ? "Restore  ⌥⌘↩" : "Expand  ⌥⌘↩"}
+              title={`${state.expanded ? "Restore" : "Expand"}  ${formatShortcut({ meta: true, alt: true }, "↩")}`}
               className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               {state.expanded
@@ -208,7 +209,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
               type="button"
               onClick={() => onAction({ type: "toggle" })}
               aria-label="Close dock"
-              title="Close dock  ⌥⌘0"
+              title={`Close dock  ${formatShortcut({ meta: true, alt: true }, "0")}`}
               className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <X size={14} strokeWidth={1.8} aria-hidden="true" />

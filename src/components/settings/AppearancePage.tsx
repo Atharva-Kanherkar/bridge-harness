@@ -14,6 +14,7 @@ import { SettingsGroup, SettingsPage, SettingsRow, Switch, TextButton } from "./
 import { cn } from "@/lib/utils";
 import { canZoom, stepZoom, useZoomLevel } from "../../zoom";
 import { useOmarchyTheme } from "../../omarchy";
+import { chordLabel } from "../../keymap";
 
 /** A tile previews either two swatches or a drawn figure, never both. */
 type Tile<T> = { id: T; label: string; hint: string } & ({ swatches: [string, string]; preview?: undefined } | { preview: ReactNode; swatches?: undefined });
@@ -156,10 +157,10 @@ export function AppearancePage({ title = "Appearance", extra }: { title?: string
         control={<Switch label="Open edit activity automatically" checked={autoExpandEditActivity} onChange={setAutoExpandEditActivity} />}
       />
     </SettingsGroup>
-    <SettingsGroup label="Zoom" note="Also on ⌘+ and ⌘-">
+    <SettingsGroup label="Zoom" note={`Also on ${chordLabel("zoom-in")} and ${chordLabel("zoom-out")}`}>
       <SettingsRow
         label="Window zoom"
-        description="Scales the whole window, the way ⌘+ does in a browser. Kept between launches."
+        description={`Scales the whole window, the way ${chordLabel("zoom-in")} does in a browser. Kept between launches.`}
         control={<ZoomControl level={zoom} onChange={setZoom} />}
       />
     </SettingsGroup>

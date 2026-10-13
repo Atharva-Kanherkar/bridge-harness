@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { DockPaneId } from "../dockLayout";
 import type { DockPaneDescriptor } from "./SessionDock";
+import { formatShortcut } from "@/lib/platform";
 
 // One strip for the whole session: what it is, where its panes are, and the
 // window actions. The dock's collapsed rail is gone, so this row is now the
@@ -167,7 +168,7 @@ export function SessionToolbar({
           onClick={onToggleDock}
           aria-pressed={dockOpen}
           aria-label="Toggle dock"
-          title="Dock  ⌥⌘0"
+          title={`Dock  ${formatShortcut({ meta: true, alt: true }, "0")}`}
           className={toolButtonClass(dockOpen)}
         >
           <PanelRight size={15} strokeWidth={1.8} aria-hidden="true" />
@@ -197,7 +198,7 @@ export function SessionToolbar({
               onClick={() => onOpenPane?.(pane.id)}
               aria-pressed={dockOpen && active}
               aria-label={pane.label}
-              title={`${pane.label}  ⌥⌘${chordIndex}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
+              title={`${pane.label}  ${formatShortcut({ meta: true, alt: true }, String(chordIndex))}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
               className={cn(toolButtonClass(dockOpen && active), !pane.available && "opacity-40")}
             >
               <Icon size={15} strokeWidth={1.7} aria-hidden="true" />
@@ -237,7 +238,7 @@ export function SessionToolbar({
         {overflowPanes.map(pane => {
           const Icon = pane.icon;
           const chordIndex = (dockPanes?.findIndex(item => item.id === pane.id) ?? 0) + 1;
-          const shortcut = <span className="shrink-0 font-mono text-[10px] text-muted-foreground">⌥⌘{chordIndex}</span>;
+          const shortcut = <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatShortcut({ meta: true, alt: true }, String(chordIndex))}</span>;
           const mark = (
             <span className="relative inline-flex shrink-0">
               <Icon size={13} strokeWidth={1.7} className={cn("text-muted-foreground", !pane.available && "opacity-40")} aria-hidden="true" />
@@ -289,7 +290,7 @@ export function SessionToolbar({
           leading={fullscreen
             ? <Minimize2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             : <Maximize2 size={13} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
-          trailing={<span className="shrink-0 font-mono text-[10px] text-muted-foreground">⌥⌘F</span>}
+          trailing={<span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatShortcut({ meta: true, alt: true }, "F")}</span>}
           onClick={() => { onToggleFullscreen(); menu.close(); }}
         />
         {onOpenRouterSettings && (
