@@ -26,8 +26,17 @@ test("the theme list matches Omarchy's shipped themes", () => {
 });
 
 /** Run the pre-paint script against a fake document, storage and URL. */
-function boot({ search = "", stored = {}, storageThrows = false } = {}) {
-  const store = { ...stored };
+function boot({ search = "", stored = {}, storageThrows = false, store: shared } = {}) {
+  const store = shared ?? { ...stored };
+  const location = { search, href: `https://bridge.example/${search}` };
+  const history = {
+    state: null,
+    replaceState: (_state, _title, url) => {
+      const next = new URL(url, location.href);
+      location.href = next.href;
+      location.search = next.search;
+    },
+  };
   const props = new Map();
   const root = {
     dataset: {},
@@ -39,10 +48,10 @@ function boot({ search = "", stored = {}, storageThrows = false } = {}) {
     getItem: key => { if (storageThrows) throw new Error("blocked"); return store[key] ?? null; },
     setItem: (key, value) => { if (storageThrows) throw new Error("blocked"); store[key] = value; },
   };
-  new Function("document", "window", "localStorage", "location", "URLSearchParams", "Event", prepaintScript())(
-    { documentElement: root }, window, localStorage, { search }, URLSearchParams, class { constructor(type) { this.type = type; } },
+  new Function("document", "window", "localStorage", "location", "history", "URLSearchParams", "URL", "Event", prepaintScript())(
+    { documentElement: root }, window, localStorage, location, history, URLSearchParams, URL, class { constructor(type) { this.type = type; } },
   );
-  return { root, props, store, events, controller: window.__bridgeOmarchy };
+  return { root, props, store, events, location, controller: window.__bridgeOmarchy };
 }
 
 test("off by default: nothing is painted", () => {
@@ -97,4 +106,19 @@ test("the copy claims only what ships", () => {
   const banner = page.slice(page.indexOf("Made for Omarchy"), page.indexOf("Made for Omarchy") + 120);
   assert.match(banner, /colors and font from your theme/);
   assert.doesNotMatch(page, /notification|quickshell|\bAUR\b|waybar/i);
+});
+
+test("a choice made after a deep link survives reload", () => {
+  const first = boot({ search: "?omarchy=gruvbox" });
+  assert.equal(first.root.dataset.omarchyTheme, "gruvbox");
+  assert.equal(first.location.search, "?omarchy=gruvbox", "boot leaves an incoming link alone");
+  first.controller.apply("nord");
+  assert.equal(first.location.search, "");
+  const reload = boot({ search: first.location.search, store: first.store });
+  assert.equal(reload.root.dataset.omarchyTheme, "nord");
+
+  const offFromLink = boot({ search: "?omarchy=gruvbox" });
+  offFromLink.controller.apply(null);
+  const reloadOff = boot({ search: offFromLink.location.search, store: offFromLink.store });
+  assert.equal(reloadOff.root.dataset.skin, undefined);
 });

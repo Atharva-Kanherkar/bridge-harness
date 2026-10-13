@@ -58,16 +58,21 @@ function paint(name){
   root.style.setProperty("color-scheme",t.mode);
   root.dataset.skin="omarchy";root.dataset.omarchyTheme=name;shown=name;
 }
-function apply(name){
+function choose(name){
   if(name&&!c.themes[name])name=c.fallback;
   write(c.skinKey,name?"omarchy":"graphite");
   if(name)write(c.themeKey,name);
   paint(name);
+}
+function apply(name){
+  choose(name);
+  // A choice made on the page outranks the link that opened it: drop ?omarchy so a reload keeps it.
+  try{var u=new URL(location.href);if(u.searchParams.has("omarchy")){u.searchParams.delete("omarchy");history.replaceState(history.state,"",u.pathname+u.search+u.hash)}}catch(e){}
   try{window.dispatchEvent(new Event(c.event))}catch(e){}
 }
 var q=null;try{q=new URLSearchParams(location.search).get("omarchy")}catch(e){}
-if(q==="off")apply(null);
-else if(q!==null)apply(c.themes[q]?q:(c.themes[read(c.themeKey)]?read(c.themeKey):c.fallback));
+if(q==="off")choose(null);
+else if(q!==null)choose(c.themes[q]?q:(c.themes[read(c.themeKey)]?read(c.themeKey):c.fallback));
 else if(read(c.skinKey)==="omarchy")paint(c.themes[read(c.themeKey)]?read(c.themeKey):c.fallback);
 window.__bridgeOmarchy={current:function(){return shown},apply:apply};
 })(${JSON.stringify(config)});`;
