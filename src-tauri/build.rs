@@ -14,6 +14,9 @@
 //! keeps that fixed: a sidecar or resource added to `tauri.conf.json` is
 //! staged here without this file changing. Release and dev setup replace
 //! these placeholders with the real content before bundling.
+//!
+//! Tauri also merges the platform overlay (`tauri.linux.conf.json` and the
+//! like) before validating, so its entries are staged too.
 
 use std::path::{Path, PathBuf};
 
@@ -83,8 +86,15 @@ fn main() {
     }
     let config = Path::new("tauri.conf.json");
     println!("cargo:rerun-if-changed=tauri.conf.json");
+    // The overlay tauri-build merges for this target, e.g. tauri.linux.conf.json.
+    let overlay = std::env::var("CARGO_CFG_TARGET_OS").ok().map(|os| {
+        let name = format!("tauri.{}.conf.json", if os == "macos" { "macos" } else { os.as_str() });
+        println!("cargo:rerun-if-changed={name}");
+        PathBuf::from(name)
+    });
     if let Ok(target) = std::env::var("TARGET") {
-        for entry in declared_external_bins(config) {
+        let overlay_bins = overlay.as_deref().map(declared_external_bins).unwrap_or_default();
+        for entry in declared_external_bins(config).into_iter().chain(overlay_bins) {
             stage_placeholder(&PathBuf::from(format!("{entry}-{target}")));
         }
     }
