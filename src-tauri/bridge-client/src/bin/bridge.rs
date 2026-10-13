@@ -37,13 +37,19 @@ fn main() -> ExitCode {
             learning_run(&args[2..])
         }
         Some("meter") => meter(&args[1..]),
+        Some("status") => status(&args[1..]),
+        Some("sessions") => sessions(&args[1..]),
+        Some("approval") => approval(&args[1..]),
         _ => {
             eprintln!(
                 "usage:\n  bridge exec --json [--data-dir <dir>] [--timeout <secs>] \
                  (--harness <id> [--model <id>] \"<prompt>\" | --method <name> [--params <json>])\n  \
                  bridge learning run --database <bridge.db> --trigger \
                  <manual|in-app|codex:ID|claude:ID|opencode:ID> [--credential-ref <reference>]\n  \
-                 bridge meter --json"
+                 bridge meter --json\n  \
+                 bridge status --json [--watch] [--data-dir <dir>]\n  \
+                 bridge sessions --json [--data-dir <dir>]\n  \
+                 bridge approval <allow-once|allow-session|decline> <sessionId> <eventId> [--data-dir <dir>]"
             );
             ExitCode::from(2)
         }
@@ -67,6 +73,206 @@ fn meter(args: &[String]) -> ExitCode {
         Err(error) => {
             eprintln!("bridge meter: {error}");
             ExitCode::from(1)
+        }
+    }
+}
+
+// --- status, sessions, approval -------------------------------------------------
+//
+// Read-mostly commands for desktop surfaces such as the Omarchy bar. They
+// attach to a running `bridged` and never host one: a bar polling for counts
+// must not boot the whole runtime when Bridge is closed.
+
+/// The data dir the desktop app uses by default, so these commands need no
+/// flags when run from a bar or a launcher.
+fn default_data_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("BRIDGE_DATA_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    if cfg!(target_os = "macos") {
+        return Some(home.join("Library/Application Support/dev.bridge.deck"));
+    }
+    let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+    Some(base.join("dev.bridge.deck"))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SurfaceFlags {
+    data_dir: PathBuf,
+    watch: bool,
+    positional: Vec<String>,
+}
+
+fn parse_surface_flags(args: &[String], allow_watch: bool) -> Result<SurfaceFlags, String> {
+    let mut data_dir = None;
+    let mut watch = false;
+    let mut json = false;
+    let mut positional = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--watch" if allow_watch => watch = true,
+            "--data-dir" => data_dir = Some(PathBuf::from(iter.next().ok_or("--data-dir requires a value")?)),
+            other if other.starts_with("--") => return Err(format!("unknown flag {other}")),
+            other => positional.push(other.to_owned()),
+        }
+    }
+    if !json && positional.is_empty() {
+        return Err("pass --json".into());
+    }
+    let data_dir = data_dir.or_else(default_data_dir).ok_or("--data-dir is required (or set BRIDGE_DATA_DIR)")?;
+    Ok(SurfaceFlags { data_dir, watch, positional })
+}
+
+fn attach(data_dir: &Path) -> Option<DaemonClient> {
+    let endpoint = Endpoint::for_data_dir(data_dir).ok()?;
+    DaemonClient::connect_with_timeout(&endpoint, bridge_client::DEFAULT_CONNECT_TIMEOUT).ok()
+}
+
+/// Statuses that mean an agent is busy, and the one that means it waits on you.
+const WORKING: &[&str] = &["working", "starting", "resuming", "checkpointing"];
+
+/// The fleet summary a bar shows. Only live sessions count.
+fn summarize(state: &Value) -> Value {
+    let live: Vec<&Value> = state["sessions"]
+        .as_array()
+        .map(|sessions| sessions.iter().filter(|session| session["endedAt"].is_null()).collect())
+        .unwrap_or_default();
+    let status = |session: &Value| session["status"].as_str().unwrap_or_default().to_owned();
+    let working = live.iter().filter(|session| WORKING.contains(&status(session).as_str())).count();
+    let waiting = live.iter().filter(|session| status(session) == "waiting").count();
+    let sessions: Vec<Value> = live
+        .iter()
+        .filter(|session| WORKING.contains(&status(session).as_str()) || status(session) == "waiting")
+        .map(|session| json!({
+            "id": session["id"],
+            "label": session["title"].as_str().filter(|title| !title.is_empty()).unwrap_or(session["label"].as_str().unwrap_or_default()),
+            "harness": session["harness"],
+            "status": session["status"],
+            "parentSessionId": session["parentSessionId"],
+        }))
+        .collect();
+    json!({ "running": true, "working": working, "waiting": waiting, "sessions": sessions })
+}
+
+fn stopped_summary() -> Value {
+    json!({ "running": false, "working": 0, "waiting": 0, "sessions": [] })
+}
+
+fn fetch_summary(client: &DaemonClient) -> Option<Value> {
+    client.call(MethodName::GetState, None).ok().map(|state| summarize(&state))
+}
+
+fn status(args: &[String]) -> ExitCode {
+    let flags = match parse_surface_flags(args, true) {
+        Ok(flags) => flags,
+        Err(message) => {
+            eprintln!("bridge status: {message}");
+            return ExitCode::from(2);
+        }
+    };
+    if !flags.watch {
+        let summary = attach(&flags.data_dir).and_then(|client| fetch_summary(&client)).unwrap_or_else(stopped_summary);
+        emit(&summary);
+        return ExitCode::SUCCESS;
+    }
+    // Watch: one line per change. Re-query on every daemon notification,
+    // and every few seconds regardless, so a missed event only delays.
+    let mut last: Option<Value> = None;
+    let mut publish = |summary: Value| {
+        if last.as_ref() != Some(&summary) {
+            emit(&summary);
+            last = Some(summary);
+        }
+    };
+    loop {
+        let Some(client) = attach(&flags.data_dir) else {
+            publish(stopped_summary());
+            std::thread::sleep(Duration::from_secs(5));
+            continue;
+        };
+        let notifications = client.subscribe();
+        loop {
+            match fetch_summary(&client) {
+                Some(summary) => publish(summary),
+                None => break,
+            }
+            let _ = notifications.recv_timeout(Duration::from_secs(5));
+            // Coalesce a burst (a streaming turn) into one re-query.
+            while notifications.recv_timeout(Duration::from_millis(150)).is_ok() {}
+        }
+        publish(stopped_summary());
+    }
+}
+
+fn sessions(args: &[String]) -> ExitCode {
+    let flags = match parse_surface_flags(args, false) {
+        Ok(flags) => flags,
+        Err(message) => {
+            eprintln!("bridge sessions: {message}");
+            return ExitCode::from(2);
+        }
+    };
+    let Some(client) = attach(&flags.data_dir) else {
+        eprintln!("bridge sessions: Bridge is not running");
+        return ExitCode::FAILURE;
+    };
+    match client.call(MethodName::GetState, None) {
+        Ok(state) => {
+            emit(&state["sessions"]);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("bridge sessions: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `allow-once` / `allow-session` / `decline` to the wire's decision names.
+fn approval_decision(action: &str) -> Option<&'static str> {
+    match action {
+        "allow-once" => Some("accept"),
+        "allow-session" => Some("acceptForSession"),
+        "decline" => Some("decline"),
+        _ => None,
+    }
+}
+
+/// Resolve one approval through the same method the in-app button calls, so
+/// the policy engine stays the only authority and a second resolution of the
+/// same approval comes back as `alreadyResolved` rather than acting twice.
+fn approval(args: &[String]) -> ExitCode {
+    let flags = match parse_surface_flags(args, false) {
+        Ok(flags) => flags,
+        Err(message) => {
+            eprintln!("bridge approval: {message}");
+            return ExitCode::from(2);
+        }
+    };
+    let [action, session_id, event_id] = flags.positional.as_slice() else {
+        eprintln!("usage: bridge approval <allow-once|allow-session|decline> <sessionId> <eventId>");
+        return ExitCode::from(2);
+    };
+    let (Some(decision), Ok(event_id)) = (approval_decision(action), event_id.parse::<i64>()) else {
+        eprintln!("usage: bridge approval <allow-once|allow-session|decline> <sessionId> <eventId>");
+        return ExitCode::from(2);
+    };
+    let Some(client) = attach(&flags.data_dir) else {
+        eprintln!("bridge approval: Bridge is not running");
+        return ExitCode::FAILURE;
+    };
+    let params = json!({ "sessionId": session_id, "eventId": event_id, "decision": decision });
+    match client.call(MethodName::ResolveApproval, Some(params)) {
+        Ok(result) => {
+            emit(&result);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("bridge approval: {error}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -492,6 +698,45 @@ fn learning_run(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fleet_summary_counts_live_working_and_waiting_sessions() {
+        let state = json!({ "sessions": [
+            { "id": "a", "label": "Chat", "title": "Fix login", "harness": "claude", "status": "working", "endedAt": null },
+            { "id": "b", "label": "Research · strong", "harness": "codex", "status": "waiting", "parentSessionId": "a" },
+            { "id": "c", "label": "Old", "harness": "codex", "status": "working", "endedAt": "2026-10-01T00:00:00Z" },
+            { "id": "d", "label": "Idle", "harness": "claude", "status": "ready" },
+            { "id": "e", "label": "Boot", "harness": "opencode", "status": "starting" },
+        ]});
+        let summary = summarize(&state);
+        assert_eq!(summary["running"], true);
+        assert_eq!(summary["working"], 2, "a and e; c has ended");
+        assert_eq!(summary["waiting"], 1);
+        let ids: Vec<_> = summary["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["a", "b", "e"]);
+        assert_eq!(summary["sessions"][0]["label"], "Fix login", "a title wins over the label");
+        assert_eq!(summarize(&json!({})), json!({ "running": true, "working": 0, "waiting": 0, "sessions": [] }));
+        assert_eq!(stopped_summary()["running"], false);
+    }
+
+    #[test]
+    fn approval_actions_map_to_wire_decisions() {
+        assert_eq!(approval_decision("allow-once"), Some("accept"));
+        assert_eq!(approval_decision("allow-session"), Some("acceptForSession"));
+        assert_eq!(approval_decision("decline"), Some("decline"));
+        assert_eq!(approval_decision("approve"), None);
+    }
+
+    #[test]
+    fn surface_flags_parse_and_default_the_data_dir() {
+        let args = |list: &[&str]| list.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+        let flags = parse_surface_flags(&args(&["--json", "--watch", "--data-dir", "/tmp/b"]), true).unwrap();
+        assert_eq!(flags, SurfaceFlags { data_dir: PathBuf::from("/tmp/b"), watch: true, positional: vec![] });
+        assert!(parse_surface_flags(&args(&["--watch", "--json", "--data-dir", "/tmp/b"]), false).unwrap_err().contains("--watch"));
+        assert!(parse_surface_flags(&args(&["--data-dir", "/tmp/b"]), true).unwrap_err().contains("--json"));
+        let approval = parse_surface_flags(&args(&["allow-once", "s1", "42", "--data-dir", "/tmp/b"]), false).unwrap();
+        assert_eq!(approval.positional, ["allow-once", "s1", "42"]);
+    }
 
     #[test]
     fn turn_failures_are_recognized_in_both_provider_shapes() {
