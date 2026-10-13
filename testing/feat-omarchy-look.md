@@ -29,6 +29,7 @@ branch `quattro`) before locking this:
   shell answers on `bridge-omarchy-theme` with
   `{ available, themeName, mode, colors, font }`. `colors` holds only keys whose
   value is a hex colour (`#rgb`, `#rrggbb`, `#rrggbbaa`); anything else is dropped.
+  `mode` resolves the way Omarchy's own `omarchy-theme-color` does.
 - While detected, the shell polls the theme dir every 400ms (theme name and
   `colors.toml` mtime) and re-emits when either changes, so a theme switch
   retints within 1s. A missing or unreadable `colors.toml` emits nothing.
@@ -74,7 +75,7 @@ branch `quattro`) before locking this:
 - `src-tauri/src/omarchy.rs`
   - `parses_every_shipped_theme` — every fixture in `testing/fixtures/omarchy/themes` parses, has `background`/`foreground`/`accent`, and reports the mode its file states.
   - `drops_non_hex_values_and_comments`
-  - `light_mode_marker_file_selects_light` — a `light.mode` file next to `colors.toml` wins when `mode` is absent.
+  - `mode_follows_omarchy_precedence` — mirrors `omarchy-theme-color`: `mode` key, then legacy `theme_type`, then a `light.mode` file beside `colors.toml`, then background luminance (r+g+b > 382 is light), else dark.
   - `detection_rules` — state dir alone; `omarchy` on PATH + Hyprland signature; neither.
   - `font_family_takes_first_fontconfig_alias` — `"JetBrainsMono Nerd Font,JetBrainsMono NF"` → `"JetBrainsMono Nerd Font"`; empty → `None`.
   - `stamp_changes_when_theme_switches` — rewriting `theme.name` or `colors.toml` changes the poll stamp; an unchanged dir does not.
