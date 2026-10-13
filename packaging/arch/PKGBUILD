@@ -8,6 +8,8 @@ arch=('x86_64')
 url='https://github.com/Atharva-Kanherkar/bridge-harness'
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'nodejs>=18' 'npm' 'git')
+optdepends=('hyprland: quick-prompt window rules and binding (bridge-deck --omarchy setup --hyprland)'
+            'quickshell: Omarchy bar widget with agent counts')
 provides=('bridge')
 conflicts=('bridge')
 

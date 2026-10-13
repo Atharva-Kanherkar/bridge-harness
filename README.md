@@ -132,7 +132,7 @@ Approvals, history, and usage tracking are on from the start.
 
 - **Release builds:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_*.dmg`, signed with a Developer ID, notarized, and stapled
 - **Requirements:** macOS 12 or later (Apple Silicon), Git, and Node.js 18+ (only needed for Claude sessions)
-- **Linux:** Debian, AppImage, and Arch packages build in CI as release candidates. They are not published downloads yet — see [docs/linux-release.md](docs/linux-release.md).
+- **Linux:** Debian, AppImage, and Arch packages build in CI as release candidates. They are not published downloads yet — see [docs/linux-release.md](docs/linux-release.md). On [Omarchy](https://omarchy.org), Bridge follows your theme and adds a bar widget, notifications with actions, and a quick prompt. See [docs/omarchy.md](docs/omarchy.md).
 - **Updates:** signed macOS builds check GitHub Releases on launch and offer to download, install, and restart when a newer signed update is available. You can always install a DMG manually; see the [CHANGELOG](CHANGELOG.md) for what's new.
 
 > [!NOTE]

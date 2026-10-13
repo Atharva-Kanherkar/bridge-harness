@@ -16,8 +16,15 @@
           "nodejs (>= 18)",
           "git",
           "npm"
-        ]
+        ],
+        "desktopTemplate": "linux/bridge.desktop"
       }
-    }
+    },
+    "externalBin": [
+      "binaries/bridge-browser-host",
+      "binaries/bridged",
+      "binaries/bridge-voice-helper",
+      "binaries/bridge"
+    ]
   }
 }
