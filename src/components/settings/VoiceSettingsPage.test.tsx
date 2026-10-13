@@ -52,6 +52,7 @@ it("discloses the local model size, language, privacy, and license before setup"
   expect(host.textContent).toContain("460 MiB");
   expect(host.textContent).toContain("662 MiB");
   expect(host.textContent).toContain("NVIDIA Open Model License");
+  expect(host.querySelector('a[href*="nvidia-open-model-license"]')).not.toBeNull();
   expect(button("Download and install")).toBeTruthy();
 });
 
@@ -66,7 +67,7 @@ it("starts only from the explicit install action and reports progress", async ()
   await act(async () => { button("Download and install").click(); });
   expect(setup).toHaveBeenCalledTimes(1);
   expect(host.textContent).toContain("Downloading model");
-  expect(host.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("50");
+  expect(host.querySelector("progress")?.value.toString()).toBe("50");
 });
 
 it("removes a ready installation only after confirmation", async () => {
@@ -90,4 +91,70 @@ it("refreshes composer availability when setup immediately reports ready", async
   await act(async () => { button("Download and install").click(); });
   expect(changed).toHaveBeenCalledTimes(1);
   expect(button("Remove local model")).toBeTruthy();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+it("keeps installation actions hidden until availability is known and retries status errors", async () => {
+  const pending = deferred<VoiceLocalStatusResult>();
+  const status = vi.spyOn(bridgeApi, "voiceLocalStatus").mockReturnValueOnce(pending.promise).mockResolvedValue(base);
+  await act(async () => root.render(<VoiceSettingsPage onError={vi.fn()} />));
+  expect(host.textContent).toContain("Checking…");
+  expect(host.textContent).not.toContain("Download and install");
+  await act(async () => pending.reject(new Error("offline")));
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not check");
+  await act(async () => button("Retry status").click());
+  expect(status).toHaveBeenCalledTimes(2);
+  expect(button("Download and install")).toBeTruthy();
+});
+
+it("ignores a stale poll after setup completes and never overlaps slow polls", async () => {
+  vi.useFakeTimers();
+  try {
+    const pending = deferred<VoiceLocalStatusResult>();
+    const initial = { ...base, state: "downloadingModel" as const };
+    const status = vi.spyOn(bridgeApi, "voiceLocalStatus").mockResolvedValueOnce(initial).mockReturnValueOnce(pending.promise);
+    await act(async () => root.render(<VoiceSettingsPage onError={vi.fn()} />));
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(status).toHaveBeenCalledTimes(2);
+    await act(async () => pending.resolve({ ...base, state: "ready" }));
+    expect(host.textContent).toContain("Try your microphone");
+    expect(host.querySelector("progress")).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(1500));
+    expect(status).toHaveBeenCalledTimes(2);
+  } finally { vi.useRealTimers(); }
+});
+
+it("ignores an old retry response after a newer result removes the installation", async () => {
+  vi.useFakeTimers();
+  try {
+    const pending = deferred<VoiceLocalStatusResult>();
+    const changed = vi.fn();
+    vi.spyOn(bridgeApi, "voiceLocalStatus").mockRejectedValueOnce(new Error("offline")).mockReturnValueOnce(pending.promise).mockResolvedValue({ ...base, state: "ready" });
+    const remove = vi.spyOn(bridgeApi, "voiceLocalRemove").mockResolvedValue(base);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => root.render(<VoiceSettingsPage onError={vi.fn()} onChanged={changed} />));
+    await act(async () => button("Retry status").click());
+    await act(async () => button("Retry status").click());
+    await act(async () => button("Remove local model").click());
+    expect(remove).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve({ ...base, state: "ready" }));
+    expect(button("Download and install")).toBeTruthy();
+    expect(host.textContent).not.toContain("Try your microphone");
+    expect(changed).toHaveBeenCalledTimes(2);
+  } finally { vi.useRealTimers(); }
+});
+
+it("refreshes composer availability when installed speech is discovered on opening settings", async () => {
+  const changed = await render({ ...base, state: "ready" });
+  expect(changed).toHaveBeenCalledTimes(1);
+  expect(host.textContent).toContain("Try your microphone");
+  expect(host.textContent).not.toContain("sherpa-onnx");
+  await act(async () => button("Model details").click());
+  expect(host.textContent).toContain("sherpa-onnx 1.13.8");
 });

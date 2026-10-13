@@ -3413,6 +3413,10 @@ function AppContent() {
                     voiceAvailable={voice.available}
                     voiceState={voice.state}
                     voicePreview={voice.preview}
+      voiceDraftPreview={voice.draftPreview}
+      voiceAudioLevel={voice.audioLevel}
+      voiceStartingPhase={voice.startingPhase}
+      voiceNotice={voice.notice}
                     voiceError={voice.error}
                     voiceUnavailableReason={voice.unavailableReason}
                     voiceRecovery={voice.recovery}
@@ -3881,6 +3885,10 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
       voiceAvailable={voice.available}
       voiceState={voice.state}
       voicePreview={voice.preview}
+      voiceDraftPreview={voice.draftPreview}
+      voiceAudioLevel={voice.audioLevel}
+      voiceStartingPhase={voice.startingPhase}
+      voiceNotice={voice.notice}
       voiceError={voice.error}
       voiceUnavailableReason={voice.unavailableReason}
       voiceRecovery={voice.recovery}
