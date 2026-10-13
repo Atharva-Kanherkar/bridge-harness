@@ -85,17 +85,20 @@ branch `quattro`) before locking this:
   - `orange` fallback for `white`;
   - light themes use the 12/16/16% border mix, dark 9/13/13%;
   - missing `background` → empty map; non-hex values rejected.
+  - legacy palettes resolve the way `omarchy-theme-color` does: `bg`/`fg` short names, ANSI `color0`..`color15` (the `omarchy-theme-colors-from-alacritty` shape), `purple`, and derived shades (25%/50% toward black, bright hues 20% toward white); shipped themes are unaffected.
 - `src/theme.test.ts`
   - `omarchy` is a valid skin; Graphite stays the default when not detected;
   - with a payload, the skin sets tokens + font on `<html>` and forces the theme's mode;
   - without a payload it sets nothing (Graphite rendering);
   - switching back to graphite removes every property.
+  - a payload delivered after render but before the hook subscribes is still applied (startup race).
 - `src/components/settings/AppearancePage.test.tsx` — the Omarchy tile is absent until a payload with `available: true` arrives, then present.
 - `src/designSystem.test.ts` — unchanged and green.
 - `landing/test/omarchy.test.ts`
   - `landing/app/lib/omarchyTheme.ts` is byte-identical to `src/lib/omarchyTheme.ts`;
   - `landing/app/content/omarchyThemes.ts` matches every fixture file (names, mode, colours);
   - the pre-paint script handles `?omarchy=off`, unknown theme names, and blocked storage.
+  - a choice made on the page after a `?omarchy=` deep link survives reload (the controller drops the param; boot does not rewrite it).
 
 ## Integration / Functional Tests
 
