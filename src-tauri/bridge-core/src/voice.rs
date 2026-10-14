@@ -205,7 +205,12 @@ pub fn start(
         .lock()
         .unwrap()
         .retain(|_, voice| voice.created_at.elapsed() < std::time::Duration::from_secs(300));
-    if core.voice.local.is_busy() || !core.voice.sessions.lock().unwrap().is_empty() {
+    // Local admission owns the bounded wait for a cancelled/finished helper
+    // to be reaped. Rejecting its busy flag here bypassed that wait for both
+    // daemon and desktop callers, so immediate retries still failed.
+    if !core.voice.sessions.lock().unwrap().is_empty()
+        || (params.provider != wire::VoiceProviderId::Local && core.voice.local.is_busy())
+    {
         return Err(BridgeError::Invalid(
             "A dictation is active or still releasing its engine".into(),
         ));

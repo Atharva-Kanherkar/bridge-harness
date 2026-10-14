@@ -1,11 +1,12 @@
 import type { ClipboardEvent, KeyboardEvent, MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Mic, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComposerAttachment } from "@/pasteAttachments";
 import type { BrowserSelectionContext } from "../browserSelection";
 import { chipDetail, chipSummary, type ReferenceChipModel } from "../referenceChip";
-import type { VoiceState } from "@/voiceDictation";
+import { VoiceControls, VoiceStatus, voiceIsBusy } from "./VoiceControls";
+import type { VoiceView, VoiceState } from "@/voiceDictation";
 import type { VoiceRecoveryAction } from "@/protocol/generated/protocol";
 
 export type ComposerPillProps = {
@@ -38,6 +39,10 @@ export type ComposerPillProps = {
   voiceAvailable?: boolean;
   voiceState?: VoiceState;
   voicePreview?: string;
+  voiceDraftPreview?: string;
+  voiceAudioLevel?: number;
+  voiceStartingPhase?: VoiceView["startingPhase"];
+  voiceNotice?: string;
   voiceError?: string;
   voiceUnavailableReason?: string;
   /** What the provider says fixes it; nothing is offered for transient states. */
@@ -115,6 +120,10 @@ export function ComposerPill({
   voiceAvailable = false,
   voiceState = "idle",
   voicePreview,
+  voiceDraftPreview,
+  voiceAudioLevel,
+  voiceStartingPhase,
+  voiceNotice,
   voiceError,
   voiceUnavailableReason,
   voiceRecovery,
@@ -141,7 +150,6 @@ export function ComposerPill({
   onRemoveReference,
 }: ComposerPillProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const voicePress = useRef<{ at: number; alreadyActive: boolean }>();
   const overlayRef = useRef<HTMLDivElement | null>(null);
   // Ghost text only makes sense continuing from where typing left off. Selection
   // changes do not re-render on their own, so a click into the middle of the
@@ -153,13 +161,8 @@ export function ComposerPill({
     return !!node && node.selectionStart === value.length && node.selectionEnd === value.length;
   };
   const [, setCaretEpoch] = useState(0);
-  const voiceBusy = voiceState === "starting" || voiceState === "recording" || voiceState === "stopping";
-  // Only a provider that needs setup links to settings. A busy turn or an
-  // in-flight probe is not a reason to set voice up again.
-  const recoveryAction = voiceError && voiceRecovery !== "setup" ? "retry" : voiceRecovery;
-  const recovery = recoveryAction === "setup" && onVoiceSetup ? { label: "Set up voice", run: onVoiceSetup }
-    : recoveryAction === "retry" && onVoiceRetry ? { label: "Retry voice", run: onVoiceRetry }
-    : undefined;
+  const voiceBusy = voiceIsBusy(voiceState);
+  const displayValue = voiceBusy ? voiceDraftPreview ?? (voicePreview || value) : value;
   const showSuggestion = !voiceBusy && !!suggestion && caretAtEnd();
   const noteCaret = () => {
     setCaretEpoch(n => n + 1);
@@ -191,7 +194,9 @@ export function ComposerPill({
     if (wasVoiceBusy.current === voiceBusy) return;
     wasVoiceBusy.current = voiceBusy;
     const form = formRef.current;
-    if (!form || form.contains(document.activeElement)) return;
+    if (!form) return;
+    if (!voiceBusy && document.activeElement?.hasAttribute("data-voice-control")) { textareaRef.current?.focus({ preventScroll: true }); return; }
+    if (form.contains(document.activeElement)) return;
     const active = document.activeElement;
     if (active && active !== document.body) return;
     textareaRef.current?.focus({ preventScroll: true });
@@ -203,7 +208,7 @@ export function ComposerPill({
     if (!textarea) return;
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, isHero ? 180 : 140)}px`;
-  }, [value, isHero]);
+  }, [displayValue, isHero]);
 
   return (
     <div className={cn("w-full", isHero ? "mx-auto max-w-3xl" : isInline ? "px-2 pb-2 pt-1.5" : "mx-auto max-w-conversation-frame px-4 pb-3 pt-2 sm:px-8 sm:pb-4", className)}>
@@ -225,7 +230,7 @@ export function ComposerPill({
           }}
           onKeyDownCapture={event => {
             if (!voiceBusy || event.nativeEvent.isComposing) return;
-            if (event.key === "Escape" || event.key === "Enter") {
+            if (event.key === "Escape" || (event.key === "Enter" && !(event.target instanceof Element && event.target.closest("button")))) {
               event.preventDefault();
               event.stopPropagation();
               if (event.key === "Escape") onVoiceCancel?.();
@@ -321,8 +326,9 @@ export function ComposerPill({
                 textareaRef.current = node;
                 if (inputRef) inputRef.current = node;
               }}
-              value={value}
+              value={displayValue}
               aria-label="Message Bridge"
+              aria-description={voiceBusy ? "Provisional dictation. Finish to edit before sending." : undefined}
               rows={1}
               placeholder={placeholder}
               disabled={locked}
@@ -344,6 +350,7 @@ export function ComposerPill({
                 onPaste?.(event);
               }}
               onKeyDown={event => {
+                if (voiceBusy) return;
                 onKeyDown?.(event);
                 if (event.defaultPrevented) return;
                 // Read the caret live: `showSuggestion` can lag a click that has
@@ -368,13 +375,7 @@ export function ComposerPill({
             />
           </div>
 
-          {voiceBusy && <div role="status" className="px-1 py-1 text-xs text-muted-foreground">
-            {voiceProviderLabel && <span className="block">{voiceProviderLabel}</span>}
-            <span>{voiceState === "starting" ? "Preparing dictation…" : voiceState === "stopping" ? "Finishing dictation…" : "Listening…"}</span>
-            {voicePreview && <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-foreground">{voicePreview}</p>}
-            <span className="block pt-1">Enter to finish · Esc to cancel. Nothing is sent automatically.</span>
-          </div>}
-          {voiceError && <p role="alert" className="px-1 py-1 text-xs text-destructive">{voiceError}</p>}
+          <VoiceStatus state={voiceState} startingPhase={voiceStartingPhase} audioLevel={voiceAudioLevel} error={voiceError} notice={voiceNotice} />
 
           <div className={cn("flex min-h-8 items-center gap-2", isInline ? "shrink-0" : "flex-wrap justify-between")}>
             {/* Leading edge of the controls row: the model chip, then the access
@@ -396,64 +397,9 @@ export function ComposerPill({
                 <button type="button" disabled={locked || voiceBusy} aria-label="Attach images" title="Attach images" onClick={() => attachmentInput.current?.click()} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><Paperclip className="h-4 w-4" aria-hidden="true" /></button>
               </>}
               {leading}
-              {onVoiceStart && onVoiceStop && (
-                <button
-                  type="button"
-                  disabled={locked || (!voiceAvailable && !voiceBusy) || voiceState === "stopping"}
-                  aria-label={voiceBusy ? "Stop dictating" : "Hold to dictate"}
-                  aria-pressed={voiceBusy}
-                  aria-busy={voiceState === "starting" || voiceState === "stopping"}
-                  aria-description={!voiceAvailable && !voiceBusy ? voiceUnavailableReason : voiceProviderLabel}
-                  title={!voiceAvailable && !voiceBusy ? voiceUnavailableReason ?? "Dictation unavailable" : [voiceProviderLabel, "Click to toggle dictation, or hold to talk"].filter(Boolean).join(". ")}
-                  onPointerDown={event => {
-                    if (event.button !== 0) return;
-                    event.preventDefault();
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                    voicePress.current = { at: Date.now(), alreadyActive: voiceBusy };
-                    if (!voiceBusy) onVoiceStart();
-                  }}
-                  onPointerUp={event => {
-                    const press = voicePress.current;
-                    voicePress.current = undefined;
-                    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                      event.currentTarget.releasePointerCapture(event.pointerId);
-                    }
-                    if (press && (press.alreadyActive || Date.now() - press.at >= 300)) onVoiceStop();
-                  }}
-                  onPointerCancel={() => { voicePress.current = undefined; onVoiceCancel?.(); }}
-                  onLostPointerCapture={() => {
-                    if (voicePress.current) { voicePress.current = undefined; onVoiceCancel?.(); }
-                  }}
-                  onClick={event => {
-                    // Pointer clicks are handled above. detail=0 is an assistive
-                    // technology activation or programmatic keyboard click.
-                    if (event.detail === 0) { if (voiceBusy) onVoiceStop(); else onVoiceStart(); }
-                  }}
-                  onKeyDown={event => {
-                    // Enter is left to the native click so it never hijacks sending.
-                    if (event.key === " ") {
-                      event.preventDefault();
-                      if (!event.repeat && !voiceBusy) onVoiceStart();
-                    }
-                  }}
-                  onKeyUp={event => {
-                    if (event.key === " ") {
-                      event.preventDefault();
-                      onVoiceStop();
-                    }
-                  }}
-                  className={cn(
-                    "inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors active:scale-95 disabled:opacity-40",
-                    voiceState === "recording" || voiceState === "starting"
-                      ? "bg-destructive/15 text-destructive"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                  )}
-                >
-                  <Mic className="h-4 w-4" aria-hidden="true" />
-                </button>
-              )}
-              {voiceBusy && onVoiceCancel && <button type="button" onClick={onVoiceCancel} aria-label="Cancel dictation" title="Cancel dictation" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"><X className="h-4 w-4" aria-hidden="true" /></button>}
-              {!voiceBusy && recovery && <button type="button" onClick={recovery.run} title={voiceUnavailableReason} className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{recovery.label}</button>}
+              {onVoiceStart && onVoiceStop && <VoiceControls state={voiceState} available={voiceAvailable} disabled={locked}
+                unavailableReason={voiceUnavailableReason} providerLabel={voiceProviderLabel} error={voiceError} recovery={voiceRecovery}
+                onStart={onVoiceStart} onStop={onVoiceStop} onCancel={onVoiceCancel} onRetry={onVoiceRetry} onSetup={onVoiceSetup} />}
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling
                   the work. */}

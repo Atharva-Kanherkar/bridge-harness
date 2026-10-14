@@ -222,11 +222,11 @@ describe("ComposerPill", () => {
   it.each(["starting", "recording", "stopping"] as const)("protects the draft and blocks Send while %s", voiceState => {
     const onSubmit = vi.fn();
     render({ value: "original draft", voiceAvailable: true, voiceState, voicePreview: "spoken preview", onSubmit, onAttachFiles: vi.fn(), onVoiceStart: vi.fn(), onVoiceStop: vi.fn(), onVoiceCancel: vi.fn() });
-    expect(textarea().value).toBe("original draft");
+    expect(textarea().value).toBe("spoken preview");
     expect(textarea().readOnly).toBe(true);
     expect(attach()!.disabled).toBe(true);
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.disabled).toBe(true);
-    expect(container.querySelector('[role="status"]')!.textContent).toContain("spoken preview");
+    expect(container.textContent).not.toContain("Nothing is sent automatically");
     expect(container.querySelector('button[aria-label="Cancel dictation"]')).not.toBeNull();
     act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     expect(onSubmit).not.toHaveBeenCalled();
@@ -242,6 +242,60 @@ describe("ComposerPill", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     act(() => textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
     expect(onVoiceCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Enter on Cancel dictation to the button's native activation", () => {
+    const onVoiceStop = vi.fn();
+    const onVoiceCancel = vi.fn();
+    render({ voiceAvailable: true, voiceState: "recording", onVoiceStart: vi.fn(), onVoiceStop, onVoiceCancel });
+    const cancel = container.querySelector<HTMLButtonElement>('button[aria-label="Cancel dictation"]')!;
+    const key = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    act(() => cancel.dispatchEvent(key));
+    expect(key.defaultPrevented).toBe(false);
+    expect(onVoiceStop).not.toHaveBeenCalled();
+    act(() => cancel.click());
+    expect(onVoiceCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores writing focus after a take started with the keyboard", () => {
+    render({ voiceAvailable: true, onVoiceStart: vi.fn(), onVoiceStop: vi.fn() });
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!.focus());
+    render({ voiceAvailable: true, voiceState: "recording", onVoiceStart: vi.fn(), onVoiceStop: vi.fn() });
+    render({ value: "spoken text", voiceAvailable: true, onVoiceStart: vi.fn(), onVoiceStop: vi.fn() });
+    expect(document.activeElement).toBe(textarea());
+  });
+
+  it("does not accept a hidden typeahead suggestion while dictation owns the draft", () => {
+    const onAcceptSuggestion = vi.fn();
+    const onKeyDown = vi.fn();
+    render({ value: "draft", suggestion: " extra", voiceAvailable: true, voiceState: "recording", onVoiceStart: vi.fn(), onVoiceStop: vi.fn(), onAcceptSuggestion, onKeyDown });
+    textarea().setSelectionRange(5, 5);
+    act(() => textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    expect(onAcceptSuggestion).not.toHaveBeenCalled();
+    expect(onKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("finishes a keyboard hold even when focus moved before Space was released", () => {
+    const onVoiceStop = vi.fn();
+    render({ voiceAvailable: true, onVoiceStart: vi.fn(), onVoiceStop });
+    const mic = container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!;
+    act(() => mic.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })));
+    render({ voiceAvailable: true, voiceState: "recording", onVoiceStart: vi.fn(), onVoiceStop });
+    act(() => textarea().focus());
+    act(() => textarea().dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true, cancelable: true })));
+    expect(onVoiceStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("a cancelled keyboard hold cannot finish a later take", () => {
+    const onVoiceStop = vi.fn();
+    render({ voiceAvailable: true, onVoiceStart: vi.fn(), onVoiceStop });
+    const mic = container.querySelector<HTMLButtonElement>('button[aria-label="Hold to dictate"]')!;
+    act(() => mic.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })));
+    render({ voiceAvailable: true, voiceState: "recording", onVoiceStart: vi.fn(), onVoiceStop });
+    render({ voiceAvailable: true, voiceState: "error", onVoiceStart: vi.fn(), onVoiceStop });
+    render({ voiceAvailable: true, voiceState: "recording", onVoiceStart: vi.fn(), onVoiceStop });
+    act(() => window.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true, cancelable: true })));
+    expect(onVoiceStop).not.toHaveBeenCalled();
   });
 
   it("accepts assistive-technology activation as a toggle", () => {

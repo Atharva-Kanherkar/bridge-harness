@@ -3,6 +3,7 @@ import {
   VoiceCapture,
   applyVoiceTranscriptDraft,
   pcm16ToBase64,
+  pcm16Level,
   renderVoiceDraft,
   resampleToPcm16,
 } from "./voiceCapture";
@@ -24,6 +25,13 @@ describe("voice capture conversion", () => {
     const samples = new Int16Array([0x1234, -2]);
     expect(Array.from(Buffer.from(pcm16ToBase64(samples), "base64")))
       .toEqual([0x34, 0x12, 0xfe, 0xff]);
+  });
+
+  it("reports actual input energy, with silence at zero and a bounded level", () => {
+    expect(pcm16Level(new Int16Array([0, 0]))).toBe(0);
+    expect(pcm16Level(new Int16Array())).toBe(0);
+    expect(pcm16Level(new Int16Array([1024, -1024]))).toBe(0.25);
+    expect(pcm16Level(new Int16Array([32767, -32768]))).toBe(1);
   });
 
   it("does not invent a sample for an empty input buffer", () => {
@@ -116,6 +124,17 @@ describe("voice capture lifecycle", () => {
     return { ...mocks, port, worklet };
   }
 
+  it.each([
+    ["NotAllowedError", "Privacy & Security"],
+    ["NotFoundError", "Sound → Input"],
+    ["NotReadableError", "other apps"],
+  ])("explains how to recover from %s without opening an audio context", async (name, instruction) => {
+    captureMocks();
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(new DOMException("opaque platform error", name));
+    await expect(VoiceCapture.start(vi.fn())).rejects.toThrow(instruction);
+    expect(AudioContext).not.toHaveBeenCalled();
+  });
+
   it("prefers the packaged worklet and waits for its tail acknowledgement before releasing the mic", async () => {
     const mocks = workletMocks();
     const chunks = vi.fn();
@@ -129,7 +148,7 @@ describe("voice capture lifecycle", () => {
     mocks.port.onmessage?.({ data: { type: "flushed" } } as MessageEvent);
     await stopping;
 
-    expect(chunks).toHaveBeenCalledWith({ data: expect.any(String), samplesPerChannel: 3 });
+    expect(chunks).toHaveBeenCalledWith({ data: expect.any(String), samplesPerChannel: 3, level: expect.any(Number) });
     expect(mocks.track.stop).toHaveBeenCalledTimes(1);
     expect(mocks.worklet.disconnect).toHaveBeenCalledTimes(1);
     expect(mocks.port.close).toHaveBeenCalledTimes(1);

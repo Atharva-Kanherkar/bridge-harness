@@ -3,7 +3,15 @@ import type { VoiceTranscriptPayload as VoiceTranscriptEvent } from "./api";
 import { applyVoiceTranscriptDraft, type VoiceChunk, type VoiceDraftTranscript } from "./voiceCapture";
 
 export type VoiceState = "idle" | "starting" | "recording" | "stopping" | "error";
-export type VoiceView = { state: VoiceState; preview: string; error?: string };
+export type VoiceView = {
+  state: VoiceState;
+  preview: string;
+  draftPreview?: string;
+  audioLevel?: number;
+  startingPhase?: "microphone" | "model";
+  error?: string;
+  notice?: string;
+};
 export type VoiceDraft = {
   ownerKey: string;
   sessionId?: string;
@@ -35,6 +43,7 @@ export const VOICE_QUEUE_BYTES = 64_000;
 export const VOICE_PREROLL_BYTES = 640_000;
 export const VOICE_START_TIMEOUT_MS = 30_000;
 export const VOICE_RPC_TIMEOUT_MS = 10_000;
+export const VOICE_DRAIN_TIMEOUT_MS = 30_000;
 export const VOICE_MAX_DURATION_MS = 120_000;
 const MAX_EARLY_EVENTS = 32;
 const MAX_TRANSCRIPT_CHARS = 64_000;
@@ -50,8 +59,15 @@ type Take = {
   ready: boolean;
   /** Released before the provider was ready: finish (not cancel) once it is. */
   stopRequested?: boolean;
+  finishing?: Promise<void>;
+  captureReleased?: boolean;
+  audioLevel?: number;
+  lastMeterUpdate: number;
+  startingPhase: "microphone" | "model";
   queue: VoiceChunk[];
   queuedBytes: number;
+  /** Previously admitted startup bytes are exempt from the live backlog cap. */
+  prerollBytes: number;
   totalBytes: number;
   sequence: number;
   pumping?: Promise<void>;
@@ -96,8 +112,8 @@ export class VoiceDictationController {
   async start(provider: VoiceProviderId): Promise<void> {
     if (this.take) return;
     const take: Take = {
-      draft: this.deps.readDraft(), provider, state: "starting", ready: false,
-      queue: [], queuedBytes: 0, totalBytes: 0, sequence: 0,
+      draft: { ...this.deps.readDraft() }, provider, state: "starting", ready: false, startingPhase: "microphone", lastMeterUpdate: -Infinity,
+      queue: [], queuedBytes: 0, prerollBytes: 0, totalBytes: 0, sequence: 0,
       transcript: { finalized: "", provisional: "" }, early: [], earlyChars: 0, timers: new Set(),
     };
     this.take = take;
@@ -107,6 +123,8 @@ export class VoiceDictationController {
       const capture = await this.deps.capture(chunk => this.enqueue(take, chunk), error => this.fail(take, error.message));
       if (!this.owns(take)) { void capture.stop().catch(() => undefined); return; }
       take.capture = capture;
+      take.startingPhase = "model";
+      this.publish(take);
       const started = await this.deps.transport.start(take.draft.ownerKey, provider, take.draft.sessionId);
       if (!this.owns(take)) { void this.deps.transport.cancel(started.voiceSessionId).catch(() => undefined); return; }
       take.id = started.voiceSessionId;
@@ -145,12 +163,13 @@ export class VoiceDictationController {
     if (event.kind === "closed") { this.finish(take); return; }
     if (event.kind === "started" && !take.ready) {
       take.ready = true;
-      take.state = "recording";
+      take.prerollBytes = take.queuedBytes;
+      take.state = take.stopRequested ? "stopping" : "recording";
       if (take.startTimer) { clearTimeout(take.startTimer); take.timers.delete(take.startTimer); }
       this.timer(take, VOICE_MAX_DURATION_MS, () => { void this.stop(); });
       this.publish(take);
       this.pump(take);
-      if (take.stopRequested) { void this.stop(); return; }
+      if (take.stopRequested) { void this.completeStop(take); return; }
     }
     if ((event.kind === "partial" || event.kind === "delta" || event.kind === "final") && typeof event.text === "string") {
       const transcript = applyVoiceTranscriptDraft(take.transcript, event.kind, event.text);
@@ -158,43 +177,66 @@ export class VoiceDictationController {
         this.fail(take, "The dictation transcript exceeded its safety limit.");
         return;
       }
-      take.transcript = transcript;
-      this.publish(take);
+      if (transcript.finalized !== take.transcript.finalized || transcript.provisional !== take.transcript.provisional) {
+        take.transcript = transcript;
+        this.publish(take);
+      }
     }
   }
 
   async stop(): Promise<void> {
     const take = this.take;
-    if (!take || take.state === "stopping") return;
-    // Releasing the button during a permission/startup prompt cancels that
-    // generation. Its eventual capture/RPC result must only clean itself up.
-    // A release while the model is still loading finishes the take once the
-    // provider is ready, so a quick hold keeps the words already spoken.
-    if (!take.ready || !take.id) {
-      if (take.state === "starting" && take.queuedBytes + take.totalBytes > 0) { take.stopRequested = true; return; }
-      this.cancel();
-      return;
-    }
+    if (!take || take.stopRequested) return;
+    // A pending permission result has no capture to flush and must only clean
+    // itself up later. Once capture exists, release it now, even during model
+    // load: the final short frame may contain the take's only spoken words.
+    if (!take.capture) { this.cancel(); return; }
+    take.stopRequested = true;
     take.state = "stopping";
     this.publish(take);
-    this.timer(take, VOICE_RPC_TIMEOUT_MS, () => this.fail(take, "Dictation did not finish in time. Your draft is unchanged."));
+    const timeout = this.timer(take, VOICE_RPC_TIMEOUT_MS, () => this.fail(take, "The microphone did not release in time. Please retry."));
     try {
       await this.releaseCapture(take);
       if (!this.owns(take)) return;
-      // stop() may flush a last PCM frame synchronously or asynchronously.
-      while (take.pumping && this.owns(take)) await take.pumping;
-      if (!this.owns(take)) return;
-      await this.deps.transport.stop(take.id);
-      // Completion is the provider's terminal notification, not a pipe write.
+      clearTimeout(timeout);
+      take.timers.delete(timeout);
+      if (!take.ready && !take.queuedBytes && !take.totalBytes) { this.cancel(); return; }
+      if (take.ready && take.id) await this.completeStop(take);
     } catch (error) {
       this.fail(take, error instanceof Error ? error.message : "Could not finish dictation.");
+    } finally {
+      clearTimeout(timeout);
+      take.timers.delete(timeout);
     }
+  }
+
+  private completeStop(take: Take): Promise<void> {
+    if (take.finishing) return take.finishing;
+    take.finishing = (async () => {
+      const drainTimeout = this.timer(take, VOICE_DRAIN_TIMEOUT_MS, () => this.fail(take, "Dictation audio did not finish processing in time. Please retry."));
+      try {
+        await this.releaseCapture(take);
+        // Capture's tail and admitted preroll must drain before finalization.
+        while (take.pumping && this.owns(take)) await take.pumping;
+        if (!this.owns(take) || !take.id) return;
+        clearTimeout(drainTimeout);
+        take.timers.delete(drainTimeout);
+        this.timer(take, VOICE_RPC_TIMEOUT_MS, () => this.fail(take, "Dictation did not finish in time. Your draft is unchanged."));
+        await this.deps.transport.stop(take.id);
+        // Completion is the terminal notification, not a pipe write.
+      } catch (error) {
+        this.fail(take, error instanceof Error ? error.message : "Could not finish dictation.");
+      } finally {
+        clearTimeout(drainTimeout);
+        take.timers.delete(drainTimeout);
+      }
+    })();
+    return take.finishing;
   }
 
   cancel(): void {
     const take = this.take;
-    if (!take) return;
-    this.end(take, true);
+    if (take) this.end(take, true);
     this.deps.changed({ state: "idle", preview: "" });
   }
 
@@ -208,19 +250,27 @@ export class VoiceDictationController {
   }
 
   private enqueue(take: Take, chunk: VoiceChunk): void {
-    if (!this.owns(take)) return;
+    if (!this.owns(take) || take.captureReleased) return;
     const bytes = chunk.samplesPerChannel * 2;
     if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > VOICE_QUEUE_BYTES ||
         chunk.data.length > Math.ceil(bytes / 3) * 4) {
       this.fail(take, "Audio capture produced an invalid frame.");
       return;
     }
-    if (take.queuedBytes + bytes > (take.ready ? VOICE_QUEUE_BYTES : VOICE_PREROLL_BYTES)) {
+    if (take.queuedBytes + bytes > (take.ready ? VOICE_QUEUE_BYTES + take.prerollBytes : VOICE_PREROLL_BYTES)) {
       this.fail(take, "Dictation cannot keep up with the microphone. Please retry.");
       return;
     }
     take.queue.push(chunk);
     take.queuedBytes += bytes;
+    if (!take.stopRequested && chunk.level !== undefined && Date.now() - take.lastMeterUpdate >= 200) {
+      const level = Math.ceil(Math.max(0, Math.min(1, chunk.level)) * 5) / 5;
+      if (level !== take.audioLevel) {
+        take.audioLevel = level;
+        take.lastMeterUpdate = Date.now();
+        this.publish(take);
+      }
+    }
     this.pump(take);
   }
 
@@ -245,6 +295,7 @@ export class VoiceDictationController {
         }
         if (!this.owns(take)) return;
         take.queuedBytes -= bytes;
+        take.prerollBytes = Math.max(0, take.prerollBytes - bytes);
         take.totalBytes += bytes;
         take.sequence += 1;
       }
@@ -256,7 +307,7 @@ export class VoiceDictationController {
   }
 
   private releaseCapture(take: Take): Promise<void> {
-    if (!take.releasing) take.releasing = take.capture?.stop() ?? Promise.resolve();
+    if (!take.releasing) take.releasing = (take.capture?.stop() ?? Promise.resolve()).finally(() => { take.captureReleased = true; });
     return take.releasing;
   }
 
@@ -272,7 +323,7 @@ export class VoiceDictationController {
       const inserted = insertDictation(take.draft, final);
       this.deps.commit(inserted.text, inserted.caret);
     }
-    this.deps.changed({ state: "idle", preview: "" });
+    this.deps.changed({ state: "idle", preview: "", ...(!final && take.totalBytes > 0 ? { notice: "No speech detected. Check your microphone and try again." } : {}) });
   }
 
   private fail(take: Take, error: string): void {
@@ -301,6 +352,11 @@ export class VoiceDictationController {
   }
 
   private publish(take: Take): void {
-    this.deps.changed({ state: take.state, preview: [take.transcript.finalized, take.transcript.provisional].filter(Boolean).join(" ") });
+    const preview = [take.transcript.finalized, take.transcript.provisional].filter(Boolean).join(" ");
+    this.deps.changed({ state: take.state, preview,
+      ...(preview ? { draftPreview: insertDictation(take.draft, preview).text } : {}),
+      ...(take.audioLevel !== undefined ? { audioLevel: take.audioLevel } : {}),
+      ...(take.state === "starting" ? { startingPhase: take.startingPhase } : {}),
+    });
   }
 }

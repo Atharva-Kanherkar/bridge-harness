@@ -249,9 +249,11 @@ fn engine_failures_release_the_take_and_emit_sanitized_errors() {
         let bus = EventBus::new();
         let mut events = bus.subscribe();
         let result = service.start(params("draft"), bus);
-        if phase == 0 {
-            assert!(result.is_err());
-        } else {
+        assert!(
+            result.is_ok(),
+            "admission precedes asynchronous engine load"
+        );
+        if phase != 0 {
             let id = result.unwrap().voice_session_id;
             assert_eq!(event(&mut events).kind, wire::VoiceTranscriptKind::Started);
             if phase == 1 {
@@ -294,11 +296,11 @@ fn startup_timeout_holds_busy_until_late_engine_is_released() {
     service.limits.release = Duration::from_millis(20);
     let bus = EventBus::new();
     let mut events = bus.subscribe();
-    assert!(service
-        .start(params("draft"), bus.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("ready in time"));
+    let started = service.start(params("draft"), bus.clone()).unwrap();
+    let timeout = event(&mut events);
+    assert_eq!(timeout.kind, wire::VoiceTranscriptKind::Error);
+    assert_eq!(timeout.voice_session_id, started.voice_session_id);
+    assert!(timeout.error.unwrap().contains("ready in time"));
     assert!(service.is_busy());
     assert!(service.start(params("same-owner"), bus).is_err());
     gate.open();
@@ -454,13 +456,14 @@ fn session_audio_budget_is_enforced_before_inference() {
     wait_idle(&service);
 }
 
-
 #[test]
 fn model_removal_waits_for_take_admission_and_preserves_an_active_engine() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = BridgeCore::for_tests(dir.path());
     core.voice = super::super::VoiceService::for_data_dir(dir.path());
-    core.voice.local.set_provider(Some(Arc::new(FakeProvider::default())));
+    core.voice
+        .local
+        .set_provider(Some(Arc::new(FakeProvider::default())));
     let core = Arc::new(core);
     // Hold the same admission boundary as voice::start, before it reserves
     // its worker slot. Removal must not clear the provider in this window.
@@ -468,17 +471,115 @@ fn model_removal_waits_for_take_admission_and_preserves_an_active_engine() {
     let removing = core.clone();
     let (sent, received) = mpsc::channel();
     let removal = std::thread::spawn(move || {
-        let result = crate::api::voice_local_remove(&removing, wire::VoiceLocalRemoveParams { confirm_removal: true });
+        let result = crate::api::voice_local_remove(
+            &removing,
+            wire::VoiceLocalRemoveParams {
+                confirm_removal: true,
+            },
+        );
         sent.send(result).unwrap();
     });
     let early = received.recv_timeout(Duration::from_millis(50));
-    let started = core.voice.local.start(params("draft:removal"), core.events.clone()).unwrap();
+    let started = core
+        .voice
+        .local
+        .start(params("draft:removal"), core.events.clone())
+        .unwrap();
     drop(admission);
     let result = received.recv_timeout(Duration::from_secs(2));
     core.voice.local.cancel(&started.voice_session_id);
     wait_idle(&core.voice.local);
     removal.join().unwrap();
-    assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)), "removal raced a pending start");
-    assert!(result.unwrap().unwrap_err().to_string().contains("Finish or cancel dictation"));
-    assert_eq!(core.voice.local.capability().state, wire::VoiceAvailability::Ready);
+    assert!(
+        matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
+        "removal raced a pending start"
+    );
+    assert!(result
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("Finish or cancel dictation"));
+    assert_eq!(
+        core.voice.local.capability().state,
+        wire::VoiceAvailability::Ready
+    );
+}
+
+#[test]
+fn take_id_is_available_for_cancellation_while_the_model_is_loading() {
+    let gate = Arc::new(Gate::default());
+    let fake = Arc::new(FakeProvider {
+        block_start: Some(gate.clone()),
+        ..FakeProvider::default()
+    });
+    let service = Arc::new(LocalVoiceService::new(Some(fake.clone())));
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let starting = service.clone();
+    let (sent, received) = mpsc::channel();
+    let launch = std::thread::spawn(move || {
+        sent.send(starting.start(params("draft"), bus)).unwrap();
+    });
+    let early = received.recv_timeout(Duration::from_millis(100));
+    if let Ok(Ok(take)) = &early {
+        service.cancel(&take.voice_session_id);
+    }
+    // Release the fake provider even if the regression fails, never strand it.
+    gate.open();
+    let result = if early.is_ok() {
+        None
+    } else {
+        Some(received.recv_timeout(Duration::from_secs(2)).unwrap())
+    };
+    launch.join().unwrap();
+    if let Some(Ok(take)) = result {
+        service.cancel(&take.voice_session_id);
+    }
+    wait_idle(&service);
+    assert!(early.is_ok(), "model loading withheld the cancellation ID");
+    assert!(
+        events.try_recv().is_err(),
+        "cancelled startup emitted a late event"
+    );
+}
+
+#[test]
+fn public_start_waits_for_cancelled_local_startup_to_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = BridgeCore::for_tests(dir.path());
+    let gate = Arc::new(Gate::default());
+    core.voice.local = LocalVoiceService::new(Some(Arc::new(FakeProvider {
+        block_start: Some(gate.clone()),
+        ..FakeProvider::default()
+    })));
+    let core = Arc::new(core);
+    let first = super::super::start(&core, params("draft")).unwrap();
+    super::super::cancel(
+        &core,
+        wire::VoiceCancelParams {
+            voice_session_id: first.voice_session_id,
+        },
+    )
+    .unwrap();
+    let starting = core.clone();
+    let (sent, received) = mpsc::channel();
+    let next = std::thread::spawn(move || {
+        sent.send(super::super::start(&starting, params("draft")))
+            .unwrap();
+    });
+    let early = received.recv_timeout(Duration::from_millis(50));
+    gate.open();
+    let result = match &early {
+        Ok(_) => None,
+        Err(_) => Some(received.recv_timeout(Duration::from_secs(2)).unwrap()),
+    };
+    next.join().unwrap();
+    if let Some(Ok(take)) = result {
+        core.voice.local.cancel(&take.voice_session_id);
+    }
+    wait_idle(&core.voice.local);
+    assert!(
+        matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
+        "public admission bypassed local helper release"
+    );
 }

@@ -4,6 +4,8 @@ import { ContinuousPcm16Resampler } from "./voiceResampler";
 export type VoiceChunk = {
   data: string;
   samplesPerChannel: number;
+  /** Normalized input activity, calculated from the same captured PCM. */
+  level?: number;
 };
 
 export type VoiceDraftTranscript = {
@@ -55,6 +57,21 @@ export function pcm16ToBase64(samples: Int16Array): string {
   return btoa(binary);
 }
 
+export function pcm16Level(samples: Int16Array): number {
+  if (!samples.length) return 0;
+  let energy = 0;
+  for (const sample of samples) energy += (sample / 32768) ** 2;
+  return Math.min(1, Math.sqrt(energy / samples.length) * 8);
+}
+
+function microphoneError(error: unknown): Error {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") return new Error("Microphone access was denied. Allow Bridge in System Settings → Privacy & Security → Microphone, then try again.");
+  if (name === "NotFoundError" || name === "OverconstrainedError") return new Error("No microphone was found. Connect or select a microphone in System Settings → Sound → Input, then try again.");
+  if (name === "NotReadableError" || name === "AbortError") return new Error("Could not open the microphone. Check your input device or close other apps using it, then try again.");
+  return error instanceof Error ? error : new Error("Could not access the microphone. Please retry.");
+}
+
 export class VoiceCapture {
   private stopping?: Promise<void>;
 
@@ -73,7 +90,7 @@ export class VoiceCapture {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone capture is not supported by this app runtime.");
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    });
+    }).catch(error => { throw microphoneError(error); });
     let context: AudioContext | undefined;
     let source: MediaStreamAudioSourceNode | undefined;
     let node: AudioNode | undefined;
@@ -87,7 +104,7 @@ export class VoiceCapture {
       mute = context.createGain();
       mute.gain.value = 0;
       const deliver = (pcm: Int16Array) => {
-        if (pcm.length) onChunk({ data: pcm16ToBase64(pcm), samplesPerChannel: pcm.length });
+        if (pcm.length) onChunk({ data: pcm16ToBase64(pcm), samplesPerChannel: pcm.length, level: pcm16Level(pcm) });
       };
       let flush: () => Promise<void>;
       if (context.audioWorklet && typeof AudioWorkletNode !== "undefined") {
