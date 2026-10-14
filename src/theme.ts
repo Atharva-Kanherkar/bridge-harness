@@ -3,6 +3,8 @@
 // only thing that changes at runtime is the `dark` class on <html>.
 
 import { useCallback, useEffect, useState } from "react";
+import { omarchyTokens } from "./lib/omarchyTheme";
+import { clearOmarchyTheme, currentOmarchyTheme, onOmarchyTheme, paintOmarchyTheme, type OmarchyThemePayload } from "./omarchy";
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
@@ -11,11 +13,13 @@ export type ResolvedTheme = "light" | "dark";
  * The skin is orthogonal to the light/dark mode: it chooses the *character* of
  * the chrome, not its brightness. `graphite` uses an opaque black shell;
  * `vibrancy` lets AppKit tint the sidebar and dark canvas with the desktop
- * wallpaper. Both render every token — only the
- * `data-skin` attribute on <html> changes at runtime. This is the seed of the
- * user-customisable theme pack; new skins slot in by extending this union.
+ * wallpaper. `omarchy` takes the palette, mode and font from the active
+ * Omarchy theme (Linux, reported by the shell; see `omarchy.ts`) and renders
+ * as Graphite until a payload arrives. Every skin renders every token — only
+ * the `data-skin` attribute on <html> changes at runtime, plus, for `omarchy`,
+ * the custom properties the payload maps to.
  */
-export type ThemeSkin = "graphite" | "vibrancy";
+export type ThemeSkin = "graphite" | "vibrancy" | "omarchy";
 
 /**
  * How the model picker draws the thinking-effort control. Every style renders
@@ -30,14 +34,24 @@ export const EFFORT_SELECTOR_STORAGE_KEY = "bridge.effortSelector";
 
 export const DEFAULT_EFFORT_SELECTOR: EffortSelectorStyle = "slider";
 
-/** The shell stays exactly as it ships until the user opts into another skin. */
+/** The shell stays exactly as it ships until the user opts into another skin,
+ *  except on Omarchy, where following the system theme is the default. */
 export const DEFAULT_SKIN: ThemeSkin = "graphite";
+
+/** The Omarchy payload the document should wear, if the skin is showing it. */
+function activeOmarchy(skin: ThemeSkin): OmarchyThemePayload | null {
+  if (skin !== "omarchy") return null;
+  const payload = currentOmarchyTheme();
+  return payload && Object.keys(omarchyTokens(payload)).length ? payload : null;
+}
 
 /**
  * Window background for the `theme-color` meta, kept in sync with `--background`
  * in index.css. Dark vibrancy uses the original near-black material ground.
  */
 function themeColorFor(resolved: ResolvedTheme, skin: ThemeSkin): string {
+  const omarchy = activeOmarchy(skin);
+  if (omarchy) return omarchy.colors.background;
   if (resolved === "light") return "#fafaf9";
   return skin === "vibrancy" ? "#111111" : "#000000";
 }
@@ -81,17 +95,18 @@ export function writeThemePreference(
 }
 
 export function isThemeSkin(value: unknown): value is ThemeSkin {
-  return value === "graphite" || value === "vibrancy";
+  return value === "graphite" || value === "vibrancy" || value === "omarchy";
 }
 
 export function readThemeSkin(storage: Pick<Storage, "getItem"> = localStorage): ThemeSkin {
+  const fallback: ThemeSkin = currentOmarchyTheme() ? "omarchy" : DEFAULT_SKIN;
   let raw: string | null = null;
   try {
     raw = storage.getItem(SKIN_STORAGE_KEY);
   } catch {
-    return DEFAULT_SKIN;
+    return fallback;
   }
-  return isThemeSkin(raw) ? raw : DEFAULT_SKIN;
+  return isThemeSkin(raw) ? raw : fallback;
 }
 
 export function writeThemeSkin(
@@ -134,9 +149,13 @@ export function writeEffortSelectorStyle(
 export function applySkin(skin: ThemeSkin): ThemeSkin {
   if (typeof document === "undefined") return skin;
   document.documentElement.dataset.skin = skin;
-  // The dark ground differs by skin, so the meta colour follows the skin too.
-  const resolved: ResolvedTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
-  syncThemeColor(resolved, skin);
+  const omarchy = activeOmarchy(skin);
+  if (omarchy) paintOmarchyTheme(omarchy);
+  else clearOmarchyTheme();
+  // Omarchy decides light or dark itself; otherwise the meta colour still
+  // follows the skin, since the dark ground differs by skin.
+  if (omarchy) applyTheme(readThemePreference());
+  else syncThemeColor(document.documentElement.dataset.theme === "dark" ? "dark" : "light", skin);
   return skin;
 }
 
@@ -153,7 +172,8 @@ export function resolveTheme(preference: ThemePreference, prefersDark = systemPr
 
 /** Applies the resolved theme to the document and returns what it resolved to. */
 export function applyTheme(preference: ThemePreference, prefersDark = systemPrefersDark()): ResolvedTheme {
-  const resolved = resolveTheme(preference, prefersDark);
+  // Under the Omarchy skin the theme's own mode wins over the OS preference.
+  const resolved = activeOmarchy(currentSkin())?.mode ?? resolveTheme(preference, prefersDark);
   if (typeof document === "undefined") return resolved;
 
   document.documentElement.classList.toggle("dark", resolved === "dark");
@@ -240,6 +260,22 @@ export function useThemePreference(): {
     return () => window.removeEventListener(THEME_EVENT, onExternalChange);
   }, []);
 
+  // An Omarchy payload can make `omarchy` the default skin, and every theme
+  // switch repaints it, so re-read and re-apply whenever one arrives. The
+  // first payload can land between render and this effect, with nobody
+  // listening, so sync once on subscribe too.
+  useEffect(() => {
+    const sync = () => {
+      const next = readThemeSkin();
+      setSkinState(next);
+      applySkin(next);
+      setResolved(applyTheme(readThemePreference()));
+    };
+    const unsubscribe = onOmarchyTheme(sync);
+    if (currentOmarchyTheme()) sync();
+    return unsubscribe;
+  }, []);
+
   const setPreference = useCallback((next: ThemePreference) => {
     writeThemePreference(next);
     setPreferenceState(next);
@@ -251,6 +287,7 @@ export function useThemePreference(): {
     writeThemeSkin(next);
     setSkinState(next);
     applySkin(next);
+    setResolved(applyTheme(readThemePreference()));
     window.dispatchEvent(new Event(THEME_EVENT));
   }, []);
 

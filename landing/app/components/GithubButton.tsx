@@ -14,7 +14,7 @@ export default function GithubButton() {
         href={repoUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="relative inline-flex items-center justify-center rounded-xl p-px leading-6 text-foreground opacity-80 shadow-lg shadow-black/60 transition-transform duration-300 ease-in-out hover:scale-[1.03] hover:opacity-100 active:scale-95"
+        className="relative inline-flex items-center justify-center rounded-xl p-px leading-6 text-foreground opacity-80 shadow-lg shadow-black/60 omarchy:shadow-none transition-transform duration-300 ease-in-out hover:scale-[1.03] hover:opacity-100 active:scale-95"
       >
         <span
           aria-hidden="true"

@@ -1,0 +1,28 @@
+[Desktop Entry]
+Categories={{categories}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}}
+Icon={{icon}}
+Name={{name}}
+Terminal=false
+Type=Application
+StartupWMClass=bridge
+Actions=new-chat;quick-prompt;approvals;mission-control;
+
+[Desktop Action new-chat]
+Name=New chat
+Exec={{exec}} --new-chat
+
+[Desktop Action quick-prompt]
+Name=Quick prompt
+Exec={{exec}} --quick
+
+[Desktop Action approvals]
+Name=Review approvals
+Exec={{exec}} --approvals
+
+[Desktop Action mission-control]
+Name=Mission Control
+Exec={{exec}} --mission-control

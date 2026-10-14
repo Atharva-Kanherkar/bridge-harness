@@ -12,6 +12,7 @@ import { PaneState } from "./ui/pane";
 import { CodeEditor } from "./editor/CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./editor/fileBuffer";
 import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
+import { modKey } from "@/lib/platform";
 
 /** Rows the tree actually paints. Deep repositories stay responsive because
  *  only expanded directories contribute. */
@@ -371,7 +372,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             onToggle={toggleDir}
             onOpen={path => void openFile(path)}
           />)}
-        {rows.length >= MAX_TREE_ROWS && <p className="px-2 py-2 text-[11px] text-muted-foreground">Showing the first {MAX_TREE_ROWS} rows — use ⌘P to reach the rest.</p>}
+        {rows.length >= MAX_TREE_ROWS && <p className="px-2 py-2 text-[11px] text-muted-foreground">Showing the first {MAX_TREE_ROWS} rows — use {modKey("P")} to reach the rest.</p>}
       </div>
     </aside>
 
@@ -415,12 +416,12 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             </div>;
           })}
         </div>
-        <Button type="button" variant="ghost" size="icon-sm" className="my-auto mr-1.5 shrink-0" onClick={() => setPaletteOpen(true)} aria-label="Find a file" title="Go to file · ⌘P"><FileSearch size={15} aria-hidden="true" /></Button>
+        <Button type="button" variant="ghost" size="icon-sm" className="my-auto mr-1.5 shrink-0" onClick={() => setPaletteOpen(true)} aria-label="Find a file" title={`Go to file · ${modKey("P")}`}><FileSearch size={15} aria-hidden="true" /></Button>
       </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col bg-code">
         {!active
-          ? <PaneState icon={FileSearch} title="Pick a file to start editing." action={<Button variant="outline" size="sm" onClick={() => setPaletteOpen(true)}>Go to file <Kbd>⌘P</Kbd></Button>}>Browse the project or search for a file. Use <Kbd>⌘S</Kbd> to save your changes.</PaneState>
+          ? <PaneState icon={FileSearch} title="Pick a file to start editing." action={<Button variant="outline" size="sm" onClick={() => setPaletteOpen(true)}>Go to file <Kbd>{modKey("P")}</Kbd></Button>}>Browse the project or search for a file. Use <Kbd>{modKey("S")}</Kbd> to save your changes.</PaneState>
           : active.state === "error" && !active.baseSha
             ? <p className="p-6 text-[12.5px] leading-relaxed text-destructive">{active.message}</p>
             : active.tooLarge
@@ -453,7 +454,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             <button type="button" onClick={() => void reload(active.path)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Reload</button>
             <button type="button" onClick={() => void save(active.path, true)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Overwrite</button>
           </>}
-          {(active.state === "dirty" || active.state === "error") && <button type="button" onClick={() => void save(active.path)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Save ⌘S</button>}
+          {(active.state === "dirty" || active.state === "error") && <button type="button" onClick={() => void save(active.path)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Save {modKey("S")}</button>}
         </span>
       </div>}
     </div>

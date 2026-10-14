@@ -1,4 +1,5 @@
 export type TerminalCommand = "new-tab" | "split-right" | "split-down" | "close-pane" | "maximize" | "next-pane" | "previous-pane" | "next-tab" | "previous-tab" | "search";
+import { MAC_GLYPHS } from "../lib/platform";
 export const TERMINAL_SHORTCUTS: { id: TerminalCommand; key: string; shift?: boolean; alt?: boolean; label: string }[] = [
   { id: "new-tab", key: "t", label: "New terminal tab" },
   { id: "split-right", key: "d", label: "Split right" },
@@ -14,7 +15,7 @@ export const TERMINAL_SHORTCUTS: { id: TerminalCommand; key: string; shift?: boo
 const isMac = () => /Mac|iPhone|iPad/.test(navigator.platform);
 export function terminalChord(id: TerminalCommand) {
   const s = TERMINAL_SHORTCUTS.find(s => s.id === id)!;
-  return `${isMac() ? "⌘" : "Ctrl+Alt+"}${s.alt && isMac() ? "⌥" : ""}${s.shift ? (isMac() ? "⇧" : "Shift+") : ""}${s.key.replace("ArrowRight", "→").replace("ArrowLeft", "←").replace("Enter", "↩").toUpperCase()}`;
+  return `${isMac() ? MAC_GLYPHS.meta : "Ctrl+Alt+"}${s.alt && isMac() ? MAC_GLYPHS.alt : ""}${s.shift ? (isMac() ? MAC_GLYPHS.shift : "Shift+") : ""}${s.key.replace("ArrowRight", "→").replace("ArrowLeft", "←").replace("Enter", "↩").toUpperCase()}`;
 }
 export function terminalCommand(event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "shiftKey" | "altKey" | "key" | "code">): TerminalCommand | undefined {
   // Plain Control belongs to the CLI, including Ctrl+C, Ctrl+D and Ctrl+F.

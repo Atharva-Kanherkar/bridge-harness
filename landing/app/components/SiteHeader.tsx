@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import ActionButton from "./ActionButton";
+import OmarchyMenu from "./omarchy/OmarchyMenu";
 import { useEffect, useState } from "react";
 import { blogPath, changelogPath, docsPath, downloadPath } from "../content/site";
 
@@ -23,7 +24,7 @@ export default function SiteHeader() {
         <Link href="/" className="font-pixel text-[20px] leading-none tracking-[0.04em] uppercase">
           Bridge
         </Link>
-        <nav className="flex items-center gap-6 text-[13px] text-muted-foreground">
+        <nav className="flex items-center gap-6 text-[13px] text-muted-foreground max-sm:omarchy:gap-4">
           <Link href={docsPath} className="hover:text-foreground">
             Docs
           </Link>
@@ -33,6 +34,7 @@ export default function SiteHeader() {
           <Link href={blogPath} className="hidden hover:text-foreground sm:inline">
             Blog
           </Link>
+          <OmarchyMenu />
           <ActionButton href={downloadPath} label="Download" size="sm" />
         </nav>
       </div>

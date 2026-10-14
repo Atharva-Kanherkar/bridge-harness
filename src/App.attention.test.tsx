@@ -84,6 +84,8 @@ describe("App attention wiring", () => {
     expect(notifyAttention).toHaveBeenCalledWith(
       "Bridge needs you",
       "Title a · Claude is waiting for your input",
+      // On macOS no approval is looked up: Linux alone answers it in place.
+      expect.objectContaining({ approvalEventId: null }),
     );
     expect(container.textContent).toContain("Bridge needs you");
     expect(container.textContent).toContain("Title a · Claude is waiting for your input");

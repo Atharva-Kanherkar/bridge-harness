@@ -24,12 +24,13 @@ describe("the api boundary consumes the generated contract", () => {
     // meter-tray channel (native tray menu/left-click, same exemption), and
     // the batched agent stream the shell coalesces on its way to the webview
     // (`src-tauri/src/agent_batch.rs`; the daemon still speaks `agent-event`
-    // one frame at a time). Any other literal here would be a hand-typed wire
-    // shape.
+    // one frame at a time), and command-line launches the shell parses from
+    // argv (`src-tauri/src/launch.rs`). Any other literal here would be a
+    // hand-typed wire shape.
     const targets = [...source.matchAll(/\blisten(?:<[^>]*>)?\(([^,]+),/g)].map(match => match[1].trim());
     // Shell-owned usage presentation carries a generated snapshot; navigation
     // belongs to the native host, like the main menu channel.
-    expect(targets).toEqual(["notification", '"bridge-provider-usage-overviews"', '"bridge-menu-bar-connection"', '"bridge-menu-bar-settings-changed"', '"bridge-usage-overview"', '"bridge-menu-bar-settings"', '"bridge-meter-tray"', "MENU_COMMAND_EVENT", "AGENT_EVENT_BATCH"]);
+    expect(targets).toEqual(["notification", '"bridge-provider-usage-overviews"', '"bridge-menu-bar-connection"', '"bridge-menu-bar-settings-changed"', '"bridge-usage-overview"', '"bridge-menu-bar-settings"', '"bridge-meter-tray"', "MENU_COMMAND_EVENT", "LAUNCH_EVENT", "AGENT_EVENT_BATCH"]);
   });
 
   it("only calls methods the generated registry declares", () => {

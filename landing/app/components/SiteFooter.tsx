@@ -10,6 +10,8 @@ const columns = [
       { label: "Changelog", href: changelogPath },
       { label: "Docs", href: docsPath },
       { label: "Blog", href: blogPath },
+      // A full load, not a client route: the pre-paint script reads ?omarchy.
+      { label: "Omarchy mode", href: "/?omarchy", reload: true },
     ],
   },
   {
@@ -37,7 +39,7 @@ export default function SiteFooter() {
             <ul className="mt-3 flex flex-col gap-2 text-muted-foreground">
               {column.links.map((link) => (
                 <li key={link.label}>
-                  {link.href.startsWith("/") ? (
+                  {link.href.startsWith("/") && !("reload" in link) ? (
                     <Link href={link.href} className="hover:text-foreground">
                       {link.label}
                     </Link>

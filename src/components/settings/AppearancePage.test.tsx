@@ -52,3 +52,25 @@ it("keeps edit activity collapsed by default and persists the opt-in", async () 
   expect(toggle.getAttribute("aria-checked")).toBe("false");
   expect(localStorage.getItem(AUTO_EXPAND_EDIT_ACTIVITY_STORAGE_KEY)).toBe("false");
 });
+
+it("offers the Omarchy skin only once the shell reports Omarchy, and defaults to it", async () => {
+  const { receiveOmarchyTheme, resetOmarchyTheme } = await import("../../omarchy");
+  resetOmarchyTheme();
+  await render();
+  const radios = () => [...host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="Shell"] [role="radio"]')];
+  expect(radios().map(radio => radio.textContent)).not.toContain(expect.stringContaining("Omarchy"));
+
+  await act(async () => {
+    receiveOmarchyTheme({ available: true, themeName: "tokyo-night", mode: "dark", colors: { background: "#1a1b26", foreground: "#a9b1d6", accent: "#7aa2f7" }, font: null });
+  });
+  const omarchy = radios().find(radio => radio.textContent?.includes("Omarchy"))!;
+  expect(omarchy).toBeTruthy();
+  expect(omarchy.getAttribute("aria-checked")).toBe("true");
+  expect(host.textContent).toContain("Following your Omarchy theme (tokyo-night)");
+
+  // Picking Solid sticks even though Omarchy is detected.
+  await act(async () => { radios().find(radio => radio.textContent?.includes("Solid"))!.click(); });
+  expect(localStorage.getItem("bridge.skin")).toBe("graphite");
+  expect(document.documentElement.style.getPropertyValue("--background")).toBe("");
+  resetOmarchyTheme();
+});

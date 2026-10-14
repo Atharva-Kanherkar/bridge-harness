@@ -670,3 +670,94 @@ fn concurrent_chat_creators_receive_their_own_committed_identity() {
     drop(client);
     daemon.stop();
 }
+
+fn run_bridge(data_dir: &Path, args: &[&str]) -> (std::process::ExitStatus, String, String) {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_bridge"))
+        .args(args)
+        .args(["--data-dir", data_dir.to_str().unwrap()])
+        .output()
+        .expect("bridge runs");
+    (output.status, String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
+#[test]
+fn status_reports_a_stopped_bridge_without_starting_one() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    let (status, stdout, stderr) = run_bridge(data_dir, &["status", "--json"]);
+    assert!(status.success(), "stderr: {stderr}");
+    let summary: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(summary, json!({ "running": false, "working": 0, "waiting": 0, "sessions": [] }));
+    // A bar polling for counts must not boot the runtime: nothing was hosted.
+    assert!(!data_dir.join("bridge.db").exists());
+}
+
+#[test]
+fn status_and_sessions_read_a_running_daemon() {
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+    let running = RunningDaemon::start(data_dir);
+    let client = connect(data_dir);
+    let session_id = create_chat(&client);
+
+    let (status, stdout, stderr) = run_bridge(data_dir, &["status", "--json"]);
+    assert!(status.success(), "stderr: {stderr}");
+    let summary: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(summary["running"], json!(true));
+    assert!(summary["working"].is_u64() && summary["waiting"].is_u64());
+
+    let (status, stdout, stderr) = run_bridge(data_dir, &["sessions", "--json"]);
+    assert!(status.success(), "stderr: {stderr}");
+    let sessions: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(sessions.as_array().unwrap().iter().any(|session| session["id"] == json!(session_id)));
+
+    drop(client);
+    running.stop();
+}
+
+#[test]
+fn the_cli_resolves_approvals_through_the_daemons_own_resolution_path() {
+    // The CLI adds no resolution logic of its own: it calls the same
+    // approvals/resolve_approval the in-app button does, so the core's
+    // atomic claim (tested in bridge-core) is what makes a resolution happen
+    // once. Here no adapter is live, and the daemon's refusal must come back
+    // as a failure rather than a silent success.
+    let fixture = tempfile::tempdir().unwrap();
+    let data_dir = fixture.path();
+    seed_data_dir(data_dir);
+    let running = RunningDaemon::start(data_dir);
+    let client = connect(data_dir);
+    let session_id = create_chat(&client);
+    let sequence = {
+        let db = running.daemon.core.db.lock().unwrap();
+        bridge_core::store::session_event(
+            &db,
+            &session_id,
+            &bridge_core::agent::NormalizedEvent {
+                kind: "approval.requested".into(),
+                item_id: Some("tool-1".into()),
+                role: Some("tool".into()),
+                status: Some("pending".into()),
+                title: Some("Run cargo test".into()),
+                text: None,
+                data: json!({"requestId": "approval-1"}),
+            },
+            &json!({"adapter": "shell"}),
+        )
+        .unwrap()
+        .sequence
+    };
+    let event = sequence.to_string();
+    let (status, stdout, stderr) = run_bridge(data_dir, &["approval", "decline", &session_id, &event]);
+    assert_eq!(status.code(), Some(1), "stdout: {stdout}");
+    assert!(stderr.contains("not running"), "the daemon's own reason is surfaced: {stderr}");
+    assert!(stdout.is_empty());
+
+    let (bad, _, _) = run_bridge(data_dir, &["approval", "approve", &session_id, &event]);
+    assert_eq!(bad.code(), Some(2), "unknown actions are a usage error");
+    let (bad_event, _, _) = run_bridge(data_dir, &["approval", "decline", &session_id, "not-a-number"]);
+    assert_eq!(bad_event.code(), Some(2));
+    drop(client);
+    running.stop();
+}

@@ -3,6 +3,7 @@ import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./fileBuffer";
+import { modKey } from "@/lib/platform";
 
 /**
  * One file from the Changes tab, opened for editing in place.
@@ -101,7 +102,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
           onClick={() => void save()}
           disabled={buffer.state === "clean" || buffer.state === "saving"}
           className="min-h-7 rounded-md px-2 underline decoration-dotted underline-offset-2 hover:text-foreground disabled:no-underline disabled:opacity-45"
-        >Save ⌘S</button>}
+        >Save {modKey("S")}</button>}
       </span>
     </div>
   </div>;

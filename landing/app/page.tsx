@@ -9,6 +9,7 @@ import DownloadButtons from "./components/DownloadButtons";
 import GithubButton from "./components/GithubButton";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
+import OmarchyPromo from "./components/omarchy/OmarchyPromo";
 
 export default function Home() {
   return (
@@ -20,6 +21,14 @@ export default function Home() {
 
         <div className="relative w-full px-4 pb-16 pt-10 sm:px-6 sm:pb-20 sm:pt-14">
           <div className="mx-auto w-full max-w-[780px] text-center">
+            {/* omarchy.org's bordered announcement line. Claims only what ships: theme and font sync. */}
+            <p
+              style={{ "--i": 0 } as React.CSSProperties}
+              className="enter mb-7 hidden items-center gap-2 border border-border-card px-3 py-1.5 font-mono text-[12px] text-muted-foreground omarchy:inline-flex"
+            >
+              <span aria-hidden="true" className="size-2 bg-primary" />
+              Made for Omarchy: Bridge takes its colors and font from your theme
+            </p>
             <h1
               style={{ "--i": 0 } as React.CSSProperties}
               className="enter font-display text-[2rem] font-semibold leading-[1.08] tracking-[-0.03em] text-foreground sm:text-[2.75rem]"
@@ -55,6 +64,7 @@ export default function Home() {
 
       <Faq />
       <SiteFooter />
+      <OmarchyPromo />
     </div>
   );
 }

@@ -53,6 +53,10 @@ jobs:
             test "$(find "$RUNNER_TEMP/bridge-deb" -path "*/$resource" | wc -l)" -eq 1
           done
           test "$(find "$RUNNER_TEMP/bridge-deb" -name bridged -type f | wc -l)" -eq 1
+          # The CLI the Omarchy bar widget runs (not /usr/bin/bridge: iproute2 owns it).
+          test -x "$RUNNER_TEMP/bridge-deb/usr/bin/bridge-cli"
+          # Desktop actions (new chat, quick prompt, approvals, Mission Control).
+          grep -q '^Actions=new-chat;quick-prompt;approvals;mission-control;' "$(find "$RUNNER_TEMP/bridge-deb/usr/share/applications" -name '*.desktop' -print -quit)"
           test "$(find "$RUNNER_TEMP/bridge-deb" -name bridge-browser-host -type f | wc -l)" -eq 1
           cd release-linux
           sha256sum ./*.deb ./*.AppImage > SHA256SUMS

@@ -50,6 +50,7 @@ portable-pty = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 libc = "0.2"
+toml = "0.9"
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -63,6 +64,14 @@ incremental = false
 [profile.test]
 debug = 0
 incremental = false
+
+# Pins the GTK program name (the Wayland app id / WM class) to `bridge`.
+# Already in the tree through Tauri's GTK stack; this only names it.
+[target.'cfg(target_os = "linux")'.dependencies]
+glib = "0.18"
+# Freedesktop notifications with action buttons (Allow once / Decline / Open).
+# Already in the tree through tauri-plugin-notification, which cannot do actions.
+notify-rust = "4"
 
 # Use typed public AppKit APIs for the material behind the webview. Native
 # titlebar controls remain under AppKit's control.

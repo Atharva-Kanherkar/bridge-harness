@@ -10,6 +10,12 @@ pub mod menu;
 pub mod meter_tray;
 mod menu_bar;
 pub mod window_chrome;
+pub mod omarchy;
+pub mod omarchy_setup;
+pub mod launch;
+pub mod linux_desktop;
+pub mod notifications;
+pub mod quick_prompt;
 mod diagnostics;
 mod nightly_updater;
 
@@ -2594,6 +2600,29 @@ impl Drop for DaemonHostRuntime {
     }
 }
 
+/// Route a launch request: the quick prompt is a window of its own, the rest
+/// are views the webview opens.
+fn deliver_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, launch: launch::Launch) {
+    if matches!(launch, launch::Launch::Quick) {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || quick_prompt::toggle(&handle));
+        return;
+    }
+    let _ = app.emit(launch::LAUNCH_EVENT, launch);
+}
+
+/// Where Tauri keeps app data on Linux (`app_data_dir`), computed before
+/// Tauri exists so `--omarchy retint` can check for a running copy cheaply.
+fn linux_default_data_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("BRIDGE_DATA_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))?;
+    Some(base.join("dev.bridge.deck"))
+}
+
 fn select_host(
     app: &tauri::App,
     host: &std::sync::OnceLock<HostMode>,
@@ -2615,7 +2644,12 @@ fn select_host(
         .first()
         .ok_or("main window config is missing")?;
     let create_window = || -> Result<(), Box<dyn std::error::Error>> {
-        tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
+        let mut builder = tauri::WebviewWindowBuilder::from_config(app, config)?;
+        // Hyprland draws borders, gaps and rounding itself.
+        if linux_desktop::hyprland_owns_chrome() {
+            builder = builder.decorations(false).transparent(false);
+        }
+        builder.build()?;
         Ok(())
     };
     create_window()?;
@@ -2663,6 +2697,11 @@ fn select_host(
             }
         });
     });
+    // Omarchy theme sync. Linux-only and inert unless Omarchy is detected.
+    omarchy::install(app.handle());
+    // Linux notifications with Allow once / Decline / Open.
+    notifications::install(app.handle());
+    quick_prompt::install(app.handle());
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
         bundled_extension
@@ -2827,6 +2866,29 @@ fn setup_embedded(
 }
 
 pub fn run() -> i32 {
+    // Before Tauri touches GTK or WebKit: app id and the NVIDIA workaround.
+    linux_desktop::prepare_process();
+    let launch_args: Vec<String> = std::env::args().skip(1).collect();
+    let initial_launch = launch::parse(&launch_args);
+    if let Some(launch::Launch::Omarchy { action, hyprland }) = &initial_launch {
+        match action {
+            // File edits only: never start a window for these.
+            launch::OmarchyAction::Setup | launch::OmarchyAction::Remove => {
+                return omarchy_setup::run_cli(*action, *hyprland);
+            }
+            // The theme hook fires whether or not Bridge is open; only a
+            // running copy has anything to retint.
+            launch::OmarchyAction::Retint => {
+                if !linux_default_data_dir().is_some_and(|dir| launch::desktop_running(&dir)) {
+                    return 0;
+                }
+            }
+        }
+    }
+    // A launch the webview has not collected yet (a first start with flags).
+    let pending_launch: Arc<std::sync::Mutex<Option<launch::Launch>>> =
+        Arc::new(std::sync::Mutex::new(initial_launch.filter(|launch| !matches!(launch, launch::Launch::Omarchy { .. }))));
+    let setup_pending_launch = pending_launch.clone();
     let packaged_smoke = packaged_smoke_requested(std::env::var_os(PACKAGED_SMOKE_ENV).as_deref());
     let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
     let setup_slot = host.clone();
@@ -3083,11 +3145,25 @@ pub fn run() -> i32 {
             workspace_changes
         ]);
     let application = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A second launch hands its argv over here and exits.
+            let launch = launch::parse(args.get(1..).unwrap_or_default());
+            if let Some(launch::Launch::Omarchy { action: launch::OmarchyAction::Retint, .. }) = launch {
+                omarchy::retint(app);
+                return;
+            }
+            // The quick prompt floats over your work; it must not raise Bridge.
+            if let Some(launch::Launch::Quick) = launch {
+                deliver_launch(app, launch::Launch::Quick);
+                return;
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
+            }
+            if let Some(launch) = launch {
+                deliver_launch(app, launch);
             }
         }))
         .plugin(embedded_browser::init())
@@ -3099,6 +3175,16 @@ pub fn run() -> i32 {
         .menu(|handle| menu::build(handle))
         .on_menu_event(menu::dispatch)
         .setup(move |app| {
+            // The webview asks once it is listening; hand over a launch
+            // request this copy was started with.
+            let request_handle = app.handle().clone();
+            let pending = setup_pending_launch.clone();
+            let _ = app.listen(launch::LAUNCH_REQUEST_EVENT, move |_| {
+                let taken = pending.lock().ok().and_then(|mut slot| slot.take());
+                if let Some(launch) = taken {
+                    deliver_launch(&request_handle, launch);
+                }
+            });
             // Tauri panics on a setup Err inside tao's non-unwinding Cocoa
             // did_finish_launching callback. Preserve the actual error and
             // show it once Ready arrives, outside the setup callback.

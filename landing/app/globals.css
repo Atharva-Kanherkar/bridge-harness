@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Omarchy mode (header toggle; see app/lib/omarchySkin.ts). The palette is set at runtime from
+ * the theme files through the app's own token table, so only shape and type live here. */
+@custom-variant omarchy (&:where([data-skin="omarchy"], [data-skin="omarchy"] *));
+
 :root {
   color-scheme: dark;
   --sidebar: #000000;
@@ -43,6 +47,20 @@
   --cursor-facet-lightest: #ededed;
 }
 
+/* Omarchy is monospace everywhere and square: Hyprland ships `rounding = 0`, omarchy.org has no
+ * radius. Pills (`rounded-full`) keep their shape. */
+[data-skin="omarchy"] {
+  --skin-font: var(--font-jetbrains), ui-monospace, monospace;
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+}
+
 @theme inline {
   --color-sidebar: var(--sidebar);
   --color-background: var(--background);
@@ -81,11 +99,11 @@
   --text-caption--line-height: 1.5;
   --text-message: 0.9375rem;
   --text-message--line-height: 1.7;
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: var(--skin-font, var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif);
   --font-pixel: var(--font-doto), ui-monospace, monospace;
-  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --font-display: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-heading: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--skin-font, var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  --font-display: var(--skin-font, var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif);
+  --font-heading: var(--skin-font, var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif);
   --animate-fade-up: fade-up 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
   --animate-entry-in: entry-in 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
   --animate-caret: caret 1s step-end infinite;

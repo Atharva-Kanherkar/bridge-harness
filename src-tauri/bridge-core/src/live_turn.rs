@@ -5670,7 +5670,8 @@ pub fn launch_worker_outcome(
                     "worker.read_only_isolation_prepared",
                     &reservation.session_id,
                     &format!(
-                        "mode=seatbelt task_network={} runtime_egress={} output_dir={output}",
+                        "mode={} task_network={} runtime_egress={} output_dir={output}",
+                        crate::worker_sandbox::ISOLATION_MODE,
                         network_allowed,
                         if sandbox_runtime_egress {
                             "allowed"

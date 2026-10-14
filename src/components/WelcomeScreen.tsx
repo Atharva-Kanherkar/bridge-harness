@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, ChevronDown, Plus } from "lucide-react";
 import { BridgeGlyph } from "./BridgeGlyph";
+import { modKey } from "@/lib/platform";
 
 // Pure UI mockup of the Bridge home / morning briefing. Typography-first,
 // keyboard-driven (↑↓ + ↵), no data wiring — actions only dismiss so the
@@ -160,7 +161,7 @@ export function WelcomeScreen({ onDismiss }: { onDismiss: () => void }) {
         <div className="home-hints">
           <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
           <span><kbd>↵</kbd> start chat</span>
-          <span><kbd>⌘K</kbd> search</span>
+          <span><kbd>{modKey("K")}</kbd> search</span>
           <span><kbd>esc</kbd> workspaces</span>
         </div>
       </div>

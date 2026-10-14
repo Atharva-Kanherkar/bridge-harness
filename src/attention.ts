@@ -1,3 +1,6 @@
+import { isMacPlatform } from "./lib/platform";
+import { NOTIFY_EVENT } from "./nativeNotify";
+
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 // Tracked independently of any Tauri API so it works the same in the mock/dev
@@ -44,8 +47,18 @@ function ensureNotificationPermission(): Promise<boolean> {
  * looking at whatever needs their attention, so a banner on top would be
  * noise rather than help. Outside Tauri (mock/dev/test) this is a no-op.
  */
-export async function notifyAttention(title: string, body: string): Promise<void> {
+export async function notifyAttention(
+  title: string,
+  body: string,
+  context: { sessionId?: string; approvalEventId?: number | null } = {},
+): Promise<void> {
   if (isBridgeFocused() || !isTauri()) return;
+  // Linux: the shell posts it natively, with Allow once / Decline / Open.
+  if (!isMacPlatform()) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(NOTIFY_EVENT, { title, body, sessionId: context.sessionId ?? null, approvalEventId: context.approvalEventId ?? null });
+    return;
+  }
   if (!(await ensureNotificationPermission())) return;
   const { sendNotification } = await loadNotification();
   sendNotification({ title, body });

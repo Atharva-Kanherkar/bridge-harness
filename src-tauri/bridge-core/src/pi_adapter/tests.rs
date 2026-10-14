@@ -591,3 +591,50 @@ fn delayed_duplicate_completion_does_not_double_count_between_runs() {
         && event.status.as_deref() == Some("failed"))
         && event.kind != "turn.completed"));
 }
+
+#[cfg(unix)]
+fn version_script(dir: &Path, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("pi-launcher");
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn a_lazy_launcher_that_installs_on_first_run_is_still_found() {
+    // Omarchy's ~/.local/bin/pi runs `mise use -g` (an install, the first
+    // time) before exec'ing the tool, so the first version read is slow.
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("installed");
+    let pi = version_script(dir.path(), &format!(
+        "if [ ! -f '{m}' ]; then touch '{m}'; sleep 2; fi\necho 'pi 1.4.0'",
+        m = marker.display()
+    ));
+    let cwd = dir.path().to_str().unwrap();
+    let version = version_with_retry(&pi, cwd, Duration::from_millis(300), Duration::from_secs(20)).unwrap();
+    assert_eq!(version, "1.4.0");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failing_version_probe_is_not_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let count = dir.path().join("count");
+    let pi = version_script(dir.path(), &format!("echo x >> '{}'\nexit 3", count.display()));
+    let cwd = dir.path().to_str().unwrap();
+    assert!(version_with_retry(&pi, cwd, Duration::from_secs(5), Duration::from_secs(5)).is_err());
+    assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_launcher_that_never_answers_still_times_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let pi = version_script(dir.path(), "sleep 30");
+    let cwd = dir.path().to_str().unwrap();
+    let started = Instant::now();
+    assert!(version_with_retry(&pi, cwd, Duration::from_millis(200), Duration::from_millis(400)).is_err());
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
