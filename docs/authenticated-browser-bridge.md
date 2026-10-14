@@ -57,7 +57,8 @@ Bridge stores per-site aggregate success, failure, latency, DOM-token, screensho
 
 Choose **Safari (fresh sign-in)** under Settings > Browser copies, on a browser
 approval card, or when starting a copy manually. Safari uses the existing
-protected Chromium clone. It opens the approved site without copying cookies;
+protected Chromium clone, using an installed Chrome, Brave, Chrome for Testing,
+or Chromium. It opens the approved site without copying cookies;
 sign in using Take over in the Browser pane, then choose Hand back to let the
 agent continue. The agent is paused during sign-in. Site scope, the temporary
 RAM profile, expiry, and turn cleanup use the same clone lifecycle.
