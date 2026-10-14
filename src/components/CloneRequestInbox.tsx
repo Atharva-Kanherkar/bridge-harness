@@ -6,6 +6,7 @@ import type { CloneRequest } from "../protocol/generated/protocol";
 import type { CloneSettings, CloneSignInPath } from "../types";
 import { Select, Switch } from "./settings/kit";
 import { Button } from "./ui/button";
+import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT, selectCloneBrowser } from "../cloneSettings";
 
 const LIFETIMES = [10, 15, 30, 60, 120, 240];
 const lifetimeLabel = (minutes: number) => minutes < 60 ? `${minutes} min` : minutes === 60 ? "1 hour" : `${minutes / 60} hours`;
@@ -39,7 +40,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let active = true;
-    bridgeApi.readCloneSettings().then(next => { if (active) setSettings({ ...next.settings, agentVision: next.settings.agentVision ?? true }); })
+    bridgeApi.readCloneSettings().then(next => { if (active) setSettings({ ...next.settings, agentVision: next.settings.agentVision ?? true, defaultSignInPath: next.settings.defaultBrowser === "safari" ? "sign_in_inside" : next.settings.defaultSignInPath }); })
       .catch(error => onError(String(error)));
     return () => { active = false; };
   }, [request.requestId]);
@@ -63,7 +64,7 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
       </div>
     </div>
     <p className="mt-3 text-[12px] leading-5 text-muted-foreground">
-      The agent opens this site in a private Chrome{blank ? "" : ", signed in as you"}. It can see the page, click, and type. The browser is wiped when the turn ends.
+      The agent opens this site in a private Chromium browser{blank ? "" : ", signed in as you"}. It can see the page, click, and type. The browser is wiped when the turn ends.
     </p>
     <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground"><Waypoints size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">
       {blank ? "Connects to " : "Copies cookies from and connects to "}
@@ -72,7 +73,8 @@ export function CloneConsentCard({ request, label, onOpen, onResolved, onError }
     </span></p>
     {request.extensionPath && <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-muted-foreground"><Package size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span className="min-w-0 break-all">Loads extension <span className="font-mono text-foreground">{request.extensionPath}</span></span></p>}
     {settings && <div className="mt-3 divide-y divide-border rounded-lg border border-border bg-background/60">
-      <OptionRow label="Sign-in"><SignInToggle value={settings.defaultSignInPath} disabled={busy} onChange={path => setSettings({ ...settings, defaultSignInPath: path })} /></OptionRow>
+      <OptionRow label="Source browser"><Select label="Source browser" value={settings.defaultBrowser ?? "chrome"} options={CLONE_BROWSERS} disabled={busy} onChange={browser => setSettings(selectCloneBrowser(settings, browser))} /></OptionRow>
+      {settings.defaultBrowser === "safari" ? <OptionRow label="Fresh sign-in" hint={SAFARI_SIGN_IN_HINT}><span className="text-[11px] text-muted-foreground">No import</span></OptionRow> : <OptionRow label="Sign-in"><SignInToggle value={settings.defaultSignInPath} disabled={busy} onChange={path => setSettings({ ...settings, defaultSignInPath: path })} /></OptionRow>}
       <OptionRow label="Agent sees screenshots" hint={settings.agentVision ? undefined : "It reads page text only"}>
         <Switch label="Agent sees screenshots" checked={settings.agentVision ?? true} disabled={busy} onChange={agentVision => setSettings({ ...settings, agentVision })} />
       </OptionRow>

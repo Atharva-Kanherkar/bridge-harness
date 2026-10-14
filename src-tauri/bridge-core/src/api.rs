@@ -5418,6 +5418,7 @@ pub fn request_clone(
         let browser = match params.browser {
             CloneBrowserKind::Chrome => CloneBrowser::Chrome,
             CloneBrowserKind::Brave => CloneBrowser::Brave,
+            CloneBrowserKind::Safari => CloneBrowser::Safari,
         };
         let path = match params.sign_in_path {
             CloneSignInPath::Import => SignInPath::Import,
@@ -5503,10 +5504,16 @@ pub fn resolve_clone_request(
     sign_in_path: CloneSignInPath,
     ttl_minutes: u64,
     agent_vision: Option<bool>,
+    browser: Option<CloneBrowserKind>,
 ) -> Result<Option<CloneSnapshot>, BridgeError> {
     #[cfg(target_os = "macos")]
     {
         validate_clone_ttl(ttl_minutes)?;
+        let browser = match browser.unwrap_or(read_clone_settings(core)?.settings.default_browser) {
+            CloneBrowserKind::Chrome => crate::clone_orchestrator::CloneBrowser::Chrome,
+            CloneBrowserKind::Brave => crate::clone_orchestrator::CloneBrowser::Brave,
+            CloneBrowserKind::Safari => crate::clone_orchestrator::CloneBrowser::Safari,
+        };
         let agent_vision = match agent_vision {
             Some(vision) => vision,
             None => read_clone_settings(core)?.settings.agent_vision,
@@ -5520,7 +5527,7 @@ pub fn resolve_clone_request(
             core.browser_clone_orchestrator
                 .approve_request(session_id, request_id, runtime_pid,
                     match sign_in_path { CloneSignInPath::Import => crate::clone_orchestrator::SignInPath::Import, CloneSignInPath::SignInInside => crate::clone_orchestrator::SignInPath::SignInInside },
-                    Some(std::time::Duration::from_secs(ttl_minutes * 60)), agent_vision)
+                    Some(std::time::Duration::from_secs(ttl_minutes * 60)), agent_vision, browser)
                 .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         } else {
             core.browser_clone_orchestrator.deny_request(session_id, request_id).map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -5529,7 +5536,7 @@ pub fn resolve_clone_request(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (core, session_id, allow, request_id, sign_in_path, ttl_minutes, agent_vision);
+        let _ = (core, session_id, allow, request_id, sign_in_path, ttl_minutes, agent_vision, browser);
         Ok(None)
     }
 }
@@ -5543,11 +5550,12 @@ pub fn read_clone_settings(core: &Arc<BridgeCore>) -> Result<bridge_protocol::me
     use bridge_protocol::messages::{CloneSettings, CloneSettingsSnapshot};
     let payload: Option<String> = core.db.lock().unwrap_or_else(|p| p.into_inner())
         .query_row("SELECT payload FROM configuration_entries WHERE kind='browser_clones' AND id='settings'", [], |row| row.get(0)).optional()?;
-    let settings = match payload {
+    let mut settings = match payload {
         Some(payload) => serde_json::from_str::<CloneSettings>(&payload).map_err(|error| BridgeError::Invalid(error.to_string()))?,
         // Import is the default: the clone starts signed in as you, like your own browser.
-        None => CloneSettings { default_sign_in_path: CloneSignInPath::Import, ttl_minutes: 30, agent_vision: true },
+        None => CloneSettings { default_browser: CloneBrowserKind::Chrome, default_sign_in_path: CloneSignInPath::Import, ttl_minutes: 30, agent_vision: true },
     };
+    if settings.default_browser == CloneBrowserKind::Safari { settings.default_sign_in_path = CloneSignInPath::SignInInside; }
     validate_clone_ttl(settings.ttl_minutes)?;
     Ok(CloneSettingsSnapshot { connected: cfg!(target_os = "macos"), settings })
 }
@@ -6753,11 +6761,17 @@ mod clone_settings_tests {
         assert!(defaults.connected);
         assert_eq!(defaults.settings.default_sign_in_path, CloneSignInPath::Import);
         assert!(defaults.settings.agent_vision);
-        let settings = bridge_protocol::messages::CloneSettings { default_sign_in_path: CloneSignInPath::SignInInside, ttl_minutes: 60, agent_vision: false };
+        let settings = bridge_protocol::messages::CloneSettings { default_browser: CloneBrowserKind::Chrome, default_sign_in_path: CloneSignInPath::SignInInside, ttl_minutes: 60, agent_vision: false };
         write_clone_settings(&core, &settings).unwrap();
         assert_eq!(read_clone_settings(&core).unwrap().settings, settings);
         let mut invalid = settings.clone(); invalid.ttl_minutes = 0;
         assert!(write_clone_settings(&core, &invalid).is_err());
         assert_eq!(read_clone_settings(&core).unwrap().settings, settings);
+        let mut safari = settings;
+        safari.default_browser = CloneBrowserKind::Safari;
+        safari.default_sign_in_path = CloneSignInPath::Import;
+        let saved = write_clone_settings(&core, &safari).unwrap();
+        assert_eq!(saved.settings.default_browser, CloneBrowserKind::Safari);
+        assert_eq!(saved.settings.default_sign_in_path, CloneSignInPath::SignInInside);
     }
 }

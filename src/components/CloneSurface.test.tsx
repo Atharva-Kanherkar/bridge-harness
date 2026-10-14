@@ -80,6 +80,20 @@ afterEach(async () => {
 });
 
 describe("CloneSurface as a dock tenant", () => {
+  it("manual Safari starts use fresh sign-in and disclose the engine", async () => {
+    vi.mocked(bridgeApi.readCloneSettings).mockResolvedValue({ connected: true, settings: { defaultBrowser: "safari", defaultSignInPath: "import", ttlMinutes: 30 } });
+    await render({ sessionId: "safari" });
+    expect(container.textContent).toContain("Chromium");
+    expect(container.textContent).toContain("no Safari cookies are copied");
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Site to clone"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "example.com");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await press("Start clone");
+    expect(bridgeApi.requestClone).toHaveBeenCalledWith("safari", "example.com", "safari", "sign_in_inside");
+  });
+
   it("switches polling to the new chat without displaying the old chat's frame", async () => {
     state.mockImplementation(async (sessionId) => clone({ domain: `${sessionId}.test` }));
     await render({ sessionId: "first" });

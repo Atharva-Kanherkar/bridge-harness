@@ -361,10 +361,11 @@ async fn resolve_clone_request(
     sign_in_path: bridge_protocol::messages::CloneSignInPath,
     ttl_minutes: u64,
     agent_vision: Option<bool>,
+    browser: Option<bridge_protocol::messages::CloneBrowserKind>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Option<bridge_protocol::messages::CloneSnapshot>, BridgeError> {
     let core = Arc::clone(state.inner());
-    blocking("resolve_clone_request", move || api::resolve_clone_request(&core, &session_id, allow, &request_id, sign_in_path, ttl_minutes, agent_vision)).await
+    blocking("resolve_clone_request", move || api::resolve_clone_request(&core, &session_id, allow, &request_id, sign_in_path, ttl_minutes, agent_vision, browser)).await
 }
 
 #[tauri::command]

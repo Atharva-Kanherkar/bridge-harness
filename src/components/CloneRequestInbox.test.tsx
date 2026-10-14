@@ -98,3 +98,17 @@ it("shows the single-domain cookie scope without implying parent-domain access",
   expect(host.textContent).toContain("Copies cookies from and connects to docs.google.com and their subdomains.");
   expect(host.textContent).toContain("Parent domains are included only when listed.");
 });
+
+it("Safari approval starts fresh, discloses Chromium and opens the chat for sign-in", async () => {
+  vi.mocked(bridgeApi.readCloneSettings).mockResolvedValue({ connected: true, settings: { defaultBrowser: "safari", defaultSignInPath: "import", ttlMinutes: 30 } });
+  vi.mocked(bridgeApi.cloneRequests).mockResolvedValue([{ sessionId: "s", requestId: "r", domain: "app.test" }]);
+  const onOpen = vi.fn();
+  await act(async () => root.render(<CloneRequestInbox sessionLabels={{}} onOpen={onOpen} onError={vi.fn()} />));
+  expect(host.textContent).toContain("no Safari cookies are copied");
+  expect(host.textContent).toContain("Chromium");
+  expect(host.textContent).not.toContain("signed in as you");
+  expect(host.querySelector('[role="radiogroup"]')).toBeNull();
+  await act(async () => [...host.querySelectorAll("button")].find(button => button.textContent === "Allow")!.click());
+  expect(bridgeApi.resolveCloneRequest).toHaveBeenCalledWith("s", true, "r", { defaultBrowser: "safari", defaultSignInPath: "sign_in_inside", ttlMinutes: 30, agentVision: true });
+  expect(onOpen).toHaveBeenCalledWith("s");
+});
