@@ -6,12 +6,17 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Which browser a clone runs, and whose cookie store an import reads.
+/// Source browser for sign-in. Safari uses fresh sign-in in a Chromium clone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CloneBrowserKind {
     Chrome,
     Brave,
+    Safari,
+}
+
+impl Default for CloneBrowserKind {
+    fn default() -> Self { Self::Chrome }
 }
 
 /// How the clone gets signed in.
@@ -61,6 +66,8 @@ pub struct DestroyCloneParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolveCloneRequestParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<CloneBrowserKind>,
     pub session_id: String,
     pub allow: bool,
     pub request_id: String,
@@ -151,6 +158,8 @@ pub struct CloneInputParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CloneSettings {
+    #[serde(default)]
+    pub default_browser: CloneBrowserKind,
     pub default_sign_in_path: CloneSignInPath,
     pub ttl_minutes: u64,
     /// The agent sees screenshots of its clone. On unless the person turns it off.
@@ -188,3 +197,15 @@ pub struct CloneRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct CloneRequestsResult(pub Vec<CloneRequest>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_clone_payloads_keep_chrome_defaults() {
+        let settings: CloneSettings = serde_json::from_value(serde_json::json!({"defaultSignInPath":"import","ttlMinutes":30})).unwrap();
+        assert_eq!(settings.default_browser, CloneBrowserKind::Chrome);
+        let approval: ResolveCloneRequestParams = serde_json::from_value(serde_json::json!({"sessionId":"s","allow":true,"requestId":"r","signInPath":"import","ttlMinutes":30})).unwrap();
+        assert_eq!(approval.browser, None);
+    }
+}

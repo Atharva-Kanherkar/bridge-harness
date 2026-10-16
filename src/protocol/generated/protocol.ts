@@ -1257,7 +1257,7 @@ export interface CloneAgentPointer {
   y: number;
 }
 
-export type CloneBrowserKind = "chrome" | "brave";
+export type CloneBrowserKind = "chrome" | "brave" | "safari";
 
 export type CloneInputEvent = { kind: "click"; x: number; y: number } | { deltaY: number; kind: "scroll"; x: number; y: number } | { kind: "type"; text: string } | { key: string; kind: "key" };
 
@@ -1271,6 +1271,7 @@ export interface CloneRequest {
 
 export interface CloneSettings {
   agentVision?: boolean;
+  defaultBrowser?: CloneBrowserKind;
   defaultSignInPath: CloneSignInPath;
   ttlMinutes: number;
 }
@@ -4549,6 +4550,7 @@ export interface DestroyCloneParams {
 export interface ResolveCloneRequestParams {
   agentVision?: boolean | null;
   allow: boolean;
+  browser?: CloneBrowserKind | null;
   requestId: string;
   sessionId: string;
   signInPath: CloneSignInPath;

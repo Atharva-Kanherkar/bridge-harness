@@ -12,6 +12,7 @@
 //    when its slice of the contract lands.
 
 import type {
+  CloneBrowserKind,
   QueuedWorkerRequest as WireQueuedWorkerRequest,
   SessionEntry as WireSessionEntry,
   SessionForestSnapshot as WireSessionForestSnapshot,
@@ -431,6 +432,7 @@ export interface BrowserCloneSnapshot {
 }
 
 export interface CloneSettings {
+  defaultBrowser?: CloneBrowserKind;
   defaultSignInPath: CloneSignInPath;
   ttlMinutes: number;
   /** Screenshots reach the agent. On unless the person turns it off. */

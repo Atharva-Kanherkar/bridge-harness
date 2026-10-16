@@ -50,6 +50,15 @@ afterEach(async () => {
 });
 
 describe("Clones settings", () => {
+  it("persists Safari with fresh sign-in and names the Chromium engine", async () => {
+    await mount();
+    await pick("Source browser", "Safari");
+    expect((await bridgeApi.readCloneSettings()).settings).toMatchObject({ defaultBrowser: "safari", defaultSignInPath: "sign_in_inside" });
+    expect(trigger("How to sign in").disabled).toBe(true);
+    expect(host.textContent).toContain("no Safari cookies are copied");
+    expect(host.textContent).toContain("Chromium");
+  });
+
   it("starts signed in as you, with vision on and a thirty minute lifetime", async () => {
     await mount();
     expect(trigger("How to sign in").textContent).toContain("Signed in as you");

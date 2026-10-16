@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { CloneSettings, CloneSettingsSnapshot, CloneSignInPath } from "../../types";
+import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT, selectCloneBrowser } from "../../cloneSettings";
 import { Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash, type SelectOption } from "./kit";
 
 // Clones: the defaults a new throwaway browser starts from. Every control
@@ -10,7 +11,7 @@ import { Select, SettingsGroup, SettingsPage, SettingsRow, Switch, useSavedFlash
 // support disables the controls.
 
 const SIGN_IN_OPTIONS: SelectOption[] = [
-  { value: "import", label: "Signed in as you", description: "Copy the approved site's sign-in from Chrome into the browser copy" },
+  { value: "import", label: "Signed in as you", description: "Copy the approved site's sign-in from Chrome or Brave into the browser copy" },
   { value: "sign_in_inside", label: "Blank browser", description: "Start without copied sign-in; sign in to the browser copy yourself" },
 ];
 
@@ -61,6 +62,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
   >
     <SettingsGroup label="New browser copies" note={connected ? undefined : "Unavailable in this build"}>
       {!connected && <SettingsRow label="Browser copies are unavailable in this build." description="Bridge cannot create a browser copy in this build. These controls become available when browser copies are supported." />}
+      <SettingsRow label="Source browser" description={settings.defaultBrowser === "safari" ? SAFARI_SIGN_IN_HINT : "Choose the browser whose sign-in can be copied."} saved={isFlashed("browser")} control={<Select label="Source browser" value={settings.defaultBrowser ?? "chrome"} disabled={busy || !connected} options={CLONE_BROWSERS} onChange={browser => void persist(selectCloneBrowser(settings, browser), "browser")} />} />
       <SettingsRow
         label="How to sign in"
         description="Choose whether to copy an approved site's sign-in or sign in yourself."
@@ -68,7 +70,7 @@ export function ClonesPage({ onError }: { onError: (message: string) => void }) 
         control={<Select
           label="How to sign in"
           value={settings.defaultSignInPath}
-          disabled={busy || !connected}
+          disabled={busy || !connected || settings.defaultBrowser === "safari"}
           options={SIGN_IN_OPTIONS}
           onChange={value => void persist({ ...settings, defaultSignInPath: value as CloneSignInPath }, "signIn")}
         />}

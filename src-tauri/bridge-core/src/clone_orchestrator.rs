@@ -21,18 +21,20 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Which browser a clone runs, and whose cookie store an import reads.
+/// Sign-in source. Safari uses fresh sign-in without reading a cookie store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloneBrowser {
     Chrome,
     Brave,
+    Safari,
 }
 
 impl CloneBrowser {
-    fn signin(self) -> Browser {
+    fn signin(self) -> Option<Browser> {
         match self {
-            Self::Chrome => Browser::Chrome,
-            Self::Brave => Browser::Brave,
+            Self::Chrome => Some(Browser::Chrome),
+            Self::Brave => Some(Browser::Brave),
+            Self::Safari => None,
         }
     }
 }
@@ -182,6 +184,8 @@ impl CloneOrchestrator {
         &self, session_id: &str, domain: &str, browser: CloneBrowser,
         path: SignInPath, ttl: Option<Duration>, runtime_pid: u32, additional_domains: &[String],
     ) -> Result<CloneView, CloneError> {
+        // Safari never reads a cookie store, even if an older client asks for import.
+        let path = if browser == CloneBrowser::Safari { SignInPath::SignInInside } else { path };
         let domain = normalize_domain(domain)
             .ok_or_else(|| CloneError::Launch("invalid approved domain".into()))?;
         let mut domains = vec![domain.clone()];
@@ -209,7 +213,7 @@ impl CloneOrchestrator {
         // Sign in. Import copies all explicitly approved domains' cookies from the user's
         // browser; sign-in-inside reads nothing and the person logs in later.
         if path == SignInPath::Import {
-            let cookies = (self.cookie_importer)(browser.signin(), "Default", &domains).map_err(map_import)?;
+            let cookies = (self.cookie_importer)(browser.signin().ok_or_else(|| CloneError::Launch("Safari cookie import is unavailable".into()))?, "Default", &domains).map_err(map_import)?;
             {
                 let mut guard = guard.lock().unwrap_or_else(|p| p.into_inner());
                 for cookie in &cookies {
@@ -324,12 +328,13 @@ impl CloneOrchestrator {
 
     /// The person allowed the agent's request: spawn the clone for the asked
     /// domain (import the sign-in), and approve page actions on it.
-    pub fn approve_request(&self, session_id: &str, request_id: &str, runtime_pid: u32, path: SignInPath, ttl: Option<Duration>, vision: bool) -> Result<CloneView, CloneError> {
+    pub fn approve_request(&self, session_id: &str, request_id: &str, runtime_pid: u32, path: SignInPath, ttl: Option<Duration>, vision: bool, browser: CloneBrowser) -> Result<CloneView, CloneError> {
         let operation = self.tool.session_operation(session_id);
         let _operation = operation.lock().unwrap_or_else(|p| p.into_inner());
         let request = self.tool.take_pending_request(session_id, request_id, runtime_pid).map_err(CloneError::Launch)?;
         let replaces_browser = self.view(session_id).is_some();
-        let started = self.request_clone_locked(session_id, &request.domain, CloneBrowser::Chrome, path, ttl, runtime_pid, &request.additional_domains);
+        let path = if browser == CloneBrowser::Safari { SignInPath::SignInInside } else { path };
+        let started = self.request_clone_locked(session_id, &request.domain, browser, path, ttl, runtime_pid, &request.additional_domains);
         let view = match started {
             Ok(view) => view,
             Err(error) => {
@@ -739,14 +744,14 @@ mod tests {
         orchestrator.request_capability_context("s1", pid).unwrap();
         let request = request_via_helper(&tool, "s1", json!({"kind":"request","domain":"first.test"}));
         let id = request["requestId"].as_str().unwrap();
-        let first = orchestrator.approve_request("s1", id, pid, SignInPath::SignInInside, None, true).unwrap();
+        let first = orchestrator.approve_request("s1", id, pid, SignInPath::SignInInside, None, true, CloneBrowser::Chrome).unwrap();
         let answer = request_via_helper(&tool, "s1", json!({"kind":"request_status","requestId":id}));
         assert_eq!(answer["previousBrowserDestroyed"], false);
         let request = request_via_helper(&tool, "s1", json!({"kind":"request","domain":"second.test"}));
         let next_id = request["requestId"].as_str().unwrap();
         // Asking alone does not kill the existing browser.
         assert_eq!(orchestrator.view("s1").unwrap().clone_id, first.clone_id);
-        let second = orchestrator.approve_request("s1", next_id, pid, SignInPath::SignInInside, None, true).unwrap();
+        let second = orchestrator.approve_request("s1", next_id, pid, SignInPath::SignInInside, None, true, CloneBrowser::Chrome).unwrap();
         assert_ne!(first.clone_id, second.clone_id);
         assert!(supervisor.clone_guard(&first.clone_id).is_none());
         assert_eq!(std::fs::read_dir(dir.path().join("mounts")).unwrap().count(), 1);
@@ -769,7 +774,7 @@ mod tests {
         orchestrator.request_capability_context("s1", pid).unwrap();
         let request = request_via_helper(&tool, "s1", json!({"kind":"request","domain":"docs.google.com"}));
         let id = request["requestId"].as_str().unwrap();
-        assert!(orchestrator.approve_request("s1", id, pid, SignInPath::Import, None, true).is_err());
+        assert!(orchestrator.approve_request("s1", id, pid, SignInPath::Import, None, true, CloneBrowser::Chrome).is_err());
         let answer = request_via_helper(&tool, "s1", json!({"kind":"request_status","requestId":id}));
         assert_eq!(answer["ok"], false);
         assert_eq!(answer["awaiting"], false);
@@ -785,6 +790,47 @@ mod tests {
             domain: format!(".login.{domain}"), path: "/".into(),
             secure: true, http_only: true, same_site: None,
         }).collect())
+    }
+
+    fn forbid_import(_: Browser, _: &str, _: &[String]) -> Result<Vec<CookieSpec>, ImportError> {
+        panic!("Safari must never read a cookie store");
+    }
+
+    #[test]
+    fn safari_stale_import_requests_start_fresh_and_pause_until_handback() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let mut orchestrator = CloneOrchestrator::new(Arc::clone(&supervisor), Arc::clone(&tool));
+        Arc::get_mut(&mut orchestrator).unwrap().cookie_importer = forbid_import;
+        let pid = std::process::id();
+        let view = orchestrator.start_approved_clone("safari", "example.test", CloneBrowser::Safari, SignInPath::Import, None, pid, true).unwrap();
+        assert_eq!(view.sign_in_path, SignInPath::SignInInside);
+        assert_eq!(view.status, CloneStatus::WaitingForYou);
+        assert_eq!(browser_via_helper(&tool, "safari", json!({"kind":"status"}))["paused"], true);
+        orchestrator.take_over("safari");
+        orchestrator.hand_back("safari");
+        assert_eq!(orchestrator.view("safari").unwrap().status, CloneStatus::Acting);
+        orchestrator.destroy("safari");
+        assert!(orchestrator.view("safari").is_none());
+    }
+
+    #[test]
+    fn safari_agent_approval_reports_fresh_signin_and_imports_nothing() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let supervisor = crate::browser_clone::tests::synthetic_supervisor(dir.path(), true);
+        let tool = CloneBrowserTool::new(Arc::clone(&supervisor), dir.path().join("tool")).unwrap();
+        let mut orchestrator = CloneOrchestrator::new(supervisor, Arc::clone(&tool));
+        Arc::get_mut(&mut orchestrator).unwrap().cookie_importer = forbid_import;
+        let pid = std::process::id();
+        orchestrator.request_capability_context("safari", pid).unwrap();
+        let request = request_via_helper(&tool, "safari", json!({"kind":"request","domain":"example.test"}));
+        let id = request["requestId"].as_str().unwrap();
+        let view = orchestrator.approve_request("safari", id, pid, SignInPath::Import, None, true, CloneBrowser::Safari).unwrap();
+        assert_eq!(view.sign_in_path, SignInPath::SignInInside);
+        let answer = request_via_helper(&tool, "safari", json!({"kind":"request_status","requestId":id}));
+        assert_eq!(answer["waitingForUser"], true);
+        assert_eq!(browser_via_helper(&tool, "safari", json!({"kind":"status"}))["paused"], true);
     }
 
     #[test]
@@ -1076,7 +1122,7 @@ mod tests {
             let (status, body) = call_script(&tool, session, "clone-request-multi-host", r#"{"kind":"request","domain":"127.0.0.1","additionalDomains":["auth.example.test"]}"#);
             assert!(status.contains("200"));
             let request: Value = serde_json::from_str(&body).unwrap();
-            let view = orchestrator.approve_request(session, request["requestId"].as_str().unwrap(), pid, SignInPath::Import, None, true).unwrap();
+            let view = orchestrator.approve_request(session, request["requestId"].as_str().unwrap(), pid, SignInPath::Import, None, true, CloneBrowser::Chrome).unwrap();
             let jar = supervisor.tool_call(&view.clone_id, "Storage.getCookies", json!({})).unwrap();
             for domain in ["127.0.0.1", "auth.example.test"] {
                 assert!(jar["cookies"].as_array().unwrap().iter().any(|cookie| cookie["domain"] == domain && cookie["session"] == true));
@@ -1116,7 +1162,7 @@ mod tests {
             assert!(orchestrator.view(session).is_none(), "a clone existed before approval");
 
             // The person approves. The clone is built and the agent gets its tool.
-            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true).expect("approve builds the clone");
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true, CloneBrowser::Chrome).expect("approve builds the clone");
             orchestrator.hand_back(session);
             assert!(orchestrator.view(session).is_some(), "no clone after approval");
             assert!(orchestrator.pending_request(session).is_none(), "the request outlived approval");
@@ -1178,7 +1224,7 @@ mod tests {
             // Go through the real request -> approve flow so actions are approved.
             orchestrator.request_capability_context(session, pid).unwrap();
             call_script(&tool, session, &format!("clone-request-{session}"), r#"{"kind":"request","domain":"127.0.0.1"}"#);
-            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true).unwrap();
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true, CloneBrowser::Chrome).unwrap();
             orchestrator.hand_back(session);
             let clone_id = orchestrator.view(session).unwrap().clone_id;
             supervisor
@@ -1219,7 +1265,7 @@ mod tests {
             let pid = std::process::id();
             orchestrator.request_capability_context(session, pid).unwrap();
             call_script(&tool, session, &format!("clone-request-{session}"), r#"{"kind":"request","domain":"127.0.0.1"}"#);
-            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true).unwrap();
+            orchestrator.approve_request(session, &orchestrator.pending_details(session).unwrap().id, pid, SignInPath::SignInInside, None, true, CloneBrowser::Chrome).unwrap();
             orchestrator.hand_back(session);
             let clone_id = orchestrator.view(session).unwrap().clone_id;
             let page = r#"<h1>Checkout</h1><label for=e>Email</label><input id=e><select id=s><option>Red</option><option>Blue</option></select><input type=checkbox id=c aria-label=Agree><button id=b onclick="document.title='clicked '+document.getElementById('e').value">Pay</button><div id=k></div><script>addEventListener('keydown',e=>document.getElementById('k').textContent+=e.key)</script>"#;

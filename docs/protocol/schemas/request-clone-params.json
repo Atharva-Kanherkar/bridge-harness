@@ -4,10 +4,11 @@
   "additionalProperties": false,
   "definitions": {
     "CloneBrowserKind": {
-      "description": "Which browser a clone runs, and whose cookie store an import reads.",
+      "description": "Source browser for sign-in. Safari uses fresh sign-in in a Chromium clone.",
       "enum": [
         "chrome",
-        "brave"
+        "brave",
+        "safari"
       ],
       "type": "string"
     },

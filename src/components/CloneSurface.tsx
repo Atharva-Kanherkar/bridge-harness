@@ -3,8 +3,10 @@ import { AlertTriangle, ArrowRight, Bot, ChevronRight, Eye, EyeOff, Globe, Hand,
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
 import type { BrowserCloneSnapshot, BrowserCloneStatus, CloneSignInPath } from "../types";
-import type { CloneInputEvent } from "../protocol/generated/protocol";
+import type { CloneInputEvent, CloneBrowserKind } from "../protocol/generated/protocol";
+import { Select } from "./settings/kit";
 import { CloneConsentCard, SignInToggle } from "./CloneRequestInbox";
+import { CLONE_BROWSERS, SAFARI_SIGN_IN_HINT } from "../cloneSettings";
 import { PaneState } from "./ui/pane";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
@@ -60,6 +62,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   const [busy, setBusy] = useState(false);
   const [confirmingDestroy, setConfirmingDestroy] = useState(false);
   const [domainDraft, setDomainDraft] = useState("");
+  const [startBrowser, setStartBrowser] = useState<CloneBrowserKind>("chrome");
   const [startPath, setStartPath] = useState<CloneSignInPath>("import");
   const latestRequest = useRef(0);
   const currentSession = useRef(sessionId);
@@ -85,7 +88,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   }, [sessionId]);
   useEffect(() => {
     let active = true;
-    bridgeApi.readCloneSettings().then(({ settings }) => { if (active) setStartPath(settings.defaultSignInPath); }).catch(() => undefined);
+    bridgeApi.readCloneSettings().then(({ settings }) => { if (active) { setStartBrowser(settings.defaultBrowser ?? "chrome"); setStartPath(settings.defaultBrowser === "safari" ? "sign_in_inside" : settings.defaultSignInPath); } }).catch(() => undefined);
     return () => { active = false; };
   }, []);
   useEffect(() => {
@@ -112,7 +115,7 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
   const remaining = minutesLeft(snapshot?.expiresAt ?? null);
   const start = () => {
     const domain = domainDraft.trim();
-    if (domain) void run(() => bridgeApi.requestClone(sessionId ?? "", domain, "chrome", startPath).then(() => setDomainDraft("")));
+    if (domain) void run(() => bridgeApi.requestClone(sessionId ?? "", domain, startBrowser, startBrowser === "safari" ? "sign_in_inside" : startPath).then(() => setDomainDraft("")));
   };
 
   return <div className="relative flex h-full min-w-0 flex-col overflow-hidden bg-background">
@@ -140,9 +143,11 @@ export function CloneSurface({ visible = true, sessionId, agentLabel = "Claude",
               <Button type="submit" size="xs" disabled={busy || !domainDraft.trim()}>Start clone<ArrowRight size={12} /></Button>
             </form>
             {onCancelStart && <Button type="button" variant="ghost" size="xs" className="mt-2 text-muted-foreground" onClick={onCancelStart}>Back to browser</Button>}
+            <div className="mt-3"><Select label="Source browser" value={startBrowser} options={CLONE_BROWSERS} disabled={busy} onChange={browser => setStartBrowser(browser as typeof startBrowser)} /></div>
+            {startBrowser === "safari" && <p className="mt-2 text-[11px] text-muted-foreground">{SAFARI_SIGN_IN_HINT}</p>}
             <div className="mt-3 flex items-center justify-between gap-3">
               <span className="text-[11px] text-muted-foreground">Opens</span>
-              <SignInToggle value={startPath} onChange={setStartPath} disabled={busy} />
+              <SignInToggle value={startBrowser === "safari" ? "sign_in_inside" : startPath} onChange={setStartPath} disabled={busy || startBrowser === "safari"} />
             </div>
           </div>
         </div>

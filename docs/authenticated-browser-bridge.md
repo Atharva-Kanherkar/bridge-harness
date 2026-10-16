@@ -52,3 +52,19 @@ Automated tests, untrusted sites, isolated QA, and local parallel QA route to he
 Bridge stores per-site aggregate success, failure, latency, DOM-token, screenshot, intervention, approval, and duplicate-side-effect counts in the app data directory. It does not store page text in these metrics.
 
 `testing/fixtures/browser-bridge-benchmark-v1.json` defines the comparable evidence schema for attached tab, Playwright MCP, Browser Use, and computer use. `src/browserBenchmark.ts` rejects incomplete scenario/provider matrices and successful runs without verified evidence.
+
+## Safari users and browser copies
+
+Choose **Safari (fresh sign-in)** under Settings > Browser copies, on a browser
+approval card, or when starting a copy manually. Safari uses the existing
+protected Chromium clone, using an installed Chrome, Brave, Chrome for Testing,
+or Chromium. It opens the approved site without copying cookies;
+sign in using Take over in the Browser pane, then choose Hand back to let the
+agent continue. The agent is paused during sign-in. Site scope, the temporary
+RAM profile, expiry, and turn cleanup use the same clone lifecycle.
+
+Safari cookie import and a native WebKit clone are not available in this mode.
+Bridge does not read Safari's cookie files or need Full Disk Access. Chrome and
+Brave still offer import or fresh sign-in. Older settings keep Chrome as their
+source browser; Safari always uses fresh sign-in, including requests from clients
+that still ask for import.

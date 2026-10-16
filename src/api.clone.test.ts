@@ -31,3 +31,18 @@ it("keeps ordinary waiting guidance and accepts older native snapshots", async (
   invoke.mockResolvedValue(null);
   expect((await bridgeApi.browserCloneState("chat")).status).toBe("none");
 });
+
+it("sends Safari approval and manual starts as fresh sign-in", async () => {
+  invoke.mockResolvedValue(snapshot("waiting_for_you"));
+  await bridgeApi.requestClone("chat", "example.com", "safari", "import");
+  expect(invoke).toHaveBeenLastCalledWith("request_clone", { sessionId: "chat", domain: "example.com", browser: "safari", signInPath: "sign_in_inside" });
+  await bridgeApi.resolveCloneRequest("chat", true, "r", { defaultBrowser: "safari", defaultSignInPath: "import", ttlMinutes: 30 });
+  expect(invoke).toHaveBeenLastCalledWith("resolve_clone_request", { sessionId: "chat", allow: true, requestId: "r", browser: "safari", signInPath: "sign_in_inside", ttlMinutes: 30, agentVision: true });
+});
+
+it("mock Safari starts never act before fresh sign-in", async () => {
+  vi.stubGlobal("window", {});
+  const view = await bridgeApi.requestClone("chat", "example.com", "safari", "import");
+  expect(view.status).toBe("waiting_for_you");
+  expect(view.signInPath).toBe("sign_in_inside");
+});

@@ -1629,6 +1629,7 @@ export const bridgeApi = {
     browser: CloneBrowserKind,
     signInPath: CloneSignInPath,
   ): Promise<BrowserCloneSnapshot> => {
+    if (browser === "safari") signInPath = "sign_in_inside";
     if (isTauri()) return cloneSnapshotFromWire(await call("clones/request_clone", { sessionId, domain, browser, signInPath }));
     mockBrowserClone = {
       status: signInPath === "import" ? "acting" : "waiting_for_you",
@@ -1664,13 +1665,14 @@ export const bridgeApi = {
   readCloneSettings: async (): Promise<CloneSettingsSnapshot> => isTauri() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
   writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
     if (isTauri()) return call("clones/write_clone_settings", { settings });
-    mockCloneSettings = { ...settings };
+    mockCloneSettings = { ...settings, defaultSignInPath: settings.defaultBrowser === "safari" ? "sign_in_inside" : settings.defaultSignInPath };
     return { connected: true, settings: { ...mockCloneSettings } };
   },
   // The person answers an agent's clone request. Allow builds the clone and lets
   // the agent act; deny drops it.
   resolveCloneRequest: async (sessionId: string, allow: boolean, requestId: string, settings: CloneSettings): Promise<BrowserCloneSnapshot> => {
-    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes, agentVision: settings.agentVision ?? true }));
+    if (settings.defaultBrowser === "safari") settings = { ...settings, defaultSignInPath: "sign_in_inside" };
+    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, browser: settings.defaultBrowser ?? "chrome", signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes, agentVision: settings.agentVision ?? true }));
     if (allow) {
       const domain = mockBrowserClone.pendingRequest ?? mockBrowserClone.domain ?? "example.com";
       mockBrowserClone = {
