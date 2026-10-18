@@ -20,9 +20,6 @@ export { alignTurns, groupItems, isToolItem, type Rendered } from "./transcript/
 export { compactionInFlight, compactionReasonLabel, reasoningDisplayText } from "./transcript/codec";
 export { isInternalCompactionEnvelope, stripWorkerResultBlocks } from "./transcript/reducer";
 export {
-  classifyExploratoryCommand,
-  hasUnquotedRedirect,
-  parseCommandTokens,
   type ToolCallDisplay,
   type ToolGlyph,
   type ToolStatus,
