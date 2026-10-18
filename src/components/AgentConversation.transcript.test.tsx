@@ -245,6 +245,66 @@ describe("command rows", () => {
   });
 });
 
+describe("readable commands", () => {
+  const claudeBash = (id: number, command: string, description: string | undefined, output: string) => event(id, "command.completed", {
+    title: command, text: output,
+    data: { type: "tool_use", name: "Bash", input: { command, ...(description ? { description } : {}) }, command },
+  });
+  const rowButton = (title: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>("[data-tool-row] button")].find(button => button.querySelector("[data-tool-title]")?.textContent === title);
+
+  it("leads with the harness's own description and trails the command", () => {
+    mount([claudeBash(1, "ls tools/ 2>/dev/null; df -h /Users/x | tail -1", "Look around tools/ before reproducing", "litellm.yaml\n")]);
+    openActivity();
+    const row = host.querySelector("[data-tool-row]")!;
+    expect(row.querySelector("[data-tool-title]")?.textContent).toBe("Look around tools/ before reproducing");
+    expect(row.querySelector("[data-tool-command]")?.textContent).toBe("ls tools/ 2>/dev/null; df -h /Users/x | tail -1");
+    expect(row.querySelector('[data-effect="read"]')?.textContent).toBe("read-only");
+  });
+
+  it("names a call by what it does when the harness gave no description", () => {
+    mount([event(1, "command.completed", { title: "x", data: { type: "commandExecution", command: `/bin/zsh -lc "sed -n '1,40p' service/chat.go"`, aggregatedOutput: "package service\n" } })]);
+    openActivity();
+    expect(host.querySelector("[data-tool-title]")?.textContent).toBe("Read chat.go");
+    expect(host.querySelector("[data-tool-command]")?.textContent).toBe("sed -n '1,40p' service/chat.go");
+  });
+
+  it("opens a chain on its numbered steps, with the raw output one tab away", () => {
+    mount([claudeBash(1, "ls tools/ 2>/dev/null; cat .gitignore | head -50; python3 repro.py", "Check the repro setup", "ok\n")]);
+    openActivity();
+    expect(host.querySelector('[data-effect="exec"]')?.textContent).toBe("runs code");
+    act(() => rowButton("Check the repro setup")!.click());
+    const steps = [...host.querySelectorAll("[data-command-steps] li")];
+    expect(steps).toHaveLength(3);
+    expect(steps[0].textContent).toContain("errors hidden");
+    expect(steps[1].textContent).toContain("first 50 lines");
+    expect(host.textContent).not.toContain("❯");
+    act(() => buttonWith("Output")!.click());
+    expect(host.textContent).toContain("❯");
+    expect(host.textContent).toContain("ok");
+  });
+
+  it("draws a gh pr view as the PR it describes, body tables and all", () => {
+    const pr = { number: 70, title: "Reproduce the over-length crash", state: "OPEN", headRefName: "fix/x", baseRefName: "main", body: "| Check | Result |\n|---|---|\n| Harness | PASS |\n", files: [] };
+    mount([event(1, "command.completed", { title: "x", data: { type: "commandExecution", command: "gh pr view 70 --json title,body,state", aggregatedOutput: JSON.stringify(pr) } })]);
+    openActivity();
+    act(() => rowButton("Read PR #70")!.click());
+    const drawn = host.querySelector('[data-structured="gh-pr"]')!;
+    expect(drawn.textContent).toContain("Reproduce the over-length crash");
+    expect(drawn.querySelector("table")?.textContent).toContain("Harness");
+    act(() => buttonWith("Output")!.click());
+    expect(host.textContent).toContain('"number":70');
+  });
+
+  it("keeps a single plain command as just its terminal", () => {
+    mount([claudeBash(1, "bun run migrate", undefined, "92 rows")]);
+    openActivity();
+    act(() => rowButton("Ran bun run migrate")!.click());
+    expect(host.querySelector("[data-command-panel]")).toBeNull();
+    expect(host.textContent).toContain("❯");
+  });
+});
+
 describe("three layers", () => {
   const read = (id: number, path: string) => event(id, "tool.completed", {
     title: `Read ${path}`, data: { type: "readFile", path },
