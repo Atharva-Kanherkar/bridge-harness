@@ -530,7 +530,11 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
     return { verb: "read", glyph: "file", doing: "Reading", done: "Read", target: named ?? "file" };
   }
   if (dataType === "commandExecution" || data.command) {
-    return shellFacet(text(data.command) ?? (title || undefined), "command");
+    const command = text(data.command) ?? (title ? unticked(title) : undefined);
+    // An ACP title is intent only when it says something the command does not;
+    // a Codex title is the command again.
+    const intent = data.kind === "execute" && title && unticked(title) !== command ? title : undefined;
+    return shellFacet(command, "command", intent);
   }
   if (dataType === "webSearch") {
     return { verb: "search", glyph: "globe", doing: "Searching the web", done: "Searched the web", target: title || undefined };
@@ -538,12 +542,8 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
   // ACP-shaped items, identified by the category the protocol itself names.
   const acp = ACP_TOOL_KINDS[String(data.kind ?? "")];
   if (acp) {
-    if (acp.verb === "run") {
-      const command = text(data.command) ?? (title ? unticked(title) : undefined);
-      // A title is intent only when it says something the command does not.
-      const intent = title && unticked(title) !== command && title !== command ? title : undefined;
-      return shellFacet(command, "command", intent);
-    }
+    // An `execute` with a command was read above; this one only has its title.
+    if (acp.verb === "run") return shellFacet(title ? unticked(title) : undefined, "command");
     return { ...acp, target: file ?? (title || undefined) };
   }
   // Provider-neutral fallback: preserve the action wording, with an explicit

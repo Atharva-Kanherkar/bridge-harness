@@ -56,6 +56,13 @@ describe("fallback tool action labels", () => {
     const preparing = readToolCall({ title: "Bash", text: "", status: "inProgress", surface: "activity", data: { type: "tool_use", name: "Bash", input: { description: "List the" }, phase: "preparing" } });
     expect(preparing.intent).toBeUndefined();
   });
+
+  it("preserves tool names and recognized categories", () => {
+    expect(readToolCall({ title: "Context", text: "", surface: "activity", data: { name: "lookup_context" } }))
+      .toMatchObject({ doing: "Using lookup_context", done: "Used lookup_context" });
+    expect(readToolCall({ title: "project", text: "", surface: "activity", data: { kind: "read" } }))
+      .toMatchObject({ doing: "Reading", done: "Read", target: "project" });
+  });
 });
 
 describe("shell intent and steps", () => {
@@ -100,14 +107,6 @@ describe("shell intent and steps", () => {
   it("treats an ACP title that differs from the command as intent", () => {
     const tool = readToolCall({ title: "Run the auth tests", text: "", surface: "activity", data: { kind: "execute", command: "bun test src/auth" } });
     expect(tool.intent).toBe("Run the auth tests");
-  });
-});
-
-  it("preserves tool names and recognized categories", () => {
-    expect(readToolCall({ title: "Context", text: "", surface: "activity", data: { name: "lookup_context" } }))
-      .toMatchObject({ doing: "Using lookup_context", done: "Used lookup_context" });
-    expect(readToolCall({ title: "project", text: "", surface: "activity", data: { kind: "read" } }))
-      .toMatchObject({ doing: "Reading", done: "Read", target: "project" });
   });
 });
 

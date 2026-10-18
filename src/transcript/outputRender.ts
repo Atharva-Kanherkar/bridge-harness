@@ -187,7 +187,7 @@ export function ghSummary(data: unknown): GhSummary {
     return path ? [{ path, additions: num(entry.additions), deletions: num(entry.deletions), change: CHANGE[String(entry.changeType ?? "").toUpperCase()] }] : [];
   });
   const rollup = Array.isArray(bag.statusCheckRollup) ? bag.statusCheckRollup.filter(isBag) : [];
-  const checks = rollup.length ? rollup.reduce((tally, check) => {
+  const checks = rollup.length ? rollup.reduce<{ passed: number; failed: number; pending: number }>((tally, check) => {
     const outcome = String(check.conclusion ?? check.state ?? check.status ?? "").toUpperCase();
     if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(outcome)) tally.passed += 1;
     else if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(outcome)) tally.failed += 1;
