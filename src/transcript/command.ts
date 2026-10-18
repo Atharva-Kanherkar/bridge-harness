@@ -407,11 +407,11 @@ function ghPhrase(args: string[]): Phrase {
   if (noun === "auth" && verb === "status") return github(look("Checking", "Checked", "GitHub sign-in"));
   if (noun === "pr") {
     switch (verb) {
-      case "view": return github(read("Reading", "Read", pr));
-      case "diff": return github(read("Reading", "Read", `${pr} diff`));
-      case "checks": return github(read("Checking", "Checked", `CI on ${pr}`));
-      case "list": return github(read("Listing", "Listed", "pull requests"));
-      case "status": return github(read("Checking", "Checked", "pull request status"));
+      case "view": return github(look("Reading", "Read", pr));
+      case "diff": return github(look("Reading", "Read", `${pr} diff`));
+      case "checks": return github(look("Checking", "Checked", `CI on ${pr}`));
+      case "list": return github(look("Listing", "Listed", "pull requests"));
+      case "status": return github(look("Checking", "Checked", "pull request status"));
       case "create": return github(exec("Opening", "Opened", "a pull request"));
       case "merge": return github(exec("Merging", "Merged", pr));
       case "comment": return github(exec("Commenting", "Commented", `on ${pr}`));
@@ -423,8 +423,8 @@ function ghPhrase(args: string[]): Phrase {
   }
   if (noun === "issue") {
     switch (verb) {
-      case "view": return github(read("Reading", "Read", issue));
-      case "list": return github(read("Listing", "Listed", "issues"));
+      case "view": return github(look("Reading", "Read", issue));
+      case "list": return github(look("Listing", "Listed", "issues"));
       case "create": return github(exec("Opening", "Opened", "an issue"));
       case "comment": return github(exec("Commenting", "Commented", `on ${issue}`));
       case "edit": return github(exec("Editing", "Edited", issue));
@@ -434,9 +434,9 @@ function ghPhrase(args: string[]): Phrase {
   if (noun === "run") {
     const run = subject ? `workflow run ${subject}` : "the latest workflow run";
     switch (verb) {
-      case "view": return github(read("Reading", "Read", run));
-      case "list": return github(read("Listing", "Listed", "workflow runs"));
-      case "watch": return github(read("Watching", "Watched", run));
+      case "view": return github(look("Reading", "Read", run));
+      case "list": return github(look("Listing", "Listed", "workflow runs"));
+      case "watch": return github(look("Watching", "Watched", run));
       case "rerun": return github(exec("Rerunning", "Reran", run));
     }
   }

@@ -186,12 +186,18 @@ function Section({ label, children }: { label: string; children: ReactNode }) {
 
 const SHOWN_FILES = 6;
 
+/// `CHANGES_REQUESTED` → "Changes requested".
+function sentence(word: string): string {
+  const spaced = word.toLowerCase().replaceAll("_", " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 function GhCard({ summary, pr }: { summary: GhSummary; pr: boolean }) {
   const stats = pr ? [
     { label: "Files", value: summary.changedFiles !== undefined ? String(summary.changedFiles) : undefined },
     { label: "Lines", value: summary.additions !== undefined ? <><span className="text-success">+{summary.additions}</span> <span className="text-destructive">−{summary.deletions ?? 0}</span></> : undefined },
     { label: "Commits", value: summary.commits !== undefined ? String(summary.commits) : undefined },
-    { label: "Reviews", value: summary.reviewDecision ? summary.reviewDecision.toLowerCase().replaceAll("_", " ") : summary.reviews !== undefined ? (summary.reviews ? String(summary.reviews) : "None yet") : undefined },
+    { label: "Reviews", value: summary.reviewDecision ? sentence(summary.reviewDecision) : summary.reviews !== undefined ? (summary.reviews ? String(summary.reviews) : "None yet") : undefined },
   ].filter(stat => stat.value !== undefined) : [];
   const checks = summary.checks;
   return <div className="space-y-3 px-4 py-3.5 text-[12.5px]">
@@ -211,7 +217,7 @@ function GhCard({ summary, pr }: { summary: GhSummary; pr: boolean }) {
     {stats.length > 0 && <dl className="grid grid-cols-2 overflow-hidden rounded-lg border border-border sm:grid-cols-4">
       {stats.map(stat => <div key={stat.label} className="border-border px-3 py-2 not-last:border-r">
         <dt className="text-[10.5px] uppercase tracking-[0.05em] text-muted-foreground">{stat.label}</dt>
-        <dd className="mt-0.5 text-[14px] tabular-nums capitalize text-foreground">{stat.value}</dd>
+        <dd className="mt-0.5 text-[14px] tabular-nums text-foreground">{stat.value}</dd>
       </div>)}
     </dl>}
     {summary.body?.trim() && <Section label="Description">
