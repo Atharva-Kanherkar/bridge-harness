@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, Pencil, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FilePlus2, FileText, Folder, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, Pencil, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
@@ -178,6 +178,7 @@ const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
   pencil: <Pencil size={12}/>,
   "file-plus": <FilePlus2 size={12}/>,
   file: <FileText size={12}/>,
+  folder: <Folder size={12}/>,
   terminal: <SquareTerminal size={12}/>,
   search: <Search size={12}/>,
   globe: <Globe size={12}/>,

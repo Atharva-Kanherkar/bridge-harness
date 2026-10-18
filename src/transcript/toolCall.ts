@@ -23,7 +23,7 @@ import { readCheck, type CheckFacet } from "./checks";
 export type ToolVerb = "edit" | "read" | "run" | "search" | "tool";
 
 /** Which icon the row wears. A key, not a component. */
-export type ToolGlyph = "pencil" | "file-plus" | "file" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench" | "brain" | "navigation" | "git" | "github" | "mcp";
+export type ToolGlyph = "pencil" | "file-plus" | "file" | "folder" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench" | "brain" | "navigation" | "git" | "github" | "mcp";
 
 export type ToolStatus = "running" | "completed" | "failed" | "idle";
 
