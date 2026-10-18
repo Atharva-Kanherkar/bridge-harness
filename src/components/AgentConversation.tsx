@@ -544,13 +544,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
       {checks.length > 0 && !expanded && <div data-check-list className="grid min-w-0 gap-px">
         {checks.map(item => <ActionRow key={item.key} item={item} turnActive={turnActive}/>)}
       </div>}
-      {current && !current.check && !expanded && (
-        <div className="flex min-h-7 min-w-0 items-center gap-2 px-1.5 text-[12px] text-muted-foreground">
-          <span className="shrink-0" aria-hidden="true">{toolIcon(current)}</span>
-          <span className="min-w-0 truncate">{current.doing}{current.target ? ` ${current.target}` : ""}</span>
-          <StatusGlyph live failed={false} succeeded={false}/>
-        </div>
-      )}
+      {current && !current.check && !expanded && <NowCard item={tools[tools.length - 1]} items={items}/>}
       <Disclosure open={expanded}>
         <motion.div
           className="grid min-w-0 gap-px pb-1"
@@ -580,6 +574,102 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
   // never hold and a live turn would re-render all hundred rows on every 50ms
   // flush. The signature says which rows a frame actually touched.
 }, (previous, next) => previous.turnActive === next.turnActive && previous.autoExpandEditActivity === next.autoExpandEditActivity && sameItems(previous.items, next.items));
+
+type NowStep = { step: string; state: "done" | "active" | "pending" };
+
+function stepState(status: unknown): NowStep["state"] {
+  const word = String(status ?? "").toLowerCase().replace(/[_\s-]/g, "");
+  if (word === "completed" || word === "complete" || word === "done") return "done";
+  if (word === "inprogress" || word === "active" || word === "running") return "active";
+  return "pending";
+}
+
+/// The plan a live run is working through: the newest plan update in it, or
+/// the newest TodoWrite a Claude or OpenCode turn kept its tasks in.
+function latestPlan(items: ConversationItem[]): NowStep[] {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.type === "plan") {
+      const steps = Array.isArray(item.data.plan) ? item.data.plan : Array.isArray(item.data.steps) ? item.data.steps : [];
+      const read = steps.flatMap(entry => (entry && typeof entry === "object" && typeof (entry as { step?: unknown }).step === "string"
+        ? [{ step: (entry as { step: string }).step, state: stepState((entry as { status?: unknown }).status) }]
+        : []));
+      if (read.length) return read;
+    }
+    if (isToolItem(item) && String(item.data.name ?? item.data.tool ?? "").toLowerCase() === "todowrite") {
+      const state = item.data.state && typeof item.data.state === "object" ? item.data.state as Record<string, unknown> : {};
+      const input = { ...(item.data.input as Record<string, unknown> | undefined), ...(state.input as Record<string, unknown> | undefined) };
+      const todos = Array.isArray(input.todos) ? input.todos : [];
+      const read = todos.flatMap(entry => (entry && typeof entry === "object" && typeof (entry as { content?: unknown }).content === "string"
+        ? [{ step: (entry as { content: string }).content, state: stepState((entry as { status?: unknown }).status) }]
+        : []));
+      if (read.length) return read;
+    }
+  }
+  return [];
+}
+
+/// The newest few lines a running command has printed, blank lines dropped.
+function outputTail(output: string | undefined, lines = 3): string[] {
+  if (!output) return [];
+  return output.slice(-4000).split("\n").map(line => line.trimEnd()).filter(Boolean).slice(-lines);
+}
+
+/// Seconds since a call started, ticking once a second while it is on screen.
+function Elapsed({ since, className }: { since: number; className?: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <span className={className}>{formatThoughtDuration(Math.max(0, now - since))}</span>;
+}
+
+const SHOWN_PLAN_STEPS = 6;
+
+/// What a live run is doing right now, and where it is in its plan. The
+/// folded group's one-line current step, grown into the card a reader
+/// watching the work actually wants: the call in the harness's words, how long
+/// it has been running, the newest output, and the plan around it.
+function NowCard({ item, items }: { item: ConversationItem; items: ConversationItem[] }) {
+  const call = toolCallDisplay(item);
+  const title = call.intent ?? `${call.doing}${call.target ? ` ${call.target}` : ""}`;
+  const command = call.command && !title.includes(call.command) ? call.command : undefined;
+  const tail = useMemo(() => outputTail(call.output), [call.output]);
+  const plan = useMemo(() => latestPlan(items), [items]);
+  const started = item.createdAt ? Date.parse(item.createdAt) : NaN;
+  const shown = plan.slice(0, SHOWN_PLAN_STEPS);
+  return (
+    <div data-now-card className="my-1 min-w-0 rounded-xl border border-border bg-card px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-2 text-[13px]">
+        <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true"/>
+        <span className="min-w-0 truncate font-medium text-foreground">{title}</span>
+        {call.effect && <EffectChip effect={call.effect} className="hidden sm:inline-flex"/>}
+        {Number.isFinite(started) && <Elapsed since={started} className="ml-auto shrink-0 text-[11.5px] tabular-nums text-muted-foreground"/>}
+      </div>
+      {command && <p className="mt-0.5 truncate pl-[21px] font-mono text-[11.5px] text-faint">{command}</p>}
+      {tail.length > 0 && <div data-now-tail className="ml-[21px] mt-2 rounded-lg bg-code px-2.5 py-1.5 font-mono text-[11.5px] leading-[1.65] text-muted-foreground">
+        {tail.map((line, index) => <span key={index} className={cn("block truncate", index === tail.length - 1 && "text-foreground")}>{line}</span>)}
+      </div>}
+      {shown.length > 0 && <ol data-now-plan className="mt-2.5 flex flex-wrap gap-1.5 pl-[21px]">
+        {shown.map((step, index) => <li
+          key={`${step.step}-${index}`}
+          data-state={step.state}
+          className={cn(
+            "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11.5px]",
+            step.state === "active" ? "border-transparent bg-accent text-foreground" : "border-border",
+            step.state === "done" ? "text-foreground" : step.state === "pending" && "text-muted-foreground",
+          )}
+        >
+          {step.state === "done" && <Check size={11} className="shrink-0 text-success" aria-hidden="true"/>}
+          {step.state === "active" && <LoaderCircle size={11} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true"/>}
+          <span className="truncate">{step.step}</span>
+        </li>)}
+        {plan.length > SHOWN_PLAN_STEPS && <li className="inline-flex items-center px-1 text-[11.5px] text-muted-foreground">+{plan.length - SHOWN_PLAN_STEPS} more</li>}
+      </ol>}
+    </div>
+  );
+}
 
 /// Variants an `ActionRow` inherits from the group that reveals it. Declared
 /// once so the stagger and the row agree on what "hidden" means.

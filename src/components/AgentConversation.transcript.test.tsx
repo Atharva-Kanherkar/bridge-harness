@@ -296,6 +296,46 @@ describe("readable commands", () => {
     expect(host.textContent).toContain('"number":70');
   });
 
+  describe("the Now card", () => {
+    const todos = event(1, "tool.completed", {
+      itemId: "todo", title: "TodoWrite",
+      data: { type: "tool_use", name: "TodoWrite", input: { todos: [
+        { content: "Understand PR #70", status: "completed" },
+        { content: "Verify the fix", status: "in_progress" },
+        { content: "Write the review", status: "pending" },
+      ] } },
+    });
+    const running = event(2, "command.started", {
+      itemId: "run", title: "python3 repro.py", status: "inProgress",
+      data: { type: "tool_use", name: "Bash", input: { command: "python3 repro.py --rounds 5", description: "Run the reproduction, 5 rounds" }, command: "python3 repro.py --rounds 5" },
+    });
+    const progress = event(0, "command.output_delta", { itemId: "run", sequence: 3, status: "inProgress", text: "round 1/5 ok\n\nround 2/5 ok\nround 3/5 scheduling\n" });
+
+    it("says what the live call is for, its newest output, and the plan around it", () => {
+      mount([todos, running, progress]);
+      const card = host.querySelector("[data-now-card]")!;
+      expect(card).not.toBeNull();
+      expect(card.textContent).toContain("Run the reproduction, 5 rounds");
+      expect(card.textContent).toContain("python3 repro.py --rounds 5");
+      expect([...card.querySelectorAll("[data-now-tail] span")].map(line => line.textContent)).toEqual(["round 1/5 ok", "round 2/5 ok", "round 3/5 scheduling"]);
+      expect([...card.querySelectorAll("[data-now-plan] li")].map(step => step.getAttribute("data-state"))).toEqual(["done", "active", "pending"]);
+    });
+
+    it("is gone once the turn ends", () => {
+      mount([todos, running, progress]);
+      act(() => {
+        root.render(<AgentConversation session={{ ...session, status: "idle" } as Session} events={[todos, running, progress]} onResolve={() => {}} />);
+      });
+      expect(host.querySelector("[data-activity-group]")).not.toBeNull();
+      expect(host.querySelector("[data-now-card]")).toBeNull();
+    });
+
+    it("leaves a live check to its check row", () => {
+      mount([event(1, "command.started", { itemId: "t", title: "bun test", status: "inProgress", data: { type: "commandExecution", command: "bun test" } })]);
+      expect(host.querySelector("[data-now-card]")).toBeNull();
+    });
+  });
+
   it("keeps a single plain command as just its terminal", () => {
     mount([claudeBash(1, "bun run migrate", undefined, "92 rows")]);
     openActivity();
