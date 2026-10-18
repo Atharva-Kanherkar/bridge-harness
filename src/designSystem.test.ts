@@ -174,6 +174,12 @@ describe("theme tokens", () => {
     expect(css).toContain("prefers-reduced-motion");
   });
 
+  it("turns ligatures off on every mono surface", () => {
+    // Geist Mono's contextual ligatures ate the space before `--`, so
+    // `gh pr view 70 --json` drew as `70--json`.
+    expect(css).toMatch(/code, kbd, samp, pre, \.font-mono, \.cm-editor\s*\{[^}]*font-variant-ligatures:\s*none/);
+  });
+
   it("zeros the window radius in fullscreen so the shell is a rectangle", () => {
     expect(css).toMatch(/html\[data-fullscreen\]/);
     expect(css).toMatch(/html\[data-flush-window\]/);
