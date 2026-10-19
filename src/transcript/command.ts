@@ -117,6 +117,8 @@ interface Piece {
   text: string;
   /** The operator that ends this piece, if any. */
   op: Operator | null;
+  /** Bodies of unquoted heredocs opened here: the shell expands `$(…)` in them. */
+  bodies?: string[];
 }
 
 /**
@@ -130,12 +132,18 @@ export function splitShell(script: string): Piece[] {
   let double = false;
   let backtick = false;
   let depth = 0;
-  const heredocs: Array<{ tag: string; strip: boolean }> = [];
+  const heredocs: Array<{ tag: string; strip: boolean; literal: boolean }> = [];
+  let bodies: string[] = [];
   const push = (op: Operator | null) => {
     const text = buffer.trim();
-    if (text) pieces.push({ text, op });
-    else if (op && pieces.length && pieces[pieces.length - 1].op === null) pieces[pieces.length - 1].op = op;
+    if (text) pieces.push({ text, op, ...(bodies.length ? { bodies } : {}) });
+    else {
+      const last = pieces[pieces.length - 1];
+      if (op && last && last.op === null) last.op = op;
+      if (bodies.length && last) last.bodies = [...(last.bodies ?? []), ...bodies];
+    }
     buffer = "";
+    bodies = [];
   };
   for (let index = 0; index < script.length; index++) {
     const ch = script[index];
@@ -164,7 +172,7 @@ export function splitShell(script: string): Piece[] {
     if (ch === "<" && script[index + 1] === "<" && script[index + 2] !== "<") {
       const heredoc = /^<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/.exec(script.slice(index));
       if (heredoc) {
-        heredocs.push({ tag: heredoc[3], strip: heredoc[1] === "-" });
+        heredocs.push({ tag: heredoc[3], strip: heredoc[1] === "-", literal: !!heredoc[2] });
         buffer += heredoc[0];
         index += heredoc[0].length - 1;
         continue;
@@ -175,13 +183,17 @@ export function splitShell(script: string): Piece[] {
         // The body belongs to the command that opened it; skip to its end tag.
         let cursor = index + 1;
         for (const doc of heredocs) {
+          const lines: string[] = [];
           while (cursor < script.length) {
             const newline = script.indexOf("\n", cursor);
             const end = newline < 0 ? script.length : newline;
             const line = script.slice(cursor, end);
             cursor = end + 1;
             if ((doc.strip ? line.replace(/^\t+/, "") : line).trim() === doc.tag) break;
+            lines.push(line);
           }
+          // A quoted delimiter (`<<'EOF'`) makes the body literal text.
+          if (!doc.literal && lines.length) bodies.push(lines.join("\n"));
         }
         heredocs.length = 0;
         index = cursor - 1;
@@ -199,6 +211,81 @@ export function splitShell(script: string): Piece[] {
   push(null);
   return pieces;
 }
+
+/* ── Nested commands ────────────────────────────────────────────────────── */
+
+/** Index just past the `)` that closes a `(` opened before `from`, or -1. */
+function closingParen(text: string, from: number): number {
+  let depth = 1;
+  let single = false;
+  let double = false;
+  for (let index = from; index < text.length; index++) {
+    const ch = text[index];
+    if (single) { if (ch === "'") single = false; continue; }
+    if (ch === "\\") { index++; continue; }
+    if (double) { if (ch === '"') double = false; continue; }
+    if (ch === "'") single = true;
+    else if (ch === '"') double = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")" && --depth === 0) return index + 1;
+  }
+  return -1;
+}
+
+/**
+ * The commands a piece of shell runs inside itself: `$(…)`, backticks, and
+ * `<(…)`/`>(…)`, wherever the shell expands them (not inside single quotes;
+ * process substitution not inside double quotes either). Arithmetic `$((…))`
+ * is not a command. `null` when one is left open: whatever it is, it runs.
+ */
+export function substitutions(text: string): string[] | null {
+  const found: string[] = [];
+  let single = false;
+  let double = false;
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index];
+    if (single) { if (ch === "'") single = false; continue; }
+    if (ch === "\\") { index++; continue; }
+    if (ch === "'" && !double) { single = true; continue; }
+    if (ch === '"') { double = !double; continue; }
+    if (ch === "$" && text[index + 1] === "(") {
+      if (text[index + 2] === "(") { index += 2; continue; }
+      const end = closingParen(text, index + 2);
+      if (end < 0) return null;
+      found.push(text.slice(index + 2, end - 1));
+      index = end - 1;
+      continue;
+    }
+    if (ch === "`") {
+      let end = index + 1;
+      while (end < text.length && text[end] !== "`") end += text[end] === "\\" ? 2 : 1;
+      if (end >= text.length) return null;
+      found.push(text.slice(index + 1, end));
+      index = end;
+      continue;
+    }
+    if ((ch === "<" || ch === ">") && text[index + 1] === "(" && !double) {
+      const end = closingParen(text, index + 2);
+      if (end < 0) return null;
+      found.push(text.slice(index + 2, end - 1));
+      index = end - 1;
+    }
+  }
+  return found;
+}
+
+/** Whether running these texts runs anything beyond reads. */
+function runsNestedCode(texts: string[]): boolean {
+  for (const text of texts) {
+    const nested = substitutions(text);
+    if (nested === null) return true;
+    if (nested.some(body => readCommand(body).effect !== "read")) return true;
+  }
+  return false;
+}
+
+/** Env prefixes that load or run code before the program starts. */
+const RUNNING_ENV = /^(LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|SSH_ASKPASS|GIT_EDITOR|EDITOR|VISUAL|BASH_ENV|ENV|PROMPT_COMMAND|PERL5OPT|PYTHONSTARTUP|NODE_OPTIONS|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_PROXY_COMMAND)=/;
 
 /* ── Lexing one command ─────────────────────────────────────────────────── */
 
@@ -706,14 +793,17 @@ function readUncached(command: string): CommandReading {
     const first = lex(stages[0].text);
     const words = program(first.words);
     const bin = basename(words[0] ?? "").toLowerCase();
-    // `cd` is where the next steps happen, not a step of its own.
-    if ((bin === "cd" || bin === "pushd") && stages.length === 1) {
+    // Whatever runs inside `$(…)`, backticks or a heredoc runs too, wherever
+    // it is written: a recognised read around it does not make it a read.
+    const nested = runsNestedCode(stages.flatMap(stage => [stage.text, ...(stage.bodies ?? [])]));
+    const loaded = first.words.some(word => RUNNING_ENV.test(word));
+    if (!nested && (bin === "cd" || bin === "pushd") && stages.length === 1) {
       directory = words[1] ? shortPath(words[1]) : "~";
       continue;
     }
-    if (bin === "popd" && stages.length === 1) { directory = undefined; continue; }
-    if (bin === "set" || bin === "exit" || bin === "wait" || (bin === "" && !first.redirects.length)) continue;
-    if ((bin === "true" || bin === ":") && stages.length === 1) {
+    if (!nested && bin === "popd" && stages.length === 1) { directory = undefined; continue; }
+    if (!nested && (bin === "set" || bin === "exit" || bin === "wait" || (bin === "" && !first.redirects.length))) continue;
+    if (!nested && (bin === "true" || bin === ":") && stages.length === 1) {
       if (opened === "||" && steps.length) steps[steps.length - 1].notes.push("failure ignored");
       continue;
     }
@@ -722,6 +812,11 @@ function readUncached(command: string): CommandReading {
     if (directory) notes.push(`in ${directory}`);
     notes.push(...phraseNotes);
     let effect = named.effect;
+    if (nested) {
+      effect = "exec";
+      notes.push("runs a nested command");
+    }
+    if (loaded) effect = "exec";
     const own = redirectNotes(first.redirects);
     notes.push(...own.notes);
     if (own.writes) effect = stronger(effect, "write");

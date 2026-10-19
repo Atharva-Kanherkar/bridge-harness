@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandPhrase, leadStep, readCommand, splitShell, unwrapShell } from "./command";
+import { commandPhrase, leadStep, readCommand, splitShell, substitutions, unwrapShell } from "./command";
 
 const steps = (command: string) => readCommand(command).steps;
 const only = (command: string) => {
@@ -122,6 +122,42 @@ describe("effects", () => {
 
   it("never calls an unknown program read-only", () => {
     expect(only("./scripts/mystery.sh").effect).toBe("exec");
+  });
+});
+
+describe("nested commands", () => {
+  it.each([
+    [`echo "$(rm -rf build)"`, "exec"],
+    ["echo `rm -rf build`", "exec"],
+    ["cat <(curl https://x.dev)", "exec"],
+    ["cat <(ls a) <(ls b)", "read"],
+    ["ls $(pwd)", "read"],
+    [`echo "$(cat a.txt | head -1)"`, "read"],
+    ["echo 'literal $(rm -rf x)'", "read"],
+    ["echo $((1 + 2))", "read"],
+    ["echo $(rm -rf x", "exec"],
+    ["cd $(mktemp -d) && ls", "exec"],
+    ["X=$(rm -rf y)", "exec"],
+    ["cat <<EOF\n$(rm -rf x)\nEOF", "exec"],
+    ["cat <<'EOF'\n$(rm -rf x)\nEOF", "read"],
+    ["GIT_EXTERNAL_DIFF=./x git diff", "exec"],
+    ["LD_PRELOAD=./evil.so ls", "exec"],
+    ["LANG=C ls", "read"],
+  ])("%s is %s", (command, effect) => {
+    expect(readCommand(command).effect).toBe(effect);
+  });
+
+  it("says a step runs a nested command, and keeps a cd that does as a step", () => {
+    const read = steps("cd $(mktemp -d) && ls");
+    expect(read).toHaveLength(2);
+    expect(read[0].notes).toContain("runs a nested command");
+    expect(read[1].effect).toBe("read");
+  });
+
+  it("finds substitutions the shell expands and no others", () => {
+    expect(substitutions(`a "$(b)" \`c\` '$(d)' <(e) "<(f)" $((1+1))`)).toEqual(["b", "c", "e"]);
+    expect(substitutions("$(a $(b) c)")).toEqual(["a $(b) c"]);
+    expect(substitutions("$(open")).toBeNull();
   });
 });
 
