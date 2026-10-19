@@ -25,6 +25,14 @@ describe("detectStructuredOutput", () => {
     expect(detectStructuredOutput(`/bin/zsh -lc "gh pr view 70 --json title"`, output)?.kind).toBe("gh-pr");
   });
 
+  it.each([
+    "gh -R owner/repo pr view 834 --json number,title",
+    "gh --repo owner/repo pr view 834 --json number,title",
+    "gh --repo=owner/repo pr view 834 --json number,title",
+  ])("reads past gh's global flags: %s", command => {
+    expect(detectStructuredOutput(command, JSON.stringify({ number: 834, title: "x" }))?.kind).toBe("gh-pr");
+  });
+
   it("recognises an issue, a run and a list", () => {
     expect(detectStructuredOutput("gh issue view 12 --json title,body", JSON.stringify({ number: 12, title: "x" }))?.kind).toBe("gh-issue");
     expect(detectStructuredOutput("gh run view 9 --json jobs", JSON.stringify({ status: "completed", jobs: [] }))?.kind).toBe("gh-run");

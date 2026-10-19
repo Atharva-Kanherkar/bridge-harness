@@ -980,6 +980,20 @@ export function leadStep(reading: CommandReading): CommandStep | undefined {
   return reading.steps.find(step => step.effect === reading.effect) ?? reading.steps[0];
 }
 
+/**
+ * `gh <noun> <verb>` of the step a command is named by, read with the same
+ * flag table as its phrase, so `gh -R owner/repo pr view 834` is `pr view`.
+ */
+export function ghSubcommand(command: string): { noun?: string; verb?: string } {
+  const lead = leadStep(readCommand(command));
+  const first = lead ? splitShell(lead.text)[0] : undefined;
+  if (!first) return {};
+  const [bin, ...args] = program(lex(first.text).words);
+  if (basename(bin ?? "") !== "gh") return {};
+  const [noun, verb] = positionals(args, GH_VALUED);
+  return { noun, verb };
+}
+
 /** The row-level shape of a whole command: its lead step, and how many more. */
 export function commandPhrase(reading: CommandReading): Omit<CommandStep, "notes" | "text"> | undefined {
   const lead = leadStep(reading);

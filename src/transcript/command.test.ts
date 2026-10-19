@@ -227,6 +227,7 @@ describe("phrases", () => {
   it.each([
     ["gh pr view 70 --json title,body", "Read PR #70"],
     ["gh pr view", "Read the current PR"],
+    ["gh -R owner/repo pr view 834", "Read PR #834"],
     ["gh pr list --state open", "Listed pull requests"],
     ["gh pr diff 70", "Read PR #70 diff"],
     ["gh pr checks 70", "Checked CI on PR #70"],

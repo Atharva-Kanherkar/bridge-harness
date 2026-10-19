@@ -13,7 +13,7 @@
  * as data.
  */
 
-import { leadStep, readCommand } from "./command";
+import { ghSubcommand } from "./command";
 
 export type StructuredKind = "gh-pr" | "gh-issue" | "gh-run" | "gh-list" | "json";
 
@@ -82,17 +82,6 @@ export function repairTruncatedJson(text: string): string | undefined {
   return out + [...stack].reverse().join("");
 }
 
-/** `gh <noun> <verb>` of the step a command is named by. */
-function ghCall(command: string | undefined): { noun?: string; verb?: string } {
-  if (!command) return {};
-  const lead = leadStep(readCommand(command));
-  if (!lead || lead.glyph !== "github") return {};
-  const words = lead.text.split(/\s+/);
-  const at = words.findIndex(word => /(^|\/)gh$/.test(word));
-  const rest = words.slice(at + 1).filter(word => !word.startsWith("-"));
-  return { noun: rest[0], verb: rest[1] };
-}
-
 function listShaped(data: unknown): boolean {
   return Array.isArray(data) && data.length > 0 && data.every(entry => isBag(entry)
     && (num(entry.number) !== undefined || num(entry.databaseId) !== undefined)
@@ -119,7 +108,7 @@ export function detectStructuredOutput(command: string | undefined, output: stri
     }
   }
   if (!data || typeof data !== "object") return null;
-  const { noun, verb } = ghCall(command);
+  const { noun, verb } = command ? ghSubcommand(command) : {};
   if (verb === "view" && isBag(data)) {
     if (noun === "pr" && (str(data.title) || num(data.number) !== undefined)) return { kind: "gh-pr", data, truncated };
     if (noun === "issue" && (str(data.title) || num(data.number) !== undefined)) return { kind: "gh-issue", data, truncated };
