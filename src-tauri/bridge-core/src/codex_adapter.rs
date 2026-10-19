@@ -398,9 +398,10 @@ fn thread_start_params(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        // Accepted by current Codex app-server builds; unknown fields are ignored safely on older ones.
+        // `developerInstructions` is the only channel the app-server reads.
+        // ThreadStartParams declares no `instructions` field (codex-cli 0.159.3),
+        // and a thread started with only that field never saw its text.
         params["developerInstructions"] = json!(instructions);
-        params["instructions"] = json!(instructions);
     }
     params
 }
@@ -1115,7 +1116,7 @@ mod tests {
     #[test]
     fn codex_context_inventory_covers_start_resume_and_per_turn() {
         let start = thread_start_params("/tmp/work", None, None, Some("bridge"), None);
-        assert_eq!(start["instructions"], "bridge");
+        assert!(start.get("instructions").is_none());
         assert_eq!(start["developerInstructions"], "bridge");
         let resume = thread_resume_params("thread", "/tmp/work", None, None, Some("bridge"), None);
         assert!(resume.get("instructions").is_none());
@@ -1289,7 +1290,7 @@ mod tests {
                 Some(WriteMode::ReadOnly),
             );
             let instructions = params["developerInstructions"].as_str().unwrap();
-            assert_eq!(params["instructions"], params["developerInstructions"]);
+            assert!(params.get("instructions").is_none());
             assert!(instructions.starts_with("<bridge-stable-prompt"));
             assert!(
                 instructions.find("stable-provider-contract").unwrap()
