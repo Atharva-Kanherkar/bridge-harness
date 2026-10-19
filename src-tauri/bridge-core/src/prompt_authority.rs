@@ -109,13 +109,13 @@ pub struct ProviderBasePromptAuthority {
 ///   in this table with shipped code as its proof. The SDK compiles the
 ///   preset internally and never returns the compiled text, and nobody has
 ///   proven what a bare string does to it — see the `replaceable` reason.
-/// - **Codex** (`codex_adapter.rs`): `thread_start_params` sets both
-///   `developerInstructions` and `instructions` on `thread/start`;
-///   `thread_resume_params` sets only `developerInstructions` on
-///   `thread/resume`. The app-server protocol does not document either field
-///   as reading, appending to, or replacing Codex's own base agent
-///   instructions — they are their own channel, and whether that channel
-///   layers onto the base or merely rides beside it is unverified.
+/// - **Codex** (`codex_adapter.rs`): both `thread_start_params` and
+///   `thread_resume_params` send `developerInstructions`, the one channel the
+///   app-server reads. Appending is proven by a live cache experiment
+///   (docs/managed-agent-runtimes.md, "Codex prompt prefix"): the cached
+///   prefix shared across threads is the same ~13k tokens whatever the
+///   developer text is, so that text sits after Codex's base prompt, and the
+///   model follows it. Reading and replacing remain unproven.
 /// - **OpenCode** (`opencode_adapter.rs`): `send_turn_with_context` rebuilds
 ///   the `system` field from `instructions` from scratch on *every* turn. The
 ///   bytes are now constant for the launch — per-turn context rides in the
@@ -144,11 +144,10 @@ const PROVIDER_BASE_PROMPT_AUTHORITY: &[ProviderBasePromptAuthority] = &[
         readable: PromptVerdict::Unsupported {
             reason: "the app-server protocol has no method that returns Codex's own base agent instructions, so Bridge cannot read what it actually is",
         },
-        appendable: PromptVerdict::Unsupported {
-            reason: "thread/start sets developerInstructions and instructions, and thread/resume carries only developerInstructions — neither the protocol nor Bridge's own usage establishes that either field is concatenated after Codex's base prompt rather than riding beside it as an unrelated channel",
-        },
+        // Measured against codex-cli 0.159.3, see the doc comment above.
+        appendable: PromptVerdict::Supported,
         replaceable: PromptVerdict::Unsupported {
-            reason: "the same gap makes replace unprovable: whether developerInstructions/instructions supersede Codex's base agent prompt, or merely sit beside it, is undocumented and unverified",
+            reason: "developerInstructions layers after Codex's base prompt rather than superseding it; replacing the base would need baseInstructions on thread/start, which Bridge does not send and has not verified",
         },
     },
     ProviderBasePromptAuthority {
@@ -267,11 +266,15 @@ mod tests {
     fn codex_and_opencode_claim_nothing_beyond_what_their_adapters_prove() {
         for adapter in ["codex", "opencode"] {
             let capability = provider_base_prompt_authority(adapter).unwrap();
-            for (name, verdict) in [
+            let mut verdicts = vec![
                 ("readable", capability.readable),
-                ("appendable", capability.appendable),
                 ("replaceable", capability.replaceable),
-            ] {
+            ];
+            // Codex append is the one proven claim: the live prefix-cache experiment.
+            if adapter != "codex" {
+                verdicts.push(("appendable", capability.appendable));
+            }
+            for (name, verdict) in verdicts {
                 assert!(
                     !verdict.is_supported(),
                     "{adapter}.{name} must not be claimed without proof from that adapter's own delivery code"
@@ -281,12 +284,16 @@ mod tests {
     }
 
     #[test]
-    fn codex_reasons_name_the_start_resume_asymmetry() {
+    fn codex_may_append_via_developer_instructions() {
         let codex = provider_base_prompt_authority("codex").unwrap();
-        for verdict in [codex.appendable, codex.replaceable] {
-            let reason = verdict.reason().unwrap();
-            assert!(reason.contains("developerInstructions"), "{reason}");
-        }
+        assert!(codex.appendable.is_supported());
+    }
+
+    #[test]
+    fn codex_replace_reason_names_the_unsent_base_channel() {
+        let codex = provider_base_prompt_authority("codex").unwrap();
+        let reason = codex.replaceable.reason().unwrap();
+        assert!(reason.contains("baseInstructions"), "{reason}");
     }
 
     #[test]
@@ -305,15 +312,16 @@ mod tests {
     #[test]
     fn no_capability_is_enabled_from_an_assumption() {
         // The acceptance bar for this slice: nothing here claims `Supported`
-        // unless a piece of shipped code can be pointed to as the proof. Only
-        // Claude's append is proven today (options.mjs's preset+append call).
-        // Everything else pins `Unsupported` until its own adapter is read
-        // the same way and gains a citation of its own.
+        // unless a piece of shipped code or a recorded measurement can be
+        // pointed to as the proof. Only Claude's append (options.mjs's
+        // preset+append call) and Codex's append (the prefix-cache experiment
+        // in docs/managed-agent-runtimes.md) are proven today. Everything else
+        // pins `Unsupported` until it gains a citation of its own.
         let supported_count = provider_base_prompt_authorities()
             .iter()
             .flat_map(|capability| [capability.readable, capability.appendable, capability.replaceable])
             .filter(|verdict| verdict.is_supported())
             .count();
-        assert_eq!(supported_count, 1, "only Claude's append is proven by shipped code today");
+        assert_eq!(supported_count, 2, "only Claude's and Codex's append are proven today");
     }
 }

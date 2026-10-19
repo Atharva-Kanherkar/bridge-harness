@@ -90,3 +90,20 @@ It installs each agent from its vendor registry, asserts the receipt's entrypoin
 Measured on macOS arm64: claude 254 MB across 5552 files in 31.9s, codex 262 MB across 14 files in 28.3s, opencode 136 MB across 10 files in 14.8s. Two very different tree shapes exercising the same digest and pruning path is stronger evidence than either alone.
 
 `scripts/check-builtin-adapters.sh` remains the gate that the three integrations' capabilities, sandbox modes, and normalization did not drift while any of this landed.
+
+## Codex prompt prefix
+
+Whether `developerInstructions` sits at the head of Codex's cacheable prefix, and whether the `instructions` field Bridge also sent on `thread/start` did anything, was recorded as unverified. It was measured against codex-cli 0.159.3 through `codex app-server`, with ephemeral threads carrying about 16k tokens of unique developer text (a fresh nonce per run) and a read of `thread/tokenUsage/updated` `last.cachedInputTokens` after each turn.
+
+| Setup | Turn 1 input / cached | Turn 2 input / cached |
+| --- | --- | --- |
+| `developerInstructions` only, thread 1 | 29255 / 13312 | 29271 / 29056 |
+| `developerInstructions` only, thread 2, identical text | 29255 / 13312 | 29271 / 29056 |
+| `developerInstructions` + `instructions`, thread 1 | 29258 / 13312 | 29274 / 29056 |
+| `developerInstructions` + `instructions`, thread 2, identical text | 29258 / 13312 | 29274 / 29056 |
+
+- **`instructions` is dead weight.** `ThreadStartParams` declares `baseInstructions` and `developerInstructions` but no `instructions`. A thread started with only `instructions` answered `NONE` to a question about a code word in it, while `developerInstructions` and `baseInstructions` were both honored. Token counts and cache hits are the same with or without the field, so Bridge no longer sends it.
+- **The developer text follows the base prompt.** Every thread, whatever its developer text, reuses the same 13312 cached tokens on turn 1, so a base prefix independent of that text comes first. Within a thread the whole prompt is cached from turn 2 on (about 99%).
+- **Cross-thread reuse of the developer text itself was not observed.** A second thread with identical text re-read only the 13312-token base on turn 1. Bridge keeps one thread per session, so this does not change its cache behaviour.
+
+`prompt_authority` therefore marks Codex `appendable: Supported`. `readable` and `replaceable` stay refused: `developerInstructions` layers rather than replaces, and the base could only be replaced through `baseInstructions`, which Bridge does not send.
