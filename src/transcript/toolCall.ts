@@ -19,11 +19,12 @@
 
 import type { ToolSurface } from "./events";
 import { readCheck, type CheckFacet } from "./checks";
+import { commandPhrase, leadStep, readCommand, type CommandEffect, type CommandStep } from "./command";
 
 export type ToolVerb = "edit" | "read" | "run" | "search" | "tool";
 
 /** Which icon the row wears. A key, not a component. */
-export type ToolGlyph = "pencil" | "file-plus" | "file" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench" | "brain" | "navigation" | "git" | "github" | "mcp";
+export type ToolGlyph = "pencil" | "file-plus" | "file" | "folder" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench" | "brain" | "navigation" | "git" | "github" | "mcp";
 
 export type ToolStatus = "running" | "completed" | "failed" | "idle";
 
@@ -38,8 +39,17 @@ export interface ToolCallDisplay {
   target?: string;
   /** The full path, when `target` is only its basename. */
   path?: string;
-  /** The command as typed, for the terminal block. */
+  /** The command as typed, for the terminal block, out of the harness's shell wrapper. */
   command?: string;
+  /**
+   * The harness's own one-line account of the call: Claude's and OpenCode's
+   * `Bash` `description`. Never written by Bridge or asked of a model.
+   */
+  intent?: string;
+  /** What a shell command does to the machine, its strongest step winning. */
+  effect?: CommandEffect;
+  /** A shell command's steps, present only when it chains two or more. */
+  steps?: CommandStep[];
   /** The MCP server a `mcp` or `github` glyph call went through, as named. */
   server?: string;
   /** A build, test, typecheck or lint run, drawn as a check row. */
@@ -387,6 +397,8 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
   if (data.phase === "preparing") {
     named.doing = "Preparing";
     named.target = text(data.name) ?? named.target;
+    // The description is still being written; a half sentence is not intent.
+    named.intent = undefined;
   }
   const command = named.command ?? (named.verb === "run" ? text(data.command) : undefined);
   return {
@@ -409,15 +421,11 @@ export function readToolCall(source: ToolCallSource): ToolCallDisplay {
 }
 
 /// A shell call wears its program's mark when there is one: `git …` the git
-/// mark, `gh …` GitHub's. Read off the first program in the line, so a chain
-/// that opens with `git status` is still git work.
+/// mark, `gh …` GitHub's. Read off the step the command is named by, so a
+/// chain that leads with `git status` is still git work.
 function commandGlyph(command: string): ToolGlyph | undefined {
-  const first = command.trim().split(/\s*(?:&&|;|\|\||\|)\s*/)[0] ?? "";
-  const clean = first.replace(/^(?:builtin|command|sudo)\s+/, "");
-  const bin = (parseCommandTokens(clean)[0] ?? "").split("/").pop()?.toLowerCase();
-  if (bin === "git") return "git";
-  if (bin === "gh") return "github";
-  return undefined;
+  const glyph = leadStep(readCommand(command))?.glyph;
+  return glyph === "git" || glyph === "github" ? glyph : undefined;
 }
 
 /// An MCP call, named by its server. GitHub's own server wears GitHub's mark;
@@ -428,232 +436,25 @@ function mcpFacet(server: string, tool: string): { verb: ToolVerb; glyph: ToolGl
   return { verb: "tool", glyph: /github/i.test(server) ? "github" : "mcp", doing: `Using ${label}`, done: `Used ${label}`, target: tool || undefined, server };
 }
 
-export function parseCommandTokens(command: string): string[] {
-  const trimmed = command.trim();
-  const stripped = trimmed.replace(/^([A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
-  const tokens: string[] = [];
-  const regex = /[^\s"']+|"([^"]*)"|'([^']*)'/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(stripped)) !== null) {
-    tokens.push(match[1] ?? match[2] ?? match[0]);
-  }
-  return tokens;
+type NamedFacet = {
+  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string; server?: string; pendingIdentity?: boolean;
+  intent?: string; effect?: CommandEffect; steps?: CommandStep[];
+};
+
+/// A shell call, read into its steps. The row is named by the step that
+/// matters most; `command` is the script without the harness's wrapper.
+function shellFacet(raw: string | undefined, fallback: string, intent?: string): NamedFacet {
+  if (!raw) return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: fallback, intent };
+  const reading = readCommand(raw);
+  const command = reading.script;
+  const phrase = commandPhrase(reading);
+  if (!phrase) return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command, command, intent, effect: reading.effect };
+  return { ...phrase, command, intent, steps: reading.steps.length > 1 ? reading.steps : undefined };
 }
 
-function matchesAny(bin: string, names: string[]): boolean {
-  const base = bin.split("/").pop() || bin;
-  return names.includes(base);
-}
-
-function isFlag(arg: string): boolean {
-  return /^--?[a-zA-Z0-9]/.test(arg);
-}
-
-function classifySingleCommand(cmd: string): {
-  verb: ToolVerb;
-  glyph: ToolGlyph;
-  doing: string;
-  done: string;
-  target?: string;
-  path?: string;
-} | null {
-  let clean = cmd.trim().replace(/^([A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
-  clean = clean.replace(/^(?:builtin|command|sudo)\s+/, "");
-  const tokens = parseCommandTokens(clean);
-  if (!tokens.length) return null;
-
-  const bin = tokens[0].toLowerCase();
-  const args = tokens.slice(1);
-
-  if (matchesAny(bin, ["cat", "head", "tail", "less", "more", "bat"])) {
-    let idx = 0;
-    while (idx < args.length) {
-      if (args[idx] === "-n" || args[idx] === "-c") {
-        idx += 2;
-      } else if (isFlag(args[idx])) {
-        idx += 1;
-      } else {
-        break;
-      }
-    }
-    const filePath = args[idx];
-    const target = filePath ? (filePath.split("/").pop() || filePath) : undefined;
-    return {
-      verb: "read",
-      glyph: "file",
-      doing: "Reading",
-      done: "Read",
-      target: target ?? filePath,
-      path: filePath,
-    };
-  }
-
-  if (matchesAny(bin, ["ls", "dir", "tree"])) {
-    const nonFlags = args.filter(arg => !isFlag(arg));
-    const dirPath = nonFlags[0];
-    return {
-      verb: "read",
-      glyph: "file",
-      doing: "Listing",
-      done: "Listed",
-      target: dirPath ? (dirPath.split("/").pop() || dirPath) : "directory",
-      path: dirPath,
-    };
-  }
-
-  if (matchesAny(bin, ["grep", "egrep", "fgrep", "rg", "ag", "ack"])) {
-    const nonFlags = args.filter(arg => !isFlag(arg));
-    const pattern = nonFlags[0];
-    const filePath = nonFlags[1];
-    return {
-      verb: "search",
-      glyph: "search",
-      doing: "Searching",
-      done: "Searched",
-      target: pattern ? `“${pattern}”` : "files",
-      path: filePath,
-    };
-  }
-
-  if (matchesAny(bin, ["find", "fd", "locate", "which", "whereis", "wc", "stat", "file"])) {
-    const nonFlags = args.filter(arg => !isFlag(arg));
-    const target = nonFlags[0];
-    return {
-      verb: "search",
-      glyph: "search",
-      doing: "Searching",
-      done: "Searched",
-      target: target ? `“${target}”` : "files",
-      path: target,
-    };
-  }
-
-  if (bin === "git") {
-    let subIdx = 0;
-    while (subIdx < args.length && isFlag(args[subIdx])) {
-      if (args[subIdx] === "-C" || args[subIdx] === "-c") subIdx += 2;
-      else subIdx += 1;
-    }
-    const sub = args[subIdx]?.toLowerCase();
-    if (!sub) return null;
-
-    if (sub === "status") {
-      return {
-        verb: "read",
-        glyph: "file",
-        doing: "Checking",
-        done: "Checked",
-        target: "git status",
-      };
-    }
-    if (sub === "diff") {
-      return {
-        verb: "read",
-        glyph: "file",
-        doing: "Inspecting",
-        done: "Inspected",
-        target: "git diff",
-      };
-    }
-    if (sub === "log") {
-      return {
-        verb: "read",
-        glyph: "file",
-        doing: "Viewing",
-        done: "Viewed",
-        target: "git log",
-      };
-    }
-    if (sub === "show") {
-      return {
-        verb: "read",
-        glyph: "file",
-        doing: "Inspecting",
-        done: "Inspected",
-        target: "git show",
-      };
-    }
-    if (sub === "branch" || sub === "tag" || sub === "remote" || sub === "describe") {
-      return {
-        verb: "read",
-        glyph: "file",
-        doing: "Checking",
-        done: "Checked",
-        target: `git ${sub}`,
-      };
-    }
-    return null;
-  }
-
-  return null;
-}
-
-export function hasUnquotedRedirect(command: string): boolean {
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (ch === "\\" && !inSingle) {
-      i++;
-      continue;
-    }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      continue;
-    }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      continue;
-    }
-    if (!inSingle && !inDouble && ch === ">") {
-      return true;
-    }
-  }
-  return false;
-}
-
-export function classifyExploratoryCommand(rawCommand: string): {
-  verb: ToolVerb;
-  glyph: ToolGlyph;
-  doing: string;
-  done: string;
-  target?: string;
-  path?: string;
-} | null {
-  const trimmed = rawCommand.trim();
-  if (!trimmed) return null;
-  if (hasUnquotedRedirect(trimmed)) return null;
-
-  const parts = trimmed.split(/\s*(?:&&|;|\|\|)\s*/).filter(Boolean);
-  if (parts.length > 1) {
-    const classifiedParts = parts.map(classifySingleCommand);
-    if (classifiedParts.some(c => c === null)) return null;
-    const first = classifiedParts[0]!;
-    return {
-      verb: first.verb,
-      glyph: first.glyph,
-      doing: "Exploring",
-      done: "Explored",
-      target: trimmed,
-    };
-  }
-
-  if (trimmed.includes("|")) {
-    const pipeParts = trimmed.split(/\s*\|\s*/).filter(Boolean);
-    const classifiedPipe = pipeParts.map(classifySingleCommand);
-    if (classifiedPipe.some(c => c === null)) return null;
-    const first = classifiedPipe[0]!;
-    return {
-      verb: first.verb,
-      glyph: first.glyph,
-      doing: first.doing,
-      done: first.done,
-      target: trimmed,
-      path: first.path,
-    };
-  }
-
-  return classifySingleCommand(trimmed);
+/// Cursor titles an ACP `execute` call with the command in backticks.
+function unticked(title: string): string {
+  return title.replace(/^`([\s\S]*)`$/, "$1");
 }
 
 /** Verb, glyph, wording and target — the half of the shape that depends on
@@ -676,9 +477,7 @@ const ACP_TOOL_KINDS: Record<string, { verb: ToolVerb; glyph: ToolGlyph; doing: 
   fetch: { verb: "search", glyph: "globe", doing: "Fetching", done: "Fetched" },
 };
 
-function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): {
-  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string; server?: string; pendingIdentity?: boolean;
-} {
+function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): NamedFacet {
   // Claude puts the arguments on `input`; OpenCode nests them under the part's
   // `state`. Merged so the branches below can read one bag.
   const state = objectValue(data.state);
@@ -699,12 +498,7 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
   if (name) {
     const key = name.toLowerCase();
     if (key === "bash" || key === "shell") {
-      const command = text(input.command) ?? text(data.command);
-      const exploratory = command ? classifyExploratoryCommand(command) : null;
-      if (exploratory) {
-        return { ...exploratory, command };
-      }
-      return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? (title || "command"), command };
+      return shellFacet(text(input.command) ?? text(data.command), title || "command", text(input.description)?.trim());
     }
     if (key === "read") return { verb: "read", glyph: "file", doing: "Reading", done: "Read", target: file ?? "file" };
     if (key === "edit" || key === "multiedit" || key === "notebookedit") return { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited", target: fileChangeTarget(file, data) };
@@ -736,12 +530,11 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
     return { verb: "read", glyph: "file", doing: "Reading", done: "Read", target: named ?? "file" };
   }
   if (dataType === "commandExecution" || data.command) {
-    const command = text(data.command) ?? (title || undefined);
-    const exploratory = command ? classifyExploratoryCommand(command) : null;
-    if (exploratory) {
-      return { ...exploratory, command };
-    }
-    return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? "command", command };
+    const command = text(data.command) ?? (title ? unticked(title) : undefined);
+    // An ACP title is intent only when it says something the command does not;
+    // a Codex title is the command again.
+    const intent = data.kind === "execute" && title && unticked(title) !== command ? title : undefined;
+    return shellFacet(command, "command", intent);
   }
   if (dataType === "webSearch") {
     return { verb: "search", glyph: "globe", doing: "Searching the web", done: "Searched the web", target: title || undefined };
@@ -749,10 +542,9 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
   // ACP-shaped items, identified by the category the protocol itself names.
   const acp = ACP_TOOL_KINDS[String(data.kind ?? "")];
   if (acp) {
-    const command = acp.verb === "run" ? text(data.command) ?? (title || undefined) : undefined;
-    const exploratory = command ? classifyExploratoryCommand(command) : null;
-    if (exploratory) return { ...exploratory, command };
-    return { ...acp, target: acp.verb === "run" ? command ?? "command" : file ?? (title || undefined), command };
+    // An `execute` with a command was read above; this one only has its title.
+    if (acp.verb === "run") return shellFacet(title ? unticked(title) : undefined, "command");
+    return { ...acp, target: file ?? (title || undefined) };
   }
   // Provider-neutral fallback: preserve the action wording, with an explicit
   // state cue that does not depend on the tense chosen by the provider.

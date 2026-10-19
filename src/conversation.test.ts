@@ -711,14 +711,17 @@ describe("toolCallDisplay", () => {
   });
 
   it("handles pipe and && chains in exploratory commands", () => {
+    // A pipe is one step: the file it reads, with the filter as a note.
     const pipeDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "cat src/auth.rs | grep \"token\"" } }));
     expect(pipeDisplay.verb).toBe("read");
-    expect(pipeDisplay.target).toBe("cat src/auth.rs | grep \"token\"");
+    expect(pipeDisplay.target).toBe("auth.rs");
+    expect(pipeDisplay.steps).toBeUndefined();
 
+    // A chain is named by its first step and says how many follow.
     const chainDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status && git diff" } }));
     expect(chainDisplay.verb).toBe("read");
-    expect(chainDisplay.done).toBe("Explored");
-    expect(chainDisplay.target).toBe("git status && git diff");
+    expect(`${chainDisplay.done} ${chainDisplay.target}`).toBe("Checked git status + 1 more step");
+    expect(chainDisplay.steps).toHaveLength(2);
 
     // If any part of chain is mutating, whole chain is treated as run
     const mixedChain = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status && rm -rf file.txt" } }));

@@ -49,7 +49,12 @@ describe("fallback tool action labels", () => {
     expect(preparing).toMatchObject({ doing: "Preparing", target: "Bash", status: "running" });
     // The snapshot carries the command and the tool actually runs.
     const running = readToolCall({ title: "gh pr create", text: "", status: "inProgress", surface: "activity", data: { type: "tool_use", name: "Bash", input: { command: "gh pr create" }, phase: "running" } });
-    expect(running).toMatchObject({ doing: "Running", target: "gh pr create" });
+    expect(running).toMatchObject({ doing: "Opening", target: "a pull request", command: "gh pr create" });
+  });
+
+  it("drops a half-written description while the call is still being prepared", () => {
+    const preparing = readToolCall({ title: "Bash", text: "", status: "inProgress", surface: "activity", data: { type: "tool_use", name: "Bash", input: { description: "List the" }, phase: "preparing" } });
+    expect(preparing.intent).toBeUndefined();
   });
 
   it("preserves tool names and recognized categories", () => {
@@ -57,6 +62,51 @@ describe("fallback tool action labels", () => {
       .toMatchObject({ doing: "Using lookup_context", done: "Used lookup_context" });
     expect(readToolCall({ title: "project", text: "", surface: "activity", data: { kind: "read" } }))
       .toMatchObject({ doing: "Reading", done: "Read", target: "project" });
+  });
+});
+
+describe("shell intent and steps", () => {
+  const claudeBash = (input: Record<string, unknown>) =>
+    readToolCall({ title: String(input.command ?? "Bash"), text: "", status: "completed", surface: "activity", data: { type: "tool_use", name: "Bash", input } });
+
+  it("takes Claude's own description as the intent, and keeps the command", () => {
+    const tool = claudeBash({ command: "ls tools/ 2>/dev/null; df -h", description: "Look around tools/ before reproducing" });
+    expect(tool.intent).toBe("Look around tools/ before reproducing");
+    expect(tool.command).toBe("ls tools/ 2>/dev/null; df -h");
+    expect(tool.effect).toBe("read");
+    expect(tool.steps?.map(step => step.done)).toEqual(["Listed", "Checked"]);
+  });
+
+  it("never invents an intent", () => {
+    expect(claudeBash({ command: "ls" }).intent).toBeUndefined();
+    expect(readToolCall({ title: "ls", text: "", surface: "activity", data: { type: "commandExecution", command: "ls" } }).intent).toBeUndefined();
+  });
+
+  it("carries steps only for a chain", () => {
+    expect(claudeBash({ command: "cat a.ts | head -20" }).steps).toBeUndefined();
+    expect(claudeBash({ command: "cat a.ts; cat b.ts" }).steps).toHaveLength(2);
+  });
+
+  it("reads a Codex command out of its zsh wrapper", () => {
+    const tool = readToolCall({ title: "x", text: "", surface: "activity", data: { type: "commandExecution", command: `/bin/zsh -lc "sed -n '1,40p' service/chat.go"` } });
+    expect(tool).toMatchObject({ command: "sed -n '1,40p' service/chat.go", verb: "read", done: "Read", target: "chat.go", effect: "read" });
+  });
+
+  it("recognises a wrapped test run as a check", () => {
+    const tool = readToolCall({ title: "x", text: "test result: ok. 12 passed; 0 failed", surface: "activity", data: { type: "commandExecution", command: `/bin/zsh -lc "cargo test -p bridge-core"` } });
+    expect(tool.check?.kind).toBe("test");
+  });
+
+  it("reads a Cursor command out of its backticked title, with no intent", () => {
+    const tool = readToolCall({ title: "`git status -sb && git diff --stat`", text: "", surface: "activity", data: { kind: "execute" } });
+    expect(tool.command).toBe("git status -sb && git diff --stat");
+    expect(tool.intent).toBeUndefined();
+    expect(tool.glyph).toBe("git");
+  });
+
+  it("treats an ACP title that differs from the command as intent", () => {
+    const tool = readToolCall({ title: "Run the auth tests", text: "", surface: "activity", data: { kind: "execute", command: "bun test src/auth" } });
+    expect(tool.intent).toBe("Run the auth tests");
   });
 });
 

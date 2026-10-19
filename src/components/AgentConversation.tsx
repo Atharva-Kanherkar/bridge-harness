@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, Pencil, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
 import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
@@ -23,10 +23,9 @@ import { computeNarration, type NarrationView } from "../startupNarration";
 import { useAutoExpandEditActivity, useShowThinking } from "../transcriptSettings";
 import { HarnessMark } from "./harnessMarks";
 import { useSmoothText } from "./smoothText";
-import { CONNECTOR_LOGOS, GitMark, logoForMcpServer } from "./connectorLogos";
+import { CappedOutput, CommandPanel, EffectChip, toolIcon } from "./CommandOutput";
 import { CHECK_LABEL } from "../transcript/checks";
 
-const GitHubMark = CONNECTOR_LOGOS.github;
 import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
 import { useProviderUsageOverviews } from "./UsageDot";
 import { UsageResetRow } from "./UsageResetRow";
@@ -169,38 +168,6 @@ function StatusGlyph({ live, failed, succeeded }: { live: boolean; failed: boole
 
 /* ── Tool-call presentation ─────────────────────────────────────────────── */
 
-// The row is achromatic on purpose: the tool glyph identifies the action, and
-// colour is left to the things that carry meaning — diffstats and failures.
-// Reading the call apart lives in `conversation.ts`; all that is left here is
-// choosing an icon for the verb it reports. Brand marks (git, GitHub, a
-// connector) are identity, not decoration, and render in `currentColor`.
-const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
-  pencil: <Pencil size={12}/>,
-  "file-plus": <FilePlus2 size={12}/>,
-  file: <FileText size={12}/>,
-  terminal: <SquareTerminal size={12}/>,
-  search: <Search size={12}/>,
-  globe: <Globe size={12}/>,
-  fork: <GitFork size={12}/>,
-  list: <ListChecks size={12}/>,
-  wrench: <Wrench size={12}/>,
-  brain: <Brain size={12}/>,
-  navigation: <Navigation size={12}/>,
-  git: <GitMark size={12}/>,
-  github: <GitHubMark size={12}/>,
-  mcp: <Wrench size={12}/>,
-};
-
-/// A call's icon: its glyph, or for an MCP call the server's connector logo
-/// when Bridge knows one.
-function toolIcon(call: { glyph: ToolGlyph; server?: string }): React.ReactNode {
-  if (call.glyph === "mcp" && call.server) {
-    const Logo = logoForMcpServer(call.server);
-    if (Logo) return <Logo size={12}/>;
-  }
-  return TOOL_ICON[call.glyph];
-}
-
 /// What a collapsed run says it did, in the order the work reads: commands
 /// first, then the files it looked at, then the files it changed. This is the
 /// only description of a hundred steps most readers will ever want, so it
@@ -231,27 +198,6 @@ function summarize(items: ConversationItem[], live: boolean): string {
   return live ? `${sentence}…` : sentence;
 }
 
-const OUTPUT_DISPLAY_CAP = 6000;
-
-function CappedOutput({ text, className }: { text: string; className?: string }) {
-  const [all, setAll] = useState(false);
-  const clipped = !all && text.length > OUTPUT_DISPLAY_CAP;
-  return (
-    <div>
-      <pre className={className}>{clipped ? text.slice(-OUTPUT_DISPLAY_CAP) : text}</pre>
-      {clipped && (
-        <button
-          type="button"
-          className="px-3.5 pb-2.5 text-left text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          onClick={() => setAll(true)}
-        >
-          earlier output hidden — show all
-        </button>
-      )}
-    </div>
-  );
-}
-
 function formatThoughtDuration(ms: number): string {
   const total = Math.max(1, Math.round(ms / 1000));
   const minutes = Math.floor(total / 60);
@@ -259,18 +205,6 @@ function formatThoughtDuration(ms: number): string {
   if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
   if (minutes === 0) return `${seconds}s`;
   return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-}
-
-/// A command the way a terminal shows one: a `❯` prompt line carrying what ran,
-/// and the output dimmed a step below it on the code ground.
-function TerminalBlock({ command, output }: { command?: string; output?: string }) {
-  return <div className="bg-code font-mono text-[12px] leading-[1.7]">
-    {command && <div className="flex gap-2 px-3.5 pb-1 pt-2.5">
-      <span className="shrink-0 select-none font-semibold text-success" aria-hidden="true">❯</span>
-      <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">{command}</span>
-    </div>}
-    {output && <CappedOutput text={output} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words px-3.5 pb-2.5 pl-[30px] text-muted-foreground"/>}
-  </div>;
 }
 
 /// A harness-spawned nested subagent's detail: which agent was named, what it
@@ -391,15 +325,20 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
   const live = turnActive && call.status === "running";
   const failed = call.status === "failed";
   const succeeded = call.status === "completed";
-  const body = call.patch ? "patch" : call.subagent ? "subagent" : call.verb === "run" && (call.command || call.output) ? "terminal" : call.output ? "output" : null;
+  const body = call.patch ? "patch" : call.subagent ? "subagent" : call.command ? "command" : call.verb === "run" && call.output ? "terminal" : call.output ? "output" : null;
   // `null` is "nobody has decided yet", which is not the same as closed: a patch
   // arriving mid-stream should still open the row, while a reader who collapsed
   // one keeps it collapsed.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const open = (toggled ?? !!call.patch) && !!body;
   const check = call.check && call.command ? { ...call.check, state: checkState(call, turnActive) } : undefined;
-  const label = check ? call.command! : `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
-  const path = call.path && call.path !== call.target ? call.path : undefined;
+  // What the call was for, in the harness's own words when it gave any; else
+  // what Bridge read off the call. A check is named by the command it ran.
+  const label = check ? call.command! : call.intent ?? `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
+  // The command itself trails the title, muted, unless the title already is it.
+  const suffix = !check && call.command && !label.includes(call.command) ? call.command : undefined;
+  // A shell row names its path inside the command; a second label would repeat it.
+  const path = call.path && call.path !== call.target && !suffix ? call.path : undefined;
   // The filename is already in the action label. Only its parent earns a
   // second label; the link and tooltip retain the complete path.
   const directory = path ? path.slice(0, Math.max(0, path.lastIndexOf("/"))) || "Workspace" : undefined;
@@ -420,10 +359,10 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
         >
           <button
             type="button"
-            className="flex min-h-8 min-w-0 items-center gap-2 rounded-md text-left disabled:cursor-default"
+            className={cn("flex min-h-8 min-w-0 items-center gap-2 rounded-md text-left disabled:cursor-default", suffix && "flex-1")}
             disabled={!body}
             aria-expanded={body ? open : undefined}
-            title={label}
+            title={suffix ? `${label}\n${suffix}` : label}
             onClick={() => body && setToggled(!open)}
           >
             {check ? <>
@@ -435,7 +374,10 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
               {check.summary && <span className="hidden truncate font-mono text-[11px] leading-5 text-faint sm:inline">{check.summary}</span>}
             </> : <>
               <span className="shrink-0 text-muted-foreground" aria-hidden="true">{toolIcon(call)}</span>
-              <span className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
+              <span data-tool-title className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
+              {call.effect && <EffectChip effect={call.effect} className="hidden sm:inline-flex"/>}
+              {/* Zero basis, so the command gives up room before the title does. */}
+              {suffix && <span data-tool-command className="hidden min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint sm:block">{suffix}</span>}
             </>}
             <SubagentChip item={item}/>
           </button>
@@ -470,7 +412,8 @@ const ActionRow = memo(function ActionRow({ item, turnActive = true }: { item: C
         <Disclosure open={open} className="my-1 ml-6 rounded-lg border border-border/60">
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
           {body === "subagent" && <SubagentBlock agentType={call.subagent?.agentType} prompt={call.subagent?.prompt} output={call.output} status={call.subagent?.status} live={live}/>}
-          {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
+          {body === "command" && <CommandPanel call={call} live={live}/>}
+          {body === "terminal" && <CappedOutput text={call.output ?? ""} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words bg-code px-3.5 py-2.5 font-mono text-[12px] leading-[1.7] text-muted-foreground"/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>
             : <CappedOutput text={call.output ?? ""} className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-mono text-[12px] leading-relaxed text-muted-foreground"/>)}
@@ -601,13 +544,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
       {checks.length > 0 && !expanded && <div data-check-list className="grid min-w-0 gap-px">
         {checks.map(item => <ActionRow key={item.key} item={item} turnActive={turnActive}/>)}
       </div>}
-      {current && !current.check && !expanded && (
-        <div className="flex min-h-7 min-w-0 items-center gap-2 px-1.5 text-[12px] text-muted-foreground">
-          <span className="shrink-0" aria-hidden="true">{toolIcon(current)}</span>
-          <span className="min-w-0 truncate">{current.doing}{current.target ? ` ${current.target}` : ""}</span>
-          <StatusGlyph live failed={false} succeeded={false}/>
-        </div>
-      )}
+      {current && !current.check && !expanded && <NowCard item={tools[tools.length - 1]} items={items}/>}
       <Disclosure open={expanded}>
         <motion.div
           className="grid min-w-0 gap-px pb-1"
@@ -637,6 +574,102 @@ const ActivityGroup = memo(function ActivityGroup({ items, turnActive, autoExpan
   // never hold and a live turn would re-render all hundred rows on every 50ms
   // flush. The signature says which rows a frame actually touched.
 }, (previous, next) => previous.turnActive === next.turnActive && previous.autoExpandEditActivity === next.autoExpandEditActivity && sameItems(previous.items, next.items));
+
+type NowStep = { step: string; state: "done" | "active" | "pending" };
+
+function stepState(status: unknown): NowStep["state"] {
+  const word = String(status ?? "").toLowerCase().replace(/[_\s-]/g, "");
+  if (word === "completed" || word === "complete" || word === "done") return "done";
+  if (word === "inprogress" || word === "active" || word === "running") return "active";
+  return "pending";
+}
+
+/// The plan a live run is working through: the newest plan update in it, or
+/// the newest TodoWrite a Claude or OpenCode turn kept its tasks in.
+function latestPlan(items: ConversationItem[]): NowStep[] {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.type === "plan") {
+      const steps = Array.isArray(item.data.plan) ? item.data.plan : Array.isArray(item.data.steps) ? item.data.steps : [];
+      const read = steps.flatMap(entry => (entry && typeof entry === "object" && typeof (entry as { step?: unknown }).step === "string"
+        ? [{ step: (entry as { step: string }).step, state: stepState((entry as { status?: unknown }).status) }]
+        : []));
+      if (read.length) return read;
+    }
+    if (isToolItem(item) && String(item.data.name ?? item.data.tool ?? "").toLowerCase() === "todowrite") {
+      const state = item.data.state && typeof item.data.state === "object" ? item.data.state as Record<string, unknown> : {};
+      const input = { ...(item.data.input as Record<string, unknown> | undefined), ...(state.input as Record<string, unknown> | undefined) };
+      const todos = Array.isArray(input.todos) ? input.todos : [];
+      const read = todos.flatMap(entry => (entry && typeof entry === "object" && typeof (entry as { content?: unknown }).content === "string"
+        ? [{ step: (entry as { content: string }).content, state: stepState((entry as { status?: unknown }).status) }]
+        : []));
+      if (read.length) return read;
+    }
+  }
+  return [];
+}
+
+/// The newest few lines a running command has printed, blank lines dropped.
+function outputTail(output: string | undefined, lines = 3): string[] {
+  if (!output) return [];
+  return output.slice(-4000).split("\n").map(line => line.trimEnd()).filter(Boolean).slice(-lines);
+}
+
+/// Seconds since a call started, ticking once a second while it is on screen.
+function Elapsed({ since, className }: { since: number; className?: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <span className={className}>{formatThoughtDuration(Math.max(0, now - since))}</span>;
+}
+
+const SHOWN_PLAN_STEPS = 6;
+
+/// What a live run is doing right now, and where it is in its plan. The
+/// folded group's one-line current step, grown into the card a reader
+/// watching the work actually wants: the call in the harness's words, how long
+/// it has been running, the newest output, and the plan around it.
+function NowCard({ item, items }: { item: ConversationItem; items: ConversationItem[] }) {
+  const call = toolCallDisplay(item);
+  const title = call.intent ?? `${call.doing}${call.target ? ` ${call.target}` : ""}`;
+  const command = call.command && !title.includes(call.command) ? call.command : undefined;
+  const tail = useMemo(() => outputTail(call.output), [call.output]);
+  const plan = useMemo(() => latestPlan(items), [items]);
+  const started = item.createdAt ? Date.parse(item.createdAt) : NaN;
+  const shown = plan.slice(0, SHOWN_PLAN_STEPS);
+  return (
+    <div data-now-card className="my-1 min-w-0 rounded-xl border border-border bg-card px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-2 text-[13px]">
+        <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true"/>
+        <span className="min-w-0 truncate font-medium text-foreground">{title}</span>
+        {call.effect && <EffectChip effect={call.effect} className="hidden sm:inline-flex"/>}
+        {Number.isFinite(started) && <Elapsed since={started} className="ml-auto shrink-0 text-[11.5px] tabular-nums text-muted-foreground"/>}
+      </div>
+      {command && <p className="mt-0.5 truncate pl-[21px] font-mono text-[11.5px] text-faint">{command}</p>}
+      {tail.length > 0 && <div data-now-tail className="ml-[21px] mt-2 rounded-lg bg-code px-2.5 py-1.5 font-mono text-[11.5px] leading-[1.65] text-muted-foreground">
+        {tail.map((line, index) => <span key={index} className={cn("block truncate", index === tail.length - 1 && "text-foreground")}>{line}</span>)}
+      </div>}
+      {shown.length > 0 && <ol data-now-plan className="mt-2.5 flex flex-wrap gap-1.5 pl-[21px]">
+        {shown.map((step, index) => <li
+          key={`${step.step}-${index}`}
+          data-state={step.state}
+          className={cn(
+            "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11.5px]",
+            step.state === "active" ? "border-transparent bg-accent text-foreground" : "border-border",
+            step.state === "done" ? "text-foreground" : step.state === "pending" && "text-muted-foreground",
+          )}
+        >
+          {step.state === "done" && <Check size={11} className="shrink-0 text-success" aria-hidden="true"/>}
+          {step.state === "active" && <LoaderCircle size={11} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true"/>}
+          <span className="truncate">{step.step}</span>
+        </li>)}
+        {plan.length > SHOWN_PLAN_STEPS && <li className="inline-flex items-center px-1 text-[11.5px] text-muted-foreground">+{plan.length - SHOWN_PLAN_STEPS} more</li>}
+      </ol>}
+    </div>
+  );
+}
 
 /// Variants an `ActionRow` inherits from the group that reveals it. Declared
 /// once so the stagger and the row agree on what "hidden" means.

@@ -445,6 +445,11 @@ html[data-native-fullscreen] .u-traffic-inset {
   code, kbd, samp, pre {
     font-family: var(--font-mono);
     }
+  /* Geist Mono's contextual ligatures swallow the space before `--`, so
+     `gh pr view 70 --json` drew as `70--json`. Code reads character by character. */
+  code, kbd, samp, pre, .font-mono, .cm-editor {
+    font-variant-ligatures: none;
+    }
   ::selection {
     background: color-mix(in srgb, var(--color-ring) 26%, transparent);
     }
