@@ -161,6 +161,68 @@ describe("nested commands", () => {
   });
 });
 
+describe("effect-bearing options", () => {
+  it.each([
+    // sed: in place, a script that writes or runs, a script file.
+    ["sed --in-place=.bak s/a/b/ f.txt", "write"],
+    ["sed --in-place s/a/b/ f.txt", "write"],
+    ["sed -i.bak s/a/b/ f.txt", "write"],
+    ["sed 's/a/b/w out.txt' f.txt", "write"],
+    ["sed -n '1,5p;/x/w log.txt' f.txt", "write"],
+    ["sed 's/x/date/e' f.txt", "exec"],
+    ["sed -e 1d -e 'e ls' f.txt", "exec"],
+    ["sed -f fix.sed f.txt", "exec"],
+    ["sed 's|a;w b|c|g' f.txt", "read"],
+    ["sed -n '$!N;s/\\n/ /p' f.txt", "read"],
+    // Finders and listers that run or write.
+    ["fd pattern --exec rm {}", "exec"],
+    ["fd pattern --exec-batch=rm", "exec"],
+    ["fd x -x rm", "exec"],
+    ["fd -HX rm x", "exec"],
+    ["fd -tx build", "read"],
+    ["rg --pre ./decode.sh x", "exec"],
+    ["rg --pre=./decode.sh x", "exec"],
+    ["find . -ok rm {} \\;", "exec"],
+    ["find . -fprint found.txt", "write"],
+    ["tree -o tree.txt", "write"],
+    ["tree -L 2", "read"],
+    ["yq -i '.a = 1' f.yaml", "write"],
+    ["yq '.a' f.yaml", "read"],
+    // Pipe stages.
+    ["cat f | sort -o out.txt", "write"],
+    ["cat f | sort --output=out.txt", "write"],
+    ["cat f | sort -rn", "read"],
+    ["cat f | uniq - out.txt", "write"],
+    ["cat f | uniq -c", "read"],
+    ["cat f | awk '{print $1}'", "read"],
+    ["cat f | awk '{system(\"rm x\")}'", "exec"],
+    ["cat f | awk '{print > \"out\"}'", "exec"],
+    ["cat f | awk -i inplace '{print}'", "write"],
+    ["cat f | base64 -o out.b64", "write"],
+    // git and gh.
+    ["git -c core.pager='rm -rf x' log", "exec"],
+    ["git -c diff.x.textconv=./t diff", "exec"],
+    ["git -c color.ui=always log", "read"],
+    ["git diff --output=patch.diff", "write"],
+    ["git diff --ext-diff", "exec"],
+    ["git grep -O todo", "exec"],
+    ["gh pr view 70 --web", "exec"],
+    ["gh issue view 3 -w", "exec"],
+    // Setting system state.
+    ["date -s 12:00", "exec"],
+    ["date +%s", "read"],
+    ["hostname new-name", "exec"],
+    ["hostname", "read"],
+  ])("%s is %s", (command, effect) => {
+    expect(readCommand(command).effect).toBe(effect);
+  });
+
+  it("keeps naming an option-escalated step by what it does", () => {
+    expect(label("sed --in-place=.bak s/a/b/ notes.md")).toBe("Edited notes.md");
+    expect(label("fd -e ts --exec rm {}")).toBe("Searched files");
+  });
+});
+
 describe("phrases", () => {
   it.each([
     ["gh pr view 70 --json title,body", "Read PR #70"],

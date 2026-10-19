@@ -429,6 +429,111 @@ function flagValue(args: string[], names: string[]): string | undefined {
   return undefined;
 }
 
+/** Every value a flag was given: `-e a -e b` is two scripts. */
+function flagValues(args: string[], names: string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    for (const name of names) {
+      if (arg === name && index + 1 < args.length) out.push(args[++index]);
+      else if (arg.startsWith(`${name}=`)) out.push(arg.slice(name.length + 1));
+    }
+  }
+  return out;
+}
+
+/** A long option, bare or with its value attached: `--in-place`, `--in-place=.bak`. */
+function hasLong(args: string[], ...names: string[]): boolean {
+  return args.some(arg => names.some(name => arg === name || arg.startsWith(`${name}=`)));
+}
+
+/** A short option, alone or in a cluster of boolean ones before it: `-x`, `-Hx`. */
+function hasShort(args: string[], letter: string, booleans = "a-zA-Z"): boolean {
+  const cluster = new RegExp(`^-[${booleans}]*${letter}`);
+  return args.some(arg => !arg.startsWith("--") && cluster.test(arg));
+}
+
+/**
+ * What a sed script does beyond printing: `w file` and `s///w file` write,
+ * `e` and `s///e` run the pattern space as a command. Walks the script's
+ * commands so a `;` or `w` inside a regex or replacement is not mistaken for one.
+ */
+function sedScriptEffect(script: string): CommandEffect {
+  let effect: CommandEffect = "read";
+  let index = 0;
+  const at = () => script[index];
+  const skipDelimited = (delimiter: string, parts: number) => {
+    let seen = 0;
+    while (index < script.length && seen < parts) {
+      if (at() === "\\") { index += 2; continue; }
+      if (at() === delimiter) seen++;
+      index++;
+    }
+  };
+  while (index < script.length) {
+    while (index < script.length && /[\s;{}!]/.test(at())) index++;
+    // Up to two addresses: a line number, `$`, or a /regex/ (or \cregexc).
+    for (let address = 0; address < 2 && index < script.length; address++) {
+      if (/\d/.test(at())) { while (index < script.length && /[\d~+]/.test(at())) index++; }
+      else if (at() === "$") index++;
+      else if (at() === "/" || at() === "\\") {
+        const delimiter = at() === "\\" ? script[++index] : "/";
+        index++;
+        skipDelimited(delimiter, 1);
+        while (index < script.length && /[IM]/.test(at())) index++;
+      } else break;
+      if (at() !== ",") break;
+      index++;
+    }
+    while (index < script.length && /[\s!]/.test(at())) index++;
+    const command = at();
+    if (command === undefined) break;
+    index++;
+    if (command === "s" || command === "y") {
+      const delimiter = script[index++];
+      skipDelimited(delimiter, 2);
+      if (command === "s") {
+        const flags = /^[0-9gpiImMew]*/.exec(script.slice(index))![0];
+        index += flags.length;
+        if (flags.includes("e")) return "exec";
+        if (flags.includes("w")) effect = "write";
+      }
+    } else if (command === "e") {
+      return "exec";
+    } else if (command === "w" || command === "W") {
+      effect = "write";
+    }
+    // Whatever argument the command took runs to the end of its line or `;`.
+    const toLineEnd = "wWaicrRe".includes(command) || (command === "s" && effect === "write");
+    while (index < script.length && at() !== "\n" && (toLineEnd || (at() !== ";" && at() !== "}"))) index++;
+  }
+  return effect;
+}
+
+/** sed's effect: an in-place edit writes; its scripts may write or run. */
+function sedEffect(args: string[]): { effect: CommandEffect; inPlace: boolean; script?: string; paths: string[] } {
+  const inPlace = hasLong(args, "--in-place") || hasShort(args, "i", "nErsuz");
+  // A script file could hold anything.
+  const fromFile = hasLong(args, "--file") || hasShort(args, "f", "nErsuz");
+  const scripts = flagValues(args, ["-e", "--expression"]);
+  // macOS spells an in-place edit with no backup as `-i ''`.
+  const free = positionals(args, new Set(["-e", "--expression", "-f", "--file", "-l"])).filter(arg => arg !== "");
+  const script = scripts[0] ?? free[0];
+  const paths = scripts.length ? free : free.slice(1);
+  let effect: CommandEffect = inPlace ? "write" : "read";
+  for (const text of scripts.length ? scripts : script ? [script] : []) effect = stronger(effect, sedScriptEffect(text));
+  if (fromFile) effect = "exec";
+  return { effect, inPlace, script, paths };
+}
+
+/** awk's effect: `-i inplace` writes; a script file, `system()`, or a pipe or redirect in the program runs or writes. */
+function awkEffect(args: string[]): CommandEffect {
+  if (flagValues(args, ["-i", "--include"]).includes("inplace")) return "write";
+  if (hasLong(args, "--file") || args.includes("-f")) return "exec";
+  const program = positionals(args, new Set(["-F", "-v", "--assign", "--field-separator"]))[0] ?? "";
+  return /system\s*\(|[|>]/.test(program) ? "exec" : "read";
+}
+
 const read = (doing: string, done: string, target?: string, extra: Partial<Phrase> = {}): Phrase =>
   ({ verb: "read", glyph: "file", doing, done, target, effect: "read", ...extra });
 /** A read-only step that is not a file read: it counts as a command, not a file. */
@@ -476,12 +581,14 @@ function headNote(bin: string, args: string[]): string {
   return bin === "head" ? `first ${n} line${n === "1" ? "" : "s"}` : `last ${n} line${n === "1" ? "" : "s"}`;
 }
 
-const GH_VALUED = new Set(["-R", "--repo", "--json", "-q", "--jq", "-t", "--template", "-L", "--limit", "-s", "--state", "-l", "--label", "-a", "--assignee", "-A", "--author", "-B", "--base", "-H", "--head", "-b", "--body", "-F", "--body-file", "--title", "-X", "--method", "-f", "--field", "--raw-field", "--header", "--input", "-w", "--workflow", "-j", "--job", "-c", "--commit", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-e", "--search", "-S"]);
+const GH_VALUED = new Set(["-R", "--repo", "--json", "-q", "--jq", "-t", "--template", "-L", "--limit", "-s", "--state", "-l", "--label", "-a", "--assignee", "-A", "--author", "-B", "--base", "-H", "--head", "-b", "--body", "-F", "--body-file", "--title", "-X", "--method", "-f", "--field", "--raw-field", "--header", "--input", "--hostname", "--workflow", "-j", "--job", "-c", "--commit", "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-e", "--search", "-S"]);
 
 function ghPhrase(args: string[]): Phrase {
-  const github = (phrase: Phrase): Phrase => ({ ...phrase, glyph: "github" });
   const rest = positionals(args, GH_VALUED);
   const [noun, verb, subject] = rest;
+  // `--web` opens a browser instead of printing: that runs something.
+  const web = hasLong(args, "--web") || (["pr", "issue", "repo", "release"].includes(noun ?? "") && args.includes("-w"));
+  const github = (phrase: Phrase): Phrase => ({ ...phrase, glyph: "github", effect: web ? "exec" : phrase.effect });
   const pr = subject ? `PR #${subject.replace(/^#/, "")}` : "the current PR";
   const issue = subject ? `issue #${subject.replace(/^#/, "")}` : "an issue";
   if (noun === "api") {
@@ -532,23 +639,33 @@ function ghPhrase(args: string[]): Phrase {
   return github(reads ? look("Running", "Ran", target) : exec("Running", "Ran", target));
 }
 
+/** `git -c` keys whose value is a program git will run. */
+const RUNNING_GIT_CONFIG = /^(core\.(pager|editor|sshcommand|fsmonitor|hookspath|gitproxy|askpass)|diff\.external|.*\.(textconv|command|driver|cmd)|alias\.|credential\.|pager\.|gpg\.|sequence\.editor|filter\.|uploadpack\.|protocol\.)/i;
+
 function gitPhrase(args: string[]): Phrase {
   const notes: string[] = [];
+  let runs = false;
   let index = 0;
   while (index < args.length && isFlag(args[index])) {
     if (args[index] === "-C") {
       if (args[index + 1]) notes.push(`in ${shortPath(args[index + 1])}`);
       index += 2;
     } else if (args[index] === "-c") {
+      if (RUNNING_GIT_CONFIG.test(args[index + 1] ?? "")) runs = true;
       index += 2;
     } else {
+      if (args[index].startsWith("--exec-path=") || args[index].startsWith("--config-env")) runs = true;
       index += 1;
     }
   }
   const sub = args[index]?.toLowerCase();
   const rest = args.slice(index + 1);
   const free = positionals(rest, new Set(["-m", "--message", "-b", "-B", "-c", "-C", "--format", "--pretty", "-n", "--max-count", "--author", "--since", "--until", "-L", "-U", "--unified"]));
-  const git = (phrase: Phrase): Phrase => ({ ...phrase, glyph: "git", notes: [...notes, ...(phrase.notes ?? [])] });
+  // Read subcommands that write a file or hand off to another program.
+  if (hasLong(rest, "--ext-diff", "--open-files-in-pager") || (sub === "grep" && hasShort(rest, "O"))) runs = true;
+  const writes = hasLong(rest, "--output");
+  const escalate = (effect: CommandEffect): CommandEffect => (runs ? "exec" : writes ? stronger(effect, "write") : effect);
+  const git = (phrase: Phrase): Phrase => ({ ...phrase, glyph: "git", effect: escalate(phrase.effect), notes: [...notes, ...(phrase.notes ?? [])] });
   const has = (...flags: string[]) => rest.some(arg => flags.includes(arg));
   switch (sub) {
     case undefined: return git(exec("Running", "Ran", "git"));
@@ -560,7 +677,7 @@ function gitPhrase(args: string[]): Phrase {
     case "rev-parse": case "ls-files": case "ls-tree": case "cat-file": case "shortlog": case "reflog": case "merge-base":
       return git(read("Checking", "Checked", `git ${sub}`));
     case "blame": return git(read("Reading", "Read", `blame of ${free[0] ? basename(free[0]) : "file"}`, { path: free[0] }));
-    case "grep": return { ...grepPhrase(rest), glyph: "git", notes };
+    case "grep": return git(grepPhrase(rest));
     case "branch":
       if (has("-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy") || (free.length && !has("-a", "-r", "--list", "--show-current", "--contains", "-v", "-vv")))
         return git(write("Changing", "Changed", "branches"));
@@ -637,21 +754,19 @@ function phrase(words: string[]): Phrase | null {
       return { ...read("Reading", "Read", "input"), ...files(paths), notes: [headNote(bin, args)] };
     }
     case "sed": {
-      // macOS spells an in-place edit with no backup as `-i ''`.
-      const free = positionals(args, new Set(["-e", "-f"])).filter(arg => arg !== "");
-      const explicit = flagValue(args, ["-e"]);
-      const script = explicit ?? free[0];
-      const paths = explicit !== undefined ? free : free.slice(1);
-      if (args.some(arg => arg === "--in-place" || (/^-[a-zA-Z]*i/.test(arg) && !arg.startsWith("--"))))
-        return { ...write("Editing", "Edited", "a file"), ...files(paths) };
+      const { effect, inPlace, script, paths } = sedEffect(args);
+      if (inPlace) return { ...write("Editing", "Edited", "a file"), ...files(paths), effect };
       const note = args.includes("-n") ? linesNote(script) : undefined;
-      return { ...read("Reading", "Read", "input"), ...files(paths), notes: note ? [note] : [] };
+      return { ...read("Reading", "Read", "input"), ...files(paths), notes: note ? [note] : [], effect };
     }
     case "ls": case "dir": case "tree": case "exa": case "eza": {
-      const dir = positionals(args, new Set(["-L", "-I", "--ignore"]))[0];
-      return read("Listing", "Listed", dir ? basename(dir) : "directory", { glyph: "folder", path: dir });
+      const dir = positionals(args, new Set(["-L", "-I", "--ignore", "-o"]))[0];
+      const effect: CommandEffect = bin === "tree" && args.includes("-o") ? "write" : "read";
+      return read("Listing", "Listed", dir ? basename(dir) : "directory", { glyph: "folder", path: dir, effect });
     }
     case "rg":
+      // A preprocessor is a program rg runs on every file it searches.
+      if (hasLong(args, "--pre")) return { ...grepPhrase(args), effect: "exec" };
       if (args.includes("--files")) {
         const dir = positionals(args, GREP_VALUED)[0];
         return read("Listing", "Listed", dir ? `files in ${basename(dir)}` : "files", { glyph: "folder", path: dir });
@@ -662,12 +777,16 @@ function phrase(words: string[]): Phrase | null {
     case "find": {
       const name = flagValue(args, ["-name", "-iname", "-path", "-ipath", "-regex"]);
       const root = args.find(arg => !arg.startsWith("-"));
-      const effect: CommandEffect = args.some(arg => arg === "-delete" || arg === "-exec" || arg === "-execdir") ? "exec" : "read";
+      const effect: CommandEffect = args.some(arg => ["-delete", "-exec", "-execdir", "-ok", "-okdir"].includes(arg)) ? "exec"
+        : args.some(arg => ["-fprint", "-fprint0", "-fprintf", "-fls"].includes(arg)) ? "write" : "read";
       return { ...search(name ? `“${clip(name, 48)}”` : "files", root), effect };
     }
     case "fd": case "fdfind": case "locate": {
-      const pattern = positionals(args, new Set(["-e", "--extension", "-t", "--type", "-d", "--max-depth", "-E", "--exclude"]))[0];
-      return search(pattern ? `“${clip(pattern, 48)}”` : "files");
+      // `-x`/`-X` run a command per match and take every argument after them.
+      const execAt = bin === "locate" ? -1 : args.findIndex(arg => hasLong([arg], "--exec", "--exec-batch") || hasShort([arg], "[xX]", "HIuisgFaLlp0"));
+      const runs = execAt >= 0;
+      const pattern = positionals(runs ? args.slice(0, execAt) : args, new Set(["-e", "--extension", "-t", "--type", "-d", "--max-depth", "-E", "--exclude"]))[0];
+      return { ...search(pattern ? `“${clip(pattern, 48)}”` : "files"), effect: runs ? "exec" : "read" };
     }
     case "wc": return { ...read("Counting", "Counted", "input"), ...files(positionals(args)) };
     case "stat": case "file": return { ...read("Inspecting", "Inspected", "a file"), ...files(positionals(args)) };
@@ -680,11 +799,19 @@ function phrase(words: string[]): Phrase | null {
     case "pwd": return look("Checking", "Checked", "the working directory");
     case "echo": case "printf": return look("Printing", "Printed", positionals(args).length ? `“${clip(positionals(args).join(" "), 40)}”` : undefined);
     case "env": case "printenv": return look("Checking", "Checked", "the environment");
-    case "date": case "uname": case "whoami": case "hostname": case "id": case "sw_vers": case "arch": case "uptime": case "nproc":
+    case "date": case "hostname":
+      // Setting the clock or the host name is not a check.
+      if (bin === "date" ? hasLong(args, "--set") || hasShort(args, "s", "uRj") : positionals(args).length > 0) return exec("Setting", "Set", bin === "date" ? "the date" : "the host name");
+      return look("Checking", "Checked", bin);
+    case "uname": case "whoami": case "id": case "sw_vers": case "arch": case "uptime": case "nproc":
       return look("Checking", "Checked", bin);
     case "ps": case "lsof": case "top": case "pgrep": return look("Checking", "Checked", "running processes");
     case "sleep": return look("Waiting", "Waited", args[0] ? `${args[0]}${/^\d+$/.test(args[0]) ? "s" : ""}` : undefined);
-    case "jq": case "yq": { const free = positionals(args, new Set(["--arg", "--argjson", "-f"])); return { ...read("Reading", "Read", "JSON"), ...files(free.slice(1)), notes: free[0] ? [`jq ${clip(free[0], 32)}`] : [] }; }
+    case "jq": case "yq": {
+      const free = positionals(args, new Set(["--arg", "--argjson", "-f"]));
+      const effect: CommandEffect = bin === "yq" && (hasLong(args, "--inplace") || hasShort(args, "i", "PCMNe")) ? "write" : "read";
+      return { ...read("Reading", "Read", "JSON"), ...files(free.slice(1)), notes: free[0] ? [`${bin} ${clip(free[0], 32)}`] : [], effect };
+    }
     case "test": case "[": case "[[": return look("Checking", "Checked", "a condition");
     case "export": return look("Setting", "Set", positionals(args).map(arg => arg.split("=")[0]).join(", ") || "variables");
     case "mkdir": return write("Creating", "Created", positionals(args)[0] ? `directory ${basename(positionals(args)[0])}` : "a directory", { path: positionals(args)[0] });
@@ -725,8 +852,15 @@ function stageNote(words: string[]): { note?: string; effect: CommandEffect } {
     }
     case "wc": return { note: args.includes("-l") ? "counted lines" : "counted", effect: "read" };
     case "jq": case "yq": return { note: "parsed JSON", effect: "read" };
-    case "sort": case "uniq": case "cut": case "tr": case "awk": case "sed": case "column": case "cat": case "less": case "more": case "nl": case "fmt": case "fold": case "rev": case "base64": case "xxd": case "od": case "strings":
-      return { effect: bin === "sed" && args.some(arg => /^-[a-zA-Z]*i/.test(arg)) ? "write" : "read" };
+    case "sed": return { effect: sedEffect(args).effect };
+    case "awk": case "gawk": case "mawk": case "nawk": return { effect: awkEffect(args) };
+    case "sort": return { effect: hasLong(args, "--output") || hasShort(args, "o", "bdfgiMhnRrVcCmsuz") ? "write" : "read" };
+    case "base64": return { effect: hasLong(args, "--output") || args.includes("-o") ? "write" : "read" };
+    // `uniq in out` and `xxd in out` write their second argument.
+    case "uniq": return { effect: positionals(args, new Set(["-f", "-s", "-w"])).length >= 2 ? "write" : "read" };
+    case "xxd": return { effect: positionals(args, new Set(["-c", "-g", "-l", "-o", "-s", "-n"])).length >= 2 ? "write" : "read" };
+    case "cut": case "tr": case "column": case "cat": case "less": case "more": case "nl": case "fmt": case "fold": case "rev": case "od": case "strings":
+      return { effect: "read" };
     case "tee": { const path = positionals(args)[0]; return { note: path ? `writes ${basename(path)}` : undefined, effect: path ? "write" : "read" }; }
     case "xargs": {
       // The command xargs runs once per line decides what the stage does.
