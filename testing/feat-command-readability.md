@@ -45,6 +45,34 @@ turn shows a Now card. Frontend only; no wire change.
   - exec: everything else, including unknown programs, interpreters, package
     scripts, curl/wget, git push/pull/fetch/clone, and gh create/merge/comment/edit.
     Unknown is never `read`.
+- **Nested commands are not hidden** (review on PR #834). A pipeline is
+  `exec` when it contains a command substitution (`$(…)`, backticks) or a
+  process substitution (`<(…)`, `>(…)`) outside single quotes, or one in the
+  body of an unquoted heredoc, unless every nested command reads as `read`.
+  `ls $(pwd)` stays read; `echo "$(rm -rf build)"` and `cat <(curl x)` are
+  exec; `echo 'literal $(x)'`, `$((1+2))` and a quoted heredoc (`<<'EOF'`)
+  are not substitutions. An unclosed substitution is exec. A `cd`, `set`,
+  `true` or bare assignment that runs a nested command is a step, not folded
+  away. The step gets the note `runs a nested command`.
+- **Effect-bearing options of allowlisted programs** (review on PR #834).
+  Long options match with or without an attached `=value`:
+  - `sed`: `-i…`/`--in-place[=SUF]` → write; a script `w`/`W` command or
+    `s///w` → write; an `e` command or `s///e` → exec; `-f`/`--file` → exec.
+  - `fd`: `-x`/`--exec`/`-X`/`--exec-batch` → exec. `rg --pre` → exec.
+  - `find`: `-ok`/`-okdir` → exec; `-fprint`/`-fprint0`/`-fprintf`/`-fls` → write.
+  - `tree -o` and `yq -i`/`--inplace` → write.
+  - Pipe stages: `sort -o`/`--output` → write; `uniq in out` → write;
+    `base64 -o` → write; `xxd in out` → write; `awk` with `-i inplace` → write;
+    `awk -f` or a program containing `system(`, `|` or `>` → exec.
+  - `git`: `-c` with a key that runs a program (`core.pager`,
+    `core.sshCommand`, `core.fsmonitor`, `core.hooksPath`, `diff.external`,
+    `*.textconv`, `alias.*`, `credential.*`, `pager.*`, `gpg.*`, …) → exec;
+    read subcommands with `--output` → write; `--ext-diff` and
+    `git grep -O`/`--open-files-in-pager` → exec.
+  - `gh … --web` → exec. `date -s`/`--set` and `hostname <name>` → exec.
+  - An env prefix that loads or runs code (`LD_PRELOAD`, `DYLD_*`,
+    `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH*`, `GIT_ASKPASS`,
+    `EDITOR`, `BASH_ENV`, …) → exec. A plain assignment like `LANG=C` is not.
 - **Phrases** (doing / done + target):
   - `gh pr view 70` → Reading / Read `PR #70`, and `gh pr view` → `the current PR`.
   - `gh pr list` → Listing / Listed `pull requests`.
@@ -104,7 +132,10 @@ turn shows a Now card. Frontend only; no wire change.
 - A truncated document (`| head -c 20000`) is repaired: the open string is
   closed, a dangling key or comma is dropped, and brackets are closed. It is
   flagged `truncated`; if repair fails the result is `null`.
-- Kind comes from the lead step: `gh pr view` + object with `title` → gh-pr,
+- Kind comes from the lead step, whose `gh` noun and verb are read with the
+  same flag table as its phrase, so global `-R`/`--repo`/`--hostname` values
+  are skipped: `gh -R o/r pr view 834` is a PR (review on PR #834).
+  `gh pr view` + object with `title` → gh-pr,
   `gh issue view` → gh-issue, `gh run view` → gh-run, and `gh pr|issue list`
   + array of objects with `number` and `title` → gh-list. Any other parsed
   object or array → json.
@@ -137,8 +168,11 @@ turn shows a Now card. Frontend only; no wire change.
   mapping, cd and `git -C` notes, `|| true`, the effect table including the
   unknown→exec and strongest-wins cases, each phrase above, the chain lead step
   and `+ N more steps`, and cache identity.
+- `src/transcript/command.test.ts` (review follow-up): every substitution case
+  above (including the literal, arithmetic and quoted-heredoc negatives), and
+  a table with one case per effect-bearing option, plus its read-only control.
 - `src/transcript/outputRender.test.ts`: gh-pr, gh-issue, gh-run and gh-list
-  detection, unknown JSON, non-JSON, a `head -c` truncated PR (repaired and
+  detection, `-R`/`--repo`/`--repo=` global flags, unknown JSON, non-JSON, a `head -c` truncated PR (repaired and
   flagged), unrepairable input → null, oversize → null.
 - `src/conversation.test.ts`: update the chain case. `git status && git diff`
   reads `Checked git status + 1 more step` with verb read and two steps; the
