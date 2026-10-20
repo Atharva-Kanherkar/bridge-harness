@@ -9,7 +9,7 @@ use crate::{
     delegation::WriteMode,
     diagnostics,
     model::{AuthState, CapabilityTier, ModelOption},
-    BridgeError,
+    opencode_v2, BridgeError,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::blocking::{Client, Response};
@@ -32,6 +32,50 @@ use std::{
 };
 
 const MINIMUM_VERSION: (u64, u64, u64) = (1, 18, 3);
+
+/// Which server API an `opencode serve` speaks. 2.x moved every route under
+/// `/api`, fixed the basic-auth user, and replaced the event stream; the
+/// translation lives in `opencode_v2`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerApi {
+    V1,
+    V2,
+}
+
+impl ServerApi {
+    fn of(version: &str) -> Self {
+        match parse_version(version) {
+            Some((major, _, _)) if major >= 2 => Self::V2,
+            _ => Self::V1,
+        }
+    }
+
+    /// 1.x takes the user from `OPENCODE_SERVER_USERNAME`; 2.x ignores it.
+    fn username(self) -> &'static str {
+        match self {
+            Self::V1 => "bridge",
+            Self::V2 => "opencode",
+        }
+    }
+
+    /// A route that answers only an authenticated caller. 2.x serves its web
+    /// app on every other path, so only an `/api` route proves the server.
+    fn health_path(self) -> &'static str {
+        match self {
+            Self::V1 => "/global/health",
+            Self::V2 => "/api/info",
+        }
+    }
+
+    /// 1.x scopes a request with `?directory=`; 2.x reads the
+    /// `x-opencode-directory` header the client sends on every request.
+    fn url(self, base_url: &str, path: &str, directory: &str) -> String {
+        match self {
+            Self::V1 => endpoint(base_url, path, directory),
+            Self::V2 => format!("{base_url}{path}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -93,6 +137,9 @@ pub struct OpenCodeRuntime {
     _ledger: crate::process_ledger::LaunchGuard,
     stderr_tail: crate::adapters::StderrTail,
     client: Option<Client>,
+    api: ServerApi,
+    /// Requests a 2.x server is waiting on, by id; see `opencode_v2`.
+    pending: opencode_v2::PendingRequests,
     base_url: String,
     directory: String,
     session_id: String,
@@ -187,7 +234,7 @@ fn launch(
         validate_path_id("session id", session_id)?;
     }
     let binary = resolve_executable(settings)?;
-    ensure_supported_version(&binary)?;
+    let api = ServerApi::of(&ensure_supported_version(&binary)?);
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let server_password = uuid::Uuid::new_v4().to_string();
@@ -227,7 +274,7 @@ fn launch(
     let mut child = command.spawn()?;
     let ledger = crate::process_ledger::record_launch("opencode.session", request.cwd, child.id());
     let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
-    let client = match build_authenticated_client(&server_password) {
+    let client = match build_authenticated_client(api, &server_password, request.cwd) {
         Ok(client) => client,
         Err(error) => {
             stop_child(&mut child);
@@ -237,7 +284,7 @@ fn launch(
     if let Some(on_progress) = request.on_progress {
         on_progress(crate::adapters::StartupPhase::Handshake);
     }
-    if let Err(error) = wait_until_ready(&client, &base_url, &mut child) {
+    if let Err(error) = wait_until_ready(&client, &base_url, &mut child, api) {
         stop_child(&mut child);
         drop_client_safely(client);
         return Err(error);
@@ -251,25 +298,28 @@ fn launch(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let directory = request.cwd.to_owned();
+    let session_prefix = match api {
+        ServerApi::V1 => "/session",
+        ServerApi::V2 => "/api/session",
+    };
     let session_result = match resume_session_id {
         Some(session_id) => client
-            .get(endpoint(
-                &base_url,
-                &format!("/session/{session_id}"),
-                &directory,
-            ))
+            .get(api.url(&base_url, &format!("{session_prefix}/{session_id}"), &directory))
             .timeout(Duration::from_secs(10))
             .send()
             .map_err(http_error("resume OpenCode session"))
             .and_then(|response| checked_json(response, "resume OpenCode session")),
         None => {
-            let body = if completion_only {
+            let mut body = if completion_only {
                 completion_session_body(model.as_ref(), variant.as_deref())
             } else {
                 session_create_body(model.as_ref(), variant.as_deref(), request.write_mode)
             };
+            if api == ServerApi::V2 {
+                body = v2_session_body(body);
+            }
             client
-                .post(endpoint(&base_url, "/session", &directory))
+                .post(api.url(&base_url, session_prefix, &directory))
                 .timeout(Duration::from_secs(10))
                 .json(&body)
                 .send()
@@ -277,6 +327,11 @@ fn launch(
                 .and_then(|response| checked_json(response, "create OpenCode session"))
         }
     };
+    // 2.x wraps every result in `{data}`.
+    let session_result = session_result.map(|session| match api {
+        ServerApi::V1 => session,
+        ServerApi::V2 => session.get("data").cloned().unwrap_or(Value::Null),
+    });
     let session = match session_result {
         Ok(session) => session,
         Err(error) => {
@@ -298,7 +353,40 @@ fn launch(
         drop_client_safely(client);
         return Err(error);
     }
+    // 2.x has no per-message `system` value. Bridge's instructions become a
+    // durable entry on the session instead, rewritten on every launch so a
+    // resumed session carries this launch's authority and not a stale one.
+    if api == ServerApi::V2 {
+        let entry = api.url(
+            &base_url,
+            &format!("/api/experimental/session/{session_id}/instructions/entries/bridge"),
+            &directory,
+        );
+        match request.instructions.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(instructions) => {
+                let attached = client
+                    .put(entry)
+                    .timeout(Duration::from_secs(10))
+                    .json(&json!({"value": instructions}))
+                    .send()
+                    .map_err(http_error("attach Bridge instructions to the OpenCode session"))
+                    .and_then(|response| checked_status(response, "attach Bridge instructions to the OpenCode session"));
+                if let Err(error) = attached {
+                    stop_child(&mut child);
+                    drop_client_safely(client);
+                    return Err(error);
+                }
+            }
+            // A resumed session may still hold an earlier launch's entry.
+            // Absent is the goal, so a missing entry is not an error.
+            None if resume_session_id.is_some() => {
+                let _ = client.delete(entry).timeout(Duration::from_secs(10)).send();
+            }
+            None => {}
+        }
+    }
 
+    let pending = opencode_v2::PendingRequests::default();
     let shutting_down = Arc::new(AtomicBool::new(false));
     let (sender, receiver, queue_metrics) =
         crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
@@ -310,6 +398,8 @@ fn launch(
         sender,
         shutting_down.clone(),
         EventStreamPolicy::default(),
+        api,
+        pending.clone(),
     ) {
         stop_child(&mut child);
         drop_client_safely(client);
@@ -328,6 +418,8 @@ fn launch(
             _ledger: ledger,
             stderr_tail,
             client: Some(client),
+            api,
+            pending,
             base_url,
             directory,
             session_id,
@@ -390,6 +482,19 @@ fn session_create_body(
     body
 }
 
+/// A 1.x session body in 2.x terms: the model reference is already the same
+/// shape, the permission rules are not.
+fn v2_session_body(body: Value) -> Value {
+    let mut converted = json!({
+        "title": body.get("title").cloned().unwrap_or(json!("Bridge session")),
+        "permissions": opencode_v2::permission_rules(body.get("permission").unwrap_or(&Value::Null)),
+    });
+    if let Some(model) = body.get("model") {
+        converted["model"] = model.clone();
+    }
+    converted
+}
+
 fn stop_child(child: &mut Child) {
     let _ = crate::adapters::terminate_process_group(child.id());
     let _ = child.kill();
@@ -409,10 +514,14 @@ fn reserve_port() -> Result<u16, BridgeError> {
     Ok(listener.local_addr()?.port())
 }
 
-fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeError> {
+fn build_authenticated_client(
+    api: ServerApi,
+    server_password: &str,
+    directory: &str,
+) -> Result<Client, BridgeError> {
     let authorization = format!(
         "Basic {}",
-        BASE64.encode(format!("bridge:{server_password}"))
+        BASE64.encode(format!("{}:{server_password}", api.username()))
     );
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -421,6 +530,14 @@ fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeErr
             BridgeError::Adapter(format!("Cannot secure OpenCode server: {error}"))
         })?,
     );
+    if api == ServerApi::V2 {
+        headers.insert(
+            "x-opencode-directory",
+            HeaderValue::from_str(&encode_directory(directory)).map_err(|error| {
+                BridgeError::Adapter(format!("Cannot scope OpenCode requests: {error}"))
+            })?,
+        );
+    }
     Client::builder()
         .default_headers(headers)
         .connect_timeout(Duration::from_secs(2))
@@ -429,16 +546,34 @@ fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeErr
         .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))
 }
 
+/// 2.x URI-decodes `x-opencode-directory`, so anything a header cannot carry
+/// is percent-encoded.
+fn encode_directory(directory: &str) -> String {
+    directory
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-_.~/".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
 /// Whether this runtime can ask OpenCode to summarize.
 ///
 /// The endpoint requires the model that writes the summary, so a runtime with
 /// no model selected has nothing to name and would be refused on the wire.
 /// Answering `Unsupported` sends the request to Bridge's own checkpoint
 /// instead of to a call that cannot succeed.
-fn compaction_support(model: Option<&ModelRef>) -> crate::adapters::NativeCompaction {
-    match model {
-        Some(_) => crate::adapters::NativeCompaction::WholeConversation,
-        None => crate::adapters::NativeCompaction::Unsupported,
+/// 2.x compacts with the session's own model, so it needs none named.
+fn compaction_support(api: ServerApi, model: Option<&ModelRef>) -> crate::adapters::NativeCompaction {
+    match (api, model) {
+        (ServerApi::V2, _) | (ServerApi::V1, Some(_)) => {
+            crate::adapters::NativeCompaction::WholeConversation
+        }
+        (ServerApi::V1, None) => crate::adapters::NativeCompaction::Unsupported,
     }
 }
 
@@ -463,7 +598,12 @@ fn probe_backoff(attempt: usize) -> Duration {
     Duration::from_millis(RAMP_MS.get(attempt).copied().unwrap_or(100))
 }
 
-fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Result<(), BridgeError> {
+fn wait_until_ready(
+    client: &Client,
+    base_url: &str,
+    child: &mut Child,
+    api: ServerApi,
+) -> Result<(), BridgeError> {
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut attempt = 0usize;
     while Instant::now() < deadline {
@@ -473,7 +613,7 @@ fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Resul
             )));
         }
         if client
-            .get(format!("{base_url}/global/health"))
+            .get(format!("{base_url}{}", api.health_path()))
             .timeout(Duration::from_secs(2))
             .send()
             .is_ok_and(|response| response.status().is_success())
@@ -487,7 +627,7 @@ fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Resul
                     "OpenCode server exited during startup with {status}"
                 )));
             }
-            return verify_server_requires_credentials(base_url);
+            return verify_server_requires_credentials(base_url, api);
         }
         thread::sleep(probe_backoff(attempt));
         attempt += 1;
@@ -497,10 +637,10 @@ fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Resul
     ))
 }
 
-fn verify_server_requires_credentials(base_url: &str) -> Result<(), BridgeError> {
+fn verify_server_requires_credentials(base_url: &str, api: ServerApi) -> Result<(), BridgeError> {
     // Runs on a dedicated thread so the probe client (and its response) are
     // dropped there — see drop_client_safely.
-    let health_url = format!("{base_url}/global/health");
+    let health_url = format!("{base_url}{}", api.health_path());
     let handle = thread::Builder::new()
         .name("opencode-auth-probe".into())
         .spawn(move || -> Result<(), BridgeError> {
@@ -580,6 +720,16 @@ fn checked_json(response: Response, action: &str) -> Result<Value, BridgeError> 
             "Invalid OpenCode response while trying to {action}: {error}"
         ))
     })
+}
+
+/// For 2.x routes that answer `204 No Content` or a body Bridge does not read.
+fn checked_status(response: Response, action: &str) -> Result<(), BridgeError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = response.text().unwrap_or_default();
+    Err(BridgeError::Adapter(format!("Failed to {action} ({status}): {body}")))
 }
 
 fn http_error(action: &'static str) -> impl FnOnce(reqwest::Error) -> BridgeError {
@@ -750,8 +900,13 @@ fn connect_event_stream(
     client: &Client,
     base_url: &str,
     directory: &str,
+    api: ServerApi,
 ) -> Result<Response, BridgeError> {
-    match client.get(endpoint(base_url, "/event", directory)).send() {
+    let path = match api {
+        ServerApi::V1 => "/event",
+        ServerApi::V2 => "/api/event",
+    };
+    match client.get(api.url(base_url, path, directory)).send() {
         Ok(response) if response.status().is_success() => Ok(response),
         Ok(response) => Err(BridgeError::Adapter(format!(
             "Failed to connect to OpenCode event stream ({})",
@@ -762,9 +917,12 @@ fn connect_event_stream(
 }
 
 /// Forward one `/event` body's frames until it ends or the consumer leaves.
+/// A 2.x stream is translated into 1.x frames first, so filtering and
+/// everything downstream sees one shape.
 fn pump_event_stream(
     response: Response,
     filter: &mut SessionFrameFilter,
+    translator: &mut Option<opencode_v2::Translator>,
     sender: &crate::frame_queue::FrameSender,
 ) -> StreamEnd {
     let mut reader = std::io::BufReader::new(response);
@@ -778,30 +936,36 @@ fn pump_event_stream(
             continue;
         };
         let data = data.trim();
-        let Ok(mut value) = serde_json::from_str::<Value>(data) else {
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
             continue;
         };
-        match filter.classify(&value) {
-            FrameDisposition::Forward => filter.stamp_unattributed_error(&mut value),
-            FrameDisposition::Foreign => {
-                sender.record_foreign_drop();
-                filter.note_foreign(&value);
-                continue;
-            }
-        }
-        // Streaming deltas are the only sheddable frames: their terminal
-        // `message.part.updated` carries the complete content. Everything
-        // else is durable and back-pressures this socket when the
-        // consumer stalls, instead of buffering without bound.
-        let transient = value.get("type").and_then(Value::as_str) == Some("message.part.delta");
-        let frame = format!("{value}\n");
-        let delivered = if transient {
-            sender.send_transient(frame).map(|_| ())
-        } else {
-            sender.send_durable(frame)
+        let frames = match translator {
+            Some(translator) => translator.translate(&value),
+            None => vec![value],
         };
-        if delivered.is_err() {
-            return StreamEnd::ConsumerGone;
+        for mut value in frames {
+            match filter.classify(&value) {
+                FrameDisposition::Forward => filter.stamp_unattributed_error(&mut value),
+                FrameDisposition::Foreign => {
+                    sender.record_foreign_drop();
+                    filter.note_foreign(&value);
+                    continue;
+                }
+            }
+            // Streaming deltas are the only sheddable frames: their terminal
+            // `message.part.updated` carries the complete content. Everything
+            // else is durable and back-pressures this socket when the
+            // consumer stalls, instead of buffering without bound.
+            let transient = value.get("type").and_then(Value::as_str) == Some("message.part.delta");
+            let frame = format!("{value}\n");
+            let delivered = if transient {
+                sender.send_transient(frame).map(|_| ())
+            } else {
+                sender.send_durable(frame)
+            };
+            if delivered.is_err() {
+                return StreamEnd::ConsumerGone;
+            }
         }
     }
 }
@@ -877,6 +1041,51 @@ fn resync_after_reconnect(
     Ok(())
 }
 
+/// The 2.x counterpart of `resync_after_reconnect`: the newest page of each
+/// owned session's messages, rebuilt as the snapshots the live stream would
+/// have produced, then whether the root is still running.
+fn resync_v2_after_reconnect(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    owned_sessions: &[String],
+    sender: &crate::frame_queue::FrameSender,
+) -> Result<(), crate::frame_queue::Disconnected> {
+    for owned_session_id in owned_sessions {
+        let mut messages = client
+            .get(format!("{base_url}/api/session/{owned_session_id}/message?order=desc&limit=50"))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .ok()
+            .and_then(|response| checked_json(response, "resync the OpenCode session").ok())
+            .and_then(|value| value.get("data").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+        messages.reverse();
+        for frame in opencode_v2::message_snapshots(owned_session_id, &messages) {
+            sender.send_durable(format!("{frame}\n"))?;
+        }
+    }
+    // `/api/session/active` lists only running sessions.
+    let active = client
+        .get(format!("{base_url}/api/session/active"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .ok()
+        .and_then(|response| checked_json(response, "read OpenCode session status").ok());
+    let Some(active) = active else {
+        return Ok(());
+    };
+    if active.pointer(&format!("/data/{session_id}")).is_none() {
+        let idle = json!({
+            "type": "session.status",
+            "properties": { "sessionID": session_id, "status": { "type": "idle" } }
+        });
+        sender.send_durable(format!("{idle}\n"))?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_event_stream(
     client: Client,
     base_url: String,
@@ -885,10 +1094,12 @@ fn spawn_event_stream(
     sender: crate::frame_queue::FrameSender,
     shutting_down: Arc<AtomicBool>,
     policy: EventStreamPolicy,
+    api: ServerApi,
+    pending: opencode_v2::PendingRequests,
 ) -> Result<(), BridgeError> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let mut response = match connect_event_stream(&client, &base_url, &directory) {
+        let mut response = match connect_event_stream(&client, &base_url, &directory, api) {
             Ok(response) => response,
             Err(error) => {
                 let _ = ready_sender.send(Err(error));
@@ -899,8 +1110,9 @@ fn spawn_event_stream(
             return;
         }
         let mut filter = SessionFrameFilter::new(session_id.clone());
+        let mut translator = (api == ServerApi::V2).then(|| opencode_v2::Translator::new(pending));
         loop {
-            if pump_event_stream(response, &mut filter, &sender) == StreamEnd::ConsumerGone {
+            if pump_event_stream(response, &mut filter, &mut translator, &sender) == StreamEnd::ConsumerGone {
                 return;
             }
             // During shutdown the body ending is expected.
@@ -915,7 +1127,7 @@ fn spawn_event_stream(
                 if shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
-                if let Ok(next) = connect_event_stream(&client, &base_url, &directory) {
+                if let Ok(next) = connect_event_stream(&client, &base_url, &directory, api) {
                     reconnected = Some(next);
                     break;
                 }
@@ -933,16 +1145,24 @@ fn spawn_event_stream(
                 let _ = sender.send_durable(format!("{error_event}\n"));
                 return;
             };
-            if resync_after_reconnect(
-                &client,
-                &base_url,
-                &directory,
-                &session_id,
-                &filter.owned_sessions(),
-                &sender,
-            )
-            .is_err()
-            {
+            let resynced = match api {
+                ServerApi::V1 => resync_after_reconnect(
+                    &client,
+                    &base_url,
+                    &directory,
+                    &session_id,
+                    &filter.owned_sessions(),
+                    &sender,
+                ),
+                ServerApi::V2 => resync_v2_after_reconnect(
+                    &client,
+                    &base_url,
+                    &session_id,
+                    &filter.owned_sessions(),
+                    &sender,
+                ),
+            };
+            if resynced.is_err() {
                 return;
             }
             response = next;
@@ -970,7 +1190,7 @@ impl OpenCodeRuntime {
             .as_ref()
             .ok_or_else(|| BridgeError::Adapter("OpenCode runtime is stopped".into()))?
             .clone();
-        let url = endpoint(&self.base_url, path, &self.directory);
+        let url = self.api.url(&self.base_url, path, &self.directory);
         // Callers include async Tauri commands. Run the blocking HTTP exchange
         // on a dedicated thread so every reqwest temporary (request builder,
         // response, client clone) is created and dropped off the async runtime
@@ -999,6 +1219,13 @@ impl OpenCodeRuntime {
         handle
             .join()
             .map_err(|_| BridgeError::Adapter(format!("Failed to {action}: request panicked")))?
+    }
+
+    /// The session a 2.x request id belongs to: a subagent's request is
+    /// answered on its child session. An id this process never saw (raised
+    /// before a restart) can only have been the root's.
+    fn pending_request(&self, request_id: &str) -> Option<opencode_v2::PendingRequest> {
+        self.pending.lock().unwrap().get(request_id).cloned()
     }
 
     fn terminate(&mut self) {
@@ -1048,6 +1275,19 @@ impl AdapterRuntime for OpenCodeRuntime {
     }
     fn supports_images(&self) -> bool { true }
     fn send_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        if self.api == ServerApi::V2 {
+            self.request(
+                reqwest::Method::POST,
+                &format!("/api/session/{}/prompt", self.session_id),
+                Some(prompt_body_v2(text, context, images)),
+                "send OpenCode turn",
+            )?;
+            crate::context_inventory::record_runtime_inventory(
+                &self.context_inventory,
+                opencode_context_inventory(ContextLifecyclePhase::PerTurn)?,
+            );
+            return Ok(());
+        }
         let mut body = prompt_body(
             self.model.as_ref(),
             self.variant.as_deref(),
@@ -1069,20 +1309,27 @@ impl AdapterRuntime for OpenCodeRuntime {
         Ok(())
     }
     fn interrupt(&self) -> Result<(), BridgeError> {
-        self.request(
-            reqwest::Method::POST,
-            &format!("/session/{}/abort", self.session_id),
-            None,
-            "interrupt OpenCode turn",
-        )
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{}/abort", self.session_id),
+            ServerApi::V2 => format!("/api/session/{}/interrupt", self.session_id),
+        };
+        self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode turn")
     }
     /// `/session/{id}/summarize` names the model that writes the summary and
     /// takes no focus, so OpenCode compacts the whole session. Without a known
     /// model there is nothing to name, and the request would be rejected.
     fn native_compaction(&self) -> crate::adapters::NativeCompaction {
-        compaction_support(self.model.as_ref())
+        compaction_support(self.api, self.model.as_ref())
     }
     fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
+        if self.api == ServerApi::V2 {
+            return self.request(
+                reqwest::Method::POST,
+                &format!("/api/session/{}/compact", self.session_id),
+                Some(json!({})),
+                "compact the OpenCode session",
+            );
+        }
         let model = self.model.as_ref().ok_or_else(|| {
             BridgeError::Invalid("OpenCode needs a selected model to summarize".into())
         })?;
@@ -1108,6 +1355,19 @@ impl AdapterRuntime for OpenCodeRuntime {
                 ))
             }
         };
+        if self.api == ServerApi::V2 {
+            let session_id = match self.pending_request(request_id) {
+                Some(opencode_v2::PendingRequest::Permission { session_id }) => session_id,
+                _ => self.session_id.clone(),
+            };
+            validate_path_id("session id", &session_id)?;
+            return self.request(
+                reqwest::Method::POST,
+                &format!("/api/session/{session_id}/permission/{request_id}/reply"),
+                Some(json!({"decision": reply})),
+                "resolve OpenCode permission",
+            );
+        }
         self.request(
             reqwest::Method::POST,
             &format!("/permission/{request_id}/reply"),
@@ -1120,6 +1380,23 @@ impl AdapterRuntime for OpenCodeRuntime {
             .as_str()
             .ok_or_else(|| BridgeError::Invalid("OpenCode question id is invalid".into()))?;
         validate_path_id("question id", request_id)?;
+        if self.api == ServerApi::V2 {
+            let Some(opencode_v2::PendingRequest::Form { session_id, fields }) =
+                self.pending_request(request_id)
+            else {
+                return Err(BridgeError::Invalid(
+                    "OpenCode is no longer waiting on this question".into(),
+                ));
+            };
+            validate_path_id("session id", &session_id)?;
+            let answer = opencode_v2::form_answer(&fields, &answers).map_err(BridgeError::Invalid)?;
+            return self.request(
+                reqwest::Method::POST,
+                &format!("/api/session/{session_id}/form/{request_id}/reply"),
+                Some(json!({"answer": answer})),
+                "answer OpenCode question",
+            );
+        }
         self.request(
             reqwest::Method::POST,
             &format!("/question/{request_id}/reply"),
@@ -1132,6 +1409,19 @@ impl AdapterRuntime for OpenCodeRuntime {
             .as_str()
             .ok_or_else(|| BridgeError::Invalid("OpenCode question id is invalid".into()))?;
         validate_path_id("question id", request_id)?;
+        if self.api == ServerApi::V2 {
+            let session_id = match self.pending_request(request_id) {
+                Some(opencode_v2::PendingRequest::Form { session_id, .. }) => session_id,
+                _ => self.session_id.clone(),
+            };
+            validate_path_id("session id", &session_id)?;
+            return self.request(
+                reqwest::Method::DELETE,
+                &format!("/api/session/{session_id}/form/{request_id}"),
+                None,
+                "reject OpenCode question",
+            );
+        }
         self.request(
             reqwest::Method::POST,
             &format!("/question/{request_id}/reject"),
@@ -1182,6 +1472,37 @@ fn prompt_body(
         // not replace the built-in system prompt; keeping it role-separated is
         // stronger than converting Bridge authority into an ordinary text part.
         body["system"] = json!(system);
+    }
+    body
+}
+
+/// A 2.x prompt is one text with attachments beside it. Bridge's per-turn
+/// context still precedes the user's words; its instructions are a session
+/// entry, not part of the prompt.
+fn prompt_body_v2(
+    text: &str,
+    context: TurnContext<'_>,
+    images: &[bridge_protocol::messages::TurnImage],
+) -> Value {
+    let mut blocks = context
+        .entries()
+        .map(|entry| entry.value.to_string())
+        .collect::<Vec<_>>();
+    blocks.push(text.to_owned());
+    let mut body = json!({ "text": blocks.join("\n\n") });
+    if !images.is_empty() {
+        body["files"] = Value::Array(
+            images
+                .iter()
+                .enumerate()
+                .map(|(index, image)| {
+                    json!({
+                        "uri": format!("data:{};base64,{}", image.media_type, image.base64_data),
+                        "name": format!("image-{}", index + 1),
+                    })
+                })
+                .collect(),
+        );
     }
     body
 }
@@ -1321,21 +1642,29 @@ fn binary_version_at(executable: &Path) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-pub fn is_supported_version(version: &str) -> bool {
-    let value = version.trim().strip_prefix('v').unwrap_or(version.trim());
+/// `--version` prints `1.18.32` on 1.x and `opencode v2.1.1` on 2.x.
+fn parse_version(version: &str) -> Option<(u64, u64, u64)> {
+    let value = version.trim();
+    let value = value.strip_prefix("opencode ").unwrap_or(value).trim();
+    let value = value.strip_prefix('v').unwrap_or(value);
     let parts = value.split('.').collect::<Vec<_>>();
     if parts.len() != 3
         || parts
             .iter()
             .any(|part| part.is_empty() || !part.chars().all(|character| character.is_ascii_digit()))
     {
-        return false;
+        return None;
     }
     let parsed = parts
         .iter()
         .map(|part| part.parse::<u64>())
-        .collect::<Result<Vec<_>, _>>();
-    matches!(parsed.as_deref(), Ok([major, minor, patch]) if (*major, *minor, *patch) >= MINIMUM_VERSION)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    Some((parsed[0], parsed[1], parsed[2]))
+}
+
+pub fn is_supported_version(version: &str) -> bool {
+    parse_version(version).is_some_and(|version| version >= MINIMUM_VERSION)
 }
 
 fn ensure_supported_version(executable: &Path) -> Result<String, BridgeError> {
@@ -1359,7 +1688,35 @@ pub fn discover(
 ) -> Result<OpenCodeCatalog, BridgeError> {
     let executable = resolve_executable(settings)?;
     let version = ensure_supported_version(&executable)?;
-    with_control_server(&executable, directory, |client, base_url| {
+    let api = ServerApi::of(&version);
+    if api == ServerApi::V2 {
+        return with_control_server(&executable, directory, api, |client, base_url| {
+            let get = |path: &str, action: &'static str| {
+                client
+                    .get(format!("{base_url}{path}"))
+                    .timeout(Duration::from_secs(20))
+                    .send()
+                    .map_err(http_error(action))
+                    .and_then(|response| checked_json(response, action))
+                    .map(|value| value.get("data").cloned().unwrap_or(Value::Null))
+            };
+            let integrations = get("/api/integration", "discover OpenCode integrations")?;
+            let providers = get("/api/provider", "discover OpenCode providers")?;
+            let models = get("/api/model", "discover OpenCode models")?;
+            // No default is a valid answer (nothing connected yet).
+            let default_model = get("/api/model/default", "read the OpenCode default model").ok();
+            opencode_v2::parse_catalog(
+                &integrations,
+                &providers,
+                &models,
+                default_model.as_ref(),
+                executable.to_string_lossy().as_ref(),
+                &version,
+            )
+            .map_err(BridgeError::Adapter)
+        });
+    }
+    with_control_server(&executable, directory, api, |client, base_url| {
         let providers = checked_json(
             client
                 .get(endpoint(base_url, "/provider", directory))
@@ -1398,8 +1755,20 @@ pub fn set_provider_api_key(
         ));
     }
     let executable = resolve_executable(settings)?;
-    ensure_supported_version(&executable)?;
-    with_control_server(&executable, directory, |client, base_url| {
+    let api = ServerApi::of(&ensure_supported_version(&executable)?);
+    with_control_server(&executable, directory, api, |client, base_url| {
+        if api == ServerApi::V2 {
+            let integration_id = v2_integration_for(client, base_url, provider_id)?;
+            return checked_status(
+                client
+                    .post(format!("{base_url}/api/integration/{integration_id}/connect/key"))
+                    .timeout(Duration::from_secs(20))
+                    .json(&json!({"key": api_key.trim()}))
+                    .send()
+                    .map_err(http_error("save OpenCode provider authentication"))?,
+                "save OpenCode provider authentication",
+            );
+        }
         checked_json(
             client
                 .put(format!("{base_url}/auth/{provider_id}"))
@@ -1421,8 +1790,40 @@ pub fn remove_provider_auth(
 ) -> Result<OpenCodeCatalog, BridgeError> {
     validate_provider_id(provider_id)?;
     let executable = resolve_executable(settings)?;
-    ensure_supported_version(&executable)?;
-    with_control_server(&executable, directory, |client, base_url| {
+    let api = ServerApi::of(&ensure_supported_version(&executable)?);
+    with_control_server(&executable, directory, api, |client, base_url| {
+        if api == ServerApi::V2 {
+            let integration_id = v2_integration_for(client, base_url, provider_id)?;
+            let integrations = checked_json(
+                client
+                    .get(format!("{base_url}/api/integration"))
+                    .timeout(Duration::from_secs(20))
+                    .send()
+                    .map_err(http_error("read OpenCode credentials"))?,
+                "read OpenCode credentials",
+            )?;
+            let credentials = opencode_v2::stored_credentials(
+                integrations.get("data").unwrap_or(&Value::Null),
+                &integration_id,
+            );
+            if credentials.is_empty() {
+                return Err(BridgeError::Invalid(format!(
+                    "OpenCode has no stored credential for {provider_id}; it may come from an environment variable"
+                )));
+            }
+            for credential in credentials {
+                validate_path_id("credential id", &credential)?;
+                checked_status(
+                    client
+                        .delete(format!("{base_url}/api/credential/{credential}"))
+                        .timeout(Duration::from_secs(20))
+                        .send()
+                        .map_err(http_error("remove OpenCode provider authentication"))?,
+                    "remove OpenCode provider authentication",
+                )?;
+            }
+            return Ok(());
+        }
         checked_json(
             client
                 .delete(format!("{base_url}/auth/{provider_id}"))
@@ -1434,6 +1835,22 @@ pub fn remove_provider_auth(
         Ok(())
     })?;
     discover(settings, directory)
+}
+
+/// The 2.x integration that stores a provider's credentials.
+fn v2_integration_for(client: &Client, base_url: &str, provider_id: &str) -> Result<String, BridgeError> {
+    let providers = checked_json(
+        client
+            .get(format!("{base_url}/api/provider"))
+            .timeout(Duration::from_secs(20))
+            .send()
+            .map_err(http_error("read OpenCode providers"))?,
+        "read OpenCode providers",
+    )?;
+    let integration_id =
+        opencode_v2::integration_for(providers.get("data").unwrap_or(&Value::Null), provider_id);
+    validate_provider_id(&integration_id)?;
+    Ok(integration_id)
 }
 
 fn validate_provider_id(provider_id: &str) -> Result<(), BridgeError> {
@@ -1478,6 +1895,7 @@ impl Drop for ControlServer {
 fn with_control_server<T>(
     executable: &Path,
     directory: &str,
+    api: ServerApi,
     action: impl FnOnce(&Client, &str) -> Result<T, BridgeError>,
 ) -> Result<T, BridgeError> {
     let port = reserve_port()?;
@@ -1503,9 +1921,9 @@ fn with_control_server<T>(
         child,
         _ledger: ledger,
     };
-    match build_authenticated_client(&password) {
+    match build_authenticated_client(api, &password, directory) {
         Ok(client) => {
-            let result = wait_until_ready(&client, &base_url, &mut server.child)
+            let result = wait_until_ready(&client, &base_url, &mut server.child, api)
                 .and_then(|_| action(&client, &base_url));
             drop_client_safely(client);
             result
@@ -1811,6 +2229,23 @@ pub fn auth_state() -> AuthState {
     auth_state_from_data_dir(opencode_data_dir())
 }
 
+/// OpenCode 2.x keeps credentials in its database and only imports a legacy
+/// `auth.json`, so a fresh 2.x install has none. A discovered catalog with a
+/// provider connected through a stored credential is the same proof.
+pub fn auth_state_with_catalog(catalog: Option<&OpenCodeCatalog>) -> AuthState {
+    let stored = catalog.is_some_and(|catalog| {
+        catalog
+            .providers
+            .iter()
+            .any(|provider| provider.connected && provider.source.as_deref() == Some("api"))
+    });
+    if stored {
+        AuthState::SignedIn
+    } else {
+        auth_state()
+    }
+}
+
 fn opencode_data_dir() -> Option<PathBuf> {
     if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME") {
         return Some(PathBuf::from(xdg_data_home).join("opencode"));
@@ -1920,7 +2355,7 @@ mod tests {
     #[test]
     fn stream_reconnects_after_a_dropped_body_and_resyncs_the_turn() {
         let (base_url, paths) = fake_opencode_server(false);
-        let client = build_authenticated_client("pw").unwrap();
+        let client = build_authenticated_client(ServerApi::V1, "pw", "/tmp").unwrap();
         let (sender, receiver, _metrics) =
             crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
         spawn_event_stream(
@@ -1931,6 +2366,8 @@ mod tests {
             sender,
             Arc::new(AtomicBool::new(false)),
             fast_policy(),
+            ServerApi::V1,
+            Default::default(),
         )
         .unwrap();
         let mut frames = Vec::new();
@@ -1956,7 +2393,7 @@ mod tests {
     #[test]
     fn stream_gives_up_after_the_retry_budget_with_one_disconnect_error() {
         let (base_url, paths) = fake_opencode_server(true);
-        let client = build_authenticated_client("pw").unwrap();
+        let client = build_authenticated_client(ServerApi::V1, "pw", "/tmp").unwrap();
         let (sender, receiver, _metrics) =
             crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
         spawn_event_stream(
@@ -1967,6 +2404,8 @@ mod tests {
             sender,
             Arc::new(AtomicBool::new(false)),
             fast_policy(),
+            ServerApi::V1,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(frame_type(&receiver.recv().unwrap()), "session.status");
@@ -1982,7 +2421,7 @@ mod tests {
     #[test]
     fn shutdown_ends_the_stream_without_a_reconnect_or_an_error() {
         let (base_url, paths) = fake_opencode_server(false);
-        let client = build_authenticated_client("pw").unwrap();
+        let client = build_authenticated_client(ServerApi::V1, "pw", "/tmp").unwrap();
         let (sender, receiver, _metrics) =
             crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
         let shutting_down = Arc::new(AtomicBool::new(false));
@@ -1994,6 +2433,8 @@ mod tests {
             sender,
             shutting_down.clone(),
             EventStreamPolicy { reconnect_backoff: vec![Duration::from_millis(200)] },
+            ServerApi::V1,
+            Default::default(),
         )
         .unwrap();
         assert_eq!(frame_type(&receiver.recv().unwrap()), "session.status");
@@ -2205,7 +2646,7 @@ mod tests {
                 });
             }
         });
-        let client = build_authenticated_client("pw").unwrap();
+        let client = build_authenticated_client(ServerApi::V1, "pw", "/tmp").unwrap();
         let (sender, receiver, _metrics) =
             crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
         spawn_event_stream(
@@ -2216,6 +2657,8 @@ mod tests {
             sender,
             Arc::new(AtomicBool::new(false)),
             fast_policy(),
+            ServerApi::V1,
+            Default::default(),
         )
         .unwrap();
         let mut frames = Vec::new();
@@ -2239,7 +2682,7 @@ mod tests {
     /// gets its catch-up too.
     #[test]
     fn resync_replays_owned_child_sessions_after_a_disconnect() {
-        let client = build_authenticated_client("pw").unwrap();
+        let client = build_authenticated_client(ServerApi::V1, "pw", "/tmp").unwrap();
         let (sender, receiver, _metrics) =
             crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
         // Serve one assistant snapshot per owned session from a loopback
@@ -2330,11 +2773,11 @@ mod tests {
         // the capability here would route /compact to a call that fails on the
         // wire instead of to the Bridge checkpoint that would have worked.
         assert_eq!(
-            compaction_support(None),
+            compaction_support(ServerApi::V1, None),
             crate::adapters::NativeCompaction::Unsupported
         );
         assert_eq!(
-            compaction_support(Some(&ModelRef {
+            compaction_support(ServerApi::V1, Some(&ModelRef {
                 provider_id: "anthropic".into(),
                 model_id: "claude-sonnet-4-5".into(),
             })),
@@ -2386,6 +2829,106 @@ mod tests {
         assert_eq!(parts[1]["text"], "trusted broker capability");
         assert_eq!(parts[2]["text"], "verify [secret:sec_reference]");
         assert_eq!(plain["parts"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_server_api_follows_the_major_version() {
+        assert_eq!(ServerApi::of("1.18.32"), ServerApi::V1);
+        assert_eq!(ServerApi::of("opencode v2.1.1"), ServerApi::V2);
+        assert_eq!(ServerApi::of("3.0.0"), ServerApi::V2);
+        assert_eq!(ServerApi::V2.username(), "opencode");
+        assert_eq!(ServerApi::V2.health_path(), "/api/info");
+        assert_eq!(
+            ServerApi::V2.url("http://127.0.0.1:1", "/api/session", "/repo"),
+            "http://127.0.0.1:1/api/session",
+            "2.x is scoped by header, not query"
+        );
+        assert_eq!(encode_directory("/Users/me/my repo/é"), "/Users/me/my%20repo/%C3%A9");
+    }
+
+    #[test]
+    fn v2_sessions_carry_the_model_and_v2_permission_rules() {
+        let model = ModelRef { provider_id: "opencode-go".into(), model_id: "kimi-k3".into() };
+        let body = v2_session_body(session_create_body(Some(&model), Some("high"), Some(WriteMode::Isolated)));
+        assert_eq!(body["model"], json!({"providerID":"opencode-go","id":"kimi-k3","variant":"high"}));
+        let rules = body["permissions"].as_array().unwrap();
+        assert!(rules.contains(&json!({"action":"shell","resource":"*","effect":"ask"})));
+        assert!(rules.contains(&json!({"action":"edit","resource":"*","effect":"ask"})));
+        assert!(body.get("permission").is_none());
+        let completion = v2_session_body(completion_session_body(Some(&model), None));
+        assert_eq!(completion["permissions"], json!([{"action":"*","resource":"*","effect":"deny"}]));
+    }
+
+    #[test]
+    fn v2_prompts_put_turn_context_first_and_images_beside_the_text() {
+        let context = TurnContext { session: Some("bridge frame"), credentials: None };
+        let images = [bridge_protocol::messages::TurnImage {
+            media_type: "image/png".into(),
+            base64_data: "iVBORw0KGgo=".into(),
+        }];
+        let body = prompt_body_v2("describe", context, &images);
+        assert_eq!(body["text"], "bridge frame\n\ndescribe");
+        assert_eq!(body["files"], json!([{"uri":"data:image/png;base64,iVBORw0KGgo=","name":"image-1"}]));
+        assert!(body.get("system").is_none(), "instructions are a session entry on 2.x");
+        assert!(prompt_body_v2("hi", TurnContext::default(), &[]).get("files").is_none());
+    }
+
+    #[test]
+    fn v2_compacts_without_naming_a_model() {
+        assert_eq!(
+            compaction_support(ServerApi::V2, None),
+            crate::adapters::NativeCompaction::WholeConversation
+        );
+    }
+
+    #[test]
+    fn a_v2_stream_is_translated_before_it_is_filtered() {
+        use std::io::Write as _;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut head = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            head.read_line(&mut request_line).unwrap();
+            assert!(request_line.starts_with("GET /api/event "), "{request_line}");
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+            for frame in [
+                json!({"id":"evt_1","type":"server.connected","data":{}}),
+                json!({"id":"evt_2","type":"session.execution.started","data":{"sessionID":"ses_other"}}),
+                json!({"id":"evt_3","type":"session.execution.started","data":{"sessionID":"ses_root"}}),
+                json!({"id":"evt_4","type":"session.text.delta","data":{"sessionID":"ses_root","assistantMessageID":"msg_1","ordinal":0,"delta":"hi"}}),
+            ] {
+                let _ = write!(stream, "id: {}\nevent: message\ndata: {frame}\n\n", frame["id"]);
+            }
+            let _ = stream.flush();
+            thread::sleep(Duration::from_secs(2));
+        });
+        let client = build_authenticated_client(ServerApi::V2, "pw", "/repo").unwrap();
+        let (sender, receiver, metrics) =
+            crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        spawn_event_stream(
+            client,
+            base_url,
+            "/repo".into(),
+            "ses_root".into(),
+            sender,
+            shutting_down.clone(),
+            fast_policy(),
+            ServerApi::V2,
+            Default::default(),
+        )
+        .unwrap();
+        let frames = (0..3)
+            .map(|_| serde_json::from_str::<Value>(receiver.recv().unwrap().trim()).unwrap())
+            .collect::<Vec<_>>();
+        shutting_down.store(true, Ordering::SeqCst);
+        assert_eq!(frames[0]["type"], "server.connected");
+        assert_eq!(frames[1], json!({"type":"session.status","properties":{"sessionID":"ses_root","status":{"type":"busy"}}}));
+        assert_eq!(frames[2]["type"], "message.part.delta");
+        assert_eq!(frames[2]["properties"]["partID"], "msg_1:text:0");
+        assert_eq!(metrics.snapshot().dropped_foreign, 1, "another session's frame is still dropped");
     }
 
     #[test]
@@ -2477,7 +3020,9 @@ mod tests {
         assert!(is_supported_version("2.0.0"));
         assert!(!is_supported_version("1.18"));
         assert!(!is_supported_version("build 9"));
-        assert!(!is_supported_version("opencode 1.18.29"));
+        assert!(is_supported_version("opencode 1.18.29"));
+        assert!(is_supported_version("opencode v2.1.1"));
+        assert!(!is_supported_version("opencode v1.17.0"));
         assert!(!is_supported_version("1.18.3-beta.1"));
         assert!(!is_supported_version("1.18.3.1"));
     }
@@ -2628,6 +3173,160 @@ mod tests {
             .all(|model| model.id.starts_with("opencode-go/")));
     }
 
+    /// Drives a real OpenCode 2.x session through every path that differs
+    /// from 1.x: the instruction entry, a permission reply, a question form,
+    /// an image attachment and native compaction.
+    #[test]
+    #[ignore = "requires OpenCode 2.x with an authenticated OpenCode Go subscription"]
+    fn live_v2_round_trips_instructions_permissions_questions_images_and_compaction() {
+        const RED_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=";
+        let executable = std::env::var("BRIDGE_OPENCODE_LIVE_BINARY")
+            .expect("set BRIDGE_OPENCODE_LIVE_BINARY to the OpenCode executable");
+        assert_eq!(
+            ServerApi::of(&binary_version_at(Path::new(&executable)).unwrap()),
+            ServerApi::V2
+        );
+        let model = std::env::var("BRIDGE_OPENCODE_LIVE_MODEL")
+            .unwrap_or_else(|_| "opencode-go/minimax-m3.1-flash-free".into());
+        let directory = tempfile::tempdir().unwrap();
+        let started = start_with_settings(
+            StartRequest {
+                cwd: directory.path().to_str().unwrap(),
+                model: Some(&model),
+                effort: None,
+                instructions: Some("End every reply with the word BANANA."),
+                write_mode: Some(WriteMode::Isolated),
+                read_only_sandbox: None,
+                briefing: None,
+                on_progress: None,
+            },
+            &OpenCodeSettings {
+                executable_path: Some(executable),
+                visible_models: Vec::new(),
+            },
+        )
+        .unwrap();
+        let mut runtime = started.runtime;
+        let mut reader = started.reader;
+        let (sender, events) = mpsc::channel::<crate::agent::NormalizedEvent>();
+        thread::spawn(move || {
+            let mut state = crate::agent::OpenCodeStreamState::default();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or_default() == 0 {
+                    break;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                for event in crate::agent::normalize_opencode_message_with_state(&value, &mut state) {
+                    if sender.send(event).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        // Until the turn ends: every reply, plus a hook for requests.
+        let run_turn = |runtime: &OpenCodeRuntime, on_request: &dyn Fn(&OpenCodeRuntime, &crate::agent::NormalizedEvent)| {
+            let mut replies = String::new();
+            let mut kinds = Vec::new();
+            loop {
+                let event = events
+                    .recv_timeout(Duration::from_secs(120))
+                    .expect("OpenCode stalled mid-turn");
+                kinds.push(event.kind.clone());
+                match event.kind.as_str() {
+                    "message.completed" => replies.push_str(event.text.as_deref().unwrap_or_default()),
+                    "permission.requested" | "question.requested" => on_request(runtime, &event),
+                    "turn.completed" => {
+                        assert_eq!(event.status.as_deref(), Some("completed"), "{kinds:?} {replies}");
+                        return (replies, kinds);
+                    }
+                    _ => {}
+                }
+            }
+        };
+        let no_requests = |_: &OpenCodeRuntime, event: &crate::agent::NormalizedEvent| {
+            panic!("unexpected request {event:?}")
+        };
+
+        runtime
+            .send_turn("Run the shell command `echo perm > p.txt`, then reply in one short sentence.")
+            .unwrap();
+        let (reply, kinds) = run_turn(&runtime, &|runtime, event| {
+            assert_eq!(event.kind, "permission.requested");
+            runtime.respond(event.data["requestId"].clone(), "accept").unwrap();
+        });
+        assert!(kinds.iter().any(|kind| kind == "permission.requested"), "{kinds:?}");
+        assert!(kinds.iter().any(|kind| kind == "command.completed"), "{kinds:?}");
+        assert_eq!(std::fs::read_to_string(directory.path().join("p.txt")).unwrap().trim(), "perm");
+        assert!(reply.contains("BANANA"), "instructions did not reach the model: {reply}");
+
+        runtime
+            .send_turn("Use your question tool to ask me whether I prefer red or blue, then tell me my answer.")
+            .unwrap();
+        let (reply, kinds) = run_turn(&runtime, &|runtime, event| {
+            assert_eq!(event.kind, "question.requested");
+            runtime
+                .answer_question(event.data["requestId"].clone(), json!([["Blue"]]))
+                .unwrap();
+        });
+        assert!(kinds.iter().any(|kind| kind == "question.settled"), "{kinds:?}");
+        assert!(reply.to_lowercase().contains("blue"), "{reply}");
+
+        runtime
+            .send_turn_with_images(
+                "What single color fills this image? Answer with the color name.",
+                TurnContext::default(),
+                &[bridge_protocol::messages::TurnImage {
+                    media_type: "image/png".into(),
+                    base64_data: RED_PNG.into(),
+                }],
+            )
+            .unwrap();
+        let (reply, _) = run_turn(&runtime, &no_requests);
+        assert!(reply.to_lowercase().contains("red"), "{reply}");
+
+        assert_eq!(runtime.native_compaction(), crate::adapters::NativeCompaction::WholeConversation);
+        runtime.compact_native(None).unwrap();
+        let (_, kinds) = run_turn(&runtime, &no_requests);
+        assert!(
+            kinds.iter().any(|kind| kind == crate::agent::NATIVE_COMPACTION_KIND),
+            "{kinds:?}"
+        );
+        runtime.stop(ShutdownReason::Completed);
+    }
+
+    /// Saves and removes a key through 2.x's integration and credential
+    /// routes. It writes a real credential, so it runs only when the whole
+    /// process points OpenCode at throwaway XDG directories.
+    #[test]
+    #[ignore = "requires OpenCode 2.x and BRIDGE_OPENCODE_LIVE_ISOLATED=1 with throwaway XDG_DATA_HOME/XDG_CONFIG_HOME"]
+    fn live_v2_saves_and_removes_a_provider_key() {
+        assert_eq!(std::env::var("BRIDGE_OPENCODE_LIVE_ISOLATED").as_deref(), Ok("1"));
+        let settings = OpenCodeSettings {
+            executable_path: Some(
+                std::env::var("BRIDGE_OPENCODE_LIVE_BINARY")
+                    .expect("set BRIDGE_OPENCODE_LIVE_BINARY to the OpenCode executable"),
+            ),
+            visible_models: Vec::new(),
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path().to_str().unwrap();
+        let provider = |catalog: &OpenCodeCatalog| {
+            catalog.providers.iter().find(|provider| provider.id == "deepseek").cloned().unwrap()
+        };
+        let before = provider(&discover(&settings, directory).unwrap());
+        assert!(!before.connected);
+        assert!(before.auth_methods.iter().any(|method| method.kind == "api"));
+        let saved = provider(&set_provider_api_key(&settings, directory, "deepseek", "sk-bridge-test").unwrap());
+        assert!(saved.connected, "a saved key makes the provider available");
+        assert_eq!(saved.source.as_deref(), Some("api"));
+        assert!(!saved.models.is_empty());
+        let removed = provider(&remove_provider_auth(&settings, directory, "deepseek").unwrap());
+        assert!(!removed.connected);
+    }
+
     #[test]
     #[ignore = "requires OpenCode 1.18.3+ with an authenticated OpenCode Go subscription"]
     fn live_chat_streams_an_opencode_go_reply() {
@@ -2731,6 +3430,23 @@ mod tests {
         assert_eq!(
             auth_state_from_data_dir(Some(dir.path().to_path_buf())),
             AuthState::SignedOut
+        );
+    }
+
+    #[test]
+    fn a_catalog_with_a_stored_credential_proves_sign_in_without_auth_json() {
+        let mut catalog = catalog_fixture();
+        for provider in &mut catalog.providers {
+            provider.source = Some("env".into());
+        }
+        let env_only = catalog.clone();
+        catalog.providers[0].connected = true;
+        catalog.providers[0].source = Some("api".into());
+        assert_eq!(auth_state_with_catalog(Some(&catalog)), AuthState::SignedIn);
+        assert_eq!(
+            auth_state_with_catalog(Some(&env_only)),
+            auth_state(),
+            "an environment key is not a stored credential; fall back to the file probe"
         );
     }
 

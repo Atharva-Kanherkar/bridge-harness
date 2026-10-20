@@ -1,0 +1,786 @@
+[
+ {
+  "id": "evt_15a547264001QKxI19XHMGwOe6",
+  "type": "server.connected",
+  "data": {}
+ },
+ {
+  "id": "evt_15a54765e00119K5UEK3kX4woh",
+  "created": 1792516847199,
+  "type": "session.created",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "slug": "proud-forest",
+   "version": "2.1.1",
+   "projectID": "1705c45cec272c250a0c7fca467417722135e5d7",
+   "location": {
+    "directory": "/private/tmp/oc2probe"
+   },
+   "subpath": ""
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 0,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a5476ae001y8xD6rCR3Qf2WF",
+  "created": 1792516847278,
+  "type": "session.inbox.enqueued",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "inboxID": "msg_15a5476ab001qWp0oyvEf2xDLh",
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "item": {
+    "type": "user",
+    "payload": {
+     "text": "Read note.txt, then run `echo hi > out.txt` with the shell, then reply with one short sentence."
+    },
+    "delivery": "steer"
+   }
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 1,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a5476b30010MMBQV3ZkUbeNh",
+  "created": 1792516847283,
+  "type": "session.execution.started",
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 2,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a5476c5001amYvwFZHZ8FZml",
+  "created": 1792516847301,
+  "metadata": {
+   "instructions": {
+    "initial": true
+   }
+  },
+  "type": "session.instructions.updated",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "delta": {
+    "core/codemode": "40a1d8fa29d2348b914210fadb968046743ae4cc4436f68b69d72b41ab34318e",
+    "core/mcp-guidance": "05b1e351a59ea7eb2c733d598d4a3f65271dcff0c077d14abf1f1e48425b97e7",
+    "core/skill-guidance": "31b8d1b714d3aa662110331754ffefde0b73e0b1ce14d46d5e77869968cd4069",
+    "core/date": "f73761ff5d2c6542faf7d4574dc66009e7e682b2c84096baf86d1dc505d70a5c",
+    "core/environment": "71d7060b076fc0215bb883983c14a3f31c57352f487dd87e6cd7e7f00c81b99a"
+   }
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 3,
+   "version": 2
+  }
+ },
+ {
+  "id": "evt_15a5476c8001t3wYUFKq4vFEyT",
+  "created": 1792516847304,
+  "type": "session.inbox.delivered",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "inboxID": "msg_15a5476ab001qWp0oyvEf2xDLh"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 4,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a547d23001fUxSv9PpqXYqRT",
+  "created": 1792516848931,
+  "type": "session.usage.updated",
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "cost": 6.18e-05,
+   "tokens": {
+    "input": 538,
+    "output": 16,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  }
+ },
+ {
+  "id": "evt_15a547d25001ZPZiCqyBzwWYz0",
+  "created": 1792516848933,
+  "type": "session.renamed",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "title": "Reviewing note.txt and creating out.txt with “hi”"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 6,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a548631001IfB1MjOL6ImNi6",
+  "created": 1792516851249,
+  "type": "session.step.started",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "agent": "build",
+   "model": {
+    "id": "minimax-m3.1-flash-free",
+    "providerID": "opencode-go"
+   },
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "started": 1792516847317
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 7,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a5486340011CXUAKtD9iMQG1",
+  "created": 1792516851252,
+  "type": "session.text.started",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "ordinal": 0
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 8,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54869c0018OqfcmPHY8ATW7",
+  "created": 1792516851356,
+  "type": "session.text.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "ordinal": 0,
+   "delta": "I'll"
+  }
+ },
+ {
+  "id": "evt_15a5487e6001w1fEy6Ip2fZmud",
+  "created": 1792516851686,
+  "type": "session.text.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "ordinal": 0,
+   "delta": " read the"
+  }
+ },
+ {
+  "id": "evt_15a548987001KkAKLZ2PfVdCre",
+  "created": 1792516852103,
+  "type": "session.text.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "ordinal": 0,
+   "delta": " note first, then run the shell command"
+  }
+ },
+ {
+  "id": "evt_15a548b0c001XclrZmXi3VKlc7",
+  "created": 1792516852492,
+  "type": "session.text.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "ordinal": 0,
+   "delta": "."
+  }
+ },
+ {
+  "id": "evt_15a548ce40019s6twGrdf1u1mW",
+  "created": 1792516852964,
+  "type": "session.tool.input.started",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a548dd87208ae38ea56",
+   "name": "read"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 9,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54924f0015dTfUogEwQLFW7",
+  "created": 1792516854351,
+  "type": "session.tool.input.started",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a54934871cd885725db",
+   "name": "shell"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 10,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54958c001B0pTCTbk0b338x",
+  "created": 1792516855180,
+  "type": "session.tool.input.ended",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a548dd87208ae38ea56",
+   "text": "{\"path\":\"/private/tmp/oc2probe/note.txt\"}"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 11,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54958d001uoMGH2AyTApEFh",
+  "created": 1792516855181,
+  "type": "session.tool.called",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a548dd87208ae38ea56",
+   "input": {
+    "path": "/private/tmp/oc2probe/note.txt"
+   },
+   "executed": false
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 12,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54958d002duj6bE2Wn3lnyQ",
+  "created": 1792516855181,
+  "type": "session.tool.input.ended",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a54934871cd885725db",
+   "text": "{\"command\":\"echo hi > out.txt\",\"workdir\":\"/private/tmp/oc2probe\"}"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 13,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54958e001RBTu4cmG0O7Y64",
+  "created": 1792516855182,
+  "type": "session.tool.called",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a54934871cd885725db",
+   "input": {
+    "command": "echo hi > out.txt",
+    "workdir": "/private/tmp/oc2probe"
+   },
+   "executed": false
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 14,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54958e0020RLDKgCiPJqHWL",
+  "created": 1792516855182,
+  "type": "session.text.ended",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "ordinal": 0,
+   "text": "I'll read the note first, then run the shell command."
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 15,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54958f001J38Yw7HRowMTnH",
+  "created": 1792516855183,
+  "type": "session.step.streamed",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 16,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a54959d001AOXsO0mUke5sMj",
+  "created": 1792516855197,
+  "type": "session.tool.success",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a548dd87208ae38ea56",
+   "content": [
+    {
+     "type": "text",
+     "text": "Read file /private/tmp/oc2probe/note.txt, lines 1-1\n1: hello world"
+    }
+   ],
+   "metadata": {
+    "truncated": false
+   },
+   "executed": false
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 17,
+   "version": 2
+  }
+ },
+ {
+  "id": "evt_15a5495a7002oaN8iG4gid3Ska",
+  "created": 1792516855207,
+  "type": "session.tool.progress",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a54934871cd885725db",
+   "metadata": {
+    "shellID": "sh_15a5495a6001SB1xGbYxkx5dkE"
+   }
+  }
+ },
+ {
+  "id": "evt_15a5495ac001JzunnAjqguSoY4",
+  "created": 1792516855212,
+  "type": "session.tool.success",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "id": "call_01a15a54934871cd885725db",
+   "content": [
+    {
+     "type": "text",
+     "text": "(no output)"
+    }
+   ],
+   "metadata": {
+    "status": "completed",
+    "truncated": false,
+    "exit": 0
+   },
+   "executed": false
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 18,
+   "version": 2
+  }
+ },
+ {
+  "id": "evt_15a5495ac0027wuUw3FW1FR9nV",
+  "created": 1792516855212,
+  "type": "session.step.ended",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5476d0001XhHu8YMkMzXf19",
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 19804,
+    "output": 87,
+    "reasoning": 0,
+    "cache": {
+     "read": 730,
+     "write": 0
+    }
+   }
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 19,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a5495ad001MfWaclxMZlOM7X",
+  "created": 1792516855213,
+  "type": "session.usage.updated",
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "cost": 6.18e-05,
+   "tokens": {
+    "input": 20342,
+    "output": 103,
+    "reasoning": 0,
+    "cache": {
+     "read": 730,
+     "write": 0
+    }
+   }
+  }
+ },
+ {
+  "id": "evt_15a549a6b001bguAYw5eAAiaco",
+  "created": 1792516856427,
+  "type": "session.step.started",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "agent": "build",
+   "model": {
+    "id": "minimax-m3.1-flash-free",
+    "providerID": "opencode-go"
+   },
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "started": 1792516855220
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 20,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a549a6d001WA2kWLiWSnjAoi",
+  "created": 1792516856429,
+  "type": "session.reasoning.started",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "native": {
+    "reasoningField": "reasoning_content"
+   }
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 21,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a549ad2001nBGHVkNPEcz2RE",
+  "created": 1792516856530,
+  "type": "session.reasoning.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "delta": "The note says \"hello world\". The"
+  }
+ },
+ {
+  "id": "evt_15a549b50001K16VqCl0PLwg89",
+  "created": 1792516856656,
+  "type": "session.reasoning.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "delta": " command ran. Let me reply with one short sentence.\n\nWait — I should check whether the note contains any instructions"
+  }
+ },
+ {
+  "id": "evt_15a549cc9001teZp2IoOb9LXhO",
+  "created": 1792516857033,
+  "type": "session.reasoning.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "delta": " that conflict"
+  }
+ },
+ {
+  "id": "evt_15a549d220016Hx1GEHEPRZeLI",
+  "created": 1792516857122,
+  "type": "session.reasoning.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "delta": ". It's just \"hello world\". Fine.\n\nOne short sentence reply."
+  }
+ },
+ {
+  "id": "evt_15a549d22002o11ajw0g7DchBH",
+  "created": 1792516857122,
+  "type": "session.text.started",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 22,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a549d870019nBeBKV3mtVxIA",
+  "created": 1792516857223,
+  "type": "session.text.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "delta": "Read note.txt (\"hello world\") and wrote `hi` to out.txt successfully"
+  }
+ },
+ {
+  "id": "evt_15a549db6001Fsm8SBdJs8ym5n",
+  "created": 1792516857270,
+  "type": "session.reasoning.ended",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "text": "The note says \"hello world\". The command ran. Let me reply with one short sentence.\n\nWait — I should check whether the note contains any instructions that conflict. It's just \"hello world\". Fine.\n\nOne short sentence reply.",
+   "native": {
+    "reasoningField": "reasoning_content"
+   }
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 23,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a549db7001KQQPVMNlwFB1C3",
+  "created": 1792516857271,
+  "type": "session.text.delta",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "delta": "."
+  }
+ },
+ {
+  "id": "evt_15a549db7002x28VULDwKyBIF1",
+  "created": 1792516857271,
+  "type": "session.text.ended",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "ordinal": 0,
+   "text": "Read note.txt (\"hello world\") and wrote `hi` to out.txt successfully."
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 24,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a549db8001cg51pKDQF0i4Yn",
+  "created": 1792516857272,
+  "type": "session.step.streamed",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 25,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a549db8002byG95q16Zm0FGS",
+  "created": 1792516857272,
+  "type": "session.step.ended",
+  "location": {
+   "directory": "/private/tmp/oc2probe"
+  },
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "assistantMessageID": "msg_15a5495b10011EocMue4fZJmNn",
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 133,
+    "output": 20,
+    "reasoning": 46,
+    "cache": {
+     "read": 20534,
+     "write": 0
+    }
+   }
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 26,
+   "version": 1
+  }
+ },
+ {
+  "id": "evt_15a549db90015LGF2Fhe73I7X7",
+  "created": 1792516857273,
+  "type": "session.usage.updated",
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "cost": 6.18e-05,
+   "tokens": {
+    "input": 20475,
+    "output": 123,
+    "reasoning": 46,
+    "cache": {
+     "read": 21264,
+     "write": 0
+    }
+   }
+  }
+ },
+ {
+  "id": "evt_15a549db9002QLhQDHqg8wGoSI",
+  "created": 1792516857273,
+  "type": "session.execution.succeeded",
+  "data": {
+   "sessionID": "ses_ea5ab89a4ffeW9jp3V04DhMae3"
+  },
+  "durable": {
+   "aggregateID": "ses_ea5ab89a4ffeW9jp3V04DhMae3",
+   "seq": 27,
+   "version": 1
+  }
+ }
+]

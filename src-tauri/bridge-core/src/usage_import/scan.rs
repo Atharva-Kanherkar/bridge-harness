@@ -838,10 +838,10 @@ mod tests {
         .unwrap();
 
         history
-            .execute("ALTER TABLE message RENAME TO message_broken", [])
+            .execute("ALTER TABLE session RENAME TO session_broken", [])
             .unwrap();
         let failure = run(&db, &opencode_request(&env, 2), &env).unwrap_err();
-        assert!(failure.to_string().contains("no such table: message"));
+        assert!(failure.to_string().contains("no such table: session"));
         let (cursor, version, coverage, last_error): (
             Option<String>,
             String,
@@ -858,7 +858,7 @@ mod tests {
         assert_eq!(cursor, None, "the old high-water mark must be discarded");
         assert_eq!(version, IMPORTER_VERSION);
         assert_eq!(coverage, "unreadable");
-        assert!(last_error.unwrap().contains("no such table: message"));
+        assert!(last_error.unwrap().contains("no such table: session"));
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM agent_usage_observations", [], |row| {
                 row.get::<_, i64>(0)
@@ -875,7 +875,7 @@ mod tests {
         );
 
         history
-            .execute("ALTER TABLE message_broken RENAME TO message", [])
+            .execute("ALTER TABLE session_broken RENAME TO session", [])
             .unwrap();
         let first_retry = run(&db, &opencode_request(&env, 2), &env).unwrap();
         assert_eq!(first_retry.records_imported, 2);

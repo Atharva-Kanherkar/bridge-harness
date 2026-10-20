@@ -23,7 +23,7 @@ This is a decision, not an accident. The harness is what talks to the model, so 
 | --- | --- | --- |
 | Claude Code | `compact_boundary` system message, with `trigger`, `pre_tokens`, `post_tokens` | a `/compact [focus]` slash command on the input stream |
 | Codex | a `contextCompaction` thread item (`thread/compacted` is deprecated) | `thread/compact/start`, whole conversation only |
-| OpenCode | a `session.compacted` event | `POST /session/{id}/summarize`, whole conversation only |
+| OpenCode | a `session.compacted` event (2.x: `session.compaction.ended`) | `POST /session/{id}/summarize` (2.x: `POST /api/session/{id}/compact`, no model needed), whole conversation only |
 
 Three facts settled it. Bridge's own pressure trigger had never fired: of the successful compactions in a month of real use, every one was a phase boundary, a model switch, or a shutdown. A Bridge checkpoint frees no provider tokens, because committing one writes forest entries and moves the session head without touching the adapter. And making it free tokens would mean restarting the process to replay a shorter history, which discards the native session and the prompt-cache prefix that native resume and the byte-stable system prompt exist to preserve.
 

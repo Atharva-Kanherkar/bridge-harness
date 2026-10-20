@@ -585,7 +585,8 @@ fn normalize_opencode_part(
                 "started"
             };
             let tool = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
-            let kind = if tool == "bash" {
+            // 1.x calls its shell tool `bash`; 2.x calls it `shell`.
+            let kind = if matches!(tool, "bash" | "shell") {
                 format!("command.{suffix}")
             } else if is_opencode_file_tool(tool) {
                 format!("file_change.{suffix}")

@@ -7,6 +7,11 @@
 //! high-water mark, so an edited message is seen again by its id and
 //! upserted, replacing whatever was imported from it earlier (e.g. a
 //! preliminary row seen before the assistant turn finished).
+//!
+//! OpenCode 2.x writes new history to `session_message` (sessions in
+//! `session_v2`) and leaves `message` as it was. It migrates 1.x history
+//! across under the same ids, so the 2.x pass skips any id `message` still
+//! holds; every message is read once, from the table that wrote it.
 
 use super::scan::{finish_source, persist_records};
 use super::{
@@ -53,6 +58,12 @@ pub fn discover(env: &SourceEnv) -> DiscoveredAnalyticsSource {
 pub struct OpenCodeCursor {
     pub time_updated: i64,
     pub id: String,
+    /// The same high-water mark over 2.x's `session_message`. Absent from
+    /// cursors saved before 2.x was read, which then start it from zero.
+    #[serde(default)]
+    pub v2_time_updated: i64,
+    #[serde(default)]
+    pub v2_id: String,
 }
 
 /// Opens the database without ever writing to it. A plain read-only open
@@ -91,41 +102,25 @@ pub(crate) fn scan(
     let mut cursor: OpenCodeCursor = cursor_text
         .and_then(|text| serde_json::from_str(text).ok())
         .unwrap_or_default();
-    let rows = {
+    let (rows, v2_rows) = {
         let history = open_read_only(&source.location)?;
-        let mut statement = history.prepare(
-            "SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, s.parent_id, s.directory
-             FROM message m LEFT JOIN session s ON s.id = m.session_id
-             WHERE (m.time_updated > ?1 OR (m.time_updated = ?1 AND m.id > ?2))
-               AND m.data LIKE '%\"role\":\"assistant\"%'
-             ORDER BY m.time_updated, m.id
-             LIMIT ?3",
-        )?;
-        let rows = statement.query_map(
-            params![cursor.time_updated, cursor.id, max_records as i64],
-            |row| {
-                Ok(MessageRow {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    time_created: row.get(2)?,
-                    time_updated: row.get(3)?,
-                    data: row.get(4)?,
-                    parent_session_id: row.get(5)?,
-                    directory: row.get(6)?,
-                })
-            },
-        )?;
-        rows.collect::<Result<Vec<_>, _>>()?
+        read_rows(&history, &cursor, max_records)?
     };
-    let truncated = rows.len() >= max_records;
+    let truncated = rows.len() + v2_rows.len() >= max_records;
     let mut skipped = 0_usize;
-    let mut records = Vec::with_capacity(rows.len());
+    let mut records = Vec::with_capacity(rows.len() + v2_rows.len());
     for row in rows {
-        cursor = OpenCodeCursor {
-            time_updated: row.time_updated,
-            id: row.id.clone(),
-        };
+        cursor.time_updated = row.time_updated;
+        cursor.id = row.id.clone();
         match parse_message(&row) {
+            Some(record) => records.push((record, String::new())),
+            None => skipped += 1,
+        }
+    }
+    for row in v2_rows {
+        cursor.v2_time_updated = row.time_updated;
+        cursor.v2_id = row.id.clone();
+        match parse_v2_message(&row) {
             Some(record) => records.push((record, String::new())),
             None => skipped += 1,
         }
@@ -156,6 +151,102 @@ pub(crate) fn scan(
         coverage,
         warning: None,
     })
+}
+
+fn has_table(history: &Connection, name: &str) -> Result<bool, BridgeError> {
+    Ok(history
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
+        .exists(params![name])?)
+}
+
+fn query_rows(
+    history: &Connection,
+    sql: &str,
+    time_updated: i64,
+    id: &str,
+    limit: usize,
+) -> Result<Vec<MessageRow>, BridgeError> {
+    let mut statement = history.prepare(sql)?;
+    let rows = statement.query_map(params![time_updated, id, limit as i64], |row| {
+        Ok(MessageRow {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            time_created: row.get(2)?,
+            time_updated: row.get(3)?,
+            data: row.get(4)?,
+            parent_session_id: row.get(5)?,
+            directory: row.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 1.x rows first, then 2.x rows with whatever budget is left. Either table
+/// may be absent: an old install never had `session_message`, and a future
+/// one may drop `message`.
+fn read_rows(
+    history: &Connection,
+    cursor: &OpenCodeCursor,
+    max_records: usize,
+) -> Result<(Vec<MessageRow>, Vec<MessageRow>), BridgeError> {
+    let has_legacy = has_table(history, "message")?;
+    let rows = if has_legacy {
+        query_rows(
+            history,
+            "SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, s.parent_id, s.directory
+             FROM message m LEFT JOIN session s ON s.id = m.session_id
+             WHERE (m.time_updated > ?1 OR (m.time_updated = ?1 AND m.id > ?2))
+               AND m.data LIKE '%\"role\":\"assistant\"%'
+             ORDER BY m.time_updated, m.id
+             LIMIT ?3",
+            cursor.time_updated,
+            &cursor.id,
+            max_records,
+        )?
+    } else {
+        Vec::new()
+    };
+    let budget = max_records.saturating_sub(rows.len());
+    if budget == 0 || !has_table(history, "session_message")? || !has_table(history, "session_v2")? {
+        return Ok((rows, Vec::new()));
+    }
+    let migrated = if has_legacy {
+        "AND NOT EXISTS (SELECT 1 FROM message legacy WHERE legacy.id = m.id)"
+    } else {
+        ""
+    };
+    let v2_rows = query_rows(
+        history,
+        &format!(
+            "SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, s.parent_id, s.directory
+             FROM session_message m LEFT JOIN session_v2 s ON s.id = m.session_id
+             WHERE m.type = 'assistant'
+               AND (m.time_updated > ?1 OR (m.time_updated = ?1 AND m.id > ?2))
+               {migrated}
+             ORDER BY m.time_updated, m.id
+             LIMIT ?3"
+        ),
+        cursor.v2_time_updated,
+        &cursor.v2_id,
+        budget,
+    )?;
+    Ok((rows, v2_rows))
+}
+
+/// A 2.x assistant message names its model as `{id, providerID}` and counts
+/// tokens without cache in `input`; restated in 1.x terms it parses the same.
+fn parse_v2_message(row: &MessageRow) -> Option<ParsedUsage> {
+    let data: Value = serde_json::from_str(&row.data).ok()?;
+    let tokens = crate::opencode_v2::inclusive_tokens(data.get("tokens").filter(|t| t.is_object())?);
+    let legacy = serde_json::json!({
+        "role": "assistant",
+        "modelID": data.pointer("/model/id"),
+        "providerID": data.pointer("/model/providerID"),
+        "cost": data.get("cost"),
+        "time": data.get("time"),
+    });
+    let record = parse_assistant_data(&legacy, &tokens, row)?;
+    record.has_tokens().then_some(record)
 }
 
 fn parse_message(row: &MessageRow) -> Option<ParsedUsage> {
@@ -264,6 +355,23 @@ pub(crate) mod fixtures {
         )
         .unwrap();
         db
+    }
+
+    /// Adds 2.x's `session_v2` and `session_message` beside the 1.x tables.
+    pub fn add_v2_tables(db: &Connection) {
+        db.execute_batch(
+            "CREATE TABLE session_v2 (id text PRIMARY KEY, project_id text NOT NULL, parent_id text, slug text NOT NULL, directory text NOT NULL, title text, version text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL);
+             CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);",
+        )
+        .unwrap();
+    }
+
+    pub fn insert_v2_message(db: &Connection, id: &str, session: &str, kind: &str, time_updated: i64, data: &str) {
+        db.execute(
+            "INSERT INTO session_message(id,session_id,type,seq,time_created,time_updated,data) VALUES(?1,?2,?3,?4,?5,?5,?6)",
+            params![id, session, kind, time_updated, time_updated, data],
+        )
+        .unwrap();
     }
 
     pub fn insert_session(db: &Connection, id: &str, parent: Option<&str>, directory: &str) {
@@ -375,6 +483,68 @@ mod tests {
             ..user
         };
         assert!(parse_message(&pending).is_none());
+    }
+
+    #[test]
+    fn v2_messages_import_once_in_cache_inclusive_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.db");
+        let db = create_db(&path);
+        add_v2_tables(&db);
+        db.execute(
+            "INSERT INTO session_v2(id,project_id,parent_id,slug,directory,version,time_created,time_updated) VALUES('ses_kid','p','ses_root','s','/work/repo','2.1.1',1,1)",
+            [],
+        )
+        .unwrap();
+        let legacy = assistant_data("kimi", "opencode-go", 10, 5, 0, 0, 0, 0.1, 1_000);
+        insert_message(&db, "msg_old", "ses_old", 1_000, &legacy);
+        // Migrated from 1.x under the same id: already read from `message`.
+        insert_v2_message(&db, "msg_old", "ses_old", "assistant", 1_000, "{}");
+        insert_v2_message(&db, "msg_user", "ses_kid", "user", 2_000, r#"{"text":"SECRET PROMPT"}"#);
+        insert_v2_message(
+            &db,
+            "msg_new",
+            "ses_kid",
+            "assistant",
+            3_000,
+            r#"{"time":{"created":3000},"agent":"build","model":{"id":"minimax-m3","providerID":"opencode-go"},"content":[{"type":"text","text":"SECRET"}],"cost":0.002,"tokens":{"input":133,"output":20,"reasoning":46,"cache":{"read":20534,"write":0}}}"#,
+        );
+        drop(db);
+        let history = open_read_only(&path).unwrap();
+        let (rows, v2_rows) = read_rows(&history, &OpenCodeCursor::default(), 100).unwrap();
+        assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["msg_old"]);
+        assert_eq!(v2_rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["msg_new"]);
+        let record = parse_v2_message(&v2_rows[0]).unwrap();
+        assert_eq!(record.model.as_deref(), Some("minimax-m3"));
+        assert_eq!(record.provider, "opencode-go");
+        assert_eq!(record.parent_native_session_id.as_deref(), Some("ses_root"));
+        assert_eq!(record.project_path.as_deref(), Some("/work/repo"));
+        assert_eq!(record.usage.total_input_tokens, Some(133 + 20534));
+        assert_eq!(record.usage.uncached_input_tokens, Some(133));
+        assert_eq!(record.usage.output_tokens, Some(66));
+        assert_eq!(record.usage.reasoning_tokens, Some(46));
+        assert_eq!(record.usage.exact_total(), Some(133 + 20534 + 20 + 46));
+        assert_eq!(record.reported_cost_microusd, Some(2_000));
+
+        let after = OpenCodeCursor {
+            time_updated: 1_000,
+            id: "msg_old".into(),
+            v2_time_updated: 3_000,
+            v2_id: "msg_new".into(),
+        };
+        let (rows, v2_rows) = read_rows(&history, &after, 100).unwrap();
+        assert!(rows.is_empty() && v2_rows.is_empty(), "both high-water marks hold");
+        let (rows, v2_rows) = read_rows(&history, &OpenCodeCursor::default(), 1).unwrap();
+        assert_eq!((rows.len(), v2_rows.len()), (1, 0), "1.x rows spend the budget first");
+    }
+
+    #[test]
+    fn cursors_saved_before_v2_support_still_parse() {
+        let cursor: OpenCodeCursor =
+            serde_json::from_str(r#"{"timeUpdated":5,"id":"msg_5"}"#).unwrap();
+        assert_eq!(cursor.time_updated, 5);
+        assert_eq!(cursor.v2_time_updated, 0);
+        assert!(cursor.v2_id.is_empty());
     }
 
     #[test]
