@@ -1387,7 +1387,7 @@ impl HarnessAdapter for OpenCodeAdapter {
             id: "opencode".into(),
             label: "OpenCode".into(),
             available,
-            auth_state: opencode_adapter::auth_state(),
+            auth_state: opencode_adapter::auth_state_with_catalog(catalog.as_ref()),
             version: catalog.as_ref().map(|catalog| catalog.version.clone()),
             capabilities: [
                 "messages",
