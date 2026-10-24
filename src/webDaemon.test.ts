@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { errorMessage } from "./errors";
 import { ERROR_CODES, PROTOCOL_VERSION } from "./protocol/generated/protocol";
-import { CONNECTION_LOST, DAEMON_UNREACHABLE, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, activeWebDaemon, followPastedLinks, readWebDaemonConfig, setActiveWebDaemon, type SocketLike, type WebDaemonStatus } from "./webDaemon";
+import { CONNECTION_LOST, DAEMON_UNREACHABLE, MAX_FRAME_BYTES, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, activeWebDaemon, followPastedLinks, readWebDaemonConfig, setActiveWebDaemon, type SocketLike, type WebDaemonStatus } from "./webDaemon";
 
 type Frame = { jsonrpc: string; id?: number; method: string; params?: unknown };
 
@@ -211,6 +213,36 @@ describe("WebDaemonClient", () => {
     await web.call("state/get_state");
     expect(daemon.sockets.length).toBe(attempts);
     web.stop();
+  });
+
+  it("refuses an oversized request locally and keeps the other lanes and events", async () => {
+    const daemon = new FakeDaemon();
+    const held: Array<{ socket: FakeSocket; id: number }> = [];
+    daemon.onCall = (socket, frame) => held.push({ socket, id: frame.id! });
+    const web = client(daemon).start();
+    const seen: unknown[] = [];
+    web.subscribe("state-changed", payload => seen.push(payload));
+    const pending = web.call("state/get_state");
+    await until(() => held.length === 1);
+    // Multi-byte text, so a character count would pass where the byte count fails.
+    const image = "é".repeat(MAX_FRAME_BYTES / 2);
+    const error = await web.call("sessions/send_turn", { sessionId: "s", text: image }).catch((cause: unknown) => cause);
+    expect(error).toMatch(/^request frame exceeds 1048576 bytes \(sessions\/send_turn is \d+\)$/);
+    expect(daemon.sockets.flatMap(socket => socket.sent).some(frame => frame.method === "sessions/send_turn")).toBe(false);
+    expect(daemon.live()).toHaveLength(7);
+    held[0].socket.reply(held[0].id, "still here");
+    await expect(pending).resolves.toBe("still here");
+    daemon.sockets[0].notify("state-changed");
+    expect(seen).toEqual([null]);
+    web.stop();
+  });
+
+  it("pins the frame limit to bridged's", () => {
+    const source = readFileSync(fileURLToPath(new URL("../src-tauri/bridged/src/lib.rs", import.meta.url)), "utf8");
+    const declared = source.match(/pub const MAX_FRAME_BYTES: usize = ([\d_ *]+);/);
+    expect(declared, "bridged::MAX_FRAME_BYTES moved").not.toBeNull();
+    const value = declared![1].split("*").map(part => Number(part.trim().replaceAll("_", ""))).reduce((product, factor) => product * factor, 1);
+    expect(MAX_FRAME_BYTES).toBe(value);
   });
 
   it("rebuilds the pool after a drop and emits reconciliation in order", async () => {

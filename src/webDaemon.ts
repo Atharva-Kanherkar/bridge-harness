@@ -53,6 +53,11 @@ const CONNECT_TIMEOUT_MS = 30_000;
 const BACKOFF_INITIAL_MS = 500;
 const BACKOFF_MAX_MS = 5_000;
 
+/** `bridged::MAX_FRAME_BYTES`: the daemon closes a connection whose message is
+ *  larger, taking every call on it down too. A test pins this to the Rust value. */
+export const MAX_FRAME_BYTES = 1024 * 1024;
+const utf8 = new TextEncoder();
+
 export const CONNECTION_LOST = "The Bridge daemon connection was lost; reconnecting";
 export const DAEMON_UNREACHABLE = "The Bridge daemon is unreachable";
 
@@ -154,13 +159,18 @@ export class DaemonSocket {
     const frame = params === undefined
       ? { jsonrpc: "2.0", id, method }
       : { jsonrpc: "2.0", id, method, params };
+    const serialized = JSON.stringify(frame);
+    // Refuse it here, as bridge-client does: sent, the daemon would close this
+    // socket, and the pool would drop every other call with it.
+    const bytes = utf8.encode(serialized).length;
+    if (bytes > MAX_FRAME_BYTES) return Promise.reject(`request frame exceeds ${MAX_FRAME_BYTES} bytes (${method} is ${bytes})`);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) reject(`${method} did not answer in time`);
       }, this.options.callTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
-        this.socket!.send(JSON.stringify(frame));
+        this.socket!.send(serialized);
       } catch {
         this.pending.delete(id);
         clearTimeout(timer);
