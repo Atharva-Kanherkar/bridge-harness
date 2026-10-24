@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.10.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.9.0...v0.10.0) (2026-10-24)
+
+
+### Features
+
+* add Pi coding-agent integration ([#828](https://github.com/Atharva-Kanherkar/bridge-harness/issues/828)) ([8ba7a96](https://github.com/Atharva-Kanherkar/bridge-harness/commit/8ba7a966ddec968770ac99eca920de28a1a5e6ea))
+* **browser:** support Safari fresh sign-in in browser copies ([#831](https://github.com/Atharva-Kanherkar/bridge-harness/issues/831)) ([c4d481d](https://github.com/Atharva-Kanherkar/bridge-harness/commit/c4d481d877b0da88f73cfe7e61aa7cc64e6e89a6))
+* **omarchy:** the Omarchy edition of Bridge, and an Omarchy mode for the landing page ([#829](https://github.com/Atharva-Kanherkar/bridge-harness/issues/829)) ([a81d0cc](https://github.com/Atharva-Kanherkar/bridge-harness/commit/a81d0cc091428e1d41de9e5be242d6a5350b772b))
+* **opencode:** support OpenCode 2.x servers ([#837](https://github.com/Atharva-Kanherkar/bridge-harness/issues/837)) ([228557d](https://github.com/Atharva-Kanherkar/bridge-harness/commit/228557daf411620686fae0f7cc0b6ace1c7f7b72))
+* render charts, diagrams and sourced findings inline with MCP Apps ([#824](https://github.com/Atharva-Kanherkar/bridge-harness/issues/824)) ([270156f](https://github.com/Atharva-Kanherkar/bridge-harness/commit/270156f321a904d6dcee8fa117fa41f08c8855b2))
+* **ui:** make tool calls readable with intent, command steps, drawn output and a Now card ([#834](https://github.com/Atharva-Kanherkar/bridge-harness/issues/834)) ([a403da6](https://github.com/Atharva-Kanherkar/bridge-harness/commit/a403da6943d97836ad017aedd4e37bccc35f52e6))
+* **web:** run Bridge in a browser tab against a real daemon ([#839](https://github.com/Atharva-Kanherkar/bridge-harness/issues/839)) ([5c2e131](https://github.com/Atharva-Kanherkar/bridge-harness/commit/5c2e1316ca7626ce733306708c4be95cef6cc2f0))
+
+
+### Bug Fixes
+
+* **auth:** recover Claude chats after browser sign-in ([#820](https://github.com/Atharva-Kanherkar/bridge-harness/issues/820)) ([0ae9639](https://github.com/Atharva-Kanherkar/bridge-harness/commit/0ae963905c3c181773123aa7d7e45dd29da3f664))
+* **claude:** stop drawing each thought twice ([#822](https://github.com/Atharva-Kanherkar/bridge-harness/issues/822)) ([4e72ae6](https://github.com/Atharva-Kanherkar/bridge-harness/commit/4e72ae682c6cfa52cfef15cf286c4b7c3d181846))
+* **codex:** drop the ignored instructions field and record the prefix experiment ([#835](https://github.com/Atharva-Kanherkar/bridge-harness/issues/835)) ([58752be](https://github.com/Atharva-Kanherkar/bridge-harness/commit/58752be39683c2b89529602414544bffe5213e96))
+* **voice:** preserve takes and streamline dictation UI ([#830](https://github.com/Atharva-Kanherkar/bridge-harness/issues/830)) ([bdabca0](https://github.com/Atharva-Kanherkar/bridge-harness/commit/bdabca065a162e871527a1c2d8c49f01d9f50cd5))
+
 ## [0.9.0](https://github.com/Atharva-Kanherkar/bridge-harness/compare/v0.8.0...v0.9.0) (2026-10-05)
 
 
