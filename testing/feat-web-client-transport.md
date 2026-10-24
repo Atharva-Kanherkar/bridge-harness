@@ -78,7 +78,7 @@ Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `
 
 ## Integration / Functional Tests
 
-- `src/webDaemon.smoke.test.ts`, skipped unless `BRIDGE_WEB_SMOKE_URL` and `BRIDGE_WEB_SMOKE_TOKEN` are set. Against a real `bridged --listen`, it checks: the handshake succeeds, `health/health` returns `ok`, `state/get_state` returns a workspaces array, a wrong token rejects with `unauthorized`, and a mutation (`add_project` on a temp git repo) yields a `state-changed` notification.
+- `src/webDaemon.smoke.test.ts`, skipped unless `BRIDGE_WEB_SMOKE_URL` and `BRIDGE_WEB_SMOKE_TOKEN` are set. Against a real `bridged --listen`, it checks: the handshake succeeds, `health/health` returns `ok`, `state/get_state` returns a workspaces array, a wrong token rejects with `unauthorized`, and a bad param rejects with `invalid_params`. `add_project` on a temp git repo returns the new project, and a second connection sees it. `sessions/create_chat_id` yields a `state-changed` notification on the events socket. (Revised during implementation: `add_project` returns its state rather than publishing `state-changed`. The UI uses the returned state, so the notification check moved to a method that does publish.)
 
 ## Smoke Tests
 
