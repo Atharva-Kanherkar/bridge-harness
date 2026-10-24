@@ -3,7 +3,7 @@ import { Plus, X } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { terminalTheme } from "../terminal/theme";
 import { FitAddon } from "@xterm/addon-fit";
-import { bridgeApi } from "../api";
+import { backendMode, bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { SCROLLBACK_PER_SESSION_LIMIT, rememberScrollback, scrollbackFor } from "../terminalScrollback";
 
@@ -53,7 +53,7 @@ function ShellHost({ workspaceId, terminalId, active, paneVisible, register }: {
     const theme = new MutationObserver(() => { term.options.theme = terminalTheme(); });
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
     const previous = scrollbackFor(`${workspaceId}:${terminalId}`); if (previous) term.write(previous);
-    else if (!("__TAURI_INTERNALS__" in window)) term.writeln("\x1b[90mBridge workspace shell · terminal is isolated from the agent conversation.\x1b[0m\r\n$ ");
+    else if (backendMode() === "mock") term.writeln("\x1b[90mBridge workspace shell · terminal is isolated from the agent conversation.\x1b[0m\r\n$ ");
     void bridgeApi.openTerminal(workspaceId, terminalId).catch(error => term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`));
     const data = term.onData(value => void bridgeApi.writeTerminal(workspaceId, terminalId, value));
     const resize = new ResizeObserver(() => { fit.fit(); void bridgeApi.resizeTerminal(workspaceId, terminalId, term.rows, term.cols); }); resize.observe(host.current);

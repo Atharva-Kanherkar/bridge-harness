@@ -493,7 +493,10 @@ let active: WebDaemonClient | null | undefined;
 export function activeWebDaemon(): WebDaemonClient | null {
   if (active !== undefined) return active;
   if (typeof window === "undefined" || "__TAURI_INTERNALS__" in window || typeof WebSocket === "undefined") return active = null;
-  const config = readWebDaemonConfig(window.location, window.sessionStorage, window.history);
+  let config: WebDaemonConfig | null = null;
+  // Reading `sessionStorage` can throw (storage disabled, sandboxed frame);
+  // that is mock mode, not a crash.
+  try { config = readWebDaemonConfig(window.location, window.sessionStorage, window.history); } catch { config = null; }
   return active = config ? new WebDaemonClient(config).start() : null;
 }
 
