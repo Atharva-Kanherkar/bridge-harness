@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { errorMessage } from "./errors";
 import { ERROR_CODES, PROTOCOL_VERSION } from "./protocol/generated/protocol";
-import { CONNECTION_LOST, DAEMON_UNREACHABLE, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, followPastedLinks, readWebDaemonConfig, type SocketLike, type WebDaemonStatus } from "./webDaemon";
+import { CONNECTION_LOST, DAEMON_UNREACHABLE, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, activeWebDaemon, followPastedLinks, readWebDaemonConfig, setActiveWebDaemon, type SocketLike, type WebDaemonStatus } from "./webDaemon";
 
 type Frame = { jsonrpc: string; id?: number; method: string; params?: unknown };
 
@@ -317,5 +317,19 @@ describe("followPastedLinks", () => {
     other.change("#section-2");
     expect(other.reload).not.toHaveBeenCalled();
     expect(other.storage.size).toBe(0);
+  });
+});
+
+describe("activeWebDaemon", () => {
+  it("is mock mode, not a crash, on a partial window", () => {
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("WebSocket", class {});
+    setActiveWebDaemon(undefined);
+    try {
+      expect(activeWebDaemon()).toBeNull();
+    } finally {
+      setActiveWebDaemon(undefined);
+      vi.unstubAllGlobals();
+    }
   });
 });

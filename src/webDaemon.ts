@@ -507,11 +507,13 @@ let active: WebDaemonClient | null | undefined;
 export function activeWebDaemon(): WebDaemonClient | null {
   if (active !== undefined) return active;
   if (typeof window === "undefined" || "__TAURI_INTERNALS__" in window || typeof WebSocket === "undefined") return active = null;
-  followPastedLinks(window, () => window.location.reload());
   let config: WebDaemonConfig | null = null;
-  // Reading `sessionStorage` can throw (storage disabled, sandboxed frame);
-  // that is mock mode, not a crash.
-  try { config = readWebDaemonConfig(window.location, window.sessionStorage, window.history); } catch { config = null; }
+  // Reading `sessionStorage` can throw (storage disabled, sandboxed frame), and
+  // a partial window has no events to follow; either is mock mode, not a crash.
+  try {
+    followPastedLinks(window, () => window.location.reload());
+    config = readWebDaemonConfig(window.location, window.sessionStorage, window.history);
+  } catch { config = null; }
   return active = config ? new WebDaemonClient(config).start() : null;
 }
 
