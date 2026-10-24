@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { errorMessage } from "./errors";
 import { ERROR_CODES, PROTOCOL_VERSION } from "./protocol/generated/protocol";
-import { CONNECTION_LOST, DAEMON_UNREACHABLE, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, readWebDaemonConfig, type SocketLike, type WebDaemonStatus } from "./webDaemon";
+import { CONNECTION_LOST, DAEMON_UNREACHABLE, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, followPastedLinks, readWebDaemonConfig, type SocketLike, type WebDaemonStatus } from "./webDaemon";
 
 type Frame = { jsonrpc: string; id?: number; method: string; params?: unknown };
 
@@ -284,5 +284,38 @@ describe("readWebDaemonConfig", () => {
     expect(harness("").read()).toBeNull();
     expect(harness("", "{not json").read()).toBeNull();
     expect(harness("#other=1").read()).toBeNull();
+  });
+});
+
+describe("followPastedLinks", () => {
+  function tab(hash: string) {
+    const storage = new Map<string, string>();
+    const replaced: string[] = [];
+    let onHashChange: (() => void) | undefined;
+    const location = { hash, pathname: "/", search: "" };
+    const target = {
+      location,
+      sessionStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value); } },
+      history: { replaceState: (_data: unknown, _unused: string, url?: string | URL | null) => { replaced.push(String(url)); } },
+      addEventListener: (type: string, listener: () => void) => { if (type === "hashchange") onHashChange = listener; },
+    };
+    const reload = vi.fn();
+    followPastedLinks(target as unknown as Parameters<typeof followPastedLinks>[0], reload);
+    return { location, storage, replaced, reload, change: (next: string) => { location.hash = next; onHashChange?.(); } };
+  }
+
+  it("stores a pasted link, strips it, and reloads onto it", () => {
+    const pasted = tab("");
+    pasted.change("#bridge-daemon=ws%3A%2F%2F127.0.0.1%3A4319&bridge-token=new");
+    expect(JSON.parse(pasted.storage.get(WEB_DAEMON_STORAGE_KEY)!)).toEqual({ url: "ws://127.0.0.1:4319", token: "new" });
+    expect(pasted.replaced).toEqual(["/"]);
+    expect(pasted.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores hash changes that are not a daemon link", () => {
+    const other = tab("");
+    other.change("#section-2");
+    expect(other.reload).not.toHaveBeenCalled();
+    expect(other.storage.size).toBe(0);
   });
 });

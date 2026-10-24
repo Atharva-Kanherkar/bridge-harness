@@ -486,6 +486,20 @@ export function readWebDaemonConfig(location: LocationLike, storage: StorageLike
   } catch { return null; }
 }
 
+/**
+ * A link pasted into a tab that is already open only changes the hash, so the
+ * page does not load again and the fragment, token included, would sit in the
+ * address bar while the old connection carried on. Take it the same way a
+ * fresh load would: store it, strip it, and reload onto it.
+ */
+export function followPastedLinks(target: Pick<Window, "addEventListener" | "location" | "sessionStorage" | "history">, reload: () => void): void {
+  target.addEventListener("hashchange", () => {
+    if (!new URLSearchParams(target.location.hash.replace(/^#/, "")).has(DAEMON_PARAM)) return;
+    try { readWebDaemonConfig(target.location, target.sessionStorage, target.history); } catch { /* storage off */ }
+    reload();
+  });
+}
+
 let active: WebDaemonClient | null | undefined;
 
 /** The tab's daemon client, created on first use; null outside a browser,
@@ -493,6 +507,7 @@ let active: WebDaemonClient | null | undefined;
 export function activeWebDaemon(): WebDaemonClient | null {
   if (active !== undefined) return active;
   if (typeof window === "undefined" || "__TAURI_INTERNALS__" in window || typeof WebSocket === "undefined") return active = null;
+  followPastedLinks(window, () => window.location.reload());
   let config: WebDaemonConfig | null = null;
   // Reading `sessionStorage` can throw (storage disabled, sandboxed frame);
   // that is mock mode, not a crash.
