@@ -22,6 +22,13 @@ describe("server state wiring", () => {
     expect(APP).toContain("bridgeApi.onTerminalExited");
   });
 
+  it("recovers the boot reads when a browser tab's daemon attaches", () => {
+    expect(SERVER_STATE).toContain("bridgeApi.onBackendAttached(");
+    expect(SERVER_STATE).toContain('query.state.status === "error"');
+    expect(APP).toContain("bridgeApi.onBackendAttached(() => {");
+    expect(APP).toContain("isTransportError(current) ? undefined : current");
+  });
+
   it("writes successful model setup changes to the shared cache", () => {
     expect(SERVER_STATE).toContain("queryClient.setQueryData(queryKeys.modelSetup, setup)");
     expect(APP).toContain("onComplete={finishAgentOnboarding}");

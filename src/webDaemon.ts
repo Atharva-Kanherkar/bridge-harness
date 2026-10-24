@@ -61,6 +61,11 @@ const utf8 = new TextEncoder();
 export const CONNECTION_LOST = "The Bridge daemon connection was lost; reconnecting";
 export const DAEMON_UNREACHABLE = "The Bridge daemon is unreachable";
 
+/** Whether an error only said the daemon was out of reach, which attaching fixes. */
+export function isTransportError(message: string | undefined): boolean {
+  return message === DAEMON_UNREACHABLE || message === CONNECTION_LOST;
+}
+
 const ERROR_KIND_BY_CODE = new Map<number, string>(
   Object.entries(ERROR_CODES).map(([name, code]) => [code, name]),
 );

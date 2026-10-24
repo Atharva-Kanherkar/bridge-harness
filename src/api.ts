@@ -3169,6 +3169,22 @@ export const bridgeApi = {
     if (hasBackend()) return subscribe<VoiceTranscriptPayload>("voice-transcript", handler);
     return () => undefined;
   },
+  /**
+   * The browser's daemon connection attached, the first time included. A tab
+   * can boot before its daemon answers, and nothing else retries the reads
+   * that failed then. A subscriber that arrives already attached is not
+   * called. The desktop host reconciles on its own, so this never fires there.
+   */
+  onBackendAttached: (handler: () => void): (() => void) => {
+    const web = webDaemon();
+    if (!web) return () => undefined;
+    let initial = true;
+    const off = web.onStatus(status => {
+      if (status.state === "attached" && !initial) handler();
+    });
+    initial = false;
+    return off;
+  },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
   },

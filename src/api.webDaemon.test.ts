@@ -12,7 +12,10 @@ vi.mock("@tauri-apps/api/event", () => ({ listen, emit: vi.fn() }));
 /** A stand-in for the WebSocket pool: records calls, lets the test publish. */
 function fakeDaemon(answer: (method: string, params: unknown) => unknown) {
   const listeners = new Map<string, Set<(payload: unknown) => void>>();
+  const statusListeners = new Set<(status: { state: string }) => void>();
+  let status = { state: "connecting" };
   const client = {
+    onStatus: (handler: (next: { state: string }) => void) => { statusListeners.add(handler); handler(status); return () => statusListeners.delete(handler); },
     call: vi.fn(async (method: string, params?: unknown) => answer(method, params)),
     subscribe: vi.fn((name: string, handler: (payload: unknown) => void) => {
       if (!listeners.has(name)) listeners.set(name, new Set());
@@ -21,7 +24,8 @@ function fakeDaemon(answer: (method: string, params: unknown) => unknown) {
     }),
   };
   const publish = (name: string, payload: unknown) => { for (const handler of listeners.get(name) ?? []) handler(payload); };
-  return { client, publish, pin: () => setActiveWebDaemon(client as unknown as WebDaemonClient) };
+  const setStatus = (next: string) => { status = { state: next }; for (const handler of statusListeners) handler(status); };
+  return { client, publish, setStatus, pin: () => setActiveWebDaemon(client as unknown as WebDaemonClient) };
 }
 
 beforeEach(() => { invoke.mockReset(); listen.mockReset(); });
@@ -88,6 +92,31 @@ describe("api.ts over a web daemon", () => {
     off();
     await bridgeApi.revealMainWindow();
     expect(listen).not.toHaveBeenCalled();
+  });
+
+  it("reports every attachment, but not to a subscriber that arrives attached", () => {
+    const daemon = fakeDaemon(() => null);
+    daemon.pin();
+    const attached = vi.fn();
+    const off = bridgeApi.onBackendAttached(attached);
+    expect(attached).not.toHaveBeenCalled();
+    daemon.setStatus("attached");
+    daemon.setStatus("reconnecting");
+    daemon.setStatus("attached");
+    expect(attached).toHaveBeenCalledTimes(2);
+    const late = vi.fn();
+    bridgeApi.onBackendAttached(late);
+    expect(late).not.toHaveBeenCalled();
+    off();
+    daemon.setStatus("attached");
+    expect(attached).toHaveBeenCalledTimes(2);
+  });
+
+  it("never reports attachment without a web daemon", () => {
+    setActiveWebDaemon(null);
+    const attached = vi.fn();
+    bridgeApi.onBackendAttached(attached)();
+    expect(attached).not.toHaveBeenCalled();
   });
 
   it("is mock mode with no daemon configured", async () => {

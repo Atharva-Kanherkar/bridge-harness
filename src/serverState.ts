@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { bridgeApi } from "./api";
 import { queryKeys } from "./queryClient";
@@ -8,6 +8,12 @@ export function useBridgeServerState() {
   const queryClient = useQueryClient();
   const health = useQuery({ queryKey: queryKeys.health, queryFn: () => bridgeApi.health() });
   const modelSetup = useQuery({ queryKey: queryKeys.modelSetup, queryFn: () => bridgeApi.modelSetup() });
+  // Health and model setup are read once (`retry: false`). If that was before a
+  // browser tab's daemon answered, attaching is the cue to read them again.
+  // `refetchQueries` skips disabled queries, so an idle Work board stays unread.
+  useEffect(() => bridgeApi.onBackendAttached(() => {
+    void queryClient.refetchQueries({ predicate: query => query.state.status === "error" });
+  }), [queryClient]);
   const [followedRunId, followWorkBriefing] = useState<string>();
   const workBoard = useQuery({
     queryKey: queryKeys.workBoard,

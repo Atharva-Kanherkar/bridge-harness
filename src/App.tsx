@@ -12,6 +12,7 @@ import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } fr
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
 import { pickPath } from "./pathPicker";
+import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
@@ -566,6 +567,13 @@ function AppContent() {
     const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
   }), []);
+  // The first reload can fail because a browser tab's daemon was not up yet.
+  // When it attaches, load again and drop an error that only said so.
+  useEffect(() => bridgeApi.onBackendAttached(() => {
+    void reload()
+      .then(() => setError(current => isTransportError(current) ? undefined : current))
+      .catch(value => setError(errorMessage(value)));
+  }), [reload]);
   useEffect(() => {
     void reload().catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;

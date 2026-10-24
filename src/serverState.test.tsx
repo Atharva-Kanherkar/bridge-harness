@@ -6,9 +6,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { WorkBoard } from "./protocol/generated/protocol";
 import { useBridgeServerState } from "./serverState";
 
-const { readBoard } = vi.hoisted(() => ({ readBoard: vi.fn() }));
+const { readBoard, readModelSetup, attachment } = vi.hoisted(() => ({
+  readBoard: vi.fn(),
+  readModelSetup: vi.fn(),
+  attachment: { handler: undefined as undefined | (() => void) },
+}));
 vi.mock("./api", () => ({ bridgeApi: {
-  health: async () => ({}), modelSetup: async () => ({}), workBoard: readBoard,
+  health: async () => ({}), modelSetup: readModelSetup, workBoard: readBoard,
+  onBackendAttached: (handler: () => void) => { attachment.handler = handler; return () => { attachment.handler = undefined; }; },
 } }));
 let client: QueryClient;
 let root: Root;
@@ -28,11 +33,30 @@ beforeEach(async () => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: 30_000, refetchOnWindowFocus: false } } });
   response = { suggestions: { state: "running" }, tasks: [] } as unknown as WorkBoard;
   readBoard.mockReset().mockImplementation(async () => response);
+  readModelSetup.mockReset().mockImplementation(async () => ({}));
   host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
   await act(async () => root.render(<QueryClientProvider client={client}><Observer /></QueryClientProvider>));
 });
 afterEach(() => {
   act(() => root.unmount()); client.clear(); host.remove(); vi.useRealTimers();
+});
+
+it("reads model setup again when a daemon attaches after the first read failed", async () => {
+  act(() => root.unmount());
+  client.clear();
+  readModelSetup.mockReset()
+    .mockImplementationOnce(async () => { throw "The Bridge daemon is unreachable"; })
+    .mockImplementation(async () => ({ complete: true }));
+  root = createRoot(host);
+  await act(async () => root.render(<QueryClientProvider client={client}><Observer /></QueryClientProvider>));
+  await tick(10);
+  expect(state.modelSetupError).toBe("The Bridge daemon is unreachable");
+  expect(state.modelSetup).toBeUndefined();
+  await act(async () => { attachment.handler?.(); });
+  await tick(10);
+  expect(readModelSetup).toHaveBeenCalledTimes(2);
+  expect(state.modelSetup).toEqual({ complete: true });
+  expect(state.modelSetupError).toBeNull();
 });
 
 it("leaves the unopened idle board unread", async () => {

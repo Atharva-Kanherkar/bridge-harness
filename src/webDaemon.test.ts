@@ -302,6 +302,21 @@ describe("WebDaemonClient", () => {
     web.stop();
   });
 
+  it("attaches after the first link wait expired and reports it", async () => {
+    const daemon = new FakeDaemon();
+    daemon.up = false;
+    const statuses: string[] = [];
+    const web = client(daemon, "secret", { linkWaitMs: 30 }).start();
+    web.onStatus(status => statuses.push(status.state));
+    await expect(web.call("health/health")).rejects.toBe(DAEMON_UNREACHABLE);
+    daemon.up = true;
+    await until(() => statuses.at(-1) === "attached");
+    expect(statuses[0]).toBe("connecting");
+    expect(statuses).toContain("reconnecting");
+    await expect(web.call("health/health")).resolves.toEqual({ echo: "health/health" });
+    web.stop();
+  });
+
   it("waits for a link, then rejects as unreachable", async () => {
     const daemon = new FakeDaemon();
     daemon.up = false;
