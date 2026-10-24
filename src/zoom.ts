@@ -15,6 +15,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+/** Only the desktop webview needs Bridge to own the level. A browser tab has
+ *  its own zoom, and Bridge stepping in would only take it away. */
+export const ownsZoom = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 /** Where the level is remembered, so a relaunch does not silently discard it. */
 export const ZOOM_STORAGE_KEY = "bridge.window.zoom";
 
@@ -234,6 +238,7 @@ export function resetZoom(): Promise<number> {
  * than stepping per event is the fix for the gesture that used to reach 360%.
  */
 export function installZoom(): () => void {
+  if (!ownsZoom()) return () => undefined;
   // Reserve the remembered level on the same queue, so a command arriving during
   // startup composes with it instead of being overwritten by it.
   void setZoomLevel(readZoom());

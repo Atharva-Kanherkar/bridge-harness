@@ -9,6 +9,8 @@ import {
   ACTUAL_SIZE,
   canZoom,
   chargeWheel,
+  installZoom,
+  ownsZoom,
   readZoom,
   snapZoom,
   stepZoom,
@@ -303,5 +305,16 @@ describe("serializing the level", () => {
     await zoom.nudgeZoom(1);          // 1.1, fine
     await expect(zoom.nudgeZoom(1)).resolves.toBe(1.1); // 1.25, fails
     await expect(zoom.nudgeZoom(1)).resolves.toBe(1.1); // and the next still runs
+  });
+});
+
+describe("in a browser tab", () => {
+  it("leaves ctrl+wheel to the browser's own zoom", () => {
+    expect(ownsZoom()).toBe(false);
+    const uninstall = installZoom();
+    const pinch = new WheelEvent("wheel", { ctrlKey: true, deltaY: -400, cancelable: true });
+    window.dispatchEvent(pinch);
+    expect(pinch.defaultPrevented).toBe(false);
+    uninstall();
   });
 });

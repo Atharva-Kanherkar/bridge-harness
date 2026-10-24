@@ -30,7 +30,15 @@ describe("the api boundary consumes the generated contract", () => {
     const targets = [...source.matchAll(/\blisten(?:<[^>]*>)?\(([^,]+),/g)].map(match => match[1].trim());
     // Shell-owned usage presentation carries a generated snapshot; navigation
     // belongs to the native host, like the main menu channel.
-    expect(targets).toEqual(["notification", '"bridge-provider-usage-overviews"', '"bridge-menu-bar-connection"', '"bridge-menu-bar-settings-changed"', '"bridge-usage-overview"', '"bridge-menu-bar-settings"', '"bridge-meter-tray"', "MENU_COMMAND_EVENT", "LAUNCH_EVENT", "AGENT_EVENT_BATCH"]);
+    expect(targets).toEqual(["notification", "name", '"bridge-menu-bar-connection"', '"bridge-menu-bar-settings"', '"bridge-meter-tray"', "MENU_COMMAND_EVENT", "LAUNCH_EVENT", "AGENT_EVENT_BATCH"]);
+  });
+
+  it("relays only the shell's presentation hints through shellListen()", () => {
+    // `name` above is shellListen()'s own body: a Tauri event between the
+    // desktop's windows, a local bus in a browser tab. These are the only
+    // channels allowed through it.
+    const relayed = [...source.matchAll(/\bshellListen(?:<[^>]*>)?\(([^,]+),/g)].map(match => match[1].trim()).filter(target => target !== "name: string");
+    expect(relayed).toEqual(['"bridge-provider-usage-overviews"', '"bridge-menu-bar-settings-changed"', '"bridge-usage-overview"']);
   });
 
   it("only calls methods the generated registry declares", () => {

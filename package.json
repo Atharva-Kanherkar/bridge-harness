@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite",
     "dev:app": "sh scripts/dev-latest.sh",
+    "web:link": "node scripts/web-link.mjs",
     "docs": "bunx serve docs-site",
     "build": "tsc -b && vite build",
     "build:visual": "node scripts/build-visual.mjs",

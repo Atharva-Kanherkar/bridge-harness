@@ -33,6 +33,7 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 vi.mock("../api", () => ({
+  backendMode: () => "mock",
   bridgeApi: {
     openTerminal: vi.fn().mockResolvedValue(undefined),
     writeTerminal: vi.fn().mockResolvedValue(undefined),

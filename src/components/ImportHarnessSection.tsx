@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickPath } from "../pathPicker";
 import { LoaderCircle as CircleNotch, FileJson as FileJs, FolderOpen, Lock as LockSimple, ShieldCheck, TriangleAlert as Warning } from "lucide-react";
 import { bridgeApi } from "../api";
 import type {
@@ -76,12 +76,9 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
 
   async function discover(kind: "directory" | "export") {
     try {
-      const chosen = ("__TAURI_INTERNALS__" in window)
-        ? await open(kind === "directory"
-          ? { directory: true, multiple: false, title: "Choose a Claude Code project or configuration folder" }
-          : { directory: false, multiple: false, title: "Choose a Claude Code JSONL export", filters: [{ name: "Claude Code history", extensions: ["jsonl"] }] })
-        : (kind === "directory" ? "/mock/.claude" : "/mock/.claude/projects/demo/session.jsonl");
-      const path = Array.isArray(chosen) ? chosen[0] : chosen;
+      const path = kind === "directory"
+        ? await pickPath({ directory: true, title: "Choose a Claude Code project or configuration folder" }, "/mock/.claude")
+        : await pickPath({ directory: false, title: "Choose a Claude Code JSONL export", filters: [{ name: "Claude Code history", extensions: ["jsonl"] }] }, "/mock/.claude/projects/demo/session.jsonl");
       if (!path) return;
       setBusy(true);
       const found = await bridgeApi.discoverExternalImport({

@@ -4,14 +4,15 @@ import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
-import { bridgeApi } from "./api";
+import { backendMode, bridgeApi } from "./api";
+import { pickPath } from "./pathPicker";
+import { isTransportError } from "./webDaemon";
 import { useVoiceDictation } from "./useVoiceDictation";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { scrollBehavior } from "./motion";
@@ -120,7 +121,7 @@ import { approvalTarget, type LaunchRequest } from "./launch";
 import { ACTION_EVENT, parseNotificationAction, pendingApprovalEventId } from "./nativeNotify";
 import { readWireKind } from "./transcript/wire";
 import { isMacPlatform } from "./lib/platform";
-import { installZoom, nudgeZoom, resetZoom } from "./zoom";
+import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
@@ -566,6 +567,13 @@ function AppContent() {
     const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
   }), []);
+  // The first reload can fail because a browser tab's daemon was not up yet.
+  // When it attaches, load again and drop an error that only said so.
+  useEffect(() => bridgeApi.onBackendAttached(() => {
+    void reload()
+      .then(() => setError(current => isTransportError(current) ? undefined : current))
+      .catch(value => setError(errorMessage(value)));
+  }), [reload]);
   useEffect(() => {
     void reload().catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
@@ -1510,7 +1518,7 @@ function AppContent() {
   // Keep git stats fresh for the selected chat's connected workspace.
   useEffect(() => {
     const workspaceId = workspace?.id;
-    if (!workspaceId || !hasRepo || !("__TAURI_INTERNALS__" in window)) return;
+    if (!workspaceId || !hasRepo || backendMode() === "mock") return;
     let active = true;
     const stop = startSerialPoll(async () => {
       const next = await bridgeApi.refreshWorkspace(workspaceId).catch(() => undefined);
@@ -1528,7 +1536,7 @@ function AppContent() {
 
   // Poll real subscription usage for every provider, independent of the chat on screen.
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (backendMode() === "mock") return;
     return startSerialPoll(() => Promise.all([
       bridgeApi.refreshAccountUsage().catch(() => undefined),
       // Preserve the main window's usage updates on every platform, including
@@ -2336,9 +2344,7 @@ function AppContent() {
     finally { setBusy(false); }
   }
   async function createWorkspaceFromFolder() {
-    const value = selectedFolder(("__TAURI_INTERNALS__" in window)
-      ? await open({ directory: true, multiple: false, title: "Choose a project folder" })
-      : "/Users/you/Developer/project");
+    const value = selectedFolder(await pickPath({ directory: true, title: "Choose a project folder" }, "/Users/you/Developer/project"));
     if (value) await connectNewWorkspaceFolder(value);
   }
   function acceptOnboardedProject(next: BridgeState) {
@@ -2348,9 +2354,7 @@ function AppContent() {
   }
   async function connectFolder(workspaceId: string) {
     setError(undefined);
-    const value = ("__TAURI_INTERNALS__" in window)
-      ? await open({ directory: true, multiple: false, title: "Connect a folder or git repository" })
-      : "/Users/you/Developer/project";
+    const value = await pickPath({ directory: true, title: "Connect a folder or git repository" }, "/Users/you/Developer/project");
     if (!value || typeof value !== "string") return;
     setBusy(true);
     try { setState(await bridgeApi.connectWorkspaceFolder(workspaceId, value)); }
@@ -2911,6 +2915,8 @@ function AppContent() {
       const inTerminal = event.target instanceof HTMLElement
         && event.target.closest("[data-terminal-workspace]");
       const match = matchShortcut(event, isTypingTarget(event.target));
+      // A browser tab zooms itself; leave its keys alone.
+      if (match?.shortcut.id.startsWith("zoom-") && !ownsZoom()) return;
       // The terminal pane suppresses commands so its own keys are not stolen,
       // but zoom presents the window rather than acting on its contents, and the
       // polyfill this replaces answered it from the terminal too. Reading wide

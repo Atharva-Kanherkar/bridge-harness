@@ -7,6 +7,7 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { LAUNCH_EVENT, LAUNCH_REQUEST_EVENT, parseLaunch, type LaunchRequest } from "./launch";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
+import { activeWebDaemon } from "./webDaemon";
 import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AdapterDescriptor, AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserCloneSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, ExportSessionTranscriptResult, TranscriptExportScope, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage, WorkspaceSessionKind } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
@@ -93,6 +94,15 @@ import type {
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/** The browser's daemon connection, when this tab has one. Never in Tauri. */
+const webDaemon = () => (isTauri() ? null : activeWebDaemon());
+/** A real backend answers: the desktop shell, or a daemon over WebSocket.
+ *  Without one, everything below serves mock data. */
+const hasBackend = () => isTauri() || webDaemon() !== null;
+export type BackendMode = "tauri" | "web" | "mock";
+/** Which transport this window is on, for the few surfaces outside api.ts
+ *  that behave differently per host (folder pickers, polls, the demo shell). */
+export const backendMode = (): BackendMode => (isTauri() ? "tauri" : webDaemon() ? "web" : "mock");
 let mockMenuBarSettings: MenuBarSettings = {
   schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: null, displayMode: "remaining", quotaWindow: "auto",
   showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300,
@@ -152,11 +162,38 @@ function call<M extends BridgeMethod>(
   ...params: BridgeMethodParams[M] extends undefined ? [] : [BridgeMethodParams[M]]
 ): Promise<BridgeMethodResults[M]> {
   const enqueue = method.startsWith("github/") ? githubInvokes : generalInvokes;
+  const web = webDaemon();
+  if (web) return enqueue(() => web.call(method, params[0]) as Promise<BridgeMethodResults[M]>);
   return enqueue(() => invoke(COMMAND_BY_METHOD[method], params[0] as Record<string, unknown> | undefined));
 }
 
-const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) => void): Promise<UnlistenFn> =>
-  listen<T>(notification, event => handler(event.payload));
+const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) => void): Promise<UnlistenFn> => {
+  const web = webDaemon();
+  if (web) return Promise.resolve(web.subscribe(notification, payload => handler(payload as T)));
+  return listen<T>(notification, event => handler(event.payload));
+};
+
+/**
+ * Presentation hints the desktop shell relays between its windows (main,
+ * meter, menu bar). A browser tab is one window, so the same hints go through
+ * a local bus instead: the surface that refreshed still tells the rest of the
+ * page, and nothing reaches for a Tauri API that is not there.
+ */
+const localShellBus = new EventTarget();
+async function shellEmit(name: string, payload?: unknown): Promise<void> {
+  if (!isTauri()) {
+    localShellBus.dispatchEvent(new CustomEvent(name, { detail: payload ?? null }));
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(name, payload).catch(() => undefined);
+}
+function shellListen<T>(name: string, handler: (payload: T) => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen<T>(name, event => handler(event.payload));
+  const relay = (event: Event) => handler((event as CustomEvent<T>).detail);
+  localShellBus.addEventListener(name, relay);
+  return Promise.resolve(() => localShellBus.removeEventListener(name, relay));
+}
 
 /**
  * Shell-to-webview transport for the live agent stream, deliberately not a
@@ -1446,11 +1483,11 @@ function mockNotifyView(sessionId?: string): DelegationNotifySettingsView {
 }
 
 export const bridgeApi = {
-  installCodexUpdate: (): Promise<void> => isTauri()
+  installCodexUpdate: (): Promise<void> => hasBackend()
     ? unit(call("health/install_codex_update"))
     : Promise.reject(new Error("Codex updates require the Bridge desktop app")),
   discoverExternalImport: (params: DiscoverExternalImportParams): Promise<ExternalImportDiscovery> => {
-    if (isTauri()) return call("imports/discover_external_import", params);
+    if (hasBackend()) return call("imports/discover_external_import", params);
     const discoveredAt = new Date().toISOString();
     const root = params.selectedExport ?? params.approvedRoots[0] ?? "/mock/.claude";
     return Promise.resolve({
@@ -1469,7 +1506,7 @@ export const bridgeApi = {
     });
   },
   previewExternalImport: (discovery: ExternalImportDiscovery, artifactIds: string[]): Promise<ExternalImportPreview> => {
-    if (isTauri()) return call("imports/preview_external_import", { discoveryId: discovery.discoveryId, artifactIds } satisfies PreviewExternalImportParams);
+    if (hasBackend()) return call("imports/preview_external_import", { discoveryId: discovery.discoveryId, artifactIds } satisfies PreviewExternalImportParams);
     const selected = new Set(artifactIds);
     const source = (artifactId: string) => {
       const artifact = discovery.artifacts.find(item => item.artifactId === artifactId)!;
@@ -1509,7 +1546,7 @@ export const bridgeApi = {
     return Promise.resolve({ candidates });
   },
   commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan): Promise<ExternalImportCommit> => {
-    if (isTauri()) return call("imports/commit_external_import", { discoveryId, plan } satisfies CommitExternalImportParams);
+    if (hasBackend()) return call("imports/commit_external_import", { discoveryId, plan } satisfies CommitExternalImportParams);
     const selected = candidates.filter(candidate => plan.selectedCandidateIds.includes(candidate.candidateId));
     return Promise.resolve({
       importId: crypto.randomUUID(),
@@ -1527,69 +1564,69 @@ export const bridgeApi = {
     });
   },
   connectorList: (refresh = false): Promise<ConnectorListResult> =>
-    isTauri() ? call("connectors/connector_list", { refresh }) : Promise.resolve(mockConnectorList()),
+    hasBackend() ? call("connectors/connector_list", { refresh }) : Promise.resolve(mockConnectorList()),
   connectorInbox: (limit?: number): Promise<ConnectorInboxResult> =>
-    isTauri() ? call("connectors/connector_inbox", { limit: limit ?? null }) : Promise.resolve(mockConnectorInbox()),
+    hasBackend() ? call("connectors/connector_inbox", { limit: limit ?? null }) : Promise.resolve(mockConnectorInbox()),
   connectorAct: (itemKey: string, action: ConnectorActionRequest, approved?: boolean): Promise<ConnectorActResult> =>
-    isTauri()
+    hasBackend()
       ? call("connectors/connector_act", { itemKey, action, approved: approved ?? null })
       : Promise.resolve(mockConnectorAct(itemKey, action, approved)),
   connectorDismiss: (itemKey: string): Promise<ConnectorDismissResult> =>
-    isTauri() ? call("connectors/connector_dismiss", { itemKey }) : Promise.resolve(mockConnectorDismiss(itemKey)),
+    hasBackend() ? call("connectors/connector_dismiss", { itemKey }) : Promise.resolve(mockConnectorDismiss(itemKey)),
   connectorRefresh: (family: string): Promise<ConnectorRefreshResult> =>
-    isTauri() ? call("connectors/connector_refresh", { family }) : Promise.resolve({ announced: 0 }),
+    hasBackend() ? call("connectors/connector_refresh", { family }) : Promise.resolve({ announced: 0 }),
   connectorSetSettings: (includeReadMentions: boolean): Promise<ConnectorSetSettingsResult> =>
-    isTauri()
+    hasBackend()
       ? call("connectors/connector_set_settings", { includeReadMentions })
       : Promise.resolve(((mockIncludeReadMentions = includeReadMentions), { includeReadMentions })),
   githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
-    isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
+    hasBackend() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
-    isTauri() ? call("github/github_prs", { workspaceId }) : Promise.resolve(mockGithubPullRequests(workspaceId)),
+    hasBackend() ? call("github/github_prs", { workspaceId }) : Promise.resolve(mockGithubPullRequests(workspaceId)),
   githubPullRequest: (workspaceId: string, number: number): Promise<GithubPullRequestResult> =>
-    isTauri() ? call("github/github_pr", { workspaceId, number }) : Promise.resolve(mockGithubPullRequest(workspaceId, number)),
+    hasBackend() ? call("github/github_pr", { workspaceId, number }) : Promise.resolve(mockGithubPullRequest(workspaceId, number)),
   githubChecks: (workspaceId: string, number: number): Promise<GithubChecksResult> =>
-    isTauri() ? call("github/github_checks", { workspaceId, number }) : Promise.resolve(mockGithubChecks(workspaceId, number)),
+    hasBackend() ? call("github/github_checks", { workspaceId, number }) : Promise.resolve(mockGithubChecks(workspaceId, number)),
   githubIssues: (workspaceId: string): Promise<GithubIssuesResult> =>
-    isTauri() ? call("github/github_issues", { workspaceId }) : Promise.resolve(mockGithubIssues()),
+    hasBackend() ? call("github/github_issues", { workspaceId }) : Promise.resolve(mockGithubIssues()),
   githubIssue: (workspaceId: string, number: number): Promise<GithubIssueResult> =>
-    isTauri() ? call("github/github_issue", { workspaceId, number }) : Promise.resolve(mockGithubIssue(number)),
+    hasBackend() ? call("github/github_issue", { workspaceId, number }) : Promise.resolve(mockGithubIssue(number)),
   githubRepository: (workspaceId: string): Promise<GithubRepositoryResult> =>
-    isTauri() ? call("github/github_repository", { workspaceId }) : Promise.resolve(mockGithubRepository()),
+    hasBackend() ? call("github/github_repository", { workspaceId }) : Promise.resolve(mockGithubRepository()),
   githubMergeConfig: (workspaceId: string): Promise<GithubMergeConfigResult> =>
-    isTauri() ? call("github/github_merge_config", { workspaceId }) : Promise.resolve(mockGithubMergeConfig()),
+    hasBackend() ? call("github/github_merge_config", { workspaceId }) : Promise.resolve(mockGithubMergeConfig()),
   githubAct: (workspaceId: string, action: GithubAction, confirmed: boolean): Promise<GithubActResult> =>
-    isTauri() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
+    hasBackend() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
   githubReview: (workspaceId: string, number: number, harness: string, sessionId?: string): Promise<GithubReviewResult> =>
-    isTauri() ? call("github/github_review", { workspaceId, number, harness, sessionId }) : Promise.resolve(mockGithubReview(number, harness)),
+    hasBackend() ? call("github/github_review", { workspaceId, number, harness, sessionId }) : Promise.resolve(mockGithubReview(number, harness)),
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
-    isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
+    hasBackend() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   githubConnect: (workspaceId: string, remoteUrl: string): Promise<GithubConnectResult> =>
-    isTauri() ? call("github/github_connect", { workspaceId, remoteUrl }) : Promise.resolve(mockGithubConnect(remoteUrl)),
+    hasBackend() ? call("github/github_connect", { workspaceId, remoteUrl }) : Promise.resolve(mockGithubConnect(remoteUrl)),
   /** The PRs attached to one chat, newest first. `refresh` bypasses the short
    * server caches — a reopened chat or a manual retry. */
   githubSessionPrs: (sessionId: string, refresh = false): Promise<GithubSessionPrsResult> =>
-    isTauri() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
+    hasBackend() ? call("github/github_session_prs", { sessionId, refresh }) : Promise.resolve(mockGithubSessionPrs(sessionId)),
   /** Attach a chat to a PR by URL or number; verified server-side against the
    * chat's workspace repository. */
   githubAttachPr: (sessionId: string, reference: string): Promise<GithubAttachPrResult> =>
-    isTauri() ? call("github/github_attach_pr", { sessionId, reference }) : mockGithubAttachPr(sessionId, reference),
+    hasBackend() ? call("github/github_attach_pr", { sessionId, reference }) : mockGithubAttachPr(sessionId, reference),
   searchGithubRepos: (query: string): Promise<SearchGithubReposResult> =>
-    isTauri() ? call("workspaces/search_github_repos", { query }) : Promise.resolve(mockSearchGithubRepos(query)),
-  browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
-  browserFrame: (afterRevision: number): Promise<BrowserFrame | null> => isTauri()
+    hasBackend() ? call("workspaces/search_github_repos", { query }) : Promise.resolve(mockSearchGithubRepos(query)),
+  browserBridgeState: (): Promise<BrowserBridgeSnapshot> => hasBackend() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
+  browserFrame: (afterRevision: number): Promise<BrowserFrame | null> => hasBackend()
     ? call("browser/browser_frame", { afterRevision })
     : Promise.resolve(mockBrowserBridge.lease && mockBrowserBridge.screenshot && afterRevision < 1 ? {
       revision: 1, leaseId: mockBrowserBridge.lease.id, dataUrl: mockBrowserBridge.screenshot,
       redactedRegions: mockBrowserBridge.screenshotRedactedRegions,
     } : null),
   installBrowserNativeHost: async (): Promise<string> => {
-    if (isTauri()) return call("browser/install_browser_native_host");
+    if (hasBackend()) return call("browser/install_browser_native_host");
     mockBrowserBridge.nativeHostInstalled = true; mockBrowserBridge.nativeHostManifestPath = "/mock/dev.bridge.deck.browser.json";
     return mockBrowserBridge.nativeHostManifestPath;
   },
   browserAction: async (request: BrowserActionRequest): Promise<string> => {
-    if (isTauri()) return call("browser/browser_action", { request });
+    if (hasBackend()) return call("browser/browser_action", { request });
     if (request.kind === "list_tabs") mockBrowserBridge.tabs = [{ id: 1, title: "Bridge test tab", url: "https://example.com", domain: "example.com", favIconUrl: null, attached: false }];
     if (request.kind === "attach" && request.tabId) {
       mockBrowserBridge.transportConnected = true; mockBrowserBridge.tabs = mockBrowserBridge.tabs.map(tab => ({ ...tab, attached: tab.id === request.tabId }));
@@ -1599,28 +1636,28 @@ export const bridgeApi = {
     return crypto.randomUUID();
   },
   setBrowserPermission: async (permission: "read_only" | "interact"): Promise<void> => {
-    if (isTauri()) return unit(call("browser/set_browser_permission", { permission }));
+    if (hasBackend()) return unit(call("browser/set_browser_permission", { permission }));
     if (mockBrowserBridge.lease) mockBrowserBridge.lease.permission = permission;
   },
   resolveBrowserApproval: async (approvalId: string, allow: boolean): Promise<void> => {
-    if (isTauri()) return unit(call("browser/resolve_browser_approval", { approvalId, allow }));
+    if (hasBackend()) return unit(call("browser/resolve_browser_approval", { approvalId, allow }));
     mockBrowserBridge.pendingApproval = null; mockBrowserBridge.status = allow ? "acting" : "paused";
   },
-  takeoverBrowser: async (): Promise<void> => { if (isTauri()) return unit(call("browser/takeover_browser")); mockBrowserBridge.status = "paused"; },
-  detachBrowser: async (): Promise<string> => { if (isTauri()) return call("browser/detach_browser"); mockBrowserBridge.lease = null; mockBrowserBridge.status = "not_attached"; return crypto.randomUUID(); },
+  takeoverBrowser: async (): Promise<void> => { if (hasBackend()) return unit(call("browser/takeover_browser")); mockBrowserBridge.status = "paused"; },
+  detachBrowser: async (): Promise<string> => { if (hasBackend()) return call("browser/detach_browser"); mockBrowserBridge.lease = null; mockBrowserBridge.status = "not_attached"; return crypto.randomUUID(); },
   routeBrowser: (request: BrowserRouteRequest): Promise<BrowserRouteDecision> => {
-    if (isTauri()) return call("browser/route_browser", { request });
+    if (hasBackend()) return call("browser/route_browser", { request });
     const route: BrowserRouteDecision["route"] = request.structuredApiAvailable ? "mcp_api" : request.needsGeoOrProxy || request.unattended || request.needsParallelism && request.remoteProviderConfigured ? "remote_browser" : request.needsUserAuth ? "attached_tab" : request.needsIsolation || request.needsParallelism ? "local_headless" : request.domControlAvailable ? "attached_tab" : "computer_use";
     return Promise.resolve({ route, reason: "Mock routing decision", requiresUserGrant: route === "attached_tab" || route === "computer_use" });
   },
-  browserSkills: (): Promise<BrowserSkill[]> => isTauri() ? call("browser/browser_skills") : Promise.resolve([]),
-  configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (isTauri()) return unit(call("browser/configure_remote_browser", { config })); mockBrowserBridge.remoteProvider = config; },
-  startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => isTauri() ? call("browser/start_remote_browser", { initialUrl }) as Promise<Record<string, unknown>> : Promise.resolve({ id: "mock-remote", initialUrl }),
+  browserSkills: (): Promise<BrowserSkill[]> => hasBackend() ? call("browser/browser_skills") : Promise.resolve([]),
+  configureRemoteBrowser: async (config: RemoteBrowserConfig | null): Promise<void> => { if (hasBackend()) return unit(call("browser/configure_remote_browser", { config })); mockBrowserBridge.remoteProvider = config; },
+  startRemoteBrowser: (initialUrl: string): Promise<Record<string, unknown>> => hasBackend() ? call("browser/start_remote_browser", { initialUrl }) as Promise<Record<string, unknown>> : Promise.resolve({ id: "mock-remote", initialUrl }),
   // Browser clones. In the desktop app these hit the real runtime through the
   // `clones/*` wire methods; outside it (dev, tests) they drive the in-memory
   // fixture above so the surface is exercisable without Tauri.
   browserCloneState: async (sessionId?: string): Promise<BrowserCloneSnapshot> => {
-    if (isTauri() && sessionId) return cloneSnapshotFromWire(await call("clones/clone_state", { sessionId }));
+    if (hasBackend() && sessionId) return cloneSnapshotFromWire(await call("clones/clone_state", { sessionId }));
     return structuredClone(mockBrowserClone);
   },
   requestClone: async (
@@ -1630,7 +1667,7 @@ export const bridgeApi = {
     signInPath: CloneSignInPath,
   ): Promise<BrowserCloneSnapshot> => {
     if (browser === "safari") signInPath = "sign_in_inside";
-    if (isTauri()) return cloneSnapshotFromWire(await call("clones/request_clone", { sessionId, domain, browser, signInPath }));
+    if (hasBackend()) return cloneSnapshotFromWire(await call("clones/request_clone", { sessionId, domain, browser, signInPath }));
     mockBrowserClone = {
       status: signInPath === "import" ? "acting" : "waiting_for_you",
       cloneId: "mock-clone-1", domain, signInPath,
@@ -1643,28 +1680,28 @@ export const bridgeApi = {
   // The person's input into a clone they have taken over (click, scroll, typing,
   // a login key). Coordinates are a fraction of the viewport.
   cloneInput: async (sessionId: string, input: CloneInputEvent): Promise<void> => {
-    if (isTauri()) { await call("clones/clone_input", { sessionId, input }); return; }
+    if (hasBackend()) { await call("clones/clone_input", { sessionId, input }); return; }
   },
   takeoverBrowserClone: async (sessionId?: string): Promise<void> => {
-    if (isTauri() && sessionId) { await call("clones/takeover_clone", { sessionId }); return; }
+    if (hasBackend() && sessionId) { await call("clones/takeover_clone", { sessionId }); return; }
     if (mockBrowserClone.status === "acting" || mockBrowserClone.status === "waiting_for_you") mockBrowserClone = { ...mockBrowserClone, status: "taken_over", waitingReason: null };
   },
   handBackBrowserClone: async (sessionId?: string): Promise<void> => {
-    if (isTauri() && sessionId) { await call("clones/hand_back_clone", { sessionId }); return; }
+    if (hasBackend() && sessionId) { await call("clones/hand_back_clone", { sessionId }); return; }
     if (mockBrowserClone.status === "taken_over") mockBrowserClone = { ...mockBrowserClone, status: "acting" };
   },
   destroyBrowserClone: async (sessionId?: string): Promise<void> => {
-    if (isTauri() && sessionId) { await call("clones/destroy_clone", { sessionId }); return; }
+    if (hasBackend() && sessionId) { await call("clones/destroy_clone", { sessionId }); return; }
     if (mockBrowserClone.cloneId) mockBrowserClone = noClone("destroyed");
   },
   resolveBrowserCloneApproval: async (approvalId: string, allow: boolean): Promise<void> => {
-    if (isTauri()) throw cloneUnavailable();
+    if (hasBackend()) throw cloneUnavailable();
     if (mockBrowserClone.pendingApproval?.id === approvalId) mockBrowserClone = { ...mockBrowserClone, pendingApproval: null, status: allow ? "acting" : "waiting_for_you" };
   },
-  cloneRequests: async (): Promise<import("./protocol/generated/protocol").CloneRequest[]> => isTauri() ? call("clones/clone_requests") : [],
-  readCloneSettings: async (): Promise<CloneSettingsSnapshot> => isTauri() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
+  cloneRequests: async (): Promise<import("./protocol/generated/protocol").CloneRequest[]> => hasBackend() ? call("clones/clone_requests") : [],
+  readCloneSettings: async (): Promise<CloneSettingsSnapshot> => hasBackend() ? call("clones/read_clone_settings") : { connected: true, settings: { ...mockCloneSettings } },
   writeCloneSettings: async (settings: CloneSettings): Promise<CloneSettingsSnapshot> => {
-    if (isTauri()) return call("clones/write_clone_settings", { settings });
+    if (hasBackend()) return call("clones/write_clone_settings", { settings });
     mockCloneSettings = { ...settings, defaultSignInPath: settings.defaultBrowser === "safari" ? "sign_in_inside" : settings.defaultSignInPath };
     return { connected: true, settings: { ...mockCloneSettings } };
   },
@@ -1672,7 +1709,7 @@ export const bridgeApi = {
   // the agent act; deny drops it.
   resolveCloneRequest: async (sessionId: string, allow: boolean, requestId: string, settings: CloneSettings): Promise<BrowserCloneSnapshot> => {
     if (settings.defaultBrowser === "safari") settings = { ...settings, defaultSignInPath: "sign_in_inside" };
-    if (isTauri()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, browser: settings.defaultBrowser ?? "chrome", signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes, agentVision: settings.agentVision ?? true }));
+    if (hasBackend()) return cloneSnapshotFromWire(await call("clones/resolve_clone_request", { sessionId, allow, requestId, browser: settings.defaultBrowser ?? "chrome", signInPath: settings.defaultSignInPath, ttlMinutes: settings.ttlMinutes, agentVision: settings.agentVision ?? true }));
     if (allow) {
       const domain = mockBrowserClone.pendingRequest ?? mockBrowserClone.domain ?? "example.com";
       mockBrowserClone = {
@@ -1685,24 +1722,24 @@ export const bridgeApi = {
     }
     return structuredClone(mockBrowserClone);
   },
-  skillCatalog: (): Promise<SkillCatalog> => isTauri() ? call("skills/skill_catalog") as Promise<SkillCatalog> : Promise.resolve(structuredClone(mockSkills)),
-  skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => isTauri() ? call("skills/skill_suggestions", { query, provider }) as Promise<CapabilitySuggestion[]> : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
+  skillCatalog: (): Promise<SkillCatalog> => hasBackend() ? call("skills/skill_catalog") as Promise<SkillCatalog> : Promise.resolve(structuredClone(mockSkills)),
+  skillSuggestions: (query: string, provider: SkillProvider): Promise<CapabilitySuggestion[]> => hasBackend() ? call("skills/skill_suggestions", { query, provider }) as Promise<CapabilitySuggestion[]> : Promise.resolve(mockSkills.community.filter(skill => skill.providerStates.some(state => state.provider === provider && state.installed) && `${skill.name} ${skill.description} ${skill.categories.join(" ")}`.toLowerCase().includes(query.toLowerCase())).map(skill => ({ id: skill.id, name: skill.name, command: skill.slug, relevance: `Matches “${query}”`, source: skill.source, providers: [provider], permissions: skill.permissions, risk: skill.risk, installed: true }))),
   previewSkillChange: async (skillId: string, action: SkillAction, targets: SkillProvider[]): Promise<SkillPreview> => {
-    if (isTauri()) return call("skills/preview_skill_change", { skillId, action, targets }) as Promise<SkillPreview>;
+    if (hasBackend()) return call("skills/preview_skill_change", { skillId, action, targets }) as Promise<SkillPreview>;
     const skill = mockSkills.community.find(item => item.id === skillId); if (!skill) throw new Error("Skill not found");
     const confirmationId = crypto.randomUUID(); mockSkillConsents.set(confirmationId, { skillId, action, targets });
     return { confirmationId, expiresAt: new Date(Date.now() + 300_000).toISOString(), action, skill: structuredClone(skill), targets, changes: targets.map(provider => `${action} ${skill.name} for ${provider}`), installer: mockSkills.installer };
   },
   executeSkillChange: async (confirmationId: string): Promise<SkillActionResult[]> => {
-    if (isTauri()) return call("skills/execute_skill_change", { confirmationId }) as Promise<SkillActionResult[]>;
+    if (hasBackend()) return call("skills/execute_skill_change", { confirmationId }) as Promise<SkillActionResult[]>;
     const consent = mockSkillConsents.get(confirmationId); if (!consent) throw new Error("Confirmation is invalid or already used"); mockSkillConsents.delete(confirmationId);
     const skill = mockSkills.community.find(item => item.id === consent.skillId)!;
     for (const target of consent.targets) { const state = skill.providerStates.find(item => item.provider === target)!; state.installed = consent.action === "install"; state.managed = consent.action === "install"; state.installedRef = consent.action === "install" ? skill.pinnedRef : null; }
     return consent.targets.map(provider => ({ provider, action: consent.action, success: true, message: `${consent.action} completed`, error: null }));
   },
-  automationCatalog: (): Promise<AutomationCatalog> => isTauri() ? call("automations/automation_catalog") as Promise<AutomationCatalog> : Promise.resolve(structuredClone(mockAutomations)),
+  automationCatalog: (): Promise<AutomationCatalog> => hasBackend() ? call("automations/automation_catalog") as Promise<AutomationCatalog> : Promise.resolve(structuredClone(mockAutomations)),
   saveAutomation: async (draft: SaveAutomationParams): Promise<AutomationSaveResult> => {
-    if (isTauri()) return call("automations/save_automation", draft) as Promise<AutomationSaveResult>;
+    if (hasBackend()) return call("automations/save_automation", draft) as Promise<AutomationSaveResult>;
     if (draft.provider !== "claude") throw new Error(`${draft.provider} does not expose native automation saving`);
     const existing = draft.id ? mockAutomations.automations.find(item => item.provider === draft.provider && item.id === draft.id) : undefined;
     if (draft.id && !existing) throw new Error(`No Claude Code scheduled task with id ${draft.id}`);
@@ -1721,7 +1758,7 @@ export const bridgeApi = {
     return { provider: "claude", id, created: !existing, message: existing ? "Updated in Claude Code's schedule file" : "Created in Claude Code's schedule file" };
   },
   executeAutomationAction: async (provider: AutomationProvider, id: string, action: AutomationAction): Promise<AutomationActionResult> => {
-    if (isTauri()) return call("automations/execute_automation_action", { provider, id, action }) as Promise<AutomationActionResult>;
+    if (hasBackend()) return call("automations/execute_automation_action", { provider, id, action }) as Promise<AutomationActionResult>;
     const state = mockAutomations.providers.find(item => item.provider === provider);
     if (!state?.capabilities.includes(action)) throw new Error(`${provider} does not expose native automation ${action} support`);
     const automation = mockAutomations.automations.find(item => item.provider === provider && item.id === id);
@@ -1730,9 +1767,9 @@ export const bridgeApi = {
     else automation.status = action === "pause" ? "paused" : "active";
     return { provider, id, action, success: true, message: `${action} completed` };
   },
-  marketplaceCatalog: (): Promise<MarketplaceCatalog> => isTauri() ? call("marketplace/marketplace_catalog") as Promise<MarketplaceCatalog> : Promise.resolve(structuredClone(mockMarketplace)),
+  marketplaceCatalog: (): Promise<MarketplaceCatalog> => hasBackend() ? call("marketplace/marketplace_catalog") as Promise<MarketplaceCatalog> : Promise.resolve(structuredClone(mockMarketplace)),
   marketplaceAppAuthStates: (): Promise<MarketplaceAppAuthState[]> => {
-    if (isTauri()) return call("marketplace/marketplace_app_auth_states") as Promise<MarketplaceAppAuthState[]>;
+    if (hasBackend()) return call("marketplace/marketplace_app_auth_states") as Promise<MarketplaceAppAuthState[]>;
     const variant = mockMarketplace.providers.find(item => item.provider === "codex")?.variants.find(item => item.appConnectorIds.includes("connector_vercel"));
     const authenticationState = variant?.authenticationState === "connected" ? "connected" : "required";
     return Promise.resolve([
@@ -1742,7 +1779,7 @@ export const bridgeApi = {
     ]);
   },
   marketplaceAction: async (provider: MarketplaceProvider, pluginId: string, marketplace: string | null, action: MarketplaceAction): Promise<MarketplaceActionResult> => {
-    if (isTauri()) return call("marketplace/marketplace_action", { provider, pluginId, marketplace, action }) as Promise<MarketplaceActionResult>;
+    if (hasBackend()) return call("marketplace/marketplace_action", { provider, pluginId, marketplace, action }) as Promise<MarketplaceActionResult>;
     const entry = mockMarketplace.providers.find(item => item.provider === provider)?.variants.find(item => item.pluginId === pluginId);
     if (!entry) throw new Error(`${provider} plugin not found`);
     if (action === "install") entry.installed = true;
@@ -1758,9 +1795,9 @@ export const bridgeApi = {
   // it Bridge's to remove — is answered by a field in these responses, so no
   // ownership logic is reimplemented here.
   listManagedAgents: (): Promise<ManagedAgentList> =>
-    isTauri() ? call("agents/list_managed_agents") : Promise.resolve(structuredClone(mockManagedAgents)),
+    hasBackend() ? call("agents/list_managed_agents") : Promise.resolve(structuredClone(mockManagedAgents)),
   inspectManagedAgent: (agentId: string): Promise<ManagedAgentInspection> => {
-    if (isTauri()) return call("agents/inspect_managed_agent", { agentId });
+    if (hasBackend()) return call("agents/inspect_managed_agent", { agentId });
     const status = mockManagedAgents.agents.find(agent => agent.agentId === agentId);
     // Reject rather than substituting another agent: silently answering about the
     // wrong runtime is the kind of mock that hides a real bug.
@@ -1768,50 +1805,50 @@ export const bridgeApi = {
     return Promise.resolve({ status: structuredClone(status), receipt: null, externalRuntime: null });
   },
   installManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
-    isTauri() ? call("agents/install_managed_agent", { agentId }) : mockManagedOperation(agentId, "install"),
+    hasBackend() ? call("agents/install_managed_agent", { agentId }) : mockManagedOperation(agentId, "install"),
   repairManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
-    isTauri() ? call("agents/repair_managed_agent", { agentId }) : mockManagedOperation(agentId, "repair"),
+    hasBackend() ? call("agents/repair_managed_agent", { agentId }) : mockManagedOperation(agentId, "repair"),
   uninstallManagedAgent: (agentId: string): Promise<ManagedAgentOperationResult> =>
-    isTauri() ? call("agents/uninstall_managed_agent", { agentId }) : mockManagedOperation(agentId, "uninstall"),
+    hasBackend() ? call("agents/uninstall_managed_agent", { agentId }) : mockManagedOperation(agentId, "uninstall"),
 
-  health: (): Promise<Health> => isTauri() ? call("health/health") : Promise.resolve(structuredClone(mockHealth)),
-  refreshModelCatalogs: (): Promise<Health> => isTauri() ? call("health/refresh_model_catalogs") : Promise.resolve(structuredClone(mockHealth)),
+  health: (): Promise<Health> => hasBackend() ? call("health/health") : Promise.resolve(structuredClone(mockHealth)),
+  refreshModelCatalogs: (): Promise<Health> => hasBackend() ? call("health/refresh_model_catalogs") : Promise.resolve(structuredClone(mockHealth)),
   prepareAgentSetup: (agentId: string): Promise<AdapterDescriptor> => {
-    if (isTauri()) return call("health/prepare_agent_setup", { agentId });
+    if (hasBackend()) return call("health/prepare_agent_setup", { agentId });
     const adapter = mockHealth.adapters.find(item => item.id === agentId);
     return adapter ? Promise.resolve(structuredClone(adapter)) : Promise.reject(new Error(`Unknown coding agent: ${agentId}`));
   },
-  state: (): Promise<BridgeState> => isTauri() ? call("state/get_state") : Promise.resolve(snapshot()),
-  modelSetup: (): Promise<ModelSetupState> => isTauri() ? call("models/get_model_setup") as Promise<ModelSetupState> : Promise.resolve(structuredClone(mockModelSetup)),
-  recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
-  saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
-  resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? call("models/reset_model_profiles") as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
+  state: (): Promise<BridgeState> => hasBackend() ? call("state/get_state") : Promise.resolve(snapshot()),
+  modelSetup: (): Promise<ModelSetupState> => hasBackend() ? call("models/get_model_setup") as Promise<ModelSetupState> : Promise.resolve(structuredClone(mockModelSetup)),
+  recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => hasBackend() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
+  saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => hasBackend() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
+  resetModelProfiles: (): Promise<ModelSetupState> => hasBackend() ? call("models/reset_model_profiles") as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
   // Token and cost usage. One summary per window; the screen never polls.
   usageSummary: (params: SummaryParams): Promise<UsageSummaryResult> =>
-    isTauri() ? call("usage/summary", params) : Promise.resolve(mockUsageSummary(params)),
+    hasBackend() ? call("usage/summary", params) : Promise.resolve(mockUsageSummary(params)),
   // The Insights tab. Blocking while a harness turn runs; the stored report
   // comes back at once when `refresh` is false.
   usageInsights: (params: InsightsParams): Promise<UsageInsightsResult> =>
-    isTauri() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
+    hasBackend() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
   listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>
-    isTauri() ? call("usage/list_price_overrides") : Promise.resolve(structuredClone(mockPriceOverrides)),
+    hasBackend() ? call("usage/list_price_overrides") : Promise.resolve(structuredClone(mockPriceOverrides)),
   setUsagePriceOverride: (params: SetPriceOverrideParams): Promise<UsagePriceOverride[]> => {
-    if (isTauri()) return call("usage/set_price_override", params);
+    if (hasBackend()) return call("usage/set_price_override", params);
     const override: UsagePriceOverride = { model: params.model, inputMicrousdPerMtok: params.inputMicrousdPerMtok, outputMicrousdPerMtok: params.outputMicrousdPerMtok, cacheReadMicrousdPerMtok: params.cacheReadMicrousdPerMtok ?? null, cacheWriteMicrousdPerMtok: params.cacheWriteMicrousdPerMtok ?? null, updatedAt: new Date().toISOString() };
     mockPriceOverrides = [...mockPriceOverrides.filter(item => item.model !== params.model), override].sort((a, b) => a.model.localeCompare(b.model));
     return Promise.resolve(structuredClone(mockPriceOverrides));
   },
   clearUsagePriceOverride: (model: string): Promise<UsagePriceOverride[]> => {
-    if (isTauri()) return call("usage/clear_price_override", { model });
+    if (hasBackend()) return call("usage/clear_price_override", { model });
     mockPriceOverrides = mockPriceOverrides.filter(item => item.model !== model);
     return Promise.resolve(structuredClone(mockPriceOverrides));
   },
   refreshUsageRates: (): Promise<UsagePricingStatus> =>
-    isTauri() ? call("usage/refresh_rates") : Promise.resolve({ ...mockUsagePricing, status: "refreshed", fetchedAt: new Date().toISOString(), overrides: mockPriceOverrides.length }),
+    hasBackend() ? call("usage/refresh_rates") : Promise.resolve({ ...mockUsagePricing, status: "refreshed", fetchedAt: new Date().toISOString(), overrides: mockPriceOverrides.length }),
   listUsageHistorySources: (): Promise<UsageHistorySource[]> =>
-    isTauri() ? call("usage/list_history_sources") : Promise.resolve(structuredClone(mockHistorySources)),
+    hasBackend() ? call("usage/list_history_sources") : Promise.resolve(structuredClone(mockHistorySources)),
   scanUsageHistory: (params: ScanHistoryParams = {}): Promise<ScanHistoryResult> => {
-    if (isTauri()) return call("usage/scan_history", params);
+    if (hasBackend()) return call("usage/scan_history", params);
     const scanned = mockHistorySources.filter(source => !params.sourceIds || params.sourceIds.includes(source.id));
     for (const source of scanned) {
       if (source.capability !== "supported") continue;
@@ -1832,7 +1869,7 @@ export const bridgeApi = {
   // fetch the static provider registry and trigger a refresh. Pace math lives
   // in `src/meter.ts`, ported from the same CodexBar sources as the Rust core.
   getMeterSnapshot: (): Promise<MeterRegistry> =>
-    isTauri() ? call("meter/get_meter_snapshot") : Promise.resolve(structuredClone(mockMeterRegistry)),
+    hasBackend() ? call("meter/get_meter_snapshot") : Promise.resolve(structuredClone(mockMeterRegistry)),
   // Raising the main window is the shell's job, not the webview's. Going
   // through `@tauri-apps/api/window` made this an ACL-gated IPC call that the
   // capability file never granted, so every caller got `window.show not
@@ -1846,48 +1883,45 @@ export const bridgeApi = {
     await emit("bridge-reveal-main");
   },
   refreshMeter: (): Promise<void> => {
-    if (isTauri()) return call("meter/refresh_meter").then(() => undefined);
+    if (hasBackend()) return call("meter/refresh_meter").then(() => undefined);
     return Promise.resolve();
   },
-  getMenuBarSettings: (): Promise<MenuBarSettings> => isTauri()
+  getMenuBarSettings: (): Promise<MenuBarSettings> => hasBackend()
     ? call("menu_bar/get_menu_bar_settings") : Promise.resolve(structuredClone(mockMenuBarSettings)),
   saveMenuBarSettings: async (settings: MenuBarSettings): Promise<MenuBarSettings> => {
-    if (!isTauri()) { mockMenuBarSettings = structuredClone(settings); return structuredClone(settings); }
+    if (!hasBackend()) { mockMenuBarSettings = structuredClone(settings); return structuredClone(settings); }
     const saved = await call("menu_bar/save_menu_bar_settings", { settings });
-    const { emit } = await import("@tauri-apps/api/event");
     // Persistence already succeeded. A missed presentation hint must not
     // misreport the save; the native host also re-reads preferences on its tick.
-    await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
+    await shellEmit("bridge-menu-bar-settings-changed");
     return saved;
   },
-  getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => isTauri()
+  getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => hasBackend()
     ? call("usage/get_provider_usage_overviews") : Promise.resolve(mockProviderUsageOverviews()),
   refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
-    if (!isTauri()) return mockProviderUsageOverviews();
+    if (!hasBackend()) return mockProviderUsageOverviews();
     const snapshot = await call("usage/refresh_provider_usage_overviews_interactive");
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined);
-    await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
+    await shellEmit("bridge-provider-usage-overviews", snapshot);
+    await shellEmit("bridge-menu-bar-settings-changed");
     return snapshot;
   },
   redeemProviderUsageReset: async (params: RedeemProviderUsageResetParams): Promise<RedeemProviderUsageResetResult> => {
-    if (!isTauri()) {
+    if (!hasBackend()) {
       mockResetsRedeemed = true;
       return { outcome: "reset", resetsLeft: 1, cleared: ["session", "weekly"], weeklyResetsAt: Math.floor(Date.now() / 1000) + 7 * 86400, cooldownUntil: null };
     }
     const result = await call("usage/redeem_provider_usage_reset", params);
     if (result.outcome === "reset" || result.outcome === "unconfirmed") {
       const snapshot = await call("usage/get_provider_usage_overviews");
-      const { emit } = await import("@tauri-apps/api/event");
       await Promise.all([
-        emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined),
-        emit("bridge-menu-bar-settings-changed").catch(() => undefined),
+        shellEmit("bridge-provider-usage-overviews", snapshot),
+        shellEmit("bridge-menu-bar-settings-changed"),
       ]);
     }
     return result;
   },
-  onProviderUsageOverviews: (handler: (snapshot: ProviderUsageOverviews) => void): Promise<UnlistenFn> => isTauri()
-    ? listen<ProviderUsageOverviews>("bridge-provider-usage-overviews", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  onProviderUsageOverviews: (handler: (snapshot: ProviderUsageOverviews) => void): Promise<UnlistenFn> =>
+    hasBackend() ? shellListen<ProviderUsageOverviews>("bridge-provider-usage-overviews", handler) : Promise.resolve(() => undefined),
   connectMenuBarOpenCode: async (): Promise<void> => {
     if (!isTauri()) throw new Error("Open Bridge desktop to connect OpenCode.");
     const { emit } = await import("@tauri-apps/api/event");
@@ -1895,22 +1929,21 @@ export const bridgeApi = {
   },
   onMenuBarConnection: (handler: (message: string) => void): Promise<UnlistenFn> => isTauri()
     ? listen<string>("bridge-menu-bar-connection", event => handler(event.payload)) : Promise.resolve(() => undefined),
-  onMenuBarSettingsChanged: (handler: () => void): Promise<UnlistenFn> => isTauri()
-    ? listen("bridge-menu-bar-settings-changed", handler) : Promise.resolve(() => undefined),
-  getUsageOverview: (): Promise<UsageOverviewSnapshot | null> => isTauri()
+  onMenuBarSettingsChanged: (handler: () => void): Promise<UnlistenFn> =>
+    hasBackend() ? shellListen("bridge-menu-bar-settings-changed", () => handler()) : Promise.resolve(() => undefined),
+  getUsageOverview: (): Promise<UsageOverviewSnapshot | null> => hasBackend()
     ? call("usage/get_usage_overview") : Promise.resolve(null),
   refreshUsageOverview: async (): Promise<UsageOverviewSnapshot | null> => {
-    if (!isTauri()) return null;
+    if (!hasBackend()) return null;
     const snapshot = await call("usage/refresh_usage_overview");
-    const { emit } = await import("@tauri-apps/api/event");
     await Promise.all([
-      emit("bridge-usage-overview", snapshot).catch(() => undefined),
-      emit("bridge-menu-bar-settings-changed").catch(() => undefined),
+      shellEmit("bridge-usage-overview", snapshot),
+      shellEmit("bridge-menu-bar-settings-changed"),
     ]);
     return snapshot;
   },
-  onUsageOverview: (handler: (snapshot: UsageOverviewSnapshot) => void): Promise<UnlistenFn> => isTauri()
-    ? listen<UsageOverviewSnapshot>("bridge-usage-overview", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  onUsageOverview: (handler: (snapshot: UsageOverviewSnapshot) => void): Promise<UnlistenFn> =>
+    hasBackend() ? shellListen<UsageOverviewSnapshot>("bridge-usage-overview", handler) : Promise.resolve(() => undefined),
   onMenuBarSettings: (handler: () => void): Promise<UnlistenFn> => isTauri()
     ? listen("bridge-menu-bar-settings", handler) : Promise.resolve(() => undefined),
   // Opening and closing the meter is window work, so the shell does it. Same
@@ -1937,11 +1970,11 @@ export const bridgeApi = {
   // The composer's inline typeahead. Off by default; `configured: false` is a
   // fresh install reading defaults, same distinction Work's settings make.
   getSuggestionSettings: (): Promise<SuggestionSettingsSnapshot> =>
-    isTauri() ? call("models/get_suggestion_settings") : Promise.resolve(structuredClone(mockSuggestionSettings)),
+    hasBackend() ? call("models/get_suggestion_settings") : Promise.resolve(structuredClone(mockSuggestionSettings)),
   // Validation is Rust's; this surface may pre-empt an obvious mistake, but a
   // payload that bypasses it is refused server-side by the same rules.
   saveSuggestionSettings: (settings: SuggestionSettings): Promise<SuggestionSettingsSnapshot> => {
-    if (isTauri()) return call("models/save_suggestion_settings", { settings });
+    if (hasBackend()) return call("models/save_suggestion_settings", { settings });
     mockSuggestionSettings = { configured: true, settings: structuredClone(settings) };
     return Promise.resolve(structuredClone(mockSuggestionSettings));
   },
@@ -1949,45 +1982,45 @@ export const bridgeApi = {
   // caller is expected to gate this on the setting being enabled and the
   // draft being non-empty — this call does not re-check either for the mock.
   suggestCompletion: (text: string): Promise<SuggestCompletionResult> => {
-    if (isTauri()) return call("models/suggest_completion", { text });
+    if (hasBackend()) return call("models/suggest_completion", { text });
     const suggestion = text.trim().endsWith("?") || text.length < 3 ? "" : " …";
     return Promise.resolve({ suggestion, usedFallback: false, fallbackReason: null });
   },
-  configState: (): Promise<ConfigState> => isTauri() ? call("config/get_config_state") : Promise.resolve(structuredClone(mockConfigState)),
+  configState: (): Promise<ConfigState> => hasBackend() ? call("config/get_config_state") : Promise.resolve(structuredClone(mockConfigState)),
   saveHarnessConfig: (config: HarnessConfig): Promise<ConfigState> => {
-    if (isTauri()) return call("config/save_harness_config", { config });
+    if (hasBackend()) return call("config/save_harness_config", { config });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === config.id ? { ...structuredClone(config), isOverride: true } : item);
     return Promise.resolve(structuredClone(mockConfigState));
   },
   resetHarnessConfig: (id: HarnessConfig["id"]): Promise<ConfigState> => {
-    if (isTauri()) return call("config/reset_harness_config", { id });
+    if (hasBackend()) return call("config/reset_harness_config", { id });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === id ? { ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false } : item);
     return Promise.resolve(structuredClone(mockConfigState));
   },
   refreshOpenCodeCatalog: (directory?: string): Promise<OpenCodeCatalog> => {
-    if (isTauri()) return call("config/refresh_opencode_catalog", { directory: directory || null }) as Promise<OpenCodeCatalog>;
+    if (hasBackend()) return call("config/refresh_opencode_catalog", { directory: directory || null }) as Promise<OpenCodeCatalog>;
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
   setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string): Promise<OpenCodeCatalog> => {
-    if (isTauri()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null }) as Promise<OpenCodeCatalog>;
+    if (hasBackend()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null }) as Promise<OpenCodeCatalog>;
     void apiKey;
     mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: true } : provider) };
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
   removeOpenCodeProviderAuth: (providerId: string, directory?: string): Promise<OpenCodeCatalog> => {
-    if (isTauri()) return call("config/remove_opencode_provider_auth", { providerId, directory: directory || null }) as Promise<OpenCodeCatalog>;
+    if (hasBackend()) return call("config/remove_opencode_provider_auth", { providerId, directory: directory || null }) as Promise<OpenCodeCatalog>;
     mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: false, models: [] } : provider) };
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
   saveAgentConfig: (agent: AgentDefinition): Promise<ConfigState> => {
-    if (isTauri()) return call("config/save_agent_config", { agent });
+    if (hasBackend()) return call("config/save_agent_config", { agent });
     const value = { ...structuredClone(agent), id: agent.id || `custom-${crypto.randomUUID()}`, isDefault: false, updatedAt: new Date().toISOString() };
     const index = mockConfigState.agents.findIndex(item => item.id === value.id);
     if (index >= 0) mockConfigState.agents[index] = value; else mockConfigState.agents.push(value);
     return Promise.resolve(structuredClone(mockConfigState));
   },
   deleteAgentConfig: (id: string): Promise<ConfigState> => {
-    if (isTauri()) return call("config/delete_agent_config", { id });
+    if (hasBackend()) return call("config/delete_agent_config", { id });
     const original = mockConfigState.agents.find(item => item.id === id);
     if (original?.isBuiltIn) mockConfigState.agents = mockConfigState.agents.map(item => item.id === id ? { ...item, systemPrompt: "", enabled: true, model: null } : item);
     else mockConfigState.agents = mockConfigState.agents.filter(item => item.id !== id);
@@ -1996,18 +2029,18 @@ export const bridgeApi = {
     return Promise.resolve(structuredClone(mockConfigState));
   },
   setDefaultAgent: (id: string): Promise<ConfigState> => {
-    if (isTauri()) return call("config/set_default_agent", { id });
+    if (hasBackend()) return call("config/set_default_agent", { id });
     mockConfigState.defaultAgentId = id;
     mockConfigState.agents = mockConfigState.agents.map(item => ({ ...item, isDefault: item.id === id }));
     return Promise.resolve(structuredClone(mockConfigState));
   },
   savePermissionPolicy: (policy: PermissionPolicy): Promise<ConfigState> => {
-    if (isTauri()) return call("config/save_permission_policy", { policy });
+    if (hasBackend()) return call("config/save_permission_policy", { policy });
     mockConfigState.permissionPolicy = { ...policy, updatedAt: new Date().toISOString() };
     return Promise.resolve(structuredClone(mockConfigState));
   },
   resetAllConfig: (): Promise<ConfigState> => {
-    if (isTauri()) return call("config/reset_all_config");
+    if (hasBackend()) return call("config/reset_all_config");
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => ({ ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false }));
     mockConfigState.agents = mockConfigState.agents.filter(item => item.isBuiltIn).map(item => ({ ...item, enabled: true, model: null, systemPrompt: "", isDefault: item.id === "bridge-orchestrator" }));
     mockConfigState.defaultAgentId = "bridge-orchestrator";
@@ -2019,17 +2052,17 @@ export const bridgeApi = {
     return Promise.resolve(structuredClone(mockConfigState));
   },
   promptStack: (target: PromptTargetChoice, depth?: number): Promise<PromptStackView> =>
-    isTauri() ? call("config/get_prompt_stack", { target, depth: depth ?? null }) : Promise.resolve(mockPromptStack(target, mockPromptDepth(depth))),
+    hasBackend() ? call("config/get_prompt_stack", { target, depth: depth ?? null }) : Promise.resolve(mockPromptStack(target, mockPromptDepth(depth))),
   savePromptSection: (target: PromptTargetChoice, sectionId: string, text: string, depth?: number): Promise<PromptSectionMutationResult> => {
-    if (isTauri()) return call("config/save_prompt_section", { target, sectionId, text, depth: depth ?? null });
+    if (hasBackend()) return call("config/save_prompt_section", { target, sectionId, text, depth: depth ?? null });
     return Promise.resolve().then(() => mockPromptMutation(target, sectionId, mockPromptDepth(depth), { state: "overridden", text }));
   },
   resetPromptSection: (target: PromptTargetChoice, sectionId: string, depth?: number): Promise<PromptSectionMutationResult> => {
-    if (isTauri()) return call("config/reset_prompt_section", { target, sectionId, depth: depth ?? null });
+    if (hasBackend()) return call("config/reset_prompt_section", { target, sectionId, depth: depth ?? null });
     return Promise.resolve().then(() => mockPromptMutation(target, sectionId, mockPromptDepth(depth), { state: "default" }));
   },
   restorePromptRevision: (target: PromptTargetChoice, sectionId: string, revisionId: number, depth?: number): Promise<PromptSectionMutationResult> => {
-    if (isTauri()) return call("config/restore_prompt_revision", { target, sectionId, revisionId, depth: depth ?? null });
+    if (hasBackend()) return call("config/restore_prompt_revision", { target, sectionId, revisionId, depth: depth ?? null });
     return Promise.resolve().then(() => {
       const resolved = mockPromptDepth(depth);
       const key = `${target}:${sectionId}`;
@@ -2040,12 +2073,12 @@ export const bridgeApi = {
     });
   },
   previewCompiledPrompt: (target: PromptTargetChoice, depth?: number): Promise<CompiledPromptPreviewResult> => {
-    if (isTauri()) return call("config/preview_compiled_prompt", { target, depth: depth ?? null });
+    if (hasBackend()) return call("config/preview_compiled_prompt", { target, depth: depth ?? null });
     return mockPromptPreview(target, mockPromptDepth(depth));
   },
-  learningState: (workspaceId: string): Promise<LearningState> => isTauri() ? call("learning/get_learning_state", { workspaceId }) as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
+  learningState: (workspaceId: string): Promise<LearningState> => hasBackend() ? call("learning/get_learning_state", { workspaceId }) as Promise<LearningState> : Promise.resolve(structuredClone(mockLearningState)),
   runLearning: (triggerKind: LocalLearningTriggerKind = "manual", workspaceId: string): Promise<LearningRun> => {
-    if (isTauri()) return call("learning/run_learning", { triggerKind, workspaceId }) as Promise<LearningRun>;
+    if (hasBackend()) return call("learning/run_learning", { triggerKind, workspaceId }) as Promise<LearningRun>;
     if (mockLearningState.latestRun) {
       const duplicate = { ...structuredClone(mockLearningState.latestRun), triggerKind, duplicate: true };
       return Promise.resolve(duplicate);
@@ -2056,90 +2089,90 @@ export const bridgeApi = {
     return Promise.resolve(structuredClone(run));
   },
   cancelLearningRun: (runId: string): Promise<LearningRun> => {
-    if (isTauri()) return call("learning/cancel_learning_run", { runId }) as Promise<LearningRun>;
+    if (hasBackend()) return call("learning/cancel_learning_run", { runId }) as Promise<LearningRun>;
     if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId) return Promise.reject(new Error("Learning run not found"));
     mockLearningState.latestRun = { ...mockLearningState.latestRun, status: "cancelled", cancellationRequested: true, promotionStatus: "cancelled", completedAt: new Date().toISOString() };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
   updateLearningSchedule: (schedule: LearningSchedule): Promise<LearningSchedule> => {
-    if (isTauri()) return call("learning/update_learning_schedule", { schedule });
+    if (hasBackend()) return call("learning/update_learning_schedule", { schedule });
     mockLearningState.schedule = structuredClone(schedule);
     return Promise.resolve(structuredClone(schedule));
   },
   approveLearningRun: (runId: string): Promise<LearningRun> => {
-    if (isTauri()) return call("learning/approve_learning_run", { runId }) as Promise<LearningRun>;
+    if (hasBackend()) return call("learning/approve_learning_run", { runId }) as Promise<LearningRun>;
     if (!mockLearningState.latestRun || mockLearningState.latestRun.id !== runId || mockLearningState.latestRun.promotionStatus !== "awaiting_approval") return Promise.reject(new Error("Learning run is not awaiting approval"));
     mockLearningState.activePolicyVersion = mockLearningState.latestRun.candidatePolicyVersion ?? mockLearningState.activePolicyVersion;
     mockLearningState.latestRun = { ...mockLearningState.latestRun, promotionStatus: "promoted" };
     return Promise.resolve(structuredClone(mockLearningState.latestRun));
   },
   rollbackRoutingPolicy: (workspaceId: string, targetVersion: number, explanation: string): Promise<LearningState> => {
-    if (isTauri()) return call("routing/rollback_routing_policy", { workspaceId, targetVersion, explanation }) as Promise<LearningState>;
+    if (hasBackend()) return call("routing/rollback_routing_policy", { workspaceId, targetVersion, explanation }) as Promise<LearningState>;
     void targetVersion;
     void explanation;
     mockLearningState.activePolicyVersion += 1;
     mockLearningState.canaryPolicyVersion = null;
     return Promise.resolve(structuredClone(mockLearningState));
   },
-  registerLearningTrigger: (kind: ExternalLearningTriggerKind, registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => isTauri()
+  registerLearningTrigger: (kind: ExternalLearningTriggerKind, registrationId: string, credentialRef: string | null, expiresAt: string | null = null): Promise<void> => hasBackend()
     ? unit(call("learning/register_learning_trigger", { kind, registrationId, credentialRef, expiresAt }))
     : Promise.resolve(),
-  learningTriggerInstructions: (kind: ExternalLearningTriggerKind, databasePath: string, registrationId: string): Promise<string> => isTauri()
+  learningTriggerInstructions: (kind: ExternalLearningTriggerKind, databasePath: string, registrationId: string): Promise<string> => hasBackend()
     ? call("learning/get_learning_trigger_instructions", { kind, databasePath, registrationId })
     : Promise.resolve(`Run \`bridge learning run --database "${databasePath}" --trigger ${kind === "open_code" ? "opencode" : kind}:${registrationId}\` locally as a wake-up trigger only. Bridge owns replay, approval, promotion, and rollback.`),
-  enableLearningTrigger: (kind: ExternalLearningTriggerKind, registrationId: string): Promise<void> => isTauri()
+  enableLearningTrigger: (kind: ExternalLearningTriggerKind, registrationId: string): Promise<void> => hasBackend()
     ? unit(call("learning/enable_learning_trigger", { kind, registrationId }))
     : Promise.resolve(),
-  routerPreferences: (workspaceId: string): Promise<RouterPreferences> => isTauri()
+  routerPreferences: (workspaceId: string): Promise<RouterPreferences> => hasBackend()
     ? call("routing/get_router_preferences", { workspaceId })
     : Promise.resolve(structuredClone(mockRouterPreferences.get(workspaceId) ?? { mode: "shadow", minimumPassBps: 6500, pinnedHarness: null, pinnedModel: null, excludedHarnesses: [], excludedModels: [] })),
   updateRouterPreferences: (workspaceId: string, preferences: RouterPreferences): Promise<RouterPreferences> => {
-    if (isTauri()) return call("routing/update_router_preferences", { workspaceId, preferences });
+    if (hasBackend()) return call("routing/update_router_preferences", { workspaceId, preferences });
     mockRouterPreferences.set(workspaceId, structuredClone(preferences));
     return Promise.resolve(structuredClone(preferences));
   },
-  sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => isTauri() ? call("sessions/get_session_forest", { sessionId }) as Promise<SessionForestSnapshot> : Promise.resolve(mockForest(sessionId)),
+  sessionForest: (sessionId: string): Promise<SessionForestSnapshot> => hasBackend() ? call("sessions/get_session_forest", { sessionId }) as Promise<SessionForestSnapshot> : Promise.resolve(mockForest(sessionId)),
   // Tens of bytes per poll instead of the entire history; equal digests mean
   // sessionForest would return unchanged store content.
-  sessionForestDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),
-  contextBreakdown: (sessionId: string): Promise<ContextBreakdownResult> => isTauri() ? call("sessions/get_context_breakdown", { sessionId }) : Promise.resolve(mockContextBreakdown(sessionId)),
+  sessionForestDigest: (sessionId: string): Promise<string> => hasBackend() ? call("sessions/get_session_forest_digest", { sessionId }).then(result => result.digest) : Promise.resolve(`mock-${sessionId}`),
+  contextBreakdown: (sessionId: string): Promise<ContextBreakdownResult> => hasBackend() ? call("sessions/get_context_breakdown", { sessionId }) : Promise.resolve(mockContextBreakdown(sessionId)),
   // Same change-token contract as sessionForestDigest, scoped to breakdown
   // inputs: compilations, config revisions, adapter observations, branch.
-  contextWindows: (sessionId: string): Promise<ContextWindowsResult> => isTauri() ? call("sessions/get_context_windows", { sessionId }) : Promise.resolve(mockContextWindows(sessionId)),
-  contextBreakdownDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
+  contextWindows: (sessionId: string): Promise<ContextWindowsResult> => hasBackend() ? call("sessions/get_context_windows", { sessionId }) : Promise.resolve(mockContextWindows(sessionId)),
+  contextBreakdownDigest: (sessionId: string): Promise<string> => hasBackend() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
   /** Durable backfill of one session's event log — any session id, including a
    * worker child's. Cursor semantics: pass the last sequence already held. */
   replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => {
-    if (isTauri()) return call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as unknown as Promise<AgentEvent[]>;
+    if (hasBackend()) return call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as unknown as Promise<AgentEvent[]>;
     const all = mockState.agentEvents.filter(event => event.sessionId === sessionId && event.sequence > afterSequence).sort((a, b) => a.sequence - b.sequence);
     const page = tail ? all.slice(Math.max(0, all.length - (limit ?? all.length))) : all.slice(0, limit ?? all.length);
     return Promise.resolve(structuredClone(page));
   },
   createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
-    if (isTauri()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
+    if (hasBackend()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
     const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;
   },
   recordCompletionCheck: async (attemptId: string, run: CompletionCheckRun): Promise<CompletionSummary> => {
-    if (isTauri()) return call("completion/record_completion_check", { attemptId, run });
+    if (hasBackend()) return call("completion/record_completion_check", { attemptId, run });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found");
     const index = forest.completion.checks.findIndex(check => check.checkId === run.checkId); if (index < 0) throw new Error("Completion check not found"); forest.completion.checks[index] = structuredClone(run); forest.completion.passedRequired = forest.completion.checks.filter(check => check.required && check.status === "passed").length; return structuredClone(forest.completion);
   },
   waiveCompletion: async (attemptId: string, checkIds: string[], reason: string): Promise<CompletionSummary> => {
-    if (isTauri()) return call("completion/waive_completion", { attemptId, checkIds, reason });
+    if (hasBackend()) return call("completion/waive_completion", { attemptId, checkIds, reason });
     const forest = Object.values(mockForests).find(item => item.completion?.attemptId === attemptId); if (!forest?.completion) throw new Error("Completion attempt not found"); const unresolved = forest.completion.checks.filter(check => check.required && check.status !== "passed").map(check => check.checkId); if (!unresolved.every(checkId => checkIds.includes(checkId))) throw new Error("Waiver must cover every unresolved required check"); forest.completion.verdict = "waived"; forest.completion.waiverReason = reason; return structuredClone(forest.completion);
   },
   // Local state on a suggested task. None of these reaches a connector: marking a task
   // done does not close the thread it came from, and dismissing it does not archive
   // anything. They are notes Bridge makes to itself about something it read.
   workTaskAction: async (taskId: string, action: "done" | "snooze" | "dismiss" | "restore", snoozedUntil: string | null = null): Promise<void> => {
-    if (isTauri()) return unit(call("work/task_action", { taskId, action, snoozedUntil }));
+    if (hasBackend()) return unit(call("work/task_action", { taskId, action, snoozedUntil }));
     const task = mockWorkTasks.find(item => item.id === taskId);
     if (!task) throw new Error("Task not found");
     task.state = action === "done" ? "done" : action === "snooze" ? "snoozed" : action === "dismiss" ? "dismissed" : "active";
     return undefined;
   },
   workTaskPin: async (taskId: string, pinned: boolean): Promise<void> => {
-    if (isTauri()) return unit(call("work/task_pin", { taskId, pinned }));
+    if (hasBackend()) return unit(call("work/task_pin", { taskId, pinned }));
     const task = mockWorkTasks.find(item => item.id === taskId);
     if (task) task.pinned = pinned;
     return undefined;
@@ -2147,7 +2180,7 @@ export const bridgeApi = {
   // Prepares a draft and returns. Sending is the user's move, which is why nothing here
   // returns a turn id or a run.
   workTaskPrepareSession: async (taskId: string, harness: Harness, model: string | null): Promise<WorkTaskDraft> => {
-    if (isTauri()) return call("work/task_prepare_session", { taskId, harness, model });
+    if (hasBackend()) return call("work/task_prepare_session", { taskId, harness, model });
     const task = mockWorkTasks.find(item => item.id === taskId);
     if (!task) throw new Error("Task not found");
     return {
@@ -2157,7 +2190,7 @@ export const bridgeApi = {
     };
   },
   workTaskOpenEvidence: async (taskId: string) => {
-    if (isTauri()) return call("work/task_open_evidence", { taskId });
+    if (hasBackend()) return call("work/task_open_evidence", { taskId });
     const task = mockWorkTasks.find(item => item.id === taskId);
     if (!task?.evidenceTarget) throw new Error("This task has no evidence to open");
     return structuredClone(task.evidenceTarget);
@@ -2168,71 +2201,71 @@ export const bridgeApi = {
   // what vitest and a `bun run dev` preview render, so the screen can be developed
   // and tested without the desktop app.
   workBoard: async (): Promise<WorkBoard> => {
-    if (isTauri()) return call("work/get_work_board");
+    if (hasBackend()) return call("work/get_work_board");
     return browserWorkBoard();
   },
   // Work's configuration. `configured: false` is a fresh install reading defaults;
   // `configured: true` with `briefing: null` is briefing explicitly switched off —
   // the write path keeps those two states distinguishable.
   readWorkSettings: async (): Promise<WorkSettingsSnapshot> => {
-    if (isTauri()) return call("work/read_settings");
+    if (hasBackend()) return call("work/read_settings");
     return structuredClone(mockWorkSettings);
   },
   // Validation is Rust's. The Settings surface may pre-empt an obvious mistake,
   // but a payload that bypasses it is refused by the same rules server-side.
   writeWorkSettings: async (settings: WorkSettings): Promise<WorkSettingsSnapshot> => {
-    if (isTauri()) return call("work/write_settings", { settings });
+    if (hasBackend()) return call("work/write_settings", { settings });
     mockWorkSettings = { configured: true, settings: structuredClone(settings) };
     return structuredClone(mockWorkSettings);
   },
   // Which harnesses passed the briefing conformance gate, why the others were
   // refused, and the cheapest capable default model for each.
   workBriefingOptions: async (): Promise<WorkBriefingOptions> => {
-    if (isTauri()) return call("work/briefing_options");
+    if (hasBackend()) return call("work/briefing_options");
     return structuredClone(mockBriefingOptions);
   },
   // Trigger a briefing run. Returns a receipt immediately — a claimed run lands
   // on the run row, and the board's suggestions.state is how the screen follows it.
   runWorkBriefing: async (trigger: "manual" | "focus" | "schedule"): Promise<WorkBriefReceipt> => {
-    if (isTauri()) return call("work/run_briefing", { trigger });
+    if (hasBackend()) return call("work/run_briefing", { trigger });
     if (!mockWorkSettings.configured || !mockWorkSettings.settings.briefing) {
       return { outcome: "refused", runId: null, code: "not_configured", detail: "Work has never been configured" };
     }
     return { outcome: "refused", runId: null, code: "desktop_required", detail: "Reading connected integrations requires the desktop app." };
   },
   cancelWorkBriefing: async (): Promise<WorkBriefReceipt> => {
-    if (isTauri()) return call("work/cancel_briefing");
+    if (hasBackend()) return call("work/cancel_briefing");
     return { outcome: "refused", runId: null, code: "not_running", detail: "no briefing run is active" };
   },
   // A workspace far behind its base branch produces changes and completion
   // stamps against stale code; `refresh` is the explicit choice the warning offers.
   workspaceBaseDivergence: async (sessionId: string, fetch: boolean): Promise<BaseBranchDivergence> => {
-    if (isTauri()) return call("worktrees/workspace_base_divergence", { sessionId, fetch });
+    if (hasBackend()) return call("worktrees/workspace_base_divergence", { sessionId, fetch });
     return { baseRef: null, baseCommit: null, head: null, branch: null, ahead: 0, behind: 0, refAgeSeconds: null, fetchAttempted: false, fetched: false, dirty: false, unavailableReason: "Base-branch comparison needs the desktop app" };
   },
   refreshWorkspaceBase: async (sessionId: string): Promise<BaseBranchDivergence> => {
-    if (isTauri()) return call("worktrees/refresh_workspace_base", { sessionId });
+    if (hasBackend()) return call("worktrees/refresh_workspace_base", { sessionId });
     throw new Error("Refreshing the workspace needs the desktop app");
   },
   // Worker output that lives only in a child worktree has not reached the user's
   // task checkout; adopting or discarding it is an explicit decision.
   pendingWorkerAdoptions: async (sessionId: string): Promise<WorkerRepositoryBinding[]> => {
-    if (isTauri()) return call("worktrees/pending_worker_adoptions", { sessionId });
+    if (hasBackend()) return call("worktrees/pending_worker_adoptions", { sessionId });
     return sessionId === "session-1" ? [structuredClone(mockPendingAdoption)] : [];
   },
   adoptWorkerWorktree: async (sessionId: string): Promise<WorkerRepositoryBinding> => {
-    if (isTauri()) return call("worktrees/adopt_worker_worktree", { sessionId });
+    if (hasBackend()) return call("worktrees/adopt_worker_worktree", { sessionId });
     throw new Error("Adopting a worker worktree needs the desktop app");
   },
   discardWorkerWorktree: async (sessionId: string, reason: string): Promise<WorkerRepositoryBinding> => {
-    if (isTauri()) return call("worktrees/discard_worker_worktree", { sessionId, reason });
+    if (hasBackend()) return call("worktrees/discard_worker_worktree", { sessionId, reason });
     throw new Error("Discarding a worker worktree needs the desktop app");
   },
   // Put one chat away and reclaim the checkout it owns — never its workspace's,
   // which belongs to every other chat in it. History is kept; the conversation
   // is simply no longer listed.
   archiveChat: async (sessionId: string): Promise<ArchiveChatResult> => {
-    if (isTauri()) return call("sessions/archive_chat", { sessionId });
+    if (hasBackend()) return call("sessions/archive_chat", { sessionId });
     const owned = mockWorktrees.find(item => item.ownerSessionId === sessionId);
     mockState.sessions = mockState.sessions.filter(session => session.id !== sessionId);
     if (owned && owned.disposition === "reclaimable") {
@@ -2244,56 +2277,56 @@ export const bridgeApi = {
     return { archived: true, bytesFreed: 0, worktreeDetail: owned?.retainedReason ?? null };
   },
   listArchivedChats: async (query = "", offset = 0, rootSessionId: string | null = null): Promise<ArchivedChatsResult> => {
-    if (isTauri()) return call("sessions/list_archived_chats", { query, offset, rootSessionId });
+    if (hasBackend()) return call("sessions/list_archived_chats", { query, offset, rootSessionId });
     return { chats: [], hasMore: false };
   },
   workerSettings: async (workspaceId: string): Promise<WorkerSettings> => {
-    if (isTauri()) return call("config/get_worker_settings", { workspaceId });
+    if (hasBackend()) return call("config/get_worker_settings", { workspaceId });
     return { defaultHarness: null, maxConcurrentWorkers: 2, maxWorkersPerTurn: 3, stallTimeoutSeconds: 600, warmRetentionMinutes: 5, automaticRetry: true, providerFailover: true };
   },
   saveWorkerSettings: async (workspaceId: string, settings: WorkerSettings): Promise<WorkerSettings> => {
-    if (isTauri()) return call("config/save_worker_settings", { workspaceId, settings });
+    if (hasBackend()) return call("config/save_worker_settings", { workspaceId, settings });
     return structuredClone(settings);
   },
   reviewerSettings: async (): Promise<ReviewerSettingsResult> => {
-    if (isTauri()) return call("config/get_reviewer_settings");
+    if (hasBackend()) return call("config/get_reviewer_settings");
     return { settings: { harnesses: {}, systemPrompt: "" }, defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
   },
   saveReviewerSettings: async (settings: ReviewerSettings): Promise<ReviewerSettingsResult> => {
-    if (isTauri()) return call("config/save_reviewer_settings", { settings });
+    if (hasBackend()) return call("config/save_reviewer_settings", { settings });
     return { settings: structuredClone(settings), defaultSystemPrompt: MOCK_REVIEWER_PROMPT };
   },
   delegationNotifySettings: async (sessionId?: string): Promise<DelegationNotifySettingsView> => {
-    if (isTauri()) return call("config/get_delegation_notify_settings", { sessionId: sessionId ?? null });
+    if (hasBackend()) return call("config/get_delegation_notify_settings", { sessionId: sessionId ?? null });
     return mockNotifyView(sessionId);
   },
   saveDelegationNotifySettings: async (sessionId: string | null, level: DelegationNotifyLevel | null): Promise<DelegationNotifySettingsView> => {
-    if (isTauri()) return call("config/save_delegation_notify_settings", { sessionId, level });
+    if (hasBackend()) return call("config/save_delegation_notify_settings", { sessionId, level });
     if (sessionId === null) mockNotifyGlobal = level ?? "all";
     else if (level === null) mockNotifyOverrides.delete(sessionId);
     else mockNotifyOverrides.set(sessionId, level);
     return mockNotifyView(sessionId ?? undefined);
   },
   attributionSettings: async (): Promise<AttributionSettings> => {
-    if (isTauri()) return call("config/get_attribution_settings");
+    if (hasBackend()) return call("config/get_attribution_settings");
     return { hideAiAttribution: false };
   },
   saveAttributionSettings: async (settings: AttributionSettings): Promise<AttributionSettings> => {
-    if (isTauri()) return call("config/save_attribution_settings", { settings });
+    if (hasBackend()) return call("config/save_attribution_settings", { settings });
     return structuredClone(settings);
   },
   chatSearchSettings: async (): Promise<ChatSearchSettings> => {
-    if (isTauri()) return call("config/get_chat_search_settings");
+    if (hasBackend()) return call("config/get_chat_search_settings");
     return structuredClone(mockChatSearchSettings);
   },
   saveChatSearchSettings: async (settings: ChatSearchSettings): Promise<ChatSearchSettings> => {
-    if (isTauri()) return call("config/save_chat_search_settings", { settings });
+    if (hasBackend()) return call("config/save_chat_search_settings", { settings });
     const model = settings.model?.trim() || null;
     mockChatSearchSettings = { deepSearch: settings.deepSearch !== false, model };
     return structuredClone(mockChatSearchSettings);
   },
   unarchiveChat: async (sessionId: string): Promise<void> => {
-    if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
+    if (hasBackend()) { await call("sessions/unarchive_chat", { sessionId }); return; }
     throw new Error("Unarchiving a chat needs the desktop app");
   },
   // What the worktrees cost. Read-only on purpose: reclaiming is the
@@ -2303,18 +2336,18 @@ export const bridgeApi = {
   // still being measured come back null with `measuring` set, and the page
   // asks again.
   storageOverview: async (): Promise<DiskOverview> => {
-    if (isTauri()) return call("storage/storage_overview");
+    if (hasBackend()) return call("storage/storage_overview");
     return mockDiskOverview();
   },
   scanDirectory: async (path: string | null, refresh = false): Promise<DiskListing> => {
-    if (isTauri()) return call("storage/scan_directory", { path, refresh });
+    if (hasBackend()) return call("storage/scan_directory", { path, refresh });
     const target = path ?? MOCK_HOME;
     const entries = structuredClone(mockDiskTree[target] ?? []);
     const parent = target === "/" ? null : target.slice(0, target.lastIndexOf("/")) || "/";
     return { path: target, parent, sizeBytes: entries.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0), measuring: false, unreadable: null, entries, omittedCount: 0, omittedBytes: 0 };
   },
   deletePaths: async (paths: string[], permanent = false): Promise<DiskDeleteResult> => {
-    if (isTauri()) return call("storage/delete_paths", { paths, permanent });
+    if (hasBackend()) return call("storage/delete_paths", { paths, permanent });
     const result: DiskDeleteResult = { deleted: [], failed: [], bytesFreed: 0, trashed: !permanent };
     for (const path of paths) {
       const parent = path.slice(0, path.lastIndexOf("/"));
@@ -2328,22 +2361,22 @@ export const bridgeApi = {
     return result;
   },
   emptyTrash: async (): Promise<EmptyTrashResult> => {
-    if (isTauri()) return call("storage/empty_trash");
+    if (hasBackend()) return call("storage/empty_trash");
     mockTrashEmpty = true;
     return { emptied: mockTrashEmpty, detail: null };
   },
   listWorktrees: async (): Promise<WorktreeInventoryEntry[]> => {
-    if (isTauri()) return call("worktrees/list_worktrees");
+    if (hasBackend()) return call("worktrees/list_worktrees");
     return structuredClone(mockWorktrees);
   },
   worktreeUsage: async (): Promise<WorktreeUsage> => {
-    if (isTauri()) return call("worktrees/worktree_usage");
+    if (hasBackend()) return call("worktrees/worktree_usage");
     return structuredClone(mockWorktreeUsage);
   },
   // A refusal is a result, not a thrown error: the caller renders "no, and
   // here is why" next to the row it asked about.
   reclaimWorktree: async (worktreeId: string, force = false): Promise<WorktreeReclaimResult> => {
-    if (isTauri()) return call("worktrees/reclaim_worktree", { worktreeId, force });
+    if (hasBackend()) return call("worktrees/reclaim_worktree", { worktreeId, force });
     const entry = mockWorktrees.find(item => item.id === worktreeId);
     if (!entry) throw new Error(`no worktree ${worktreeId} is recorded`);
     // Mirrors is_removable: force overrides only at_risk/unverifiable, never
@@ -2356,7 +2389,7 @@ export const bridgeApi = {
     return { reclaimed: true, bytesFreed: entry.sizeBytes ?? 0, disposition: entry.disposition ?? "reclaimable", detail: null };
   },
   sweepWorktrees: async (): Promise<WorktreeSweepResult> => {
-    if (isTauri()) return call("worktrees/sweep_worktrees");
+    if (hasBackend()) return call("worktrees/sweep_worktrees");
     const collectable = mockWorktrees.filter(item => item.disposition === "reclaimable");
     mockWorktrees = mockWorktrees.filter(item => item.disposition !== "reclaimable");
     return {
@@ -2370,11 +2403,11 @@ export const bridgeApi = {
     };
   },
   registerVerifierManifest: async (source: string, manifest: VerifierManifest): Promise<void> => {
-    if (isTauri()) return unit(call("completion/register_verifier_manifest", { source, manifest }));
+    if (hasBackend()) return unit(call("completion/register_verifier_manifest", { source, manifest }));
     mockVerifierManifests.set(manifest.id, structuredClone(manifest));
   },
   verifierCandidates: async (changeLabels: string[], availableCapabilities: string[]): Promise<VerifierCandidate[]> => {
-    if (isTauri()) return call("completion/verifier_candidates", { changeLabels, availableCapabilities });
+    if (hasBackend()) return call("completion/verifier_candidates", { changeLabels, availableCapabilities });
     return [...mockVerifierManifests.values()].map(manifest => {
       const triggerMatch = !manifest.triggers?.length || manifest.triggers.some(trigger => changeLabels.includes(trigger));
       const missing = (manifest.requiredCapabilities ?? []).filter(capability => !availableCapabilities.includes(capability));
@@ -2383,7 +2416,7 @@ export const bridgeApi = {
     });
   },
   activateSessionEntry: async (sessionId: string, entryId: string): Promise<SessionForestSnapshot> => {
-    if (isTauri()) return call("sessions/activate_session_entry", { sessionId, entryId }) as Promise<SessionForestSnapshot>;
+    if (hasBackend()) return call("sessions/activate_session_entry", { sessionId, entryId }) as Promise<SessionForestSnapshot>;
     if (!mockForests[sessionId]) mockForest(sessionId);
     const forest = mockForests[sessionId];
     if (!forest.entries.some(entry => entry.id === entryId)) throw new Error("Entry is not in this session");
@@ -2392,7 +2425,7 @@ export const bridgeApi = {
     emitState(); return structuredClone(forest);
   },
   resolveReference: async (id: string): Promise<ResolveReferenceResult> => {
-    if (isTauri()) return call("sessions/resolve_reference", { id }) as Promise<ResolveReferenceResult>;
+    if (hasBackend()) return call("sessions/resolve_reference", { id }) as Promise<ResolveReferenceResult>;
     const bare = id.replace(/^@session:/, "").replace(/^brio_/, "");
     const session = mockState.sessions.find(candidate => candidate.id === bare || (candidate.id.replace(/-/g, "").startsWith(bare) && bare.length === 8));
     if (session) {
@@ -2432,7 +2465,7 @@ export const bridgeApi = {
     return { kind: "unknown", authorized: false };
   },
   forkSession: async (sessionId: string, entryId: string, title?: string | null, harness?: string | null, model?: string | null, worktreePolicy?: string | null): Promise<ForkSessionResult> => {
-    if (isTauri()) return call("sessions/fork_session", { sessionId, entryId, title, harness, model, worktreePolicy: worktreePolicy ?? "shared" }) as Promise<ForkSessionResult>;
+    if (hasBackend()) return call("sessions/fork_session", { sessionId, entryId, title, harness, model, worktreePolicy: worktreePolicy ?? "shared" }) as Promise<ForkSessionResult>;
     const source = mockState.sessions.find(session => session.id === sessionId);
     if (!source) throw new Error("Session to fork does not exist");
     if (source.kind === "worker") throw new Error("Worker sessions cannot be forked; fork an orchestrator or direct chat");
@@ -2488,7 +2521,7 @@ export const bridgeApi = {
     return { state: structuredClone(mockState) as BridgeState, sessionId: forkId, snapshot: structuredClone(mockForests[forkId]), fidelity: "projected_at_boundary" };
   },
   compactSession: async (sessionId: string): Promise<void> => {
-    if (isTauri()) return unit(call("sessions/compact_session", { sessionId }));
+    if (hasBackend()) return unit(call("sessions/compact_session", { sessionId }));
     if (!mockForests[sessionId]) mockForest(sessionId);
     const forest = mockForests[sessionId];
     const parent = forest.head?.activeEntryId ?? null;
@@ -2507,7 +2540,7 @@ export const bridgeApi = {
     emitState();
   },
   searchSessionEntries: async (sessionId: string, query: string, limit?: number | null, offset?: number | null): Promise<SearchSessionEntriesResult> => {
-    if (isTauri()) {
+    if (hasBackend()) {
       return call("sessions/search_session_entries", {
         sessionId,
         query,
@@ -2545,7 +2578,7 @@ export const bridgeApi = {
    * index is unsure, and can take seconds.
    */
   searchChats: async (query: string, options: { limit?: number; deep?: boolean } = {}): Promise<SearchChatsResult> => {
-    if (isTauri()) {
+    if (hasBackend()) {
       return call("sessions/search_chats", {
         query,
         ...(options.limit != null ? { limit: options.limit } : {}),
@@ -2565,7 +2598,7 @@ export const bridgeApi = {
     sessionId: string,
     options: { scope?: TranscriptExportScope; includeHidden?: boolean; destinationPath?: string } = {},
   ): Promise<ExportSessionTranscriptResult> => {
-    if (isTauri()) {
+    if (hasBackend()) {
       return call("sessions/export_session_transcript", {
         sessionId,
         ...(options.scope ? { scope: options.scope } : {}),
@@ -2579,7 +2612,7 @@ export const bridgeApi = {
     throw new Error("Exporting a transcript needs the desktop app; the browser preview has no session store to read.");
   },
   saveMemoryRecord: async (body: string, kind?: string | null, sessionId?: string | null): Promise<MemoryRecord> => {
-    if (isTauri()) {
+    if (hasBackend()) {
       return call("memory/save_memory_record", {
         body,
         ...(kind ? { kind } : {}),
@@ -2606,7 +2639,7 @@ export const bridgeApi = {
     return structuredClone(record);
   },
   listMemoryRecords: async (scopeKey: string, status?: string): Promise<ListMemoryRecordsResult> => {
-    if (isTauri()) return call("memory/list_memory_records", { scopeKey, ...(status ? { status } : {}) });
+    if (hasBackend()) return call("memory/list_memory_records", { scopeKey, ...(status ? { status } : {}) });
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
     const wanted = status ?? "active";
@@ -2620,7 +2653,7 @@ export const bridgeApi = {
     };
   },
   supersedeMemoryRecord: async (recordId: string, body: string, kind?: string | null): Promise<MemoryRecord> => {
-    if (isTauri()) return call("memory/supersede_memory_record", { recordId, body, ...(kind ? { kind } : {}) });
+    if (hasBackend()) return call("memory/supersede_memory_record", { recordId, body, ...(kind ? { kind } : {}) });
     const old = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
     if (!old) throw new Error("Only an active memory record can be superseded.");
     const trimmed = body.trim();
@@ -2647,7 +2680,7 @@ export const bridgeApi = {
     return structuredClone(record);
   },
   approveMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
-    if (isTauri()) return call("memory/approve_memory_record", { recordId });
+    if (hasBackend()) return call("memory/approve_memory_record", { recordId });
     const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "proposed");
     if (!record) throw new Error("Only a proposed memory record can be approved.");
     record.status = "active";
@@ -2656,7 +2689,7 @@ export const bridgeApi = {
     return structuredClone(record);
   },
   rejectMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
-    if (isTauri()) return call("memory/reject_memory_record", { recordId });
+    if (hasBackend()) return call("memory/reject_memory_record", { recordId });
     const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "proposed");
     if (!record) throw new Error("Only a proposed memory record can be rejected.");
     record.status = "rejected";
@@ -2665,11 +2698,11 @@ export const bridgeApi = {
     return structuredClone(record);
   },
   getExtractionSettings: async (): Promise<MemoryExtractionSettings> => {
-    if (isTauri()) return call("memory/get_extraction_settings");
+    if (hasBackend()) return call("memory/get_extraction_settings");
     return structuredClone(mockExtractionSettings);
   },
   updateExtractionSettings: async (mode: string, harness?: string | null, model?: string | null): Promise<MemoryExtractionSettings> => {
-    if (isTauri()) {
+    if (hasBackend()) {
       return call("memory/update_extraction_settings", {
         mode,
         ...(harness ? { harness } : {}),
@@ -2684,16 +2717,16 @@ export const bridgeApi = {
     return structuredClone(mockExtractionSettings);
   },
   getMemoryInjection: async (): Promise<MemoryInjectionSettings> => {
-    if (isTauri()) return call("memory/get_memory_injection");
+    if (hasBackend()) return call("memory/get_memory_injection");
     return { scopeKey: "account:local", enabled: mockMemoryInjection };
   },
   setMemoryInjection: async (enabled: boolean): Promise<MemoryInjectionSettings> => {
-    if (isTauri()) return call("memory/set_memory_injection", { enabled });
+    if (hasBackend()) return call("memory/set_memory_injection", { enabled });
     mockMemoryInjection = enabled;
     return { scopeKey: "account:local", enabled };
   },
   getPacketAudit: async (sessionId: string): Promise<MemoryPacketAudit> => {
-    if (isTauri()) return call("memory/get_packet_audit", { sessionId });
+    if (hasBackend()) return call("memory/get_packet_audit", { sessionId });
     // The mock packet is the active recall-eligible pins, so the transcript's
     // "Recalled N memories" note is exercisable under `bun run dev`.
     const selected = mockMemoryRecords
@@ -2702,7 +2735,7 @@ export const bridgeApi = {
     return { sessionId, selected, tokenEstimate: selected.reduce((sum, item) => sum + Math.ceil(item.body.length / 4), 0) };
   },
   getMemoryCapabilities: async (): Promise<MemoryCapabilities> => {
-    if (isTauri()) return call("memory/get_memory_capabilities");
+    if (hasBackend()) return call("memory/get_memory_capabilities");
     return {
       ledger: { exists: true, scopeKey: "account:local", maxBodyChars: 4000, kinds: ["preference", "fact", "decision", "constraint"] },
       providerNative: [
@@ -2712,7 +2745,7 @@ export const bridgeApi = {
     };
   },
   deleteMemoryRecord: async (recordId: string): Promise<MemoryRecord> => {
-    if (isTauri()) return call("memory/delete_memory_record", { recordId });
+    if (hasBackend()) return call("memory/delete_memory_record", { recordId });
     const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
     if (!record) throw new Error("That memory pin is not active (unknown id or already forgotten).");
     const closedAt = new Date().toISOString();
@@ -2728,18 +2761,18 @@ export const bridgeApi = {
   memoryRecallStats: async (scopeKey: string): Promise<MemoryRecallStats> => {
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
-    if (isTauri()) return call("memory/get_recall_stats");
+    if (hasBackend()) return call("memory/get_recall_stats");
     return deriveRecallStats(mockMemoryRecords.filter(record => record.scopeKey === trimmed), mockPacketAudit);
   },
   memoryActivityLog: async (scopeKey: string): Promise<MemoryActivityEntry[]> => {
     if (!scopeKey.trim()) throw new Error("Memory scope is required; it cannot be empty or NULL");
-    if (isTauri()) return (await call("memory/get_activity_log")).entries;
+    if (hasBackend()) return (await call("memory/get_activity_log")).entries;
     return structuredClone(mockActivityLog);
   },
   // Without `refresh` this reads the stored report; running the model is always
   // an explicit action, because it sends memory text to the harness.
   memoryInsights: (refresh: boolean): Promise<MemoryInsightsResult> => {
-    if (isTauri()) return call("memory/get_insights", { refresh });
+    if (hasBackend()) return call("memory/get_insights", { refresh });
     return new Promise(resolve => setTimeout(() => {
       if (!refresh) return resolve(structuredClone(mockMemoryInsights));
       const stats = deriveRecallStats(mockMemoryRecords.filter(record => record.scopeKey === "account:local"), mockPacketAudit);
@@ -2770,23 +2803,23 @@ export const bridgeApi = {
     }, refresh ? 900 : 0));
   },
   addProject: async (path: string): Promise<BridgeState> => {
-    if (isTauri()) return call("projects/add_project", { path });
+    if (hasBackend()) return call("projects/add_project", { path });
     const name = path.split("/").filter(Boolean).at(-1) || "Repository";
     mockState.projects.push({ id: crypto.randomUUID(), name, path, createdAt: new Date().toISOString() }); emitState(); return snapshot();
   },
   createWorkspace: async (title: string): Promise<BridgeState> => {
-    if (isTauri()) return call("workspaces/create_workspace", { title });
+    if (hasBackend()) return call("workspaces/create_workspace", { title });
     const id = crypto.randomUUID();
     mockState.workspaces.push({ id, projectId: null, city: null, title, branch: null, path: null, status: "idle", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() });
     emitState(); return snapshot();
   },
   createChat: async (harness: Harness, model: string | null, title: string | null, purpose?: "storage"): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/create_chat", purpose ? { harness, model, title, purpose } : { harness, model, title });
+    if (hasBackend()) return call("sessions/create_chat", purpose ? { harness, model, title, purpose } : { harness, model, title });
     const id = crypto.randomUUID();
     mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title, kind: "direct", cwd: null }); emitState(); return snapshot();
   },
   createAsideChat: async (sourceSessionId: string, harness: Harness, model: string | null, title: string | null): Promise<CreateAsideChatResult> => {
-    if (isTauri()) return call("sessions/create_aside_chat", { sourceSessionId, harness, model, title });
+    if (hasBackend()) return call("sessions/create_aside_chat", { sourceSessionId, harness, model, title });
     const source = mockState.sessions.find(item => item.id === sourceSessionId);
     if (!source) throw new Error("Aside source session does not exist");
     const id = crypto.randomUUID();
@@ -2821,7 +2854,7 @@ export const bridgeApi = {
     };
   },
   createWorkspaceSession: async (workspaceId: string, createWorktree = false, kind: WorkspaceSessionKind = "orchestrator", harness?: Harness, model?: string | null): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree, kind, harness, model });
+    if (hasBackend()) return call("sessions/create_workspace_session", { workspaceId, createWorktree, kind, harness, model });
     const id = crypto.randomUUID();
     const workspace = mockState.workspaces.find(item => item.id === workspaceId);
     if (createWorktree && !workspace?.projectId) throw new Error("Connect a Git repository before creating an isolated worktree");
@@ -2829,18 +2862,18 @@ export const bridgeApi = {
     mockState.sessions.push({ id, workspaceId, harness: kind === "direct" ? harness ?? "codex" : "codex", label: kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: kind === "direct" ? model ?? null : null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind, cwd }); emitState(); return snapshot();
   },
   updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/update_chat_model", { sessionId, harness, model, effort });
+    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
     if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) { session.harness = harness; session.model = model; if (effort) session.effort = effort; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh"; }
     emitState(); return snapshot();
   },
   carrySessionHandoff: async (targetSessionId: string, sourceSessionId: string): Promise<boolean> => {
-    if (isTauri()) return (await call("sessions/carry_session_handoff", { targetSessionId, sourceSessionId })).carried;
+    if (hasBackend()) return (await call("sessions/carry_session_handoff", { targetSessionId, sourceSessionId })).carried;
     return false;
   },
   listSlashCommands: async (sessionId?: string): Promise<SlashCommand[]> => {
-    if (isTauri()) return call("slash/list_slash_commands", { sessionId: sessionId ?? null });
+    if (hasBackend()) return call("slash/list_slash_commands", { sessionId: sessionId ?? null });
     const harness = mockState.sessions.find(session => session.id === sessionId)?.harness;
     const commands: SlashCommand[] = [
       { name: "clear", description: "Start fresh in this chat", harness: "bridge", kind: "builtin" },
@@ -2852,30 +2885,30 @@ export const bridgeApi = {
     return commands.filter(command => !harness || command.harness === "bridge" || command.harness === harness);
   },
   resolveSlashCommand: async (sessionId: string, text: string): Promise<SlashCommandResolve | null> => {
-    if (isTauri()) return call("slash/resolve_slash_command", { sessionId, text });
+    if (hasBackend()) return call("slash/resolve_slash_command", { sessionId, text });
     return null;
   },
-  listWorkspaceFiles: (sessionId: string): Promise<string[]> => isTauri()
+  listWorkspaceFiles: (sessionId: string): Promise<string[]> => hasBackend()
     ? call("workspaces/list_workspace_files", { sessionId })
     : Promise.resolve(["src/App.tsx", "src/api.ts", "src/types.ts", "src-tauri/src/lib.rs", "README.md"]),
   connectWorkspaceFolder: async (workspaceId: string, path: string): Promise<BridgeState> => {
-    if (isTauri()) return call("workspaces/connect_workspace_folder", { workspaceId, path });
+    if (hasBackend()) return call("workspaces/connect_workspace_folder", { workspaceId, path });
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }
     emitState(); return snapshot();
   },
   cloneWorkspaceRepo: async (url: string, destination?: string): Promise<BridgeState> => {
-    if (isTauri()) return call("workspaces/clone_workspace_repo", { url, destination: destination || null });
+    if (hasBackend()) return call("workspaces/clone_workspace_repo", { url, destination: destination || null });
     const title = url.trim().replace(/\/$/, "").split(/[/:]/).pop()?.replace(/\.git$/, "") || "project";
     const id = crypto.randomUUID(); mockState.workspaces.push({ id, title, status: "idle", path: destination || `/tmp/bridge/projects/${title}`, projectId: id, city: "Kyoto", branch: "main", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() }); emitState(); return snapshot();
   },
   startChat: async (sessionId: string): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/start_chat", { sessionId });
+    if (hasBackend()) return call("sessions/start_chat", { sessionId });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session) { session.status = "working"; session.startedAt = new Date().toISOString(); session.endedAt = null; session.providerSessionId = session.providerSessionId ?? `mock-${crypto.randomUUID()}`; session.restorationMode = "fresh"; appendAgent(session.id, "session.started", { status: "working" }); }
     emitState(); return snapshot();
   },
   startSession: async (workspaceId: string, harness?: Harness | null, model?: string | null): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/start_session", { workspaceId, harness: harness ?? null, model: model ?? null });
+    if (hasBackend()) return call("sessions/start_session", { workspaceId, harness: harness ?? null, model: model ?? null });
     const resolvedHarness = harness ?? "codex";
     let session = mockState.sessions.find(item => item.workspaceId === workspaceId && item.harness === resolvedHarness);
     if (!session) { session = { id: crypto.randomUUID(), workspaceId, harness: resolvedHarness, label: "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", model: model ?? "gpt-5.6-luna", requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" }; mockState.sessions.push(session); }
@@ -2884,15 +2917,15 @@ export const bridgeApi = {
     appendAgent(session.id, "session.started", { status: "working" }); emitState(); return snapshot();
   },
   stopSession: async (sessionId: string): Promise<BridgeState> => {
-    if (isTauri()) return call("sessions/stop_session", { sessionId });
+    if (hasBackend()) return call("sessions/stop_session", { sessionId });
     const session = mockState.sessions.find(item => item.id === sessionId); if (session) { session.status = "stopped"; session.endedAt = new Date().toISOString(); session.activeTurnId = null; }
     emitState(); return snapshot();
   },
-  prepareTurn: (sessionId: string, text: string): Promise<SanitizedTurn> => isTauri()
+  prepareTurn: (sessionId: string, text: string): Promise<SanitizedTurn> => hasBackend()
     ? call("sessions/prepare_turn", { sessionId, text })
     : Promise.resolve({ text, interceptions: [] }),
   sendTurn: async (sessionId: string, text: string): Promise<void> => {
-    if (isTauri()) return unit(call("sessions/send_turn", { sessionId, text }));
+    if (hasBackend()) return unit(call("sessions/send_turn", { sessionId, text }));
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
     session.status = "working"; session.activeTurnId = `mock-turn-${nextEventId}`;
     appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text });
@@ -2911,7 +2944,7 @@ export const bridgeApi = {
       mediaType: attachment.mediaType,
       base64Data: attachment.dataUri.split(",")[1] ?? "",
     }));
-    if (isTauri()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined, activeTurnInput });
+    if (hasBackend()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined, activeTurnInput });
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
     if (session.activeTurnId && (activeTurnInput === "queue" || (activeTurnInput === "steer" && !mockHealth.adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering")))) {
       if (images.length) throw new Error("Images cannot be held in the queue; wait for the current step to finish.");
@@ -2931,7 +2964,7 @@ export const bridgeApi = {
     await bridgeApi.sendTurn(sessionId, text);
     return { disposition: "startedNewTurn", interceptions: [] };
   },
-  voiceCapabilities: (sessionId?: string): Promise<VoiceCapabilitiesResult> => isTauri()
+  voiceCapabilities: (sessionId?: string): Promise<VoiceCapabilitiesResult> => hasBackend()
     ? call("voice/voice_capabilities", { sessionId })
     : Promise.resolve({
         sessionId,
@@ -2957,7 +2990,7 @@ export const bridgeApi = {
     unit(call("voice/voice_stop", { voiceSessionId })),
   voiceCancel: (voiceSessionId: string): Promise<void> =>
     unit(call("voice/voice_cancel", { voiceSessionId })),
-  voiceLocalStatus: (): Promise<VoiceLocalStatusResult> => isTauri()
+  voiceLocalStatus: (): Promise<VoiceLocalStatusResult> => hasBackend()
     ? call("voice/voice_local_status")
     : Promise.resolve({
         state: "unsupported",
@@ -2974,7 +3007,7 @@ export const bridgeApi = {
   voiceLocalRemove: (): Promise<VoiceLocalStatusResult> =>
     call("voice/voice_local_remove", { confirmRemoval: true }),
   dispatchAgentShortcut: async (sessionId: string, token: string, objective: string): Promise<DispatchAgentShortcutResult> => {
-    if (isTauri()) return call("sessions/dispatch_agent_shortcut", { sessionId, token, objective });
+    if (hasBackend()) return call("sessions/dispatch_agent_shortcut", { sessionId, token, objective });
     if (!objective.trim()) throw new Error("Agent shortcut objective cannot be empty; add what the specialist should do");
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (!session?.workspaceId) throw new Error("Agent shortcuts need a connected workspace");
@@ -3000,7 +3033,7 @@ export const bridgeApi = {
     };
   },
   interruptTurn: async (sessionId: string): Promise<void> => {
-    if (isTauri()) return unit(call("sessions/interrupt_turn", { sessionId }));
+    if (hasBackend()) return unit(call("sessions/interrupt_turn", { sessionId }));
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (!session) throw new Error("Session not found");
     session.status = "stopped";
@@ -3010,46 +3043,46 @@ export const bridgeApi = {
   },
   // The user's half of the retry decision. Bridge stopped taking this turn on
   // its own for a cause it cannot show has changed.
-  retryWorkerTask: (childSessionId: string): Promise<void> => isTauri() ? unit(call("sessions/retry_worker_task", { childSessionId })) : Promise.resolve(),
-  refreshAccountUsage: (): Promise<void> => isTauri() ? unit(call("sessions/refresh_account_usage")) : Promise.resolve(),
+  retryWorkerTask: (childSessionId: string): Promise<void> => hasBackend() ? unit(call("sessions/retry_worker_task", { childSessionId })) : Promise.resolve(),
+  refreshAccountUsage: (): Promise<void> => hasBackend() ? unit(call("sessions/refresh_account_usage")) : Promise.resolve(),
   resolveApproval: async (sessionId: string, eventId: number, decision: ApprovalDecision, optionId?: string): Promise<InteractionResolutionResult> => {
-    if (isTauri()) return call("approvals/resolve_approval", { sessionId, eventId, decision, optionId });
+    if (hasBackend()) return call("approvals/resolve_approval", { sessionId, eventId, decision, optionId });
     const request = mockState.agentEvents.find(item => item.id === eventId);
     if (request) appendAgent(request.sessionId, readWireKind(request.kind) === "permission.requested" ? "permission.resolved" : "approval.resolved", { status: decision, data: { requestEventId: eventId, decision, optionId, resolvedBy: "human" } });
     emitState();
     return { disposition: "resolved", interactionKind: "permission", status: decision, resolvedBy: "human", decision };
   },
   resolveQuestion: async (sessionId: string, eventId: number, action: QuestionAction, answers: Record<string, string[]> = {}): Promise<InteractionResolutionResult> => {
-    if (isTauri()) return call("approvals/resolve_question", { sessionId, eventId, action, answers });
+    if (hasBackend()) return call("approvals/resolve_question", { sessionId, eventId, action, answers });
     const request = mockState.agentEvents.find(item => item.id === eventId);
     if (request) appendAgent(request.sessionId, "question.resolved", { status: action === "answer" ? "answered" : action, data: { requestEventId: eventId, decision: action, resolvedBy: "human" } });
     emitState();
     return { disposition: "resolved", interactionKind: "question", status: action === "answer" ? "answered" : action, resolvedBy: "human", decision: action };
   },
   startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
-    isTauri() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
+    hasBackend() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
   cancelProviderLogin: (provider: string): Promise<void> =>
-    isTauri() ? unit(call("auth/cancel_provider_login", { provider })) : Promise.resolve(),
-  createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => isTauri() ? call("terminal/create_terminal", { ...params, restart: params.restart ?? false }) : mockCreateTerminal(params),
-  terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => isTauri() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
-  terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => isTauri() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),
-  saveTerminalLayout: async (workspaceId: string, layout: unknown): Promise<void> => isTauri() ? unit(call("terminal/save_terminal_workspace", { workspaceId, layout })) : mockSaveLayout(workspaceId, layout),
-  renameTerminal: async (workspaceId: string, terminalId: string, title: string): Promise<TerminalRecord> => isTauri() ? call("terminal/rename_terminal", { workspaceId, terminalId, title }) : mockRenameTerminal(workspaceId, terminalId, title),
-  onTerminalFrame: async (handler: (frame: TerminalFrame) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalFrame>("terminal-frame", handler) : () => undefined,
-  onTerminalLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
+    hasBackend() ? unit(call("auth/cancel_provider_login", { provider })) : Promise.resolve(),
+  createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => hasBackend() ? call("terminal/create_terminal", { ...params, restart: params.restart ?? false }) : mockCreateTerminal(params),
+  terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => hasBackend() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
+  terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => hasBackend() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),
+  saveTerminalLayout: async (workspaceId: string, layout: unknown): Promise<void> => hasBackend() ? unit(call("terminal/save_terminal_workspace", { workspaceId, layout })) : mockSaveLayout(workspaceId, layout),
+  renameTerminal: async (workspaceId: string, terminalId: string, title: string): Promise<TerminalRecord> => hasBackend() ? call("terminal/rename_terminal", { workspaceId, terminalId, title }) : mockRenameTerminal(workspaceId, terminalId, title),
+  onTerminalFrame: async (handler: (frame: TerminalFrame) => void): Promise<UnlistenFn> => hasBackend() ? subscribe<TerminalFrame>("terminal-frame", handler) : () => undefined,
+  onTerminalLagged: async (handler: () => void): Promise<UnlistenFn> => hasBackend() ? subscribe("stream-lagged", handler) : () => undefined,
   /** The live channel dropped frames. Durable ones come back by cursor replay. */
-  onStreamLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
-  openTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
-  writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
-  resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
-  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(mockCloseTerminal(workspaceId, terminalId)),
+  onStreamLagged: async (handler: () => void): Promise<UnlistenFn> => hasBackend() ? subscribe("stream-lagged", handler) : () => undefined,
+  openTerminal: (workspaceId: string, terminalId: string): Promise<void> => hasBackend() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
+  writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => hasBackend() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
+  resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => hasBackend() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
+  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => hasBackend() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(mockCloseTerminal(workspaceId, terminalId)),
   listTerminals: async (workspaceId: string): Promise<string[]> => {
-    if (isTauri()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
+    if (hasBackend()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
     return [];
   },
-  refreshWorkspace: (workspaceId: string): Promise<BridgeState> => isTauri() ? call("workspaces/refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
+  refreshWorkspace: (workspaceId: string): Promise<BridgeState> => hasBackend() ? call("workspaces/refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
   listWorkspaceBranches: (workspaceId: string): Promise<ListWorkspaceBranchesResult> => {
-    if (isTauri()) return call("workspaces/list_workspace_branches", { workspaceId });
+    if (hasBackend()) return call("workspaces/list_workspace_branches", { workspaceId });
     const current = mockState.workspaces.find(workspace => workspace.id === workspaceId)?.branch ?? null;
     return Promise.resolve({
       current,
@@ -3057,7 +3090,7 @@ export const bridgeApi = {
     });
   },
   checkoutWorkspaceBranch: async (workspaceId: string, branch: string): Promise<BridgeState> => {
-    if (isTauri()) return call("workspaces/checkout_workspace_branch", { workspaceId, branch });
+    if (hasBackend()) return call("workspaces/checkout_workspace_branch", { workspaceId, branch });
     const workspace = mockState.workspaces.find(item => item.id === workspaceId);
     if (workspace) workspace.branch = branch;
     emitState();
@@ -3091,22 +3124,22 @@ export const bridgeApi = {
     });
   },
   archiveWorkspace: async (workspaceId: string): Promise<BridgeState> => {
-    if (isTauri()) return call("workspaces/archive_workspace", { workspaceId });
+    if (hasBackend()) return call("workspaces/archive_workspace", { workspaceId });
     mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId); mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId); emitState(); return snapshot();
   },
   workspaceChanges: (workspaceId: string): Promise<WorkspaceChangesResult> =>
-    isTauri() ? call("workspaces/workspace_changes", { workspaceId }) : Promise.resolve(mockWorkspaceChanges()),
+    hasBackend() ? call("workspaces/workspace_changes", { workspaceId }) : Promise.resolve(mockWorkspaceChanges()),
   listWorkspaceTree: (workspaceId: string): Promise<string[]> =>
-    isTauri() ? call("workspaces/list_workspace_tree", { workspaceId }) : Promise.resolve(mockTreePaths()),
+    hasBackend() ? call("workspaces/list_workspace_tree", { workspaceId }) : Promise.resolve(mockTreePaths()),
   // `async` rather than `Promise.resolve(mock…())`: the mocks throw on the
   // refusal paths, and wrapping the *call* would throw synchronously instead
   // of rejecting — the one way a mock can behave unlike the daemon.
   readWorkspaceFile: async (workspaceId: string, path: string): Promise<ReadWorkspaceFileResult> =>
-    isTauri() ? call("workspaces/read_workspace_file", { workspaceId, path }) : mockReadFile(path),
+    hasBackend() ? call("workspaces/read_workspace_file", { workspaceId, path }) : mockReadFile(path),
   writeWorkspaceFile: async (workspaceId: string, path: string, content: string, baseSha256: string | null): Promise<WriteWorkspaceFileResult> =>
-    isTauri() ? call("workspaces/write_workspace_file", { workspaceId, path, content, baseSha256 }) : mockWriteFile(path, content, baseSha256),
-  onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
-  onTerminalExited: async (handler: (exit: TerminalExit) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalExit>("terminal-exited", handler) : () => undefined,
+    hasBackend() ? call("workspaces/write_workspace_file", { workspaceId, path, content, baseSha256 }) : mockWriteFile(path, content, baseSha256),
+  onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => hasBackend() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
+  onTerminalExited: async (handler: (exit: TerminalExit) => void): Promise<UnlistenFn> => hasBackend() ? subscribe<TerminalExit>("terminal-exited", handler) : () => undefined,
   /**
    * The live conversation stream, one call per frame.
    *
@@ -3122,71 +3155,90 @@ export const bridgeApi = {
         for (const frame of event.payload) { recordStreamReceipt(frame); handler(frame); }
       });
     }
+    // The daemon itself sends one `agent-event` per frame; only the desktop
+    // shell batches them, so the browser takes them as they come.
+    if (hasBackend()) return subscribe<AgentEvent>("agent-event", frame => { recordStreamReceipt(frame); handler(frame); });
     agentListeners.add(handler);
     return () => agentListeners.delete(handler);
   },
   onAccountUsage: async (handler: (payload: AccountUsagePayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<AccountUsagePayload>("account-usage", handler);
+    if (hasBackend()) return subscribe<AccountUsagePayload>("account-usage", handler);
     return () => undefined;
   },
   onVoiceTranscript: async (handler: (payload: VoiceTranscriptPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<VoiceTranscriptPayload>("voice-transcript", handler);
+    if (hasBackend()) return subscribe<VoiceTranscriptPayload>("voice-transcript", handler);
     return () => undefined;
   },
+  /**
+   * The browser's daemon connection attached, the first time included. A tab
+   * can boot before its daemon answers, and nothing else retries the reads
+   * that failed then. A subscriber that arrives already attached is not
+   * called. The desktop host reconciles on its own, so this never fires there.
+   */
+  onBackendAttached: (handler: () => void): (() => void) => {
+    const web = webDaemon();
+    if (!web) return () => undefined;
+    let initial = true;
+    const off = web.onStatus(status => {
+      if (status.state === "attached" && !initial) handler();
+    });
+    initial = false;
+    return off;
+  },
   onStateChanged: async (handler: () => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
+    if (hasBackend()) return subscribe("state-changed", handler); stateListeners.add(handler); return () => stateListeners.delete(handler);
   },
   onAdaptersChanged: async (handler: () => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe("adapters-changed", handler);
+    if (hasBackend()) return subscribe("adapters-changed", handler);
     return () => undefined;
   },
   onLearningJobChanged: async (handler: () => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe("learning-job-changed", handler);
+    if (hasBackend()) return subscribe("learning-job-changed", handler);
     return () => undefined;
   },
   onMemoryChanged: async (handler: (payload: MemoryChangedPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<MemoryChangedPayload>("memory-changed", handler);
+    if (hasBackend()) return subscribe<MemoryChangedPayload>("memory-changed", handler);
     memoryListeners.add(handler);
     return () => memoryListeners.delete(handler);
   },
   /** Cold-start phase narration. Live-only — a client that missed one simply
    *  never shows that phase, so browser/mock mode has nothing to replay. */
   onSessionStartup: async (handler: (payload: SessionStartupPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<SessionStartupPayload>("session-startup", handler);
+    if (hasBackend()) return subscribe<SessionStartupPayload>("session-startup", handler);
     return () => undefined;
   },
   onConnectorItemArrived: async (handler: (payload: ConnectorItemArrivedPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<ConnectorItemArrivedPayload>("connectors/item_arrived", handler);
+    if (hasBackend()) return subscribe<ConnectorItemArrivedPayload>("connectors/item_arrived", handler);
     connectorArrivalListeners.add(handler);
     scheduleMockConnectorArrival();
     return () => connectorArrivalListeners.delete(handler);
   },
   onConnectorCardReady: async (handler: (payload: ConnectorCardReadyPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<ConnectorCardReadyPayload>("connectors/card_ready", handler);
+    if (hasBackend()) return subscribe<ConnectorCardReadyPayload>("connectors/card_ready", handler);
     connectorCardListeners.add(handler);
     return () => connectorCardListeners.delete(handler);
   },
   onConnectorItemResolved: async (handler: (payload: ConnectorItemResolvedPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<ConnectorItemResolvedPayload>("connectors/item_resolved", handler);
+    if (hasBackend()) return subscribe<ConnectorItemResolvedPayload>("connectors/item_resolved", handler);
     connectorResolvedListeners.add(handler);
     return () => connectorResolvedListeners.delete(handler);
   },
   onConnectorInboxChanged: async (handler: (payload: { family: string }) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<{ family: string }>("connectors/inbox_changed", handler);
+    if (hasBackend()) return subscribe<{ family: string }>("connectors/inbox_changed", handler);
     connectorInboxListeners.add(handler);
     return () => connectorInboxListeners.delete(handler);
   },
   onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
+    if (hasBackend()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
   },
   onGithubSessionPrsChanged: async (handler: (payload: { sessionId: string }) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<{ sessionId: string }>("github/session_prs_changed", handler);
+    if (hasBackend()) return subscribe<{ sessionId: string }>("github/session_prs_changed", handler);
     sessionPrListeners.add(handler);
     return () => sessionPrListeners.delete(handler);
   },
   onGithubCiFinished: async (handler: (payload: GithubCiFinishedPayload) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<GithubCiFinishedPayload>("github/ci_finished", handler);
+    if (hasBackend()) return subscribe<GithubCiFinishedPayload>("github/ci_finished", handler);
     githubCiListeners.add(handler);
     return () => githubCiListeners.delete(handler);
   },

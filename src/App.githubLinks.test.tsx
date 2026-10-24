@@ -49,6 +49,10 @@ beforeEach(async () => {
     },
   });
   installExternalLinkHandler();
+  // This runs as a browser tab on mock data, where leaving the app is a new
+  // tab rather than the shell plugin. What these cases pin is whether a click
+  // leaves and with which URL, so both openers report to the same spy.
+  vi.spyOn(window, "open").mockImplementation(url => { open(String(url)); return null; });
   open.mockClear();
   container = document.createElement("div");
   document.body.append(container);
