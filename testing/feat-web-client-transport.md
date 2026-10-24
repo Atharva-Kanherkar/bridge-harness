@@ -36,6 +36,10 @@ Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `
 - `github/*` methods use only the GitHub lanes. Everything else uses only the general lanes. An idle lane is preferred. When all are busy, calls rotate across them.
 - With the GitHub lanes all busy, a `health/health` call still completes immediately.
 
+### Back/forward cache
+
+- On `pagehide` the client closes every socket, so a page held in the browser's back/forward cache holds no daemon slots. On `pageshow` with `persisted` it reconnects, reconciles, and fires `onBackendAttached`. A suspended or resumed client never runs two connection loops at once. (Found while verifying the review's connection-cap fix: Chrome kept a navigated-away page's seven sockets open indefinitely.)
+
 ### Reconnect and reconciliation
 
 - If any socket in the pool drops, the whole pool is torn down and rebuilt with backoff (0.5 s doubling to 5 s).
