@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { errorMessage } from "./errors";
 import { ERROR_CODES, PROTOCOL_VERSION } from "./protocol/generated/protocol";
-import { CONNECTION_LOST, DAEMON_UNREACHABLE, MAX_FRAME_BYTES, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, activeWebDaemon, followPastedLinks, readWebDaemonConfig, setActiveWebDaemon, type SocketLike, type WebDaemonStatus } from "./webDaemon";
+import { CONNECTION_LOST, DAEMON_UNREACHABLE, MAX_FRAME_BYTES, WebDaemonClient, WEB_DAEMON_STORAGE_KEY, activeWebDaemon, followPastedLinks, readWebDaemonConfig, releaseInBackForwardCache, setActiveWebDaemon, type SocketLike, type WebDaemonStatus } from "./webDaemon";
 
 type Frame = { jsonrpc: string; id?: number; method: string; params?: unknown };
 
@@ -317,6 +317,45 @@ describe("WebDaemonClient", () => {
     web.stop();
   });
 
+  it("lets go of every slot while suspended and reconciles when resumed", async () => {
+    const daemon = new FakeDaemon();
+    const order: string[] = [];
+    const web = client(daemon).start();
+    for (const name of ["state-changed", "adapters-changed", "stream-lagged"]) web.subscribe(name, () => order.push(name));
+    await web.call("health/health");
+    web.suspend();
+    await flush();
+    expect(daemon.live()).toHaveLength(0);
+    const opened = daemon.sockets.length;
+    await flush();
+    await flush();
+    expect(daemon.sockets.length).toBe(opened);
+    web.resume();
+    await until(() => order.length === 3);
+    expect(order).toEqual(["state-changed", "adapters-changed", "stream-lagged"]);
+    expect(daemon.live()).toHaveLength(7);
+    await expect(web.call("state/get_state")).resolves.toEqual({ echo: "state/get_state" });
+    web.stop();
+  });
+
+  it("never runs two connection loops after a suspend during a reconnect", async () => {
+    const daemon = new FakeDaemon();
+    daemon.up = false;
+    const web = client(daemon, "secret", { linkWaitMs: 2_000 }).start();
+    await until(() => daemon.sockets.length >= 2);
+    web.suspend();
+    web.resume();
+    web.suspend();
+    web.resume();
+    daemon.up = true;
+    await expect(web.call("health/health")).resolves.toEqual({ echo: "health/health" });
+    await flush();
+    await flush();
+    // One pool, not one per loop.
+    expect(daemon.live()).toHaveLength(7);
+    web.stop();
+  });
+
   it("waits for a link, then rejects as unreachable", async () => {
     const daemon = new FakeDaemon();
     daemon.up = false;
@@ -415,5 +454,20 @@ describe("activeWebDaemon", () => {
       setActiveWebDaemon(undefined);
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("releaseInBackForwardCache", () => {
+  it("suspends on pagehide and resumes only for a page shown from the cache", () => {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const target = { addEventListener: (type: string, listener: (event: unknown) => void) => { listeners.set(type, listener); } };
+    const client = { suspend: vi.fn(), resume: vi.fn() };
+    releaseInBackForwardCache(target as unknown as Window, client);
+    listeners.get("pagehide")!({ persisted: true });
+    expect(client.suspend).toHaveBeenCalledTimes(1);
+    listeners.get("pageshow")!({ persisted: false });
+    expect(client.resume).not.toHaveBeenCalled();
+    listeners.get("pageshow")!({ persisted: true });
+    expect(client.resume).toHaveBeenCalledTimes(1);
   });
 });

@@ -257,6 +257,10 @@ export class WebDaemonClient {
   private refusal: string | null = null;
   private stopped = false;
   private started = false;
+  private suspended = false;
+  /** Bumped by stop() and suspend(), so a loop from before stands down. */
+  private generation = 0;
+  private everAttached = false;
   private rotation = 0;
   private readonly options: Required<WebDaemonOptions>;
 
@@ -281,15 +285,33 @@ export class WebDaemonClient {
   start(): this {
     if (!this.started) {
       this.started = true;
-      void this.run();
+      void this.run(this.generation);
     }
     return this;
   }
 
   stop(): void {
     this.stopped = true;
+    this.generation += 1;
     this.teardown();
     this.rejectWaiters(DAEMON_UNREACHABLE);
+  }
+
+  /** Let go of every daemon slot: the page is going into the back/forward
+   *  cache, where it would otherwise hold them for as long as it is kept. */
+  suspend(): void {
+    if (this.stopped || this.suspended) return;
+    this.suspended = true;
+    this.generation += 1;
+    this.teardown();
+    this.setStatus({ state: "reconnecting", reason: "suspended while the page is hidden" });
+  }
+
+  /** Back from the cache: connect again and reconcile what was missed. */
+  resume(): void {
+    if (this.stopped || !this.suspended) return;
+    this.suspended = false;
+    if (this.started && !this.refusal) void this.run(this.generation);
   }
 
   async call(method: string, params?: unknown): Promise<unknown> {
@@ -310,27 +332,27 @@ export class WebDaemonClient {
     return () => { this.statusListeners.delete(handler); };
   }
 
-  private async run(): Promise<void> {
+  private async run(generation: number): Promise<void> {
+    const current = () => !this.stopped && this.generation === generation;
     let backoff = this.options.backoffInitialMs;
-    let attachedBefore = false;
-    while (!this.stopped) {
+    while (current()) {
       let link: Link;
       try {
         link = await this.connect();
       } catch (error) {
+        if (!current()) return;
         if (error instanceof HandshakeRefused) {
           this.refusal = error.envelope;
           this.setStatus({ state: "refused", message: messageOf(error.envelope) });
           this.rejectWaiters(error.envelope);
           return;
         }
-        if (this.stopped) return;
         this.setStatus({ state: "reconnecting", reason: error instanceof Error ? error.message : String(error) });
         await sleep(backoff);
         backoff = Math.min(backoff * 2, this.options.backoffMaxMs);
         continue;
       }
-      if (this.stopped) { closeAll(link); return; }
+      if (!current()) { closeAll(link); return; }
       backoff = this.options.backoffInitialMs;
       const lost = new Promise<void>(resolve => {
         for (const socket of allSockets(link)) socket.onClose(resolve);
@@ -338,11 +360,14 @@ export class WebDaemonClient {
       this.link = link;
       this.setStatus({ state: "attached" });
       for (const waiter of [...this.waiters]) { this.waiters.delete(waiter); clearTimeout(waiter.timer); waiter.resolve(link); }
-      if (attachedBefore) this.reconcile();
-      attachedBefore = true;
+      if (this.everAttached) this.reconcile();
+      this.everAttached = true;
       await lost;
+      // stop() and suspend() tear down themselves, and a resumed loop may
+      // already own the link; only a loss this loop saw is its to handle.
+      if (!current()) return;
       this.teardown();
-      if (!this.stopped) this.setStatus({ state: "reconnecting", reason: CONNECTION_LOST });
+      this.setStatus({ state: "reconnecting", reason: CONNECTION_LOST });
     }
   }
 
@@ -527,6 +552,16 @@ export function followPastedLinks(target: Pick<Window, "addEventListener" | "loc
   });
 }
 
+/** Close the pool when the page is hidden into the back/forward cache and
+ *  reconnect when it is shown from there. `pagehide` also fires on a real
+ *  unload, where letting go early is harmless. */
+export function releaseInBackForwardCache(target: Pick<Window, "addEventListener">, client: Pick<WebDaemonClient, "suspend" | "resume">): void {
+  target.addEventListener("pagehide", () => client.suspend());
+  target.addEventListener("pageshow", event => {
+    if ((event as PageTransitionEvent).persisted) client.resume();
+  });
+}
+
 let active: WebDaemonClient | null | undefined;
 
 /** The tab's daemon client, created on first use; null outside a browser,
@@ -541,7 +576,10 @@ export function activeWebDaemon(): WebDaemonClient | null {
     followPastedLinks(window, () => window.location.reload());
     config = readWebDaemonConfig(window.location, window.sessionStorage, window.history);
   } catch { config = null; }
-  return active = config ? new WebDaemonClient(config).start() : null;
+  if (!config) return active = null;
+  const client = new WebDaemonClient(config).start();
+  releaseInBackForwardCache(window, client);
+  return active = client;
 }
 
 /** Tests only: pin the active client (or mock mode with null; reset with undefined). */
