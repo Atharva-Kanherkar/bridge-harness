@@ -27,10 +27,12 @@ Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `
 - An RPC error rejects with the string `{"code":C,"kind":K,"message":M}`, the same as `daemon_host::host_error_envelope`. `kind` is the `ERROR_CODES` name, or null for an unknown code. `errorMessage()` therefore yields `M`.
 - A socket that closes rejects its in-flight calls with "The Bridge daemon connection was lost; reconnecting".
 - A call made while detached waits up to 10 s for a link, then rejects with "The Bridge daemon is unreachable".
+- A request whose serialized frame is over the daemon's 1 MiB limit (`bridged::MAX_FRAME_BYTES`, counted in UTF-8 bytes) is rejected locally and never sent. Other lanes and the events socket are unaffected. A drift test pins the TypeScript limit to the Rust constant. (Review of #839.)
 
 ### Pool and lanes
 
 - One events socket plus four general and two GitHub call sockets.
+- The first socket must authenticate. The other six are an optimization: those that authenticate are kept, and the pool is laid out from what it got, as `daemon_host::attach`, `split_event_connection` and `lane_range` do. With one socket, events and calls share it. With five or fewer call sockets, GitHub and general calls share them. A daemon at its connection cap with one free slot still serves calls. (Review of #839.)
 - `github/*` methods use only the GitHub lanes. Everything else uses only the general lanes. An idle lane is preferred. When all are busy, calls rotate across them.
 - With the GitHub lanes all busy, a `health/health` call still completes immediately.
 
@@ -40,6 +42,10 @@ Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `
 - After a successful re-attach, and on every `stream-lagged` notification, the client emits `state-changed`, `adapters-changed`, `stream-lagged` locally, in that order, to subscribers. This matches `daemon_host::emit_reconciliation`.
 - An `unauthorized` (2001) or `incompatible_protocol` (2000) handshake rejection stops reconnecting. It surfaces as the error of pending and future calls, and is reported through `onStatus`. It is never silently replaced with mock data.
 
+### Recovery at boot
+
+- `bridgeApi.onBackendAttached` fires whenever the web client attaches, including the first time, but not for a subscriber that arrives already attached. On it, every errored react-query read (health, model setup) is refetched, the state and config reload runs, and a startup error that was only a transport error (unreachable, connection lost) is cleared. A tab opened while the daemon is down for longer than the link wait therefore recovers by itself when the daemon starts. (Review of #839.)
+
 ### Agent stream
 
 - In web mode, `onAgentEvent` subscribes to `agent-event` and calls `recordStreamReceipt` and the handler once per frame, in order.
@@ -47,6 +53,7 @@ Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `
 ### Shell-only fallbacks
 
 - `openInSystemBrowser` and `openExternalUrl` use `window.open(url, "_blank", "noopener,noreferrer")` outside Tauri. The internal router still runs first.
+- If the router has not answered within 250 ms (inside every browser's transient-activation window), a blank tab is reserved with its opener cut. If the router then takes the link, the tab closes. If it declines, the tab navigates to the URL. A fast router never reserves a tab. (Review of #839: a slow `githubStatus` lookup let activation expire, and the browser blocked the new tab.)
 - Folder pickers (`createWorkspaceFromFolder`, `connectFolder`, the import "choose folder") ask for a typed path when the backend is the web daemon. Mock mode keeps its demo path. Tauri keeps the native dialog. A cancelled or empty entry does nothing.
 - `installZoom` and App's zoom keys do nothing outside Tauri (`ownsZoom()`), so ctrl+wheel and Cmd+/- reach the browser's own zoom. (Revised: gating the keys, not `applyZoom`, is what stops the browser's zoom being swallowed.)
 
