@@ -12,15 +12,44 @@ const EXTERNAL_SCHEME = /^(https?|mailto):/i;
  * that leaving is the whole point of the click. */
 const SYSTEM_BROWSER_ATTRIBUTE = "data-system-browser";
 
+const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 /** The desktop hands a URL to the OS default browser. A browser tab already
  * is one, so it opens a new tab there; `noopener` keeps the page it opens
  * from reaching back into Bridge. */
 async function openOutside(url: string): Promise<void> {
-  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+  if (inTauri()) {
     await open(url);
     return;
   }
   window.open(url, "_blank", "noopener,noreferrer");
+}
+
+/**
+ * How long the router may think before a browser tab reserves the new tab.
+ * A page may only open one shortly after the click (about a second in Safari),
+ * and a router that waits on the backend can answer after that, when the
+ * browser would block it. Well inside that window, so a fast answer never
+ * reserves anything.
+ */
+export const ROUTER_GRACE_MS = 250;
+
+/** A blank tab opened while the click still counts, with its opener cut so the
+ * page it later shows cannot reach back into Bridge. Null when blocked. */
+function reserveTab(): Window | null {
+  const tab = window.open("", "_blank");
+  if (tab) tab.opener = null;
+  return tab;
+}
+
+async function routeSafely(router: InternalLinkRouter, url: string): Promise<boolean> {
+  try {
+    return await router(url);
+  } catch {
+    // A router that fails is a router that did not take the link; the
+    // browser still gets it, so a bad route never strands a click.
+    return false;
+  }
 }
 
 export function isExternalUrl(url: string): boolean {
@@ -54,15 +83,26 @@ export async function openInSystemBrowser(url: string): Promise<void> {
  * it, in the OS default browser otherwise. */
 export async function openExternalUrl(url: string): Promise<void> {
   if (!isExternalUrl(url)) return;
-  if (internalRouter) {
-    try {
-      if (await internalRouter(url)) return;
-    } catch {
-      // A router that fails is a router that did not take the link; the
-      // browser still gets it, so a bad route never strands a click.
-    }
+  const router = internalRouter;
+  // The desktop's shell plugin needs no click to open a URL, so it can wait.
+  if (!router || inTauri()) {
+    if (router && await routeSafely(router, url)) return;
+    await openOutside(url);
+    return;
   }
-  await openOutside(url);
+  const reserved: { tab: Window | null } = { tab: null };
+  const grace = setTimeout(() => { reserved.tab = reserveTab(); }, ROUTER_GRACE_MS);
+  const routed = await routeSafely(router, url);
+  clearTimeout(grace);
+  if (routed) {
+    reserved.tab?.close();
+    return;
+  }
+  if (reserved.tab) {
+    reserved.tab.location.replace(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 let handlerInstalled = false;

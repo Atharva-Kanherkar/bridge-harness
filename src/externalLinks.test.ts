@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installExternalLinkHandler, isExternalUrl, openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
+import { ROUTER_GRACE_MS, installExternalLinkHandler, isExternalUrl, openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 
 const open = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-shell", () => ({ open }));
@@ -221,6 +221,64 @@ describe("in a browser tab", () => {
     setInternalLinkRouter(() => false);
     await openExternalUrl("https://example.com");
     expect(windowOpen).toHaveBeenCalledWith("https://example.com", "_blank", "noopener,noreferrer");
+  });
+
+  describe("with a router that waits on the backend", () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    function reservedTab() {
+      return { opener: {} as unknown, close: vi.fn(), location: { replace: vi.fn() } };
+    }
+    function slowRouter(answer: boolean, ms = 1_500) {
+      setInternalLinkRouter(() => new Promise(resolve => setTimeout(() => resolve(answer), ms)));
+    }
+
+    it("reserves a tab before the click stops counting and sends it on when the router declines", async () => {
+      const tab = reservedTab();
+      const windowOpen = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+      slowRouter(false);
+      const opening = openExternalUrl("https://github.com/someone/else/pull/1");
+      await vi.advanceTimersByTimeAsync(ROUTER_GRACE_MS - 1);
+      expect(windowOpen).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(windowOpen).toHaveBeenCalledWith("", "_blank");
+      expect(tab.opener).toBeNull();
+      await vi.advanceTimersByTimeAsync(1_500);
+      await opening;
+      expect(tab.location.replace).toHaveBeenCalledWith("https://github.com/someone/else/pull/1");
+      expect(windowOpen).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes the reserved tab when the router takes the link", async () => {
+      const tab = reservedTab();
+      vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+      slowRouter(true);
+      const opening = openExternalUrl("https://github.com/acme/repo/pull/2");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await opening;
+      expect(tab.close).toHaveBeenCalledTimes(1);
+      expect(tab.location.replace).not.toHaveBeenCalled();
+    });
+
+    it("never reserves a tab for a router that answers in time", async () => {
+      const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
+      slowRouter(false, ROUTER_GRACE_MS / 2);
+      const opening = openExternalUrl("https://example.com");
+      await vi.advanceTimersByTimeAsync(ROUTER_GRACE_MS * 4);
+      await opening;
+      expect(windowOpen).toHaveBeenCalledTimes(1);
+      expect(windowOpen).toHaveBeenCalledWith("https://example.com", "_blank", "noopener,noreferrer");
+    });
+
+    it("still tries a plain new tab when the reservation was blocked", async () => {
+      const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
+      slowRouter(false);
+      const opening = openExternalUrl("https://example.com/slow");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await opening;
+      expect(windowOpen.mock.calls).toEqual([["", "_blank"], ["https://example.com/slow", "_blank", "noopener,noreferrer"]]);
+    });
   });
 
   it("refuses schemes outside the allowlist", async () => {
