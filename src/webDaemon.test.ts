@@ -32,13 +32,17 @@ class FakeSocket implements SocketLike {
 class FakeDaemon {
   sockets: FakeSocket[] = [];
   up = true;
+  /** Connection slots left, like `bridged`'s shared cap; beyond it an upgrade fails. */
+  capacity = Number.POSITIVE_INFINITY;
+  private opened = new Set<FakeSocket>();
   token = "secret";
   onCall: (socket: FakeSocket, frame: Frame) => void = (socket, frame) => socket.reply(frame.id!, { echo: frame.method });
   factory = (_url: string): SocketLike => {
     const socket = new FakeSocket(this, this.sockets.length);
     this.sockets.push(socket);
     queueMicrotask(() => {
-      if (this.up) socket.onopen?.({});
+      const full = [...this.opened].filter(open => !open.closed).length >= this.capacity;
+      if (this.up && !full) { this.opened.add(socket); socket.onopen?.({}); }
       else { socket.closed = true; socket.onerror?.({}); socket.onclose?.({}); }
     });
     return socket;
@@ -173,6 +177,39 @@ describe("WebDaemonClient", () => {
     void web.call("github/github_issues", { workspaceId: "w" }).catch(() => undefined);
     void web.call("github/github_checks", { workspaceId: "w", number: 1 }).catch(() => undefined);
     await expect(web.call("health/health")).resolves.toBe("ok");
+    web.stop();
+  });
+
+  it("keeps the sockets that authenticate when the daemon is near its connection cap", async () => {
+    for (const [capacity, callSockets] of [[1, 0], [3, 2], [6, 5]] as const) {
+      const daemon = new FakeDaemon();
+      daemon.capacity = capacity;
+      const lanes: number[] = [];
+      daemon.onCall = (socket, frame) => { lanes.push(socket.index); socket.reply(frame.id!, frame.method); };
+      const web = client(daemon).start();
+      const seen: unknown[] = [];
+      web.subscribe("state-changed", payload => seen.push(payload));
+      await expect(web.call("health/health")).resolves.toBe("health/health");
+      await expect(web.call("github/github_prs", { workspaceId: "w" })).resolves.toBe("github/github_prs");
+      expect(daemon.live()).toHaveLength(1 + callSockets);
+      // With no call sockets the events socket serves calls; otherwise calls
+      // stay off it, and GitHub shares the general lanes.
+      expect(lanes.every(index => callSockets === 0 ? index === 0 : index > 0)).toBe(true);
+      daemon.sockets[0].notify("state-changed");
+      expect(seen).toEqual([null]);
+      web.stop();
+    }
+  });
+
+  it("does not retry a pool that came up short", async () => {
+    const daemon = new FakeDaemon();
+    daemon.capacity = 2;
+    const web = client(daemon).start();
+    await web.call("health/health");
+    const attempts = daemon.sockets.length;
+    await flush();
+    await web.call("state/get_state");
+    expect(daemon.sockets.length).toBe(attempts);
     web.stop();
   });
 

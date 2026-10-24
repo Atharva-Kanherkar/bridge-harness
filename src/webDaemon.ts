@@ -332,25 +332,25 @@ export class WebDaemonClient {
   }
 
   private async connect(): Promise<Link> {
-    const count = 1 + this.options.generalLanes + this.options.githubLanes;
-    const sockets = Array.from({ length: count }, (_, index) => new DaemonSocket(
+    const socket = (delivers: boolean) => new DaemonSocket(
       this.options.socketFactory,
       this.config,
       // Every socket hears every notification; only the events socket's copy
       // is delivered, as on the desktop.
-      index === 0 ? (method, params) => this.deliver(method, params) : () => undefined,
+      delivers ? (method, params) => this.deliver(method, params) : () => undefined,
       this.options,
-    ));
-    const opened = await Promise.allSettled(sockets.map(socket => socket.open()));
-    const failure = opened.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failure) {
-      for (const socket of sockets) socket.close();
-      const refused = opened.find(result => result.status === "rejected" && result.reason instanceof HandshakeRefused) as PromiseRejectedResult | undefined;
-      throw (refused ?? failure).reason;
-    }
-    const general = sockets.slice(1, 1 + this.options.generalLanes);
-    const github = sockets.slice(1 + this.options.generalLanes);
-    return { events: sockets[0], general, github };
+    );
+    // The first socket is the requirement: it proves the token and carries the
+    // events. A refusal or an unreachable daemon ends the attempt here.
+    const events = socket(true);
+    await events.open();
+    // The rest are an optimization, as in `daemon_host::attach`: the daemon caps
+    // Unix and WebSocket clients together, so near that cap some of these fail,
+    // and the pool is laid out from whichever authenticated.
+    const extras = Array.from({ length: this.options.generalLanes + this.options.githubLanes }, () => socket(false));
+    const opened = await Promise.allSettled(extras.map(extra => extra.open()));
+    const calls = extras.filter((_, index) => opened[index].status === "fulfilled");
+    return layOutLanes(events, calls, this.options.generalLanes);
   }
 
   private deliver(method: string, params: unknown): void {
@@ -377,7 +377,7 @@ export class WebDaemonClient {
   /** GitHub methods stay on their lanes and everything else stays off them;
    *  an idle lane wins, and only when all are busy does rotation decide. */
   private pickLane(method: string, link: Link): DaemonSocket {
-    const lanes = method.startsWith("github/") && link.github.length ? link.github : link.general.length ? link.general : [link.events];
+    const lanes = method.startsWith("github/") ? link.github : link.general;
     const start = this.rotation++ % lanes.length;
     for (let offset = 0; offset < lanes.length; offset += 1) {
       const lane = lanes[(start + offset) % lanes.length];
@@ -420,8 +420,20 @@ export class WebDaemonClient {
   }
 }
 
+/**
+ * `split_event_connection` and `lane_range`, for a pool that may have come up
+ * short. With no call sockets the events socket serves calls too. With no more
+ * call sockets than general lanes, GitHub calls share them; only a pool with
+ * room to spare reserves GitHub lanes.
+ */
+function layOutLanes(events: DaemonSocket, calls: DaemonSocket[], generalLanes: number): Link {
+  if (calls.length === 0) return { events, general: [events], github: [events] };
+  if (calls.length <= generalLanes) return { events, general: calls, github: calls };
+  return { events, general: calls.slice(0, generalLanes), github: calls.slice(generalLanes) };
+}
+
 function allSockets(link: Link): DaemonSocket[] {
-  return [link.events, ...link.general, ...link.github];
+  return [...new Set([link.events, ...link.general, ...link.github])];
 }
 
 function closeAll(link: Link): void {
