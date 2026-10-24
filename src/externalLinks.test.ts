@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installExternalLinkHandler, isExternalUrl, openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 
 const open = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-shell", () => ({ open }));
 
+// These cases are the desktop webview, where the shell plugin owns opening.
+beforeEach(() => { (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {}; });
+
 afterEach(() => {
+  delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+  vi.restoreAllMocks();
   open.mockClear();
   setInternalLinkRouter(undefined);
   document.body.innerHTML = "";
@@ -195,5 +200,32 @@ describe("the internal link router", () => {
 
     expect(router).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("in a browser tab", () => {
+  beforeEach(() => { delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__; });
+
+  it("opens a new tab without an opener instead of calling the shell plugin", async () => {
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
+    await openInSystemBrowser("https://github.com/acme/repo");
+    expect(windowOpen).toHaveBeenCalledWith("https://github.com/acme/repo", "_blank", "noopener,noreferrer");
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("still lets the router take a link first", async () => {
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
+    setInternalLinkRouter(() => true);
+    await openExternalUrl("https://github.com/acme/repo/pull/1");
+    expect(windowOpen).not.toHaveBeenCalled();
+    setInternalLinkRouter(() => false);
+    await openExternalUrl("https://example.com");
+    expect(windowOpen).toHaveBeenCalledWith("https://example.com", "_blank", "noopener,noreferrer");
+  });
+
+  it("refuses schemes outside the allowlist", async () => {
+    const windowOpen = vi.spyOn(window, "open").mockReturnValue(null);
+    await openInSystemBrowser("javascript:alert(1)");
+    expect(windowOpen).not.toHaveBeenCalled();
   });
 });

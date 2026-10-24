@@ -120,7 +120,7 @@ import { approvalTarget, type LaunchRequest } from "./launch";
 import { ACTION_EVENT, parseNotificationAction, pendingApprovalEventId } from "./nativeNotify";
 import { readWireKind } from "./transcript/wire";
 import { isMacPlatform } from "./lib/platform";
-import { installZoom, nudgeZoom, resetZoom } from "./zoom";
+import { installZoom, nudgeZoom, ownsZoom, resetZoom } from "./zoom";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "./usage";
@@ -2907,6 +2907,8 @@ function AppContent() {
       const inTerminal = event.target instanceof HTMLElement
         && event.target.closest("[data-terminal-workspace]");
       const match = matchShortcut(event, isTypingTarget(event.target));
+      // A browser tab zooms itself; leave its keys alone.
+      if (match?.shortcut.id.startsWith("zoom-") && !ownsZoom()) return;
       // The terminal pane suppresses commands so its own keys are not stolen,
       // but zoom presents the window rather than acting on its contents, and the
       // polyfill this replaces answered it from the terminal too. Reading wide

@@ -12,6 +12,17 @@ const EXTERNAL_SCHEME = /^(https?|mailto):/i;
  * that leaving is the whole point of the click. */
 const SYSTEM_BROWSER_ATTRIBUTE = "data-system-browser";
 
+/** The desktop hands a URL to the OS default browser. A browser tab already
+ * is one, so it opens a new tab there; `noopener` keeps the page it opens
+ * from reaching back into Bridge. */
+async function openOutside(url: string): Promise<void> {
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    await open(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 export function isExternalUrl(url: string): boolean {
   return EXTERNAL_SCHEME.test(url.trim());
 }
@@ -36,7 +47,7 @@ export function setInternalLinkRouter(router: InternalLinkRouter | undefined): v
 /** Hands the URL to the OS default browser, router or no router. */
 export async function openInSystemBrowser(url: string): Promise<void> {
   if (!isExternalUrl(url)) return;
-  await open(url);
+  await openOutside(url);
 }
 
 /** Opens a URL the way Bridge prefers: inside the app when something can show
@@ -51,7 +62,7 @@ export async function openExternalUrl(url: string): Promise<void> {
       // browser still gets it, so a bad route never strands a click.
     }
   }
-  await open(url);
+  await openOutside(url);
 }
 
 let handlerInstalled = false;

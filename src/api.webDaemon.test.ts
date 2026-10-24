@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { backendMode, bridgeApi } from "./api";
 import { setActiveWebDaemon, type WebDaemonClient } from "./webDaemon";
-import type { AgentEvent, MenuBarSettings } from "./types";
+import type { AgentEvent } from "./types";
+import type { MenuBarSettings } from "./protocol/generated/protocol";
 
 const invoke = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
@@ -60,12 +61,12 @@ describe("api.ts over a web daemon", () => {
   it("takes single agent-event frames, in order", async () => {
     const daemon = fakeDaemon(() => null);
     daemon.pin();
-    const seen: string[] = [];
+    const seen: number[] = [];
     await bridgeApi.onAgentEvent(event => seen.push(event.id));
-    const frame = (id: string) => ({ id, sessionId: "s", kind: "assistant.delta", providerMeta: {} }) as unknown as AgentEvent;
-    daemon.publish("agent-event", frame("a"));
-    daemon.publish("agent-event", frame("b"));
-    expect(seen).toEqual(["a", "b"]);
+    const frame = (id: number) => ({ id, sessionId: "s", kind: "assistant.delta", providerMeta: {} }) as unknown as AgentEvent;
+    daemon.publish("agent-event", frame(1));
+    daemon.publish("agent-event", frame(2));
+    expect(seen).toEqual([1, 2]);
     expect(daemon.client.subscribe).toHaveBeenCalledWith("agent-event", expect.any(Function));
   });
 
