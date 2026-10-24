@@ -19,7 +19,7 @@ bidirectional events — is RPC-shaped, so REST+SSE was considered and rejected.
 | Transport | Audience |
 | --- | --- |
 | Unix-domain socket | Local clients (Tauri shell, TUI, `bridge exec`) — served by `bridged` today |
-| WebSocket | Browser and remote clients — `bridged --listen`, off by default; same handshake token, limits and events as the socket, plus an exact-match `Origin` allowlist |
+| WebSocket | Browser and remote clients — `bridged --listen`, off by default; same handshake token, limits and events as the socket, plus an exact-match `Origin` allowlist. The browser client is [`docs/web-client.md`](../web-client.md) |
 | Tauri invoke/event adapter | The desktop webview; proxied to `bridged` by default, in-process only in embedded fallback |
 | Plain HTTP | `/healthz` and `/readyz` only |
 

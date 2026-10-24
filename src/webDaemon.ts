@@ -1,7 +1,7 @@
 // The browser's way to a real `bridged`: JSON-RPC over the daemon's opt-in
 // WebSocket listener (`bridged --listen`). It is the TypeScript twin of the
-// desktop shell's `src-tauri/src/daemon_host.rs` — same pool shape, same lane
-// rules, same refetch hints after a reconnect — so `api.ts` can route to it
+// desktop shell's `src-tauri/src/daemon_host.rs`, with the same pool shape,
+// lane rules and refetch hints after a reconnect, so `api.ts` can route to it
 // without any component knowing which transport it is on.
 
 import { ERROR_CODES, HANDSHAKE_METHOD, PROTOCOL_VERSION } from "./protocol/generated/protocol";

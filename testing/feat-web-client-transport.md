@@ -1,4 +1,4 @@
-# feat/web-client-transport — Test Contract
+# feat/web-client-transport: Test Contract
 
 Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `bridged` over the WebSocket listener from #815. No protocol change. Hosting, TLS and login are out of scope.
 
