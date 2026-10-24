@@ -9,13 +9,14 @@ Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `
 - `api.ts` has three transports: Tauri (`__TAURI_INTERNALS__` present), web daemon (a connection is configured), mock (neither). Tauri wins if both are present.
 - With no fragment and nothing in `sessionStorage`, a browser tab runs on mock data exactly as before. Every existing vitest suite passes unchanged.
 - `hasBackend()` is true in Tauri and web modes. It replaces `isTauri()` at every `api.ts` site that means "a real backend exists".
-- `isTauri()` stays only on shell channels: the menu bar (settings-changed, connection, connect OpenCode), provider and usage overview broadcasts, the meter panel and tray, reveal-main-window, menu commands, launch requests, layout fullscreen, and `agent-event-batch`.
-- Shell `emit`s that follow a successful backend call (menu-bar saves, usage refreshes, reset redemption) are skipped outside Tauri. The call's result still returns.
+- `isTauri()` stays only on shell channels: the menu bar (settings, connection, connect OpenCode), the meter panel and tray, reveal-main-window, menu commands, launch requests, layout fullscreen, and `agent-event-batch`.
+- The shell's presentation hints that follow a successful backend call (`bridge-provider-usage-overviews`, `bridge-usage-overview`, `bridge-menu-bar-settings-changed`) go through `shellEmit`/`shellListen`: Tauri events on the desktop, a local bus in a tab. The call's result still returns. (Revised during implementation: the main window's `UsageDot` and `App` listen to these, so skipping them would have left the tab's usage display stale.)
 
 ### Connecting
 
 - `#bridge-daemon=<ws or wss url>&bridge-token=<token>` is read once at boot, saved to `sessionStorage` under `bridge.webDaemon`, and removed from the address bar with `history.replaceState`. Other fragment content is kept.
 - A daemon URL that isn't `ws:` or `wss:` is ignored, and the tab stays in mock mode.
+- A link pasted into an open tab (a hash-only change) is stored, stripped, and followed by a reload onto it. A partial or unusual `window` (no storage, no events) is mock mode, not a crash. (Added during implementation, after E2E showed a pasted link was ignored.)
 - `bun run web:link -- --data-dir <dir> [--daemon ws://127.0.0.1:4319] [--app http://127.0.0.1:1420]` prints the link, built from `<dir>/daemon.token`. A missing token file exits non-zero with a clear message.
 
 ### Wire
@@ -47,7 +48,7 @@ Bridge web, slice 1 (#838): the React app in a plain browser tab drives a real `
 
 - `openInSystemBrowser` and `openExternalUrl` use `window.open(url, "_blank", "noopener,noreferrer")` outside Tauri. The internal router still runs first.
 - Folder pickers (`createWorkspaceFromFolder`, `connectFolder`, the import "choose folder") ask for a typed path when the backend is the web daemon. Mock mode keeps its demo path. Tauri keeps the native dialog. A cancelled or empty entry does nothing.
-- `installZoom` and `applyZoom` do nothing outside Tauri, so ctrl+wheel reaches the browser's own zoom.
+- `installZoom` and App's zoom keys do nothing outside Tauri (`ownsZoom()`), so ctrl+wheel and Cmd+/- reach the browser's own zoom. (Revised: gating the keys, not `applyZoom`, is what stops the browser's zoom being swallowed.)
 
 ## Unit Tests
 
