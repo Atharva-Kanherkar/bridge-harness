@@ -1,14 +1,17 @@
 import { useMemo } from "react";
-import { Check, X } from "lucide-react";
+import { Check, LoaderCircle, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { usePolledSessionForest } from "../forest";
 import type { AgentEvent, ApprovalDecision, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
+import { harnessLabel } from "../utils";
+import { agentName, agentTopic } from "./agentIdentity";
 import { AgentConversation } from "./AgentConversation";
 import { Markdown } from "./Markdown";
 import { SteerComposer } from "./SteerComposer";
 import { WorkerDiagnostics, reportedResult, workerDiagnostics, type ReportedResult } from "./WorkerControls";
+import { workerStatus } from "./workerStatus";
 
 // One agent's chat as the Agents pane shows it: the conversation Bridge draws
 // for every chat, fed from the worker's own forest and its slice of the live
@@ -21,6 +24,11 @@ import { WorkerDiagnostics, reportedResult, workerDiagnostics, type ReportedResu
 // inside a `bridge-worker-result` fence, which the transcript strips as wire
 // chatter, so a worker that answers with only the fence would end on nothing.
 // The typed result is drawn after the last row instead.
+//
+// Nor can it show a worker that has not spoken yet. Bridge opens the pane the
+// moment a worker is delegated, before its first message, and an empty chat
+// falls back to the new-chat greeting. A worker gets its own empty state: a
+// spinner while it starts, a plain note if it ended without a word.
 
 export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSession, onSteer }: {
   session: Session;
@@ -40,6 +48,9 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
   const steerable = runtime?.resultStatus !== "reported"
     && runtime?.lifecycleState !== "checkpointing"
     && (session.status === "working" || session.status === "waiting");
+  // Live, but not yet taking steers: starting, resuming, or restored.
+  const tone = workerStatus(session, runtime).tone;
+  const active = tone === "working" || tone === "waiting";
   const hasDiagnostics = workerDiagnostics(reasons, session.id).length > 0;
   const lastResult = runtime?.lastResult;
   const resultStatus = runtime?.resultStatus;
@@ -49,6 +60,12 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
     const result = reportedResult(resultStatus, lastResult);
     return result ? <ResultCard result={result} /> : null;
   }, [lastResult, resultStatus]);
+  const topic = agentTopic(session);
+  const harness = session.harness;
+  const empty = useMemo(
+    () => active ? <AgentStarting name={agentName(session.id)} topic={topic} harness={harnessLabel(harness)} /> : <AgentSilent />,
+    [active, harness, session.id, topic],
+  );
   // A worker's approval card is resolvable right here: it is the one place the
   // person is looking while the worker waits on them.
   const resolve = (eventId: number, decision: ApprovalDecision, optionId?: string): Promise<InteractionResolutionResult | void> => bridgeApi.resolveApproval(session.id, eventId, decision, optionId);
@@ -71,9 +88,29 @@ export function AgentChat({ session, runtime, liveEvents, reasons = [], onOpenSe
         preview={false}
         density="compact"
         trailing={trailing}
+        empty={empty}
       />
     </div>
-    {onSteer && <SteerComposer sessionId={session.id} steerable={steerable} onSteer={onSteer} className="shrink-0 border-t border-border px-3 py-2.5" />}
+    {onSteer && <SteerComposer sessionId={session.id} steerable={steerable} starting={active && !steerable} onSteer={onSteer} className="shrink-0 border-t border-border px-3 py-2.5" />}
+  </div>;
+}
+
+/// A worker that is live but has not said anything yet.
+function AgentStarting({ name, topic, harness }: { name: string; topic?: string; harness?: string }) {
+  return <div role="status" aria-label={`${name} is starting`} className="absolute inset-0 grid place-items-center px-6 text-center animate-page-enter">
+    <div className="flex max-w-[360px] flex-col items-center">
+      <LoaderCircle size={18} className="animate-spin text-muted-foreground" aria-hidden="true" />
+      <p className="mt-3 text-[14px] font-medium text-foreground">{name} is starting</p>
+      {topic && <p className="mt-1 line-clamp-2 text-[12.5px] leading-relaxed text-muted-foreground">{topic}</p>}
+      <p className="mt-2 text-caption text-muted-foreground/80">Waiting for its first message{harness ? ` from ${harness}` : ""}</p>
+    </div>
+  </div>;
+}
+
+/// A worker that ended without a single message.
+function AgentSilent() {
+  return <div className="absolute inset-0 grid place-items-center px-6 text-center">
+    <p className="text-caption text-muted-foreground">No messages recorded</p>
   </div>;
 }
 
