@@ -8,6 +8,11 @@ describe("agentIdentity", () => {
     expect(agentName("4c1f0b8e-0d1e-4a3b-9b55-3f1f2c9a7d10")).toBe(agentName("4c1f0b8e-0d1e-4a3b-9b55-3f1f2c9a7d10"));
   });
 
+  it("pins the hash: a known id maps to a known name", () => {
+    // If the pool or hash changes, update this pin deliberately.
+    expect(agentName("w1")).toBe("Reed");
+  });
+
   it("spreads different ids across the pool", () => {
     const names = new Set(Array.from({ length: 40 }, (_, index) => agentName(`worker-${index}`)));
     expect(names.size).toBeGreaterThan(15);

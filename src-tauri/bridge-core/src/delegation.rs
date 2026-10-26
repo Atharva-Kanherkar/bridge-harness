@@ -244,6 +244,10 @@ fn worker_title(objective: &str) -> Option<String> {
         .find(|&(index, c)| matches!(c, '.' | '!' | '?') && line[index + 1..].starts_with(' '))
         .map_or(line, |(index, _)| &line[..index]);
     let sentence = sentence.trim_end_matches(['.', '!', '?', ':', ';', ',']).trim_end();
+    // A stop-only line (". …") trims to nothing: no title, not an empty one.
+    if sentence.is_empty() {
+        return None;
+    }
     if sentence.chars().count() <= WORKER_TITLE_CHARS {
         return Some(sentence.to_owned());
     }
@@ -1835,6 +1839,7 @@ mod tests {
     #[test]
     fn worker_title_is_none_for_a_blank_objective() {
         assert_eq!(worker_title("  \n "), None);
+        assert_eq!(worker_title(". …"), None, "a stop-only line is no title");
     }
 
     fn request() -> DelegationRequest {

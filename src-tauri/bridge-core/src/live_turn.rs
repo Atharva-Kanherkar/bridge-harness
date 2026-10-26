@@ -4582,10 +4582,10 @@ pub fn reserve_worker_launch_outcome(
             })?;
             let worker_path = runtime.worktree_path.unwrap_or_else(|| path.clone());
             let worker_branch = runtime.worktree_branch.unwrap_or_else(|| branch.clone());
-            // A warm worker picks up a new objective, so it takes that one's name.
-            if let Some(title) = directive.title() {
-                db.execute("UPDATE sessions SET title=?2 WHERE id=?1", params![session_id, title])?;
-            }
+            // A warm worker picks up a new objective, so it takes that one's
+            // name. Bind unconditionally: a blank objective clears the title
+            // rather than leaving the previous task's name on the worker.
+            db.execute("UPDATE sessions SET title=?2 WHERE id=?1", params![session_id, directive.title()])?;
             return Ok(WorkerReservationOutcome::Reserved(
                 WorkerLaunchReservation {
                     session_id: session_id.clone(),
