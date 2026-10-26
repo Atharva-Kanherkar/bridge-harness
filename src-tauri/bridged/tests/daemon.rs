@@ -1098,3 +1098,34 @@ fn shutdown_drains_open_connections_before_completing() {
 
     running.stop();
 }
+
+#[test]
+fn personal_chat_defaults_are_authenticated_revisioned_and_survive_daemon_restart() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("result").is_some());
+    let (read, _) = client.call(1, "config/get_chat_defaults", Some(json!({})));
+    assert_eq!(read["result"]["application"]["revision"], 0);
+    let (saved, _) = client.call(2, "config/save_chat_defaults", Some(json!({"expectedRevision":0,"defaults":{"access":"ask","activeTurnInput":"queue"}})));
+    assert_eq!(saved["result"]["application"]["revision"], 1);
+    let (stale, _) = client.call(3, "config/save_chat_defaults", Some(json!({"expectedRevision":0,"defaults":{"access":"full"}})));
+    assert!(stale.get("error").is_some());
+    let (unknown, _) = client.call(4, "config/save_chat_defaults", Some(json!({"projectId":"not-a-project","expectedRevision":0,"defaults":{"access":"full"}})));
+    assert!(unknown.get("error").is_some());
+    let (forged, _) = client.call(5, "config/save_chat_defaults", Some(json!({"expectedRevision":1,"defaults":{"access":"full","providerArguments":["--unsafe"]}})));
+    assert_eq!(forged["error"]["code"], -32602);
+    let (bad_workspace, _) = client.call(6, "sessions/create_configured_chat", Some(json!({"workspaceId":"missing","overrides":{},"expectedRevision":{"application":1,"project":0}})));
+    assert!(bad_workspace.get("error").is_some());
+    let (state, _) = client.call(7, "state/get_state", None);
+    assert_eq!(state["result"]["sessions"], json!([]));
+    drop(client);
+    running.stop();
+    let reopened = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&reopened.socket_path);
+    assert!(client.handshake(&reopened.token).get("result").is_some());
+    let (read, _) = client.call(1, "config/get_chat_defaults", Some(json!({})));
+    assert_eq!(read["result"]["application"], json!({"revision":1,"defaults":{"access":"ask","activeTurnInput":"queue"}}));
+    drop(client);
+    reopened.stop();
+}
