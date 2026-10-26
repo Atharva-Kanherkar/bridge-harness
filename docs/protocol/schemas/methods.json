@@ -583,6 +583,48 @@
       "resultSchema": "worker-settings.json"
     },
     {
+      "command": "get_chat_defaults",
+      "domain": "config",
+      "method": "config/get_chat_defaults",
+      "paramsSchema": "get-chat-defaults-params.json",
+      "resultSchema": "chat-defaults-view.json"
+    },
+    {
+      "command": "save_chat_defaults",
+      "domain": "config",
+      "method": "config/save_chat_defaults",
+      "paramsSchema": "save-chat-defaults-params.json",
+      "resultSchema": "chat-defaults-view.json"
+    },
+    {
+      "command": "resolve_chat_settings",
+      "domain": "sessions",
+      "method": "sessions/resolve_chat_settings",
+      "paramsSchema": "resolve-chat-settings-params.json",
+      "resultSchema": "resolved-chat-settings.json"
+    },
+    {
+      "command": "create_configured_chat",
+      "domain": "sessions",
+      "method": "sessions/create_configured_chat",
+      "paramsSchema": "create-configured-chat-params.json",
+      "resultSchema": "configured-chat-result.json"
+    },
+    {
+      "command": "get_chat_settings",
+      "domain": "sessions",
+      "method": "sessions/get_chat_settings",
+      "paramsSchema": "get-chat-settings-params.json",
+      "resultSchema": "chat-session-settings.json"
+    },
+    {
+      "command": "update_chat_options",
+      "domain": "sessions",
+      "method": "sessions/update_chat_options",
+      "paramsSchema": "update-chat-options-params.json",
+      "resultSchema": "chat-session-settings.json"
+    },
+    {
       "command": "get_reviewer_settings",
       "domain": "config",
       "method": "config/get_reviewer_settings",
@@ -1740,7 +1782,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 22
+    "minor": 23
   },
   "reserved": {
     "cancel": "$/cancel",

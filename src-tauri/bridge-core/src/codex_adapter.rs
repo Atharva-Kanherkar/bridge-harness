@@ -91,6 +91,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
+            interactive: request.interactive,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -174,6 +175,7 @@ fn launch(
         write_mode,
         read_only_sandbox,
         briefing,
+        interactive,
         on_progress,
     } = request;
     // Codex cannot express one connector tool's exact identity, so a briefing
@@ -201,7 +203,7 @@ fn launch(
     });
     // Root-level overrides, ahead of the subcommand: an interactive chat gets
     // Bridge's `visualize` server alongside the user's own servers.
-    let visualize = crate::mcp_apps::attaches_to(write_mode, read_only_sandbox, briefing)
+    let visualize = crate::mcp_apps::attaches_to(interactive, write_mode, read_only_sandbox, briefing)
         .then(crate::mcp_apps::ServerLaunch::resolve)
         .flatten();
     for value in chat_config_overrides(visualize.as_ref()) {
@@ -1489,6 +1491,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();
@@ -1565,6 +1568,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();
@@ -1582,6 +1586,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             provider_session_id: &thread_id,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();
@@ -1713,7 +1718,7 @@ mod tests {
     #[test]
     fn codex_workers_do_not_get_the_overrides() {
         assert!(chat_config_overrides(None).is_empty());
-        assert!(!crate::mcp_apps::attaches_to(Some(WriteMode::Isolated), None, None));
+        assert!(!crate::mcp_apps::attaches_to(false, Some(WriteMode::Isolated), None, None));
     }
 
 }

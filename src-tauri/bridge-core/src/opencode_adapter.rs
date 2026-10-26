@@ -195,6 +195,7 @@ pub fn resume_with_settings(
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
+            interactive: request.interactive,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -247,7 +248,7 @@ fn launch(
     // An interactive chat gets Bridge's `visualize` server, merged into
     // whatever inline config the user already passes OpenCode.
     let visualize = (!completion_only
-        && crate::mcp_apps::attaches_to(request.write_mode, request.read_only_sandbox, request.briefing))
+        && crate::mcp_apps::attaches_to(request.interactive, request.write_mode, request.read_only_sandbox, request.briefing))
         .then(crate::mcp_apps::ServerLaunch::resolve)
         .flatten();
     if let Some(config) = chat_config_content(
@@ -3198,6 +3199,7 @@ mod tests {
                 write_mode: Some(WriteMode::Isolated),
                 read_only_sandbox: None,
                 briefing: None,
+                interactive: false,
                 on_progress: None,
             },
             &OpenCodeSettings {
@@ -3342,6 +3344,7 @@ mod tests {
                 write_mode: None,
                 read_only_sandbox: None,
                 briefing: None,
+                interactive: false,
                 on_progress: None,
             },
             &OpenCodeSettings {

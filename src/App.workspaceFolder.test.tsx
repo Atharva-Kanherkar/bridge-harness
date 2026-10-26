@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { bridgeApi } from "./api";
+import type { ConfiguredChatResult } from "./protocol/generated/protocol";
 import type { Workspace } from "./types";
 
 let container: HTMLDivElement;
@@ -92,8 +93,7 @@ describe("new project folder flow (#351)", () => {
   });
 
   it("opens a direct-chat draft when that project choice is selected", async () => {
-    const createChat = vi.spyOn(bridgeApi, "createChat");
-    const createWorkspaceSession = vi.spyOn(bridgeApi, "createWorkspaceSession");
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat");
     localStorage.setItem("bridge.chat.lastWorkspaceId", "demo-1");
     const projects = container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!;
     await act(async () => projects.click());
@@ -113,15 +113,18 @@ describe("new project folder flow (#351)", () => {
     await typeAndSubmit(composer, "help me plan this project");
     await settle();
 
-    expect(createChat).toHaveBeenCalledOnce();
-    expect(createWorkspaceSession).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]![0]).toMatchObject({ workspaceId: null, overrides: { target: { kind: "direct" } } });
+    const created: ConfiguredChatResult = await create.mock.results[0]!.value;
+    expect(created.configuration.settings.target).toEqual({ kind: "direct" });
+    expect(created.state.sessions.find(item => item.id === created.sessionId)?.workspaceId).toBeNull();
   });
 });
 
 describe("welcome composer resolves a pasted repo directly (#288)", () => {
   it("clones a bare repo URL, clears the composer, and starts the next message in that workspace", async () => {
     const clone = vi.spyOn(bridgeApi, "cloneWorkspaceRepo");
-    const createSession = vi.spyOn(bridgeApi, "createWorkspaceSession");
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat");
     const composer = container.querySelector<HTMLTextAreaElement>("textarea")!;
 
     await typeAndSubmit(composer, "https://github.com/rimo/bridge-harness");
@@ -139,7 +142,11 @@ describe("welcome composer resolves a pasted repo directly (#288)", () => {
     await typeAndSubmit(composer, "what does this repo do?");
     await settle();
 
-    expect(createSession).toHaveBeenCalledWith(cloned!.id, false);
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]![0].workspaceId).toBe(cloned!.id);
+    const created: ConfiguredChatResult = await create.mock.results[0]!.value;
+    expect(created.configuration.settings.createWorktree).toBe(false);
+    expect(created.state.sessions.find(item => item.id === created.sessionId)?.workspaceId).toBe(cloned!.id);
   });
 
   it("leaves an ordinary message alone", async () => {

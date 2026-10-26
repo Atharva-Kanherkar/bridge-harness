@@ -30,6 +30,7 @@ mod clones;
 mod common;
 mod completion;
 mod config;
+mod chat_defaults;
 mod connectors;
 mod forest;
 mod github;
@@ -63,6 +64,7 @@ pub use clones::*;
 pub use common::*;
 pub use completion::*;
 pub use config::*;
+pub use chat_defaults::*;
 pub use connectors::*;
 pub use forest::*;
 pub use github::*;
@@ -327,6 +329,12 @@ typed_methods![
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
+    (GetChatDefaults, GetChatDefaultsParams, ChatDefaultsView),
+    (SaveChatDefaults, SaveChatDefaultsParams, ChatDefaultsView),
+    (ResolveChatSettings, ResolveChatSettingsParams, ResolvedChatSettings),
+    (CreateConfiguredChat, CreateConfiguredChatParams, ConfiguredChatResult),
+    (GetChatSettings, GetChatSettingsParams, ChatSessionSettings),
+    (UpdateChatOptions, UpdateChatOptionsParams, ChatSessionSettings),
     (GetReviewerSettings, _, ReviewerSettingsResult),
     (SaveReviewerSettings, SaveReviewerSettingsParams, ReviewerSettingsResult),
     (GetAttributionSettings, _, AttributionSettings),

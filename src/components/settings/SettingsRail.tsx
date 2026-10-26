@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 
 const SECTION_ICONS: Record<Section, Icon> = {
   general: Sun,
+  chatDefaults: Robot,
   codingAgents: Robot,
   data: HardDrive,
   appearance: Sun,

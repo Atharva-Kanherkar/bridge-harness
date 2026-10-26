@@ -1176,6 +1176,8 @@ pub fn start_session(
         )?
     };
     let dispatch_id = launch_plan.adapter_id.as_str();
+    let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
+    let interactive = crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
             .chat_scratch_dir(&session_id)
@@ -1282,7 +1284,8 @@ pub fn start_session(
                 model: chosen_model.as_deref(),
                 effort: chosen_effort_name,
                 instructions: Some(instructions),
-                write_mode: None,
+                write_mode: root_write_mode,
+                interactive,
                 read_only_sandbox: None,
                 briefing: None,
                 on_progress: None,
@@ -1315,7 +1318,8 @@ pub fn start_session(
                     model: chosen_model.as_deref(),
                     effort: chosen_effort_name,
                     instructions: Some(orchestrator_instructions.as_str()),
-                    write_mode: None,
+                    write_mode: root_write_mode,
+                    interactive,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: None,
@@ -1656,13 +1660,16 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         )?
     };
     let dispatch_id = launch_plan.adapter_id.clone();
+    let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
+    let interactive = crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
+    let scoped_settings = crate::chat_defaults::validate_launch(&state.db.lock().unwrap(), &state.adapter_registry, &session_id, adapter_id, model.as_deref(), effort.as_deref())?;
     let tier = if is_orchestrator {
         orchestrator::TIER
     } else {
         CapabilityTier::Fast
     };
     let configured_harness = agent_config::harness_config(&state.db.lock().unwrap(), adapter_id);
-    let chosen_model = model
+    let chosen_model = if scoped_settings { model.clone() } else { model
         .as_ref()
         .filter(|value| !value.is_empty())
         .cloned()
@@ -1721,7 +1728,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 .resolve_model(adapter_id, tier, None)
                 .ok()
                 .map(|resolution| resolution.actual_model)
-        });
+        }) };
     let (configured_prompt, prompt_stack) = {
         let db = state.db.lock().unwrap();
         let target = if is_orchestrator {
@@ -1840,9 +1847,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
-    let chosen_effort = effort
+    let chosen_effort = if scoped_settings { effort.clone() } else { effort
         .filter(|value| !value.is_empty())
-        .or(configured_effort);
+        .or(configured_effort) };
     let registry = state.adapter_registry.clone();
     let launch_adapter_id = dispatch_id.clone();
     let launch_cwd = cwd.clone();
@@ -1880,7 +1887,8 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
                 instructions: Some(instructions),
-                write_mode: None,
+                write_mode: root_write_mode,
+                interactive,
                 read_only_sandbox: None,
                 briefing: None,
                 on_progress: Some(&on_startup_progress),
@@ -1911,7 +1919,8 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
                     instructions: Some(&runtime_instructions),
-                    write_mode: None,
+                    write_mode: root_write_mode,
+                    interactive,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: Some(&on_startup_progress),
@@ -1980,7 +1989,8 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
                     instructions: Some(&runtime_instructions),
-                    write_mode: None,
+                    write_mode: root_write_mode,
+                    interactive,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: Some(&on_startup_progress),
@@ -2924,7 +2934,7 @@ fn handle_agent_value_timed(
                     // reach this arm. Checked anyway — a structural guarantee
                     // that is also asserted is one that survives a refactor.
                     let is_permission_request = event.kind == "permission.requested";
-                    let auto_approve_this_event = should_auto_approve_permission(&db, event);
+                    let auto_approve_this_event = should_auto_approve_permission(&db, session_id, event);
                     if own_depth > 0 {
                         let _ = session_supervisor::SessionSupervisor::transition(
                             &db,
@@ -3179,7 +3189,7 @@ fn handle_agent_value_timed(
             }
         }
         for mut normalized_event in normalized {
-            let auto_approve_this_event = should_auto_approve_permission(&db, &normalized_event);
+            let auto_approve_this_event = should_auto_approve_permission(&db, session_id, &normalized_event);
             // Policy-owned permission requests are born settling. Clients may
             // observe this request before the provider reply returns, but they
             // must never observe an actionable human race window.
@@ -5798,6 +5808,7 @@ pub fn launch_worker_outcome(
                         write_mode: Some(directive.write_mode),
                         read_only_sandbox: read_only_sandbox.as_ref(),
                         briefing: None,
+                        interactive: false,
                         on_progress: None,
                     },
                 )
@@ -5823,6 +5834,7 @@ pub fn launch_worker_outcome(
                                 write_mode: Some(directive.write_mode),
                                 read_only_sandbox: read_only_sandbox.as_ref(),
                                 briefing: None,
+                                interactive: false,
                                 on_progress: None,
                             },
                         )
@@ -5841,6 +5853,7 @@ pub fn launch_worker_outcome(
                             write_mode: Some(directive.write_mode),
                             read_only_sandbox: read_only_sandbox.as_ref(),
                             briefing: None,
+                            interactive: false,
                             on_progress: None,
                         },
                     )
@@ -5860,6 +5873,7 @@ pub fn launch_worker_outcome(
                     write_mode: Some(directive.write_mode),
                     read_only_sandbox: read_only_sandbox.as_ref(),
                     briefing: None,
+                    interactive: false,
                     on_progress: None,
                 },
             )
@@ -6607,14 +6621,14 @@ fn queue_parent_prompt_notice(
     }
 }
 
-fn should_auto_approve_permission(db: &Connection, event: &agent::NormalizedEvent) -> bool {
+fn should_auto_approve_permission(db: &Connection, session_id: &str, event: &agent::NormalizedEvent) -> bool {
     event.kind == "permission.requested"
         && !matches!(event.data.get("approvalType")
             .or_else(|| event.data.pointer("/data/approvalType"))
             .and_then(serde_json::Value::as_str),
             Some("delegation_path_scope" | "prompt_mutation"))
-        && agent_config::permission_policy(db)
-            .map(|policy| policy.auto_approve_provider_permissions)
+        && crate::chat_defaults::effective_access(db, session_id)
+            .map(|access| access == wire::ChatAccess::Full)
             .unwrap_or(false)
 }
 
@@ -11079,7 +11093,7 @@ fn configured_worker_request(
         }
     };
     let automatic_harness = agent.harness == "bridge";
-    let request = delegation::DelegationRequest {
+    let mut request = delegation::DelegationRequest {
         schema_version: delegation::SCHEMA_VERSION,
         role,
         objective,
@@ -11109,6 +11123,9 @@ fn configured_worker_request(
         harness: (!automatic_harness).then(|| agent.harness.clone()),
         model: (!automatic_harness).then(|| agent.model.clone()).flatten(),
     };
+    if !agent.system_prompt.trim().is_empty() {
+        request.known_facts.push(format!("User-selected agent instructions:\n{}", agent.system_prompt));
+    }
     request.validate().map_err(BridgeError::Invalid)?;
     Ok(request)
 }
@@ -11205,7 +11222,15 @@ pub fn dispatch_agent_shortcut(
             "Agent shortcuts need a connected workspace so Bridge can enforce worker isolation and path scope".into(),
         ));
     }
-    let configured_agent = agent_config::resolve_worker_agent(&core.db.lock().unwrap(), &token)?;
+    let configured_agent = {
+        let db = core.db.lock().unwrap();
+        let selected = crate::chat_defaults::snapshot(&db, &session_id)?;
+        match selected.and_then(|s| match s.settings.target { wire::ChatLaunchTarget::Agent { agent_id } => Some(agent_id), _ => None }) {
+            Some(id) if agent_config::normalize_agent_token(&id) == agent_config::normalize_agent_token(&token) =>
+                crate::chat_defaults::selected_agent(&db, &session_id, &id)?.ok_or_else(|| BridgeError::Invalid("Saved agent configuration is unavailable".into()))?,
+            _ => agent_config::resolve_worker_agent(&db, &token)?,
+        }
+    };
     let normalized_token = agent_config::normalize_agent_token(&token);
     let (display_objective, worker_objective, interceptions) =
         prepare_direct_agent_objective(core, &session_id, objective.trim());
@@ -12266,6 +12291,8 @@ pub fn resolve_policy_delegation_approval(
 pub enum StopCause<'a> {
     User,
     Orchestrator(&'a str),
+    /// The chat's access changed; work started under the old posture ends.
+    AccessChanged,
 }
 
 impl StopCause<'_> {
@@ -12273,12 +12300,13 @@ impl StopCause<'_> {
         match self {
             Self::User => "Worker cancelled by user".to_owned(),
             Self::Orchestrator(reason) => format!("Worker stopped by its orchestrator: {reason}"),
+            Self::AccessChanged => "Worker stopped because the chat's access changed".to_owned(),
         }
     }
 
     fn shutdown(self) -> adapters::ShutdownReason {
         match self {
-            Self::User => adapters::ShutdownReason::UserCancelled,
+            Self::User | Self::AccessChanged => adapters::ShutdownReason::UserCancelled,
             Self::Orchestrator(_) => adapters::ShutdownReason::Completed,
         }
     }
@@ -12463,16 +12491,23 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
     Ok(())
 }
 
-/// Archive already holds lifecycle claims for the whole family. End processes
-/// synchronously, without the optional before-shutdown checkpoint that can
-/// leave `stop_session` running a new model turn after it returns.
-pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    let (live, worker): (bool, bool) = core.db.lock().unwrap().query_row(
+/// Archive and access changes already hold lifecycle claims for the whole
+/// family. End processes synchronously, without the optional before-shutdown
+/// checkpoint that can leave `stop_session` running a new model turn after it
+/// returns. Callers retire the root first, so a worker's cancellation cannot
+/// start a new turn on it.
+pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str, cause: StopCause<'_>) -> Result<(), BridgeError> {
+    // A worker is a child with a runtime record. Real workers keep the default
+    // `kind`, so the kind column cannot identify them. An unsettled worker is
+    // settled even without a live process: its lease still counts toward
+    // concurrency and writer conflicts until it is cancelled.
+    let (live, worker, unsettled): (bool, bool, bool) = core.db.lock().unwrap().query_row(
         "SELECT active_turn_id IS NOT NULL OR adapter_pid IS NOT NULL
                 OR status IN ('working','waiting','starting','resuming','checkpointing','ready','warm','restored'),
-                kind='worker' AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1)
+                parent_session_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1),
+                EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1 AND lifecycle_state NOT IN ('completed','cancelled'))
          FROM sessions WHERE id=?1",
-        [session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        [session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     // Waiting inputs must never revive an archived conversation, even when
     // there is no live adapter left to retire.
@@ -12487,9 +12522,9 @@ pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str)
     core.browser_clone_orchestrator.destroy(session_id);
     let has_adapter = core.adapters.lock().unwrap().contains_key(session_id);
     let has_pty = core.runtimes.lock().unwrap().contains_key(session_id);
-    if live || has_adapter || has_pty {
+    if live || has_adapter || has_pty || (worker && unsettled) {
         if worker {
-            stop_worker_session(core, session_id, StopCause::User)?;
+            stop_worker_session(core, session_id, cause)?;
         } else {
             stop_turn_claimed(core, session_id, TurnStop::User)?;
         }
@@ -17722,22 +17757,27 @@ mod permission_policy_tests {
     #[test]
     fn the_permission_policy_is_not_reachable_from_the_browser_gate() {
         let browser = include_str!("browser_bridge.rs");
-        for marker in ["permission_policy", "auto_approve_provider_permissions", "PermissionPolicy"] {
+        for marker in ["permission_policy", "auto_approve_provider_permissions", "PermissionPolicy", "chat_defaults", "effective_access", "ChatAccess"] {
             assert!(
                 !browser.contains(marker),
                 "the browser outward-effect gate must not consult the permission \
                  policy — it is authorization, not convenience (found {marker:?})"
             );
         }
-        // And the policy's only reader is this module's approval seam.
-        // Split so this assertion does not match its own source text.
-        let needle = format!("{}::{}(", "agent_config", "permission_policy");
+        // The approval seam asks for the chat's effective access exactly once,
+        // and that lookup holds the only read of the legacy global policy.
+        // Split so these assertions do not match their own source text.
+        let policy_read = format!("{}::{}(", "agent_config", "permission_policy");
+        let access_read = format!("{}::{}(", "chat_defaults", "effective_access");
         let live = include_str!("live_turn.rs");
+        assert_eq!(live.matches(policy_read.as_str()).count(), 0, "live turns read access through the chat's settings, never the global policy directly");
         assert_eq!(
-            live.matches(needle.as_str()).count(),
+            live.matches(access_read.as_str()).count(),
             1,
-            "one policy read, at the approval seam; a second reader is a second policy"
+            "one access read, at the approval seam; a second reader is a second policy"
         );
+        let defaults = include_str!("chat_defaults.rs");
+        assert_eq!(defaults.matches(policy_read.as_str()).count(), 1, "only the legacy fallback reads the global policy");
     }
 }
 

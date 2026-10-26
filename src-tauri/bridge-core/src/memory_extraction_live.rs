@@ -233,6 +233,7 @@ fn one_bounded_turn(
             write_mode: None,
             read_only_sandbox: None,
             briefing: Some(&policy),
+            interactive: false,
             on_progress: None,
         },
     );

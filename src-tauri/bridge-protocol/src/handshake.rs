@@ -87,9 +87,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `config/save_delegation_notify_settings`.** A new client must not pair with
 /// an older daemon, whose notification-level control would fail with
 /// `method_not_found`; a 1.21 client still pairs with a 1.22 daemon.
+/// **1.23 adds personal project defaults and enforced session-scoped access.**
+/// Older clients cannot display that authority, so both directions require 1.23.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 1,
-    minor: 22,
+    minor: 23,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -104,6 +106,7 @@ impl ProtocolVersion {
     pub fn accepts(self, client: ProtocolVersion) -> bool {
         const AUTOMATIC_MEMORY_MINOR: u32 = 17;
         const INDEPENDENT_VOICE_MINOR: u32 = 21;
+        const SCOPED_CHAT_SETTINGS_MINOR: u32 = 23;
         self.major == client.major
             && client.minor <= self.minor
             && !(self.major == 1
@@ -112,6 +115,9 @@ impl ProtocolVersion {
             && !(self.major == 1
                 && self.minor >= INDEPENDENT_VOICE_MINOR
                 && client.minor < INDEPENDENT_VOICE_MINOR)
+            && !(self.major == 1
+                && self.minor >= SCOPED_CHAT_SETTINGS_MINOR
+                && client.minor < SCOPED_CHAT_SETTINGS_MINOR)
     }
 }
 

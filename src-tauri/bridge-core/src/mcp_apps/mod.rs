@@ -65,13 +65,16 @@ pub fn canonical_json(value: &Value) -> String {
 
 /// Only an interactive chat draws visuals. Workers report to an orchestrator,
 /// not a reader; read-only workers and briefings run under strict scopes that
-/// a new tool must not widen.
+/// a new tool must not widen. A configured top-level chat states its write
+/// authority explicitly, so `interactive` carries purpose and `write_mode`
+/// carries authority; a launch without a write mode keeps its old meaning.
 pub fn attaches_to(
+    interactive: bool,
     write_mode: Option<WriteMode>,
     read_only_sandbox: Option<&ReadOnlySandbox>,
     briefing: Option<&BriefingRuntimePolicy>,
 ) -> bool {
-    write_mode.is_none() && read_only_sandbox.is_none() && briefing.is_none()
+    (interactive || write_mode.is_none()) && read_only_sandbox.is_none() && briefing.is_none()
 }
 
 /// The `bridged` binary that serves the tool: an explicit override, this
@@ -185,9 +188,12 @@ mod tests {
 
     #[test]
     fn only_interactive_chats_attach() {
-        assert!(attaches_to(None, None, None));
-        assert!(!attaches_to(Some(WriteMode::Isolated), None, None));
-        assert!(!attaches_to(Some(WriteMode::ReadOnly), None, None));
+        assert!(attaches_to(false, None, None, None));
+        assert!(!attaches_to(false, Some(WriteMode::Isolated), None, None));
+        assert!(!attaches_to(false, Some(WriteMode::ReadOnly), None, None));
+        // Configured top-level chats carry explicit authority and still draw.
+        assert!(attaches_to(true, Some(WriteMode::Shared), None, None));
+        assert!(attaches_to(true, Some(WriteMode::Full), None, None));
     }
 
     #[test]

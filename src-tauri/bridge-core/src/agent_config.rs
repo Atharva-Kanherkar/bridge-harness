@@ -462,7 +462,9 @@ pub fn set_default(db: &Connection, id: &str) -> Result<ConfigState, BridgeError
 pub fn reset_all(db: &Connection) -> Result<ConfigState, BridgeError> {
     let transaction = db.unchecked_transaction()?;
     crate::prompt_sections::append_reset_all_revisions(&transaction)?;
-    transaction.execute("DELETE FROM configuration_entries", [])?;
+    // Session authority is a durable snapshot, not a default. Resetting
+    // preferences must not erase the policy an existing chat runs under.
+    transaction.execute("DELETE FROM configuration_entries WHERE kind NOT IN ('chat_session_settings_v1','chat_agent_snapshot_v1')", [])?;
     transaction.commit()?;
     state(db)
 }
