@@ -1343,6 +1343,103 @@ mod tests {
         assert!(error.to_string().contains("requires user approval"));
     }
     #[test]
+    fn seeded_fuzz_scope_ids_and_model_effort_access_combinations() {
+        let (_dir, core) = fixture();
+        let db = core.db.lock().unwrap();
+        let mut seed = 0x840_5c0e_e0f0u64;
+        let (mut accepted, mut rejected) = (0, 0);
+        for _ in 0..5_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            // Arbitrary scope ids, including path-like and name-like ones, never bind.
+            let id = (0..1 + seed % 24)
+                .map(|i| char::from(b' ' + ((seed >> ((i * 5) % 60)) % 95) as u8))
+                .collect::<String>();
+            let known = id == "a" || id == "b";
+            assert_eq!(
+                view(&db, Some(&id)).is_ok(),
+                known,
+                "seed {seed} scope {id:?}"
+            );
+            // The catalog is the oracle: standard advertises low..xhigh, fast none.
+            let model = ["standard", "fast", "removed"][(seed >> 8) as usize % 3];
+            let effort = [
+                None,
+                Some(None),
+                Some(Some("low")),
+                Some(Some("xhigh")),
+                Some(Some("max")),
+            ][(seed >> 12) as usize % 5];
+            let access = [None, Some("ask"), Some("full")][(seed >> 16) as usize % 3];
+            let target = [
+                json!({"kind":"direct"}),
+                json!({"kind":"orchestrator"}),
+                json!({"kind":"agent","agentId":format!("missing-{:x}", seed >> 20)}),
+            ][(seed >> 20) as usize % 3]
+                .clone();
+            let mut value = json!({"model":{"harness":"codex","model":model},"target":target});
+            if let Some(effort) = effort {
+                value["effort"] = json!({"value": effort});
+            }
+            if let Some(access) = access {
+                value["access"] = json!(access);
+            }
+            let expected = model != "removed"
+                && !matches!(effort, Some(Some("max")))
+                && !(model == "fast" && matches!(effort, Some(Some(_))))
+                && target["kind"] != "agent";
+            let workspace = if seed & (1 << 40) != 0 {
+                id.clone()
+            } else {
+                "a".into()
+            };
+            let result = resolve(
+                &db,
+                &core.adapter_registry,
+                &ResolveChatSettingsParams {
+                    workspace_id: Some(workspace.clone()),
+                    overrides: defaults(value.clone()),
+                    expected_revision: None,
+                },
+            );
+            let scoped = workspace == "a" || workspace == "b";
+            assert_eq!(
+                result.is_ok(),
+                expected && scoped,
+                "seed {seed} {value} in {workspace:?}: {result:?}"
+            );
+            if result.is_ok() {
+                accepted += 1
+            } else {
+                rejected += 1
+            }
+            if let Ok(settings) = result {
+                assert_eq!(
+                    settings.access,
+                    if access == Some("full") {
+                        ChatAccess::Full
+                    } else {
+                        ChatAccess::Ask
+                    },
+                    "seed {seed}"
+                );
+                assert_eq!(settings.model.model.as_deref(), Some(model), "seed {seed}");
+            }
+        }
+        // Both outcomes are exercised, so the oracle is not vacuous.
+        assert!(
+            accepted > 500 && rejected > 500,
+            "accepted {accepted}, rejected {rejected}"
+        );
+        assert!(core.adapters.lock().unwrap().is_empty());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
     fn seeded_fuzz_layering_and_strict_payloads() {
         // xorshift64, fixed seed: replayable without OS randomness or extra dependencies.
         let mut seed = 0x840_20261026u64;
