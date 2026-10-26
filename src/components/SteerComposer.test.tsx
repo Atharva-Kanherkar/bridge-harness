@@ -111,9 +111,24 @@ describe("SteerComposer", () => {
     const { container, unmount } = await mount(<SteerComposer sessionId="w1" steerable onSteer={onSteer}/>);
     await type(box(container), "first thought");
     await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    expect(box(container).value).toBe("");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Sending guidance…");
     await type(box(container), "second thought");
     await act(async () => held.resolve());
     expect(box(container).value).toBe("second thought");
+    await unmount();
+  });
+
+  it("restores refused guidance beside anything typed since submission", async () => {
+    const held = deferred();
+    const { container, unmount } = await mount(<SteerComposer sessionId="w1" steerable onSteer={() => held.promise}/>);
+    await type(box(container), "first thought");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    expect(box(container).value).toBe("");
+    await type(box(container), "second thought");
+    await act(async () => held.reject(new Error("not accepted")));
+    expect(box(container).value).toBe("first thought\nsecond thought");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("not accepted");
     await unmount();
   });
 

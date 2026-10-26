@@ -46,12 +46,12 @@ function SteerBox({ sessionId, steerable, onSteer, label = "Steer this worker…
     const sent = draft;
     const text = sent.trim();
     if (!text || busy) return;
-    setBusy(true); setFailure(undefined);
+    setDraft(""); setBusy(true); setFailure(undefined);
     void onSteer(sessionId, text)
-      // Typing can go on while the steer is in flight. Only the words that
-      // were sent are cleared; anything written since stays.
-      .then(() => setDraft(current => current === sent ? "" : current))
-      .catch((cause: unknown) => setFailure(cause instanceof Error ? cause.message : String(cause)))
+      .catch((cause: unknown) => {
+        setDraft(current => current ? `${sent}\n${current}` : sent);
+        setFailure(cause instanceof Error ? cause.message : String(cause));
+      })
       .finally(() => setBusy(false));
   };
   return <form className={className} onSubmit={requested => { requested.preventDefault(); send(); }}>
@@ -71,7 +71,7 @@ function SteerBox({ sessionId, steerable, onSteer, label = "Steer this worker…
       <Button type="submit" size="sm" disabled={busy || !draft.trim()}><Navigation size={12}/>{busy ? "Sending…" : "Steer"}</Button>
       {trailing}
     </div>
-    <p className="mt-1.5 text-[11px] text-muted-foreground">Guidance is folded into the worker&rsquo;s objective and its orchestrator is told. It still reports a typed result.</p>
+    <p role={busy ? "status" : undefined} className="mt-1.5 text-[11px] text-muted-foreground">{busy ? "Sending guidance…" : "Guidance refines this worker’s task. It is delivered during the turn when supported, or held for its next turn."}</p>
     {failure && <p role="alert" className="mt-1.5 text-[11px] text-destructive">{failure}</p>}
   </form>;
 }

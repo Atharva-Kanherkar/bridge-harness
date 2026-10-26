@@ -164,7 +164,7 @@ describe("AsideChat", () => {
     expect(document.body.textContent).toContain("2 follow-ups queued");
     await act(async () => writeActiveTurnInput("steer"));
     await mount({ working: true });
-    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Queue"]')!.title).toContain("cannot steer");
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Steer"]')!.title).toContain("interrupts");
   });
 
   it("disables the model control while the aside is working", async () => {

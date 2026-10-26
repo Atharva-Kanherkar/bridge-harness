@@ -120,6 +120,26 @@ afterEach(() => {
 });
 
 describe("sending a message reacts before the daemon answers", () => {
+  it("cancels held preparation immediately and never submits its late result", async () => {
+    const held = deferred<{ text: string; interceptions: [] }>();
+    vi.spyOn(bridgeApi, "prepareTurn").mockReturnValue(held.promise);
+    const submit = vi.spyOn(bridgeApi, "submitInput");
+    const start = vi.spyOn(bridgeApi, "startChat");
+    const interrupt = vi.spyOn(bridgeApi, "interruptTurn");
+    await send("cancel before launch");
+    expect(composer()!.value).toBe("");
+    await click(stopButton()!);
+    expect(stopButton()).toBeNull();
+    // Never sent, so handed back rather than lost.
+    expect(composer()!.value).toBe("cancel before launch");
+    expect(container.textContent).not.toContain("cancel before launchcancel before launch");
+    held.resolve({ text: "cancel before launch", interceptions: [] });
+    await settle(4);
+    expect(submit).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(interrupt).not.toHaveBeenCalled();
+  });
+
   it("shows the user's bubble and the Stop control while prepareTurn is still pending", async () => {
     const held = deferred<{ text: string; interceptions: [] }>();
     vi.spyOn(bridgeApi, "prepareTurn").mockReturnValue(held.promise);

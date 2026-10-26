@@ -2418,30 +2418,41 @@ function AppContent() {
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
   async function deliverPrompt(target: Session, submittedText: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
     const key = crypto.randomUUID();
+    const flight = sessionStops.beginSend(target.id, () => setPending(current => current.filter(item => item.key !== key)));
     // The bubble lands before the first round-trip, not after it: the user
     // should see their words the instant they press Send, and the daemon may
     // take a while to prepare the turn. If preparation rewrites the text, the
     // same row is updated in place.
     setPending(current => [...current, { key, sessionId: target.id, text: submittedText, after: sendWatermark(target.id, submittedText), attachments: (sentAttachments ?? []).map(item => item.dataUri) }]);
     try {
+      if (flight.ready) await flight.ready;
+      if (flight.cancelled) return;
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      if (flight.cancelled) return;
       const text = prepared.text;
       if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
       if (!liveStatuses.includes(target.status)) {
+        flight.starting();
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
+        if (flight.cancelled) { flight.stopIfCancelled(); return; }
       }
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
+      flight.submitted();
       const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments, activeTurnInput);
+      if (flight.cancelled) { flight.stopIfCancelled(); return; }
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
         setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
       }
     } catch (e) {
       setPending(current => current.filter(item => item.key !== key));
+      if (flight.cancelled) return;
       throw e;
+    } finally {
+      flight.finish();
     }
   }
   async function beginVoiceDictation() {
@@ -2554,6 +2565,12 @@ function AppContent() {
     }
     const key = crypto.randomUUID();
     let target = session;
+    // Stop before submission means the words never left. Their bubble goes
+    // and they are back in the composer, as if Send had not been pressed.
+    const flight = sessionStops.beginSend(target.id, () => {
+      setPending(current => current.filter(item => item.key !== key));
+      restoreFailedSend(origin ?? session.id, { text: submittedText, attachments: sentAttachments });
+    });
     let retryText = submittedText;
     if (forcedText === undefined && forcedAttachments === undefined) {
       setComposer("");
@@ -2580,31 +2597,43 @@ function AppContent() {
       }
     };
     try {
+      if (flight.ready) await flight.ready;
+      if (flight.cancelled) return;
       if (selectedBrowserContexts.length) await validateSelectedPage();
+      if (flight.cancelled) return;
       const prepared = await bridgeApi.prepareTurn(target.id, serializeBrowserSelections(submittedText, selectedBrowserContexts, target.id));
+      if (flight.cancelled) return;
       const text = prepared.text;
       retryText = selectedBrowserContexts.length ? submittedText : text;
       if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text, after: sendWatermark(target.id, text) } : item));
-      const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
+      const resolved = text.startsWith("/") ? await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null) : null;
+      if (flight.cancelled) return;
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
+        flight.starting();
         const next = await bridgeApi.updateChatModel(target.id, resolved.harness as Harness, adapter?.defaultModel ?? null);
         setState(next);
+        if (flight.cancelled) { flight.stopIfCancelled(); return; }
         target = next.sessions.find(item => item.id === target.id) ?? target;
       }
       localOnly = /^\/(usage|cost|stats|clear|new|reset|compact|recall|pins|unpin|pin)(\s|$)/i.test(text);
       if (!localOnly && !liveStatuses.includes(target.status)) {
+        flight.starting();
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
+        if (flight.cancelled) { flight.stopIfCancelled(); return; }
       }
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
       if (selectedBrowserContexts.length) await validateSelectedPage();
+      if (flight.cancelled) return;
       const stillSelected = selectedBrowserContexts.filter(context => browserSelectionsRef.current.some(current => current.id === context.id));
       if (stillSelected.length !== selectedBrowserContexts.length) throw new Error("The selected browser page changed before sending. Select the element again and retry.");
       const promptText = text;
+      flight.submitted();
       const outcome = await bridgeApi.submitInput(target.id, promptText, sentAttachments, activeTurnInput);
+      if (flight.cancelled) { flight.stopIfCancelled(); return; }
       if (stillSelected.length) {
         setBrowserSelections(current => current.filter(context => !stillSelected.some(sent => sent.id === context.id)));
         setPending(current => current.map(item => item.key === key ? { ...item, text: promptText } : item));
@@ -2616,6 +2645,14 @@ function AppContent() {
       if (localOnly) setPending(current => current.filter(item => item.key !== key));
     }
     catch (e) {
+      if (flight.cancelled) {
+        // Stopped mid-submission and refused: not delivered, so not lost.
+        if (!flight.withdrawn) {
+          setPending(current => current.filter(item => item.key !== key));
+          restoreFailedSend(origin ?? target.id, { text: retryText, attachments: sentAttachments });
+        }
+        return;
+      }
       // Back where it was typed, never over what was typed since, and never
       // dropped because another chat is on screen now.
       restoreFailedSend(origin ?? target.id, { text: retryText, attachments: sentAttachments });
@@ -2628,6 +2665,8 @@ function AppContent() {
       }
       setError(message);
       return;
+    } finally {
+      flight.finish();
     }
     // A local command has run once it is submitted. Its refresh failing is an
     // error to show, not a reason to hand the command back for a second run.
@@ -3474,7 +3513,7 @@ function AppContent() {
                     disabled={!session}
                     working={turnActive}
                     activeAction={activeAction}
-                    activeActionNote={activeTurnInput === "steer" && activeAction === "queue" ? "This provider cannot steer a live turn. Held until the current step finishes." : undefined}
+                    activeActionNote={activeTurnInput === "steer" && !adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering") ? "Steer interrupts the current turn and continues with your guidance." : undefined}
                     stopping={stopping}
                     agentsWorking={chatAgents.length > 0}
                     onStop={session ? stopChat : undefined}

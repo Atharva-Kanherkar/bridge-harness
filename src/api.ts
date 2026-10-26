@@ -2946,7 +2946,7 @@ export const bridgeApi = {
     }));
     if (hasBackend()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined, activeTurnInput });
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
-    if (session.activeTurnId && (activeTurnInput === "queue" || (activeTurnInput === "steer" && !mockHealth.adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering")))) {
+    if (session.activeTurnId && activeTurnInput === "queue") {
       if (images.length) throw new Error("Images cannot be held in the queue; wait for the current step to finish.");
       const queuedInputId = `mock-queued-${nextEventId}`;
       appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text, data: { delivery: "queued" } });

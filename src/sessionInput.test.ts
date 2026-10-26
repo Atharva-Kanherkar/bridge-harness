@@ -47,8 +47,8 @@ describe("queuedFollowUps", () => {
 describe("activeTurnAction", () => {
   it.each([
     ["steer", ["steering"], "steer"],
-    ["steer", [], "queue"],
-    ["steer", undefined, "queue"],
+    ["steer", [], "steer"],
+    ["steer", undefined, "steer"],
     ["queue", ["steering"], "queue"],
     ["queue", [], "queue"],
     ["queue", undefined, "queue"],
