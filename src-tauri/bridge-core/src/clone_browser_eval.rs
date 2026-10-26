@@ -158,6 +158,14 @@ fn providers() -> Vec<String> {
         .collect()
 }
 
+/// `BRIDGE_BROWSER_EVAL_CASES` (comma-separated ids) reruns a subset, e.g.
+/// cases a provider rate limit cut short.
+fn selected(id: &str) -> bool {
+    std::env::var("BRIDGE_BROWSER_EVAL_CASES")
+        .map(|ids| ids.split(',').any(|wanted| wanted.trim() == id))
+        .unwrap_or(true)
+}
+
 fn start(provider: &str, cwd: &str) -> (Box<dyn AdapterRuntime>, BufReader<ChildStdout>) {
     let request = StartRequest {
         cwd,
@@ -274,7 +282,7 @@ fn live_browser_selection_eval() {
     let harness = Harness::new();
     let mut failures = Vec::new();
     for provider in providers() {
-        for case in &cases {
+        for case in cases.iter().filter(|case| selected(&case.id)) {
             let cwd = tempfile::tempdir_in("/tmp").unwrap();
             let session = format!("{provider}-{}", case.id);
             let prompt = format!(
@@ -339,7 +347,7 @@ fn live_browser_behavior_eval() {
     let harness = Harness::new();
     let mut failures = Vec::new();
     for provider in providers() {
-        for case in &cases {
+        for case in cases.iter().filter(|case| selected(&case.id)) {
             let cwd = tempfile::tempdir_in("/tmp").unwrap();
             std::fs::write(cwd.path().join("index.html"), SIGNUP_PAGE).unwrap();
             let session = format!("{provider}-{}", case.id);
