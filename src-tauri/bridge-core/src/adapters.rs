@@ -182,6 +182,15 @@ pub trait AdapterRuntime: Send {
     fn supports_active_turn_steering(&self) -> bool {
         false
     }
+    /// Deliver to the existing turn. Streaming transports share their input
+    /// channel; request/response transports override this with a native verb.
+    fn steer_turn(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        if images.is_empty() {
+            self.send_turn_with_context(text, context)
+        } else {
+            self.send_turn_with_images(text, context, images)
+        }
+    }
     fn supports_voice_dictation(&self) -> bool { false }
     fn voice_start(&self) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
@@ -1684,6 +1693,7 @@ impl HarnessAdapter for CodexAdapter {
                 "streaming",
                 "reasoning",
                 "plans",
+                "steering",
                 "tools",
                 "commands",
                 "file_changes",

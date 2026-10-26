@@ -28,6 +28,7 @@ pub mod account;
 /// `turn/start` ids live in their own band so a rejected start is recognisable
 /// from its response alone (see `agent::codex_turn_start_rejection`).
 pub const TURN_START_REQUEST_ID_BASE: i64 = 1 << 40;
+pub const TURN_STEER_REQUEST_ID_BASE: i64 = 1 << 41;
 
 pub struct CodexRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
@@ -36,6 +37,7 @@ pub struct CodexRuntime {
     pub current_turn: Arc<Mutex<Option<String>>>,
     request_id: AtomicI64,
     turn_start_id: AtomicI64,
+    turn_steer_id: AtomicI64,
     sandbox_policy: Option<Value>,
     context_inventory: Mutex<Vec<AdapterContextInventory>>,
     realtime_voice: bool,
@@ -315,6 +317,7 @@ fn launch(
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
             turn_start_id: AtomicI64::new(TURN_START_REQUEST_ID_BASE),
+            turn_steer_id: AtomicI64::new(TURN_STEER_REQUEST_ID_BASE),
             sandbox_policy,
             context_inventory: Mutex::new(codex_context_inventory(lifecycle_phase)?),
             realtime_voice,
@@ -688,6 +691,14 @@ fn turn_start_params(
     params
 }
 
+fn turn_steer_params(thread_id: &str, turn_id: &str, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Value {
+    // Steer accepts input and application context, but no turn-level overrides.
+    let mut params = turn_start_params(thread_id, text, context, None);
+    params["expectedTurnId"] = json!(turn_id);
+    append_images(&mut params, images);
+    params
+}
+
 impl AdapterRuntime for CodexRuntime {
     fn process_id(&self) -> u32 {
         self.child.id()
@@ -712,6 +723,13 @@ impl AdapterRuntime for CodexRuntime {
         self.start_turn(text, context)
     }
     fn supports_images(&self) -> bool { true }
+    fn supports_active_turn_steering(&self) -> bool { true }
+    fn steer_turn(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        let turn_id = self.current_turn.lock().unwrap().clone()
+            .ok_or_else(|| BridgeError::Invalid("The turn has finished; send the guidance again to start the next turn".into()))?;
+        let id = self.turn_steer_id.fetch_add(1, Ordering::Relaxed);
+        write_value(&self.writer, &json!({"method":"turn/steer","id":id,"params":turn_steer_params(&self.thread_id, &turn_id, text, context, images)}))
+    }
     fn send_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
         self.start_turn_with_images(text, context, images)
     }
@@ -1019,6 +1037,39 @@ fn wait_for_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_steer_binds_the_existing_turn_without_starting_another() {
+        let mut child = Command::new("cat").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let writer = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let runtime = CodexRuntime {
+            writer, child, thread_id: "thread".into(),
+            current_turn: Arc::new(Mutex::new(Some("running".into()))),
+            request_id: AtomicI64::new(10),
+            turn_start_id: AtomicI64::new(TURN_START_REQUEST_ID_BASE),
+            turn_steer_id: AtomicI64::new(TURN_STEER_REQUEST_ID_BASE),
+            sandbox_policy: None, context_inventory: Mutex::new(vec![]),
+            stopped: false, stderr_tail: Default::default(), realtime_voice: false,
+        };
+        assert!(runtime.supports_active_turn_steering());
+        let images = [bridge_protocol::messages::TurnImage { media_type: "image/png".into(), base64_data: "cG5n".into() }];
+        runtime.steer_turn("focus here", TurnContext { session: Some("session frame"), credentials: Some("capability") }, &images).unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "turn/steer");
+        assert_eq!(request["id"], TURN_STEER_REQUEST_ID_BASE);
+        assert_eq!(request["params"]["expectedTurnId"], "running");
+        assert_eq!(request["params"]["threadId"], "thread");
+        assert_eq!(request["params"]["input"][0]["text"], "session frame");
+        assert_eq!(request["params"]["input"][1]["text"], "focus here");
+        assert_eq!(request["params"]["input"][2]["url"], "data:image/png;base64,cG5n");
+        assert_eq!(request["params"]["additionalContext"]["bridge.credentials"]["value"], "capability");
+        assert!(request["params"].get("sandboxPolicy").is_none());
+        *runtime.current_turn.lock().unwrap() = None;
+        assert!(runtime.steer_turn("too late", TurnContext::default(), &[]).is_err());
+    }
 
     /// A stand-in app-server: answers `account/read` (id 3) with `reply` after
     /// first emitting an unrelated notification.

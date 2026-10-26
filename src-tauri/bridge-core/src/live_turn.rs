@@ -8896,7 +8896,13 @@ fn deliver_orchestrator_steer(
                 .lock()
                 .unwrap()
                 .get(&steer.session_id)
-                .is_some_and(|runtime| runtime.send_turn(&envelope).is_ok());
+                .is_some_and(|runtime| {
+                    if route == session_input::InputRoute::Steer {
+                        runtime.steer_turn(&envelope, adapters::TurnContext::default(), &[]).is_ok()
+                    } else {
+                        runtime.send_turn(&envelope).is_ok()
+                    }
+                });
             if sent {
                 WorkerReach::Now
             } else {
@@ -10914,7 +10920,9 @@ fn deliver_prepared_input(
             "This provider does not accept image attachments in this session. Choose a provider with image support, or send the text on its own.".into(),
         ));
     }
-    let delivered = if has_images {
+    let delivered = if delivery == DeliveryMode::Steered {
+        runtime.steer_turn(&prepared.provider_text, turn_context, &prepared.images)
+    } else if has_images {
         // An image-only send still needs a non-empty text block: Anthropic
         // content blocks require text of at least one character.
         let provider_text = if prepared.provider_text.trim().is_empty() {
@@ -13620,6 +13628,7 @@ mod submit_input_tests {
         /// How many times `interrupt()` was called — the whole assertion for
         /// "Stop gracefully aborted the turn before teardown".
         interrupts: Arc<std::sync::atomic::AtomicUsize>,
+        steers: Arc<std::sync::atomic::AtomicUsize>,
         /// When set, `interrupt()` returns an error, standing in for a provider
         /// whose abort request fails. Teardown must still complete.
         refuse_interrupt: Arc<AtomicBool>,
@@ -13634,6 +13643,7 @@ mod submit_input_tests {
         pub(super) rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         pub(super) refuse: Arc<AtomicBool>,
         pub(super) interrupts: Arc<std::sync::atomic::AtomicUsize>,
+        pub(super) steers: Arc<std::sync::atomic::AtomicUsize>,
         pub(super) refuse_interrupt: Arc<AtomicBool>,
     }
 
@@ -13657,6 +13667,7 @@ mod submit_input_tests {
             let rejected = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
             let interrupts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let steers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let refuse_interrupt = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
                 runtime_pid,
@@ -13670,6 +13681,7 @@ mod submit_input_tests {
                 rejected: rejected.clone(),
                 refuse: refuse.clone(),
                 interrupts: interrupts.clone(),
+                steers: steers.clone(),
                 refuse_interrupt: refuse_interrupt.clone(),
             };
             (
@@ -13683,6 +13695,7 @@ mod submit_input_tests {
                     rejected,
                     refuse,
                     interrupts,
+                    steers,
                     refuse_interrupt,
                 },
             )
@@ -13721,6 +13734,11 @@ mod submit_input_tests {
         }
         fn supports_active_turn_steering(&self) -> bool {
             self.steering
+        }
+        fn steer_turn(&self, text: &str, context: adapters::TurnContext<'_>, images: &[wire::TurnImage]) -> Result<(), BridgeError> {
+            self.steers.fetch_add(1, Ordering::SeqCst);
+            if images.is_empty() { self.send_turn_with_context(text, context) }
+            else { self.send_turn_with_images(text, context, images) }
         }
         fn supports_images(&self) -> bool {
             self.images
@@ -13882,6 +13900,30 @@ mod submit_input_tests {
         let stopped: (String, Option<String>, String) = db.query_row("SELECT status,active_turn_id,provider_session_id FROM sessions WHERE id='chat'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!(stopped, ("stopped".into(), None, "saved-provider".into()));
         assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='other'", [], |r| r.get::<_,String>(0)).unwrap(), "working");
+    }
+
+    #[test]
+    fn active_guidance_uses_the_native_steer_seam() {
+        let (_dir, core, _guard) = core_with_chat("working");
+        let handles = attach_handles(&core, true);
+        let outcome = submit_input_with_preference(&core, "chat".into(), "focus on tests".into(), vec![], Some(wire::ActiveTurnInput::Steer)).unwrap();
+        assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+        assert_eq!(handles.steers.load(Ordering::SeqCst), 1);
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
+        assert_eq!(*handles.sent.lock().unwrap(), vec!["focus on tests"]);
+    }
+
+    #[test]
+    fn a_native_steer_rejection_does_not_settle_the_running_turn() {
+        let (_dir, core, _guard) = core_with_chat("working");
+        attach_handles(&core, true);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex',active_turn_id='running' WHERE id='chat'", []).unwrap();
+        let current = Arc::new(Mutex::new(Some("running".into())));
+        handle_agent_value(&core, "chat", &current, &serde_json::json!({
+            "id": crate::codex_adapter::TURN_STEER_REQUEST_ID_BASE, "error":{"message":"turn mismatch"}
+        }));
+        assert_eq!(current.lock().unwrap().as_deref(), Some("running"));
+        assert_eq!(core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='chat'", [], |r| r.get::<_, String>(0)).unwrap(), "working");
     }
 
     fn attach(core: &Arc<BridgeCore>, steering: bool) -> Arc<Mutex<Vec<String>>> {

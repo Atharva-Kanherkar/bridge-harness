@@ -732,6 +732,14 @@ fn codex_turn_start_rejection(message: &Value) -> Option<NormalizedEvent> {
     }
     let reason = message.pointer("/error/message").and_then(Value::as_str)?;
     let mut event = with_data("error", message, message.clone());
+    if id >= crate::codex_adapter::TURN_STEER_REQUEST_ID_BASE {
+        // A failed expected-turn precondition rejects this input, not the
+        // original turn. Keep it running and give the person a visible retry.
+        event.status = Some("rejected".into());
+        event.title = Some("Guidance was not accepted".into());
+        event.text = Some(format!("Codex did not accept this guidance: {reason}. Send it again to retry."));
+        return Some(event);
+    }
     event.status = Some("failed".into());
     event.title = Some("Codex rejected the turn".into());
     event.text = Some(format!("Codex rejected the turn: {reason}"));
@@ -2613,6 +2621,17 @@ mod tests {
     fn other_codex_response_errors_stay_silent() {
         assert!(normalize_codex_message(&json!({"id": 11, "error": {"message": "no active turn"}})).is_empty());
         assert!(normalize_codex_message(&json!({"id": crate::codex_adapter::TURN_START_REQUEST_ID_BASE, "result": {}})).is_empty());
+    }
+    #[test]
+    fn rejected_codex_steer_is_visible_without_failing_the_original_turn() {
+        let events = normalize_codex_message(&json!({
+            "id": crate::codex_adapter::TURN_STEER_REQUEST_ID_BASE,
+            "error": {"message": "expected turn no longer active"}
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+        assert_eq!(events[0].status.as_deref(), Some("rejected"));
+        assert!(events[0].text.as_deref().unwrap().contains("retry"));
     }
     #[test]
     fn normalizes_streaming_assistant_delta() {
