@@ -11,6 +11,6 @@ export function ActiveTurnInputSetting({ onError }: { onError: (message: string)
         }}>{mode === "steer" ? "Steer" : "Queue"}</button>)}
       </div>
     } />
-    <p className="px-4 py-2 text-xs text-muted-foreground">If a provider cannot steer a live turn, Bridge queues the message instead. Images cannot be queued; send them after the turn finishes.</p>
+    <p className="px-4 py-2 text-xs text-muted-foreground">If a provider cannot steer a live turn, Bridge stops that turn and continues with your guidance. Queue never interrupts. Images steer only into providers that accept them mid-turn; otherwise send them after the turn finishes.</p>
   </SettingsGroup>;
 }
