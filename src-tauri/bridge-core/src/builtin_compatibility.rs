@@ -70,6 +70,7 @@ const CODEX_CAPABILITIES: &[&str] = &[
     "streaming",
     "reasoning",
     "plans",
+    "steering",
     "tools",
     "commands",
     "file_changes",
@@ -94,14 +95,15 @@ const CLAUDE_CAPABILITIES: &[&str] = &[
     "usage",
     "interrupt",
     "briefings",
-    // Claude alone: the sidecar drives one streaming-input query, so a user
-    // message written mid-turn is folded into the turn in flight. Codex and
-    // OpenCode would take a second concurrent turn instead, so they must not
-    // advertise this — Bridge queues their follow-ups.
+    // The sidecar drives one streaming-input query. Codex uses turn/steer;
+    // OpenCode needs interrupt-and-continue rather than a competing turn.
     "steering",
 ];
 
-const OPENCODE_CAPABILITIES: &[&str] = CODEX_CAPABILITIES;
+const OPENCODE_CAPABILITIES: &[&str] = &[
+    "messages", "streaming", "reasoning", "plans", "tools", "commands",
+    "file_changes", "approvals", "usage", "history", "interrupt", "briefings",
+];
 
 /// Cursor is reached through the shared ACP client, so its surface is whatever
 /// that client normalizes. `interrupt` is here because a cancel is a real

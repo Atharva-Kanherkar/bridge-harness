@@ -1572,6 +1572,12 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    start_chat_claimed(core, session_id)
+}
+
+/// The caller owns the session lifecycle across a cancellation and continuation.
+fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
+    let state = core;
     ensure_session_not_archived(core, &session_id)?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode, purpose): (
         String,
@@ -2865,7 +2871,9 @@ fn handle_agent_value_timed(
                     // a real failure in the new turn is never mistaken for
                     // fallout from a stop the user already got.
                     state.user_stop_requested.lock().unwrap().remove(session_id);
-                    state.steer_requested.lock().unwrap().remove(session_id);
+                    // Not the steer flag: this may be the acknowledgement of
+                    // the very turn a steer just interrupted. That turn's end
+                    // retires it below.
                     let turn_id = event
                         .data
                         .pointer("/turn/id")
@@ -2908,6 +2916,9 @@ fn handle_agent_value_timed(
                 "turn.completed" => {
                     turn_completed = true;
                     turn_failed |= matches!(event.status.as_deref(), Some("failed" | "error"));
+                    // The boundary a steer was waiting for. Its error frames
+                    // were relabelled above; a later turn's are real.
+                    state.steer_requested.lock().unwrap().remove(session_id);
                     *current_turn.lock().unwrap() = None;
                     let checkpointing_worker = own_depth > 0
                         && store::worker_runtime(&db, session_id)
@@ -8915,7 +8926,13 @@ fn deliver_orchestrator_steer(
                 .lock()
                 .unwrap()
                 .get(&steer.session_id)
-                .is_some_and(|runtime| runtime.send_turn(&envelope).is_ok());
+                .is_some_and(|runtime| {
+                    if route == session_input::InputRoute::Steer {
+                        runtime.steer_turn(&envelope, adapters::TurnContext::default(), &[]).is_ok()
+                    } else {
+                        runtime.send_turn(&envelope).is_ok()
+                    }
+                });
             if sent {
                 WorkerReach::Now
             } else {
@@ -10521,13 +10538,12 @@ fn prepare_input(
         .register(session_id, intercepted.captured);
     let sanitized_input = intercepted.sanitized;
     let interceptions = sanitized_input.interceptions.clone();
-    let available: std::collections::HashSet<String> = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .map(|descriptor| descriptor.id)
-        .collect();
+    // Ordinary guidance has no command to resolve. Descriptor discovery can
+    // query vendor CLIs, so it must not sit on every keystroke-to-agent path.
+    let available: std::collections::HashSet<String> = if sanitized_input.text.contains('/') {
+        state.adapter_registry.descriptors().into_iter()
+            .filter(|descriptor| descriptor.available).map(|descriptor| descriptor.id).collect()
+    } else { std::collections::HashSet::new() };
     let (session_harness, cwd): (String, Option<String>) = state.db.lock().unwrap().query_row(
         "SELECT harness, cwd FROM sessions WHERE id=?1",
         params![session_id],
@@ -10933,21 +10949,28 @@ fn deliver_prepared_input(
             "This provider does not accept image attachments in this session. Choose a provider with image support, or send the text on its own.".into(),
         ));
     }
-    let delivered = if has_images {
-        // An image-only send still needs a non-empty text block: Anthropic
-        // content blocks require text of at least one character.
-        let provider_text = if prepared.provider_text.trim().is_empty() {
-            "(image)"
-        } else {
-            prepared.provider_text.as_str()
-        };
+    // An image-only send still needs a non-empty text block: Anthropic
+    // content blocks require text of at least one character. A steer carries
+    // the same blocks, so the rule applies to both.
+    let provider_text = if has_images && prepared.provider_text.trim().is_empty() {
+        "(image)"
+    } else {
+        prepared.provider_text.as_str()
+    };
+    let delivered = if delivery == DeliveryMode::Steered {
+        runtime.steer_turn(provider_text, turn_context, &prepared.images)
+    } else if has_images {
         runtime.send_turn_with_images(provider_text, turn_context, &prepared.images)
     } else {
         deliver_sanitized_turn(runtime.as_ref(), &prepared.provider_text, turn_context)
     };
     if let Err(error) = delivered {
         drop(adapters);
-        record_recoverable_adapter_failure(state, session_id, &error)?;
+        // A provider refusing this guidance says nothing about the turn it was
+        // aimed at, which is still running. Only a transport failure does.
+        if !(delivery == DeliveryMode::Steered && matches!(error, BridgeError::Invalid(_))) {
+            record_recoverable_adapter_failure(state, session_id, &error)?;
+        }
         return Err(error);
     }
     drop(adapters);
@@ -11662,6 +11685,7 @@ fn submit_input_internal(
     }
 
     let (turn_active, checkpointing) = turn_phase(core, &session_id)?;
+    let interrupted_target = steer_target(&core.db.lock().unwrap(), &session_id);
     let steering_capable = state
         .adapters
         .lock()
@@ -11672,7 +11696,7 @@ fn submit_input_internal(
     // next one, on every provider: the text waits at the front of the queue and
     // the interrupted turn's own boundary delivers it. Images cannot ride the
     // queue, so a provider that can fold them into the live turn still does.
-    let stop_first = preference.is_none()
+    let stop_first = (preference.is_none() || (preference == Some(wire::ActiveTurnInput::Steer) && !steering_capable))
         && session_input::interrupts_active_turn(worker.is_some(), turn_active, checkpointing)
             && (attachments.is_empty() || !steering_capable);
     // The legacy `send_turn` entry point forces a new turn, which is the one
@@ -11685,7 +11709,7 @@ fn submit_input_internal(
     } else {
         session_input::route(turn_active, steering_capable && preference != Some(wire::ActiveTurnInput::Queue))
     };
-    let disposition = if stop_first {
+    let mut disposition = if stop_first {
         wire::InputDisposition::SteeredActiveTurn
     } else {
         route.disposition()
@@ -11731,20 +11755,42 @@ fn submit_input_internal(
     let interceptions = mirror_interceptions(&prepared.interceptions);
 
     let mut queued_input_id = None;
+    let mut delivered_route = route;
     match route {
         session_input::InputRoute::NewTurn => {
             deliver_prepared_input(core, &session_id, &prepared, DeliveryMode::Submitted)?;
         }
         session_input::InputRoute::Steer => {
-            deliver_prepared_input(core, &session_id, &prepared, DeliveryMode::Steered)?;
-            let db = state.db.lock().unwrap();
-            let _ = store::event(
-                &db,
-                "session",
-                "session.input.steered",
-                &session_id,
-                "User guidance delivered into the active turn",
-            );
+            await_acknowledged_turn(core, &session_id);
+            match deliver_prepared_input(core, &session_id, &prepared, DeliveryMode::Steered) {
+                Ok(()) => {
+                    let db = state.db.lock().unwrap();
+                    let _ = store::event(
+                        &db,
+                        "session",
+                        "session.input.steered",
+                        &session_id,
+                        "User guidance delivered into the active turn",
+                    );
+                }
+                // The provider refused this input, not the turn: it ended
+                // between routing and delivery, or never acknowledged. Hold the
+                // words at the front and redirect, as for a provider without
+                // native steering. A worker is never interrupted, so its
+                // guidance waits for the boundary. Images cannot be held.
+                Err(BridgeError::Invalid(_)) if prepared.images.is_empty() => {
+                    let redirect = session_input::interrupts_active_turn(worker.is_some(), turn_active, checkpointing);
+                    let queued = hold_input(core, &session_id, &prepared, true, redirect)?;
+                    if redirect {
+                        interrupt_for_steer(core, &session_id, &queued.id, interrupted_target);
+                    } else {
+                        disposition = wire::InputDisposition::QueuedForPhaseBoundary;
+                        delivered_route = session_input::InputRoute::Queue;
+                    }
+                    queued_input_id = Some(queued.id);
+                }
+                Err(error) => return Err(error),
+            }
         }
         session_input::InputRoute::Queue => {
             // The durable queue stores text; there is no byte budget or shape
@@ -11756,52 +11802,9 @@ fn submit_input_internal(
                     "Images cannot be held in the queue — wait for the current step to finish, then send again.".into(),
                 ));
             }
-            let queued = {
-                let db = state.db.lock().unwrap();
-                let enqueue = if stop_first {
-                    session_input::enqueue_steer
-                } else {
-                    session_input::enqueue
-                };
-                let queued = enqueue(
-                    &db,
-                    &session_id,
-                    &prepared.provider_text,
-                    &prepared.display_text,
-                )?;
-                // Persist the message itself, not just the queue row: a
-                // reconnect replays the conversation from durable history, and a
-                // follow-up the user can no longer see is a follow-up they will
-                // type again.
-                let adapter_id: String = db.query_row(
-                    "SELECT harness FROM sessions WHERE id=?1",
-                    params![session_id],
-                    |row| row.get(0),
-                )?;
-                if let Some(event) = persist_submitted_user_turn_with_delivery(
-                    &db,
-                    &session_id,
-                    &adapter_id,
-                    &prepared.display_text,
-                    if stop_first { "steered" } else { "queued" },
-                    &prepared.images,
-                )? {
-                    core.events.publish(CoreEvent::Agent(event));
-                }
-                // A steer is not a follow-up waiting its turn, so it stays out
-                // of the client's queued fold.
-                let _ = store::event(
-                    &db,
-                    "session",
-                    if stop_first { "session.input.steered" } else { "session.input.queued" },
-                    &session_id,
-                    &queued.id,
-                );
-                queued
-            };
-            core.events.publish(CoreEvent::StateChanged);
+            let queued = hold_input(core, &session_id, &prepared, stop_first, stop_first)?;
             if stop_first {
-                interrupt_for_steer(core, &session_id, &queued.id);
+                interrupt_for_steer(core, &session_id, &queued.id, interrupted_target);
             }
             queued_input_id = Some(queued.id);
         }
@@ -11811,7 +11814,7 @@ fn submit_input_internal(
     // never saw. Told at submission time rather than at delivery: knowing a steer
     // is inbound is what stops the fight, and a queued one lands next boundary.
     if worker.is_some() {
-        notify_parent_worker_steered(core, &session_id, &prepared.display_text, route);
+        notify_parent_worker_steered(core, &session_id, &prepared.display_text, delivered_route);
     }
     Ok(wire::SubmitInputResult {
         disposition,
@@ -11820,9 +11823,104 @@ fn submit_input_internal(
     })
 }
 
+/// Persist input that waits for a turn boundary: the queue row and the visible
+/// message. `front` puts guidance ahead of ordinary follow-ups; `steered`
+/// labels it as redirecting the current turn rather than waiting behind it.
+fn hold_input(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    prepared: &PreparedInput,
+    front: bool,
+    steered: bool,
+) -> Result<session_input::QueuedInput, BridgeError> {
+    let queued = {
+        let db = core.db.lock().unwrap();
+        let enqueue = if front {
+            session_input::enqueue_steer
+        } else {
+            session_input::enqueue
+        };
+        let queued = enqueue(
+            &db,
+            session_id,
+            &prepared.provider_text,
+            &prepared.display_text,
+        )?;
+        // Persist the message itself, not just the queue row: a
+        // reconnect replays the conversation from durable history, and a
+        // follow-up the user can no longer see is a follow-up they will
+        // type again.
+        let adapter_id: String = db.query_row(
+            "SELECT harness FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if let Some(event) = persist_submitted_user_turn_with_delivery(
+            &db,
+            session_id,
+            &adapter_id,
+            &prepared.display_text,
+            if steered { "steered" } else { "queued" },
+            &prepared.images,
+        )? {
+            core.events.publish(CoreEvent::Agent(event));
+        }
+        // A steer is not a follow-up waiting its turn, so it stays out
+        // of the client's queued fold.
+        let _ = store::event(
+            &db,
+            "session",
+            if steered { "session.input.steered" } else { "session.input.queued" },
+            session_id,
+            &queued.id,
+        );
+        queued
+    };
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(queued)
+}
+
+/// How long a native steer waits for the provider to acknowledge a turn it
+/// was just asked to start. The window is normally well under a second.
+const STEER_ACK_WAIT: Duration = Duration::from_secs(1);
+
+/// Hold a steer that names the provider's turn until that turn has an id.
+/// Polls without the adapter map: the reader that records the acknowledgement
+/// must never wait on this.
+fn await_acknowledged_turn(core: &Arc<BridgeCore>, session_id: &str) {
+    let required = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .is_some_and(|runtime| runtime.steer_requires_acknowledged_turn());
+    if !required {
+        return;
+    }
+    let deadline = std::time::Instant::now() + STEER_ACK_WAIT;
+    loop {
+        let acknowledged = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT active_turn_id IS NOT NULL FROM sessions WHERE id=?1",
+                [session_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(true);
+        if acknowledged || std::time::Instant::now() >= deadline {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// How long a steered turn gets to settle after its in-band interrupt before
-/// Bridge stops it the hard way.
-const STEER_SETTLE_GRACE: Duration = Duration::from_secs(5);
+/// Bridge stops it the hard way. The clock starts at submission, not when the
+/// interrupt returns. Too short and every redirect pays for a cold restart,
+/// which is slower than the interrupt it replaced.
+const STEER_SETTLE_GRACE: Duration = Duration::from_millis(1500);
 
 /// Stop a chat's running turn so the steer queued at the front runs next.
 ///
@@ -11830,70 +11928,144 @@ const STEER_SETTLE_GRACE: Duration = Duration::from_secs(5);
 /// turn's own `turn.completed` is the boundary that delivers the steer. A
 /// provider that never settles after the interrupt is stopped like the Stop
 /// button does it and resumed, so the person's words always land.
-fn interrupt_for_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
+fn interrupt_for_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str, target: Option<SteerTarget>) {
+    let current = steer_target(&core.db.lock().unwrap(), session_id);
+    if !target.as_ref().is_some_and(|target| target.is_still(current.as_ref())) {
+        drain_queued_input(core, session_id);
+        return;
+    }
     core.steer_requested
         .lock()
         .unwrap()
         .insert(session_id.to_owned());
-    // Tests drive the boundary themselves; a fallback that relaunches a real
-    // provider has no place in them.
+    let interrupt = core.adapters.lock().unwrap().get(session_id)
+        .and_then(|runtime| runtime.interrupt_request());
+    // Tests drive the boundary and the fallback themselves; a watchdog that
+    // relaunches a real provider has no place in them.
     if cfg!(test) {
-        interrupt_live_turn(core, session_id);
+        if let Some(interrupt) = interrupt { let _ = interrupt(); }
         return;
     }
-    // Off the caller's thread: an interrupt can be an HTTP round trip, and the
-    // person's send should not wait on it.
+    // The watchdog starts independently of the provider call. Only an owned
+    // launch can be restarted; a runtime without durable identity stays queued.
+    if target.as_ref().is_none_or(|target| target.launch.is_none()) {
+        if let Some(interrupt) = interrupt { thread::spawn(move || { let _ = interrupt(); }); }
+        return;
+    }
     let core = Arc::clone(core);
     let session_id = session_id.to_owned();
     let queued_id = queued_id.to_owned();
-    thread::spawn(move || {
-        interrupt_live_turn(&core, &session_id);
-        thread::sleep(STEER_SETTLE_GRACE);
-        settle_unanswered_steer(&core, &session_id, &queued_id);
+    interrupt_with_deadline(interrupt, STEER_SETTLE_GRACE, move || {
+        settle_unanswered_steer(&core, &session_id, &queued_id, target);
     });
 }
 
-fn interrupt_live_turn(core: &Arc<BridgeCore>, session_id: &str) {
-    if let Some(runtime) = core.adapters.lock().unwrap().get(session_id) {
-        // A refusal (the turn already ended, say) is fine: the boundary or the
-        // fallback still delivers.
-        let _ = runtime.interrupt();
+fn interrupt_with_deadline(interrupt: Option<adapters::InterruptRequest>, grace: Duration, fallback: impl FnOnce() + Send + 'static) {
+    // Neither thread waits for the other. A blocked HTTP request or stdin pipe
+    // cannot extend the user's redirect deadline or retain the adapter map.
+    thread::spawn(move || { thread::sleep(grace); fallback(); });
+    if let Some(interrupt) = interrupt { thread::spawn(move || { let _ = interrupt(); }); }
+}
+
+/// The turn a steer was aimed at.
+///
+/// A turn's provider id arrives only with `turn/started`, so a steer sent just
+/// after the turn was requested sees none. The id alone cannot say whether a
+/// turn is the same one later; the launch and the number of turns that have
+/// ended can. An acknowledgement fills in the id and ends nothing.
+#[derive(Debug, Clone, PartialEq)]
+struct SteerTarget {
+    turn: Option<String>,
+    launch: Option<String>,
+    provider: Option<String>,
+    ended: i64,
+}
+
+impl SteerTarget {
+    fn is_still(&self, current: Option<&SteerTarget>) -> bool {
+        current.is_some_and(|current| {
+            self.launch == current.launch
+                && self.provider == current.provider
+                && self.ended == current.ended
+                && (self.turn.is_none() || self.turn == current.turn)
+        })
     }
+}
+
+fn steer_target(db: &Connection, session_id: &str) -> Option<SteerTarget> {
+    db.query_row(
+        "SELECT active_turn_id,started_at,provider_session_id,
+                (SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='turn.completed')
+         FROM sessions WHERE id=?1",
+        [session_id],
+        |row| Ok(SteerTarget { turn: row.get(0)?, launch: row.get(1)?, provider: row.get(2)?, ended: row.get(3)? }),
+    )
+    .ok()
+}
+
+/// What a steer's watchdog should do once its deadline passes.
+#[derive(Debug, PartialEq)]
+enum SteerFollowUp {
+    /// The guidance was delivered or withdrawn.
+    Nothing,
+    /// The targeted turn is over. Deliver if the chat is idle, never relaunch:
+    /// the boundary's own drain could have lost the lifecycle claim to this
+    /// watchdog, and a stopped chat stays stopped.
+    Deliver,
+    /// The targeted turn is still running past its deadline: stop it, resume,
+    /// and deliver.
+    Redirect,
+}
+
+fn steer_follow_up(db: &Connection, session_id: &str, queued_id: &str, target: Option<&SteerTarget>) -> SteerFollowUp {
+    let waiting = db
+        .query_row(
+            "SELECT state=?2 FROM queued_session_input WHERE id=?1",
+            params![queued_id, session_input::STATE_QUEUED],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if !waiting {
+        return SteerFollowUp::Nothing;
+    }
+    // A delayed watchdog has no authority over a later turn.
+    if !target.is_some_and(|target| target.is_still(steer_target(db, session_id).as_ref())) {
+        return SteerFollowUp::Deliver;
+    }
+    let busy = db
+        .query_row(
+            "SELECT active_turn_id IS NOT NULL OR status IN ('working','waiting')
+             FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if busy { SteerFollowUp::Redirect } else { SteerFollowUp::Deliver }
 }
 
 /// The fallback behind [`interrupt_for_steer`]: if the steer is still waiting
 /// and the turn it interrupted is still running, stop that turn hard, resume the
 /// chat, and deliver.
-fn settle_unanswered_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
-    let (waiting, busy) = {
-        let db = core.db.lock().unwrap();
-        let waiting = db
-            .query_row(
-                "SELECT state=?2 FROM queued_session_input WHERE id=?1",
-                params![queued_id, session_input::STATE_QUEUED],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap_or(false);
-        let busy = db
-            .query_row(
-                "SELECT active_turn_id IS NOT NULL OR status IN ('working','waiting')
-                 FROM sessions WHERE id=?1",
-                params![session_id],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap_or(false);
-        (waiting, busy)
-    };
-    if !waiting {
-        return;
-    }
-    if busy {
-        if stop_turn(core, session_id, TurnStop::Steered).is_err() {
-            return;
+fn settle_unanswered_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str, target: Option<SteerTarget>) {
+    let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "steer continuation") else { return; };
+    let follow_up = steer_follow_up(&core.db.lock().unwrap(), session_id, queued_id, target.as_ref());
+    match follow_up {
+        SteerFollowUp::Nothing => {}
+        SteerFollowUp::Deliver => {
+            drain_queued_input_claimed(core, session_id);
         }
-        let _ = resume_for_send(core, session_id);
+        SteerFollowUp::Redirect => {
+            if stop_turn_claimed(core, session_id, TurnStop::Steered).is_err() {
+                return;
+            }
+            if let Err(error) = start_chat_claimed(core, session_id.to_owned()) {
+                let db = core.db.lock().unwrap();
+                let _ = store::event(&db, "session", "session.input.delivery_failed", session_id, &error.to_string());
+                return;
+            }
+            drain_queued_input_claimed(core, session_id);
+        }
     }
-    drain_queued_input(core, session_id);
 }
 
 /// The wrapper a user's words wear on their way into a running worker.
@@ -11936,6 +12108,10 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "queued input delivery") else {
         return false;
     };
+    drain_queued_input_claimed(core, session_id)
+}
+
+fn drain_queued_input_claimed(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     if ensure_session_not_archived(core, session_id).is_err() {
         return false;
     }
@@ -12324,18 +12500,16 @@ pub fn stop_worker_session(
     cause: StopCause<'_>,
 ) -> Result<(), BridgeError> {
     let state = core.clone();
-    if let Some(runtime) = state.adapters.lock().unwrap().get(session_id) {
-        // Only a session with a live adapter to interrupt can have that
-        // interrupt provoke a stop-induced error frame, so only that case
-        // needs the marker — an adapterless stop leaves nothing for a
-        // later resume's genuine error to be mistaken for.
-        state
-            .user_stop_requested
-            .lock()
-            .unwrap()
-            .insert(session_id.to_owned());
-        let _ = runtime.interrupt();
-    }
+    // Retire output before deciding the result. An unresponsive provider must
+    // not delay cancellation, and disposal must never own the adapter map.
+    let runtime = {
+        let db = state.db.lock().unwrap();
+        deactivate_reader_launch(&state, session_id);
+        state.user_stop_requested.lock().unwrap().remove(session_id);
+        db.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        let runtime = state.adapters.lock().unwrap().remove(session_id);
+        runtime
+    };
     let result = delegation::WorkerResult {
         schema_version: delegation::SCHEMA_VERSION,
         status: delegation::WorkerResultStatus::Cancelled,
@@ -12349,7 +12523,14 @@ pub fn stop_worker_session(
         suggested_role: None,
         suggested_task: None,
     };
-    if !settle_worker_after_result(core, session_id, &result)? {
+    let settled = settle_worker_after_result(core, session_id, &result);
+    if !matches!(settled, Ok(true)) {
+        // Its output gate is already closed and it is out of the map, so a
+        // process left running here would be an orphan nobody can reach.
+        if let Some(mut runtime) = runtime {
+            runtime.stop(cause.shutdown());
+        }
+        settled?;
         return Err(BridgeError::Invalid(
             "cancelled worker cannot be retried".into(),
         ));
@@ -12362,8 +12543,8 @@ pub fn stop_worker_session(
     if !report_to_parent(core, session_id, &result) {
         announce_worker_cancellation(core, session_id, &result.summary);
     }
-    deactivate_reader_launch(&state, session_id);
-    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
+    core.events.publish(CoreEvent::StateChanged);
+    if let Some(mut runtime) = runtime {
         runtime.stop(cause.shutdown());
     }
     verify_read_only_worker(core, session_id);
@@ -13660,9 +13841,15 @@ mod submit_input_tests {
         /// How many times `interrupt()` was called — the whole assertion for
         /// "Stop gracefully aborted the turn before teardown".
         interrupts: Arc<std::sync::atomic::AtomicUsize>,
+        steers: Arc<std::sync::atomic::AtomicUsize>,
         /// When set, `interrupt()` returns an error, standing in for a provider
         /// whose abort request fails. Teardown must still complete.
         refuse_interrupt: Arc<AtomicBool>,
+        /// When set, a native steer is refused as Codex refuses one aimed at a
+        /// turn it has not acknowledged.
+        refuse_steer: Arc<AtomicBool>,
+        /// Whether a steer names the provider's turn, as Codex's does.
+        steer_needs_ack: Arc<AtomicBool>,
     }
 
     pub(super) struct FakeHandles {
@@ -13674,7 +13861,10 @@ mod submit_input_tests {
         pub(super) rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         pub(super) refuse: Arc<AtomicBool>,
         pub(super) interrupts: Arc<std::sync::atomic::AtomicUsize>,
+        pub(super) steers: Arc<std::sync::atomic::AtomicUsize>,
         pub(super) refuse_interrupt: Arc<AtomicBool>,
+        pub(super) refuse_steer: Arc<AtomicBool>,
+        pub(super) steer_needs_ack: Arc<AtomicBool>,
     }
 
     impl FakeRuntime {
@@ -13697,7 +13887,10 @@ mod submit_input_tests {
             let rejected = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
             let interrupts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let steers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let refuse_interrupt = Arc::new(AtomicBool::new(false));
+            let refuse_steer = Arc::new(AtomicBool::new(false));
+            let steer_needs_ack = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
                 runtime_pid,
                 steering,
@@ -13710,7 +13903,10 @@ mod submit_input_tests {
                 rejected: rejected.clone(),
                 refuse: refuse.clone(),
                 interrupts: interrupts.clone(),
+                steers: steers.clone(),
                 refuse_interrupt: refuse_interrupt.clone(),
+                refuse_steer: refuse_steer.clone(),
+                steer_needs_ack: steer_needs_ack.clone(),
             };
             (
                 Box::new(runtime),
@@ -13723,7 +13919,10 @@ mod submit_input_tests {
                     rejected,
                     refuse,
                     interrupts,
+                    steers,
                     refuse_interrupt,
+                    refuse_steer,
+                    steer_needs_ack,
                 },
             )
         }
@@ -13761,6 +13960,22 @@ mod submit_input_tests {
         }
         fn supports_active_turn_steering(&self) -> bool {
             self.steering
+        }
+        fn interrupt_request(&self) -> Option<adapters::InterruptRequest> {
+            // Record the captured request synchronously; this fake has no I/O.
+            let result = self.interrupt();
+            Some(Box::new(move || result))
+        }
+        fn steer_requires_acknowledged_turn(&self) -> bool {
+            self.steer_needs_ack.load(Ordering::SeqCst)
+        }
+        fn steer_turn(&self, text: &str, context: adapters::TurnContext<'_>, images: &[wire::TurnImage]) -> Result<(), BridgeError> {
+            if self.refuse_steer.load(Ordering::SeqCst) {
+                return Err(BridgeError::Invalid("The turn has finished; send the guidance again to start the next turn".into()));
+            }
+            self.steers.fetch_add(1, Ordering::SeqCst);
+            if images.is_empty() { self.send_turn_with_context(text, context) }
+            else { self.send_turn_with_images(text, context, images) }
         }
         fn supports_images(&self) -> bool {
             self.images
@@ -13922,6 +14137,30 @@ mod submit_input_tests {
         let stopped: (String, Option<String>, String) = db.query_row("SELECT status,active_turn_id,provider_session_id FROM sessions WHERE id='chat'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!(stopped, ("stopped".into(), None, "saved-provider".into()));
         assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='other'", [], |r| r.get::<_,String>(0)).unwrap(), "working");
+    }
+
+    #[test]
+    fn active_guidance_uses_the_native_steer_seam() {
+        let (_dir, core, _guard) = core_with_chat("working");
+        let handles = attach_handles(&core, true);
+        let outcome = submit_input_with_preference(&core, "chat".into(), "focus on tests".into(), vec![], Some(wire::ActiveTurnInput::Steer)).unwrap();
+        assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+        assert_eq!(handles.steers.load(Ordering::SeqCst), 1);
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
+        assert_eq!(*handles.sent.lock().unwrap(), vec!["focus on tests"]);
+    }
+
+    #[test]
+    fn a_native_steer_rejection_does_not_settle_the_running_turn() {
+        let (_dir, core, _guard) = core_with_chat("working");
+        attach_handles(&core, true);
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex',active_turn_id='running' WHERE id='chat'", []).unwrap();
+        let current = Arc::new(Mutex::new(Some("running".into())));
+        handle_agent_value(&core, "chat", &current, &serde_json::json!({
+            "id": crate::codex_adapter::TURN_STEER_REQUEST_ID_BASE, "error":{"message":"turn mismatch"}
+        }));
+        assert_eq!(current.lock().unwrap().as_deref(), Some("running"));
+        assert_eq!(core.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id='chat'", [], |r| r.get::<_, String>(0)).unwrap(), "working");
     }
 
     fn attach(core: &Arc<BridgeCore>, steering: bool) -> Arc<Mutex<Vec<String>>> {
@@ -15247,7 +15486,7 @@ mod submit_input_tests {
     }
 
     #[test]
-    fn explicit_active_turn_preferences_control_delivery_without_interrupting() {
+    fn explicit_queue_waits_and_steer_redirects_without_native_support() {
         for preference in [wire::ActiveTurnInput::Steer, wire::ActiveTurnInput::Queue] {
             for steering in [true, false] {
                 for active in [true, false] {
@@ -15258,12 +15497,13 @@ mod submit_input_tests {
                     let handles = attach_handles(&core, steering);
                     let outcome = submit_input_with_preference(&core, "chat".into(), "follow up".into(), Vec::new(), Some(preference)).unwrap();
                     let queued = active && (preference == wire::ActiveTurnInput::Queue || !steering);
+                    let interrupted = active && preference == wire::ActiveTurnInput::Steer && !steering;
                     let expected = if !active { wire::InputDisposition::StartedNewTurn }
-                        else if queued { wire::InputDisposition::QueuedForPhaseBoundary }
+                        else if queued && !interrupted { wire::InputDisposition::QueuedForPhaseBoundary }
                         else { wire::InputDisposition::SteeredActiveTurn };
                     assert_eq!(outcome.disposition, expected);
                     assert_eq!(outcome.queued_input_id.is_some(), queued);
-                    assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
+                    assert_eq!(handles.interrupts.load(Ordering::SeqCst), usize::from(interrupted));
                     assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), if queued { 1 } else { 0 });
                     assert_eq!(handles.sent.lock().unwrap().len(), if queued { 0 } else { 1 });
                     if queued {
@@ -15276,6 +15516,191 @@ mod submit_input_tests {
                 }
             }
         }
+    }
+
+    /// Submit a Steer on a provider without native steering and return the
+    /// queued guidance with the turn it was aimed at.
+    fn redirect_turn_one(core: &Arc<BridgeCore>) -> (FakeHandles, String, Option<SteerTarget>) {
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET active_turn_id='turn-1',started_at='launch-1',provider_session_id='p1' WHERE id='chat'", [],
+        ).unwrap();
+        let handles = attach_handles(core, false);
+        let target = steer_target(&core.db.lock().unwrap(), "chat");
+        let outcome = submit_input_with_preference(core, "chat".into(), "use the other API".into(), Vec::new(), Some(wire::ActiveTurnInput::Steer)).unwrap();
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 1);
+        (handles, outcome.queued_input_id.expect("guidance waits at the front"), target)
+    }
+
+    fn queued_state(core: &Arc<BridgeCore>, id: &str) -> String {
+        core.db.lock().unwrap().query_row("SELECT state FROM queued_session_input WHERE id=?1", [id], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_late_steer_watchdog_never_touches_a_newer_turn() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let (handles, queued, target) = redirect_turn_one(&core);
+        // The interrupted turn ended and something else started a new one
+        // before the watchdog fired.
+        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-2' WHERE id='chat'", []).unwrap();
+
+        settle_unanswered_steer(&core, "chat", &queued, target);
+
+        assert!(core.adapters.lock().unwrap().contains_key("chat"), "the newer turn keeps its process");
+        let db = core.db.lock().unwrap();
+        let (status, turn): (String, Option<String>) = db.query_row("SELECT status,active_turn_id FROM sessions WHERE id='chat'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), turn.as_deref()), ("working", Some("turn-2")));
+        let redirected: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='turn.completed'", [], |row| row.get(0)).unwrap();
+        assert_eq!(redirected, 0);
+        drop(db);
+        assert_eq!(queued_state(&core, &queued), session_input::STATE_QUEUED, "still waiting for its boundary, not dropped");
+        assert!(handles.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_late_steer_watchdog_does_not_revive_a_stopped_chat() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let (handles, queued, target) = redirect_turn_one(&core);
+        cancel_visible_turn(&core, "chat").unwrap();
+
+        settle_unanswered_steer(&core, "chat", &queued, target);
+
+        assert_eq!(session_status(&core), "stopped");
+        assert!(!core.adapters.lock().unwrap().contains_key("chat"));
+        assert_eq!(queued_state(&core, &queued), session_input::STATE_ABANDONED, "Stop withdraws the guidance it superseded");
+        assert!(handles.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_steer_watchdog_delivers_when_the_turn_boundary_lost_the_race() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let (handles, queued, target) = redirect_turn_one(&core);
+        // The interrupt settled the turn, but the boundary's drain found the
+        // lifecycle claimed by the watchdog and left the guidance waiting.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'", []).unwrap();
+
+        settle_unanswered_steer(&core, "chat", &queued, target);
+
+        assert_eq!(queued_state(&core, &queued), session_input::STATE_DELIVERED);
+        assert_eq!(handles.sent.lock().unwrap().as_slice(), ["use the other API".to_owned()]);
+    }
+
+    /// The turn a steer interrupts may not have its provider id yet. Its
+    /// acknowledgement must not read as a replacement, or the watchdog gives
+    /// up on a turn that is still running and the guidance waits indefinitely.
+    #[test]
+    fn a_steer_sent_before_the_turn_is_acknowledged_still_redirects_that_turn() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET active_turn_id=NULL,started_at='launch-1',provider_session_id='p1' WHERE id='chat'", [],
+        ).unwrap();
+        let handles = attach_handles(&core, false);
+        let target = steer_target(&core.db.lock().unwrap(), "chat");
+        assert_eq!(target.as_ref().unwrap().turn, None);
+        let queued = submit_input_with_preference(&core, "chat".into(), "use the other API".into(), Vec::new(), Some(wire::ActiveTurnInput::Steer))
+            .unwrap().queued_input_id.unwrap();
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 1);
+
+        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-1' WHERE id='chat'", []).unwrap();
+        assert_eq!(
+            steer_follow_up(&core.db.lock().unwrap(), "chat", &queued, target.as_ref()),
+            SteerFollowUp::Redirect,
+            "the acknowledged turn is the one that was steered",
+        );
+
+        // A turn that ended and was replaced is a different turn.
+        {
+            let db = core.db.lock().unwrap();
+            store::session_event(&db, "chat", &agent::NormalizedEvent::new("turn.completed"), &serde_json::Value::Null).unwrap();
+            db.execute("UPDATE sessions SET active_turn_id='turn-2' WHERE id='chat'", []).unwrap();
+        }
+        assert_eq!(steer_follow_up(&core.db.lock().unwrap(), "chat", &queued, target.as_ref()), SteerFollowUp::Deliver);
+    }
+
+    #[test]
+    fn a_native_steer_waits_for_the_turn_it_names_to_be_acknowledged() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let handles = attach_handles(&core, true);
+        handles.steer_needs_ack.store(true, Ordering::SeqCst);
+        // Like Codex, it refuses a steer until `turn/started` names the turn.
+        handles.refuse_steer.store(true, Ordering::SeqCst);
+        let acknowledging = core.clone();
+        let accepts = handles.refuse_steer.clone();
+        let acknowledgement = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            accepts.store(false, Ordering::SeqCst);
+            acknowledging.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-1' WHERE id='chat'", []).unwrap();
+        });
+
+        let outcome = submit_input_with_preference(&core, "chat".into(), "focus on tests".into(), Vec::new(), Some(wire::ActiveTurnInput::Steer)).unwrap();
+        acknowledgement.join().unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+        assert_eq!(outcome.queued_input_id, None);
+        assert_eq!(handles.steers.load(Ordering::SeqCst), 1);
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
+    }
+
+    /// A steer the provider refuses is refused input. The turn it was aimed at
+    /// keeps running, and the words are redirected rather than lost.
+    #[test]
+    fn a_refused_native_steer_keeps_the_turn_running_and_redirects() {
+        for acknowledged in [true, false] {
+            let (_fixture, core, _managed_root) = core_with_chat("working");
+            core.db.lock().unwrap().execute(
+                "UPDATE sessions SET active_turn_id=?1,started_at='launch-1',provider_session_id='p1' WHERE id='chat'",
+                [acknowledged.then_some("turn-1")],
+            ).unwrap();
+            let handles = attach_handles(&core, true);
+            handles.refuse_steer.store(true, Ordering::SeqCst);
+            // Codex withholding `turn/started`: the steer cannot name a turn.
+            handles.steer_needs_ack.store(!acknowledged, Ordering::SeqCst);
+
+            let outcome = submit_input_with_preference(&core, "chat".into(), "use the other API".into(), Vec::new(), Some(wire::ActiveTurnInput::Steer)).unwrap();
+
+            assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+            assert!(outcome.queued_input_id.is_some(), "held at the front for the boundary");
+            assert_eq!(handles.interrupts.load(Ordering::SeqCst), 1);
+            let db = core.db.lock().unwrap();
+            let (status, turn): (String, Option<String>) = db.query_row("SELECT status,active_turn_id FROM sessions WHERE id='chat'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+            assert_eq!(status, "working", "acknowledged={acknowledged}");
+            assert_eq!(turn.as_deref(), acknowledged.then_some("turn-1"));
+            assert_eq!(session_input::pending_count(&db, "chat").unwrap(), 1);
+            let shown: i64 = db.query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='user.message' AND payload LIKE '%use the other API%'",
+                [], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(shown, 1, "the guidance is shown once");
+        }
+    }
+
+    #[test]
+    fn an_image_only_native_steer_still_carries_text() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-1' WHERE id='chat'", []).unwrap();
+        let handles = attach_images(&core, true);
+
+        let outcome = submit_input_with_preference(&core, "chat".into(), String::new(), vec![png_image()], Some(wire::ActiveTurnInput::Steer)).unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::SteeredActiveTurn);
+        assert_eq!(handles.steers.load(Ordering::SeqCst), 1);
+        assert_eq!(handles.sent.lock().unwrap().as_slice(), ["(image)".to_owned()]);
+    }
+
+    #[test]
+    fn a_stalled_interrupt_cannot_postpone_the_steer_deadline() {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (fired, observed) = std::sync::mpsc::channel();
+        let interrupt: adapters::InterruptRequest = Box::new(move || {
+            let _ = blocked.recv();
+            Ok(())
+        });
+        let started = std::time::Instant::now();
+        interrupt_with_deadline(Some(interrupt), Duration::from_millis(20), move || {
+            let _ = fired.send(started.elapsed());
+        });
+        let elapsed = observed.recv_timeout(Duration::from_secs(5)).expect("the fallback fires while the interrupt is stuck");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+        let _ = release.send(());
     }
 
     #[test]
@@ -18630,6 +19055,60 @@ mod retry_settlement_tests {
                 .lifecycle_state,
             "cancelled"
         );
+    }
+
+    /// A provider that is not listening cannot hold Stop hostage. The worker
+    /// is cancelled from Bridge's side: its output gate closes first, nothing
+    /// asks the provider to interrupt, and disposal runs without the adapter
+    /// map so every other session stays reachable while it happens.
+    #[test]
+    fn stopping_a_worker_never_waits_on_the_provider_or_the_adapter_map() {
+        struct UnresponsiveRuntime {
+            core: std::sync::Weak<BridgeCore>,
+            disposed: Arc<Mutex<Vec<&'static str>>>,
+        }
+        impl adapters::AdapterRuntime for UnresponsiveRuntime {
+            fn process_id(&self) -> u32 { 0 }
+            fn provider_session_id(&self) -> &str { "unresponsive" }
+            fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(Some("busy".into()))) }
+            fn send_turn(&self, _: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn interrupt(&self) -> Result<(), BridgeError> {
+                panic!("Stop must not wait on a provider interrupt")
+            }
+            fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn stop(&mut self, _: adapters::ShutdownReason) {
+                let core = self.core.upgrade().unwrap();
+                self.disposed.lock().unwrap().push(if core.adapters.try_lock().is_ok() { "map free" } else { "map held" });
+            }
+        }
+        let (_fixture, core, sibling, _guard) = core_with_working_worker();
+        let disposed = Arc::new(Mutex::new(Vec::new()));
+        let sibling_runtime = core.adapters.lock().unwrap().remove("child").unwrap();
+        core.adapters.lock().unwrap().insert("sibling".into(), sibling_runtime);
+        core.adapters.lock().unwrap().insert("child".into(), Box::new(UnresponsiveRuntime {
+            core: Arc::downgrade(&core),
+            disposed: disposed.clone(),
+        }));
+        let gate = Arc::new(Mutex::new(true));
+        core.reader_launches.lock().unwrap().insert("child".into(), gate.clone());
+        let queued = session_input::enqueue(&core.db.lock().unwrap(), "child", "later", "later").unwrap();
+
+        stop_worker_session(&core, "child", StopCause::User).unwrap();
+
+        assert!(!*gate.lock().unwrap(), "late output cannot reopen the cancelled worker");
+        assert_eq!(*disposed.lock().unwrap(), ["map free"]);
+        assert!(!core.adapters.lock().unwrap().contains_key("child"));
+        assert!(core.adapters.lock().unwrap().contains_key("sibling"), "other sessions are untouched");
+        assert!(sibling.lock().unwrap().is_empty());
+        let db = core.db.lock().unwrap();
+        assert_eq!(store::worker_runtime(&db, "child").unwrap().unwrap().lifecycle_state, "cancelled");
+        let state: String = db.query_row("SELECT state FROM queued_session_input WHERE id=?1", [&queued.id], |row| row.get(0)).unwrap();
+        assert_eq!(state, session_input::STATE_ABANDONED, "a stopped worker does not wake for old input");
+        let told: i64 = db.query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='parent' AND kind IN ('worker.result','delegation.rejected')",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert!(told > 0, "the parent sees the cancellation");
     }
 
     /// `report_to_parent` claims the result seam once. A worker cancelled

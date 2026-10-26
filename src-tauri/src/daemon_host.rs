@@ -37,9 +37,16 @@ use std::time::{Duration, Instant};
 /// take ten-plus seconds against large repositories, so they get their own
 /// lanes. Blind sharing let one slow GitHub read queue sessions, health, and
 /// work-board invokes behind it — the whole app appeared to hang.
+///
+/// Controls get lanes of their own for the same reason: a click on Stop or a
+/// steer must not wait behind a state snapshot or a Git scan. Stop has its own
+/// lane on top of that, since a submission can legitimately take a while to
+/// start a turn and the person pressing Stop is trying to end exactly that.
 const GENERAL_LANES: usize = 4;
 const GITHUB_LANES: usize = 2;
-const POOL_SIZE: usize = GENERAL_LANES + GITHUB_LANES;
+const INPUT_LANES: usize = 2;
+const STOP_LANES: usize = 1;
+const POOL_SIZE: usize = GENERAL_LANES + GITHUB_LANES + INPUT_LANES + STOP_LANES;
 
 /// One more connection than the pool, carrying only the notification stream.
 /// The daemon writes a connection's frames under one writer lock, a response
@@ -51,7 +58,11 @@ const CONNECTIONS: usize = POOL_SIZE + 1;
 /// Bound the blocking-runtime work retained by an invoke burst. A short queue
 /// absorbs normal UI fan-out; requests beyond it fail promptly instead of
 /// retaining arbitrary payloads and blocking threads for minutes.
-const MAX_INVOKE_JOBS: usize = POOL_SIZE * 4;
+/// Each class has its own budget, so a saturated background burst still
+/// admits a control.
+const MAX_INVOKE_JOBS: usize = (GENERAL_LANES + GITHUB_LANES) * 4;
+const MAX_INPUT_JOBS: usize = INPUT_LANES * 4;
+const MAX_STOP_JOBS: usize = STOP_LANES * 4;
 
 /// How long an invoke waits for a live connection before failing. Covers the
 /// small window while the supervisor is reconnecting after a daemon restart.
@@ -243,7 +254,7 @@ pub fn proxy_invoke<R: tauri::Runtime>(
     };
     let params = wire_params(method, payload);
     let resolver = invoke.resolver;
-    let Some(permit) = proxy.reserve_invoke() else {
+    let Some(permit) = proxy.reserve_invoke(method) else {
         resolver.reject("The Bridge daemon is busy; try again");
         return true;
     };
@@ -263,19 +274,59 @@ struct Link {
     clients: Vec<Arc<DaemonClient>>,
 }
 
+/// Which partition of the pool a method runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaneClass {
+    General,
+    Github,
+    Input,
+    Stop,
+}
+
+impl LaneClass {
+    fn of(method: MethodName) -> Self {
+        match method {
+            MethodName::InterruptTurn | MethodName::StopSession => Self::Stop,
+            MethodName::SubmitInput
+            | MethodName::PrepareTurn
+            | MethodName::SendTurn
+            | MethodName::ResolveApproval
+            | MethodName::ResolveQuestion => Self::Input,
+            _ if method.domain() == "github" => Self::Github,
+            _ => Self::General,
+        }
+    }
+
+    fn lanes(self) -> std::ops::Range<usize> {
+        const GITHUB: usize = GENERAL_LANES;
+        const INPUT: usize = GITHUB + GITHUB_LANES;
+        const STOP: usize = INPUT + INPUT_LANES;
+        match self {
+            Self::General => 0..GENERAL_LANES,
+            Self::Github => GITHUB..INPUT,
+            Self::Input => INPUT..STOP,
+            Self::Stop => STOP..POOL_SIZE,
+        }
+    }
+
+    fn budget(self) -> usize {
+        match self {
+            Self::General | Self::Github => MAX_INVOKE_JOBS,
+            Self::Input => MAX_INPUT_JOBS,
+            Self::Stop => MAX_STOP_JOBS,
+        }
+    }
+}
+
 /// The connection indexes `method` may use. GitHub methods are confined to
 /// the reserved lanes and everything else stays off them, so a slow `gh`
 /// call can never occupy a connection a session or health invoke needs. A
 /// degraded pool (reconnect built fewer connections) falls back to sharing.
 fn lane_range(method: MethodName, total: usize) -> std::ops::Range<usize> {
-    if total <= GENERAL_LANES {
+    if total < POOL_SIZE {
         return 0..total;
     }
-    if method.domain() == "github" {
-        GENERAL_LANES..total
-    } else {
-        0..GENERAL_LANES
-    }
+    LaneClass::of(method).lanes()
 }
 
 /// Prefer an idle lane, scanning from the rotation point so load still
@@ -300,27 +351,42 @@ pub struct DaemonProxy {
     link: RwLock<Option<Arc<Link>>>,
     next: AtomicUsize,
     active_invokes: AtomicUsize,
+    active_inputs: AtomicUsize,
+    active_stops: AtomicUsize,
 }
 
 struct InvokePermit {
     proxy: Arc<DaemonProxy>,
+    class: LaneClass,
 }
 
 impl Drop for InvokePermit {
     fn drop(&mut self) {
-        self.proxy.active_invokes.fetch_sub(1, Ordering::Release);
+        self.proxy
+            .admission(self.class)
+            .fetch_sub(1, Ordering::Release);
     }
 }
 
 impl DaemonProxy {
-    fn reserve_invoke(self: &Arc<Self>) -> Option<InvokePermit> {
-        self.active_invokes
+    fn admission(&self, class: LaneClass) -> &AtomicUsize {
+        match class {
+            LaneClass::General | LaneClass::Github => &self.active_invokes,
+            LaneClass::Input => &self.active_inputs,
+            LaneClass::Stop => &self.active_stops,
+        }
+    }
+
+    fn reserve_invoke(self: &Arc<Self>, method: MethodName) -> Option<InvokePermit> {
+        let class = LaneClass::of(method);
+        self.admission(class)
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < MAX_INVOKE_JOBS).then_some(active + 1)
+                (active < class.budget()).then_some(active + 1)
             })
             .ok()?;
         Some(InvokePermit {
             proxy: self.clone(),
+            class,
         })
     }
 
@@ -1194,7 +1260,7 @@ mod tests {
         // Full pool: github stays on the reserved lanes, the rest stays off.
         assert_eq!(
             lane_range(MethodName::GithubPullRequests, POOL_SIZE),
-            GENERAL_LANES..POOL_SIZE
+            GENERAL_LANES..GENERAL_LANES + GITHUB_LANES
         );
         assert_eq!(lane_range(MethodName::Health, POOL_SIZE), 0..GENERAL_LANES);
         // A degraded pool (reconnect built fewer connections) shares.
@@ -1230,11 +1296,37 @@ mod tests {
     fn invoke_jobs_are_bounded() {
         let proxy = Arc::new(DaemonProxy::default());
         let permits = (0..MAX_INVOKE_JOBS)
-            .map(|_| proxy.reserve_invoke().expect("slot available"))
+            .map(|_| proxy.reserve_invoke(MethodName::GetState).expect("slot available"))
             .collect::<Vec<_>>();
-        assert!(proxy.reserve_invoke().is_none());
+        assert!(proxy.reserve_invoke(MethodName::GetState).is_none());
+        let inputs = (0..MAX_INPUT_JOBS)
+            .map(|_| proxy.reserve_invoke(MethodName::SubmitInput).expect("input capacity survives background saturation"))
+            .collect::<Vec<_>>();
+        assert!(proxy.reserve_invoke(MethodName::ResolveApproval).is_none());
+        let stop = proxy.reserve_invoke(MethodName::InterruptTurn);
+        assert!(stop.is_some(), "Stop is admitted even when input and background are saturated");
+        drop(inputs);
+        assert!(proxy.reserve_invoke(MethodName::SubmitInput).is_some());
         drop(permits);
-        assert!(proxy.reserve_invoke().is_some());
+        assert!(proxy.reserve_invoke(MethodName::GetState).is_some());
+    }
+
+    #[test]
+    fn controls_never_queue_behind_background_or_github_calls() {
+        let stop = lane_range(MethodName::InterruptTurn, POOL_SIZE);
+        assert_eq!(lane_range(MethodName::StopSession, POOL_SIZE), stop);
+        let input = lane_range(MethodName::SubmitInput, POOL_SIZE);
+        for method in [MethodName::PrepareTurn, MethodName::SendTurn, MethodName::ResolveApproval, MethodName::ResolveQuestion] {
+            assert_eq!(lane_range(method, POOL_SIZE), input);
+        }
+        // Stop never waits behind a submission that is still starting a turn.
+        assert!(input.clone().all(|lane| !stop.contains(&lane)));
+        for method in [MethodName::GetState, MethodName::GithubPullRequests] {
+            let lanes = lane_range(method, POOL_SIZE);
+            assert!(lanes.clone().all(|lane| !stop.contains(&lane) && !input.contains(&lane)));
+        }
+        assert_eq!(stop.end, POOL_SIZE);
+        assert_eq!(pick_lane(&input, 0, |lane| lane < input.start), input.start);
     }
 
     /// The decision table. `ours` is the launcher's binary identity, `theirs`

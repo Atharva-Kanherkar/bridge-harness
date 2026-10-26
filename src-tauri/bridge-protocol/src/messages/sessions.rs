@@ -643,7 +643,8 @@ pub struct TurnImage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitInputParams {
     /// Absent preserves legacy interrupt behavior. Explicit Steer uses native
-    /// steering with queue fallback; Queue waits for the phase boundary.
+    /// steering, or interrupts the turn and runs the guidance next where the
+    /// provider has none; Queue waits for the phase boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn_input: Option<ActiveTurnInput>,
     pub session_id: String,

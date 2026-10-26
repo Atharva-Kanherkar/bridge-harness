@@ -28,7 +28,7 @@ export function queuedFollowUps(sessionId: string, events: BridgeEvent[]): strin
   return [...waiting];
 }
 
-/** Queue is always available; steering requires the provider capability. */
-export function activeTurnAction(capabilities: string[] | undefined, preference: ActiveTurnInput): ActiveTurnInput {
-  return preference === "steer" && capabilities?.includes("steering") ? "steer" : "queue";
+/** Native steering or host interruption delivers guidance; Queue stays explicit. */
+export function activeTurnAction(_capabilities: string[] | undefined, preference: ActiveTurnInput): ActiveTurnInput {
+  return preference;
 }

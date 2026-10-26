@@ -116,6 +116,8 @@ impl NativeCompaction {
     }
 }
 
+pub type InterruptRequest = Box<dyn FnOnce() -> Result<(), BridgeError> + Send>;
+
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
@@ -182,6 +184,20 @@ pub trait AdapterRuntime: Send {
     fn supports_active_turn_steering(&self) -> bool {
         false
     }
+    /// Native steering that names the provider's turn cannot be sent between
+    /// asking for a turn and the provider acknowledging it.
+    fn steer_requires_acknowledged_turn(&self) -> bool {
+        false
+    }
+    /// Deliver to the existing turn. Streaming transports share their input
+    /// channel; request/response transports override this with a native verb.
+    fn steer_turn(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        if images.is_empty() {
+            self.send_turn_with_context(text, context)
+        } else {
+            self.send_turn_with_images(text, context, images)
+        }
+    }
     fn supports_voice_dictation(&self) -> bool { false }
     fn voice_start(&self) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
@@ -193,6 +209,9 @@ pub trait AdapterRuntime: Send {
         Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
+    /// Snapshot an interrupt that can run without retaining the adapter map.
+    /// Unsupported transports use the host's bounded process fallback.
+    fn interrupt_request(&self) -> Option<InterruptRequest> { None }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
     /// Resolve a permission with the exact provider option advertised on the
     /// request. Providers without option ids use the decision vocabulary.
@@ -1692,6 +1711,7 @@ impl HarnessAdapter for CodexAdapter {
                 "streaming",
                 "reasoning",
                 "plans",
+                "steering",
                 "tools",
                 "commands",
                 "file_changes",

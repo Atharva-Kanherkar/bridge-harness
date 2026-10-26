@@ -401,7 +401,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               placeholder={`Ask ${harnessLabel(session.harness)}… / skills & commands · @ files`}
               working={working}
               activeAction={activeAction}
-              activeActionNote={activeTurnInput === "steer" && activeAction === "queue" ? "This provider cannot steer a live turn. Held until the current step finishes." : undefined}
+              activeActionNote={activeTurnInput === "steer" && !adapters.find(adapter => adapter.id === session.harness)?.capabilities.includes("steering") ? "Steer interrupts the current turn and continues with your guidance." : undefined}
               inputRef={inputRef}
             />
           </div>

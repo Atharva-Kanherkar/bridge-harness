@@ -7,8 +7,14 @@ const delivered = (session: StopSession) => !!session.activeTurnId || ["working"
 /** Requests belong to session IDs, including requests made before launch has
  * acknowledged a turn. Switching the selected chat never retargets a stop. */
 export function createSessionStops(interrupt: (id: string) => Promise<void>, changed: () => void, failed: (id: string, error: unknown) => void) {
-  const requests = new Map<string, { sent: boolean; acknowledged: boolean }>();
+  type Send = { cancelled: boolean; finished: boolean; phase: "preparing" | "starting" | "submitted"; withdrawn?: () => void };
+  // `stale`: the chat was already `stopped` when Stop was pressed — its last
+  // turn's state, not news about this request — and has not been seen live since.
+  type Request = { sent: boolean; acknowledged: boolean; stale: boolean; captured: Set<Send>; settled: Promise<void>; release: () => void };
+  const requests = new Map<string, Request>();
+  const sends = new Map<string, Set<Send>>();
   let disposed = false;
+  function remove(id: string) { requests.get(id)?.release(); requests.delete(id); }
   function send(id: string) {
     const request = requests.get(id);
     if (!request || request.sent) return;
@@ -19,16 +25,50 @@ export function createSessionStops(interrupt: (id: string) => Promise<void>, cha
       changed();
     }, error => {
       if (disposed || requests.get(id) !== request) return;
-      requests.delete(id);
+      remove(id);
       failed(id, error);
       changed();
     });
   }
   return {
     has: (id?: string) => !!id && requests.has(id),
+    /** `withdrawn` runs synchronously when Stop lands before submission: the
+     * words never reached the backend, so the sender can hand them back. */
+    beginSend(id: string, withdrawn?: () => void) {
+      const entry: Send = { cancelled: false, finished: false, phase: "preparing", withdrawn };
+      const active = sends.get(id) ?? new Set<Send>();
+      active.add(entry); sends.set(id, active);
+      return {
+        ready: requests.get(id)?.settled,
+        get cancelled() { return disposed || entry.cancelled; },
+        get withdrawn() { return entry.cancelled && entry.phase !== "submitted"; },
+        starting() { entry.phase = "starting"; },
+        submitted() { entry.phase = "submitted"; },
+        stopIfCancelled() {
+          if (entry.cancelled && requests.get(id)?.captured.has(entry)) send(id);
+        },
+        finish() {
+          entry.finished = true; active.delete(entry);
+          if (!active.size) sends.delete(id);
+          if (!disposed) changed();
+        },
+      };
+    },
     request(session: StopSession) {
       if (disposed || requests.has(session.id)) return;
-      requests.set(session.id, { sent: false, acknowledged: false });
+      const captured = new Set(sends.get(session.id));
+      for (const pending of captured) {
+        pending.cancelled = true;
+        if (pending.phase !== "submitted") pending.withdrawn?.();
+      }
+      // Preparation is local work we can invalidate immediately. No provider
+      // turn needs to be launched merely to make it possible to stop it.
+      if (!delivered(session) && captured.size && [...captured].every(item => item.phase === "preparing")) {
+        changed(); return;
+      }
+      let release!: () => void;
+      const settled = new Promise<void>(resolve => { release = resolve; });
+      requests.set(session.id, { sent: false, acknowledged: false, stale: session.status === "stopped", captured, settled, release });
       changed();
       if (delivered(session)) send(session.id);
     },
@@ -36,16 +76,22 @@ export function createSessionStops(interrupt: (id: string) => Promise<void>, cha
       let removed = false;
       for (const [id, request] of requests) {
         const session = sessions.find(session => session.id === id);
+        if (session && session.status !== "stopped") request.stale = false;
         if (session && delivered(session)) { send(id); continue; }
-        if (!pending.has(id) && (!request.sent || request.acknowledged || !session || session.status === "stopped")) {
-          requests.delete(id);
+        // A captured send still starting owns this request: when its launch
+        // returns, it stops what it launched and only then may Stop settle.
+        if ([...request.captured].some(item => !item.finished)) continue;
+        const stopped = session?.status === "stopped" && !request.stale;
+        const pendingSend = !request.captured.size && pending.has(id);
+        if ((stopped || !pendingSend) && (!request.sent || request.acknowledged || !session || stopped)) {
+          remove(id);
           removed = true;
         }
       }
       if (removed) changed();
     },
     activate() { disposed = false; },
-    dispose() { disposed = true; requests.clear(); },
+    dispose() { disposed = true; for (const id of requests.keys()) remove(id); for (const active of sends.values()) for (const entry of active) entry.cancelled = true; sends.clear(); },
   };
 }
 

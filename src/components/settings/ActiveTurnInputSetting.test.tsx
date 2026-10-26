@@ -27,7 +27,7 @@ it("updates all mounted consumers immediately and receives cross-window changes"
     expect(queue.getAttribute("aria-pressed")).toBe("true");
     expect(Array.from(container.querySelectorAll("output")).map(output => output.textContent)).toEqual(["queue", "queue"]);
     expect(localStorage.getItem(ACTIVE_TURN_INPUT_KEY)).toBe("queue");
-    expect(container.textContent).toContain("If a provider cannot steer");
+    expect(container.textContent).toContain("Bridge stops that turn and continues with your guidance");
     await act(async () => {
       localStorage.setItem(ACTIVE_TURN_INPUT_KEY, "steer");
       window.dispatchEvent(new StorageEvent("storage", { key: ACTIVE_TURN_INPUT_KEY }));

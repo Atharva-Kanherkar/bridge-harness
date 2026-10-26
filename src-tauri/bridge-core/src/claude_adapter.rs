@@ -919,6 +919,11 @@ impl AdapterRuntime for ClaudeRuntime {
     fn interrupt(&self) -> Result<(), BridgeError> {
         ClaudeRuntime::interrupt(self)
     }
+    fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
+        let writer = self.writer.clone();
+        let request = json!({"type":"control_request","request_id":format!("irq-{}", self.request_id.fetch_add(1, Ordering::Relaxed)),"request":{"subtype":"interrupt"}});
+        Some(Box::new(move || write_value(&writer, &request)))
+    }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         ClaudeRuntime::respond(self, request_id, decision)
     }

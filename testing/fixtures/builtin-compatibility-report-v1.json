@@ -42,6 +42,7 @@
         "streaming",
         "reasoning",
         "plans",
+        "steering",
         "tools",
         "commands",
         "file_changes",
