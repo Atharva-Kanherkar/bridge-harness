@@ -40,7 +40,7 @@
           "type": "null"
         }
       ],
-      "description": "Absent preserves legacy interrupt behavior. Explicit Steer uses native steering with queue fallback; Queue waits for the phase boundary."
+      "description": "Absent preserves legacy interrupt behavior. Explicit Steer uses native steering, or interrupts the turn and runs the guidance next where the provider has none; Queue waits for the phase boundary."
     },
     "attachments": {
       "description": "Image attachments pasted or otherwise added in the composer. Absent (or `None`) means none: older clients omit it and stay on plain text.",
