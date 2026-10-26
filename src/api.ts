@@ -1,3 +1,5 @@
+import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
+import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
@@ -1483,6 +1485,32 @@ function mockNotifyView(sessionId?: string): DelegationNotifySettingsView {
 }
 
 export const bridgeApi = {
+  getChatDefaults: async (projectId?: string | null): Promise<ChatDefaultsView> => hasBackend() ? call("config/get_chat_defaults", { projectId: projectId ?? null }) : Promise.resolve(mockDefaultsView(mockState, projectId)),
+  saveChatDefaults: async (params: SaveChatDefaultsParams): Promise<ChatDefaultsView> => {
+    if (hasBackend()) return call("config/save_chat_defaults", params);
+    const result = mockSaveDefaults(mockState,params); emitState(); return result;
+  },
+  resolveChatSettings: async (params: ResolveChatSettingsParams): Promise<ResolvedChatSettings> => hasBackend() ? call("sessions/resolve_chat_settings", params) : Promise.resolve(mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params)),
+  createConfiguredChat: async (params: CreateConfiguredChatParams): Promise<ConfiguredChatResult> => {
+    if (hasBackend()) return call("sessions/create_configured_chat", params);
+    const settings = mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params);
+    const id=crypto.randomUUID();
+    mockState.sessions.push({ id, workspaceId: params.workspaceId ?? null, harness: settings.model.harness, label: settings.target.kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt:null, endedAt:null, contextPercent:null,usagePercent:null,metricSource:"estimated",providerSessionId:null,activeTurnId:null,model:settings.model.model ?? null,effort:settings.effort,requestedTier:"standard",restorationMode:"fresh",continuationFidelity:"native",title:params.title ?? null,kind:settings.target.kind === "direct" ? "direct" : "orchestrator",cwd:settings.createWorktree ? `/tmp/bridge/worktrees/${id}` : mockState.workspaces.find(w=>w.id===params.workspaceId)?.path ?? null });
+    const configuration={revision:1,settings};mockSessionSettings.set(id,configuration);emitState();return {sessionId:id,state:snapshot(),configuration};
+  },
+  chatSettings: async (sessionId: string): Promise<ChatSessionSettings> => {
+    if (hasBackend()) return call("sessions/get_chat_settings",{sessionId});
+    const session=mockState.sessions.find(s=>s.id===sessionId);if(!session) throw new Error("Chat no longer exists");
+    const stored=mockSessionSettings.get(sessionId);
+    const settings=stored?.settings ?? { workspaceId:session.workspaceId,projectId:mockState.workspaces.find(w=>w.id===session.workspaceId)?.projectId,revision:{application:0,project:0},target:{kind:session.kind === "direct" ? "direct" as const : "orchestrator" as const},model:{harness:session.harness,model:session.model},effort:session.effort,access:mockConfigState.permissionPolicy.autoApproveProviderPermissions ? "full" as const : "ask" as const,createWorktree:false,activeTurnInput:"steer" as const,sources:{} };
+    return structuredClone({revision:stored?.revision ?? 0,settings:{...settings,model:{harness:session.harness,model:session.model},effort:session.effort}});
+  },
+  updateChatOptions: async (params: UpdateChatOptionsParams): Promise<ChatSessionSettings> => {
+    if(hasBackend()) return call("sessions/update_chat_options",params);
+    const current=await bridgeApi.chatSettings(params.sessionId);if(current.revision!==params.expectedRevision) throw new Error("Chat settings changed. Reload before saving");
+    const next={revision:current.revision+1,settings:{...current.settings,access:params.access,activeTurnInput:params.activeTurnInput}};
+    mockSessionSettings.set(params.sessionId,next);emitState();return structuredClone(next);
+  },
   installCodexUpdate: (): Promise<void> => hasBackend()
     ? unit(call("health/install_codex_update"))
     : Promise.reject(new Error("Codex updates require the Bridge desktop app")),

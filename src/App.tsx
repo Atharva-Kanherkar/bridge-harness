@@ -1,3 +1,7 @@
+import { defaultsFromSettings } from "./chatDefaults";
+import { useResolvedChatDraft } from "./useChatDefaults";
+import { ChatOptionsControl } from "./components/ChatOptionsControl";
+import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings } from "./protocol/generated/protocol";
 import { needsProviderSignIn, providerSignInForEvent, signInRetryPayload, type SignInRetry } from "./providerLogin";
 import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
@@ -189,18 +193,11 @@ function StatusDot({ status }: { status: SessionStatus }) {
   return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />;
 }
 
-// #350: New chat opens an *unstarted* draft — no session row, no scratch dir, no
-// adapter process — until the first message is submitted. The draft captures the
-// choices made before sending. Harness/model are snapshotted at open time so the
-// carry-over from the current direct chat survives deselecting it.
+// A new chat remains an unstarted draft. Only explicit overrides live here;
+// inherited values are resolved by the host for the selected workspace.
 type NewChatDraft = {
-  effort?: string;
-  harness: Harness;
-  model: string | null;
+  overrides?: ChatDefaults;
   workspaceId: string | null;
-  createWorktree: boolean;
-  /** Workspace drafts only: orchestrate (default) or chat with the harness directly. */
-  sessionKind?: WorkspaceSessionKind;
   carryFromSessionId?: string;
 };
 
@@ -1220,6 +1217,23 @@ function AppContent() {
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
+  const resolvedWelcomeWorkspaceId = newChatDraft
+    ? newChatDraft.workspaceId
+    : resolveNewChatWorkspaceId({ activeWorkspaceId: welcomeWorkspaceId, lastWorkspaceId: readLastWorkspaceId(), workspaces: state.workspaces });
+  const draftSettings = useResolvedChatDraft(resolvedWelcomeWorkspaceId, newChatDraft?.overrides ?? {}, adaptersReady && !session && view === "workspace");
+  const [chatConfiguration, setChatConfiguration] = useState<{sessionId:string; value:ChatSessionSettings}>();
+  const currentChatConfiguration = chatConfiguration?.sessionId === session?.id ? chatConfiguration?.value : undefined;
+  useEffect(() => {
+    let active = true;
+    if (session && !session.parentSessionId) void bridgeApi.chatSettings(session.id).then(value => {
+      if (active) setChatConfiguration({sessionId:session.id,value});
+    }).catch(error => { if(active) setError(errorMessage(error)); });
+    return () => { active = false; };
+  }, [session?.id, session?.model, session?.effort, state.events[0]?.id]);
+  function patchDraft(patch: ChatDefaults) {
+    setNewChatDraft(current => ({ ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId }), overrides: { ...current?.overrides, ...patch } }));
+  }
+
   // A review-comment jump from Gitplace: the file lives in a worktree, so the
   // jump waits until a chat in that workspace is the one on screen, through a
   // draft's first message if it has to. Declared after the workspace-change
@@ -1285,7 +1299,8 @@ function AppContent() {
     () => state.events.filter(event => event.kind === "approval.auto_allowed"),
     [state.events],
   );
-  const activeTurnInput = useActiveTurnInput();
+  const legacyActiveTurnInput = useActiveTurnInput();
+  const activeTurnInput = currentChatConfiguration && currentChatConfiguration.revision > 0 ? currentChatConfiguration.settings.activeTurnInput : legacyActiveTurnInput;
   const activeAction = activeTurnAction(adapters.find(adapter => adapter.id === session?.harness)?.capabilities, activeTurnInput);
   const voice = useVoiceDictation({
     ownerKey: composerOwnerRef.current,
@@ -1849,20 +1864,19 @@ function AppContent() {
       if (!text && initialAttachments.length === 0) return undefined;
       setBusy(true); setError(undefined);
       try {
-        // Direct workspace chats start with their selected harness/model. An
-        // orchestrator can still be aligned after creation to the draft picker.
-        let next = draft.workspaceId
-          ? draft.sessionKind === "direct"
-            ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree, "direct", draft.harness, draft.model)
-            : await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
-          : await bridgeApi.createChat(draft.harness, draft.model, null);
-        let created = draft.workspaceId
-          ? [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === draft.workspaceId)
-          : [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
-        if (created && (draft.effort != null || (draft.workspaceId && (created.harness !== draft.harness || (created.model ?? null) !== draft.model)))) {
-          next = await bridgeApi.updateChatModel(created.id, draft.harness, draft.model, draft.effort);
-          created = next.sessions.find(s => s.id === created!.id) ?? created;
+        const overrides = draft.overrides ?? {};
+        const reviewed = draftSettings.settings?.workspaceId === draft.workspaceId ? draftSettings.settings : undefined;
+        const settings = await bridgeApi.resolveChatSettings({workspaceId:draft.workspaceId,overrides,expectedRevision:reviewed?.revision});
+        const agent = settings.target.kind === "agent" ? settings.target : undefined;
+        if ((agent || parseAgentMention(text)) && (initialAttachments.length > 0 || !text)) {
+          throw new Error("Agents need a text objective and workspace file references. Remove image attachments before sending to an agent.");
         }
+        const result = await bridgeApi.createConfiguredChat({workspaceId:draft.workspaceId,overrides,expectedRevision:settings.revision,title:null});
+        const next = result.state;
+        const created = next.sessions.find(item => item.id === result.sessionId);
+        if (!created) throw new Error("The host did not return the created chat");
+        setChatConfiguration({sessionId:result.sessionId,value:result.configuration});
+        const firstMessage = agent && !parseAgentMention(text) ? `#${agent.agentId} ${text}` : text;
         // Carry before selecting: the welcome-message effect fires on session-id
         // change, and the brief must be in the forest before the first cold start
         // compiles its prompt.
@@ -1873,17 +1887,18 @@ function AppContent() {
         if (draft.workspaceId) writeLastWorkspaceId(draft.workspaceId);
         // Tag the message with the created session so it can only land there, even if
         // another session became active while the create awaited.
-        if (created) pendingWelcomeMessageRef.current = { sessionId: created.id, text, attachments: initialAttachments };
+        if (created) pendingWelcomeMessageRef.current = { sessionId: created.id, text:firstMessage, attachments: initialAttachments };
         setState(next);
         setNewChatDraft(null);
         if (created) {
-          if (draft.workspaceId) worktreeBySessionRef.current.set(created.id, draft.createWorktree);
+          if (draft.workspaceId) worktreeBySessionRef.current.set(created.id, settings.createWorktree);
           setSelectedSessionId(created.id);
         }
         return created?.id;
       } catch (e) {
         pendingWelcomeMessageRef.current = null;
         setError(errorMessage(e));
+        draftSettings.reload();
       }
       finally { setBusy(false); }
     } finally {
@@ -1898,10 +1913,11 @@ function AppContent() {
   async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor, alreadyLocked = false, carryFromSessionId?: string): Promise<string | undefined> {
     if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
     const { harness, model } = resolveDraftHarnessModel(harnessOverride);
-    const draft: NewChatDraft = { harness, model, workspaceId: null, createWorktree: false, carryFromSessionId };
+    const draft: NewChatDraft = { workspaceId: null, carryFromSessionId, overrides: harnessOverride ? {target:{kind:"direct"},model:{harness,model},effort:{value:null}} : {target:{kind:"direct"}} };
     const message = initialMessage?.trim();
     if (message) return submitNewChatDraft(draft, message, alreadyLocked);
     setView("workspace"); setParadigm("single");
+    draftSettings.reload();
     setNewChatDraft(draft);
     setSelectedSessionId(undefined);
     return undefined;
@@ -2137,13 +2153,11 @@ function AppContent() {
       // Submit the open draft's choices; on the fresh welcome surface (no draft yet)
       // resolve them from the welcome workspace, just as this path used to.
       const draft: NewChatDraft = newChatDraft ?? {
-        ...resolveDraftHarnessModel(),
         workspaceId: resolveNewChatWorkspaceId({
           activeWorkspaceId: welcomeWorkspaceId,
           lastWorkspaceId: readLastWorkspaceId(),
           workspaces: state.workspaces,
         }),
-        createWorktree: false,
       };
       await submitNewChatDraft(draft, text, true, initialAttachments);
       return false;
@@ -2188,12 +2202,11 @@ function AppContent() {
   }
 
   // Open an unstarted workspace draft (#350) — no row until the first submit.
-  // Snapshot harness/model before deselecting so the carry-over survives.
   function openWorkspaceDraft(workspaceId: string) {
-    const { harness, model } = resolveDraftHarnessModel();
+    draftSettings.reload();
     setView("workspace"); setParadigm("single");
     setWelcomeWorkspaceId(workspaceId);
-    setNewChatDraft({ harness, model, workspaceId, createWorktree: false });
+    setNewChatDraft({ workspaceId });
     setSelectedSessionId(undefined);
   }
 
@@ -2276,22 +2289,10 @@ function AppContent() {
     try {
       const workspaceId = explicitWorkspaceId ?? pendingWorkspaceId;
       if (!workspaceId) return;
-      setBusy(true); setError(undefined);
-      try {
-        const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
-        const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
-        writeLastWorkspaceId(workspaceId);
-        setState(next);
-        // Land in the new agent's chat rather than leaving the user looking at the
-        // card or dialog they came from.
-        if (created) {
-          worktreeBySessionRef.current.set(created.id, createWorktree);
-          openSession(created.id);
-        }
-        closeModal(); setPendingWorkspaceId(undefined);
-        return created?.id;
-      } catch (e) { setError(errorMessage(e)); }
-      finally { setBusy(false); }
+      setView("workspace");setParadigm("single");setWelcomeWorkspaceId(workspaceId);
+      setNewChatDraft({workspaceId,overrides:{createWorktree}});
+      setSelectedSessionId(undefined);closeModal();setPendingWorkspaceId(undefined);
+      return undefined;
     } finally {
       if (!alreadyLocked) newChatPendingRef.current = false;
     }
@@ -3021,18 +3022,24 @@ function AppContent() {
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
-  // Access lives in the composer, chosen where the work happens: "Full access"
-  // grants every provider permission, "User approval" asks first. The saved
-  // policy publishes StateChanged, and `reload` re-reads it for every window.
-  const changeAccessMode = async (mode: AccessMode) => {
+  const changeChatOptions = async (access: AccessMode, input?: ActiveTurnInput) => {
+    if (!session) {patchDraft(input ? {access,activeTurnInput:input} : {access});return;}
+    if (!currentChatConfiguration) return;
+    setBusy(true);
     try {
-      const config = await bridgeApi.savePermissionPolicy({ ...(permissionPolicy ?? {}), autoApproveProviderPermissions: mode === "full" });
-      setPermissionPolicy(config.permissionPolicy);
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-    }
+      const value=await bridgeApi.updateChatOptions({sessionId:session.id,expectedRevision:currentChatConfiguration.revision,access,activeTurnInput:input ?? activeTurnInput});
+      setChatConfiguration({sessionId:session.id,value});await reload();
+    } catch(error) {setError(errorMessage(error));}
+    finally {setBusy(false);}
   };
-  const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
+  const effectiveSettings = session ? currentChatConfiguration?.settings : draftSettings.settings;
+  const accessControl = <><AccessControl disabled={busy} policy={effectiveSettings ? {...(permissionPolicy ?? {workerPromptProposalRoles:[],updatedAt:""}),autoApproveProviderPermissions:effectiveSettings.access === "full"} : undefined} onChange={mode => void changeChatOptions(mode)} />
+    <ChatOptionsControl key={session?.id ?? "new-chat"} settings={effectiveSettings} disabled={busy} onInputChange={input => {if(session) void changeChatOptions(effectiveSettings?.access ?? "ask",input);else patchDraft({activeTurnInput:input});}} onOpenDefaults={() => {setSettingsSection("chatDefaults");setView("settings");}} onContinue={session ? () => {
+      const source=session.id;const workspaceId=session.workspaceId;
+      setNewChatDraft({workspaceId:workspaceId ?? null,carryFromSessionId:source,overrides:effectiveSettings ? defaultsFromSettings(effectiveSettings) : {}});
+      setWelcomeWorkspaceId(workspaceId ?? null);setSelectedSessionId(undefined);setView("workspace");
+    } : undefined} />
+  </>;
   // Account quota lives in the sidebar rail, reading the same provider
   // overviews the menu-bar meter does. The composer shows the model's own
   // context window instead: the two are different things.
@@ -3102,13 +3109,6 @@ function AppContent() {
       onForward={goForward}
     />
   );
-  const resolvedWelcomeWorkspaceId = newChatDraft
-    ? newChatDraft.workspaceId
-    : resolveNewChatWorkspaceId({
-      activeWorkspaceId: welcomeWorkspaceId,
-      lastWorkspaceId: readLastWorkspaceId(),
-      workspaces: state.workspaces,
-    });
   const welcomeWorkspace = state.workspaces.find(item => item.id === resolvedWelcomeWorkspaceId) ?? null;
 
   return <div data-fullscreen={chromeFullscreen ? "" : undefined} className="u-app-shell relative flex h-[100dvh] flex-row overflow-hidden text-foreground">
@@ -3596,21 +3596,11 @@ function AppContent() {
         accessControl={accessControl}
         onVoiceSetup={() => { setSettingsSection("voice"); setView("settings"); }}
         adapters={adapters}
-        harness={(newChatDraft ?? resolveDraftHarnessModel()).harness}
-        model={(newChatDraft ?? resolveDraftHarnessModel()).model}
-        effort={newChatDraft?.effort}
-        onSelectEffort={effort => setNewChatDraft(current => ({
-          ...(current ?? { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
-          effort,
-        }))}
-        onSelectModel={(harness, model) => setNewChatDraft(current => ({
-          ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
-          harness,
-          model,
-          // The picker stays open across the pick so model and thinking are set
-          // together; a level the new model also offers survives the switch.
-          effort: carryEffort(supportedEffortLevelsOf(adapters, harness, model), current?.effort),
-        }))}
+        harness={draftSettings.settings?.model.harness ?? resolveDraftHarnessModel().harness}
+        model={draftSettings.settings?.model.model ?? null}
+        effort={draftSettings.settings?.effort ?? undefined}
+        onSelectEffort={effort => patchDraft({effort:{value:effort}})}
+        onSelectModel={(harness, model) => patchDraft({model:{harness,model},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model),draftSettings.settings?.effort) ?? null}})}
         slashCommands={slashCommands}
         suggestionSettings={suggestionSettings}
         canStartChat={adaptersReady}
@@ -3618,12 +3608,9 @@ function AppContent() {
         workspaces={state.workspaces}
         workspace={welcomeWorkspace}
         projectName={welcomeWorkspace?.projectId ? state.projects.find(project => project.id === welcomeWorkspace.projectId)?.name : undefined}
-        worktree={newChatDraft?.createWorktree ?? false}
-        sessionKind={newChatDraft?.sessionKind ?? "orchestrator"}
-        onSelectSessionKind={sessionKind => setNewChatDraft(current => ({
-          ...(current ?? { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
-          sessionKind,
-        }))}
+        worktree={draftSettings.settings?.createWorktree ?? false}
+        sessionKind={draftSettings.settings?.target.kind === "direct" ? "direct" : "orchestrator"}
+        onSelectSessionKind={kind => patchDraft({target:{kind}})}
         branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
         currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
         branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
@@ -3632,11 +3619,10 @@ function AppContent() {
         onRequestBranches={() => { if (welcomeWorkspace) void requestWorkspaceBranches(welcomeWorkspace.id); }}
         onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
         agents={configuredAgents}
-        onToggleWorktree={() => setNewChatDraft(current => current
-          ? { ...current, createWorktree: !current.createWorktree }
-          // Fresh welcome surface with no draft yet: the worktree decision is now
-          // held on the draft (#350), created on submit — not started immediately.
-          : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
+        selectedAgent={configuredAgents.find(agent => draftSettings.settings?.target.kind === "agent" && agent.id === draftSettings.settings.target.agentId) ?? null}
+        onSelectAgent={agent => patchDraft({target:agent?.id ? {kind:"agent",agentId:agent.id} : {kind:"orchestrator"}})}
+        defaultsNotice={draftSettings.error ?? (draftSettings.loading ? "Loading project defaults…" : undefined)}
+        onToggleWorktree={() => patchDraft({createWorktree:!(draftSettings.settings?.createWorktree ?? false)})}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
         harnessShortcutFailure={harnessShortcutFailure}
         onDraftChange={() => setHarnessShortcutFailure(undefined)}
@@ -3777,9 +3763,12 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
+  selectedAgent: AgentDefinition | null;
+  onSelectAgent: (agent:AgentDefinition | null) => void;
+  defaultsNotice?: string;
   onVoiceSetup: () => void;
   slashCommands: import("./types").SlashCommand[];
   suggestionSettings?: SuggestionSettingsSnapshot;
@@ -3875,13 +3864,13 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
   };
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
-  const [agent, setAgent] = useState<AgentDefinition | null>(null);
-  const agentToken = agent ? agentShortcutCandidates([agent], "")[0]?.token : undefined;
+  const agent = selectedAgent;
   const submit = () => {
     if (voice.isActive()) { void voice.stop(); return; }
     const typed = draft.trim();
     // A chosen agent rides the same `#agent objective` directive the in-chat shortcut parses.
-    const text = agentToken && typed ? `#${agentToken} ${typed}` : typed;
+    const text = typed;
+    if (defaultsNotice) return;
     if (typed === "/voice" && attachments.length === 0) { beginVoice(); return; }
     const started = text || attachments.length > 0 ? onStartChat(text, attachments) : onStartChat();
     void started.then(cleared => { if (cleared) { setDraft(""); setAttachments([]); } });
@@ -3994,9 +3983,10 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
         agents={agents.filter(item => item.enabled && item.role !== "orchestrator")}
         agent={agent}
         onCreateAgent={onOpenAgents}
-        onSelectAgent={next => { setAgent(next); if (next) onSelectSessionKind("orchestrator"); }}
+        onSelectAgent={onSelectAgent}
       /> : undefined}
     />
+    {defaultsNotice && <p role="status" className="mt-2 text-xs text-muted-foreground">{defaultsNotice}</p>}
     <ComposerSuggestionStatus error={completion.error} onRetry={completion.retry} />
     </div>
     {(composerError || harnessShortcutFailure) && <p role="alert" className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError ?? harnessShortcutFailure}</p>}

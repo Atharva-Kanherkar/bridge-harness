@@ -235,6 +235,14 @@ refused at the handshake rather than served values they cannot decode.
 Since 0.6 the request carries an optional `authToken`; hosts serving
 remote-capable transports (the daemon) require it, and nothing ever echoes it.
 
+## Personal chat defaults (1.23)
+
+Protocol 1.23 adds versioned application/project defaults, draft resolution,
+atomic configured chat creation and session-scoped option changes. Both clients
+and daemons require 1.23 so access cannot be displayed with older global-only
+semantics. See [personal chat defaults](../chat-defaults.md) for inheritance,
+revision conflicts, session snapshots and permission boundaries.
+
 ## Methods
 
 `docs/protocol/schemas/methods.json` is the registry. Wire names are

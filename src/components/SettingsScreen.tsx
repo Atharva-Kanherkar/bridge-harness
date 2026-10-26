@@ -28,6 +28,7 @@ import { WorkersPage } from "./settings/WorkersPage";
 import { ClonesPage } from "./settings/ClonesPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { primarySection, SECTION_LABELS, type Section } from "./settings/sections";
+import { ChatDefaultsPage } from "./settings/ChatDefaultsPage";
 import { VoiceSettingsPage } from "./settings/VoiceSettingsPage";
 
 export type { Section };
@@ -238,6 +239,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const navigate = (next: Section) => { setSection(next); setQuery(""); setPresetDetailId(null); setHarnessDetailId(null); };
   const agentPreferences = <>
     <SettingsGroup label="How Bridge works">
+      <SettingsRow label="New chat defaults" description="Choose agent, model, effort, access and other defaults for each project." onOpen={() => navigate("chatDefaults")} />
       <SettingsRow label="Model preferences" description="Choose models for chats and background tasks. Start with Bridge's defaults." onOpen={() => navigate("models")} />
       <SettingsRow label="Agents" description="Your own agents, plus Bridge's built-in ones. Pick one when you start a new chat." onOpen={() => navigate("agents")} />
     </SettingsGroup>
@@ -275,6 +277,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
 
       {!contextual && section !== primarySection(section) && section !== "harnesses" && <div className="mx-auto w-full max-w-page px-5 pt-4 sm:px-8"><TextButton onClick={() => navigate(primarySection(section))}>Back to {SECTION_LABELS[primarySection(section)]}</TextButton></div>}
+      {section === "chatDefaults" && config && <ChatDefaultsPage adapters={adapters} agents={config.agents} onOpenAgents={() => navigate("agents")} />}
       {section === "general" && <AppearancePage title="General" extra={<><ActiveTurnInputSetting onError={onError} />{generalLinks}</>} />}
       {section === "data" && <StoragePage title="Data & storage" extra={dataLinks} onError={onError} copilot={storageCopilot} />}
       {section === "appearance" && <AppearancePage />}
