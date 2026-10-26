@@ -19,12 +19,13 @@
 - `bun run build` and `bun run test` pass in the isolated worktree.
 
 ## E2E Tests
-- Run opt-in live Codex routing evals through Bridge's production Codex adapter with the actual generated per-turn clone context, independent sessions, and a bounded deadline.
-- Cases cover local IPv4/IPv6/localhost QA, public pages, extension testing, unavailable automation, signed-in tasks, explicit clone requests, and local apps requiring existing login state.
+- Run opt-in live routing evals through Bridge's production Codex and Claude adapters with the actual generated per-turn clone context, independent sessions, and a bounded deadline.
+- Cases cover unhinted local QA (no mention of tools or login), local IPv4/IPv6/localhost QA, public pages, extension testing, unavailable automation, signed-in tasks, explicit clone requests, and local apps requiring existing login state.
+- Behavior eval: send realistic tasks unchanged against a served local page and let the agent act. Score whether it invokes the clone-request helper. The old prompt must reproduce the misfire on ordinary local/public tasks, and the revised prompt must not misfire, while signed-in, explicit, and local-with-login cases still request a clone.
 - Record individual results and compare the old and revised prompt on the same cases. Provider errors and tool attempts fail the eval rather than scoring as routing decisions.
-- This is a browser-selection eval; full website interaction and other providers are outside this change's E2E scope.
+- This is a browser-selection eval; full website interaction and OpenCode are outside this change's E2E scope.
 
 ## Manual / cURL Tests
 - Inspect the generated context in the live eval output: ordinary testing must not mandate clone approval, and signed-in state must still require explicit consent.
-- Run `cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core live_browser_selection_eval -- --ignored --nocapture` with authenticated Codex installed.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core live_browser_behavior_eval -- --ignored --nocapture` (and `live_browser_selection_eval`) with authenticated Codex and Claude installed.
 - No external-site cURL or cookie access is needed for this prompt-only change.
