@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Settings2 } from "lucide-react";
 import { Select } from "./settings/kit";
 import { bridgeApi } from "../api";
-import { defaultsFromSettings } from "../chatDefaults";
+import { defaultsFromSettings, settingSourceLabel } from "../chatDefaults";
 import type { ActiveTurnInput, ResolvedChatSettings } from "../protocol/generated/protocol";
 
 export function ChatOptionsControl({ settings, disabled, onInputChange, onContinue, onOpenDefaults }: {
@@ -26,7 +26,7 @@ export function ChatOptionsControl({ settings, disabled, onInputChange, onContin
       <div className="flex items-center justify-between gap-2"><span>While running</span>
         <Select label="Chat input while running" disabled={disabled || busy || !settings} value={settings?.activeTurnInput ?? "steer"} options={[{value:"steer",label:"Steer"},{value:"queue",label:"Queue"}]} width="w-24" onChange={value => onInputChange(value as ActiveTurnInput)} />
       </div>
-      {settings && <p className="text-xs text-muted-foreground">Model: {settings.sources.model ?? "this chat"} · Access: {settings.sources.access ?? "this chat"}</p>}
+      {settings && <p className="text-xs text-muted-foreground">Model: {settingSourceLabel(settings.sources.model)} · Access: {settingSourceLabel(settings.sources.access)}</p>}
       {onContinue && <button type="button" onClick={onContinue} className="rounded-lg px-2 py-1.5 text-left hover:bg-accent">Change agent or mode in a continuation…</button>}
       {settings?.projectId && <button type="button" disabled={disabled || busy} onClick={() => void save(settings.projectId!)} className="rounded-lg px-2 py-1.5 text-left hover:bg-accent disabled:opacity-45">Save as this project's defaults</button>}
       <button type="button" disabled={disabled || busy || !settings} onClick={() => void save(null)} className="rounded-lg px-2 py-1.5 text-left hover:bg-accent disabled:opacity-45">Save as application defaults</button>

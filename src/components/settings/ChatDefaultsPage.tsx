@@ -9,6 +9,16 @@ const INHERIT = "inherit";
 function targetValue(target: ChatLaunchTarget | null | undefined) {
   return target?.kind === "agent" ? `agent:${target.agentId}` : target?.kind ?? INHERIT;
 }
+const modelValue = (model: NonNullable<ChatDefaults["model"]>) => JSON.stringify({ harness: model.harness, model: model.model ?? null });
+type Choice = { value: string; label: string; disabled?: boolean };
+/** The select value for a stored field, so inherited values read with the same labels as the menus. */
+function selectValue(field: keyof ChatDefaults, defaults: ChatDefaults): string {
+  if (defaults[field] == null) return INHERIT;
+  if (field === "target") return targetValue(defaults.target);
+  if (field === "model") return modelValue(defaults.model!);
+  if (field === "effort") return defaults.effort!.value ?? "provider";
+  return String(defaults[field]);
+}
 export function DefaultsSelect({ label, value, options, disabled, onChange }: {
   label: string; value: string; options: Array<{ value: string; label: string; disabled?: boolean }>; disabled?: boolean; onChange: (value: string) => void;
 }) {
@@ -42,14 +52,19 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
   const model = effective.model;
   const adapter = adapters.find(a => a.id === model?.harness);
   const efforts = adapter?.models.find(m => m.id === (model?.model ?? adapter.defaultModel))?.supportedEffortLevels ?? [];
+  const choices: Record<keyof ChatDefaults, Choice[]> = {
+    target: [{ value: "direct", label: "Direct chat" }, { value: "orchestrator", label: "Orchestrator" }, ...agents.filter(a => a.enabled && a.role !== "orchestrator").map(a => ({ value: `agent:${a.id}`, label: a.name }))],
+    model: adapters.filter(a => a.available).flatMap(a => [{ value: modelValue({ harness: a.id, model: null }), label: `${a.label} · Provider default` }, ...a.models.map(m => ({ value: modelValue({ harness: a.id, model: m.id }), label: `${a.label} · ${m.label}`, disabled: m.available === false || m.compatible === false }))]),
+    effort: [{ value: "provider", label: "Provider default" }, ...efforts.map(value => ({ value, label: value }))],
+    access: [{ value: "ask", label: "User approval" }, { value: "full", label: "Full access" }],
+    createWorktree: [{ value: "false", label: "Current project checkout" }, { value: "true", label: "New isolated worktree" }],
+    activeTurnInput: [{ value: "steer", label: "Steer" }, { value: "queue", label: "Queue" }],
+  };
   const source = (field: keyof ChatDefaults) => {
     if (draft[field] != null) return scope ? "This project" : "Application default";
-    const inherited = view?.application.defaults[field];
-    if (!scope || inherited == null) return "Uses the selected agent or Bridge default";
-    const value = field === "access" ? inherited === "full" ? "Full access" : "User approval"
-      : field === "createWorktree" ? inherited ? "isolated worktree" : "current checkout"
-      : typeof inherited === "string" ? inherited : JSON.stringify(inherited);
-    return `Inherits application default: ${value}`;
+    const inherited = selectValue(field, view?.application.defaults ?? {});
+    if (!scope || inherited === INHERIT) return "Uses the selected agent or Bridge default";
+    return `Inherits application default: ${choices[field].find(choice => choice.value === inherited)?.label ?? inherited}`;
   };
   const save = async (defaults: ChatDefaults) => {
     if (!view) return;
@@ -70,15 +85,15 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
     {error && <div role="alert" className="text-ui text-destructive">{error} <TextButton onClick={() => setReload(value => value + 1)}>Reload defaults</TextButton></div>}
     {!view ? <p role="status" className="text-ui text-muted-foreground">{busy ? "Loading defaults…" : "Defaults could not be loaded."}</p> : <>
       <SettingsGroup label="When a chat starts">
-        <SettingsRow label="Agent or chat mode" description={source("target")} control={<DefaultsSelect label="Default chat target" disabled={busy} value={targetValue(draft.target)} options={[inherited, { value: "direct", label: "Direct chat" }, { value: "orchestrator", label: "Orchestrator" }, ...agents.filter(a => a.enabled && a.role !== "orchestrator").map(a => ({ value: `agent:${a.id}`, label: a.name }))]} onChange={value => setField("target", value, value => value.startsWith("agent:") ? { kind: "agent", agentId: value.slice(6) } : { kind: value as "direct" | "orchestrator" })} />} />
-        <SettingsRow label="Model" description={source("model")} control={<DefaultsSelect label="Default chat model" disabled={busy} value={draft.model ? JSON.stringify(draft.model) : INHERIT} options={[inherited, ...adapters.filter(a => a.available).flatMap(a => [{ value: JSON.stringify({ harness: a.id, model: null }), label: `${a.label} · Provider default` }, ...a.models.map(m => ({ value: JSON.stringify({ harness: a.id, model: m.id }), label: `${a.label} · ${m.label}`, disabled: m.available === false || m.compatible === false }))])]} onChange={value => {
+        <SettingsRow label="Agent or chat mode" description={source("target")} control={<DefaultsSelect label="Default chat target" disabled={busy} value={selectValue("target", draft)} options={[inherited, ...choices.target]} onChange={value => setField("target", value, value => value.startsWith("agent:") ? { kind: "agent", agentId: value.slice(6) } : { kind: value as "direct" | "orchestrator" })} />} />
+        <SettingsRow label="Model" description={source("model")} control={<DefaultsSelect label="Default chat model" disabled={busy} value={selectValue("model", draft)} options={[inherited, ...choices.model]} onChange={value => {
           if (value === INHERIT) inherit("model");
           else { const model = JSON.parse(value) as NonNullable<ChatDefaults["model"]>; change({ model, effort: { value: null } }); }
         }} />} />
-        <SettingsRow label="Thinking effort" description={efforts.length ? source("effort") : "This model has no advertised thinking control. Provider default is available."} control={<DefaultsSelect label="Default thinking effort" disabled={busy} value={draft.effort ? draft.effort.value ?? "provider" : INHERIT} options={[inherited, { value: "provider", label: "Provider default" }, ...efforts.map(value => ({ value, label: value }))]} onChange={value => setField("effort", value, value => ({ value: value === "provider" ? null : value }))} />} />
-        <SettingsRow label="Access" description={`${source("access")}. User approval keeps provider approval checks; Full access grants ordinary provider approvals. Browser and other special grants remain separate.`} control={<DefaultsSelect label="Default chat access" disabled={busy} value={draft.access ?? INHERIT} options={[inherited, { value: "ask", label: "User approval" }, { value: "full", label: "Full access" }]} onChange={value => setField("access", value, value => value as "ask" | "full")} />} />
-        <SettingsRow label="Work location" description={`${source("createWorktree")}. An isolated worktree is created only when the first message is sent.`} control={<DefaultsSelect label="Default work location" disabled={busy} value={draft.createWorktree == null ? INHERIT : String(draft.createWorktree)} options={[inherited, { value: "false", label: "Current project checkout" }, { value: "true", label: "New isolated worktree" }]} onChange={value => setField("createWorktree", value, value => value === "true")} />} />
-        <SettingsRow label="Input while running" description={`${source("activeTurnInput")}. Providers without live steer queue input until a safe boundary.`} control={<DefaultsSelect label="Default input while running" disabled={busy} value={draft.activeTurnInput ?? INHERIT} options={[inherited, { value: "steer", label: "Steer" }, { value: "queue", label: "Queue" }]} onChange={value => setField("activeTurnInput", value, value => value as "steer" | "queue")} />} />
+        <SettingsRow label="Thinking effort" description={efforts.length ? source("effort") : "This model has no advertised thinking control. Provider default is available."} control={<DefaultsSelect label="Default thinking effort" disabled={busy} value={selectValue("effort", draft)} options={[inherited, ...choices.effort]} onChange={value => setField("effort", value, value => ({ value: value === "provider" ? null : value }))} />} />
+        <SettingsRow label="Access" description={`${source("access")}. User approval keeps provider approval checks; Full access grants ordinary provider approvals. Browser and other special grants remain separate.`} control={<DefaultsSelect label="Default chat access" disabled={busy} value={selectValue("access", draft)} options={[inherited, ...choices.access]} onChange={value => setField("access", value, value => value as "ask" | "full")} />} />
+        <SettingsRow label="Work location" description={`${source("createWorktree")}. An isolated worktree is created only when the first message is sent.`} control={<DefaultsSelect label="Default work location" disabled={busy} value={selectValue("createWorktree", draft)} options={[inherited, ...choices.createWorktree]} onChange={value => setField("createWorktree", value, value => value === "true")} />} />
+        <SettingsRow label="Input while running" description={`${source("activeTurnInput")}. Providers without live steer queue input until a safe boundary.`} control={<DefaultsSelect label="Default input while running" disabled={busy} value={selectValue("activeTurnInput", draft)} options={[inherited, ...choices.activeTurnInput]} onChange={value => setField("activeTurnInput", value, value => value as "steer" | "queue")} />} />
       </SettingsGroup>
       <SettingsGroup label="Instructions">
         <SettingsRow label="Agent instructions" description="Use your existing agents to configure reusable instructions. Project defaults select the agent by its saved identity." onOpen={onOpenAgents} />

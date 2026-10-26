@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { defaultsFromSettings, layerChatDefaults, sameDefaultsRevision } from "./chatDefaults";
+import { defaultsFromSettings, layerChatDefaults, sameDefaultsRevision, settingSourceLabel } from "./chatDefaults";
 import type { ChatDefaults, ResolvedChatSettings } from "./protocol/generated/protocol";
 
 const settings: ResolvedChatSettings = { workspaceId:"a",projectId:"p",revision:{application:2,project:4},target:{kind:"direct"},model:{harness:"codex",model:null},effort:null,access:"ask",createWorktree:false,activeTurnInput:"queue",sources:{model:"project"} };
 describe("personal chat defaults",()=>{
+  it("names every host setting source in user-facing words",()=>{
+    expect(["application","project","chat","agent","default"].map(settingSourceLabel)).toEqual(["application default","project default","this chat","selected agent","Bridge default"]);
+    expect(settingSourceLabel(undefined)).toBe("this chat");
+  });
   it("keeps explicit false, no agent and provider default choices above inherited fields",()=>{
     expect(layerChatDefaults({access:"full",createWorktree:true,target:{kind:"agent",agentId:"research"},effort:{value:"high"}},{access:"ask",createWorktree:false,target:{kind:"direct"},effort:{value:null}})).toEqual({access:"ask",createWorktree:false,target:{kind:"direct"},effort:{value:null}});
     expect(layerChatDefaults({access:"full"},{access:null})).toEqual({access:"full"});

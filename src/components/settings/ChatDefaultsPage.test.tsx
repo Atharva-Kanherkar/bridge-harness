@@ -36,3 +36,8 @@ it("does not let a late project read overwrite another project's editor",async()
   await act(async()=>q({...view(),project:{revision:9,defaults:{access:"ask"}}}));await act(async()=>p({...view(),project:{revision:5,defaults:{access:"full"}}}));
   await click("Save defaults");expect(save.mock.calls[0][0]).toMatchObject({projectId:"q",expectedRevision:9,defaults:{access:"ask"}});
 });
+it("labels inherited values with the same words as the menus, never raw data",async()=>{
+  await render();await choose("Defaults scope","Project A");
+  expect(host.textContent).toContain("Inherits application default: Codex · Standard");expect(host.textContent).toContain("Inherits application default: Full access");
+  expect(host.textContent).not.toContain('"harness"');
+});
