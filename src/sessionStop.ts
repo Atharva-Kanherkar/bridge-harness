@@ -8,7 +8,9 @@ const delivered = (session: StopSession) => !!session.activeTurnId || ["working"
  * acknowledged a turn. Switching the selected chat never retargets a stop. */
 export function createSessionStops(interrupt: (id: string) => Promise<void>, changed: () => void, failed: (id: string, error: unknown) => void) {
   type Send = { cancelled: boolean; finished: boolean; phase: "preparing" | "starting" | "submitted"; withdrawn?: () => void };
-  type Request = { sent: boolean; acknowledged: boolean; captured: Set<Send>; settled: Promise<void>; release: () => void };
+  // `stale`: the chat was already `stopped` when Stop was pressed — its last
+  // turn's state, not news about this request — and has not been seen live since.
+  type Request = { sent: boolean; acknowledged: boolean; stale: boolean; captured: Set<Send>; settled: Promise<void>; release: () => void };
   const requests = new Map<string, Request>();
   const sends = new Map<string, Set<Send>>();
   let disposed = false;
@@ -66,7 +68,7 @@ export function createSessionStops(interrupt: (id: string) => Promise<void>, cha
       }
       let release!: () => void;
       const settled = new Promise<void>(resolve => { release = resolve; });
-      requests.set(session.id, { sent: false, acknowledged: false, captured, settled, release });
+      requests.set(session.id, { sent: false, acknowledged: false, stale: session.status === "stopped", captured, settled, release });
       changed();
       if (delivered(session)) send(session.id);
     },
@@ -74,11 +76,14 @@ export function createSessionStops(interrupt: (id: string) => Promise<void>, cha
       let removed = false;
       for (const [id, request] of requests) {
         const session = sessions.find(session => session.id === id);
+        if (session && session.status !== "stopped") request.stale = false;
         if (session && delivered(session)) { send(id); continue; }
-        const pendingSend = request.captured.size
-          ? [...request.captured].some(item => !item.finished)
-          : pending.has(id);
-        if ((session?.status === "stopped" || !pendingSend) && (!request.sent || request.acknowledged || !session || session.status === "stopped")) {
+        // A captured send still starting owns this request: when its launch
+        // returns, it stops what it launched and only then may Stop settle.
+        if ([...request.captured].some(item => !item.finished)) continue;
+        const stopped = session?.status === "stopped" && !request.stale;
+        const pendingSend = !request.captured.size && pending.has(id);
+        if ((stopped || !pendingSend) && (!request.sent || request.acknowledged || !session || stopped)) {
           remove(id);
           removed = true;
         }

@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { createSessionStops } from "./sessionStop";
-const session = (id: string, status: "working" | "idle" = "working") => ({ id, status, activeTurnId: null });
+const session = (id: string, status: "working" | "idle" | "stopped" = "working") => ({ id, status, activeTurnId: null });
 it("pending Stop remains owned by the original chat after switching", async () => {
   const interrupt = vi.fn().mockResolvedValue(undefined);
   const stops = createSessionStops(interrupt, vi.fn(), vi.fn());
@@ -100,4 +100,39 @@ it("keeps a submitted message's bubble: only unsent words are withdrawn", () => 
   expect(sent.withdrawn).toBe(false);
   expect(startingWithdrawn).toHaveBeenCalledOnce();
   expect(starting.withdrawn).toBe(true);
+});
+
+it("keeps a Stop pressed during startup of a previously stopped chat until that startup is stopped", async () => {
+  const interrupt = vi.fn().mockResolvedValue(undefined);
+  const stops = createSessionStops(interrupt, vi.fn(), vi.fn());
+  const starting = stops.beginSend("a"); starting.starting();
+  stops.request(session("a", "stopped"));
+  const next = stops.beginSend("a");
+  let released = false;
+  void next.ready!.then(() => { released = true; });
+  // The previous turn's `stopped` is not news about this request.
+  stops.reconcile([session("a", "stopped")], new Set(["a"]));
+  expect(stops.has("a")).toBe(true);
+  starting.stopIfCancelled();
+  expect(interrupt).toHaveBeenCalledOnce();
+  starting.finish();
+  stops.reconcile([session("a", "stopped")], new Set());
+  await Promise.resolve();
+  expect(released, "a later send waits for this startup to be stopped").toBe(false);
+  await Promise.resolve();
+  stops.reconcile([session("a", "stopped")], new Set());
+  await next.ready;
+  expect(stops.has("a")).toBe(false);
+  expect(next.cancelled).toBe(false);
+});
+
+it("treats stopped as settlement once the chat has been seen live since Stop", () => {
+  const stops = createSessionStops(() => new Promise<void>(() => {}), vi.fn(), vi.fn());
+  const starting = stops.beginSend("a"); starting.starting();
+  stops.request(session("a", "stopped"));
+  stops.reconcile([session("a", "idle")], new Set(["a"]));
+  starting.stopIfCancelled(); starting.finish();
+  // The interrupt never answers, but the durable state says the launch is stopped.
+  stops.reconcile([session("a", "stopped")], new Set());
+  expect(stops.has("a")).toBe(false);
 });

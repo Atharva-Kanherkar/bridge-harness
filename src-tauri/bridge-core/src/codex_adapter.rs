@@ -724,6 +724,8 @@ impl AdapterRuntime for CodexRuntime {
     }
     fn supports_images(&self) -> bool { true }
     fn supports_active_turn_steering(&self) -> bool { true }
+    /// `turn/steer` carries `expectedTurnId`, which only `turn/started` supplies.
+    fn steer_requires_acknowledged_turn(&self) -> bool { true }
     fn steer_turn(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
         let turn_id = self.current_turn.lock().unwrap().clone()
             .ok_or_else(|| BridgeError::Invalid("The turn has finished; send the guidance again to start the next turn".into()))?;

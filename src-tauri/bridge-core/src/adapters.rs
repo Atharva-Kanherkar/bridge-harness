@@ -184,6 +184,11 @@ pub trait AdapterRuntime: Send {
     fn supports_active_turn_steering(&self) -> bool {
         false
     }
+    /// Native steering that names the provider's turn cannot be sent between
+    /// asking for a turn and the provider acknowledging it.
+    fn steer_requires_acknowledged_turn(&self) -> bool {
+        false
+    }
     /// Deliver to the existing turn. Streaming transports share their input
     /// channel; request/response transports override this with a native verb.
     fn steer_turn(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {

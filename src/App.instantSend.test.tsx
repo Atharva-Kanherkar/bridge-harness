@@ -140,6 +140,29 @@ describe("sending a message reacts before the daemon answers", () => {
     expect(interrupt).not.toHaveBeenCalled();
   });
 
+  it("stops what a held startup launches on a chat whose last turn was stopped", async () => {
+    const chat = (await bridgeApi.state()).sessions.find(item => item.workspaceId === "demo-2" && item.kind === "orchestrator")!;
+    await act(async () => { await bridgeApi.stopSession(chat.id); });
+    await settle(4);
+    const gate = deferred<void>();
+    const realStart = bridgeApi.startChat.bind(bridgeApi);
+    const start = vi.spyOn(bridgeApi, "startChat").mockImplementation(async id => { await gate.promise; return realStart(id); });
+    const submit = vi.spyOn(bridgeApi, "submitInput");
+    const realInterrupt = bridgeApi.interruptTurn.bind(bridgeApi);
+    const interrupt = vi.spyOn(bridgeApi, "interruptTurn").mockImplementation(id => realInterrupt(id));
+    await send("start then stop");
+    await settle(4);
+    expect(start).toHaveBeenCalledOnce();
+    await click(stopButton()!);
+    // The previous turn's stopped state reconciles while startup is held.
+    await settle(4);
+    gate.resolve();
+    await settle(6);
+    expect(interrupt).toHaveBeenCalledWith(chat.id);
+    expect(submit).not.toHaveBeenCalled();
+    expect(composer()!.value).toBe("start then stop");
+  });
+
   it("shows the user's bubble and the Stop control while prepareTurn is still pending", async () => {
     const held = deferred<{ text: string; interceptions: [] }>();
     vi.spyOn(bridgeApi, "prepareTurn").mockReturnValue(held.promise);
