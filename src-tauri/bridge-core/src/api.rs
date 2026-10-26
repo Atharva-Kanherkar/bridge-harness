@@ -1527,6 +1527,7 @@ pub fn update_chat_model(
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
     let _lifecycle = core.claim_session_lifecycle(session_id, "model switch")?;
+    crate::chat_defaults::validate_model_switch(&core.db.lock().unwrap(), &core.adapter_registry, session_id, &store::harness_name(harness))?;
     let change = core.plan_chat_model_change(session_id, harness, model)?;
     let (previous_model, previous_effort): (Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
         "SELECT model,effort FROM sessions WHERE id=?1", params![session_id],
@@ -2790,6 +2791,9 @@ fn resolve_provider_permission(
     reason: Option<&str>,
 ) -> Result<wire::InteractionResolutionResult, BridgeError> {
     let db = core.db.lock().unwrap();
+    if actor == "policy" && crate::chat_defaults::effective_access(&db,session_id)? != wire::ChatAccess::Full {
+        return Err(BridgeError::Invalid("Automatic permission grant is no longer authorized".into()));
+    }
     let (payload, adapter_id, is_worker) =
         interaction_payload(&db, session_id, event_id, "permission.requested")?;
     let details = payload.get("data").cloned().unwrap_or_else(|| serde_json::json!({}));

@@ -394,6 +394,7 @@ impl BridgeCore {
                 params![id, if carried { "projected_at_boundary" } else { "native" }],
             )?;
         }
+        crate::chat_defaults::inherit_session_settings(&transaction, source_session_id, &id)?;
         transaction.commit()?;
         Ok((id, carried, native_fork))
     }
@@ -2010,6 +2011,7 @@ pub(crate) fn fork_session_records(
         session_id,
         &format!("Fork {id} created at {entry_id}"),
     )?;
+    crate::chat_defaults::inherit_session_settings(&transaction, session_id, &id)?;
     transaction.commit()?;
     Ok(id)
 }

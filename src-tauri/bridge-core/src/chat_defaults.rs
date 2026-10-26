@@ -440,7 +440,7 @@ pub fn session_settings(
 }
 /// Follow only real parent rows. New root sessions always have an explicit
 /// snapshot; older roots keep the legacy global policy until edited by a user.
-pub fn effective_access(db: &Connection, session_id: &str) -> Result<ChatAccess, BridgeError> {
+pub fn scoped_access(db: &Connection, session_id: &str) -> Result<Option<ChatAccess>, BridgeError> {
     let mut current = Some(session_id.to_owned());
     let mut seen = std::collections::HashSet::new();
     while let Some(id) = current {
@@ -453,9 +453,16 @@ pub fn effective_access(db: &Connection, session_id: &str) -> Result<ChatAccess,
             |r| r.get(0),
         )?;
         if let Some(stored) = snapshot(db, &id)? {
-            return Ok(stored.settings.access);
+            return Ok(Some(stored.settings.access));
         }
         current = parent;
+    }
+    Ok(None)
+}
+
+pub fn effective_access(db: &Connection, session_id: &str) -> Result<ChatAccess, BridgeError> {
+    if let Some(access) = scoped_access(db, session_id)? {
+        return Ok(access);
     }
     Ok(
         if agent_config::permission_policy(db)?.auto_approve_provider_permissions {
@@ -1166,6 +1173,175 @@ mod tests {
             0
         );
     }
+    struct LaunchProbe(
+        std::sync::Arc<std::sync::Mutex<Vec<(Option<WriteMode>, Option<String>, Option<String>)>>>,
+    );
+    impl adapters::HarnessAdapter for LaunchProbe {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            descriptor()
+        }
+        fn start(
+            &self,
+            r: adapters::StartRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
+            self.0.lock().unwrap().push((
+                r.write_mode,
+                r.model.map(str::to_owned),
+                r.effort.map(str::to_owned),
+            ));
+            Err(invalid("probe: launch boundary reached"))
+        }
+        fn resume(
+            &self,
+            r: adapters::ResumeRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
+            self.0.lock().unwrap().push((
+                r.write_mode,
+                r.model.map(str::to_owned),
+                r.effort.map(str::to_owned),
+            ));
+            Err(invalid("probe: resume boundary reached"))
+        }
+        fn supports_native_resume(&self) -> bool {
+            true
+        }
+        fn normalize(&self, _: &Value) -> Vec<crate::agent::NormalizedEvent> {
+            vec![]
+        }
+    }
+    #[test]
+    fn configured_root_launch_passes_concrete_access_and_provider_defaults() {
+        for (access, expected) in [("ask", WriteMode::Shared), ("full", WriteMode::Full)] {
+            let (_dir, mut core) = fixture();
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+            let mut registry = adapters::AdapterRegistry::empty();
+            registry
+                .register(Box::new(LaunchProbe(calls.clone())))
+                .unwrap();
+            Arc::get_mut(&mut core).unwrap().adapter_registry = Arc::new(registry);
+            let chat = create_value(
+                &core,
+                "a",
+                json!({"target":{"kind":"direct"},"model":{"harness":"codex","model":null},"effort":{"value":null},"access":access}),
+            );
+            let error = crate::live_turn::start_chat(&core, chat.session_id).unwrap_err();
+            assert!(error.to_string().contains("probe:"), "{error}");
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0], (Some(expected), None, None));
+        }
+    }
+    #[test]
+    fn inherited_aside_and_fork_authority_does_not_follow_global_full_access() {
+        let (_dir, core) = fixture();
+        let source = create_value(&core, "a", json!({"access":"ask"}));
+        let db = core.db.lock().unwrap();
+        agent_config::save_permission_policy(
+            &db,
+            agent_config::PermissionPolicy {
+                auto_approve_provider_permissions: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(id,harness,label,status,kind) VALUES('fork','codex','fork','idle','direct')",[]).unwrap();
+        inherit_session_settings(&db, &source.session_id, "fork").unwrap();
+        assert_eq!(effective_access(&db, "fork").unwrap(), ChatAccess::Ask);
+        assert!(matches!(
+            root_write_mode(&db, "fork").unwrap(),
+            Some(WriteMode::Shared)
+        ));
+    }
+    #[test]
+    fn changing_access_declines_old_permissions_and_stale_auto_grants() {
+        let (_dir, core) = fixture();
+        let chat = create_value(&core, "a", json!({"access":"full"}));
+        let sequence = {
+            let db = core.db.lock().unwrap();
+            let mut event = crate::agent::NormalizedEvent::new("permission.requested");
+            event.data = json!({"requestId":1});
+            store::session_event(&db, &chat.session_id, &event, &Value::Null)
+                .unwrap()
+                .sequence
+        };
+        update_options(
+            &core,
+            &UpdateChatOptionsParams {
+                session_id: chat.session_id.clone(),
+                expected_revision: 1,
+                access: ChatAccess::Ask,
+                active_turn_input: ActiveTurnInput::Steer,
+            },
+        )
+        .unwrap();
+        assert!(
+            crate::api::auto_resolve_provider_permission(&core, &chat.session_id, sequence)
+                .is_err()
+        );
+        let db = core.db.lock().unwrap();
+        assert_eq!(db.query_row("SELECT decision FROM interaction_resolutions WHERE session_id=?1 AND request_sequence=?2",params![chat.session_id,sequence],|r|r.get::<_,String>(0)).unwrap(),"decline");
+    }
+    #[test]
+    fn removed_models_and_unenforceable_switches_fail_before_provider_start() {
+        let (_dir, core) = fixture();
+        let chat = create_value(&core, "a", json!({}));
+        let db = core.db.lock().unwrap();
+        assert!(validate_launch(
+            &db,
+            &core.adapter_registry,
+            &chat.session_id,
+            "codex",
+            Some("removed"),
+            None
+        )
+        .is_err());
+        assert!(validate_model_switch(
+            &db,
+            &core.adapter_registry,
+            &chat.session_id,
+            "unregistered"
+        )
+        .is_err());
+    }
+    #[test]
+    fn a_scoped_approval_chat_cannot_launch_an_unrestricted_worker() {
+        use crate::delegation::*;
+        let (_dir, core) = fixture();
+        let chat = create_value(&core, "a", json!({"access":"ask"}));
+        let request = DelegationRequest {
+            schema_version: SCHEMA_VERSION,
+            role: WorkerRole::Implementation,
+            objective: "change files".into(),
+            acceptance_criteria: vec!["tests".into()],
+            known_facts: vec![],
+            decisions: vec![],
+            evidence_ids: vec![],
+            relevant_files: vec![],
+            owned_paths: vec!["**".into()],
+            write_mode: WriteMode::Full,
+            capability_tier: CapabilityTier::Standard,
+            effort: Effort::Medium,
+            network_access: false,
+            writable_output_paths: vec![],
+            verification: vec![],
+            output_contract: OutputContract::ImplementationResult,
+            harness: Some("codex".into()),
+            model: None,
+        };
+        let error = crate::policy_coordinator::PolicyCoordinator::decide_worker_route(
+            &core.db.lock().unwrap(),
+            &chat.session_id,
+            "turn",
+            &request,
+            true,
+        )
+        .err()
+        .expect("unrestricted worker must be refused");
+        assert!(error.to_string().contains("requires user approval"));
+    }
     #[test]
     fn seeded_fuzz_layering_and_strict_payloads() {
         // xorshift64, fixed seed: replayable without OS randomness or extra dependencies.
@@ -1211,4 +1387,75 @@ mod tests {
             let _ = serde_json::from_str::<ChatDefaults>(&bytes);
         }
     }
+}
+
+/// Provider flags are checked on every launch/resume, including after a model
+/// change. An explicit provider default must not become an unrelated tier pin.
+pub fn validate_launch(
+    db: &Connection,
+    registry: &adapters::AdapterRegistry,
+    session_id: &str,
+    harness: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<bool, BridgeError> {
+    let Some(settings) = snapshot(db, session_id)? else {
+        return Ok(false);
+    };
+    let descriptors = registry.descriptors();
+    validate_model(
+        &ChatModelChoice {
+            harness: harness.into(),
+            model: model.map(str::to_owned),
+        },
+        effort,
+        &descriptors,
+        db,
+    )?;
+    validate_access(harness, settings.settings.access, &descriptors)?;
+    Ok(true)
+}
+/// Forks/asides are independent roots, so authority must travel explicitly in
+/// the same insertion transaction rather than falling back to global policy.
+pub fn inherit_session_settings(
+    db: &Connection,
+    source: &str,
+    target: &str,
+) -> Result<(), BridgeError> {
+    if let Some(mut stored) = snapshot(db, source)? {
+        let (harness, model, effort, workspace): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = db.query_row(
+            "SELECT harness,model,effort,workspace_id FROM sessions WHERE id=?1",
+            [target],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        stored.revision = 1;
+        stored.settings.target = ChatLaunchTarget::Direct;
+        stored.settings.workspace_id = workspace.clone();
+        stored.settings.project_id = workspace_project(db, workspace.as_deref())?;
+        stored.settings.model = ChatModelChoice { harness, model };
+        stored.settings.effort = effort;
+        stored
+            .settings
+            .sources
+            .insert("access".into(), "source chat".into());
+        write(db, SESSION_KIND, target, &stored)?;
+    }
+    Ok(())
+}
+
+pub fn validate_model_switch(
+    db: &Connection,
+    registry: &adapters::AdapterRegistry,
+    session_id: &str,
+    harness: &str,
+) -> Result<(), BridgeError> {
+    if let Some(settings) = snapshot(db, session_id)? {
+        validate_access(harness, settings.settings.access, &registry.descriptors())?;
+    }
+    Ok(())
 }

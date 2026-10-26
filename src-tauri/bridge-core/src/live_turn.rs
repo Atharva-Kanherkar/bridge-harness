@@ -1176,6 +1176,7 @@ pub fn start_session(
         )?
     };
     let dispatch_id = launch_plan.adapter_id.as_str();
+    let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
             .chat_scratch_dir(&session_id)
@@ -1282,7 +1283,7 @@ pub fn start_session(
                 model: chosen_model.as_deref(),
                 effort: chosen_effort_name,
                 instructions: Some(instructions),
-                write_mode: None,
+                write_mode: root_write_mode,
                 read_only_sandbox: None,
                 briefing: None,
                 on_progress: None,
@@ -1315,7 +1316,7 @@ pub fn start_session(
                     model: chosen_model.as_deref(),
                     effort: chosen_effort_name,
                     instructions: Some(orchestrator_instructions.as_str()),
-                    write_mode: None,
+                    write_mode: root_write_mode,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: None,
@@ -1656,13 +1657,15 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         )?
     };
     let dispatch_id = launch_plan.adapter_id.clone();
+    let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
+    let scoped_settings = crate::chat_defaults::validate_launch(&state.db.lock().unwrap(), &state.adapter_registry, &session_id, adapter_id, model.as_deref(), effort.as_deref())?;
     let tier = if is_orchestrator {
         orchestrator::TIER
     } else {
         CapabilityTier::Fast
     };
     let configured_harness = agent_config::harness_config(&state.db.lock().unwrap(), adapter_id);
-    let chosen_model = model
+    let chosen_model = if scoped_settings { model.clone() } else { model
         .as_ref()
         .filter(|value| !value.is_empty())
         .cloned()
@@ -1721,7 +1724,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 .resolve_model(adapter_id, tier, None)
                 .ok()
                 .map(|resolution| resolution.actual_model)
-        });
+        }) };
     let (configured_prompt, prompt_stack) = {
         let db = state.db.lock().unwrap();
         let target = if is_orchestrator {
@@ -1840,9 +1843,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
-    let chosen_effort = effort
+    let chosen_effort = if scoped_settings { effort.clone() } else { effort
         .filter(|value| !value.is_empty())
-        .or(configured_effort);
+        .or(configured_effort) };
     let registry = state.adapter_registry.clone();
     let launch_adapter_id = dispatch_id.clone();
     let launch_cwd = cwd.clone();
@@ -1880,7 +1883,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
                 instructions: Some(instructions),
-                write_mode: None,
+                write_mode: root_write_mode,
                 read_only_sandbox: None,
                 briefing: None,
                 on_progress: Some(&on_startup_progress),
@@ -1911,7 +1914,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
                     instructions: Some(&runtime_instructions),
-                    write_mode: None,
+                    write_mode: root_write_mode,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: Some(&on_startup_progress),
@@ -1980,7 +1983,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
                     instructions: Some(&runtime_instructions),
-                    write_mode: None,
+                    write_mode: root_write_mode,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: Some(&on_startup_progress),
@@ -2924,7 +2927,7 @@ fn handle_agent_value_timed(
                     // reach this arm. Checked anyway — a structural guarantee
                     // that is also asserted is one that survives a refactor.
                     let is_permission_request = event.kind == "permission.requested";
-                    let auto_approve_this_event = should_auto_approve_permission(&db, event);
+                    let auto_approve_this_event = should_auto_approve_permission(&db, session_id, event);
                     if own_depth > 0 {
                         let _ = session_supervisor::SessionSupervisor::transition(
                             &db,
@@ -3179,7 +3182,7 @@ fn handle_agent_value_timed(
             }
         }
         for mut normalized_event in normalized {
-            let auto_approve_this_event = should_auto_approve_permission(&db, &normalized_event);
+            let auto_approve_this_event = should_auto_approve_permission(&db, session_id, &normalized_event);
             // Policy-owned permission requests are born settling. Clients may
             // observe this request before the provider reply returns, but they
             // must never observe an actionable human race window.
@@ -6602,14 +6605,14 @@ fn queue_parent_prompt_notice(
     }
 }
 
-fn should_auto_approve_permission(db: &Connection, event: &agent::NormalizedEvent) -> bool {
+fn should_auto_approve_permission(db: &Connection, session_id: &str, event: &agent::NormalizedEvent) -> bool {
     event.kind == "permission.requested"
         && !matches!(event.data.get("approvalType")
             .or_else(|| event.data.pointer("/data/approvalType"))
             .and_then(serde_json::Value::as_str),
             Some("delegation_path_scope" | "prompt_mutation"))
-        && agent_config::permission_policy(db)
-            .map(|policy| policy.auto_approve_provider_permissions)
+        && crate::chat_defaults::effective_access(db, session_id)
+            .map(|access| access == wire::ChatAccess::Full)
             .unwrap_or(false)
 }
 
@@ -11074,7 +11077,7 @@ fn configured_worker_request(
         }
     };
     let automatic_harness = agent.harness == "bridge";
-    let request = delegation::DelegationRequest {
+    let mut request = delegation::DelegationRequest {
         schema_version: delegation::SCHEMA_VERSION,
         role,
         objective,
@@ -11104,6 +11107,9 @@ fn configured_worker_request(
         harness: (!automatic_harness).then(|| agent.harness.clone()),
         model: (!automatic_harness).then(|| agent.model.clone()).flatten(),
     };
+    if !agent.system_prompt.trim().is_empty() {
+        request.known_facts.push(format!("User-selected agent instructions:\n{}", agent.system_prompt));
+    }
     request.validate().map_err(BridgeError::Invalid)?;
     Ok(request)
 }
@@ -11200,7 +11206,15 @@ pub fn dispatch_agent_shortcut(
             "Agent shortcuts need a connected workspace so Bridge can enforce worker isolation and path scope".into(),
         ));
     }
-    let configured_agent = agent_config::resolve_worker_agent(&core.db.lock().unwrap(), &token)?;
+    let configured_agent = {
+        let db = core.db.lock().unwrap();
+        let selected = crate::chat_defaults::snapshot(&db, &session_id)?;
+        match selected.and_then(|s| match s.settings.target { wire::ChatLaunchTarget::Agent { agent_id } => Some(agent_id), _ => None }) {
+            Some(id) if agent_config::normalize_agent_token(&id) == agent_config::normalize_agent_token(&token) =>
+                crate::chat_defaults::selected_agent(&db, &session_id, &id)?.ok_or_else(|| BridgeError::Invalid("Saved agent configuration is unavailable".into()))?,
+            _ => agent_config::resolve_worker_agent(&db, &token)?,
+        }
+    };
     let normalized_token = agent_config::normalize_agent_token(&token);
     let (display_objective, worker_objective, interceptions) =
         prepare_direct_agent_objective(core, &session_id, objective.trim());

@@ -24,6 +24,10 @@ impl PolicyCoordinator {
         request: &DelegationRequest,
         child_worktrees_available: bool,
     ) -> Result<WorkerRouteContext, BridgeError> {
+        if request.write_mode == crate::delegation::WriteMode::Full
+            && crate::chat_defaults::scoped_access(db,parent_session_id)? == Some(bridge_protocol::messages::ChatAccess::Ask) {
+            return Err(BridgeError::Invalid("This chat requires user approval. Change its access before requesting an unrestricted worker".into()));
+        }
         let (workspace_id, parent_depth, path, branch): (String, i64, String, String) = db
             .query_row(
                 "SELECT s.workspace_id,COALESCE(s.depth,0),w.path,w.branch FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
@@ -47,8 +51,8 @@ impl PolicyCoordinator {
             let mut provenance = owned_path_provenance(db, parent_session_id, turn_id, Path::new(&path))?;
             // Full access means every approval is granted for the user, and a
             // write-scope card is an approval. An unreadable policy asks.
-            provenance.full_access = crate::agent_config::permission_policy(db)
-                .map(|policy| policy.auto_approve_provider_permissions)
+            provenance.full_access = crate::chat_defaults::effective_access(db, parent_session_id)
+                .map(|access| access == bridge_protocol::messages::ChatAccess::Full)
                 .unwrap_or(false);
             provenance
         };
