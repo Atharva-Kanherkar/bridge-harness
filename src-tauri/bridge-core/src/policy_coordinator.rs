@@ -822,6 +822,11 @@ mod tests {
         assert!(matches!(outcome, WorkerReservationOutcome::Reserved(_)));
         assert!(resolve_policy_delegation_approval(&db, "parent", approval.sequence, "accept", &approval.payload).is_err());
         assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(
+            db.query_row("SELECT title FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_, Option<String>>(0)).unwrap(),
+            Some("Implement the requested change".to_owned()),
+            "a reserved worker is named after its objective"
+        );
         assert_eq!(SessionForest::new(&db).active_branch("parent").unwrap().iter().filter(|entry| entry.kind == "approval.requested").count(), 1);
     }
 

@@ -6,6 +6,7 @@ import { bridgeApi } from "../api";
 import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, Session, SessionEntry, SessionForestSnapshot, WorkerRuntimeRecord } from "../types";
 import { AgentChat } from "./AgentChat";
+import { agentName } from "./agentIdentity";
 
 // Contract: testing/feat-agents-pane-auto-open.md, agent chat.
 
@@ -116,5 +117,40 @@ describe("AgentChat", () => {
     await mount({ onSteer: undefined });
     expect(container.querySelector("textarea")).toBeNull();
     expect(container.textContent).not.toContain("This worker has finished");
+  });
+
+  // Contract: testing/fix-agent-starting-state.md, starting state.
+  describe("before the worker's first message", () => {
+    beforeEach(() => {
+      vi.spyOn(bridgeApi, "sessionForest").mockResolvedValue({ entries: [], head: { activeEntryId: null } } as unknown as SessionForestSnapshot);
+    });
+
+    it("shows a starting spinner with the worker's name and topic, not the chat greeting", async () => {
+      await mount({
+        session: worker({ status: "starting", title: "Rank the gateway repos" }),
+        runtime: runtime({ lifecycleState: "starting" }),
+      });
+      const name = agentName("w1");
+      const starting = container.querySelector(`[role="status"][aria-label="${name} is starting"]`);
+      expect(starting).not.toBeNull();
+      expect(starting!.textContent).toContain("Rank the gateway repos");
+      expect(starting!.textContent).toContain("Waiting for its first message from Claude");
+      expect(starting!.querySelector("svg.animate-spin")).not.toBeNull();
+      expect(container.textContent).not.toContain("Say the word");
+    });
+
+    it("says the worker is starting rather than finished", async () => {
+      await mount({ session: worker({ status: "starting" }), runtime: runtime({ lifecycleState: "starting" }) });
+      expect(container.textContent).not.toContain("This worker has finished");
+      expect(container.textContent).toContain("You can steer this worker once it is running");
+      expect(container.querySelector('textarea[aria-label="Steer this worker…"]')).toBeNull();
+    });
+
+    it("notes a worker that ended without a word instead of greeting", async () => {
+      await mount({ session: worker({ status: "failed" }), runtime: runtime({ lifecycleState: "failed" }) });
+      expect(container.textContent).toContain("No messages recorded");
+      expect(container.textContent).not.toContain("is starting");
+      expect(container.textContent).toContain("This worker has finished");
+    });
   });
 });
