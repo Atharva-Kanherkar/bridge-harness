@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { bridgeApi } from "./api";
+import { writeActiveTurnInput } from "./activeTurnSettings";
 
 // xterm paints to canvas, which jsdom lacks; the pane only needs to mount here.
 vi.mock("@xterm/xterm", () => ({
@@ -211,8 +212,10 @@ describe("a send that finishes later takes only what it sent", () => {
 
 describe("a follow-up sent while the chat works", () => {
   it("keeps one bubble that says it is queued once the backend acknowledges it", async () => {
-    // The working demo chat queues follow-ups; its row is published before
-    // submitInput even returns, so the optimistic bubble hands over at once.
+    // Queue is chosen explicitly: every provider can now be steered. The
+    // queued row is published before submitInput even returns, so the
+    // optimistic bubble hands over at once.
+    await act(async () => writeActiveTurnInput("queue"));
     const working = chatRows().findIndex(row => row.textContent?.includes("working"));
     expect(working, "the demo has a working chat").toBeGreaterThanOrEqual(0);
     await open(working);
