@@ -17727,22 +17727,27 @@ mod permission_policy_tests {
     #[test]
     fn the_permission_policy_is_not_reachable_from_the_browser_gate() {
         let browser = include_str!("browser_bridge.rs");
-        for marker in ["permission_policy", "auto_approve_provider_permissions", "PermissionPolicy"] {
+        for marker in ["permission_policy", "auto_approve_provider_permissions", "PermissionPolicy", "chat_defaults", "effective_access", "ChatAccess"] {
             assert!(
                 !browser.contains(marker),
                 "the browser outward-effect gate must not consult the permission \
                  policy — it is authorization, not convenience (found {marker:?})"
             );
         }
-        // And the policy's only reader is this module's approval seam.
-        // Split so this assertion does not match its own source text.
-        let needle = format!("{}::{}(", "agent_config", "permission_policy");
+        // The approval seam asks for the chat's effective access exactly once,
+        // and that lookup holds the only read of the legacy global policy.
+        // Split so these assertions do not match their own source text.
+        let policy_read = format!("{}::{}(", "agent_config", "permission_policy");
+        let access_read = format!("{}::{}(", "chat_defaults", "effective_access");
         let live = include_str!("live_turn.rs");
+        assert_eq!(live.matches(policy_read.as_str()).count(), 0, "live turns read access through the chat's settings, never the global policy directly");
         assert_eq!(
-            live.matches(needle.as_str()).count(),
+            live.matches(access_read.as_str()).count(),
             1,
-            "one policy read, at the approval seam; a second reader is a second policy"
+            "one access read, at the approval seam; a second reader is a second policy"
         );
+        let defaults = include_str!("chat_defaults.rs");
+        assert_eq!(defaults.matches(policy_read.as_str()).count(), 1, "only the legacy fallback reads the global policy");
     }
 }
 
