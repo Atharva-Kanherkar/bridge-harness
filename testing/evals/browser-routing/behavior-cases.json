@@ -1,0 +1,37 @@
+[
+  {
+    "id": "local-screenshot",
+    "task": "Take a screenshot of my app at {origin} and tell me whether the signup form looks right.",
+    "clone": false
+  },
+  {
+    "id": "local-ui-bugs",
+    "task": "The app in this folder is running at {origin}. Click through the signup form in a browser and list any UI bugs you find. Don't change any files.",
+    "clone": false
+  },
+  {
+    "id": "localhost-verify",
+    "task": "I just edited index.html. Check in a browser that {localhost} renders the signup form correctly.",
+    "clone": false
+  },
+  {
+    "id": "public-page",
+    "task": "Check that https://example.com renders its main heading in a browser.",
+    "clone": false
+  },
+  {
+    "id": "signed-in-dashboard",
+    "task": "Read yesterday's signup count from my private analytics dashboard at https://analytics.example.net/dashboard. It only works with my existing signed-in Chrome session; there is no API, CLI, or connector for it.",
+    "clone": true
+  },
+  {
+    "id": "explicit-clone",
+    "task": "Request a Bridge browser clone for {origin}. I want to approve it and watch you drive the signup form.",
+    "clone": true
+  },
+  {
+    "id": "local-with-login",
+    "task": "Check my account page at {origin}/account. It only renders with my existing Chrome sign-in cookies for 127.0.0.1; a fresh browser is logged out.",
+    "clone": true
+  }
+]
