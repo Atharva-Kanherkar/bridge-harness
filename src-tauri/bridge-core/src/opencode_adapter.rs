@@ -1315,6 +1315,20 @@ impl AdapterRuntime for OpenCodeRuntime {
         };
         self.request(reqwest::Method::POST, &path, None, "interrupt OpenCode turn")
     }
+    fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
+        let client = self.client.as_ref()?.clone();
+        let path = match self.api {
+            ServerApi::V1 => format!("/session/{}/abort", self.session_id),
+            ServerApi::V2 => format!("/api/session/{}/interrupt", self.session_id),
+        };
+        let url = self.api.url(&self.base_url, &path, &self.directory);
+        Some(Box::new(move || {
+            // Off the caller's thread; the steer watchdog does not wait on this.
+            client.post(url).timeout(Duration::from_secs(5)).send()
+                .and_then(Response::error_for_status)
+                .map(|_| ()).map_err(http_error("interrupt OpenCode turn"))
+        }))
+    }
     /// `/session/{id}/summarize` names the model that writes the summary and
     /// takes no focus, so OpenCode compacts the whole session. Without a known
     /// model there is nothing to name, and the request would be rejected.

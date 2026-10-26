@@ -116,6 +116,8 @@ impl NativeCompaction {
     }
 }
 
+pub type InterruptRequest = Box<dyn FnOnce() -> Result<(), BridgeError> + Send>;
+
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
@@ -202,6 +204,9 @@ pub trait AdapterRuntime: Send {
         Err(BridgeError::Invalid("This provider does not support voice dictation".into()))
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
+    /// Snapshot an interrupt that can run without retaining the adapter map.
+    /// Unsupported transports use the host's bounded process fallback.
+    fn interrupt_request(&self) -> Option<InterruptRequest> { None }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
     /// Resolve a permission with the exact provider option advertised on the
     /// request. Providers without option ids use the decision vocabulary.

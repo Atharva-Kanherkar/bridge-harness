@@ -740,6 +740,12 @@ impl AdapterRuntime for CodexRuntime {
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
     }
+    fn interrupt_request(&self) -> Option<crate::adapters::InterruptRequest> {
+        let turn_id = self.current_turn.lock().unwrap().clone()?;
+        let writer = self.writer.clone();
+        let request = json!({"method":"turn/interrupt","id":self.request_id.fetch_add(1, Ordering::Relaxed),"params":{"threadId":self.thread_id,"turnId":turn_id}});
+        Some(Box::new(move || write_value(&writer, &request)))
+    }
     /// `thread/compact/start` takes a thread id and nothing else, so Codex
     /// compacts the whole conversation and a focus cannot ride along.
     fn native_compaction(&self) -> crate::adapters::NativeCompaction {

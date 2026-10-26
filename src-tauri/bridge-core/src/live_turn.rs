@@ -1568,6 +1568,12 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
+    start_chat_claimed(core, session_id)
+}
+
+/// The caller owns the session lifecycle across a cancellation and continuation.
+fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
+    let state = core;
     ensure_session_not_archived(core, &session_id)?;
     let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode, purpose): (
         String,
@@ -10508,13 +10514,12 @@ fn prepare_input(
         .register(session_id, intercepted.captured);
     let sanitized_input = intercepted.sanitized;
     let interceptions = sanitized_input.interceptions.clone();
-    let available: std::collections::HashSet<String> = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .map(|descriptor| descriptor.id)
-        .collect();
+    // Ordinary guidance has no command to resolve. Descriptor discovery can
+    // query vendor CLIs, so it must not sit on every keystroke-to-agent path.
+    let available: std::collections::HashSet<String> = if sanitized_input.text.contains('/') {
+        state.adapter_registry.descriptors().into_iter()
+            .filter(|descriptor| descriptor.available).map(|descriptor| descriptor.id).collect()
+    } else { std::collections::HashSet::new() };
     let (session_harness, cwd): (String, Option<String>) = state.db.lock().unwrap().query_row(
         "SELECT harness, cwd FROM sessions WHERE id=?1",
         params![session_id],
@@ -11640,6 +11645,7 @@ fn submit_input_internal(
     }
 
     let (turn_active, checkpointing) = turn_phase(core, &session_id)?;
+    let interrupted_target = steer_target(&core.db.lock().unwrap(), &session_id);
     let steering_capable = state
         .adapters
         .lock()
@@ -11650,7 +11656,7 @@ fn submit_input_internal(
     // next one, on every provider: the text waits at the front of the queue and
     // the interrupted turn's own boundary delivers it. Images cannot ride the
     // queue, so a provider that can fold them into the live turn still does.
-    let stop_first = preference.is_none()
+    let stop_first = (preference.is_none() || (preference == Some(wire::ActiveTurnInput::Steer) && !steering_capable))
         && session_input::interrupts_active_turn(worker.is_some(), turn_active, checkpointing)
             && (attachments.is_empty() || !steering_capable);
     // The legacy `send_turn` entry point forces a new turn, which is the one
@@ -11779,7 +11785,7 @@ fn submit_input_internal(
             };
             core.events.publish(CoreEvent::StateChanged);
             if stop_first {
-                interrupt_for_steer(core, &session_id, &queued.id);
+                interrupt_for_steer(core, &session_id, &queued.id, interrupted_target);
             }
             queued_input_id = Some(queued.id);
         }
@@ -11799,8 +11805,10 @@ fn submit_input_internal(
 }
 
 /// How long a steered turn gets to settle after its in-band interrupt before
-/// Bridge stops it the hard way.
-const STEER_SETTLE_GRACE: Duration = Duration::from_secs(5);
+/// Bridge stops it the hard way. The clock starts at submission, not when the
+/// interrupt returns. Too short and every redirect pays for a cold restart,
+/// which is slower than the interrupt it replaced.
+const STEER_SETTLE_GRACE: Duration = Duration::from_millis(1500);
 
 /// Stop a chat's running turn so the steer queued at the front runs next.
 ///
@@ -11808,42 +11816,57 @@ const STEER_SETTLE_GRACE: Duration = Duration::from_secs(5);
 /// turn's own `turn.completed` is the boundary that delivers the steer. A
 /// provider that never settles after the interrupt is stopped like the Stop
 /// button does it and resumed, so the person's words always land.
-fn interrupt_for_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
+fn interrupt_for_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str, target: Option<SteerTarget>) {
+    let current_target = steer_target(&core.db.lock().unwrap(), session_id);
+    if current_target != target {
+        drain_queued_input(core, session_id);
+        return;
+    }
     core.steer_requested
         .lock()
         .unwrap()
         .insert(session_id.to_owned());
-    // Tests drive the boundary themselves; a fallback that relaunches a real
-    // provider has no place in them.
+    let interrupt = core.adapters.lock().unwrap().get(session_id)
+        .and_then(|runtime| runtime.interrupt_request());
+    // Tests drive the boundary and the fallback themselves; a watchdog that
+    // relaunches a real provider has no place in them.
     if cfg!(test) {
-        interrupt_live_turn(core, session_id);
+        if let Some(interrupt) = interrupt { let _ = interrupt(); }
         return;
     }
-    // Off the caller's thread: an interrupt can be an HTTP round trip, and the
-    // person's send should not wait on it.
+    // The watchdog starts independently of the provider call. Only an owned
+    // launch can be restarted; a runtime without durable identity stays queued.
+    if target.as_ref().is_none_or(|target| target.1.is_none()) {
+        if let Some(interrupt) = interrupt { thread::spawn(move || { let _ = interrupt(); }); }
+        return;
+    }
     let core = Arc::clone(core);
     let session_id = session_id.to_owned();
     let queued_id = queued_id.to_owned();
-    thread::spawn(move || {
-        interrupt_live_turn(&core, &session_id);
-        thread::sleep(STEER_SETTLE_GRACE);
-        settle_unanswered_steer(&core, &session_id, &queued_id);
+    interrupt_with_deadline(interrupt, STEER_SETTLE_GRACE, move || {
+        settle_unanswered_steer(&core, &session_id, &queued_id, target);
     });
 }
 
-fn interrupt_live_turn(core: &Arc<BridgeCore>, session_id: &str) {
-    if let Some(runtime) = core.adapters.lock().unwrap().get(session_id) {
-        // A refusal (the turn already ended, say) is fine: the boundary or the
-        // fallback still delivers.
-        let _ = runtime.interrupt();
-    }
+fn interrupt_with_deadline(interrupt: Option<adapters::InterruptRequest>, grace: Duration, fallback: impl FnOnce() + Send + 'static) {
+    // Neither thread waits for the other. A blocked HTTP request or stdin pipe
+    // cannot extend the user's redirect deadline or retain the adapter map.
+    thread::spawn(move || { thread::sleep(grace); fallback(); });
+    if let Some(interrupt) = interrupt { thread::spawn(move || { let _ = interrupt(); }); }
+}
+
+type SteerTarget = (Option<String>, Option<String>, Option<String>);
+fn steer_target(db: &Connection, session_id: &str) -> Option<SteerTarget> {
+    db.query_row("SELECT active_turn_id,started_at,provider_session_id FROM sessions WHERE id=?1", [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).ok()
 }
 
 /// The fallback behind [`interrupt_for_steer`]: if the steer is still waiting
 /// and the turn it interrupted is still running, stop that turn hard, resume the
 /// chat, and deliver.
-fn settle_unanswered_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str) {
-    let (waiting, busy) = {
+fn settle_unanswered_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: &str, target: Option<SteerTarget>) {
+    let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "steer continuation") else { return; };
+    let (waiting, busy, same_turn) = {
         let db = core.db.lock().unwrap();
         let waiting = db
             .query_row(
@@ -11860,18 +11883,31 @@ fn settle_unanswered_steer(core: &Arc<BridgeCore>, session_id: &str, queued_id: 
                 |row| row.get::<_, bool>(0),
             )
             .unwrap_or(false);
-        (waiting, busy)
+        (waiting, busy, steer_target(&db, session_id) == target)
     };
     if !waiting {
         return;
     }
+    // The original turn may already have ended and a later one started. A
+    // delayed watchdog has no authority over that replacement, but it may still
+    // deliver into an idle chat: the boundary's own drain could have lost the
+    // lifecycle claim to this watchdog. Draining never launches a process, so
+    // a stopped chat stays stopped.
+    if !same_turn {
+        drain_queued_input_claimed(core, session_id);
+        return;
+    }
     if busy {
-        if stop_turn(core, session_id, TurnStop::Steered).is_err() {
+        if stop_turn_claimed(core, session_id, TurnStop::Steered).is_err() {
             return;
         }
-        let _ = resume_for_send(core, session_id);
+        if let Err(error) = start_chat_claimed(core, session_id.to_owned()) {
+            let db = core.db.lock().unwrap();
+            let _ = store::event(&db, "session", "session.input.delivery_failed", session_id, &error.to_string());
+            return;
+        }
     }
-    drain_queued_input(core, session_id);
+    drain_queued_input_claimed(core, session_id);
 }
 
 /// The wrapper a user's words wear on their way into a running worker.
@@ -11914,6 +11950,10 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let Ok(_lifecycle) = core.claim_session_lifecycle(session_id, "queued input delivery") else {
         return false;
     };
+    drain_queued_input_claimed(core, session_id)
+}
+
+fn drain_queued_input_claimed(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     if ensure_session_not_archived(core, session_id).is_err() {
         return false;
     }
@@ -12299,18 +12339,16 @@ pub fn stop_worker_session(
     cause: StopCause<'_>,
 ) -> Result<(), BridgeError> {
     let state = core.clone();
-    if let Some(runtime) = state.adapters.lock().unwrap().get(session_id) {
-        // Only a session with a live adapter to interrupt can have that
-        // interrupt provoke a stop-induced error frame, so only that case
-        // needs the marker — an adapterless stop leaves nothing for a
-        // later resume's genuine error to be mistaken for.
-        state
-            .user_stop_requested
-            .lock()
-            .unwrap()
-            .insert(session_id.to_owned());
-        let _ = runtime.interrupt();
-    }
+    // Retire output before deciding the result. An unresponsive provider must
+    // not delay cancellation, and disposal must never own the adapter map.
+    let runtime = {
+        let db = state.db.lock().unwrap();
+        deactivate_reader_launch(&state, session_id);
+        state.user_stop_requested.lock().unwrap().remove(session_id);
+        db.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        let runtime = state.adapters.lock().unwrap().remove(session_id);
+        runtime
+    };
     let result = delegation::WorkerResult {
         schema_version: delegation::SCHEMA_VERSION,
         status: delegation::WorkerResultStatus::Cancelled,
@@ -12324,7 +12362,14 @@ pub fn stop_worker_session(
         suggested_role: None,
         suggested_task: None,
     };
-    if !settle_worker_after_result(core, session_id, &result)? {
+    let settled = settle_worker_after_result(core, session_id, &result);
+    if !matches!(settled, Ok(true)) {
+        // Its output gate is already closed and it is out of the map, so a
+        // process left running here would be an orphan nobody can reach.
+        if let Some(mut runtime) = runtime {
+            runtime.stop(cause.shutdown());
+        }
+        settled?;
         return Err(BridgeError::Invalid(
             "cancelled worker cannot be retried".into(),
         ));
@@ -12337,8 +12382,8 @@ pub fn stop_worker_session(
     if !report_to_parent(core, session_id, &result) {
         announce_worker_cancellation(core, session_id, &result.summary);
     }
-    deactivate_reader_launch(&state, session_id);
-    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
+    core.events.publish(CoreEvent::StateChanged);
+    if let Some(mut runtime) = runtime {
         runtime.stop(cause.shutdown());
     }
     verify_read_only_worker(core, session_id);
@@ -13734,6 +13779,11 @@ mod submit_input_tests {
         }
         fn supports_active_turn_steering(&self) -> bool {
             self.steering
+        }
+        fn interrupt_request(&self) -> Option<adapters::InterruptRequest> {
+            // Record the captured request synchronously; this fake has no I/O.
+            let result = self.interrupt();
+            Some(Box::new(move || result))
         }
         fn steer_turn(&self, text: &str, context: adapters::TurnContext<'_>, images: &[wire::TurnImage]) -> Result<(), BridgeError> {
             self.steers.fetch_add(1, Ordering::SeqCst);
@@ -15245,7 +15295,7 @@ mod submit_input_tests {
     }
 
     #[test]
-    fn explicit_active_turn_preferences_control_delivery_without_interrupting() {
+    fn explicit_queue_waits_and_steer_redirects_without_native_support() {
         for preference in [wire::ActiveTurnInput::Steer, wire::ActiveTurnInput::Queue] {
             for steering in [true, false] {
                 for active in [true, false] {
@@ -15256,12 +15306,13 @@ mod submit_input_tests {
                     let handles = attach_handles(&core, steering);
                     let outcome = submit_input_with_preference(&core, "chat".into(), "follow up".into(), Vec::new(), Some(preference)).unwrap();
                     let queued = active && (preference == wire::ActiveTurnInput::Queue || !steering);
+                    let interrupted = active && preference == wire::ActiveTurnInput::Steer && !steering;
                     let expected = if !active { wire::InputDisposition::StartedNewTurn }
-                        else if queued { wire::InputDisposition::QueuedForPhaseBoundary }
+                        else if queued && !interrupted { wire::InputDisposition::QueuedForPhaseBoundary }
                         else { wire::InputDisposition::SteeredActiveTurn };
                     assert_eq!(outcome.disposition, expected);
                     assert_eq!(outcome.queued_input_id.is_some(), queued);
-                    assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0);
+                    assert_eq!(handles.interrupts.load(Ordering::SeqCst), usize::from(interrupted));
                     assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "chat").unwrap(), if queued { 1 } else { 0 });
                     assert_eq!(handles.sent.lock().unwrap().len(), if queued { 0 } else { 1 });
                     if queued {
@@ -15274,6 +15325,89 @@ mod submit_input_tests {
                 }
             }
         }
+    }
+
+    /// Submit a Steer on a provider without native steering and return the
+    /// queued guidance with the turn it was aimed at.
+    fn redirect_turn_one(core: &Arc<BridgeCore>) -> (FakeHandles, String, Option<SteerTarget>) {
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET active_turn_id='turn-1',started_at='launch-1',provider_session_id='p1' WHERE id='chat'", [],
+        ).unwrap();
+        let handles = attach_handles(core, false);
+        let target = steer_target(&core.db.lock().unwrap(), "chat");
+        let outcome = submit_input_with_preference(core, "chat".into(), "use the other API".into(), Vec::new(), Some(wire::ActiveTurnInput::Steer)).unwrap();
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 1);
+        (handles, outcome.queued_input_id.expect("guidance waits at the front"), target)
+    }
+
+    fn queued_state(core: &Arc<BridgeCore>, id: &str) -> String {
+        core.db.lock().unwrap().query_row("SELECT state FROM queued_session_input WHERE id=?1", [id], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_late_steer_watchdog_never_touches_a_newer_turn() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let (handles, queued, target) = redirect_turn_one(&core);
+        // The interrupted turn ended and something else started a new one
+        // before the watchdog fired.
+        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='turn-2' WHERE id='chat'", []).unwrap();
+
+        settle_unanswered_steer(&core, "chat", &queued, target);
+
+        assert!(core.adapters.lock().unwrap().contains_key("chat"), "the newer turn keeps its process");
+        let db = core.db.lock().unwrap();
+        let (status, turn): (String, Option<String>) = db.query_row("SELECT status,active_turn_id FROM sessions WHERE id='chat'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), turn.as_deref()), ("working", Some("turn-2")));
+        let redirected: i64 = db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='turn.completed'", [], |row| row.get(0)).unwrap();
+        assert_eq!(redirected, 0);
+        drop(db);
+        assert_eq!(queued_state(&core, &queued), session_input::STATE_QUEUED, "still waiting for its boundary, not dropped");
+        assert!(handles.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_late_steer_watchdog_does_not_revive_a_stopped_chat() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let (handles, queued, target) = redirect_turn_one(&core);
+        cancel_visible_turn(&core, "chat").unwrap();
+
+        settle_unanswered_steer(&core, "chat", &queued, target);
+
+        assert_eq!(session_status(&core), "stopped");
+        assert!(!core.adapters.lock().unwrap().contains_key("chat"));
+        assert_eq!(queued_state(&core, &queued), session_input::STATE_ABANDONED, "Stop withdraws the guidance it superseded");
+        assert!(handles.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_steer_watchdog_delivers_when_the_turn_boundary_lost_the_race() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let (handles, queued, target) = redirect_turn_one(&core);
+        // The interrupt settled the turn, but the boundary's drain found the
+        // lifecycle claimed by the watchdog and left the guidance waiting.
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id='chat'", []).unwrap();
+
+        settle_unanswered_steer(&core, "chat", &queued, target);
+
+        assert_eq!(queued_state(&core, &queued), session_input::STATE_DELIVERED);
+        assert_eq!(handles.sent.lock().unwrap().as_slice(), ["use the other API".to_owned()]);
+    }
+
+    #[test]
+    fn a_stalled_interrupt_cannot_postpone_the_steer_deadline() {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (fired, observed) = std::sync::mpsc::channel();
+        let interrupt: adapters::InterruptRequest = Box::new(move || {
+            let _ = blocked.recv();
+            Ok(())
+        });
+        let started = std::time::Instant::now();
+        interrupt_with_deadline(Some(interrupt), Duration::from_millis(20), move || {
+            let _ = fired.send(started.elapsed());
+        });
+        let elapsed = observed.recv_timeout(Duration::from_secs(5)).expect("the fallback fires while the interrupt is stuck");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+        let _ = release.send(());
     }
 
     #[test]
@@ -18623,6 +18757,60 @@ mod retry_settlement_tests {
                 .lifecycle_state,
             "cancelled"
         );
+    }
+
+    /// A provider that is not listening cannot hold Stop hostage. The worker
+    /// is cancelled from Bridge's side: its output gate closes first, nothing
+    /// asks the provider to interrupt, and disposal runs without the adapter
+    /// map so every other session stays reachable while it happens.
+    #[test]
+    fn stopping_a_worker_never_waits_on_the_provider_or_the_adapter_map() {
+        struct UnresponsiveRuntime {
+            core: std::sync::Weak<BridgeCore>,
+            disposed: Arc<Mutex<Vec<&'static str>>>,
+        }
+        impl adapters::AdapterRuntime for UnresponsiveRuntime {
+            fn process_id(&self) -> u32 { 0 }
+            fn provider_session_id(&self) -> &str { "unresponsive" }
+            fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(Some("busy".into()))) }
+            fn send_turn(&self, _: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn interrupt(&self) -> Result<(), BridgeError> {
+                panic!("Stop must not wait on a provider interrupt")
+            }
+            fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn stop(&mut self, _: adapters::ShutdownReason) {
+                let core = self.core.upgrade().unwrap();
+                self.disposed.lock().unwrap().push(if core.adapters.try_lock().is_ok() { "map free" } else { "map held" });
+            }
+        }
+        let (_fixture, core, sibling, _guard) = core_with_working_worker();
+        let disposed = Arc::new(Mutex::new(Vec::new()));
+        let sibling_runtime = core.adapters.lock().unwrap().remove("child").unwrap();
+        core.adapters.lock().unwrap().insert("sibling".into(), sibling_runtime);
+        core.adapters.lock().unwrap().insert("child".into(), Box::new(UnresponsiveRuntime {
+            core: Arc::downgrade(&core),
+            disposed: disposed.clone(),
+        }));
+        let gate = Arc::new(Mutex::new(true));
+        core.reader_launches.lock().unwrap().insert("child".into(), gate.clone());
+        let queued = session_input::enqueue(&core.db.lock().unwrap(), "child", "later", "later").unwrap();
+
+        stop_worker_session(&core, "child", StopCause::User).unwrap();
+
+        assert!(!*gate.lock().unwrap(), "late output cannot reopen the cancelled worker");
+        assert_eq!(*disposed.lock().unwrap(), ["map free"]);
+        assert!(!core.adapters.lock().unwrap().contains_key("child"));
+        assert!(core.adapters.lock().unwrap().contains_key("sibling"), "other sessions are untouched");
+        assert!(sibling.lock().unwrap().is_empty());
+        let db = core.db.lock().unwrap();
+        assert_eq!(store::worker_runtime(&db, "child").unwrap().unwrap().lifecycle_state, "cancelled");
+        let state: String = db.query_row("SELECT state FROM queued_session_input WHERE id=?1", [&queued.id], |row| row.get(0)).unwrap();
+        assert_eq!(state, session_input::STATE_ABANDONED, "a stopped worker does not wake for old input");
+        let told: i64 = db.query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='parent' AND kind IN ('worker.result','delegation.rejected')",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert!(told > 0, "the parent sees the cancellation");
     }
 
     /// `report_to_parent` claims the result seam once. A worker cancelled
