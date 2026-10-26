@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../api";
-import type { AdapterDescriptor, BridgeState } from "../../types";
+import type { AdapterDescriptor, AgentDefinition, BridgeState } from "../../types";
 import { ChatDefaultsPage } from "./ChatDefaultsPage";
 import type { ChatDefaultsView } from "../../protocol/generated/protocol";
 
@@ -40,4 +40,13 @@ it("labels inherited values with the same words as the menus, never raw data",as
   await render();await choose("Defaults scope","Project A");
   expect(host.textContent).toContain("Inherits application default: Codex · Standard");expect(host.textContent).toContain("Inherits application default: Full access");
   expect(host.textContent).not.toContain('"harness"');
+});
+it("offers a specialist only the thinking efforts a worker can start",async()=>{
+  const wide={...adapter,models:[{...adapter.models[0],supportedEffortLevels:["high","max"]}]} as AdapterDescriptor;
+  const research={id:"research",name:"Research agent",role:"research",enabled:true} as AgentDefinition;
+  await act(async()=>root.render(<ChatDefaultsPage adapters={[wide]} agents={[research]}/>));
+  const efforts=async()=>{await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Default thinking effort"]')!.click());const values=[...document.querySelectorAll<HTMLElement>('[role="option"]')].map(o=>o.textContent);await act(async()=>document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true})));return values;};
+  expect(await efforts()).toContain("max");
+  await choose("Default chat target","Research agent");
+  const offered=await efforts();expect(offered).toContain("high");expect(offered).not.toContain("max");
 });

@@ -335,6 +335,15 @@ pub fn resolve(
     });
     let descriptors = registry.descriptors();
     validate_model(&model, effort.as_deref(), &descriptors, db)?;
+    if let (Some(_), Some(value)) = (&preset, effort.as_deref()) {
+        // A specialist runs as a worker. Its delegation contract and cost model
+        // carry low..xhigh, so reject anything else here rather than at create.
+        if serde_json::from_value::<crate::delegation::Effort>(serde_json::json!(value)).is_err() {
+            return Err(invalid(format!(
+                "Specialist agents support low, medium, high or xhigh thinking effort, not {value}. Choose one of those or Provider default"
+            )));
+        }
+    }
     let access = combined.access.unwrap_or(ChatAccess::Ask);
     validate_access(&model.harness, access, &descriptors)?;
     let create_worktree = combined.create_worktree.unwrap_or(false);
@@ -406,15 +415,16 @@ pub fn session_settings(
     db: &Connection,
     session_id: &str,
 ) -> Result<ChatSessionSettings, BridgeError> {
-    let (harness, model, effort, workspace_id): (
+    let (harness, model, effort, workspace_id, kind): (
         String,
         Option<String>,
         Option<String>,
         Option<String>,
+        String,
     ) = db.query_row(
-        "SELECT harness,model,effort,workspace_id FROM sessions WHERE id=?1",
+        "SELECT harness,model,effort,workspace_id,kind FROM sessions WHERE id=?1",
         [session_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
     let mut snapshot = snapshot(db, session_id)?.unwrap_or(ChatSessionSettings {
         revision: 0,
@@ -422,7 +432,13 @@ pub fn session_settings(
             workspace_id: workspace_id.clone(),
             project_id: workspace_project(db, workspace_id.as_deref())?,
             revision: ChatDefaultsRevision::default(),
-            target: ChatLaunchTarget::Direct,
+            // A legacy chat has no snapshot; its stored kind is the only record
+            // of how it started, and it is what save-as-default exports.
+            target: if kind == "orchestrator" {
+                ChatLaunchTarget::Orchestrator
+            } else {
+                ChatLaunchTarget::Direct
+            },
             model: ChatModelChoice {
                 harness: harness.clone(),
                 model: model.clone(),
@@ -441,6 +457,15 @@ pub fn session_settings(
 /// Follow only real parent rows. New root sessions always have an explicit
 /// snapshot; older roots keep the legacy global policy until edited by a user.
 pub fn scoped_access(db: &Connection, session_id: &str) -> Result<Option<ChatAccess>, BridgeError> {
+    Ok(scoped_snapshot(db, session_id)?.map(|stored| stored.settings.access))
+}
+
+/// The nearest snapshot on the session's real parent chain: its own for a
+/// root, its root's for a worker.
+fn scoped_snapshot(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<ChatSessionSettings>, BridgeError> {
     let mut current = Some(session_id.to_owned());
     let mut seen = std::collections::HashSet::new();
     while let Some(id) = current {
@@ -453,7 +478,7 @@ pub fn scoped_access(db: &Connection, session_id: &str) -> Result<Option<ChatAcc
             |r| r.get(0),
         )?;
         if let Some(stored) = snapshot(db, &id)? {
-            return Ok(Some(stored.settings.access));
+            return Ok(Some(stored));
         }
         current = parent;
     }
@@ -471,6 +496,15 @@ pub fn effective_access(db: &Connection, session_id: &str) -> Result<ChatAccess,
             ChatAccess::Ask
         },
     )
+}
+
+/// A top-level chat a person reads: no parent and no worker runtime.
+pub fn is_top_level_chat(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
+    Ok(db.query_row(
+        "SELECT parent_session_id IS NULL AND NOT EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1) FROM sessions WHERE id=?1",
+        [session_id],
+        |r| r.get(0),
+    )?)
 }
 
 pub fn root_write_mode(
@@ -675,8 +709,15 @@ pub fn update_options(
         }
         tx.commit()?;
         drop(db);
-        for id in &family {
-            crate::live_turn::stop_session_for_archive(core, id)?;
+        // Root first, as archive does, so a worker's cancellation cannot start
+        // a new turn on it under the old posture.
+        let root = std::iter::once(&params.session_id);
+        for id in root.chain(family.iter().filter(|id| **id != params.session_id)) {
+            crate::live_turn::stop_session_for_archive(
+                core,
+                id,
+                crate::live_turn::StopCause::AccessChanged,
+            )?;
         }
     }
     let db = core.db.lock().unwrap();
@@ -1187,6 +1228,16 @@ mod tests {
             &self,
             r: adapters::StartRequest<'_>,
         ) -> Result<adapters::StartedAdapter, BridgeError> {
+            assert!(
+                r.interactive
+                    && crate::mcp_apps::attaches_to(
+                        r.interactive,
+                        r.write_mode,
+                        r.read_only_sandbox,
+                        r.briefing
+                    ),
+                "a configured interactive chat keeps the visualize tool"
+            );
             self.0.lock().unwrap().push((
                 r.write_mode,
                 r.model.map(str::to_owned),
@@ -1341,6 +1392,209 @@ mod tests {
         .err()
         .expect("unrestricted worker must be refused");
         assert!(error.to_string().contains("requires user approval"));
+    }
+    fn real_worker(db: &Connection, id: &str, parent: &str, lifecycle: &str) {
+        // Shaped like `reserve_worker_launch_outcome`: default `kind`, a
+        // runtime row and an active lease.
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth) VALUES(?1,'a','codex','Worker','working','reported',?2,1)",params![id,parent]).unwrap();
+        store::upsert_worker_runtime(
+            db,
+            &crate::model::WorkerRuntimeRecord {
+                session_id: id.into(),
+                parent_session_id: parent.into(),
+                lifecycle_state: lifecycle.into(),
+                task_family: "implementation".into(),
+                compatibility_key: "key".into(),
+                result_status: "pending".into(),
+                retry_count: 0,
+                warm_until: None,
+                worktree_path: None,
+                worktree_branch: None,
+                last_result: None,
+                last_activity_at: None,
+                waiting_since: None,
+                waiting_reason: None,
+                progress_summary: None,
+                updated_at: "now".into(),
+                failure_class: None,
+            },
+        )
+        .unwrap();
+        db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,write_mode,lease_status,created_at,updated_at) VALUES(?1,'a','implementation','standard','implementation','shared','active','now','now')",[id]).unwrap();
+    }
+    #[test]
+    fn only_top_level_chats_are_interactive_launches() {
+        let (_dir, core) = fixture();
+        let root = create_value(&core, "a", json!({"access":"ask"}));
+        let db = core.db.lock().unwrap();
+        real_worker(&db, "worker", &root.session_id, "working");
+        assert!(is_top_level_chat(&db, &root.session_id).unwrap());
+        assert!(!is_top_level_chat(&db, "worker").unwrap());
+        // The worker carries an explicit write mode and is not interactive.
+        assert!(!crate::mcp_apps::attaches_to(
+            false,
+            Some(WriteMode::Shared),
+            None,
+            None
+        ));
+        assert!(is_top_level_chat(&db, "missing").is_err());
+    }
+    #[test]
+    fn an_aside_from_a_worker_keeps_the_scoped_restriction_of_its_root() {
+        let (_dir, core) = fixture();
+        let root = create_value(&core, "a", json!({"access":"ask"}));
+        {
+            let db = core.db.lock().unwrap();
+            agent_config::save_permission_policy(
+                &db,
+                agent_config::PermissionPolicy {
+                    auto_approve_provider_permissions: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            real_worker(&db, "worker", &root.session_id, "working");
+            assert_eq!(effective_access(&db, "worker").unwrap(), ChatAccess::Ask);
+        }
+        let (aside, _, _) = core
+            .create_aside_chat_id("worker", &crate::model::Harness::Codex, None, None)
+            .unwrap();
+        let db = core.db.lock().unwrap();
+        assert_eq!(effective_access(&db, &aside).unwrap(), ChatAccess::Ask);
+        assert!(matches!(
+            root_write_mode(&db, &aside).unwrap(),
+            Some(WriteMode::Shared)
+        ));
+    }
+    #[test]
+    fn an_access_change_settles_real_workers_and_releases_their_leases() {
+        let (_dir, core) = fixture();
+        let root = create_value(&core, "a", json!({"access":"full"}));
+        real_worker(
+            &core.db.lock().unwrap(),
+            "worker",
+            &root.session_id,
+            "working",
+        );
+        update_options(
+            &core,
+            &UpdateChatOptionsParams {
+                session_id: root.session_id.clone(),
+                expected_revision: 1,
+                access: ChatAccess::Ask,
+                active_turn_input: ActiveTurnInput::Steer,
+            },
+        )
+        .unwrap();
+        let db = core.db.lock().unwrap();
+        let lifecycle: String = db
+            .query_row(
+                "SELECT lifecycle_state FROM worker_runtime WHERE session_id='worker'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let lease: String = db
+            .query_row(
+                "SELECT lease_status FROM worker_leases WHERE session_id='worker'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            (lifecycle.as_str(), lease.as_str()),
+            ("cancelled", "released")
+        );
+    }
+    #[test]
+    fn specialist_efforts_offered_are_the_ones_a_worker_can_start() {
+        let (_dir, mut core) = fixture();
+        let mut wide = descriptor();
+        wide.models[0].supported_effort_levels = vec!["high".into(), "max".into(), "ultra".into()];
+        struct Wide(AdapterDescriptor);
+        impl adapters::HarnessAdapter for Wide {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn descriptor(&self) -> AdapterDescriptor {
+                self.0.clone()
+            }
+            fn start(
+                &self,
+                _: adapters::StartRequest<'_>,
+            ) -> Result<adapters::StartedAdapter, BridgeError> {
+                panic!("no start")
+            }
+            fn resume(
+                &self,
+                _: adapters::ResumeRequest<'_>,
+            ) -> Result<adapters::StartedAdapter, BridgeError> {
+                panic!("no resume")
+            }
+            fn supports_native_resume(&self) -> bool {
+                false
+            }
+            fn normalize(&self, _: &Value) -> Vec<crate::agent::NormalizedEvent> {
+                vec![]
+            }
+        }
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry.register(Box::new(Wide(wide))).unwrap();
+        Arc::get_mut(&mut core).unwrap().adapter_registry = Arc::new(registry);
+        let agent = {
+            let db = core.db.lock().unwrap();
+            agent_config::state(&db)
+                .unwrap()
+                .agents
+                .into_iter()
+                .find(|a| a.enabled && a.role == "research")
+                .unwrap()
+                .id
+        };
+        for (effort, starts) in [("high", true), ("max", false), ("ultra", false)] {
+            let value = json!({"target":{"kind":"agent","agentId":agent},"model":{"harness":"codex","model":"standard"},"effort":{"value":effort}});
+            let resolved = resolve(
+                &core.db.lock().unwrap(),
+                &core.adapter_registry,
+                &ResolveChatSettingsParams {
+                    workspace_id: Some("a".into()),
+                    overrides: defaults(value.clone()),
+                    expected_revision: None,
+                },
+            );
+            // Whatever resolve accepts must also create; nothing fails later.
+            assert_eq!(resolved.is_ok(), starts, "{effort}: {resolved:?}");
+            if let Ok(settings) = resolved {
+                assert!(
+                    create(
+                        &core,
+                        &CreateConfiguredChatParams {
+                            workspace_id: Some("a".into()),
+                            overrides: defaults(value),
+                            expected_revision: settings.revision,
+                            title: None
+                        }
+                    )
+                    .is_ok(),
+                    "{effort}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn a_legacy_orchestrator_reports_and_exports_its_orchestrator_target() {
+        let (_dir, core) = fixture();
+        let db = core.db.lock().unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,kind) VALUES('legacy-o','a','codex','Orchestrator','idle','orchestrator')",[]).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,kind) VALUES('legacy-d','a','codex','Chat','idle','direct')",[]).unwrap();
+        assert_eq!(
+            session_settings(&db, "legacy-o").unwrap().settings.target,
+            ChatLaunchTarget::Orchestrator
+        );
+        assert_eq!(
+            session_settings(&db, "legacy-d").unwrap().settings.target,
+            ChatLaunchTarget::Direct
+        );
     }
     #[test]
     fn seeded_fuzz_scope_ids_and_model_effort_access_combinations() {
@@ -1519,7 +1773,10 @@ pub fn inherit_session_settings(
     source: &str,
     target: &str,
 ) -> Result<(), BridgeError> {
-    if let Some(mut stored) = snapshot(db, source)? {
+    // A worker has no snapshot of its own; it holds its root's authority. The
+    // detached copy must carry that authority, not fall back to the legacy
+    // global policy.
+    if let Some(mut stored) = scoped_snapshot(db, source)? {
         let (harness, model, effort, workspace): (
             String,
             Option<String>,

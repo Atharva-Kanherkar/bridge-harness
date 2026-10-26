@@ -1177,6 +1177,7 @@ pub fn start_session(
     };
     let dispatch_id = launch_plan.adapter_id.as_str();
     let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
+    let interactive = crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| {
         state
             .chat_scratch_dir(&session_id)
@@ -1284,6 +1285,7 @@ pub fn start_session(
                 effort: chosen_effort_name,
                 instructions: Some(instructions),
                 write_mode: root_write_mode,
+                interactive,
                 read_only_sandbox: None,
                 briefing: None,
                 on_progress: None,
@@ -1317,6 +1319,7 @@ pub fn start_session(
                     effort: chosen_effort_name,
                     instructions: Some(orchestrator_instructions.as_str()),
                     write_mode: root_write_mode,
+                    interactive,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: None,
@@ -1658,6 +1661,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     };
     let dispatch_id = launch_plan.adapter_id.clone();
     let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
+    let interactive = crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let scoped_settings = crate::chat_defaults::validate_launch(&state.db.lock().unwrap(), &state.adapter_registry, &session_id, adapter_id, model.as_deref(), effort.as_deref())?;
     let tier = if is_orchestrator {
         orchestrator::TIER
@@ -1884,6 +1888,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 effort: chosen_effort.as_deref(),
                 instructions: Some(instructions),
                 write_mode: root_write_mode,
+                interactive,
                 read_only_sandbox: None,
                 briefing: None,
                 on_progress: Some(&on_startup_progress),
@@ -1915,6 +1920,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     effort: chosen_effort.as_deref(),
                     instructions: Some(&runtime_instructions),
                     write_mode: root_write_mode,
+                    interactive,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: Some(&on_startup_progress),
@@ -1984,6 +1990,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     effort: chosen_effort.as_deref(),
                     instructions: Some(&runtime_instructions),
                     write_mode: root_write_mode,
+                    interactive,
                     read_only_sandbox: None,
                     briefing: None,
                     on_progress: Some(&on_startup_progress),
@@ -5796,6 +5803,7 @@ pub fn launch_worker_outcome(
                         write_mode: Some(directive.write_mode),
                         read_only_sandbox: read_only_sandbox.as_ref(),
                         briefing: None,
+                        interactive: false,
                         on_progress: None,
                     },
                 )
@@ -5821,6 +5829,7 @@ pub fn launch_worker_outcome(
                                 write_mode: Some(directive.write_mode),
                                 read_only_sandbox: read_only_sandbox.as_ref(),
                                 briefing: None,
+                                interactive: false,
                                 on_progress: None,
                             },
                         )
@@ -5839,6 +5848,7 @@ pub fn launch_worker_outcome(
                             write_mode: Some(directive.write_mode),
                             read_only_sandbox: read_only_sandbox.as_ref(),
                             briefing: None,
+                            interactive: false,
                             on_progress: None,
                         },
                     )
@@ -5858,6 +5868,7 @@ pub fn launch_worker_outcome(
                     write_mode: Some(directive.write_mode),
                     read_only_sandbox: read_only_sandbox.as_ref(),
                     briefing: None,
+                    interactive: false,
                     on_progress: None,
                 },
             )
@@ -12275,6 +12286,8 @@ pub fn resolve_policy_delegation_approval(
 pub enum StopCause<'a> {
     User,
     Orchestrator(&'a str),
+    /// The chat's access changed; work started under the old posture ends.
+    AccessChanged,
 }
 
 impl StopCause<'_> {
@@ -12282,12 +12295,13 @@ impl StopCause<'_> {
         match self {
             Self::User => "Worker cancelled by user".to_owned(),
             Self::Orchestrator(reason) => format!("Worker stopped by its orchestrator: {reason}"),
+            Self::AccessChanged => "Worker stopped because the chat's access changed".to_owned(),
         }
     }
 
     fn shutdown(self) -> adapters::ShutdownReason {
         match self {
-            Self::User => adapters::ShutdownReason::UserCancelled,
+            Self::User | Self::AccessChanged => adapters::ShutdownReason::UserCancelled,
             Self::Orchestrator(_) => adapters::ShutdownReason::Completed,
         }
     }
@@ -12472,16 +12486,23 @@ fn stop_turn_claimed(core: &Arc<BridgeCore>, session_id: &str, cause: TurnStop) 
     Ok(())
 }
 
-/// Archive already holds lifecycle claims for the whole family. End processes
-/// synchronously, without the optional before-shutdown checkpoint that can
-/// leave `stop_session` running a new model turn after it returns.
-pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    let (live, worker): (bool, bool) = core.db.lock().unwrap().query_row(
+/// Archive and access changes already hold lifecycle claims for the whole
+/// family. End processes synchronously, without the optional before-shutdown
+/// checkpoint that can leave `stop_session` running a new model turn after it
+/// returns. Callers retire the root first, so a worker's cancellation cannot
+/// start a new turn on it.
+pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str, cause: StopCause<'_>) -> Result<(), BridgeError> {
+    // A worker is a child with a runtime record. Real workers keep the default
+    // `kind`, so the kind column cannot identify them. An unsettled worker is
+    // settled even without a live process: its lease still counts toward
+    // concurrency and writer conflicts until it is cancelled.
+    let (live, worker, unsettled): (bool, bool, bool) = core.db.lock().unwrap().query_row(
         "SELECT active_turn_id IS NOT NULL OR adapter_pid IS NOT NULL
                 OR status IN ('working','waiting','starting','resuming','checkpointing','ready','warm','restored'),
-                kind='worker' AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1)
+                parent_session_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1),
+                EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1 AND lifecycle_state NOT IN ('completed','cancelled'))
          FROM sessions WHERE id=?1",
-        [session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        [session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     // Waiting inputs must never revive an archived conversation, even when
     // there is no live adapter left to retire.
@@ -12496,9 +12517,9 @@ pub(crate) fn stop_session_for_archive(core: &Arc<BridgeCore>, session_id: &str)
     core.browser_clone_orchestrator.destroy(session_id);
     let has_adapter = core.adapters.lock().unwrap().contains_key(session_id);
     let has_pty = core.runtimes.lock().unwrap().contains_key(session_id);
-    if live || has_adapter || has_pty {
+    if live || has_adapter || has_pty || (worker && unsettled) {
         if worker {
-            stop_worker_session(core, session_id, StopCause::User)?;
+            stop_worker_session(core, session_id, cause)?;
         } else {
             stop_turn_claimed(core, session_id, TurnStop::User)?;
         }

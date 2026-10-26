@@ -4426,9 +4426,9 @@ pub fn archive_chat(
     }
     // Retire the parent first so a worker cancellation cannot start a new turn
     // on it while the rest of the family is being shut down.
-    live_turn::stop_session_for_archive(core, session_id)?;
+    live_turn::stop_session_for_archive(core, session_id, live_turn::StopCause::User)?;
     for id in family.iter().filter(|id| id.as_str() != session_id) {
-        live_turn::stop_session_for_archive(core, id)?;
+        live_turn::stop_session_for_archive(core, id, live_turn::StopCause::User)?;
     }
     let owned = { worktree_registry::owned_by_session(&core.db.lock().unwrap(), session_id)? };
     let reclaim = match owned {

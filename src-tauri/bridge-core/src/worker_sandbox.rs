@@ -785,6 +785,7 @@ mod tests {
             write_mode: Some(crate::delegation::WriteMode::ReadOnly),
             read_only_sandbox: Some(&codex_sandbox),
             briefing: None,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();
@@ -844,6 +845,7 @@ mod tests {
             write_mode: Some(crate::delegation::WriteMode::ReadOnly),
             read_only_sandbox: Some(&claude_sandbox),
             briefing: None,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();

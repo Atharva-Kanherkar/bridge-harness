@@ -55,6 +55,8 @@ export type ChatModelControlProps = {
    *  footer segmented control — the 2a home for effort, moved off the composer's
    *  old standalone pill. */
   effort?: string | null;
+  /** Restricts the offered levels, e.g. to what a specialist worker can carry. */
+  allowedEfforts?: readonly string[];
   /** Changes the reasoning effort. When omitted the footer control still shows
    *  the current effort but is inert — the state lives with the caller, so a
    *  surface that has not wired a setter yet reads rather than writes. */
@@ -68,7 +70,7 @@ const MAX_POPOVER_HEIGHT = 420;
 const MIN_POPOVER_HEIGHT = 240;
 const VIEWPORT_MARGIN = 12;
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, onEffortChange, onRefresh }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, onRefresh }: ChatModelControlProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -224,7 +226,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const compactLabel = modelLabel.toLowerCase().startsWith(harnessName.toLowerCase())
     ? modelLabel
     : `${harnessName} · ${modelLabel}`;
-  const effortLevels = effortLevelsFrom(currentModel?.supportedEffortLevels);
+  const effortLevels = effortLevelsFrom(currentModel?.supportedEffortLevels?.filter(value => !allowedEfforts || allowedEfforts.includes(value)));
   // A surface that wires neither the value nor a setter does not do effort at
   // all; one that wires either shows the current level, editable or not.
   const effortSurface = effort != null || !!onEffortChange;

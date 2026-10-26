@@ -5,6 +5,9 @@ export function defaultsFromSettings(settings: ResolvedChatSettings): ChatDefaul
   return { target: settings.target, model: settings.model, effort: { value: settings.effort ?? null }, access: settings.access, createWorktree: settings.createWorktree, activeTurnInput: settings.activeTurnInput };
 }
 
+/** A specialist runs as a worker; the worker contract carries these levels only. */
+export const WORKER_EFFORTS: readonly string[] = ["low", "medium", "high", "xhigh"];
+
 const SOURCE_LABELS: Record<string, string> = { application: "application default", project: "project default", chat: "this chat", agent: "selected agent", default: "Bridge default" };
 /** Host source keys (application, project, chat, agent, default) as user-facing words. */
 export function settingSourceLabel(source: string | undefined): string {

@@ -1,4 +1,4 @@
-import { defaultsFromSettings } from "./chatDefaults";
+import { defaultsFromSettings, WORKER_EFFORTS } from "./chatDefaults";
 import { useResolvedChatDraft } from "./useChatDefaults";
 import { ChatOptionsControl } from "./components/ChatOptionsControl";
 import type { ActiveTurnInput, ChatDefaults, ChatSessionSettings } from "./protocol/generated/protocol";
@@ -3600,7 +3600,7 @@ function AppContent() {
         model={draftSettings.settings?.model.model ?? null}
         effort={draftSettings.settings?.effort ?? undefined}
         onSelectEffort={effort => patchDraft({effort:{value:effort}})}
-        onSelectModel={(harness, model) => patchDraft({model:{harness,model},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model),draftSettings.settings?.effort) ?? null}})}
+        onSelectModel={(harness, model) => patchDraft({model:{harness,model},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model).filter(value => draftSettings.settings?.target.kind !== "agent" || WORKER_EFFORTS.includes(value)),draftSettings.settings?.effort) ?? null}})}
         slashCommands={slashCommands}
         suggestionSettings={suggestionSettings}
         canStartChat={adaptersReady}
@@ -3964,7 +3964,7 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
       trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip

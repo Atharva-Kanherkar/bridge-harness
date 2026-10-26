@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { bridgeApi } from "../../api";
-import { layerChatDefaults } from "../../chatDefaults";
+import { layerChatDefaults, WORKER_EFFORTS } from "../../chatDefaults";
 import type { AdapterDescriptor, AgentDefinition, Project } from "../../types";
 import type { ChatDefaults, ChatDefaultsView, ChatLaunchTarget } from "../../protocol/generated/protocol";
 import { SettingsGroup, SettingsPage, SettingsRow, TextButton, Select } from "./kit";
@@ -51,7 +51,8 @@ export function ChatDefaultsPage({ adapters, agents, onOpenAgents }: { adapters:
   const effective = layerChatDefaults(scope ? view?.application.defaults ?? {} : {}, draft);
   const model = effective.model;
   const adapter = adapters.find(a => a.id === model?.harness);
-  const efforts = adapter?.models.find(m => m.id === (model?.model ?? adapter.defaultModel))?.supportedEffortLevels ?? [];
+  const efforts = (adapter?.models.find(m => m.id === (model?.model ?? adapter.defaultModel))?.supportedEffortLevels ?? [])
+    .filter(value => effective.target?.kind !== "agent" || WORKER_EFFORTS.includes(value));
   const choices: Record<keyof ChatDefaults, Choice[]> = {
     target: [{ value: "direct", label: "Direct chat" }, { value: "orchestrator", label: "Orchestrator" }, ...agents.filter(a => a.enabled && a.role !== "orchestrator").map(a => ({ value: `agent:${a.id}`, label: a.name }))],
     model: adapters.filter(a => a.available).flatMap(a => [{ value: modelValue({ harness: a.id, model: null }), label: `${a.label} · Provider default` }, ...a.models.map(m => ({ value: modelValue({ harness: a.id, model: m.id }), label: `${a.label} · ${m.label}`, disabled: m.available === false || m.compatible === false }))]),

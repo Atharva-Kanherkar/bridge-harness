@@ -1493,6 +1493,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            interactive: false,
             on_progress: None,
         });
         std::env::remove_var("BRIDGE_GROK_BIN");
