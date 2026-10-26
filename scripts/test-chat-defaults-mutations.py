@@ -19,6 +19,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 FRONT = "src/chatDefaults.ts"
 CORE = "src-tauri/bridge-core/src/chat_defaults.rs"
+LIVE = "src-tauri/bridge-core/src/live_turn.rs"
+MCP = "src-tauri/bridge-core/src/mcp_apps/mod.rs"
 MUTANTS = [
     ("explicit-false-is-lost", FRONT, "if (value != null)", "if (value)", "frontend"),
     ("lower-layer-wins", FRONT, "Object.assign(result, { [key]: value });", "if (!(key in result)) Object.assign(result, { [key]: value });", "frontend"),
@@ -26,8 +28,14 @@ MUTANTS = [
     ("transient-context-exported", FRONT, "return { target: settings.target,", "return { ...settings, target: settings.target,", "frontend"),
     ("host-save-revision-ignored", CORE, "let current = record(&transaction, &key)?;\n    if current.revision != params.expected_revision {", "let current = record(&transaction, &key)?;\n    if false {", "rust"),
     ("host-access-overlay-omitted", CORE, 'field!(access, "access");', '// access overlay removed', "rust"),
-    ("scoped-access-becomes-full", CORE, "return Ok(Some(stored.settings.access));", "return Ok(Some(ChatAccess::Full));", "rust"),
+    ("scoped-access-becomes-full", CORE, "Ok(scoped_snapshot(db, session_id)?.map(|stored| stored.settings.access))", "Ok(scoped_snapshot(db, session_id)?.map(|_| ChatAccess::Full))", "rust"),
     ("unsupported-sandbox-accepted", CORE, "if !descriptor.sandbox_modes.contains(&mode) {", "if false {", "rust"),
+    ("aside-skips-root-authority", CORE, "if let Some(mut stored) = scoped_snapshot(db, source)? {", "if let Some(mut stored) = snapshot(db, source)? {", "rust"),
+    ("legacy-target-always-direct", CORE, 'target: if kind == "orchestrator" {', "target: if false {", "rust"),
+    ("specialist-effort-unchecked", CORE, "if serde_json::from_value::<crate::delegation::Effort>(serde_json::json!(value)).is_err()", "if false", "rust"),
+    ("worker-classified-by-kind", LIVE, "parent_session_id IS NOT NULL AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1),", "kind='worker' AND EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1),", "rust"),
+    ("visualize-needs-no-write-mode", MCP, "(interactive || write_mode.is_none())", "write_mode.is_none()", "rust"),
+    ("top-level-never-interactive", CORE, '"SELECT parent_session_id IS NULL AND NOT EXISTS(', '"SELECT 0 AND NOT EXISTS(', "rust"),
 ]
 
 
