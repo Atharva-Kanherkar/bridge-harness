@@ -225,6 +225,34 @@ impl DelegationRequest {
             self.capability_tier.as_str()
         )
     }
+
+    /// What the worker is about, as the Agents pane names it: the objective's
+    /// first sentence, cut on a word to fit one line. The label only says which
+    /// role and tier ran, which every worker of that kind shares.
+    pub fn title(&self) -> Option<String> {
+        worker_title(&self.objective)
+    }
+}
+
+const WORKER_TITLE_CHARS: usize = 60;
+
+fn worker_title(objective: &str) -> Option<String> {
+    let line = objective.lines().map(str::trim).find(|line| !line.is_empty())?;
+    // a sentence ends at a stop followed by a space, so `v1.2` and `a.rs` survive.
+    let sentence = line
+        .char_indices()
+        .find(|&(index, c)| matches!(c, '.' | '!' | '?') && line[index + 1..].starts_with(' '))
+        .map_or(line, |(index, _)| &line[..index]);
+    let sentence = sentence.trim_end_matches(['.', '!', '?', ':', ';', ',']).trim_end();
+    if sentence.chars().count() <= WORKER_TITLE_CHARS {
+        return Some(sentence.to_owned());
+    }
+    let cut: String = sentence.chars().take(WORKER_TITLE_CHARS).collect();
+    let cut = match cut.rfind(char::is_whitespace) {
+        Some(space) if space > 0 => &cut[..space],
+        _ => cut.as_str(),
+    };
+    Some(format!("{}…", cut.trim_end_matches([',', ';', ':', '-']).trim_end()))
 }
 
 fn validate_output_paths(paths: &[String]) -> Result<(), String> {
@@ -1785,6 +1813,29 @@ fn parse_effort(value: &str) -> Effort {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn worker_title_is_the_objectives_first_sentence() {
+        assert_eq!(worker_title("Add refresh-token rotation. Keep the store.").as_deref(), Some("Add refresh-token rotation"));
+        assert_eq!(worker_title("Bump to v1.2 in a.rs").as_deref(), Some("Bump to v1.2 in a.rs"));
+    }
+
+    #[test]
+    fn worker_title_skips_blank_lines_and_ignores_later_ones() {
+        assert_eq!(worker_title("\n  \nRank the gateway repos\nThen write it up").as_deref(), Some("Rank the gateway repos"));
+    }
+
+    #[test]
+    fn worker_title_cuts_long_objectives_on_a_word() {
+        let title = worker_title("Investigate why the login page flickers on Safari when the session cookie expires mid-request").unwrap();
+        assert_eq!(title, "Investigate why the login page flickers on Safari when the…");
+        assert!(title.chars().count() <= WORKER_TITLE_CHARS + 1);
+    }
+
+    #[test]
+    fn worker_title_is_none_for_a_blank_objective() {
+        assert_eq!(worker_title("  \n "), None);
+    }
 
     fn request() -> DelegationRequest {
         DelegationRequest {

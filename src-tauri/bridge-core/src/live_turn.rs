@@ -4582,6 +4582,10 @@ pub fn reserve_worker_launch_outcome(
             })?;
             let worker_path = runtime.worktree_path.unwrap_or_else(|| path.clone());
             let worker_branch = runtime.worktree_branch.unwrap_or_else(|| branch.clone());
+            // A warm worker picks up a new objective, so it takes that one's name.
+            if let Some(title) = directive.title() {
+                db.execute("UPDATE sessions SET title=?2 WHERE id=?1", params![session_id, title])?;
+            }
             return Ok(WorkerReservationOutcome::Reserved(
                 WorkerLaunchReservation {
                     session_id: session_id.clone(),
@@ -4627,12 +4631,13 @@ pub fn reserve_worker_launch_outcome(
     let now = Utc::now().to_rfc3339();
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,model,requested_tier,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,'starting',?5,'reported',?6,?7,?8,?9,?10)",
+        "INSERT INTO sessions(id,workspace_id,harness,label,title,status,started_at,metric_source,model,requested_tier,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,?5,'starting',?6,'reported',?7,?8,?9,?10,?11)",
         params![
             session_id,
             workspace_id,
             harness,
             directive.label(),
+            directive.title(),
             now,
             actual_model,
             directive.capability_tier.as_str(),
