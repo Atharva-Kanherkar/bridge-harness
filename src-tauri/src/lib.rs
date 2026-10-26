@@ -839,6 +839,25 @@ async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::m
 }
 
 #[tauri::command]
+async fn get_chat_defaults(project_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatDefaultsView, BridgeError> { api::get_chat_defaults(state.inner(),project_id.as_deref()) }
+#[tauri::command]
+async fn save_chat_defaults(project_id: Option<String>, expected_revision:u32, defaults:bridge_protocol::messages::ChatDefaults, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatDefaultsView, BridgeError> { api::save_chat_defaults(state.inner(),&bridge_protocol::messages::SaveChatDefaultsParams {project_id,expected_revision,defaults}) }
+#[tauri::command]
+async fn resolve_chat_settings(workspace_id: Option<String>, overrides:bridge_protocol::messages::ChatDefaults, expected_revision:Option<bridge_protocol::messages::ChatDefaultsRevision>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ResolvedChatSettings, BridgeError> { api::resolve_chat_settings(state.inner(),&bridge_protocol::messages::ResolveChatSettingsParams {workspace_id,overrides,expected_revision}) }
+#[tauri::command]
+async fn create_configured_chat(workspace_id: Option<String>, overrides:bridge_protocol::messages::ChatDefaults, expected_revision:bridge_protocol::messages::ChatDefaultsRevision, title:Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ConfiguredChatResult, BridgeError> {
+    let core=state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move ||api::create_configured_chat(&core,&bridge_protocol::messages::CreateConfiguredChatParams {workspace_id,overrides,expected_revision,title})).await.map_err(|e|BridgeError::Invalid(e.to_string()))?
+}
+#[tauri::command]
+async fn get_chat_settings(session_id:String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSessionSettings, BridgeError> { api::get_chat_settings(state.inner(),&session_id) }
+#[tauri::command]
+async fn update_chat_options(session_id:String,expected_revision:u32,access:bridge_protocol::messages::ChatAccess,active_turn_input:bridge_protocol::messages::ActiveTurnInput,state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ChatSessionSettings, BridgeError> {
+    let core=state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move ||api::update_chat_options(&core,&bridge_protocol::messages::UpdateChatOptionsParams {session_id,expected_revision,access,active_turn_input})).await.map_err(|e|BridgeError::Invalid(e.to_string()))?
+}
+
+#[tauri::command]
 async fn get_reviewer_settings(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::ReviewerSettingsResult, BridgeError> {
     api::get_reviewer_settings(state.inner())
 }
@@ -2987,6 +3006,12 @@ pub fn run() -> i32 {
             unarchive_chat,
             get_worker_settings,
             save_worker_settings,
+            get_chat_defaults,
+            save_chat_defaults,
+            resolve_chat_settings,
+            create_configured_chat,
+            get_chat_settings,
+            update_chat_options,
             get_reviewer_settings,
             save_reviewer_settings,
             get_delegation_notify_settings,

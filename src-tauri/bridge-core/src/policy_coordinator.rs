@@ -24,6 +24,10 @@ impl PolicyCoordinator {
         request: &DelegationRequest,
         child_worktrees_available: bool,
     ) -> Result<WorkerRouteContext, BridgeError> {
+        if request.write_mode == crate::delegation::WriteMode::Full
+            && crate::chat_defaults::scoped_access(db,parent_session_id)? == Some(bridge_protocol::messages::ChatAccess::Ask) {
+            return Err(BridgeError::Invalid("This chat requires user approval. Change its access before requesting an unrestricted worker".into()));
+        }
         let (workspace_id, parent_depth, path, branch): (String, i64, String, String) = db
             .query_row(
                 "SELECT s.workspace_id,COALESCE(s.depth,0),w.path,w.branch FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
@@ -47,8 +51,8 @@ impl PolicyCoordinator {
             let mut provenance = owned_path_provenance(db, parent_session_id, turn_id, Path::new(&path))?;
             // Full access means every approval is granted for the user, and a
             // write-scope card is an approval. An unreadable policy asks.
-            provenance.full_access = crate::agent_config::permission_policy(db)
-                .map(|policy| policy.auto_approve_provider_permissions)
+            provenance.full_access = crate::chat_defaults::effective_access(db, parent_session_id)
+                .map(|access| access == bridge_protocol::messages::ChatAccess::Full)
                 .unwrap_or(false);
             provenance
         };
@@ -822,6 +826,11 @@ mod tests {
         assert!(matches!(outcome, WorkerReservationOutcome::Reserved(_)));
         assert!(resolve_policy_delegation_approval(&db, "parent", approval.sequence, "accept", &approval.payload).is_err());
         assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(
+            db.query_row("SELECT title FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_, Option<String>>(0)).unwrap(),
+            Some("Implement the requested change".to_owned()),
+            "a reserved worker is named after its objective"
+        );
         assert_eq!(SessionForest::new(&db).active_branch("parent").unwrap().iter().filter(|entry| entry.kind == "approval.requested").count(), 1);
     }
 

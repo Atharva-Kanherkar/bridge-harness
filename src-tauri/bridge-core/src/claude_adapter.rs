@@ -155,6 +155,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
+            interactive: request.interactive,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -187,6 +188,7 @@ fn launch(
         write_mode,
         read_only_sandbox,
         briefing,
+        interactive,
         on_progress,
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
@@ -270,7 +272,7 @@ fn launch(
     // An interactive chat also gets Bridge's own `visualize` server. It is a
     // local stdio process with no sign-in, so it carries none of the
     // connector handshake cost described on `sidecar_mcp_servers`.
-    let visualize = crate::mcp_apps::attaches_to(write_mode, read_only_sandbox, briefing)
+    let visualize = crate::mcp_apps::attaches_to(interactive, write_mode, read_only_sandbox, briefing)
         .then(crate::mcp_apps::ServerLaunch::resolve)
         .flatten();
     let launch_mcp_servers = sidecar_mcp_servers(
@@ -1208,8 +1210,8 @@ mod tests {
         // A briefing's list is exactly its discovered connectors.
         assert_eq!(sidecar_mcp_servers(true, &discovered, Some(&visualize_launch())), discovered);
         // Workers never resolve a launch: the attach rule refuses them first.
-        assert!(!crate::mcp_apps::attaches_to(Some(WriteMode::Isolated), None, None));
-        assert!(!crate::mcp_apps::attaches_to(Some(WriteMode::Shared), None, None));
+        assert!(!crate::mcp_apps::attaches_to(false, Some(WriteMode::Isolated), None, None));
+        assert!(!crate::mcp_apps::attaches_to(false, Some(WriteMode::Shared), None, None));
     }
 
     #[test]
@@ -1425,6 +1427,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();
@@ -1501,6 +1504,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();
@@ -1518,6 +1522,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             provider_session_id: &session_id,
+            interactive: false,
             on_progress: None,
         })
         .unwrap();

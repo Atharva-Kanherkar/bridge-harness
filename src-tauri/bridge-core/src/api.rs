@@ -263,7 +263,7 @@ fn github_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeE
         .map_err(|error| BridgeError::Invalid(format!("GitHub protocol conversion failed: {error}")))
 }
 
-fn protocol_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeError> {
+pub(crate) fn protocol_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeError> {
     serde_json::from_value(serde_json::to_value(value).map_err(|error| BridgeError::Invalid(error.to_string()))?)
         .map_err(|error| BridgeError::Invalid(format!("Protocol conversion failed: {error}")))
 }
@@ -1527,6 +1527,7 @@ pub fn update_chat_model(
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
     let _lifecycle = core.claim_session_lifecycle(session_id, "model switch")?;
+    crate::chat_defaults::validate_model_switch(&core.db.lock().unwrap(), &core.adapter_registry, session_id, &store::harness_name(harness))?;
     let change = core.plan_chat_model_change(session_id, harness, model)?;
     let (previous_model, previous_effort): (Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
         "SELECT model,effort FROM sessions WHERE id=?1", params![session_id],
@@ -2790,6 +2791,9 @@ fn resolve_provider_permission(
     reason: Option<&str>,
 ) -> Result<wire::InteractionResolutionResult, BridgeError> {
     let db = core.db.lock().unwrap();
+    if actor == "policy" && crate::chat_defaults::effective_access(&db,session_id)? != wire::ChatAccess::Full {
+        return Err(BridgeError::Invalid("Automatic permission grant is no longer authorized".into()));
+    }
     let (payload, adapter_id, is_worker) =
         interaction_payload(&db, session_id, event_id, "permission.requested")?;
     let details = payload.get("data").cloned().unwrap_or_else(|| serde_json::json!({}));
@@ -4422,9 +4426,9 @@ pub fn archive_chat(
     }
     // Retire the parent first so a worker cancellation cannot start a new turn
     // on it while the rest of the family is being shut down.
-    live_turn::stop_session_for_archive(core, session_id)?;
+    live_turn::stop_session_for_archive(core, session_id, live_turn::StopCause::User)?;
     for id in family.iter().filter(|id| id.as_str() != session_id) {
-        live_turn::stop_session_for_archive(core, id)?;
+        live_turn::stop_session_for_archive(core, id, live_turn::StopCause::User)?;
     }
     let owned = { worktree_registry::owned_by_session(&core.db.lock().unwrap(), session_id)? };
     let reclaim = match owned {
@@ -6774,4 +6778,26 @@ mod clone_settings_tests {
         assert_eq!(saved.settings.default_browser, CloneBrowserKind::Safari);
         assert_eq!(saved.settings.default_sign_in_path, CloneSignInPath::SignInInside);
     }
+}
+
+
+pub fn get_chat_defaults(core: &Arc<BridgeCore>, project_id: Option<&str>) -> Result<wire::ChatDefaultsView, BridgeError> {
+    crate::chat_defaults::view(&core.db.lock().unwrap(), project_id)
+}
+pub fn save_chat_defaults(core: &Arc<BridgeCore>, params: &wire::SaveChatDefaultsParams) -> Result<wire::ChatDefaultsView, BridgeError> {
+    let result = crate::chat_defaults::save(&core.db.lock().unwrap(), &core.adapter_registry.descriptors(), params)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(result)
+}
+pub fn resolve_chat_settings(core: &Arc<BridgeCore>, params: &wire::ResolveChatSettingsParams) -> Result<wire::ResolvedChatSettings, BridgeError> {
+    crate::chat_defaults::resolve(&core.db.lock().unwrap(), &core.adapter_registry, params)
+}
+pub fn create_configured_chat(core: &Arc<BridgeCore>, params: &wire::CreateConfiguredChatParams) -> Result<wire::ConfiguredChatResult, BridgeError> {
+    crate::chat_defaults::create(core, params)
+}
+pub fn get_chat_settings(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ChatSessionSettings, BridgeError> {
+    crate::chat_defaults::session_settings(&core.db.lock().unwrap(),session_id)
+}
+pub fn update_chat_options(core: &Arc<BridgeCore>, params: &wire::UpdateChatOptionsParams) -> Result<wire::ChatSessionSettings, BridgeError> {
+    crate::chat_defaults::update_options(core,params)
 }

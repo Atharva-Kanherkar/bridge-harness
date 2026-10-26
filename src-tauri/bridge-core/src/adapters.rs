@@ -606,6 +606,10 @@ pub struct StartRequest<'a> {
     /// defaulted, because an adapter that silently ignores it would run a
     /// briefing with a coding agent's tools.
     pub briefing: Option<&'a BriefingRuntimePolicy>,
+    /// A top-level chat a person reads, as opposed to a worker or a background
+    /// job. Decides attachments such as `visualize`. A separate axis from
+    /// `write_mode`: configured chats carry an explicit write authority too.
+    pub interactive: bool,
     /// See [`StartupProgress`].
     pub on_progress: Option<StartupProgress<'a>>,
 }
@@ -622,6 +626,7 @@ impl std::fmt::Debug for StartRequest<'_> {
             .field("write_mode", &self.write_mode)
             .field("read_only_sandbox", &self.read_only_sandbox)
             .field("briefing", &self.briefing)
+            .field("interactive", &self.interactive)
             .field("on_progress", &self.on_progress.map(|_| "<fn>"))
             .finish()
     }
@@ -643,6 +648,8 @@ pub struct ResumeRequest<'a> {
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
     /// See [`StartRequest::briefing`].
     pub briefing: Option<&'a BriefingRuntimePolicy>,
+    /// See [`StartRequest::interactive`].
+    pub interactive: bool,
     /// See [`StartupProgress`].
     pub on_progress: Option<StartupProgress<'a>>,
 }
@@ -659,6 +666,7 @@ impl std::fmt::Debug for ResumeRequest<'_> {
             .field("write_mode", &self.write_mode)
             .field("read_only_sandbox", &self.read_only_sandbox)
             .field("briefing", &self.briefing)
+            .field("interactive", &self.interactive)
             .field("on_progress", &self.on_progress.map(|_| "<fn>"))
             .finish()
     }

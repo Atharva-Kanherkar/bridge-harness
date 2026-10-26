@@ -35,6 +35,7 @@ import "./components/CodePanel";
 import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
 import { SHORTCUTS } from "./keymap";
+import { agentName } from "./components/agentIdentity";
 
 // jsdom has no Web Animations API; Base UI's dialog asks for running
 // animations when it closes.
@@ -594,10 +595,12 @@ describe("the dock in the session view", () => {
     await key({ ...chord, code: "Digit6", key: "6" });
     await settle(3);
     const dock = dockAside()!;
-    expect(dock.textContent).toContain("Implementation · strong");
+    expect(dock.textContent).toContain(agentName("session-1w"));
+    expect(dock.textContent).toContain("Implementation");
+    expect(dock.textContent).toContain("Refactor the auth module to use the new token store");
     expect(dock.textContent).toContain("WORKING");
     // The finished verification worker is the chat's history, not a running agent.
-    expect(dock.textContent).not.toContain("Verification · strong");
+    expect(dock.textContent).not.toContain("Verification");
     expect(dock.textContent).toContain("Update the auth serializer");
     expect(dock.textContent).toContain("owned_path_conflict");
   });
@@ -618,11 +621,11 @@ describe("the dock in the session view", () => {
     await settle(3);
     // A row opens the worker's chat in the pane; its own session is one more
     // click from there.
-    await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="View Implementation · strong"]')!);
-    expect(dockAside()!.querySelector('[role="region"][aria-label="Agent Implementation · strong"]')).not.toBeNull();
+    await click(dockAside()!.querySelector<HTMLButtonElement>(`button[aria-label="View ${agentName("session-1w")}"]`)!);
+    expect(dockAside()!.querySelector('[role="region"][aria-label="Agent Refactor the auth module to use the new token store"]')).not.toBeNull();
     await click(dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open session"]')!);
 
-    expect(container.querySelector("h1")!.textContent).toContain("Implementation");
+    expect(container.querySelector("h1")!.textContent).toContain("Refactor the auth module");
     expect(container.textContent).toContain("This is a background worker");
     expect(container.querySelector('[aria-label^="Context window"]')).not.toBeNull();
   });

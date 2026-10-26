@@ -2794,6 +2794,7 @@ mod tests {
             write_mode,
             read_only_sandbox: None,
             briefing,
+            interactive: false,
             on_progress: None,
         };
         let Err(error) = adapter.start(request(Some(WriteMode::ReadOnly), None)) else {
@@ -2922,6 +2923,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            interactive: false,
             on_progress: None,
         }) else {
             panic!("a harness that does not resume must not pretend to");

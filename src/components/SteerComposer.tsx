@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Navigation } from "lucide-react";
+import { LoaderCircle, Navigation } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -20,6 +20,9 @@ export function SteerComposer(props: SteerComposerProps) {
 interface SteerComposerProps {
   sessionId: string;
   steerable: boolean;
+  /** Live but not yet taking steers (starting, resuming). Without it a
+   *  worker that cannot be steered reads as finished. */
+  starting?: boolean;
   onSteer: (sessionId: string, text: string) => Promise<void>;
   label?: string;
   /** Container chrome. The overlay wants a full-width divider; the docked
@@ -32,10 +35,17 @@ interface SteerComposerProps {
   trailing?: ReactNode;
 }
 
-function SteerBox({ sessionId, steerable, onSteer, label = "Steer this worker…", className = "shrink-0 border-t border-border px-4 py-3 sm:px-6", trailing }: SteerComposerProps) {
+function SteerBox({ sessionId, steerable, starting = false, onSteer, label = "Steer this worker…", className = "shrink-0 border-t border-border px-4 py-3 sm:px-6", trailing }: SteerComposerProps) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
+  if (!steerable && starting) {
+    return <div className={cn(className, "flex items-center gap-2")} role="status">
+      <LoaderCircle size={12} className="shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
+      <span className="flex-1 text-[11px] text-muted-foreground">Starting up. You can steer this worker once it is running.</span>
+      {trailing}
+    </div>;
+  }
   if (!steerable) {
     return <div className={cn(className, "flex items-center gap-2")} role="status">
       <span className="flex-1 text-[11px] text-muted-foreground">This worker has finished. Its typed result is final — ask the orchestrator to delegate a follow-up.</span>

@@ -8,6 +8,7 @@ import { workerStatus, type WorkerTone } from "./workerStatus";
 import type { TerminalActivity } from "./TerminalPane";
 import { workerClock } from "./WorkerControls";
 import { AgentChat } from "./AgentChat";
+import { agentName, agentRole, agentTopic } from "./agentIdentity";
 import { formatElapsed, harnessLabel } from "../utils";
 
 // The Agents pane: the agents this chat has running right now, and nothing
@@ -121,7 +122,8 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
   if (open) {
     const runtime = runtimes.find(item => item.sessionId === open.id);
     const status = workerStatus(open, runtime);
-    const name = open.title || open.label;
+    const name = agentName(open.id);
+    const topic = agentTopic(open);
     const isPinned = pinned.has(open.id);
     return <div className="flex h-full flex-col">
       <div className="flex min-h-11 shrink-0 items-center gap-1.5 border-b border-border px-1.5 py-1.5">
@@ -135,9 +137,11 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
         <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", TONE_DOT[status.tone], status.tone === "working" && "mission-live-accent")} aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5">
-            <b className="min-w-0 truncate text-[13px] font-medium text-foreground">{name}</b>
+            <b className="shrink-0 text-[13px] font-medium text-foreground">{name}</b>
+            <span className="min-w-0 truncate text-[12px] text-muted-foreground">{agentRole(open.label)}</span>
             <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.06em]", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
           </span>
+          {topic && <span className="mt-0.5 block truncate text-[12px] text-foreground/80" title={topic}>{topic}</span>}
           <small className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{[harnessLabel(open.harness), open.model, runtime?.taskFamily].filter(Boolean).join(" · ")}</small>
         </span>
         <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{formatElapsed(open.startedAt, workerClock(open, runtime, now))}</span>
@@ -169,7 +173,8 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
       {rows.map(({ runtime, session, pinned: isPinned }) => {
         const status = workerStatus(session, runtime);
         const elapsed = formatElapsed(session.startedAt, workerClock(session, runtime, now));
-        const name = session.title || session.label;
+        const name = agentName(session.id);
+        const topic = agentTopic(session);
         return <section key={runtime.sessionId} data-agent-row={runtime.sessionId} className="border-b border-border">
           <div className="flex items-center gap-2 px-3 py-2.5">
             <button
@@ -181,9 +186,11 @@ export function TasksPane({ chatSessionId, sessions, runtimes = [], queue = [], 
               <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", TONE_DOT[status.tone], status.tone === "working" && "mission-live-accent")} aria-hidden="true" />
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline gap-1.5">
-                  <b className="min-w-0 truncate text-[13px] font-medium text-foreground">{name}</b>
+                  <b className="shrink-0 text-[13px] font-medium text-foreground">{name}</b>
+                  <span className="min-w-0 truncate text-[12px] text-muted-foreground">{agentRole(session.label)}</span>
                   <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.06em]", status.tone === "waiting" ? "text-warning" : "text-muted-foreground")}>{status.label}</span>
                 </span>
+                {topic && <span className="mt-0.5 block truncate text-[12px] text-foreground/80">{topic}</span>}
                 <small className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{runtime.waitingReason ? `waiting: ${runtime.waitingReason.replaceAll("_", " ")}` : runtime.progressSummary ?? runtime.taskFamily}</small>
               </span>
               <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{elapsed}</span>

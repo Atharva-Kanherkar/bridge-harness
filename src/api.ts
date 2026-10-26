@@ -1,3 +1,5 @@
+import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
+import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
@@ -488,7 +490,7 @@ let mockState: BridgeState & { agentEvents: AgentEvent[] } = {
   ],
   sessions: [
     { id: "session-1", workspaceId: "demo-1", harness: "codex", label: "Orchestrator", status: "working", startedAt: now, endedAt: null, contextPercent: 38, usagePercent: 24, metricSource: "reported", providerSessionId: "mock-thread-1", activeTurnId: "mock-turn-1", model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "hot", continuationFidelity: "native", kind: "orchestrator" },
-    { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
+    { id: "session-1w", workspaceId: "demo-1", harness: "claude", label: "Implementation · strong", title: "Refactor the auth module to use the new token store", status: "working", startedAt: now, endedAt: null, contextPercent: 21, usagePercent: 14, metricSource: "reported", providerSessionId: "mock-claude-1", activeTurnId: "mock-turn-1w", model: "fable", requestedTier: "strong", effort: "high", parentSessionId: "session-1", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" },
     { id: "session-1w2", workspaceId: "demo-1", harness: "codex", label: "Verification · strong", status: "ready", startedAt: now, endedAt: null, contextPercent: 9, usagePercent: 6, metricSource: "reported", providerSessionId: "mock-codex-2", activeTurnId: null, model: "gpt-5.6-sol", requestedTier: "strong", effort: "xhigh", parentSessionId: "session-1", depth: 1, restorationMode: "checkpoint_restored", continuationFidelity: "projected_at_boundary", kind: "worker" },
     { id: "session-2", workspaceId: "demo-2", harness: "codex", label: "Orchestrator", status: "ready", startedAt: now, endedAt: null, contextPercent: 12, usagePercent: 8, metricSource: "reported", providerSessionId: "mock-thread-2", activeTurnId: null, model: "gpt-5.6-luna", requestedTier: "fast", effort: null, parentSessionId: null, depth: 0, restorationMode: "fresh", continuationFidelity: "native", kind: "orchestrator" },
     { id: "session-2w", workspaceId: "demo-2", harness: "opencode", label: "Docs · fast", status: "working", startedAt: now, endedAt: null, contextPercent: 7, usagePercent: 3, metricSource: "reported", providerSessionId: "mock-opencode-2w", activeTurnId: "mock-turn-2w", model: "opencode/space-bunny-free", requestedTier: "fast", effort: null, parentSessionId: "session-2", depth: 1, restorationMode: "native", continuationFidelity: "native", kind: "worker" }
@@ -1483,6 +1485,32 @@ function mockNotifyView(sessionId?: string): DelegationNotifySettingsView {
 }
 
 export const bridgeApi = {
+  getChatDefaults: async (projectId?: string | null): Promise<ChatDefaultsView> => hasBackend() ? call("config/get_chat_defaults", { projectId: projectId ?? null }) : Promise.resolve(mockDefaultsView(mockState, projectId)),
+  saveChatDefaults: async (params: SaveChatDefaultsParams): Promise<ChatDefaultsView> => {
+    if (hasBackend()) return call("config/save_chat_defaults", params);
+    const result = mockSaveDefaults(mockState,params); emitState(); return result;
+  },
+  resolveChatSettings: async (params: ResolveChatSettingsParams): Promise<ResolvedChatSettings> => hasBackend() ? call("sessions/resolve_chat_settings", params) : Promise.resolve(mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params)),
+  createConfiguredChat: async (params: CreateConfiguredChatParams): Promise<ConfiguredChatResult> => {
+    if (hasBackend()) return call("sessions/create_configured_chat", params);
+    const settings = mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params);
+    const id=crypto.randomUUID();
+    mockState.sessions.push({ id, workspaceId: params.workspaceId ?? null, harness: settings.model.harness, label: settings.target.kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt:null, endedAt:null, contextPercent:null,usagePercent:null,metricSource:"estimated",providerSessionId:null,activeTurnId:null,model:settings.model.model ?? null,effort:settings.effort,requestedTier:"standard",restorationMode:"fresh",continuationFidelity:"native",title:params.title ?? null,kind:settings.target.kind === "direct" ? "direct" : "orchestrator",cwd:settings.createWorktree ? `/tmp/bridge/worktrees/${id}` : mockState.workspaces.find(w=>w.id===params.workspaceId)?.path ?? null });
+    const configuration={revision:1,settings};mockSessionSettings.set(id,configuration);emitState();return {sessionId:id,state:snapshot(),configuration};
+  },
+  chatSettings: async (sessionId: string): Promise<ChatSessionSettings> => {
+    if (hasBackend()) return call("sessions/get_chat_settings",{sessionId});
+    const session=mockState.sessions.find(s=>s.id===sessionId);if(!session) throw new Error("Chat no longer exists");
+    const stored=mockSessionSettings.get(sessionId);
+    const settings=stored?.settings ?? { workspaceId:session.workspaceId,projectId:mockState.workspaces.find(w=>w.id===session.workspaceId)?.projectId,revision:{application:0,project:0},target:{kind:session.kind === "direct" ? "direct" as const : "orchestrator" as const},model:{harness:session.harness,model:session.model},effort:session.effort,access:mockConfigState.permissionPolicy.autoApproveProviderPermissions ? "full" as const : "ask" as const,createWorktree:false,activeTurnInput:"steer" as const,sources:{} };
+    return structuredClone({revision:stored?.revision ?? 0,settings:{...settings,model:{harness:session.harness,model:session.model},effort:session.effort}});
+  },
+  updateChatOptions: async (params: UpdateChatOptionsParams): Promise<ChatSessionSettings> => {
+    if(hasBackend()) return call("sessions/update_chat_options",params);
+    const current=await bridgeApi.chatSettings(params.sessionId);if(current.revision!==params.expectedRevision) throw new Error("Chat settings changed. Reload before saving");
+    const next={revision:current.revision+1,settings:{...current.settings,access:params.access,activeTurnInput:params.activeTurnInput}};
+    mockSessionSettings.set(params.sessionId,next);emitState();return structuredClone(next);
+  },
   installCodexUpdate: (): Promise<void> => hasBackend()
     ? unit(call("health/install_codex_update"))
     : Promise.reject(new Error("Codex updates require the Bridge desktop app")),

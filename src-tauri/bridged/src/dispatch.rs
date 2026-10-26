@@ -591,6 +591,12 @@ pub fn dispatch(
             let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
             reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
         }
+        MethodName::GetChatDefaults => { let p:wire::GetChatDefaultsParams=decode(method,params)?; reply(api::get_chat_defaults(core,p.project_id.as_deref())) },
+        MethodName::SaveChatDefaults => { let p:wire::SaveChatDefaultsParams=decode(method,params)?; reply(api::save_chat_defaults(core,&p)) },
+        MethodName::ResolveChatSettings => { let p:wire::ResolveChatSettingsParams=decode(method,params)?; reply(api::resolve_chat_settings(core,&p)) },
+        MethodName::CreateConfiguredChat => { let p:wire::CreateConfiguredChatParams=decode(method,params)?; reply(api::create_configured_chat(core,&p)) },
+        MethodName::GetChatSettings => { let p:wire::GetChatSettingsParams=decode(method,params)?; reply(api::get_chat_settings(core,&p.session_id)) },
+        MethodName::UpdateChatOptions => { let p:wire::UpdateChatOptionsParams=decode(method,params)?; reply(api::update_chat_options(core,&p)) },
         MethodName::GetReviewerSettings => reply(api::get_reviewer_settings(core)),
         MethodName::SaveReviewerSettings => {
             let p: wire::SaveReviewerSettingsParams = decode(method, params)?;

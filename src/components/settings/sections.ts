@@ -2,13 +2,13 @@
 export type Section =
   | "general" | "codingAgents" | "data"
   | "appearance" | "menuBar" | "updates" | "permissions" | "composer" | "voice"
-  | "agents" | "models" | "prompts" | "harnesses" | "clones"
+  | "chatDefaults" | "agents" | "models" | "prompts" | "harnesses" | "clones"
   | "work" | "import" | "archives" | "workers" | "storage";
 
 export type PrimarySection = "general" | "codingAgents" | "permissions" | "data";
 export type RailGroup = "Settings";
 export const SECTION_LABELS: Record<Section, string> = {
-  voice: "Voice", general: "General", codingAgents: "Coding agents", data: "Data & storage",
+  chatDefaults: "New chat defaults", voice: "Voice", general: "General", codingAgents: "Coding agents", data: "Data & storage",
   appearance: "Appearance", menuBar: "Menu bar", updates: "Updates",
   permissions: "Permissions", composer: "Typing & search", agents: "Agents",
   models: "Model preferences", prompts: "Bridge instructions", harnesses: "Coding agents",
