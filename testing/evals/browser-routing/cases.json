@@ -1,0 +1,72 @@
+[
+  {
+    "id": "local-dev-unhinted",
+    "task": "Check that the new settings page on my dev server at http://localhost:5173 renders correctly.",
+    "expected": "automation"
+  },
+  {
+    "id": "local-flow-unhinted",
+    "task": "Click through the signup form of the web app I'm building locally and tell me if anything breaks.",
+    "expected": "automation"
+  },
+  {
+    "id": "localhost-qa",
+    "task": "Test the app at http://localhost:1420. Playwright is installed; no login is needed.",
+    "expected": "automation"
+  },
+  {
+    "id": "ipv4-screenshot",
+    "task": "Take a screenshot of http://127.0.0.1:3000 using the installed Playwright. It is a local landing page.",
+    "expected": "automation"
+  },
+  {
+    "id": "ipv6-qa",
+    "task": "Check the form at http://[::1]:8080 with the available browser automation. No authentication.",
+    "expected": "automation"
+  },
+  {
+    "id": "local-extension",
+    "task": "Test my unpacked Chrome extension against a local fixture. A fresh Playwright persistent context can load it. No account or cookies are needed.",
+    "expected": "automation"
+  },
+  {
+    "id": "public-page",
+    "task": "Check the layout of https://example.com in a fresh browser. No login is needed and browser automation is available.",
+    "expected": "automation"
+  },
+  {
+    "id": "missing-automation",
+    "task": "Test my local app. There is no browser automation tool or browser binary installed, and installing one is blocked in this environment. No login is needed.",
+    "expected": "blocked"
+  },
+  {
+    "id": "signed-in-doc",
+    "task": "Read my private Google Doc using my existing Chrome sign-in. There is no connected Docs API.",
+    "expected": "clone"
+  },
+  {
+    "id": "signed-in-dashboard",
+    "task": "Check the numbers on my private signed-in analytics dashboard using my Chrome session. There is no connected API.",
+    "expected": "clone"
+  },
+  {
+    "id": "explicit-local-clone",
+    "task": "Use a Bridge browser clone for http://localhost:3000. I specifically want to approve a cloned browser for this test.",
+    "expected": "clone"
+  },
+  {
+    "id": "explicit-cookie-import",
+    "task": "Import my approved example.com browser cookies into a Bridge clone and inspect the page.",
+    "expected": "clone"
+  },
+  {
+    "id": "local-with-login",
+    "task": "Test http://localhost:3000 against my private account. It requires importing my existing Chrome sign-in cookies through Bridge; a fresh browser cannot access the account.",
+    "expected": "clone"
+  },
+  {
+    "id": "public-no-tools",
+    "task": "Read the public documentation at https://example.com/docs. A connected fetch tool can return its content; no login is needed.",
+    "expected": "direct"
+  }
+]

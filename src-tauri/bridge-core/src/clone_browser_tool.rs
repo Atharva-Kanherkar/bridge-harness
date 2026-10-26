@@ -177,7 +177,8 @@ Work in a loop: look (screenshot or read_page), act, look again. status stays av
             quote(&self.socket.to_string_lossy()), quote(&format!("Authorization: Bearer {token}")), quote(&format!("X-Bridge-Session: {session}")));
         fs::write(&path, script).ok()?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).ok()?;
-        Some(format!(r#"When a task needs a real browser (a signed-in site, a web app to check or use, a UI to test), ask for one; the person approves it: {tool} '{{"kind":"request","domain":"example.com"}}'. It copies cookies for the explicitly approved domains, and you can see and drive it. The result includes requestId. Poll the same tool with {{"kind":"request_status","requestId":...}} every two seconds until awaiting=false (approval can take minutes; do not end your turn); it returns the browser tool's instructions. Optional additionalDomains lists hosts the site needs: each entry permits connections and imports cookies for that host and its subdomains. Parent-domain cookies require explicitly listing their parent (for Google Docs sign-in, include google.com to copy Google's shared session cookies); the approval card shows this full scope. Nothing is widened automatically. Resolve a pending request before changing its scope. Approving a new request destroys the previous browser; use the fresh tool instructions returned by request_status. Optional extensionPath is an absolute directory of an extension under test. The browser is destroyed when your turn ends."#, tool = path.display()))
+        Some(format!(r#"Choose browser access based on the state the task needs. For local app QA, UI tests, screenshots, and extension tests, use available Playwright or other ordinary browser automation with a fresh profile. This includes localhost, 127.0.0.1, and [::1]. For public pages with no login requirement, use available web/fetch tools or ordinary browser automation. These tasks do not require a Bridge browser clone or cookie-copy approval. If automation is missing or fails, use another available tool, set it up within the task's permissions, or explain the limitation; do not request a clone merely because browser testing is needed.
+Request a Bridge browser clone when the task needs the user's existing signed-in browser state or the user explicitly asks for a Bridge clone or cookie import. This also applies to a local app that explicitly needs that signed-in state. A clone is an optional capability, not a prerequisite for browser use. To request one, the person approves it: {tool} '{{"kind":"request","domain":"example.com"}}'. It copies cookies for the explicitly approved domains, and you can see and drive it. The result includes requestId. Poll the same tool with {{"kind":"request_status","requestId":...}} every two seconds until awaiting=false (approval can take minutes; do not end your turn); it returns the browser tool's instructions. Optional additionalDomains lists hosts the site needs: each entry permits connections and imports cookies for that host and its subdomains. Parent-domain cookies require explicitly listing their parent (for Google Docs sign-in, include google.com to copy Google's shared session cookies); the approval card shows this full scope. Nothing is widened automatically. Resolve a pending request before changing its scope. Approving a new request destroys the previous browser; use the fresh tool instructions returned by request_status. Optional extensionPath is an absolute directory of an extension under test. The browser is destroyed when your turn ends."#, tool = path.display()))
     }
 
     /// The domain a session's agent has asked for, awaiting the person's answer.
@@ -1031,6 +1032,31 @@ mod tests {
         }
         supervisor.destroy(&info.id).unwrap();
         assert!(!info.mount.exists());
+    }
+
+    #[test]
+    fn request_context_scopes_clones_to_signed_in_state_or_explicit_requests() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let tool = CloneBrowserTool::new(
+            CloneSupervisor::guarded(dir.path().join("ledger.json")), dir.path().to_owned(),
+        ).unwrap();
+        let context = tool.request_capability_context("routing", std::process::id()).unwrap();
+        for instruction in [
+            "use available Playwright or other ordinary browser automation with a fresh profile",
+            "localhost, 127.0.0.1, and [::1]",
+            "public pages with no login requirement",
+            "do not request a clone merely because browser testing is needed",
+            "user's existing signed-in browser state",
+            "user explicitly asks for a Bridge clone or cookie import",
+            "local app that explicitly needs that signed-in state",
+            "request_status", "additionalDomains", "extensionPath",
+            "Parent-domain cookies require explicitly listing their parent",
+            "The browser is destroyed when your turn ends",
+        ] {
+            assert!(context.contains(instruction), "missing routing/protocol instruction: {instruction}");
+        }
+        assert!(!context.contains("When a task needs a real browser"));
+        assert!(dir.path().join("clone-request-routing").exists());
     }
 
     #[test]

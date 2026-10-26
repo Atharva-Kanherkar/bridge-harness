@@ -13922,7 +13922,11 @@ mod submit_input_tests {
         std::fs::write(extension.join("manifest.json"), r#"{"manifest_version":3,"name":"Synthetic fixture","version":"1.0"}"#).unwrap();
         for _ in 0..2 {
             submit_input(&core, "chat".into(), "Test my local extension with a browser".into()).unwrap();
-            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text| text.contains("clone-request-chat")));
+            assert!(handles.contexts.lock().unwrap().last().unwrap().iter().any(|text|
+                text.contains("clone-request-chat")
+                    && text.contains("For local app QA")
+                    && text.contains("user's existing signed-in browser state")
+            ));
             let request_tool = directory.join("clone-request-chat");
             let (ok, asked) = invoke(&request_tool, serde_json::json!({"kind":"request","domain":"example.test","extensionPath":extension,"additionalDomains":["cdn.example.test"]}));
             assert!(ok);
