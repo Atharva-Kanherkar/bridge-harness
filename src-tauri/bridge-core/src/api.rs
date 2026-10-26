@@ -263,7 +263,7 @@ fn github_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeE
         .map_err(|error| BridgeError::Invalid(format!("GitHub protocol conversion failed: {error}")))
 }
 
-fn protocol_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeError> {
+pub(crate) fn protocol_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeError> {
     serde_json::from_value(serde_json::to_value(value).map_err(|error| BridgeError::Invalid(error.to_string()))?)
         .map_err(|error| BridgeError::Invalid(format!("Protocol conversion failed: {error}")))
 }
@@ -6774,4 +6774,26 @@ mod clone_settings_tests {
         assert_eq!(saved.settings.default_browser, CloneBrowserKind::Safari);
         assert_eq!(saved.settings.default_sign_in_path, CloneSignInPath::SignInInside);
     }
+}
+
+
+pub fn get_chat_defaults(core: &Arc<BridgeCore>, project_id: Option<&str>) -> Result<wire::ChatDefaultsView, BridgeError> {
+    crate::chat_defaults::view(&core.db.lock().unwrap(), project_id)
+}
+pub fn save_chat_defaults(core: &Arc<BridgeCore>, params: &wire::SaveChatDefaultsParams) -> Result<wire::ChatDefaultsView, BridgeError> {
+    let result = crate::chat_defaults::save(&core.db.lock().unwrap(), &core.adapter_registry.descriptors(), params)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(result)
+}
+pub fn resolve_chat_settings(core: &Arc<BridgeCore>, params: &wire::ResolveChatSettingsParams) -> Result<wire::ResolvedChatSettings, BridgeError> {
+    crate::chat_defaults::resolve(&core.db.lock().unwrap(), &core.adapter_registry, params)
+}
+pub fn create_configured_chat(core: &Arc<BridgeCore>, params: &wire::CreateConfiguredChatParams) -> Result<wire::ConfiguredChatResult, BridgeError> {
+    crate::chat_defaults::create(core, params)
+}
+pub fn get_chat_settings(core: &Arc<BridgeCore>, session_id: &str) -> Result<wire::ChatSessionSettings, BridgeError> {
+    crate::chat_defaults::session_settings(&core.db.lock().unwrap(),session_id)
+}
+pub fn update_chat_options(core: &Arc<BridgeCore>, params: &wire::UpdateChatOptionsParams) -> Result<wire::ChatSessionSettings, BridgeError> {
+    crate::chat_defaults::update_options(core,params)
 }
