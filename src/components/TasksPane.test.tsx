@@ -6,6 +6,7 @@ import type { Session, WorkerRuntimeRecord } from "../types";
 import type { QueuedWorkerRequest } from "../protocol/generated/protocol";
 import { bridgeApi } from "../api";
 import { TasksPane, activeAgentRows, descendantIds } from "./TasksPane";
+import { agentName } from "./agentIdentity";
 
 // The Agents pane lists the agents this chat has running now, and pinned ones,
 // and opens any of them to its chat.
@@ -133,7 +134,7 @@ describe("a row", () => {
     expect(container.textContent).toContain("editing src/auth/store.rs");
     expect(chatRegion("Worker w1")).toBeNull();
 
-    await click(byLabel("View Worker w1"));
+    await click(byLabel(`View ${agentName("w1")}`));
     expect(chatRegion("Worker w1")).not.toBeNull();
     // The list gives way to the chat, and it is part of the pane, not an overlay.
     expect(rowIds()).toEqual([]);
@@ -168,7 +169,7 @@ describe("a row", () => {
     await mount({ sessions: [chat, session("w1", { status: "completed" })], runtimes: [runtime("w1", { lifecycleState: "completed", resultStatus: "reported" })], focus: { sessionId: "w1", nonce: 1 } });
     expect(chatRegion("Worker w1")).not.toBeNull();
     // Nothing left to stop.
-    expect(byLabel("Stop worker Worker w1")).toBeNull();
+    expect(byLabel(`Stop worker ${agentName("w1")}`)).toBeNull();
     await click(byLabel("All agents"));
     expect(container.textContent).toContain("No agents running");
   });
@@ -189,18 +190,35 @@ describe("a row", () => {
       onTogglePin,
     });
     expect(rowIds()).toEqual(["finished", "live"]);
-    expect(byLabel("Unpin Worker finished")?.getAttribute("aria-pressed")).toBe("true");
+    expect(byLabel(`Unpin ${agentName("finished")}`)?.getAttribute("aria-pressed")).toBe("true");
     // Nothing left to stop on a finished worker.
-    expect(byLabel("Stop worker Worker finished")).toBeNull();
+    expect(byLabel(`Stop worker ${agentName("finished")}`)).toBeNull();
 
-    await click(byLabel("Pin Worker live"));
+    await click(byLabel(`Pin ${agentName("live")}`));
     expect(onTogglePin).toHaveBeenCalledWith("live");
+  });
+
+  // Contract: testing/fix-agent-starting-state.md, header and rows.
+  it("names each agent, with its role and what it is working on", async () => {
+    const research = session("w1", { label: "Research · standard", title: "Rank the gateway repos", status: "starting" });
+    await mount({ sessions: [chat, research], runtimes: [runtime("w1", { lifecycleState: "starting", taskFamily: "research" })] });
+    const row = container.querySelector('[data-agent-row="w1"]')!;
+    expect(row.querySelector("b")?.textContent).toBe(agentName("w1"));
+    expect(row.textContent).toContain("Research");
+    expect(row.textContent).not.toContain("standard");
+    expect(row.textContent).toContain("Rank the gateway repos");
+    expect(row.textContent).toContain("STARTING");
+
+    await click(byLabel(`View ${agentName("w1")}`));
+    expect(container.querySelector("b")?.textContent).toBe(agentName("w1"));
+    expect(container.textContent).toContain("Rank the gateway repos");
+    expect(container.textContent).toContain("Codex · m · research");
   });
 
   it("stops a live worker through the host", async () => {
     const onStopWorker = vi.fn(async () => undefined);
     await mount({ sessions: [chat, session("w1")], runtimes: [runtime("w1")], onStopWorker });
-    await click(byLabel("Stop worker Worker w1"));
+    await click(byLabel(`Stop worker ${agentName("w1")}`));
     expect(onStopWorker).toHaveBeenCalledWith("w1");
   });
 
