@@ -1,6 +1,6 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
-import type { RunWorkflowResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
+import type { AlwaysAllowToolResult, RunWorkflowResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
@@ -1959,6 +1959,12 @@ export const bridgeApi = {
     if (settings.quotaReservePercent < 0 || settings.quotaReservePercent > 90) throw new Error("The quota reserve is between 0 and 90 percent");
     mockWorkflowSettings = { configured: true, settings: { ...settings } };
     return structuredClone(mockWorkflowSettings);
+  },
+  // "Always allow for this workflow" on a run's pending card: answers the card
+  // and records the tool in a new, already-approved revision.
+  alwaysAllowWorkflowTool: async (workflowId: string, sessionId: string, eventId: number, toolIdentity: string): Promise<AlwaysAllowToolResult> => {
+    if (hasBackend()) return call("workflows/always_allow_tool", { workflowId, sessionId, eventId, toolIdentity });
+    throw new Error("Approving a workflow run's tool requires the desktop app.");
   },
   onWorkflowRunChanged: (handler: (payload: { run: WorkflowRun }) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<{ run: WorkflowRun }>("workflows/run_changed", handler);

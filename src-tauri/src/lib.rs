@@ -733,6 +733,24 @@ async fn list_workflow_runs(
 }
 
 #[tauri::command]
+async fn always_allow_tool(
+    workflow_id: String,
+    session_id: String,
+    event_id: i64,
+    tool_identity: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::AlwaysAllowToolResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow approval", move || {
+        api::always_allow_tool(
+            &core,
+            &bridge_protocol::messages::AlwaysAllowToolParams { workflow_id, session_id, event_id, tool_identity },
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn read_workflow_settings(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::WorkflowSettingsSnapshot, BridgeError> {
@@ -3136,6 +3154,7 @@ pub fn run() -> i32 {
             list_workflow_runs,
             read_workflow_settings,
             write_workflow_settings,
+            always_allow_tool,
             get_state,
             get_session_forest,
             get_session_forest_digest,

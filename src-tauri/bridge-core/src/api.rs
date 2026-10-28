@@ -5892,6 +5892,63 @@ pub fn list_workflow_runs(core: &Arc<BridgeCore>, params: &wire::ListWorkflowRun
     Ok(wire::WorkflowRunList { runs })
 }
 
+/// "Always allow for this workflow" (C9). The card is answered first, through
+/// the same resolver a click uses; only once the provider has its answer is
+/// the tool recorded in a new revision, approved by construction. A card that
+/// was already answered records nothing.
+pub fn always_allow_tool(core: &Arc<BridgeCore>, params: &wire::AlwaysAllowToolParams) -> Result<wire::AlwaysAllowToolResult, BridgeError> {
+    let (definition, workflow_id) = {
+        let db = core.db.lock().unwrap();
+        let Some((run, _)) = crate::workflow_run::run_for_session(&db, &params.session_id)? else {
+            return Err(BridgeError::Invalid("that session is not a workflow run".into()));
+        };
+        if run.workflow_id != params.workflow_id {
+            return Err(BridgeError::Invalid("that run belongs to another workflow".into()));
+        }
+        let (payload, _, _) = interaction_payload(&db, &params.session_id, params.event_id, "permission.requested")?;
+        let asked = payload.pointer("/data/tool_name").and_then(Value::as_str).unwrap_or_default();
+        if asked != params.tool_identity {
+            return Err(BridgeError::Invalid(format!("the card asks about `{asked}`, not `{}`", params.tool_identity)));
+        }
+        let workflow = crate::workflows::require(&db, &params.workflow_id)?;
+        let mut definition = workflow.definition;
+        let Some((server, _)) = crate::workflows::split_identity(&params.tool_identity) else {
+            return Err(BridgeError::Invalid(format!("`{}` is not an exact tool identity", params.tool_identity)));
+        };
+        let writable = definition.grants.iter().any(|grant| {
+            crate::workflows::wire_server_name(&grant.server) == server && grant.write == wire::WorkflowWriteAccess::Ask
+        });
+        if !writable {
+            return Err(BridgeError::Invalid(format!("`{server}` is not granted writes in this workflow")));
+        }
+        if !definition.always_allow.contains(&params.tool_identity) {
+            definition.always_allow.push(params.tool_identity.clone());
+        }
+        (definition, params.workflow_id.clone())
+    };
+    let resolution = resolve_provider_permission(
+        core,
+        &params.session_id,
+        params.event_id,
+        Some("accept"),
+        None,
+        "user",
+        Some("Always allowed for this workflow"),
+    )?;
+    if resolution.disposition != wire::InteractionResolutionDisposition::Resolved {
+        return Err(BridgeError::Invalid("that card was already answered".into()));
+    }
+    let saved = crate::workflows::save(
+        &core.db.lock().unwrap(),
+        &workflow_data_dir(core),
+        Some(&workflow_id),
+        &definition,
+        crate::workflows::CreatedBy::AlwaysAllow,
+    )?;
+    publish_workflows_changed(core, [workflow_id]);
+    Ok(wire::AlwaysAllowToolResult { workflow: saved.workflow, resolution })
+}
+
 pub fn read_workflow_settings(core: &Arc<BridgeCore>) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
     crate::workflow_trigger::read_settings(&core.db.lock().unwrap())
 }

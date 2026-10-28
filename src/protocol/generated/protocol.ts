@@ -272,7 +272,8 @@ export type BridgeMethod =
   | "workflows/cancel_workflow_run"
   | "workflows/list_workflow_runs"
   | "workflows/read_workflow_settings"
-  | "workflows/write_workflow_settings";
+  | "workflows/write_workflow_settings"
+  | "workflows/always_allow_tool";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -541,6 +542,7 @@ export const BRIDGE_METHODS = [
   { method: "workflows/list_workflow_runs", domain: "workflows", command: "list_workflow_runs" },
   { method: "workflows/read_workflow_settings", domain: "workflows", command: "read_workflow_settings" },
   { method: "workflows/write_workflow_settings", domain: "workflows", command: "write_workflow_settings" },
+  { method: "workflows/always_allow_tool", domain: "workflows", command: "always_allow_tool" },
 ] as const;
 
 export type BridgeNotification =
@@ -888,6 +890,7 @@ export interface BridgeMethodParams {
   "workflows/list_workflow_runs": ListWorkflowRunsParams;
   "workflows/read_workflow_settings": undefined;
   "workflows/write_workflow_settings": WriteWorkflowSettingsParams;
+  "workflows/always_allow_tool": AlwaysAllowToolParams;
 }
 
 /** Result types for every registered method. */
@@ -1158,6 +1161,7 @@ export interface BridgeMethodResults {
   "workflows/list_workflow_runs": WorkflowRunList;
   "workflows/read_workflow_settings": WorkflowSettingsSnapshot;
   "workflows/write_workflow_settings": WorkflowSettingsSnapshot;
+  "workflows/always_allow_tool": AlwaysAllowToolResult;
 }
 
 export type ActiveTurnInput = "steer" | "queue";
@@ -1795,6 +1799,15 @@ export interface HealthWarning {
 export type InputDisposition = "startedNewTurn" | "steeredActiveTurn" | "queuedForPhaseBoundary";
 
 export type InteractionResolutionDisposition = "resolved" | "alreadyResolved";
+
+export interface InteractionResolutionResult {
+  decision: string;
+  disposition: InteractionResolutionDisposition;
+  interactionKind: string;
+  reason?: string | null;
+  resolvedBy: string;
+  status: string;
+}
 
 export interface IssueDetail {
   body: string;
@@ -4088,15 +4101,6 @@ export interface ResolveApprovalParams {
   sessionId: string;
 }
 
-export interface InteractionResolutionResult {
-  decision: string;
-  disposition: InteractionResolutionDisposition;
-  interactionKind: string;
-  reason?: string | null;
-  resolvedBy: string;
-  status: string;
-}
-
 export interface ResolveQuestionParams {
   action: QuestionAction;
   answers?: Record<string, string[]>;
@@ -5064,6 +5068,18 @@ export interface WorkflowSettingsSnapshot {
 
 export interface WriteWorkflowSettingsParams {
   settings: WorkflowSettings;
+}
+
+export interface AlwaysAllowToolParams {
+  eventId: number;
+  sessionId: string;
+  toolIdentity: string;
+  workflowId: string;
+}
+
+export interface AlwaysAllowToolResult {
+  resolution: InteractionResolutionResult;
+  workflow: Workflow;
 }
 
 export interface VoiceTranscriptEvent {
