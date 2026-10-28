@@ -130,7 +130,7 @@ pub fn tool_definition_digest(definition: &serde_json::Value) -> String {
 
 /// Serialize with object keys sorted, so two equal definitions digest equally
 /// regardless of the order a provider happened to emit them in.
-fn canonical_json(value: &serde_json::Value) -> String {
+pub(crate) fn canonical_json(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Object(map) => {
             let sorted: BTreeMap<&String, &serde_json::Value> = map.iter().collect();

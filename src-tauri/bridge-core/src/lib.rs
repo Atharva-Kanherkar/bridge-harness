@@ -180,6 +180,8 @@ pub mod work_brief_store;
 pub mod work_briefing_live;
 pub mod work_briefing_trigger;
 pub mod work_connectors;
+pub mod workflow_schedule;
+pub mod workflows;
 pub mod work_evidence;
 pub mod work_fingerprint;
 pub mod work_reconcile;
