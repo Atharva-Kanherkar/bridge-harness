@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { buildOptions, catalogOptions } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
 import { probeUsage, readContextUsage } from "./usage.mjs";
+import { createAskRelay } from "./ask.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -108,7 +109,9 @@ function userMessage(content) {
   };
 }
 
-const options = config.catalog === true ? catalogOptions() : buildOptions(config);
+// A workflow run's write calls wait on Bridge's answer; see ask.mjs.
+const asks = createAskRelay(writeFrame);
+const options = config.catalog === true ? catalogOptions() : buildOptions(config, asks.ask);
 
 const run = query({ prompt: input, options });
 
@@ -141,10 +144,16 @@ rl.on("line", (line) => {
     const blocks = userContentBlocks(frame);
     if (blocks) input.push(userMessage(blocks));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
+    asks.denyPending();
     void run.interrupt().catch(() => {});
+  } else if (frame.type === "control_response") {
+    asks.resolve(frame);
   }
 });
-rl.on("close", () => input.close());
+rl.on("close", () => {
+  asks.close();
+  input.close();
+});
 
 // After each turn, report the live window as Claude Code measures it. One read
 // in flight at most, and never awaited by the pump: a slow or missing control
