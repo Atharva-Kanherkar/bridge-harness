@@ -20,12 +20,13 @@ their own harness, asking before every write, and reports the result in one inbo
 | C6 | Which harness may run what | Connector grants, and `files: "none"`, require an adapter that can enforce exact tool identities (`briefing_policy::adapter_may_brief`): Claude today. Codex and OpenCode are offered only for project-bound `files: "worktree"` workflows with no connector grants, and are shown disabled with the gate's own reason otherwise. | The gate already says Codex has "no per-tool authority" and OpenCode's rules "are coarse families". A workflow cannot promise "granted tools only" on an adapter that cannot enforce it. |
 | C7 | Built-in tools | `files` is `none` or `worktree`. `none`: built-in file, shell and web tool families are denied, as in a briefing run. `worktree` (project-bound only): the run gets its own task worktree under the existing Isolated write mode. A no-project workflow is always `none`; its home folder is its working directory only. | Keeps Phase 1 to two shapes the policy engine already enforces. |
 | C8 | Write approvals on Claude | The Claude sidecar gains an ask path: a write grant without always-allow makes `canUseTool` emit a normal `approval.requested` and wait. The user answers with `approvals/resolve_approval`. On teardown, a pending ask resolves to decline. | The sidecar has no human-ask path today (chat modes are `acceptEdits` or `bypassPermissions`). Reusing `approval.requested` keeps one approval surface. |
-| C9 | Always allow | "Always allow for this workflow" is one core call, `workflows/always_allow_tool`. It writes a new revision with that identity in the always-allow set and accepts the pending approval, atomically. | Two separate calls could accept without recording, or record without accepting. |
+| C9 | Always allow | "Always allow for this workflow" is one core call, `workflows/always_allow_tool`. It writes a new revision with that exact tool identity in `alwaysAllow` and accepts the pending approval, atomically. | Two separate calls could accept without recording, or record without accepting. |
 | C10 | Full access | Chat-level Full access never applies to workflow runs. A write grant without always-allow always asks. | Workflow writes are outward effects; outward effects keep asking even under Full access, as browser outward effects do. |
 | C11 | Quota reserve | Default 25 percent, range 0 to 90, in Workflows settings. A run does not start while any usage window of its provider is at or above `100 - reserve` percent used; it waits as `waiting_quota` until that window resets. When the provider reports no usage, the run proceeds and is labelled "quota unknown". | Your own chats come first. Unknown usage cannot be allowed to block every workflow forever, so it is shown, not hidden. |
 | C12 | Expected result | Instructions end with a request for a fenced `workflow-result` JSON block: `{"status":"done"\|"not_done","summary":string}`. Core parses it. `done` with no failed write is `succeeded`; `not_done` is `failed`; a missing or invalid block is `unverified`. No model judges the outcome. | "Succeeded" must mean the job reports done, not that the session ended. A deterministic parse needs no eval. |
 | C13 | Duplicate writes | An executed write is recorded with key `sha256(runId, toolIdentity, canonicalArguments)`. A resumed or retried run that issues the same call is denied as a duplicate. Two identical writes in one run are therefore impossible, by design. | At most one effect per approved write, across crashes. |
 | C14 | Draft eval | P1.5 ships 30 recorded sentences with expected trigger and grants. Replay runs in `bun run test`. A live run is required before P1.5 merges, with results in the PR. Bar: zero over-grants (hard gate), at least 27 of 30 triggers exact, at most 3 under-grants. | Drafting is a model decision; a grant it invents is a permission the user did not mean to give. |
+| C16 | Grant granularity | Connectors are granted per server: `read` admits that server's read-verb tools (the briefing scoped-read rule), `write: "ask"` lets the run ask before any other tool on that server. Exact identities appear only in `alwaysAllow`. A tool's class comes from the briefing read-verb vocabulary at call time and fails closed to write. | A harness only presents its tool list once a session starts, so exact tools cannot be offered or validated at save time. Server-level grants are what Bridge can know and enforce before a run. |
 | C15 | Settings storage | `configuration_entries` under `(kind = 'workflows', id = 'settings')`: `paused`, `quotaReservePercent`. | The same pattern Work settings use. |
 
 ## Wire contract
@@ -37,13 +38,13 @@ a Tauri command in `generate_handler!`, regenerated artifacts.
 
 | Method | Params (camelCase on the wire) | Result | Slice |
 | --- | --- | --- | --- |
-| `workflows/list_workflows` | `{ projectId?: string \| null }` | `{ workflows: WorkflowSummary[] }` | P1.1 |
+| `workflows/list_workflows` | none | `{ workflows: WorkflowSummary[] }` | P1.1 |
 | `workflows/get_workflow` | `{ workflowId }` | `{ workflow: Workflow }` | P1.1 |
 | `workflows/save_workflow` | `{ workflowId?: string, definition: WorkflowDefinition }` | `{ workflow: Workflow, needsApproval: boolean }` | P1.1 |
 | `workflows/approve_workflow` | `{ workflowId, revisionId }` | `{ workflow: Workflow }` | P1.1 |
 | `workflows/delete_workflow` | `{ workflowId }` | `{}` | P1.1 |
 | `workflows/set_workflow_enabled` | `{ workflowId, enabled: boolean }` | `{ workflow: Workflow }` | P1.1 |
-| `workflows/workflow_options` | `{}` | `{ harnesses: WorkflowHarnessOption[], tools: WorkflowToolOption[] }` | P1.1 |
+| `workflows/workflow_options` | none | `{ harnesses: WorkflowHarnessOption[], servers: WorkflowServerOption[] }` | P1.1 |
 | `workflows/read_workflow_settings` | `{}` | `{ settings: WorkflowSettings, configured: boolean }` | P1.2 |
 | `workflows/write_workflow_settings` | `{ settings: WorkflowSettings }` | `{ settings: WorkflowSettings }` | P1.2 |
 | `workflows/run_workflow` | `{ workflowId, requestId, dryRun: boolean }` | `{ run: WorkflowRun, created: boolean }` | P1.2 |
@@ -68,9 +69,10 @@ WorkflowDefinition {
   steps: [WorkflowStep]                         // exactly 1 in Phase 1
   trigger: { kind: "manual" }
          | { kind: "schedule", cron: string, timezone: string }
-  grants: [{ identity: string, access: "read" | "write", alwaysAllow: boolean }]
+  grants: [{ server: string, read: boolean, write: "never" | "ask" }]
+  alwaysAllow: [string]                         // exact mcp__<server>__<tool> identities
   files: "none" | "worktree"                    // "worktree" needs a projectId
-  budget: { maxWallSeconds, maxTurns, maxToolCalls, maxCostMicrousd?, maxTokens? }
+  budget: WorkBriefLimits                       // { maxWallSeconds, maxTurns, maxToolCalls, maxOutputTokens?, costCeilingMicrousd? }
   expectedResult: string                        // shown to the agent and the user
   notify: { onSuccess: boolean }                // failures and approvals always notify
 }
@@ -108,11 +110,11 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 
 - F1. A workflow saves with `projectId: null` or an existing project id and reads back byte-identical in its definition.
 - F2. Every save creates a new immutable revision; the old revision is unchanged and still readable.
-- F3. A revision whose grants are a superset of the approved revision's grants (a new identity, `read` to `write`, or a new `alwaysAllow`) has `approved_at = null`. A revision whose grants are a subset keeps approval. `always_allow_tool` revisions are approved by construction (C9).
+- F3. A revision that widens authority has `approved_at = null`. Widening is any of: a new server, `read` false to true, `write` never to ask, a new `alwaysAllow` identity, `files` none to worktree, a different harness, a different project. A revision that only narrows or rewords keeps approval. `always_allow_tool` revisions are approved by construction (C9).
 - F4. Saving a no-project workflow twice leaves one home folder. Deleting the workflow removes it. No `projects` row is created at any point.
 - F5. Deleting a project disables its workflows with `disabled_reason = 'project_removed'`; it never orphans them.
-- F6. Refused, each with a reason: more than one step; `files: "worktree"` without a project; connector grants on an adapter that fails C6; a cron that does not parse; consecutive fire times under 15 minutes apart; an unknown timezone; a budget outside its bounds; a grant identity not present in `workflow_options`.
-- F7. `workflow_options` lists every registered adapter with eligible or refused plus the gate's reason, and every discovered connector tool with its class (read or write) using the briefing read-verb vocabulary, failing closed to write.
+- F6. Refused, each with a reason: more than one step; `files: "worktree"` without a project; connector grants on an adapter that fails C6; a cron that does not parse; consecutive fire times under 15 minutes apart; an unknown timezone; a budget outside its bounds; a grant on a server the harness's configuration does not hold; a duplicate server; an `alwaysAllow` identity that is not `mcp__<server>__<tool>` on a server granted `write: "ask"`.
+- F7. `workflow_options` lists every registered adapter with whether it may hold connector grants and whether it may run worktree jobs, each with the gate's reason when refused, and every connector server the Claude configuration holds with its family and connection state. `workflows::tool_class` classifies a tool identity as read or write with the briefing read-verb vocabulary and fails closed to write.
 
 ### Triggering (P1.2)
 
@@ -129,7 +131,7 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 
 - F16. A run creates a `workflow` session. Project-bound with `files: "worktree"`: a new task worktree through the normal workspace path. Otherwise: no workspace, cwd = the workflow home.
 - F17. The instructions compile as a purposed prompt, followed by the expected result and the C12 result-block request. Trigger payloads and connector results are framed as data.
-- F18. On Claude, the sidecar gate allows granted reads, asks for granted writes without always-allow, allows always-allowed writes, and denies everything else with a reason naming the tool. Nothing is pre-approved through `allowedTools`. MCP servers are filtered to granted servers with `strictMcpConfig`, and no setting sources or plugins are inherited, as in `briefingOptions`.
+- F18. On Claude, the sidecar gate allows read-class tools on servers granted `read`, allows identities in `alwaysAllow`, asks for any other tool on a server granted `write: "ask"`, and denies everything else with a reason naming the tool. Nothing is pre-approved through `allowedTools`. MCP servers are filtered to granted servers with `strictMcpConfig`, and no setting sources or plugins are inherited, as in `briefingOptions`.
 - F19. A dry run denies every write and stores a `previewed` effect with the attempted arguments.
 - F20. Before dispatch the quota rule (C11) is checked; mid-run, hitting any budget ceiling stops the run as `failed` with `budget_exhausted`.
 - F21. A write approved or always-allowed is recorded before it executes; a second identical call in that run is denied as a duplicate (C13).
@@ -186,7 +188,7 @@ Rust, in each module's `#[cfg(test)] mod tests`:
   - U-M6 `deleting_a_project_disables_its_workflows_with_a_reason` (F5)
   - U-M7 `each_invalid_definition_is_refused_with_its_reason`, table-driven over every F6 case
   - U-M8 `options_report_the_gate_reason_for_every_refused_adapter` (F7)
-  - U-M9 `an_unrecognised_tool_verb_is_classed_as_a_write` (F7)
+  - U-M9 `tool_class_fails_closed_to_write` (F7)
 - `workflow_trigger.rs` (fake clock)
   - U-T1 `the_same_occasion_fired_twice_yields_one_run` (F9)
   - U-T2 `a_claim_during_an_active_run_is_skipped_or_returned` (F10)
@@ -225,7 +227,7 @@ Rust, in each module's `#[cfg(test)] mod tests`:
 
 Sidecar, `node --test sidecar/claude-agent/test/workflow.mjs`:
 
-- U-S1 the gate allows a granted read, asks for a granted write, allows an always-allowed write, denies anything else
+- U-S1 the gate allows a read on a read-granted server, allows an always-allowed identity, asks for another tool on a write-granted server, denies anything else
 - U-S2 the options never set `allowedTools`, set `strictMcpConfig`, and filter MCP servers to granted ones
 - U-S3 a pending ask resolves to deny when the session tears down
 
