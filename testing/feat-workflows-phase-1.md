@@ -165,8 +165,8 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 | Epic criterion (#845) | Proved by |
 | --- | --- |
 | No-project journey from a fresh install, UI only | E1, M1 |
-| Project-bound code journey with worktree isolation | E2, M2 |
-| Window closed keeps schedules; one catch-up after sleep | F12, F15, U-T5, M3 |
+| Project-bound code journey with worktree isolation | U-R12, E2, M2 |
+| Window closed keeps schedules; one catch-up after sleep | F12, F15, U-T5, I-4, M3 |
 | At most one run per occasion and one effect per write | F9, F11, F21, U-T1, U-T3, U-R7, E3 |
 | Hostile connector text cannot use an ungranted tool | F18, U-R2, S-1 |
 | Quota reserve holds workflows, never chats | F20, U-R5 |
@@ -191,10 +191,12 @@ Rust, in each module's `#[cfg(test)] mod tests`:
   - U-T1 `the_same_occasion_fired_twice_yields_one_run` (F9)
   - U-T2 `a_claim_during_an_active_run_is_skipped_or_returned` (F10)
   - U-T3 `an_expired_lease_is_reclaimed_and_the_stale_worker_cannot_commit` (F11)
-  - U-T4 `spring_forward_and_fall_back_each_fire_once` (C4)
-  - U-T5 `three_missed_slots_yield_one_catch_up_with_missed_slots_three` (C5)
+  - U-T4 `spring_forward_and_fall_back_each_fire_once` (F12, C4)
+  - U-T5 `three_missed_slots_yield_one_catch_up_with_missed_slots_three` (F12, C5)
   - U-T6 `paused_disabled_unapproved_and_removed_workflows_never_claim` (F13)
   - U-T7 `the_database_refuses_a_second_active_run` (partial unique index)
+  - U-T8 `run_now_and_schedules_insert_runs_only_through_claim` (F8)
+  - U-T9 `native_automations_are_never_dispatched` (F14)
 - `workflow_run.rs` (fake adapter)
   - U-R1 `an_ungranted_tool_is_denied_with_its_name_in_the_reason` (F18)
   - U-R2 `hostile_connector_text_cannot_reach_a_shell_or_an_ungranted_tool` (F17, F18)
@@ -207,6 +209,16 @@ Rust, in each module's `#[cfg(test)] mod tests`:
   - U-R9 `result_block_maps_to_succeeded_failed_or_unverified` (C12)
   - U-R10 `a_user_turn_to_a_workflow_session_is_refused` (F24)
   - U-R11 `always_allow_records_and_accepts_atomically` (C9)
+  - U-R12 `a_project_run_edits_only_its_own_worktree` (F16)
+  - U-R13 `a_no_project_run_has_no_workspace_and_its_home_as_cwd` (F16)
+  - U-R14 `a_budget_ceiling_stops_the_run_as_budget_exhausted` (F20)
+  - U-R15 `usage_is_tagged_with_the_run_and_summed_onto_it` (F23)
+- `workflow_draft.rs`
+  - U-D1 `a_draft_is_never_persisted` (F30)
+  - U-D2 `an_unconnected_app_becomes_a_connect_first_note` (F31)
+  - U-D3 `save_as_workflow_grants_only_tools_the_chat_called` (F32)
+- `workflow_inbox` (in `workflows.rs` or its own module)
+  - U-I1 `unread_state_survives_restart` (F36)
 - `bridge-protocol`
   - U-P1 every `workflows/*` params type round-trips and refuses unknown fields
   - U-P2 the existing drift and naming gates stay green (`tsgen`, `protocol_mirror`, params naming, registry and handler parity)
@@ -225,12 +237,14 @@ Frontend, colocated vitest (`// @vitest-environment jsdom` where it mounts):
 - V-4 the run view calls `sessions/fork_session` on "Continue in chat" (F29)
 - V-5 the inbox orders, approves, declines and clears unread (F34 to F36)
 - V-6 the draft form is prefilled and saves nothing until confirmed (F30)
+- V-7 a running workflow run appears in Mission Control and the dock Agents pane (F38)
 
 ## Integration / Functional Tests
 
 - I-1 Daemon round trip: `bridged` test client saves, approves and runs a manual workflow with the fake adapter, and receives `workflows/run_changed` for each status in order.
 - I-2 Draft replay: 30 recorded drafting outputs in `testing/fixtures/workflow-drafts/` pass the validator and meet the C14 bar (F31 to F33).
 - I-3 Notification de-duplication: one notification per run status change across a restart (F37).
+- I-4 Host parity: the daemon host and the embedded host both start the workflow maintenance loop, and a schedule fires under the daemon with no desktop client attached (F15).
 
 ## Smoke Tests
 
