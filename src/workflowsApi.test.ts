@@ -44,3 +44,24 @@ describe("workflows in mock mode", () => {
     expect(options.servers.length).toBeGreaterThan(0);
   });
 });
+
+describe("workflow runs in mock mode", () => {
+  it("makes one run per request id and lists it", async () => {
+    const created = await bridgeApi.saveWorkflow(null, definition());
+    await expect(bridgeApi.runWorkflow(created.workflow.id, "r1")).rejects.toThrow(/approval/);
+    const dry = await bridgeApi.runWorkflow(created.workflow.id, "dry-1", true);
+    expect(dry.created).toBe(true);
+    expect(dry.run.dryRun).toBe(true);
+    const again = await bridgeApi.runWorkflow(created.workflow.id, "dry-1", true);
+    expect(again.created).toBe(false);
+    expect(again.run.id).toBe(dry.run.id);
+    const runs = await bridgeApi.listWorkflowRuns({ workflowId: created.workflow.id, limit: 10 });
+    expect(runs.runs.map(run => run.id)).toEqual([dry.run.id]);
+  });
+
+  it("keeps settings in range", async () => {
+    const written = await bridgeApi.writeWorkflowSettings({ paused: false, quotaReservePercent: 40 });
+    expect(written.configured).toBe(true);
+    await expect(bridgeApi.writeWorkflowSettings({ paused: false, quotaReservePercent: 95 })).rejects.toThrow(/between 0 and 90/);
+  });
+});

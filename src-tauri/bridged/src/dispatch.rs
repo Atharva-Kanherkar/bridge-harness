@@ -1088,6 +1088,23 @@ pub fn dispatch(
             reply(api::set_workflow_enabled(core, &p))
         }
         MethodName::WorkflowOptions => encode(api::workflow_options(core)),
+        MethodName::RunWorkflow => {
+            let p: wire::RunWorkflowParams = decode(method, params)?;
+            reply(api::run_workflow(core, &p))
+        }
+        MethodName::CancelWorkflowRun => {
+            let p: wire::CancelWorkflowRunParams = decode(method, params)?;
+            reply(api::cancel_workflow_run(core, &p))
+        }
+        MethodName::ListWorkflowRuns => {
+            let p: wire::ListWorkflowRunsParams = decode(method, params)?;
+            reply(api::list_workflow_runs(core, &p))
+        }
+        MethodName::ReadWorkflowSettings => reply(api::read_workflow_settings(core)),
+        MethodName::WriteWorkflowSettings => {
+            let p: wire::WriteWorkflowSettingsParams = decode(method, params)?;
+            reply(api::write_workflow_settings(core, &p))
+        }
     }
 }
 
@@ -1218,10 +1235,32 @@ mod tests {
         let error = dispatch(&core, MethodName::ListWorkflows, Some(json!({}))).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
 
+        let first = dispatch(&core, MethodName::RunWorkflow, Some(json!({ "workflowId": id, "requestId": "r1", "dryRun": true }))).unwrap();
+        assert_eq!(first["created"], true);
+        let second = dispatch(&core, MethodName::RunWorkflow, Some(json!({ "workflowId": id, "requestId": "r1", "dryRun": true }))).unwrap();
+        assert_eq!(second["created"], false);
+        assert_eq!(second["run"]["id"], first["run"]["id"]);
+        let runs = dispatch(&core, MethodName::ListWorkflowRuns, Some(json!({ "workflowId": id, "limit": 10 }))).unwrap();
+        assert_eq!(runs["runs"][0]["id"], first["run"]["id"]);
+        let settings = dispatch(&core, MethodName::ReadWorkflowSettings, None).unwrap();
+        assert_eq!(settings["settings"]["quotaReservePercent"], 25);
+
         let options = dispatch(&core, MethodName::WorkflowOptions, None).unwrap();
         let codex = options["harnesses"].as_array().unwrap().iter().find(|harness| harness["id"] == "codex").unwrap();
         assert_eq!(codex["connectorsAllowed"], false);
         assert!(codex["connectorsReason"].as_str().unwrap().contains("per-tool"));
+    }
+
+    #[test]
+    fn both_hosts_start_the_workflow_maintenance_loop() {
+        // I-4: the daemon and the embedded desktop host must both tick, or
+        // schedules silently stop under one of them.
+        for (host, source) in [("bridged", include_str!("lib.rs")), ("desktop", include_str!("../../src/lib.rs"))] {
+            assert!(
+                source.contains("workflow_trigger::start_workflow_maintenance(core.clone())"),
+                "{host} does not start workflow maintenance"
+            );
+        }
     }
 
     #[test]

@@ -471,6 +471,11 @@ typed_methods![
     (DeleteWorkflow, DeleteWorkflowParams, UnitResult),
     (SetWorkflowEnabled, SetWorkflowEnabledParams, WorkflowSnapshot),
     (WorkflowOptions, _, WorkflowOptions),
+    (RunWorkflow, RunWorkflowParams, RunWorkflowResult),
+    (CancelWorkflowRun, CancelWorkflowRunParams, WorkflowRunSnapshot),
+    (ListWorkflowRuns, ListWorkflowRunsParams, WorkflowRunList),
+    (ReadWorkflowSettings, _, WorkflowSettingsSnapshot),
+    (WriteWorkflowSettings, WriteWorkflowSettingsParams, WorkflowSettingsSnapshot),
 ];
 
 /// The documented exceptions to result typing: every method whose result is

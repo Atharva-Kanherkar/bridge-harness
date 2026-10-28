@@ -5818,6 +5818,55 @@ pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
     wire::WorkflowOptions { harnesses, servers }
 }
 
+/// Run now. The request id makes a double click one run.
+pub fn run_workflow(core: &Arc<BridgeCore>, params: &wire::RunWorkflowParams) -> Result<wire::RunWorkflowResult, BridgeError> {
+    use crate::workflow_trigger::{self, ClaimOutcome, Occasion};
+    let occasion = Occasion::manual(&params.workflow_id, &params.request_id);
+    let outcome = workflow_trigger::claim(
+        &core.db.lock().unwrap(),
+        &params.workflow_id,
+        &occasion,
+        params.dry_run,
+        chrono::Utc::now(),
+    )?;
+    match outcome {
+        ClaimOutcome::Claimed(claimed) => {
+            let run = claimed.run.clone();
+            workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
+            workflow_trigger::dispatch(core.clone(), claimed);
+            Ok(wire::RunWorkflowResult { run, created: true })
+        }
+        ClaimOutcome::Existing(run) | ClaimOutcome::Overlap { active: run, .. } => {
+            Ok(wire::RunWorkflowResult { run, created: false })
+        }
+        ClaimOutcome::Refused(reason) => Err(BridgeError::Invalid(reason)),
+    }
+}
+
+pub fn cancel_workflow_run(core: &Arc<BridgeCore>, params: &wire::CancelWorkflowRunParams) -> Result<wire::WorkflowRunSnapshot, BridgeError> {
+    let run = crate::workflow_trigger::cancel(&core.db.lock().unwrap(), &params.run_id, chrono::Utc::now())?;
+    crate::workflow_trigger::publish_runs(core, std::slice::from_ref(&run.id));
+    Ok(wire::WorkflowRunSnapshot { run })
+}
+
+pub fn list_workflow_runs(core: &Arc<BridgeCore>, params: &wire::ListWorkflowRunsParams) -> Result<wire::WorkflowRunList, BridgeError> {
+    let runs = crate::workflow_trigger::list_runs(
+        &core.db.lock().unwrap(),
+        params.workflow_id.as_deref(),
+        params.unread_only,
+        params.limit,
+    )?;
+    Ok(wire::WorkflowRunList { runs })
+}
+
+pub fn read_workflow_settings(core: &Arc<BridgeCore>) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
+    crate::workflow_trigger::read_settings(&core.db.lock().unwrap())
+}
+
+pub fn write_workflow_settings(core: &Arc<BridgeCore>, params: &wire::WriteWorkflowSettingsParams) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
+    crate::workflow_trigger::write_settings(&core.db.lock().unwrap(), params.settings, chrono::Utc::now())
+}
+
 // --- automations ---------------------------------------------------------------
 
 pub fn automation_catalog(

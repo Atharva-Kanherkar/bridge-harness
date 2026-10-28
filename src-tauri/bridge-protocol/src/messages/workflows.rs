@@ -130,6 +130,9 @@ pub struct WorkflowSummary {
     pub model: String,
     pub files: WorkflowFiles,
     pub updated_at: String,
+    /// The next scheduled fire time, when the workflow could run on one.
+    pub next_run_at: Option<String>,
+    pub last_run: Option<WorkflowRun>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -187,6 +190,136 @@ pub struct WorkflowServerOption {
 pub struct WorkflowOptions {
     pub harnesses: Vec<WorkflowHarnessOption>,
     pub servers: Vec<WorkflowServerOption>,
+}
+
+/// Why a run started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowTriggerKind {
+    Manual,
+    Schedule,
+    /// The latest of one or more slots missed while Bridge was not running.
+    CatchUp,
+}
+
+/// Where a run is. The first four are active: at most one per workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRunStatus {
+    Queued,
+    WaitingQuota,
+    Running,
+    WaitingApproval,
+    Succeeded,
+    /// The session ended without the result block the workflow asks for.
+    Unverified,
+    Failed,
+    Cancelled,
+    /// Recorded, never run: another run of this workflow was active.
+    Skipped,
+}
+
+impl WorkflowRunStatus {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::WaitingQuota | Self::Running | Self::WaitingApproval)
+    }
+}
+
+/// One firing of a workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRun {
+    pub id: String,
+    pub workflow_id: String,
+    pub revision_id: String,
+    pub trigger_kind: WorkflowTriggerKind,
+    pub missed_slots: i64,
+    pub dry_run: bool,
+    pub status: WorkflowRunStatus,
+    pub failure_code: Option<String>,
+    pub summary: Option<String>,
+    pub session_id: Option<String>,
+    /// The provider reported no usage, so the quota reserve could not be checked.
+    pub quota_unknown: bool,
+    pub cost_microusd: Option<i64>,
+    pub tokens: Option<i64>,
+    pub unread: bool,
+    pub scheduled_for: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunSnapshot {
+    pub run: WorkflowRun,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunList {
+    pub runs: Vec<WorkflowRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWorkflowResult {
+    pub run: WorkflowRun,
+    /// False when this request's id, or an active run, already had a run.
+    pub created: bool,
+}
+
+/// Settings for every workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowSettings {
+    /// No workflow starts while paused; active runs finish.
+    pub paused: bool,
+    /// A run waits while its provider is above `100 - this` percent of any
+    /// usage window. 0 to 90.
+    pub quota_reserve_percent: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSettingsSnapshot {
+    pub settings: WorkflowSettings,
+    /// False on a fresh install, where `settings` are the defaults.
+    pub configured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunWorkflowParams {
+    pub workflow_id: String,
+    /// A client-chosen id: the same id twice is one run.
+    pub request_id: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CancelWorkflowRunParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListWorkflowRunsParams {
+    #[serde(default)]
+    pub workflow_id: Option<String>,
+    #[serde(default)]
+    pub unread_only: bool,
+    /// 1 to 200.
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteWorkflowSettingsParams {
+    pub settings: WorkflowSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -273,6 +406,18 @@ mod tests {
         assert!(serde_json::from_value::<DeleteWorkflowParams>(json!({ "workflowId": "w", "x": 1 })).is_err());
         assert!(serde_json::from_value::<SetWorkflowEnabledParams>(json!({ "workflowId": "w", "enabled": true, "x": 1 })).is_err());
         assert!(serde_json::from_value::<WorkflowTrigger>(json!({ "kind": "schedule", "cron": "* * * * *", "timezone": "UTC", "x": 1 })).is_err());
+    }
+
+    #[test]
+    fn run_params_default_to_a_real_run_and_refuse_unknown_fields() {
+        let params: RunWorkflowParams = serde_json::from_value(json!({ "workflowId": "w", "requestId": "r" })).unwrap();
+        assert!(!params.dry_run);
+        assert!(serde_json::from_value::<RunWorkflowParams>(json!({ "workflowId": "w", "requestId": "r", "x": 1 })).is_err());
+        assert!(serde_json::from_value::<CancelWorkflowRunParams>(json!({ "runId": "r", "x": 1 })).is_err());
+        assert!(serde_json::from_value::<ListWorkflowRunsParams>(json!({ "limit": 5, "x": 1 })).is_err());
+        assert!(serde_json::from_value::<WriteWorkflowSettingsParams>(json!({ "settings": { "paused": false, "quotaReservePercent": 25, "x": 1 } })).is_err());
+        assert_eq!(serde_json::to_value(WorkflowRunStatus::WaitingApproval).unwrap(), json!("waiting_approval"));
+        assert_eq!(serde_json::to_value(WorkflowTriggerKind::CatchUp).unwrap(), json!("catch_up"));
     }
 
     #[test]

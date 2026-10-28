@@ -267,7 +267,12 @@ export type BridgeMethod =
   | "workflows/approve_workflow"
   | "workflows/delete_workflow"
   | "workflows/set_workflow_enabled"
-  | "workflows/workflow_options";
+  | "workflows/workflow_options"
+  | "workflows/run_workflow"
+  | "workflows/cancel_workflow_run"
+  | "workflows/list_workflow_runs"
+  | "workflows/read_workflow_settings"
+  | "workflows/write_workflow_settings";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -531,6 +536,11 @@ export const BRIDGE_METHODS = [
   { method: "workflows/delete_workflow", domain: "workflows", command: "delete_workflow" },
   { method: "workflows/set_workflow_enabled", domain: "workflows", command: "set_workflow_enabled" },
   { method: "workflows/workflow_options", domain: "workflows", command: "workflow_options" },
+  { method: "workflows/run_workflow", domain: "workflows", command: "run_workflow" },
+  { method: "workflows/cancel_workflow_run", domain: "workflows", command: "cancel_workflow_run" },
+  { method: "workflows/list_workflow_runs", domain: "workflows", command: "list_workflow_runs" },
+  { method: "workflows/read_workflow_settings", domain: "workflows", command: "read_workflow_settings" },
+  { method: "workflows/write_workflow_settings", domain: "workflows", command: "write_workflow_settings" },
 ] as const;
 
 export type BridgeNotification =
@@ -554,6 +564,7 @@ export type BridgeNotification =
   | "connectors/item_resolved"
   | "connectors/inbox_changed"
   | "workflows/changed"
+  | "workflows/run_changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -577,6 +588,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "connectors/item_resolved", delivery: "transient" },
   { notification: "connectors/inbox_changed", delivery: "transient" },
   { notification: "workflows/changed", delivery: "transient" },
+  { notification: "workflows/run_changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -871,6 +883,11 @@ export interface BridgeMethodParams {
   "workflows/delete_workflow": DeleteWorkflowParams;
   "workflows/set_workflow_enabled": SetWorkflowEnabledParams;
   "workflows/workflow_options": undefined;
+  "workflows/run_workflow": RunWorkflowParams;
+  "workflows/cancel_workflow_run": CancelWorkflowRunParams;
+  "workflows/list_workflow_runs": ListWorkflowRunsParams;
+  "workflows/read_workflow_settings": undefined;
+  "workflows/write_workflow_settings": WriteWorkflowSettingsParams;
 }
 
 /** Result types for every registered method. */
@@ -1136,6 +1153,11 @@ export interface BridgeMethodResults {
   "workflows/delete_workflow": UnitResult;
   "workflows/set_workflow_enabled": WorkflowSnapshot;
   "workflows/workflow_options": WorkflowOptions;
+  "workflows/run_workflow": RunWorkflowResult;
+  "workflows/cancel_workflow_run": WorkflowRunSnapshot;
+  "workflows/list_workflow_runs": WorkflowRunList;
+  "workflows/read_workflow_settings": WorkflowSettingsSnapshot;
+  "workflows/write_workflow_settings": WorkflowSettingsSnapshot;
 }
 
 export type ActiveTurnInput = "steer" | "queue";
@@ -3094,10 +3116,38 @@ export interface WorkflowNotify {
   onSuccess?: boolean;
 }
 
+export interface WorkflowRun {
+  costMicrousd?: number | null;
+  createdAt: string;
+  dryRun: boolean;
+  failureCode?: string | null;
+  finishedAt?: string | null;
+  id: string;
+  missedSlots: number;
+  quotaUnknown: boolean;
+  revisionId: string;
+  scheduledFor?: string | null;
+  sessionId?: string | null;
+  startedAt?: string | null;
+  status: WorkflowRunStatus;
+  summary?: string | null;
+  tokens?: number | null;
+  triggerKind: WorkflowTriggerKind;
+  unread: boolean;
+  workflowId: string;
+}
+
+export type WorkflowRunStatus = "queued" | "waiting_quota" | "running" | "waiting_approval" | "succeeded" | "failed" | "cancelled" | "unverified" | "skipped";
+
 export interface WorkflowServerOption {
   connected?: boolean | null;
   family: string;
   id: string;
+}
+
+export interface WorkflowSettings {
+  paused: boolean;
+  quotaReservePercent: number;
 }
 
 export interface WorkflowStep {
@@ -3114,14 +3164,18 @@ export interface WorkflowSummary {
   files: WorkflowFiles;
   harness: HarnessId;
   id: string;
+  lastRun?: WorkflowRun | null;
   model: string;
   name: string;
+  nextRunAt?: string | null;
   projectId?: string | null;
   trigger: WorkflowTrigger;
   updatedAt: string;
 }
 
 export type WorkflowTrigger = { kind: "manual" } | { cron: string; kind: "schedule"; timezone: string };
+
+export type WorkflowTriggerKind = "manual" | "schedule" | "catch_up";
 
 export type WorkflowWriteAccess = "never" | "ask";
 
@@ -4972,6 +5026,44 @@ export interface SetWorkflowEnabledParams {
 export interface WorkflowOptions {
   harnesses: WorkflowHarnessOption[];
   servers: WorkflowServerOption[];
+}
+
+export interface RunWorkflowParams {
+  dryRun?: boolean;
+  requestId: string;
+  workflowId: string;
+}
+
+export interface RunWorkflowResult {
+  created: boolean;
+  run: WorkflowRun;
+}
+
+export interface CancelWorkflowRunParams {
+  runId: string;
+}
+
+export interface WorkflowRunSnapshot {
+  run: WorkflowRun;
+}
+
+export interface ListWorkflowRunsParams {
+  limit: number;
+  unreadOnly?: boolean;
+  workflowId?: string | null;
+}
+
+export interface WorkflowRunList {
+  runs: WorkflowRun[];
+}
+
+export interface WorkflowSettingsSnapshot {
+  configured: boolean;
+  settings: WorkflowSettings;
+}
+
+export interface WriteWorkflowSettingsParams {
+  settings: WorkflowSettings;
 }
 
 export interface VoiceTranscriptEvent {

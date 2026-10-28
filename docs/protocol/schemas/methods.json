@@ -1827,6 +1827,41 @@
       "method": "workflows/workflow_options",
       "paramsSchema": null,
       "resultSchema": "workflow-options.json"
+    },
+    {
+      "command": "run_workflow",
+      "domain": "workflows",
+      "method": "workflows/run_workflow",
+      "paramsSchema": "run-workflow-params.json",
+      "resultSchema": "run-workflow-result.json"
+    },
+    {
+      "command": "cancel_workflow_run",
+      "domain": "workflows",
+      "method": "workflows/cancel_workflow_run",
+      "paramsSchema": "cancel-workflow-run-params.json",
+      "resultSchema": "workflow-run-snapshot.json"
+    },
+    {
+      "command": "list_workflow_runs",
+      "domain": "workflows",
+      "method": "workflows/list_workflow_runs",
+      "paramsSchema": "list-workflow-runs-params.json",
+      "resultSchema": "workflow-run-list.json"
+    },
+    {
+      "command": "read_workflow_settings",
+      "domain": "workflows",
+      "method": "workflows/read_workflow_settings",
+      "paramsSchema": null,
+      "resultSchema": "workflow-settings-snapshot.json"
+    },
+    {
+      "command": "write_workflow_settings",
+      "domain": "workflows",
+      "method": "workflows/write_workflow_settings",
+      "paramsSchema": "write-workflow-settings-params.json",
+      "resultSchema": "workflow-settings-snapshot.json"
     }
   ],
   "protocolVersion": {
