@@ -463,6 +463,14 @@ typed_methods![
     (AutomationCatalog, _, _),
     (SaveAutomation, SaveAutomationParams, _),
     (ExecuteAutomationAction, ExecuteAutomationActionParams, _),
+    // workflows
+    (ListWorkflows, _, WorkflowList),
+    (GetWorkflow, GetWorkflowParams, WorkflowSnapshot),
+    (SaveWorkflow, SaveWorkflowParams, SaveWorkflowResult),
+    (ApproveWorkflow, ApproveWorkflowParams, WorkflowSnapshot),
+    (DeleteWorkflow, DeleteWorkflowParams, UnitResult),
+    (SetWorkflowEnabled, SetWorkflowEnabledParams, WorkflowSnapshot),
+    (WorkflowOptions, _, WorkflowOptions),
 ];
 
 /// The documented exceptions to result typing: every method whose result is

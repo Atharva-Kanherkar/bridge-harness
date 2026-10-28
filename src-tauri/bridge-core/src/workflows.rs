@@ -241,7 +241,7 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
         let writable = definition
             .grants
             .iter()
-            .any(|grant| grant.server == server && grant.write == wire::WorkflowWriteAccess::Ask);
+            .any(|grant| wire_server_name(&grant.server) == server && grant.write == wire::WorkflowWriteAccess::Ask);
         if !writable {
             return Err(format!("`{identity}` is always allowed, but `{server}` is not granted writes"));
         }
@@ -275,6 +275,16 @@ fn validate_budget(budget: &wire::WorkBriefLimits) -> Result<(), String> {
         return Err("A cost ceiling, when set, is positive".into());
     }
     Ok(())
+}
+
+/// The server segment a harness uses in tool names for a configured server:
+/// anything outside `[A-Za-z0-9_-]` becomes `_` (`claude.ai Slack` is
+/// `claude_ai_Slack` in `mcp__claude_ai_Slack__slack_read_thread`).
+pub fn wire_server_name(server: &str) -> String {
+    server
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect()
 }
 
 /// Split `mcp__<server>__<tool>`, the form the harness names connector tools.
@@ -587,6 +597,65 @@ pub fn reconcile_projects(db: &Connection) -> Result<Vec<String>, BridgeError> {
     Ok(changed)
 }
 
+/// A test core with stub Claude and Codex adapters, shared by the workflow
+/// slices' tests. Stubs never start a provider.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use serde_json::{json, Value};
+
+    use crate::adapters;
+    use crate::model::AdapterDescriptor;
+    use crate::runtime::BridgeCore;
+    use crate::BridgeError;
+
+    pub(crate) struct StubAdapter {
+        pub id: &'static str,
+    }
+
+    impl adapters::HarnessAdapter for StubAdapter {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            serde_json::from_value(json!({
+                "id": self.id, "label": self.id, "available": true, "authState": "unknown",
+                "capabilities": [], "sandboxModes": ["read_only", "workspace_write"],
+                "defaultModel": "sonnet",
+                "models": [
+                    {"id": "sonnet", "label": "Sonnet", "tier": "standard", "defaultForTier": true, "supportedEffortLevels": []},
+                    {"id": "haiku", "label": "Haiku", "tier": "fast", "defaultForTier": true, "supportedEffortLevels": []}
+                ]
+            }))
+            .unwrap()
+        }
+        fn start(&self, _: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            panic!("workflow store tests must not start a provider")
+        }
+        fn resume(&self, _: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            panic!("workflow store tests must not resume a provider")
+        }
+        fn supports_native_resume(&self) -> bool {
+            false
+        }
+        fn normalize(&self, _: &Value) -> Vec<crate::agent::NormalizedEvent> {
+            vec![]
+        }
+    }
+
+    /// A core whose registry holds stub `claude` and `codex` adapters.
+    pub(crate) fn core() -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(dir.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry.register(Box::new(StubAdapter { id: "claude" })).unwrap();
+        registry.register(Box::new(StubAdapter { id: "codex" })).unwrap();
+        core.adapter_registry = Arc::new(registry);
+        (dir, Arc::new(core))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +937,50 @@ mod tests {
         job.steps[0].harness = wire::HarnessId::parse("codex").unwrap();
         job.steps[0].model = "gpt-5.5".into();
         assert_eq!(validate(&job, &context()), Ok(()));
+    }
+
+    #[test]
+    fn every_mutation_publishes_workflows_changed() {
+        let (_scratch, core) = test_support::core();
+        let mut events = core.events.subscribe();
+        let mut candidate = definition();
+        // No connector grants, so validation never asks Claude's configuration.
+        candidate.grants.clear();
+
+        let saved = crate::api::save_workflow(&core, &wire::SaveWorkflowParams { workflow_id: None, definition: candidate })
+            .unwrap()
+            .workflow;
+        let id = saved.id.clone();
+        crate::api::approve_workflow(&core, &wire::ApproveWorkflowParams { workflow_id: id.clone(), revision_id: saved.revision_id })
+            .unwrap();
+        crate::api::set_workflow_enabled(&core, &wire::SetWorkflowEnabledParams { workflow_id: id.clone(), enabled: false }).unwrap();
+        crate::api::delete_workflow(&core, &wire::DeleteWorkflowParams { workflow_id: id.clone() }).unwrap();
+
+        let mut published = 0;
+        while let Ok(event) = events.try_recv() {
+            if let crate::events::CoreEvent::WorkflowsChanged { workflow_id } = event {
+                assert_eq!(workflow_id, id);
+                published += 1;
+            }
+        }
+        assert_eq!(published, 4, "save, approve, disable and delete each publish once");
+        // A client that lagged through all of it still learns to refetch.
+        assert!(events.reconciliation_events().iter().any(|event| matches!(
+            event,
+            crate::events::CoreEvent::WorkflowsChanged { workflow_id } if *workflow_id == id
+        )));
+    }
+
+    #[test]
+    fn always_allow_matches_a_configured_server_by_its_wire_name() {
+        let mut spaced = definition();
+        spaced.grants = vec![wire::WorkflowGrant { server: "claude.ai Slack".into(), read: true, write: wire::WorkflowWriteAccess::Ask }];
+        spaced.always_allow = vec!["mcp__claude_ai_Slack__slack_send_message".into()];
+        let mut context = context();
+        context.servers.insert("claude.ai Slack".into());
+        assert_eq!(validate(&spaced, &context), Ok(()));
+        assert_eq!(wire_server_name("claude.ai Slack"), "claude_ai_Slack");
+        assert_eq!(wire_server_name("linear-prod_2"), "linear-prod_2");
     }
 
     #[test]

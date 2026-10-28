@@ -1065,6 +1065,29 @@ pub fn dispatch(
                 into_core(method, &p.action)?,
             ))
         }
+
+        MethodName::ListWorkflows => reply(api::list_workflows(core)),
+        MethodName::GetWorkflow => {
+            let p: wire::GetWorkflowParams = decode(method, params)?;
+            reply(api::get_workflow(core, &p))
+        }
+        MethodName::SaveWorkflow => {
+            let p: wire::SaveWorkflowParams = decode(method, params)?;
+            reply(api::save_workflow(core, &p))
+        }
+        MethodName::ApproveWorkflow => {
+            let p: wire::ApproveWorkflowParams = decode(method, params)?;
+            reply(api::approve_workflow(core, &p))
+        }
+        MethodName::DeleteWorkflow => {
+            let p: wire::DeleteWorkflowParams = decode(method, params)?;
+            reply(api::delete_workflow(core, &p))
+        }
+        MethodName::SetWorkflowEnabled => {
+            let p: wire::SetWorkflowEnabledParams = decode(method, params)?;
+            reply(api::set_workflow_enabled(core, &p))
+        }
+        MethodName::WorkflowOptions => encode(api::workflow_options(core)),
     }
 }
 
@@ -1157,6 +1180,48 @@ mod tests {
             })
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn workflows_save_list_and_approve_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        assert_eq!(dispatch(&core, MethodName::ListWorkflows, None).unwrap(), json!({ "workflows": [] }));
+        let model = core
+            .adapter_registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == "claude")
+            .and_then(|descriptor| descriptor.models.first().map(|model| model.id.clone()))
+            .expect("the built-in registry carries Claude's catalog");
+        let definition = json!({
+            "name": "Morning brief",
+            "steps": [{ "harness": "claude", "model": model, "instructions": "Summarise the day." }],
+            "trigger": { "kind": "manual" },
+            "files": "none",
+            "budget": { "maxWallSeconds": 600, "maxTurns": 24, "maxToolCalls": 64, "maxOutputTokens": null, "costCeilingMicrousd": null }
+        });
+        let saved = dispatch(&core, MethodName::SaveWorkflow, Some(json!({ "definition": definition }))).unwrap();
+        assert_eq!(saved["needsApproval"], true);
+        let id = saved["workflow"]["id"].as_str().unwrap().to_owned();
+        let revision = saved["workflow"]["revisionId"].as_str().unwrap().to_owned();
+
+        let listed = dispatch(&core, MethodName::ListWorkflows, None).unwrap();
+        assert_eq!(listed["workflows"][0]["id"], id);
+        assert_eq!(listed["workflows"][0]["projectId"], Value::Null);
+
+        let approved = dispatch(&core, MethodName::ApproveWorkflow, Some(json!({ "workflowId": id, "revisionId": revision }))).unwrap();
+        assert_eq!(approved["workflow"]["approved"], true);
+
+        let error = dispatch(&core, MethodName::GetWorkflow, Some(json!({ "workflowId": id, "extra": 1 }))).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+        let error = dispatch(&core, MethodName::ListWorkflows, Some(json!({}))).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams.code());
+
+        let options = dispatch(&core, MethodName::WorkflowOptions, None).unwrap();
+        let codex = options["harnesses"].as_array().unwrap().iter().find(|harness| harness["id"] == "codex").unwrap();
+        assert_eq!(codex["connectorsAllowed"], false);
+        assert!(codex["connectorsReason"].as_str().unwrap().contains("per-tool"));
     }
 
     #[test]
