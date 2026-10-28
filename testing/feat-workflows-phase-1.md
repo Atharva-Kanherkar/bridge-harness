@@ -112,7 +112,7 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 - F2. Every save creates a new immutable revision; the old revision is unchanged and still readable.
 - F3. A revision that widens authority has `approved_at = null`. Widening is any of: a new server, `read` false to true, `write` never to ask, a new `alwaysAllow` identity, `files` none to worktree, a different harness, a different project. A revision that only narrows or rewords keeps approval. `always_allow_tool` revisions are approved by construction (C9).
 - F4. Saving a no-project workflow twice leaves one home folder. Deleting the workflow removes it. No `projects` row is created at any point.
-- F5. Deleting a project disables its workflows with `disabled_reason = 'project_removed'`; it never orphans them.
+- F5. A project-bound workflow whose project row or folder is gone is disabled with `disabled_reason = 'project_removed'` the next time Bridge reads or claims it; it is never orphaned or run somewhere else. (Bridge has no project-removal path today, so the check runs on read and claim.)
 - F6. Refused, each with a reason: more than one step; `files: "worktree"` without a project; connector grants on an adapter that fails C6; a cron that does not parse; consecutive fire times under 15 minutes apart; an unknown timezone; a budget outside its bounds; a grant on a server the harness's configuration does not hold; a duplicate server; an `alwaysAllow` identity that is not `mcp__<server>__<tool>` on a server granted `write: "ask"`.
 - F7. `workflow_options` lists every registered adapter with whether it may hold connector grants and whether it may run worktree jobs, each with the gate's reason when refused, and every connector server the Claude configuration holds with its family and connection state. `workflows::tool_class` classifies a tool identity as read or write with the briefing read-verb vocabulary and fails closed to write.
 
@@ -185,7 +185,7 @@ Rust, in each module's `#[cfg(test)] mod tests`:
   - U-M3 `widening_grants_clears_approval_and_narrowing_keeps_it` (F3)
   - U-M4 `a_no_project_home_is_created_once_and_removed_on_delete` (F4)
   - U-M5 `a_no_project_workflow_never_creates_a_project_row` (F4)
-  - U-M6 `deleting_a_project_disables_its_workflows_with_a_reason` (F5)
+  - U-M6 `a_workflow_whose_project_folder_is_gone_is_disabled_with_a_reason` (F5)
   - U-M7 `each_invalid_definition_is_refused_with_its_reason`, table-driven over every F6 case
   - U-M8 `options_report_the_gate_reason_for_every_refused_adapter` (F7)
   - U-M9 `tool_class_fails_closed_to_write` (F7)
