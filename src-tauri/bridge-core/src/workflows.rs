@@ -415,11 +415,14 @@ pub fn require(db: &Connection, workflow_id: &str) -> Result<wire::Workflow, Bri
 
 /// Every workflow, most recently changed first.
 pub fn list(db: &Connection) -> Result<Vec<wire::WorkflowSummary>, BridgeError> {
+    let now = Utc::now();
     let mut statement = db.prepare(&format!("{SELECT_WORKFLOW} ORDER BY w.updated_at DESC, w.id"))?;
     let rows = statement.query_map([], read_row)?.collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
         .map(|row| {
             let workflow = into_workflow(row)?;
+            let next_run_at = crate::workflow_trigger::next_run_at(db, &workflow, now)?;
+            let last_run = crate::workflow_trigger::latest_run(db, &workflow.id)?;
             let step = workflow.definition.steps.first().cloned();
             Ok(wire::WorkflowSummary {
                 id: workflow.id,
@@ -436,6 +439,8 @@ pub fn list(db: &Connection) -> Result<Vec<wire::WorkflowSummary>, BridgeError> 
                 model: step.map(|step| step.model).unwrap_or_default(),
                 files: workflow.definition.files,
                 updated_at: workflow.updated_at,
+                next_run_at,
+                last_run,
             })
         })
         .collect()
@@ -642,6 +647,44 @@ pub(crate) mod test_support {
         fn normalize(&self, _: &Value) -> Vec<crate::agent::NormalizedEvent> {
             vec![]
         }
+    }
+
+    /// A valid no-project, read-only Slack workflow on a weekday schedule.
+    pub(crate) fn definition() -> bridge_protocol::messages::WorkflowDefinition {
+        use bridge_protocol::messages as wire;
+        wire::WorkflowDefinition {
+            name: "Morning brief".into(),
+            project_id: None,
+            steps: vec![wire::WorkflowStep {
+                harness: wire::HarnessId::parse("claude").unwrap(),
+                model: "haiku".into(),
+                effort: None,
+                instructions: "Summarise my Slack mentions.".into(),
+            }],
+            trigger: wire::WorkflowTrigger::Schedule { cron: "0 9 * * 1-5".into(), timezone: "UTC".into() },
+            grants: vec![wire::WorkflowGrant { server: "claude_ai_Slack".into(), read: true, write: wire::WorkflowWriteAccess::Never }],
+            always_allow: vec![],
+            files: wire::WorkflowFiles::None,
+            budget: wire::WorkBriefLimits {
+                max_wall_seconds: 600,
+                max_turns: 24,
+                max_tool_calls: 64,
+                max_output_tokens: None,
+                cost_ceiling_microusd: None,
+            },
+            expected_result: String::new(),
+            notify: wire::WorkflowNotify::default(),
+        }
+    }
+
+    /// Save and approve `definition`, returning the stored workflow.
+    pub(crate) fn save_approved(
+        db: &rusqlite::Connection,
+        data_dir: &std::path::Path,
+        definition: &bridge_protocol::messages::WorkflowDefinition,
+    ) -> bridge_protocol::messages::Workflow {
+        let saved = super::save(db, data_dir, None, definition, super::CreatedBy::User).unwrap().workflow;
+        super::approve(db, &saved.id, &saved.revision_id).unwrap()
     }
 
     /// A core whose registry holds stub `claude` and `codex` adapters.

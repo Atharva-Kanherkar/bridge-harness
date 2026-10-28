@@ -554,6 +554,7 @@ export type BridgeNotification =
   | "connectors/item_resolved"
   | "connectors/inbox_changed"
   | "workflows/changed"
+  | "workflows/run_changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -577,6 +578,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "connectors/item_resolved", delivery: "transient" },
   { notification: "connectors/inbox_changed", delivery: "transient" },
   { notification: "workflows/changed", delivery: "transient" },
+  { notification: "workflows/run_changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -3094,6 +3096,29 @@ export interface WorkflowNotify {
   onSuccess?: boolean;
 }
 
+export interface WorkflowRun {
+  costMicrousd?: number | null;
+  createdAt: string;
+  dryRun: boolean;
+  failureCode?: string | null;
+  finishedAt?: string | null;
+  id: string;
+  missedSlots: number;
+  quotaUnknown: boolean;
+  revisionId: string;
+  scheduledFor?: string | null;
+  sessionId?: string | null;
+  startedAt?: string | null;
+  status: WorkflowRunStatus;
+  summary?: string | null;
+  tokens?: number | null;
+  triggerKind: WorkflowTriggerKind;
+  unread: boolean;
+  workflowId: string;
+}
+
+export type WorkflowRunStatus = "queued" | "waiting_quota" | "running" | "waiting_approval" | "succeeded" | "failed" | "cancelled" | "unverified" | "skipped";
+
 export interface WorkflowServerOption {
   connected?: boolean | null;
   family: string;
@@ -3114,14 +3139,18 @@ export interface WorkflowSummary {
   files: WorkflowFiles;
   harness: HarnessId;
   id: string;
+  lastRun?: WorkflowRun | null;
   model: string;
   name: string;
+  nextRunAt?: string | null;
   projectId?: string | null;
   trigger: WorkflowTrigger;
   updatedAt: string;
 }
 
 export type WorkflowTrigger = { kind: "manual" } | { cron: string; kind: "schedule"; timezone: string };
+
+export type WorkflowTriggerKind = "manual" | "schedule" | "catch_up";
 
 export type WorkflowWriteAccess = "never" | "ask";
 
