@@ -610,6 +610,88 @@ async fn execute_automation_action(
     .await
 }
 
+// --- workflows -----------------------------------------------------------------
+
+#[tauri::command]
+async fn list_workflows(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflows", move || api::list_workflows(&core)).await
+}
+
+#[tauri::command]
+async fn get_workflow(
+    workflow_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflows", move || {
+        api::get_workflow(&core, &bridge_protocol::messages::GetWorkflowParams { workflow_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_workflow(
+    workflow_id: Option<String>,
+    definition: bridge_protocol::messages::WorkflowDefinition,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SaveWorkflowResult, BridgeError> {
+    let core = state.inner().clone();
+    // Validation may read Claude's connector configuration, a subprocess.
+    blocking("Workflow update", move || {
+        api::save_workflow(&core, &bridge_protocol::messages::SaveWorkflowParams { workflow_id, definition })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn approve_workflow(
+    workflow_id: String,
+    revision_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow update", move || {
+        api::approve_workflow(&core, &bridge_protocol::messages::ApproveWorkflowParams { workflow_id, revision_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_workflow(
+    workflow_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UnitResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow update", move || {
+        api::delete_workflow(&core, &bridge_protocol::messages::DeleteWorkflowParams { workflow_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_workflow_enabled(
+    workflow_id: String,
+    enabled: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow update", move || {
+        api::set_workflow_enabled(&core, &bridge_protocol::messages::SetWorkflowEnabledParams { workflow_id, enabled })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn workflow_options(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowOptions, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow options", move || Ok(api::workflow_options(&core))).await
+}
+
 #[tauri::command]
 async fn list_managed_agents(
 ) -> Result<bridge_protocol::messages::ManagedAgentList, managed_agents::ManagedAgentError> {
@@ -2986,6 +3068,13 @@ pub fn run() -> i32 {
             automation_catalog,
             save_automation,
             execute_automation_action,
+            list_workflows,
+            get_workflow,
+            save_workflow,
+            approve_workflow,
+            delete_workflow,
+            set_workflow_enabled,
+            workflow_options,
             get_state,
             get_session_forest,
             get_session_forest_digest,

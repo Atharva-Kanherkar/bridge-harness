@@ -5669,6 +5669,155 @@ pub fn execute_skill_change(
     Ok(results)
 }
 
+// --- workflows -----------------------------------------------------------------
+
+/// The data directory a workflow's private folder lives under.
+fn workflow_data_dir(core: &Arc<BridgeCore>) -> std::path::PathBuf {
+    core.database_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+fn publish_workflows_changed(core: &Arc<BridgeCore>, ids: impl IntoIterator<Item = String>) {
+    for workflow_id in ids {
+        core.events.publish(crate::events::CoreEvent::WorkflowsChanged { workflow_id });
+    }
+}
+
+/// Facts validation needs from the registry and, only when a definition grants
+/// connectors, from Claude's own configuration (a subprocess, so never asked
+/// for when nothing would read it).
+fn workflow_validation_context(core: &Arc<BridgeCore>, with_servers: bool) -> crate::workflows::ValidationContext {
+    crate::workflows::ValidationContext {
+        adapters: core
+            .adapter_registry
+            .descriptors()
+            .into_iter()
+            .map(|descriptor| crate::workflows::AdapterFacts {
+                models: descriptor.models.iter().map(|model| model.id.clone()).collect(),
+                id: descriptor.id,
+            })
+            .collect(),
+        servers: if with_servers {
+            crate::marketplace::claude_sdk_configuration().mcp_servers.into_keys().collect()
+        } else {
+            Default::default()
+        },
+    }
+}
+
+/// Every workflow. Disables, and announces, any whose project is gone first.
+pub fn list_workflows(core: &Arc<BridgeCore>) -> Result<wire::WorkflowList, BridgeError> {
+    let (changed, workflows) = {
+        let db = core.db.lock().unwrap();
+        let changed = crate::workflows::reconcile_projects(&db)?;
+        (changed, crate::workflows::list(&db)?)
+    };
+    publish_workflows_changed(core, changed);
+    Ok(wire::WorkflowList { workflows })
+}
+
+pub fn get_workflow(core: &Arc<BridgeCore>, params: &wire::GetWorkflowParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
+    let (changed, workflow) = {
+        let db = core.db.lock().unwrap();
+        let changed = crate::workflows::reconcile_projects(&db)?;
+        (changed, crate::workflows::require(&db, &params.workflow_id)?)
+    };
+    publish_workflows_changed(core, changed);
+    Ok(wire::WorkflowSnapshot { workflow })
+}
+
+/// Validate in Rust, then store a new workflow or a new revision.
+pub fn save_workflow(core: &Arc<BridgeCore>, params: &wire::SaveWorkflowParams) -> Result<wire::SaveWorkflowResult, BridgeError> {
+    let context = workflow_validation_context(core, !params.definition.grants.is_empty());
+    crate::workflows::validate(&params.definition, &context).map_err(BridgeError::Invalid)?;
+    let result = crate::workflows::save(
+        &core.db.lock().unwrap(),
+        &workflow_data_dir(core),
+        params.workflow_id.as_deref(),
+        &params.definition,
+        crate::workflows::CreatedBy::User,
+    )?;
+    publish_workflows_changed(core, [result.workflow.id.clone()]);
+    Ok(result)
+}
+
+pub fn approve_workflow(core: &Arc<BridgeCore>, params: &wire::ApproveWorkflowParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
+    let workflow = crate::workflows::approve(&core.db.lock().unwrap(), &params.workflow_id, &params.revision_id)?;
+    publish_workflows_changed(core, [workflow.id.clone()]);
+    Ok(wire::WorkflowSnapshot { workflow })
+}
+
+pub fn delete_workflow(core: &Arc<BridgeCore>, params: &wire::DeleteWorkflowParams) -> Result<wire::UnitResult, BridgeError> {
+    crate::workflows::delete(&core.db.lock().unwrap(), &workflow_data_dir(core), &params.workflow_id)?;
+    publish_workflows_changed(core, [params.workflow_id.clone()]);
+    Ok(wire::UnitResult(()))
+}
+
+pub fn set_workflow_enabled(core: &Arc<BridgeCore>, params: &wire::SetWorkflowEnabledParams) -> Result<wire::WorkflowSnapshot, BridgeError> {
+    let workflow = crate::workflows::set_enabled(&core.db.lock().unwrap(), &params.workflow_id, params.enabled)?;
+    publish_workflows_changed(core, [workflow.id.clone()]);
+    Ok(wire::WorkflowSnapshot { workflow })
+}
+
+/// What each harness may run as a workflow, and the connector servers Claude's
+/// configuration holds. Discovery, not authority: a run's scope is still
+/// checked against the live configuration when it starts.
+pub fn workflow_options(core: &Arc<BridgeCore>) -> wire::WorkflowOptions {
+    let descriptors = core.adapter_registry.descriptors();
+    let harnesses: Vec<wire::WorkflowHarnessOption> = descriptors
+        .into_iter()
+        .map(|descriptor| {
+            let gate = crate::briefing_policy::adapter_may_brief(&descriptor.id);
+            let default_model = core
+                .adapter_registry
+                .resolve_model(&descriptor.id, CapabilityTier::Fast, None)
+                .ok()
+                .map(|resolution| resolution.actual_model);
+            wire::WorkflowHarnessOption {
+                connectors_allowed: gate.is_ok(),
+                connectors_reason: gate.err().map(|refusal| refusal.reason()),
+                worktree_allowed: true,
+                default_model,
+                models: descriptor
+                    .models
+                    .iter()
+                    .map(|model| wire::WorkBriefingModel {
+                        id: model.id.clone(),
+                        label: model.label.clone(),
+                        tier: model.tier.as_str().to_owned(),
+                        default_for_briefing: model.tier == CapabilityTier::Fast && model.default_for_tier,
+                    })
+                    .collect(),
+                id: descriptor.id,
+                label: descriptor.label,
+                available: descriptor.available,
+            }
+        })
+        .collect();
+    let claude_may_hold_connectors = harnesses
+        .iter()
+        .any(|harness| harness.id == "claude" && harness.connectors_allowed);
+    let servers = if claude_may_hold_connectors {
+        let configuration = crate::marketplace::claude_sdk_configuration();
+        configuration
+            .mcp_servers
+            .keys()
+            .map(|server| wire::WorkflowServerOption {
+                id: server.clone(),
+                family: crate::work_briefing_live::family_for_server(server)
+                    .map(|family| family.as_str().to_owned())
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                connected: configuration.connector_health.get(server).copied().flatten(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    wire::WorkflowOptions { harnesses, servers }
+}
+
 // --- automations ---------------------------------------------------------------
 
 pub fn automation_catalog(

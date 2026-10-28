@@ -1778,6 +1778,55 @@
       "method": "automations/execute_automation_action",
       "paramsSchema": "execute-automation-action-params.json",
       "resultDeferred": "bridge_core::automations::AutomationActionResult"
+    },
+    {
+      "command": "list_workflows",
+      "domain": "workflows",
+      "method": "workflows/list_workflows",
+      "paramsSchema": null,
+      "resultSchema": "workflow-list.json"
+    },
+    {
+      "command": "get_workflow",
+      "domain": "workflows",
+      "method": "workflows/get_workflow",
+      "paramsSchema": "get-workflow-params.json",
+      "resultSchema": "workflow-snapshot.json"
+    },
+    {
+      "command": "save_workflow",
+      "domain": "workflows",
+      "method": "workflows/save_workflow",
+      "paramsSchema": "save-workflow-params.json",
+      "resultSchema": "save-workflow-result.json"
+    },
+    {
+      "command": "approve_workflow",
+      "domain": "workflows",
+      "method": "workflows/approve_workflow",
+      "paramsSchema": "approve-workflow-params.json",
+      "resultSchema": "workflow-snapshot.json"
+    },
+    {
+      "command": "delete_workflow",
+      "domain": "workflows",
+      "method": "workflows/delete_workflow",
+      "paramsSchema": "delete-workflow-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "set_workflow_enabled",
+      "domain": "workflows",
+      "method": "workflows/set_workflow_enabled",
+      "paramsSchema": "set-workflow-enabled-params.json",
+      "resultSchema": "workflow-snapshot.json"
+    },
+    {
+      "command": "workflow_options",
+      "domain": "workflows",
+      "method": "workflows/workflow_options",
+      "paramsSchema": null,
+      "resultSchema": "workflow-options.json"
     }
   ],
   "protocolVersion": {

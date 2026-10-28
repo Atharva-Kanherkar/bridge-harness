@@ -109,6 +109,9 @@ pub enum CoreEvent {
     ConnectorItemResolved { family: String, item_key: String, succeeded: bool },
     /// Refetch hint: one family's inbox changed.
     ConnectorInboxChanged { family: String },
+    /// Refetch hint: one workflow was saved, approved, enabled, disabled or
+    /// deleted.
+    WorkflowsChanged { workflow_id: String },
 }
 
 impl CoreEvent {
@@ -136,6 +139,7 @@ impl CoreEvent {
             CoreEvent::ConnectorCardReady { .. } => NotificationName::ConnectorCardReady,
             CoreEvent::ConnectorItemResolved { .. } => NotificationName::ConnectorItemResolved,
             CoreEvent::ConnectorInboxChanged { .. } => NotificationName::ConnectorInboxChanged,
+            CoreEvent::WorkflowsChanged { .. } => NotificationName::WorkflowsChanged,
         }
     }
 
@@ -201,6 +205,7 @@ impl CoreEvent {
                 "family": family, "itemKey": item_key, "succeeded": succeeded,
             }),
             CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
+            CoreEvent::WorkflowsChanged { workflow_id } => serde_json::json!({ "workflowId": workflow_id }),
         }
     }
 
@@ -227,6 +232,9 @@ struct ReconciliationState {
     /// Which memory scopes changed while a subscriber was lagging. Same shape
     /// as the agent set above, for the same reason: the hint names its scope.
     memory_scopes_changed: std::collections::BTreeSet<String>,
+    /// Which workflows changed while a subscriber was lagging. Same shape, for
+    /// the same reason: the hint names its workflow.
+    workflows_changed: std::collections::BTreeSet<String>,
 }
 
 /// Receive failures exposed without coupling hosts to Tokio's channel types.
@@ -273,6 +281,11 @@ impl EventReceiver {
         for scope_key in &state.memory_scopes_changed {
             events.push(CoreEvent::MemoryChanged {
                 scope_key: scope_key.clone(),
+            });
+        }
+        for workflow_id in &state.workflows_changed {
+            events.push(CoreEvent::WorkflowsChanged {
+                workflow_id: workflow_id.clone(),
             });
         }
         events
@@ -334,6 +347,9 @@ impl EventBus {
                 }
                 CoreEvent::MemoryChanged { scope_key } => {
                     state.memory_scopes_changed.insert(scope_key.clone());
+                }
+                CoreEvent::WorkflowsChanged { workflow_id } => {
+                    state.workflows_changed.insert(workflow_id.clone());
                 }
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
@@ -482,6 +498,7 @@ mod tests {
                 succeeded: true,
             },
             CoreEvent::ConnectorInboxChanged { family: "slack".into() },
+            CoreEvent::WorkflowsChanged { workflow_id: "w1".into() },
         ];
         for event in &events {
             assert_eq!(

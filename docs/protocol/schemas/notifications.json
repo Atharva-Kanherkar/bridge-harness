@@ -79,6 +79,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "workflows/changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]

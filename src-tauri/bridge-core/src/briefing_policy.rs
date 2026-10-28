@@ -319,6 +319,13 @@ const MUTATION_TOOL_WORDS: &[&str] = &[
 ];
 
 /// Is this bare tool name (the segment after `mcp__<server>__`) a read?
+///
+/// The one vocabulary every unattended runner classifies by; workflows use it
+/// too, so a tool is never a read in one gate and a write in another.
+pub fn is_read_tool_name(tool: &str) -> bool {
+    is_read_verb_tool(tool)
+}
+
 fn is_read_verb_tool(tool: &str) -> bool {
     let lowered = tool.to_lowercase();
     if lowered != tool {

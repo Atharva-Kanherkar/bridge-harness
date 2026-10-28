@@ -114,6 +114,9 @@ notifications![
     (ConnectorItemResolved, "connectors/item_resolved", Transient),
     // Refetch hint: something in one family's inbox changed.
     (ConnectorInboxChanged, "connectors/inbox_changed", Transient),
+    // Refetch hint: one workflow was saved, approved, enabled, disabled or
+    // deleted. Payload `{"workflowId": "<id>"}`.
+    (WorkflowsChanged, "workflows/changed", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent

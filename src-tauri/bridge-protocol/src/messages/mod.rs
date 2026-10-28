@@ -25,6 +25,7 @@ mod agents;
 mod approvals;
 mod auth;
 mod automations;
+mod workflows;
 mod browser;
 mod clones;
 mod common;
@@ -59,6 +60,7 @@ pub use agents::*;
 pub use approvals::*;
 pub use auth::*;
 pub use automations::*;
+pub use workflows::*;
 pub use browser::*;
 pub use clones::*;
 pub use common::*;
@@ -461,6 +463,14 @@ typed_methods![
     (AutomationCatalog, _, _),
     (SaveAutomation, SaveAutomationParams, _),
     (ExecuteAutomationAction, ExecuteAutomationActionParams, _),
+    // workflows
+    (ListWorkflows, _, WorkflowList),
+    (GetWorkflow, GetWorkflowParams, WorkflowSnapshot),
+    (SaveWorkflow, SaveWorkflowParams, SaveWorkflowResult),
+    (ApproveWorkflow, ApproveWorkflowParams, WorkflowSnapshot),
+    (DeleteWorkflow, DeleteWorkflowParams, UnitResult),
+    (SetWorkflowEnabled, SetWorkflowEnabledParams, WorkflowSnapshot),
+    (WorkflowOptions, _, WorkflowOptions),
 ];
 
 /// The documented exceptions to result typing: every method whose result is
