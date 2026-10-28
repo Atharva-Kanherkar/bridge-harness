@@ -1,6 +1,6 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
-import type { SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
+import type { RunWorkflowResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
@@ -1524,6 +1524,14 @@ let mockWorkflows: Workflow[] = [{
   createdAt: "2026-10-27T09:00:00Z", updatedAt: "2026-10-27T09:00:00Z",
 }];
 
+let mockWorkflowRuns: WorkflowRun[] = [{
+  id: "run-morning-1", workflowId: "wf-morning-brief", revisionId: "wf-morning-brief-r1", triggerKind: "schedule", missedSlots: 0,
+  dryRun: false, status: "succeeded", failureCode: null, summary: "3 Slack mentions need replies; 2 Linear issues moved to In review.",
+  sessionId: null, quotaUnknown: false, costMicrousd: 40000, tokens: 18200, unread: true,
+  scheduledFor: "2026-10-28T03:30:00.000Z", startedAt: "2026-10-28T03:30:02.000Z", finishedAt: "2026-10-28T03:31:14.000Z", createdAt: "2026-10-28T03:30:01.000Z",
+}];
+let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settings: { paused: false, quotaReservePercent: 25 } };
+
 /** The mock's mirror of `workflows::widens`. */
 function mockWorkflowWidens(previous: WorkflowDefinition, next: WorkflowDefinition): boolean {
   if (previous.projectId !== next.projectId) return true;
@@ -1543,6 +1551,8 @@ function mockWorkflowSummary(workflow: Workflow): WorkflowSummary {
     enabled: workflow.enabled, disabledReason: workflow.disabledReason, approved: workflow.approved,
     trigger: workflow.definition.trigger, harness: step.harness, model: step.model,
     files: workflow.definition.files, updatedAt: workflow.updatedAt,
+    nextRunAt: null,
+    lastRun: mockWorkflowRuns.find(run => run.workflowId === workflow.id) ?? null,
   };
 }
 
@@ -1588,6 +1598,28 @@ export const mockWorkflowApi = {
   remove(workflowId: string): void {
     mockRequireWorkflow(workflowId);
     mockWorkflows = mockWorkflows.filter(workflow => workflow.id !== workflowId);
+    mockWorkflowRuns = mockWorkflowRuns.filter(run => run.workflowId !== workflowId);
+  },
+  // Mock mode has no runner, so a run settles the way the desktop app's does
+  // without one: failed, with the reason.
+  run(workflowId: string, requestId: string, dryRun: boolean): RunWorkflowResult {
+    const workflow = mockRequireWorkflow(workflowId);
+    if (!workflow.enabled) throw new Error(`${workflow.definition.name} cannot run: it is turned off`);
+    if (!workflow.approved && !dryRun) throw new Error(`${workflow.definition.name} waits for approval`);
+    if (mockWorkflowSettings.settings.paused) throw new Error("Workflows are paused");
+    const existing = mockWorkflowRuns.find(run => run.id === `run-${workflowId}-${requestId}`);
+    if (existing) return { run: structuredClone(existing), created: false };
+    const stamp = new Date().toISOString();
+    const run: WorkflowRun = {
+      id: `run-${workflowId}-${requestId}`, workflowId, revisionId: workflow.revisionId, triggerKind: "manual", missedSlots: 0, dryRun,
+      status: "failed", failureCode: "desktop_required", summary: "Running workflows requires the desktop app.", sessionId: null,
+      quotaUnknown: false, costMicrousd: null, tokens: null, unread: true, scheduledFor: null, startedAt: null, finishedAt: stamp, createdAt: stamp,
+    };
+    mockWorkflowRuns = [run, ...mockWorkflowRuns];
+    return { run: structuredClone(run), created: true };
+  },
+  runs(workflowId: string | null, unreadOnly: boolean, limit: number): WorkflowRunList {
+    return { runs: mockWorkflowRuns.filter(run => (!workflowId || run.workflowId === workflowId) && (!unreadOnly || run.unread)).slice(0, limit).map(run => structuredClone(run)) };
   },
 };
 
@@ -1902,6 +1934,35 @@ export const bridgeApi = {
   workflowOptions: async (): Promise<WorkflowOptions> => {
     if (hasBackend()) return call("workflows/workflow_options");
     return structuredClone(mockWorkflowOptions);
+  },
+  // Run now. `requestId` makes a double click one run.
+  runWorkflow: async (workflowId: string, requestId: string, dryRun = false): Promise<RunWorkflowResult> => {
+    if (hasBackend()) return call("workflows/run_workflow", { workflowId, requestId, dryRun });
+    return mockWorkflowApi.run(workflowId, requestId, dryRun);
+  },
+  cancelWorkflowRun: async (runId: string): Promise<WorkflowRunSnapshot> => {
+    if (hasBackend()) return call("workflows/cancel_workflow_run", { runId });
+    const run = mockWorkflowRuns.find(candidate => candidate.id === runId);
+    if (!run) throw new Error(`workflow run ${runId} does not exist`);
+    throw new Error(`workflow run ${runId} already finished`);
+  },
+  listWorkflowRuns: async (query: { workflowId?: string | null; unreadOnly?: boolean; limit: number }): Promise<WorkflowRunList> => {
+    if (hasBackend()) return call("workflows/list_workflow_runs", { workflowId: query.workflowId ?? null, unreadOnly: query.unreadOnly ?? false, limit: query.limit });
+    return mockWorkflowApi.runs(query.workflowId ?? null, query.unreadOnly ?? false, query.limit);
+  },
+  readWorkflowSettings: async (): Promise<WorkflowSettingsSnapshot> => {
+    if (hasBackend()) return call("workflows/read_workflow_settings");
+    return structuredClone(mockWorkflowSettings);
+  },
+  writeWorkflowSettings: async (settings: WorkflowSettings): Promise<WorkflowSettingsSnapshot> => {
+    if (hasBackend()) return call("workflows/write_workflow_settings", { settings });
+    if (settings.quotaReservePercent < 0 || settings.quotaReservePercent > 90) throw new Error("The quota reserve is between 0 and 90 percent");
+    mockWorkflowSettings = { configured: true, settings: { ...settings } };
+    return structuredClone(mockWorkflowSettings);
+  },
+  onWorkflowRunChanged: (handler: (payload: { run: WorkflowRun }) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<{ run: WorkflowRun }>("workflows/run_changed", handler);
+    return Promise.resolve(() => {});
   },
   onWorkflowsChanged: (handler: (payload: { workflowId: string }) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<{ workflowId: string }>("workflows/changed", handler);

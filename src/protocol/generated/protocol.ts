@@ -267,7 +267,12 @@ export type BridgeMethod =
   | "workflows/approve_workflow"
   | "workflows/delete_workflow"
   | "workflows/set_workflow_enabled"
-  | "workflows/workflow_options";
+  | "workflows/workflow_options"
+  | "workflows/run_workflow"
+  | "workflows/cancel_workflow_run"
+  | "workflows/list_workflow_runs"
+  | "workflows/read_workflow_settings"
+  | "workflows/write_workflow_settings";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -531,6 +536,11 @@ export const BRIDGE_METHODS = [
   { method: "workflows/delete_workflow", domain: "workflows", command: "delete_workflow" },
   { method: "workflows/set_workflow_enabled", domain: "workflows", command: "set_workflow_enabled" },
   { method: "workflows/workflow_options", domain: "workflows", command: "workflow_options" },
+  { method: "workflows/run_workflow", domain: "workflows", command: "run_workflow" },
+  { method: "workflows/cancel_workflow_run", domain: "workflows", command: "cancel_workflow_run" },
+  { method: "workflows/list_workflow_runs", domain: "workflows", command: "list_workflow_runs" },
+  { method: "workflows/read_workflow_settings", domain: "workflows", command: "read_workflow_settings" },
+  { method: "workflows/write_workflow_settings", domain: "workflows", command: "write_workflow_settings" },
 ] as const;
 
 export type BridgeNotification =
@@ -873,6 +883,11 @@ export interface BridgeMethodParams {
   "workflows/delete_workflow": DeleteWorkflowParams;
   "workflows/set_workflow_enabled": SetWorkflowEnabledParams;
   "workflows/workflow_options": undefined;
+  "workflows/run_workflow": RunWorkflowParams;
+  "workflows/cancel_workflow_run": CancelWorkflowRunParams;
+  "workflows/list_workflow_runs": ListWorkflowRunsParams;
+  "workflows/read_workflow_settings": undefined;
+  "workflows/write_workflow_settings": WriteWorkflowSettingsParams;
 }
 
 /** Result types for every registered method. */
@@ -1138,6 +1153,11 @@ export interface BridgeMethodResults {
   "workflows/delete_workflow": UnitResult;
   "workflows/set_workflow_enabled": WorkflowSnapshot;
   "workflows/workflow_options": WorkflowOptions;
+  "workflows/run_workflow": RunWorkflowResult;
+  "workflows/cancel_workflow_run": WorkflowRunSnapshot;
+  "workflows/list_workflow_runs": WorkflowRunList;
+  "workflows/read_workflow_settings": WorkflowSettingsSnapshot;
+  "workflows/write_workflow_settings": WorkflowSettingsSnapshot;
 }
 
 export type ActiveTurnInput = "steer" | "queue";
@@ -3125,6 +3145,11 @@ export interface WorkflowServerOption {
   id: string;
 }
 
+export interface WorkflowSettings {
+  paused: boolean;
+  quotaReservePercent: number;
+}
+
 export interface WorkflowStep {
   effort?: string | null;
   harness: HarnessId;
@@ -5001,6 +5026,44 @@ export interface SetWorkflowEnabledParams {
 export interface WorkflowOptions {
   harnesses: WorkflowHarnessOption[];
   servers: WorkflowServerOption[];
+}
+
+export interface RunWorkflowParams {
+  dryRun?: boolean;
+  requestId: string;
+  workflowId: string;
+}
+
+export interface RunWorkflowResult {
+  created: boolean;
+  run: WorkflowRun;
+}
+
+export interface CancelWorkflowRunParams {
+  runId: string;
+}
+
+export interface WorkflowRunSnapshot {
+  run: WorkflowRun;
+}
+
+export interface ListWorkflowRunsParams {
+  limit: number;
+  unreadOnly?: boolean;
+  workflowId?: string | null;
+}
+
+export interface WorkflowRunList {
+  runs: WorkflowRun[];
+}
+
+export interface WorkflowSettingsSnapshot {
+  configured: boolean;
+  settings: WorkflowSettings;
+}
+
+export interface WriteWorkflowSettingsParams {
+  settings: WorkflowSettings;
 }
 
 export interface VoiceTranscriptEvent {

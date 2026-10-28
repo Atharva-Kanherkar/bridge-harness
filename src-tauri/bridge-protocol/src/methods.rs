@@ -347,6 +347,11 @@ methods![
     (DeleteWorkflow, "workflows", "delete_workflow"),
     (SetWorkflowEnabled, "workflows", "set_workflow_enabled"),
     (WorkflowOptions, "workflows", "workflow_options"),
+    (RunWorkflow, "workflows", "run_workflow"),
+    (CancelWorkflowRun, "workflows", "cancel_workflow_run"),
+    (ListWorkflowRuns, "workflows", "list_workflow_runs"),
+    (ReadWorkflowSettings, "workflows", "read_workflow_settings"),
+    (WriteWorkflowSettings, "workflows", "write_workflow_settings"),
 ];
 
 impl MethodName {

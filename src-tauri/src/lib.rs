@@ -693,6 +693,61 @@ async fn workflow_options(
 }
 
 #[tauri::command]
+async fn run_workflow(
+    workflow_id: String,
+    request_id: String,
+    dry_run: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::RunWorkflowResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow run", move || {
+        api::run_workflow(&core, &bridge_protocol::messages::RunWorkflowParams { workflow_id, request_id, dry_run })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn cancel_workflow_run(
+    run_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowRunSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow run", move || {
+        api::cancel_workflow_run(&core, &bridge_protocol::messages::CancelWorkflowRunParams { run_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_workflow_runs(
+    workflow_id: Option<String>,
+    unread_only: bool,
+    limit: i64,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowRunList, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow runs", move || {
+        api::list_workflow_runs(&core, &bridge_protocol::messages::ListWorkflowRunsParams { workflow_id, unread_only, limit })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn read_workflow_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowSettingsSnapshot, BridgeError> {
+    api::read_workflow_settings(state.inner())
+}
+
+#[tauri::command]
+async fn write_workflow_settings(
+    settings: bridge_protocol::messages::WorkflowSettings,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowSettingsSnapshot, BridgeError> {
+    api::write_workflow_settings(state.inner(), &bridge_protocol::messages::WriteWorkflowSettingsParams { settings })
+}
+
+#[tauri::command]
 async fn list_managed_agents(
 ) -> Result<bridge_protocol::messages::ManagedAgentList, managed_agents::ManagedAgentError> {
     api::list_managed_agents()
@@ -2958,6 +3013,7 @@ fn setup_embedded(
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
     bridge_core::github_poll::start_github_poll_maintenance(core.clone());
     bridge_core::connector_runs_live::start_connector_poll_maintenance(core.clone());
+    bridge_core::workflow_trigger::start_workflow_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
@@ -3075,6 +3131,11 @@ pub fn run() -> i32 {
             delete_workflow,
             set_workflow_enabled,
             workflow_options,
+            run_workflow,
+            cancel_workflow_run,
+            list_workflow_runs,
+            read_workflow_settings,
+            write_workflow_settings,
             get_state,
             get_session_forest,
             get_session_forest_digest,
