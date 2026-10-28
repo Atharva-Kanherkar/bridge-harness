@@ -2780,6 +2780,30 @@ pub(crate) fn auto_resolve_provider_permission(
     )
 }
 
+/// Answer a workflow run's ask that Bridge decided itself, through the same
+/// single-owner resolver a click uses. A failure is recorded, never silent.
+pub(crate) fn resolve_workflow_permission(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    decision: &crate::workflow_run::PermissionDecision,
+) {
+    let (answer, reason) = match decision {
+        crate::workflow_run::PermissionDecision::Accept(reason) => ("accept", reason.as_str()),
+        crate::workflow_run::PermissionDecision::Decline(reason) => ("decline", reason.as_str()),
+    };
+    if let Err(error) = resolve_provider_permission(core, session_id, event_id, Some(answer), None, "workflow", Some(reason)) {
+        let db = core.db.lock().unwrap();
+        let _ = store::event(
+            &db,
+            "permission",
+            "approval.workflow_resolve_failed",
+            session_id,
+            &format!("Bridge could not answer permission {event_id} for this workflow run: {error}"),
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_provider_permission(
     core: &Arc<BridgeCore>,
@@ -2793,6 +2817,10 @@ fn resolve_provider_permission(
     let db = core.db.lock().unwrap();
     if actor == "policy" && crate::chat_defaults::effective_access(&db,session_id)? != wire::ChatAccess::Full {
         return Err(BridgeError::Invalid("Automatic permission grant is no longer authorized".into()));
+    }
+    let workflow_session = crate::workflow_run::is_workflow_session(&db, session_id);
+    if actor == "workflow" && !workflow_session {
+        return Err(BridgeError::Invalid("Only a workflow run's own decisions use the workflow resolver".into()));
     }
     let (payload, adapter_id, is_worker) =
         interaction_payload(&db, session_id, event_id, "permission.requested")?;
@@ -2822,6 +2850,11 @@ fn resolve_provider_permission(
     let Some(resolving_event) = claim else {
         return stored_interaction_result(&db, session_id, event_id);
     };
+    // A person's answer on a workflow run is an effect, so a repeat of an
+    // approved call is recognised and the run's record shows who decided.
+    if workflow_session && actor != "workflow" {
+        crate::workflow_run::record_human_decision(&db, session_id, &details, &decision, actor)?;
+    }
     drop(db);
     core.events.publish(CoreEvent::Agent(resolving_event));
 

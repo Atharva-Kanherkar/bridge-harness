@@ -39,8 +39,6 @@ pub const ON_TIME_MINUTES: i64 = 5;
 pub const TICK_SECONDS: u64 = 30;
 pub const DEFAULT_QUOTA_RESERVE_PERCENT: i64 = 25;
 pub const MAX_QUOTA_RESERVE_PERCENT: i64 = 90;
-/// The failure code a run gets while no runner is installed.
-pub const RUNNER_UNAVAILABLE: &str = "runner_unavailable";
 
 const SETTINGS_KIND: &str = "workflows";
 const SETTINGS_ID: &str = "settings";
@@ -470,6 +468,40 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
     Ok(reclaimed)
 }
 
+/// Park a held run until its provider has room (C11). It stays active, so
+/// nothing overlaps it, but holds no lease: nobody is working on it.
+pub fn park(db: &Connection, run_id: &str, lease_owner: &str) -> Result<bool, BridgeError> {
+    let changed = db.execute(
+        &format!(
+            "UPDATE workflow_runs SET status='waiting_quota', lease_owner=NULL, lease_expires_at=NULL
+             WHERE id=?1 AND lease_owner=?2 AND status IN {ACTIVE}"
+        ),
+        params![run_id, lease_owner],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Take every parked run back with a fresh lease, for the runner to re-check.
+pub fn unpark_waiting(db: &Connection, now: DateTime<Utc>) -> Result<Vec<ClaimedRun>, BridgeError> {
+    let ids: Vec<String> = db
+        .prepare("SELECT id FROM workflow_runs WHERE status='waiting_quota' AND lease_owner IS NULL ORDER BY created_at")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut claimed = Vec::new();
+    for id in ids {
+        let lease_owner = Uuid::new_v4().to_string();
+        let changed = db.execute(
+            "UPDATE workflow_runs SET status='queued', lease_owner=?2, lease_expires_at=?3
+             WHERE id=?1 AND status='waiting_quota' AND lease_owner IS NULL",
+            params![id, lease_owner, stamp(now + Duration::minutes(LEASE_MINUTES))],
+        )?;
+        if changed == 1 {
+            claimed.push(ClaimedRun { run: require_run(db, &id)?, lease_owner });
+        }
+    }
+    Ok(claimed)
+}
+
 /// Cancel an active run. A queued or waiting run settles now; a running run's
 /// holder learns on its next heartbeat, which fails because the lease is gone.
 pub fn cancel(db: &Connection, run_id: &str, now: DateTime<Utc>) -> Result<wire::WorkflowRun, BridgeError> {
@@ -591,6 +623,9 @@ pub fn tick(core: &Arc<BridgeCore>, now: DateTime<Utc>) -> Result<Vec<ClaimedRun
         let db = core.db.lock().unwrap();
         changed_runs.extend(reclaim_expired(&db, now)?);
         let changed_workflows = workflows::reconcile_projects(&db)?;
+        // Parked runs go back to the runner, which re-checks the quota and
+        // parks them again if their provider still has no room.
+        claimed.extend(unpark_waiting(&db, now)?);
         for (workflow_id, occasion) in due_occasions(&db, now)? {
             match claim(&db, &workflow_id, &occasion, false, now)? {
                 ClaimOutcome::Claimed(run) => {
@@ -621,25 +656,9 @@ pub fn dispatch(core: Arc<BridgeCore>, claimed: ClaimedRun) {
         .expect("spawn workflow run thread");
 }
 
-/// What a claimed run does. No runner is installed yet, so it settles as
-/// `runner_unavailable` rather than waiting for a lease to expire.
+/// What a claimed run does.
 fn run_claimed(core: &Arc<BridgeCore>, claimed: ClaimedRun) {
-    let outcome = Outcome {
-        failure_code: Some(RUNNER_UNAVAILABLE.into()),
-        summary: Some("This version of Bridge cannot run workflows yet.".into()),
-        ..Outcome::default()
-    };
-    let settled = finish(
-        &core.db.lock().unwrap(),
-        &claimed.run.id,
-        &claimed.lease_owner,
-        wire::WorkflowRunStatus::Failed,
-        &outcome,
-        Utc::now(),
-    );
-    if let Ok(true) = settled {
-        publish_runs(core, std::slice::from_ref(&claimed.run.id));
-    }
+    crate::workflow_run::execute(core, claimed);
 }
 
 /// Start the loop on its own thread. Both hosts call this at boot.
@@ -928,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_claims_due_slots_and_dispatch_settles_without_a_runner() {
+    fn tick_claims_due_slots_and_unparks_waiting_runs() {
         let (_scratch, core) = test_support::core();
         let workflow = {
             let db = core.db.lock().unwrap();
@@ -938,16 +957,23 @@ mod tests {
         let claimed = tick(&core, at("2026-10-29T09:00:20Z")).unwrap();
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].run.workflow_id, workflow.id);
-        run_claimed(&core, claimed[0].clone());
-        let run = require_run(&core.db.lock().unwrap(), &claimed[0].run.id).unwrap();
-        assert_eq!(run.status, wire::WorkflowRunStatus::Failed);
-        assert_eq!(run.failure_code.as_deref(), Some(RUNNER_UNAVAILABLE));
         let mut statuses = Vec::new();
         while let Ok(event) = events.try_recv() {
             if let CoreEvent::WorkflowRunChanged { run } = event {
                 statuses.push(run.status);
             }
         }
-        assert_eq!(statuses, vec![wire::WorkflowRunStatus::Queued, wire::WorkflowRunStatus::Failed]);
+        assert_eq!(statuses, vec![wire::WorkflowRunStatus::Queued]);
+
+        // Parked for quota: no lease, still active, and the next tick hands it back.
+        let db = core.db.lock().unwrap();
+        assert!(park(&db, &claimed[0].run.id, &claimed[0].lease_owner).unwrap());
+        let parked = require_run(&db, &claimed[0].run.id).unwrap();
+        assert_eq!(parked.status, wire::WorkflowRunStatus::WaitingQuota);
+        assert!(reclaim_expired(&db, at("2026-10-30T09:00:00Z")).unwrap().is_empty(), "a parked run holds no lease to expire");
+        let back = unpark_waiting(&db, at("2026-10-29T09:01:00Z")).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].run.status, wire::WorkflowRunStatus::Queued);
+        assert!(heartbeat(&db, &back[0].run.id, &back[0].lease_owner, at("2026-10-29T09:02:00Z")).unwrap());
     }
 }

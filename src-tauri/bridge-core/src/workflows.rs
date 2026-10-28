@@ -205,6 +205,9 @@ pub fn validate(definition: &wire::WorkflowDefinition, context: &ValidationConte
     if definition.files == wire::WorkflowFiles::Worktree && definition.project_id.is_none() {
         return Err("A worktree needs a project; choose one or turn file access off".into());
     }
+    if definition.files == wire::WorkflowFiles::Worktree && !definition.grants.is_empty() {
+        return Err("A worktree workflow uses no connectors for now; remove the connectors or turn file access off".into());
+    }
     if needs_identity_enforcement(definition) {
         crate::briefing_policy::adapter_may_brief(harness).map_err(|refusal| {
             format!("`{harness}` cannot run this workflow: {}", refusal.reason())
@@ -947,6 +950,7 @@ mod tests {
             ("not a model", Box::new(|d| d.steps[0].model = "opus-9".into())),
             ("what to do", Box::new(|d| d.steps[0].instructions = "".into())),
             ("needs a project", Box::new(|d| d.files = wire::WorkflowFiles::Worktree)),
+            ("uses no connectors", Box::new(|d| { d.project_id = Some("p".into()); d.files = wire::WorkflowFiles::Worktree; })),
             ("cannot run this workflow", Box::new(|d| d.steps[0].harness = wire::HarnessId::parse("codex").unwrap())),
             ("cannot run this workflow", Box::new(|d| d.steps[0].harness = wire::HarnessId::parse("opencode").unwrap())),
             ("five", Box::new(|d| d.trigger = wire::WorkflowTrigger::Schedule { cron: "0 9 * *".into(), timezone: "UTC".into() })),

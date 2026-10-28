@@ -254,6 +254,23 @@ pub struct BriefingRuntimePolicy {
     /// Only [`Self::compile_toolless`] sets it, and only with an empty scope,
     /// so it can narrow a run and never widen one.
     toolless: bool,
+    /// A workflow run's servers. Only [`Self::compile_workflow`] sets it, and
+    /// the sidecar then asks Bridge before any call that is not a read on a
+    /// read-granted server, so a write is decided in Rust, call by call.
+    workflow_servers: Option<Vec<WorkflowServerScope>>,
+}
+
+/// One connector server a workflow run may reach.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowServerScope {
+    /// The server's id in the harness's configuration (`claude.ai Slack`).
+    pub key: String,
+    /// The segment the harness puts in tool names (`claude_ai_Slack`).
+    pub wire: String,
+    pub read: bool,
+    /// `"ask"` or `"never"`.
+    pub write: &'static str,
 }
 
 /// What a single approved connector action is allowed to do.
@@ -425,6 +442,7 @@ impl BriefingRuntimePolicy {
             action_scope: None,
             read_scope_servers: Vec::new(),
             toolless: false,
+            workflow_servers: None,
         })
     }
 
@@ -463,7 +481,28 @@ impl BriefingRuntimePolicy {
             action_scope: None,
             read_scope_servers: scope,
             toolless: false,
+            workflow_servers: None,
         })
+    }
+
+    /// Compile a workflow run's policy: the briefing posture (built-ins denied
+    /// by name, nothing inherited, strict MCP) over the granted servers, with
+    /// writes asked of Bridge rather than refused.
+    pub fn compile_workflow(
+        servers: Vec<WorkflowServerScope>,
+        limits: wire::WorkBriefLimits,
+    ) -> Result<Self, BriefingUnsupported> {
+        let mut policy = Self::compile_scoped(Vec::new(), limits)?;
+        if servers.iter().any(|server| server.key.trim().is_empty() || server.wire.is_empty()) {
+            return Err(BriefingUnsupported::MalformedPolicy { detail: "a workflow server has an empty name".into() });
+        }
+        policy.workflow_servers = Some(servers);
+        Ok(policy)
+    }
+
+    /// The workflow scope the sidecar's gate enforces, when this is a workflow run.
+    pub fn workflow_servers(&self) -> Option<&[WorkflowServerScope]> {
+        self.workflow_servers.as_deref()
     }
 
     /// Compile a policy for a run that needs no tools of any kind: an answer

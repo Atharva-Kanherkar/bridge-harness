@@ -181,6 +181,9 @@ pub fn is_hidden_session_kind(kind: Option<&str>) -> bool {
         || kind == Some(crate::memory_consolidation::CONSOLIDATION_SESSION_KIND)
         || kind == Some(crate::chat_search::CHAT_SEARCH_SESSION_KIND)
         || kind == Some(crate::connector_runs_live::CONNECTOR_SESSION_KIND)
+        // Workflow runs stay out of chat lists, search and memory, but remain
+        // in state so the Workflows page can open one by id.
+        || kind == Some(crate::workflow_run::WORKFLOW_SESSION_KIND)
 }
 
 #[cfg(test)]

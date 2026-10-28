@@ -181,6 +181,7 @@ pub mod work_briefing_live;
 pub mod work_briefing_trigger;
 pub mod work_connectors;
 pub mod workflow_schedule;
+pub mod workflow_run;
 pub mod workflow_trigger;
 pub mod workflows;
 pub mod work_evidence;
