@@ -38,7 +38,7 @@ a Tauri command in `generate_handler!`, regenerated artifacts.
 
 | Method | Params (camelCase on the wire) | Result | Slice |
 | --- | --- | --- | --- |
-| `workflows/list_workflows` | none | `{ workflows: WorkflowSummary[] }` | P1.1 |
+| `workflows/list_workflows` | none | `{ workflows: WorkflowSummary[] }`; P1.2 adds `nextRunAt` and `lastRun` to each summary | P1.1 |
 | `workflows/get_workflow` | `{ workflowId }` | `{ workflow: Workflow }` | P1.1 |
 | `workflows/save_workflow` | `{ workflowId?: string, definition: WorkflowDefinition }` | `{ workflow: Workflow, needsApproval: boolean }` | P1.1 |
 | `workflows/approve_workflow` | `{ workflowId, revisionId }` | `{ workflow: Workflow }` | P1.1 |
@@ -123,7 +123,8 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 - F10. A claim while the workflow has an active run inserts a `skipped` run with `failure_code = 'overlap'` for schedules, and returns the active run for Run now.
 - F11. A crash after claim: once the 15-minute lease expires, a CAS reclaim marks the run `failed` with `lease_expired`. A worker whose lease was reclaimed cannot write a result.
 - F12. C4 and C5 hold under a fake clock.
-- F13. Disabled, unapproved, project-removed and globally paused workflows never claim. Run now on them is refused with the reason.
+- F13. Disabled, unapproved, project-removed and globally paused workflows never claim on a schedule, and Run now on them is refused with the reason. One exception: a manual dry run is allowed on an unapproved workflow, because a person started it and every write becomes a preview.
+- F13a. A schedule counts slots from its anchor: the latest of its last scheduled run's slot, the current revision's approval, the workflow's last change, and the moment Workflows were last unpaused. Slots before the anchor are never caught up, so turning a workflow back on does not replay the time it was off.
 - F14. The engine reads only the `workflows` tables. Native Claude Code and Codex schedules are never dispatched by it.
 - F15. The maintenance loop runs in the daemon host and in the embedded host. Closing the desktop window does not stop schedules under the daemon host.
 
@@ -197,6 +198,8 @@ Rust, in each module's `#[cfg(test)] mod tests`:
   - U-T5 `three_missed_slots_yield_one_catch_up_with_missed_slots_three` (F12, C5)
   - U-T6 `paused_disabled_unapproved_and_removed_workflows_never_claim` (F13)
   - U-T7 `the_database_refuses_a_second_active_run` (partial unique index)
+  - U-T10 `a_manual_dry_run_may_run_unapproved_and_a_schedule_may_not` (F13)
+  - U-T11 `slots_before_the_anchor_are_never_caught_up` (F13a)
   - U-T8 `run_now_and_schedules_insert_runs_only_through_claim` (F8)
   - U-T9 `native_automations_are_never_dispatched` (F14)
 - `workflow_run.rs` (fake adapter)
