@@ -41,16 +41,18 @@ turn-heavy replay.
 - First commit of a chat mounts only the newest `INITIAL_TRANSCRIPT_ROWS` (32)
   rows. Older rows hydrate in idle slices of `TRANSCRIPT_HYDRATE_CHUNK` (48)
   rows until all are mounted.
-- Hydration never unmounts a row that is already on screen: the boundary is a
-  count of hydrated *leading* rows, so new tail rows (streaming, optimistic
-  bubbles) do not shift it.
+- Hydration never remounts a row that is already on screen: the window is an
+  index into the head of the transcript, so new tail rows (streaming,
+  optimistic bubbles) do not move it.
 - Hydration is skipped entirely when there are at most `INITIAL_TRANSCRIPT_ROWS`
   rows.
 - Full mount happens immediately when `highlightEntryId` is set, because a
-  search/recall jump must land on a row that exists.
+  search/recall jump must land on a row that exists. Clearing the highlight
+  afterwards does not collapse the window it opened.
 - Full mount happens immediately when the chat has a remembered scroll position
   that is not pinned to the bottom, because a partial transcript cannot restore
-  that offset.
+  that offset. That answer is captured once per chat, so scrolling up later in
+  the session does not turn into a full mount.
 - Hydration uses `requestIdleCallback` when available and a `setTimeout`
   fallback otherwise (Safari/WKWebView and jsdom have no `requestIdleCallback`).
 - Reset is keyed by session, so switching chats starts from the newest rows
@@ -113,14 +115,14 @@ turn-heavy replay.
 
 `src/components/transcriptWindow.test.ts`
 
-- `initial window keeps the newest rows` — `initialHydratedCount(1500) = 1468`,
-  `initialHydratedCount(10) = 0`.
-- `forced window reveals everything` — `initialHydratedCount(1500, true) = 1500`.
-- `hydration grows by one chunk and clamps` — `nextHydratedCount(1468, 1500) =
-  1500`, `nextHydratedCount(0, 10) = 10`.
-- `the hydrated prefix is stable when tail rows arrive` — with 68 of 100 rows
-  hydrated, adding two tail rows keeps the first 68 rows hydrated, so no
-  already-mounted row is unmounted.
+- `keeps only the newest rows in the opening window` — `initialWindowStart(1500) = 1468`,
+  `initialWindowStart(10) = 0`.
+- `mounts everything when the window is forced` — `initialWindowStart(1500, true) = 0`.
+- `moves the start one chunk toward the head per slice` —
+  `nextWindowStart(1468) = 1420`, `nextWindowStart(20) = 0`.
+- `keeps the window start stable when tail rows arrive` — the start is seeded
+  at 68 for a 100-row chat and stays 68 as the live tail grows, so no
+  already-mounted row is remounted.
 
 `src/components/useInViewport.test.tsx`
 
@@ -144,10 +146,11 @@ turn-heavy replay.
 - `mounts only the newest rows first` — a 300-row history renders
   `INITIAL_TRANSCRIPT_ROWS` rows on the first commit.
 - `hydrates older rows in idle slices` — advancing the idle queue mounts the
-  rest in `TRANSCRIPT_HYDRATE_CHUNK` steps, never exceeding the chunk per step.
+  rest in `TRANSCRIPT_HYDRATE_CHUNK` steps, growing the mounted row count by at
+  most one chunk per step.
 - `mounts everything at once for a highlighted entry` — with
   `highlightEntryId` pointing at the oldest row, that row exists on the first
-  commit.
+  commit, and clearing the highlight leaves every row mounted.
 - `mounts everything at once for a remembered position`.
 - `keeps a streaming tail when older rows hydrate` — adding a tail row between
   slices does not unmount an already-hydrated row.
