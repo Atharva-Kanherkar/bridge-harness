@@ -43,9 +43,16 @@ cut locally from the first message, and finally the placeholder.
   the file is at most 32 MiB. Lines are prefix-checked before JSON parsing.
 - The transcript is found at `<projects>/<slug(cwd)>/<id>.jsonl` first, and only
   then by scanning project directories (20k+ on a real machine).
-- Provider and generated titles keep up to six words (a three-word cut turns
-  "Paper and slate launch video" into "Paper and slate"); derived headings stay
-  at three.
+- Generated titles keep up to six words (a three-word cut turns "Paper and
+  slate launch video" into "Paper and slate"); derived headings stay at three.
+  Claude's own titles are bounded by characters only (60, cut at a word with an
+  ellipsis), because Claude writes seven-word titles ("Show less option in chats
+  per project") that any word cap cuts mid-phrase.
+- Claude's generated title (`ai-title`) is used only when it shares a topic word
+  with the person's first or latest messages. On a copy of a real store Claude
+  titled chats from the context Bridge prepends ("Bridge session capabilities"
+  for a Dynamo bug hunt) and from resumes ("Continue work"). A `custom-title`
+  (the user renamed the session in Claude) is always used.
 
 ### Title job (queue)
 
@@ -108,7 +115,10 @@ cut locally from the first message, and finally the placeholder.
 - `a_title_in_the_tail_of_a_large_transcript_is_found`: about 1 MB of filler
   before an `ai-title`.
 - `a_transcript_is_found_through_its_cwd_slug`
-- `provider_titles_keep_up_to_six_words`; derived headings stay at three.
+- `provider_titles_keep_their_words_within_sixty_characters`; generated titles
+  stay at six words, derived headings at three.
+- `a_harness_title_must_share_a_topic_word_with_what_was_said`
+- `a_name_the_user_chose_in_claude_needs_no_grounding`
 - `a_generated_title_is_not_replaced_by_a_derived_one`
 - `a_provider_title_replaces_a_generated_one`
 - `a_provider_title_follows_claudes_newer_title`
