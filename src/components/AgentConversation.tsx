@@ -9,7 +9,7 @@ import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidel
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
-import { INITIAL_TRANSCRIPT_ROWS, useTranscriptWindow } from "./transcriptWindow";
+import { useTranscriptWindow } from "./transcriptWindow";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
@@ -34,6 +34,10 @@ import type { InteractionResolutionResult, QuestionAction, SessionEntryWindowSum
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
 type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
+
+// React warns when a layout effect is reached by `react-dom/server`. The effect
+// is still layout-only on the client, where the transcript actually lives.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
@@ -107,7 +111,6 @@ function TranscriptRow({ tone = "quiet", className, id, entryId, instant = false
     <motion.div
       id={id}
       data-entry-id={entryId}
-      data-transcript-row=""
       className={className}
       layout={instant ? false : "position"}
       initial={instant ? false : { opacity: 0, y: alert ? 12 : 6 }}
@@ -822,11 +825,21 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 /// `working`; both answer the same question.
 const ACTIVE_SESSION_STATUSES = new Set(["starting", "working", "waiting", "checkpointing", "resuming", "warm"]);
 
+// Stable defaults. A literal default array or function is a new identity on
+// every internal render, and each row's memo comparison would see a changed
+// prop even when nothing about the row changed. Hydration re-renders the
+// transcript once per slice, so an unstable default turns a 48-row slice into a
+// whole-transcript render.
+const NO_EVENTS: AgentEvent[] = [];
+const NO_PENDING_MESSAGES: readonly PendingMessage[] = [];
+const NO_PENDING_ADOPTIONS: WorkerRepositoryBinding[] = [];
+const NO_ANSWER: ResolveQuestion = async () => undefined;
+
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = NO_EVENTS, forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, now, onResolve, onAnswerQuestion = NO_ANSWER, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, pendingAdoptions = NO_PENDING_ADOPTIONS, onResolveAdoption, preview, readOnly = false, working, pendingMessages = NO_PENDING_MESSAGES, queuedFollowUps = 0, highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, onFollowUp, entryWindow, onForkSession, onRewindEntry, leafEntryIds, density = "comfortable", leading, trailing, empty }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; /** Show a delegated agent in the dock's Agents pane. */ onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: readonly PendingMessage[]; /** Follow-ups the session still holds in its queue, oldest delivered first. */ queuedFollowUps?: number; highlightEntryId?: string | null; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewindEntry?: (sessionId: string, entryId: string) => void; leafEntryIds?: string[]; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; /** A follow-up a visual proposes: fills the composer, never sends. */ onFollowUp?: (text: string) => void; entryWindow?: SessionEntryWindowSummary; density?: "comfortable" | "compact"; /** Drawn before the first row, inside the scroll: scrolls away with the head of the chat. */ leading?: ReactNode; /** Drawn after the last row, inside the scroll: a surface's own closing card. */ trailing?: ReactNode; /** Drawn instead of the new-chat greeting when there is nothing to show yet. */ empty?: ReactNode }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
-  useLayoutEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     const pending = paintFrames.current;
     pending.ids.push(...recordStreamCommit(events));
     pending.ids = pending.ids.slice(-512);
@@ -885,6 +898,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // its remembered offset by the same id, and the row window resets with it.
   const historySessionId = forestEntries?.[0]?.sessionId ?? (readOnly ? events[0]?.sessionId : undefined);
   const transcriptKey = session?.id ?? historySessionId ?? "preview";
+  const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   // A search/recall jump must land on a row that exists, and a chat reopening
   // at a remembered offset needs its full height to restore it. Every other
   // open mounts the newest rows and hydrates the rest above them.
@@ -892,15 +906,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // The remembered answer is captured once per chat: re-reading it every
   // render would turn a reader scrolling up mid-stream into a full mount of
   // the whole history, which is the stall this window exists to avoid.
-  const rememberedAway = useRef<{ key: string; away: boolean }>({ key: "", away: false });
-  if (rememberedAway.current.key !== transcriptKey) {
-    rememberedAway.current = { key: transcriptKey, away: readPositions.get(transcriptKey)?.pinned === false };
-  }
-  const fullTranscript = !!highlightEntryId || rememberedAway.current.away;
-  const windowStart = useTranscriptWindow(shownItems.length, transcriptKey, fullTranscript);
-  // Everything older than the opening window arrives without an entrance: it
-  // was always part of the conversation, it just had not been mounted yet.
-  const instantBefore = Math.max(0, shownItems.length - INITIAL_TRANSCRIPT_ROWS);
+  const rememberedAway = useMemo(() => readPositions.get(transcriptKey)?.pinned === false, [transcriptKey]);
+  const fullTranscript = !!highlightEntryId || rememberedAway;
+  const { start: windowStart, instantBefore } = useTranscriptWindow(
+    shownItems.length,
+    transcriptKey,
+    fullTranscript,
+    transcriptIsForThisSession,
+  );
 
   // Every file name in the transcript resolves against this one set; without
   // an opener the transcript renders exactly as before.
@@ -927,6 +940,15 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // the optimistic one: queued until the queue lets them go, steering until
   // the running step answers. A read-only history has nothing still in flight.
   const delivery = useMemo(() => readOnly ? new Map<string, DeliveryNote>() : deliveryNotes(visibleItems, queuedFollowUps, turnActive), [readOnly, visibleItems, queuedFollowUps, turnActive]);
+  // The fallback runtime for an error row. Memoized so an idle hydration slice,
+  // which changes none of its inputs, does not hand every mounted row a new
+  // object and defeat its memo comparison.
+  const errorContext: ErrorContext = useMemo(() => ({
+    harness: session?.harness ?? undefined,
+    provider: providerLabel(session?.harness),
+    snapshot: latestUsageSnapshot(events),
+    allowReset: session?.kind === "chat" && !readOnly && !preview,
+  }), [session?.harness, session?.kind, events, readOnly, preview]);
   // Hooks run unconditionally, ahead of the early returns below: the row
   // itself only renders past them, but its state still has to track every
   // render this component makes.
@@ -953,9 +975,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // nothing to draw.
   const answered = answeredPending(pendingMessages, visibleItems);
   const optimistic = pendingMessages.filter((message, index) => !answered.has(index) && (message.text.trim().length > 0 || (message.attachments?.length ?? 0) > 0));
-  // The session's *current* runtime, and its meter. Only a fallback: a row
-  // that knows which runtime raised it outranks both (see `ErrorCard`).
-  const errorContext: ErrorContext = { harness: session?.harness ?? undefined, provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events), allowReset: session?.kind === "chat" && !readOnly && !preview };
   // Content-addressed, occurrence-counted keys for the optimistic bubbles: when
   // an earlier pending message lands as a real message, the bubbles after it
   // keep their identity — one ghost fades, and no survivor flips its text.
@@ -980,7 +999,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // Hydration is a layout change above the reader: when they are pinned to the
   // bottom it must re-place them there, and when they scrolled up it must not.
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}:${shownItems.length - windowStart}`;
-  const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   // The reply whose action bar stays visible: the last settled assistant message.
   let latestReplyKey: string | undefined;
@@ -989,20 +1007,31 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     if (item.type === "message" && item.role === "assistant") latestReplyKey = item.key;
   }
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
-  const renderEntry = (entry: Rendered, instant = false) => entry.kind === "group"
-    ? <TranscriptRow key={entry.key} instant={instant}><ActivityGroup items={entry.items} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/></TranscriptRow>
-    : entry.kind === "raw-group" ? <TranscriptRow key={entry.key} instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>
-    : <TranscriptRow
-        key={entry.key}
-        instant={instant}
-        tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
-        id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
-        entryId={entry.item.entryId}
-        className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
-      >
-        <ItemView item={entry.item} sessionId={session?.id} delivery={delivery.get(entry.item.key)} latest={entry.item.key === latestReplyKey} readOnly={readOnly} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
-      </TranscriptRow>;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
+  const renderEntry = (entry: Rendered, instant = false) => <TranscriptEntry
+    key={entry.key}
+    entry={entry}
+    instant={instant}
+    highlighted={!!highlightEntryId && entry.kind === "item" && entry.item.entryId === highlightEntryId}
+    sessionId={session?.id}
+    delivery={entry.kind === "item" ? delivery.get(entry.item.key) : undefined}
+    latest={entry.kind === "item" && entry.item.key === latestReplyKey}
+    readOnly={readOnly}
+    turnActive={turnActive}
+    autoExpandEditActivity={autoExpandEditActivity}
+    onResolve={onResolve}
+    onAnswerQuestion={onAnswerQuestion}
+    onOpenSession={onOpenSession}
+    onRefreshBase={readOnly ? undefined : onRefreshBase}
+    onRetryWorker={readOnly ? undefined : onRetryWorker}
+    onOpenAgent={onOpenAgent}
+    onRetryCompaction={readOnly ? undefined : onRetryCompaction}
+    onRemember={readOnly ? undefined : onRemember}
+    onForkSession={readOnly ? undefined : onForkSession}
+    onRewind={readOnly ? undefined : onRewindEntry}
+    rewindable={entry.kind === "item" && !!leafEntryIds?.includes(entry.item.entryId ?? "")}
+    errorContext={errorContext}
+  />;
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} windowStart={windowStart} total={shownItems.length} compensate={!fullTranscript} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth [overflow-anchor:none]",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -1257,7 +1286,7 @@ function scrollInstantly(el: HTMLElement, top: number): number {
   return target;
 }
 
-function ScrollFollow({ sessionKey, populated, signature, className, children }: { sessionKey: string; populated: boolean; signature: string; className?: string; children: React.ReactNode }) {
+function ScrollFollow({ sessionKey, populated, signature, windowStart, total, compensate, className, children }: { sessionKey: string; populated: boolean; signature: string; windowStart: number; total: number; compensate: boolean; className?: string; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const pinned = useRef(true);
   // The chat this instance's state describes, and whether that chat has had its
@@ -1270,11 +1299,17 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
   const placedTop = useRef<number | null>(null);
   // How long a scroll counts as still settling, and so as still ours to finish.
   const settleUntil = useRef(0);
+  // The previous commit's head window and height. Hydration adds rows above
+  // the reader; scroll anchoring is off (WebKit does not implement it), so the
+  // height that arrived is added to `scrollTop` before paint.
+  const previousFrame = useRef<{ key: string; windowStart: number; total: number; height: number } | null>(null);
 
   const place = useCallback((el: HTMLDivElement, top: number, pin: boolean) => {
     pinned.current = pin;
     settleUntil.current = Date.now() + SETTLE_MS;
-    placedTop.current = scrollInstantly(el, top);
+    const target = scrollInstantly(el, top);
+    placedTop.current = target;
+    return target;
   }, []);
 
   /// The opening placement: the last-read position when this chat has one, the
@@ -1314,9 +1349,33 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
       landed.current = false;
       pinned.current = true;
       placedTop.current = null;
+      previousFrame.current = null;
     }
     if (populated && !landed.current) land(el);
   }, [land, sessionKey, populated]);
+
+  // Hydration prepends rows. Keep the reader's text where it was by adding the
+  // height that arrived above them, before the frame paints. Chromium can do
+  // this with scroll anchoring, but WKWebView and WebKitGTK do not implement
+  // it, so the scroller disables anchoring and this runs on every engine.
+  useIsomorphicLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const height = el.scrollHeight;
+    const previous = previousFrame.current;
+    previousFrame.current = { key: sessionKey, windowStart, total, height };
+    if (!previous || previous.key !== sessionKey) return;
+    // A shrink changes the branch; it is not history arriving above a reader.
+    // A full mount is a jump to a row, not hydration.
+    if (total < previous.total || windowStart >= previous.windowStart) return;
+    if (!compensate || pinned.current) return;
+    const delta = height - previous.height;
+    if (delta <= 0) return;
+    const target = place(el, el.scrollTop + delta, false);
+    // The reader did not leave their text; the transcript moved under them.
+    // Remember the offset that still points at that text.
+    rememberReadPosition(sessionKey, { top: target, pinned: false });
+  });
 
   // The opening placement's second chance, and live follow after it: while the
   // reader is at the bottom, every new item and every streamed character keeps
@@ -1494,7 +1553,7 @@ function CopyReplyButton({ text }: { text: string }) {
   </ReplyAction>;
 }
 
-function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
+const ItemView = memo(function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, autoExpandEditActivity, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onOpenAgent, onRetryCompaction, onRemember, onForkSession, onRewind, rewindable, errorContext }: { item: ConversationItem; sessionId?: string; delivery?: DeliveryNote; latest?: boolean; readOnly?: boolean; turnActive: boolean; autoExpandEditActivity: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onOpenAgent?: (childSessionId: string) => void; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; onForkSession?: (sessionId: string, entryId: string) => void; onRewind?: (sessionId: string, entryId: string) => void; rewindable?: boolean; errorContext?: ErrorContext }) {
   if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} sessionId={sessionId} delivery={delivery} latest={latest} onRemember={onRemember} onForkSession={onForkSession} onRewind={onRewind} rewindable={rewindable}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
@@ -1519,7 +1578,31 @@ function ItemView({ item, sessionId, delivery, latest, readOnly, turnActive, aut
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
   if (isVisualItem(item)) return <VisualCall item={item} turnActive={turnActive}/>;
   return <ActivityGroup items={[item]} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/>;
-}
+});
+
+/// One row of the transcript. Memoized as a whole: an idle slice mounts a few
+/// older rows, and every row already on screen must not be re-rendered just
+/// because the parent mapped over a longer window. The entry object and every
+/// prop below are stable across that slice; the new rows are the only work.
+const TranscriptEntry = memo(function TranscriptEntry({ entry, instant, highlighted, ...itemProps }: {
+  entry: Rendered;
+  instant: boolean;
+  highlighted: boolean;
+} & Omit<React.ComponentProps<typeof ItemView>, "item">) {
+  if (entry.kind === "group") return <TranscriptRow instant={instant}>
+    <ActivityGroup items={entry.items} turnActive={itemProps.turnActive} autoExpandEditActivity={itemProps.autoExpandEditActivity}/>
+  </TranscriptRow>;
+  if (entry.kind === "raw-group") return <TranscriptRow instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>;
+  return <TranscriptRow
+    instant={instant}
+    tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
+    id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
+    entryId={entry.item.entryId}
+    className={highlighted ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
+  >
+    <ItemView {...itemProps} item={entry.item}/>
+  </TranscriptRow>;
+});
 
 /// A failure, stated plainly.
 ///

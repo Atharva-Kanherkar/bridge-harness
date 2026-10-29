@@ -33,12 +33,30 @@ interface WindowState {
   seeded: boolean;
   /** First mounted row. Rows before it are older history, not yet mounted. */
   start: number;
+  /**
+   * The boundary the opening window had when this chat first rendered rows.
+   * Tail growth must not move it: a row that was already below the opening
+   * window keeps its entrance animation instead of flipping to instant.
+   */
+  instantBefore: number;
 }
 
 function windowState(key: string, total: number, full: boolean): WindowState {
   // `seeded` is what makes history that arrives after the first commit still
   // open on its newest rows instead of mounting all at once.
-  return { key, seeded: total > 0, start: initialWindowStart(total, full) };
+  return {
+    key,
+    seeded: total > 0,
+    start: initialWindowStart(total, full),
+    instantBefore: Math.max(0, total - INITIAL_TRANSCRIPT_ROWS),
+  };
+}
+
+export interface TranscriptWindow {
+  /** Index of the first row to mount. */
+  start: number;
+  /** Rows before this index arrived with the opening window. */
+  instantBefore: number;
 }
 
 type IdleHandle = { kind: "idle" | "timeout"; id: number };
@@ -71,8 +89,13 @@ function cancelIdle(handle: IdleHandle): void {
  * `full` mounts everything at once (start zero). Callers use it for a row that
  * must exist on the first commit (a search jump) and for a chat reopening at a
  * remembered offset, which a partial transcript cannot restore.
+ *
+ * `ready` says the rows in `total` belong to `key`. Selecting a chat swaps the
+ * session a commit before its forest follows, and seeding from the previous
+ * chat's row count is how a short chat used to open a long one fully mounted.
+ * Until the forest catches up the window keeps describing the rows it can see.
  */
-export function useTranscriptWindow(total: number, key: string, full: boolean): number {
+export function useTranscriptWindow(total: number, key: string, full: boolean, ready = true): TranscriptWindow {
   const [state, setState] = useState(() => windowState(key, total, full));
   let current = state;
   // Adjust during render, React's own pattern for state derived from props: a
@@ -80,30 +103,43 @@ export function useTranscriptWindow(total: number, key: string, full: boolean): 
   // newest rows in this commit, not one commit later. A forced window is
   // remembered, not re-derived: clearing a search highlight must not collapse
   // the history it just opened, or yank the row the reader jumped to.
-  if (current.key !== key || (!current.seeded && total > 0) || (full && current.start !== 0)) {
-    current = full
-      ? { key, seeded: true, start: 0 }
-      : windowState(key, total, false);
+  if (ready && (current.key !== key || (!current.seeded && total > 0) || (full && current.start !== 0))) {
+    current = windowState(key, total, full);
     setState(current);
   }
   // A rewind can shrink the branch under the window. Clamp to the opening
   // window rather than to `total`: clamping to the row count would leave no
-  // rows at all when the branch shrinks past the stored start.
-  const start = full ? 0 : Math.min(current.start, initialWindowStart(total));
-  const startRef = useRef(start);
-  startRef.current = start;
+  // rows at all when the branch shrinks past the stored start. Write the clamp
+  // into state so the next idle slice starts from the rows that are actually
+  // mounted; reading only the clamped value leaves the queue stalled forever.
+  //
+  // While the forest still belongs to the previous chat, `full` describes the
+  // chat being opened, not the rows on screen. Applying it early would mount
+  // every old row in the mismatch commit.
+  const ceiling = !ready ? initialWindowStart(total) : full ? 0 : initialWindowStart(total);
+  const start = Math.min(current.start, ceiling);
+  if (ready && start !== current.start) {
+    current = { ...current, start };
+    setState(current);
+  }
+  // The idle callback reads the latest total without re-arming on every
+  // streamed character: a tail row must not cancel and reschedule hydration.
+  const totalRef = useRef(total);
+  useEffect(() => { totalRef.current = total; });
 
   useEffect(() => {
-    if (startRef.current <= 0) return;
+    if (!ready || start <= 0) return;
     let cancelled = false;
     const handle = scheduleIdle(() => {
       if (cancelled) return;
-      setState(previous => previous.key === key && previous.start > 0
-        ? { ...previous, start: nextWindowStart(previous.start) }
-        : previous);
+      setState(previous => {
+        if (previous.key !== key || previous.start <= 0) return previous;
+        const next = nextWindowStart(Math.min(previous.start, initialWindowStart(totalRef.current)));
+        return next === previous.start ? previous : { ...previous, start: next };
+      });
     });
     return () => { cancelled = true; cancelIdle(handle); };
-  }, [start, key]);
+  }, [start, key, ready]);
 
-  return start;
+  return { start, instantBefore: current.instantBefore };
 }

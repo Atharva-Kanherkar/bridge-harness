@@ -29,7 +29,16 @@ const history = (count: number): SessionEntry[] => Array.from({ length: count },
   tokenEstimate: null, createdAt: "now",
 }));
 
-const rowCount = (container: HTMLElement) => container.querySelectorAll("[data-transcript-row]").length;
+const chat = (id: string): Session => ({ ...session, id });
+
+const historyFor = (sessionId: string, count: number): SessionEntry[] => Array.from({ length: count }, (_, index) => ({
+  id: `${sessionId}${index}`, sessionId, parentEntryId: index === 0 ? null : `${sessionId}${index - 1}`, sequence: index + 1,
+  semanticSchemaVersion: 2, kind: index % 2 === 0 ? "user.message" : "assistant.message",
+  payload: { text: `Message ${index}` }, providerEventId: null, contextVisibility: "eligible",
+  tokenEstimate: null, createdAt: "now",
+}));
+
+const rowCount = (container: HTMLElement) => container.querySelectorAll("[data-entry-id]").length;
 
 /// The idle fallback is a frame-spaced timeout, so a real 40ms wait lets one
 /// hydration slice commit.
@@ -56,6 +65,11 @@ async function slice() {
   const [id, task] = next.value;
   pendingIdle.delete(id);
   await act(async () => { task(); });
+}
+
+async function drain() {
+  for (let guard = 0; pendingIdle.size > 0 && guard < 100; guard += 1) await slice();
+  if (pendingIdle.size > 0) throw new Error("hydration did not finish");
 }
 
 afterEach(() => {
@@ -183,6 +197,64 @@ describe("AgentConversation history loading", () => {
       // The row the slice mounted is the same node: a tail arrival must not
       // remount history that is already on screen.
       expect(container.querySelector('[data-entry-id="h250"]')).toBe(hydrated);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("opens a long chat on its newest rows when switching from a short one", async () => {
+    manualIdle();
+    const short = historyFor("a", 10);
+    const long = historyFor("b", 300);
+    const props = { onResolve: () => undefined };
+    const { container, root, cleanup } = await render(
+      <AgentConversation {...props} session={chat("a")} forestEntries={short} activeLeafId="a9" />,
+    );
+    try {
+      // The session swaps one commit before the new forest does.
+      await act(async () => root.render(
+        <AgentConversation {...props} session={chat("b")} forestEntries={short} activeLeafId="a9" />,
+      ));
+      await act(async () => root.render(
+        <AgentConversation {...props} session={chat("b")} forestEntries={long} activeLeafId="b299" />,
+      ));
+      // Rows from the previous chat can still be exiting; count only the new
+      // chat's rows.
+      const longRows = () => container.querySelectorAll('[data-entry-id^="b"]').length;
+      expect(longRows()).toBe(INITIAL_TRANSCRIPT_ROWS);
+      expect(container.querySelector('[data-entry-id="b299"]')).not.toBeNull();
+      expect(container.querySelector('[data-entry-id="b0"]')).toBeNull();
+
+      await drain();
+      expect(longRows()).toBe(300);
+      expect(container.querySelector('[data-entry-id="b0"]')).not.toBeNull();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("finishes hydrating after the branch shrinks past the stored start", async () => {
+    manualIdle();
+    const long = historyFor("b", 600);
+    const short = historyFor("b", 200);
+    const props = { onResolve: () => undefined, session: chat("b") };
+    const { container, root, cleanup } = await render(
+      <AgentConversation {...props} forestEntries={long} activeLeafId="b599" />,
+    );
+    try {
+      expect(rowCount(container)).toBe(INITIAL_TRANSCRIPT_ROWS);
+      await act(async () => root.render(
+        <AgentConversation {...props} forestEntries={short} activeLeafId="b199" />,
+      ));
+      // Still the newest rows of the shorter branch, not the rows that used
+      // to sit at the old start and no longer exist.
+      expect(container.querySelector('[data-entry-id="b199"]')).not.toBeNull();
+      expect(container.querySelector('[data-entry-id="b0"]')).toBeNull();
+
+      await drain();
+      // Reaching the first row proves the idle queue advanced from the
+      // clamped start instead of stalling on the old 568.
+      expect(container.querySelector('[data-entry-id="b0"]')).not.toBeNull();
     } finally {
       await cleanup();
     }

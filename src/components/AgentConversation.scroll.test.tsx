@@ -281,7 +281,7 @@ describe("AgentConversation scroll placement", () => {
     }
   });
 
-  it("leaves a reader who scrolled up exactly where they were while rows hydrate", async () => {
+  it("keeps a reader who scrolled up on the same text while rows hydrate above", async () => {
     const session = chat("reading");
     const entries = history("reading", 300);
     contentHeight = VIEWPORT + INITIAL_TRANSCRIPT_ROWS * 120;
@@ -290,9 +290,23 @@ describe("AgentConversation scroll placement", () => {
     const el = container.firstElementChild as HTMLDivElement;
     await scrollTo(el, 120);
 
+    // The slice adds 48 rows above the reader. Anchoring is off because the
+    // webviews Bridge ships on do not implement it, so the added height moves
+    // the offset by the same amount before paint.
     contentHeight = VIEWPORT + 80 * 120;
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
-    expect(el.scrollTop).toBe(120);
+    const kept = 120 + (80 - INITIAL_TRANSCRIPT_ROWS) * 120;
+    expect(el.scrollTop).toBe(kept);
+
+    // The remembered offset follows the same text, not the old pixel. Reopening
+    // this chat must land where the reader actually is.
+    contentHeight = VIEWPORT + 300 * 120;
+    const other = chat("elsewhere");
+    await act(async () => root.render(<AgentConversation onResolve={() => undefined} events={[]}
+      session={other} forestEntries={history("elsewhere", 10)} activeLeafId="elsewhere-e9" />));
+    await act(async () => root.render(<AgentConversation onResolve={() => undefined} events={[]}
+      session={session} forestEntries={entries} activeLeafId="reading-e299" />));
+    expect(el.scrollTop).toBe(kept);
   });
 
   it("mounts the whole transcript when reopening at a remembered position", async () => {
@@ -313,7 +327,7 @@ describe("AgentConversation scroll placement", () => {
     // cannot restore a pixel offset that sits above what it mounted.
     await act(async () => root.render(<AgentConversation onResolve={() => undefined} events={[]}
       session={session} forestEntries={entries} activeLeafId="remembered-e299" />));
-    expect(container.querySelectorAll("[data-transcript-row]")).toHaveLength(300);
+    expect(container.querySelectorAll("[data-entry-id]")).toHaveLength(300);
     expect(el.scrollTop).toBe(500);
   });
 });
