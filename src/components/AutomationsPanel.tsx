@@ -25,7 +25,8 @@ function relativeTime(epochMs: number | null, now: number): string | null {
 
 type DraftState = SaveAutomationParams & { mode: "create" | "edit" };
 
-export function AutomationsPanel({ initialCatalog }: { initialCatalog?: AutomationCatalog } = {}) {
+/** `embedded` renders inside the Workflows page: no page frame, a quiet header. */
+export function AutomationsPanel({ initialCatalog, embedded = false }: { initialCatalog?: AutomationCatalog; embedded?: boolean } = {}) {
   const [catalog, setCatalog] = useState<AutomationCatalog | undefined>(initialCatalog);
   const [provider, setProvider] = useState<AutomationProvider | "all">("all");
   const [status, setStatus] = useState<UnifiedAutomation["status"] | "all">("all");
@@ -104,12 +105,15 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
     }
   };
 
-  return <div className="h-full min-h-0 overflow-y-auto">
-    <div className={SCREEN_CONTENT}>
-      <ScreenHeading title="Scheduled tasks" description="Run recurring work using schedules supported by your coding agents." action={<>
-        {canCreateClaude && <Button size="xs" disabled={busy} onClick={openCreate}><Plus size={13}/>New Claude automation</Button>}
-        <Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={13}/>Refresh</Button>
-      </>} />
+  const actions = <>
+    {canCreateClaude && <Button size="xs" disabled={busy} onClick={openCreate}><Plus size={13}/>New Claude automation</Button>}
+    <Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={13}/>Refresh</Button>
+  </>;
+  return <div className={embedded ? "" : "h-full min-h-0 overflow-y-auto"}>
+    <div className={embedded ? "" : SCREEN_CONTENT}>
+      {embedded
+        ? <div className="flex flex-wrap items-center gap-3"><p className="min-w-0 flex-1 text-ui text-muted-foreground">Schedules your coding agents keep themselves. Their own apps run them; Bridge lists and edits them.</p>{actions}</div>
+        : <ScreenHeading title="Scheduled tasks" description="Run recurring work using schedules supported by your coding agents." action={actions} />}
 
       <div className="mt-5 flex flex-wrap gap-2">
         <div className="u-segmented flex-wrap w-fit" aria-label="Filter automations by provider">{(["all", ...(catalog?.providers ?? []).map(state => state.provider)] as Array<AutomationProvider | "all">).map(value => <button type="button" key={value} data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All providers" : providerLabel(value)}</button>)}</div>

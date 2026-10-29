@@ -87,8 +87,9 @@ describe("shell flags", () => {
     expect(source).toContain('onOpenMarketplace={() => setView("marketplace")}');
     expect(source).toContain('onOpenMemory={() => setView("memory")}');
     expect(source).toContain('if (view !== "memory") setMemoryDraft(null)');
-    expect(source).toContain('onOpenAutomations={() => setView("automations")}');
-    expect(source).toContain('view === "automations"');
+    expect(source).toContain('onOpenWorkflows={() => setView("workflows")}');
+    expect(source).toContain('view === "workflows"');
+    expect(source).not.toContain("Scheduled tasks");
     expect(source).toContain("chromeFullscreen");
     expect(source).toContain("data-flush-window");
     expect(source).toContain("setLayoutFullscreenDocument");

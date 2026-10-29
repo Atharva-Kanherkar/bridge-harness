@@ -145,7 +145,7 @@ import { createBridgeQueryClient } from "./queryClient";
 import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
 
-const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
+const WorkflowsScreen = lazy(() => import("./components/WorkflowsScreen").then(module => ({ default: module.WorkflowsScreen })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
@@ -3056,7 +3056,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "workflows" ? "Workflows" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3119,8 +3119,8 @@ function AppContent() {
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
       onOpenSavedSetups={() => setView("saved-setups")}
-      onOpenAutomations={() => setView("automations")}
-      automationsActive={view === "automations"}
+      onOpenWorkflows={() => setView("workflows")}
+      workflowsActive={view === "workflows"}
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
@@ -3196,7 +3196,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening scheduled tasks…"/>}><AutomationsPanel /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}

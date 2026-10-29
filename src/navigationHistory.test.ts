@@ -36,11 +36,11 @@ describe("placesEqual", () => {
     expect(placesEqual(workspace("a"), { view: "work", sessionId: "a", paradigm: "single" })).toBe(false);
   });
 
-  it("keeps scheduled tasks and contextual tools separate from the marketplace", () => {
-    const views: Record<AppView, true> = { workspace: true, "agent-fleet": true, "mission-control": true, work: true, projects: true, memory: true, marketplace: true, usage: true, gitplace: true, settings: true, automations: true, archives: true, "saved-setups": true, "briefing-settings": true };
-    expect(Object.keys(views)).toContain("automations");
+  it("keeps workflows and contextual tools separate from the marketplace", () => {
+    const views: Record<AppView, true> = { workspace: true, "agent-fleet": true, "mission-control": true, work: true, projects: true, memory: true, marketplace: true, usage: true, gitplace: true, settings: true, workflows: true, archives: true, "saved-setups": true, "briefing-settings": true };
+    expect(Object.keys(views)).toContain("workflows");
     const marketplace: AppPlace = { view: "marketplace", sessionId: null, paradigm: "single" };
-    const scheduled: AppPlace = { ...marketplace, view: "automations" };
+    const scheduled: AppPlace = { ...marketplace, view: "workflows" };
     expect(recordPlace([marketplace], 0, scheduled).stack).toEqual([marketplace, scheduled]);
   });
 });
