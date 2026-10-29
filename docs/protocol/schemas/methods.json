@@ -1869,6 +1869,20 @@
       "method": "workflows/always_allow_tool",
       "paramsSchema": "always-allow-tool-params.json",
       "resultSchema": "always-allow-tool-result.json"
+    },
+    {
+      "command": "draft_workflow_from_text",
+      "domain": "workflows",
+      "method": "workflows/draft_workflow_from_text",
+      "paramsSchema": "draft-workflow-from-text-params.json",
+      "resultSchema": "workflow-draft-result.json"
+    },
+    {
+      "command": "draft_workflow_from_session",
+      "domain": "workflows",
+      "method": "workflows/draft_workflow_from_session",
+      "paramsSchema": "draft-workflow-from-session-params.json",
+      "resultSchema": "workflow-draft-result.json"
     }
   ],
   "protocolVersion": {

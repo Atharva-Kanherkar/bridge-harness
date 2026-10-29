@@ -85,6 +85,40 @@ describe("WorkflowsScreen", () => {
   });
 });
 
+describe("drafting", () => {
+  it("opens a prefilled editor from a sentence and saves nothing until confirmed", async () => {
+    const draft = vi.spyOn(bridgeApi, "draftWorkflowFromText");
+    const save = vi.spyOn(bridgeApi, "saveWorkflow");
+    await act(async () => root.render(<WorkflowsScreen projects={[]} onContinueInChat={() => {}} />));
+    await settle();
+    const input = document.querySelector<HTMLInputElement>('[aria-label="Describe a job"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => { setter.call(input, "Every Friday summarise my invoices"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => button("Draft it")!.click());
+    await settle();
+    expect(draft).toHaveBeenCalledWith("Every Friday summarise my invoices");
+    expect(document.body.textContent).toContain("Drafted workflow");
+    expect(document.querySelector('[aria-label="Draft notes"]')?.textContent).toContain("Fill in the rest below");
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("opens a draft made elsewhere once, then hands it back", async () => {
+    const opened = vi.fn();
+    const { draft } = await bridgeApi.draftWorkflowFromText("Post release notes to #releases");
+    await act(async () => root.render(<WorkflowsScreen projects={[]} onContinueInChat={() => {}} initialDraft={draft} onDraftOpened={opened} />));
+    await settle();
+    expect(document.body.textContent).toContain("Drafted workflow");
+    expect(opened).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers Save as workflow in the sidebar chat menu", () => {
+    const sidebar = readFileSync(resolve(process.cwd(), "src/components/BridgeSidebar.tsx"), "utf8");
+    const app = readFileSync(resolve(process.cwd(), "src/App.tsx"), "utf8");
+    expect(sidebar).toContain("Save as workflow…");
+    expect(app).toContain("onSaveChatAsWorkflow={chat => void saveChatAsWorkflow(chat)}");
+  });
+});
+
 describe("harnessRefusal", () => {
   const options: WorkflowOptions = {
     harnesses: [

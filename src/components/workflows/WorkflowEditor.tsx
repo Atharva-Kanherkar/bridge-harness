@@ -39,12 +39,14 @@ export function harnessRefusal(options: WorkflowOptions | null, harnessId: strin
   return null;
 }
 
-export function WorkflowEditor({ open, workflow, initial, options, projects, busy, error, onCancel, onSubmit }: {
+export function WorkflowEditor({ open, workflow, initial, notes = [], options, projects, busy, error, onCancel, onSubmit }: {
   open: boolean;
   /** The workflow being edited, or null to create one. */
   workflow: Workflow | null;
   /** A draft to start from (P1.5), when not editing. */
   initial?: WorkflowDefinition | null;
+  /** What drafting could not do, shown above the form. */
+  notes?: string[];
   options: WorkflowOptions | null;
   projects: Project[];
   busy: boolean;
@@ -82,10 +84,11 @@ export function WorkflowEditor({ open, workflow, initial, options, projects, bus
   return <Dialog open={open} onOpenChange={next => { if (!next && !busy) onCancel(); }}>
     {open && <DialogContent className="sm:max-w-2xl" showCloseButton={!busy}>
       <DialogHeader>
-        <DialogTitle>{workflow ? "Edit workflow" : "New workflow"}</DialogTitle>
+        <DialogTitle>{workflow ? "Edit workflow" : initial ? "Drafted workflow" : "New workflow"}</DialogTitle>
         <DialogDescription>Check what it may use before you approve it. A change that lets it touch more asks for approval again.</DialogDescription>
       </DialogHeader>
       <DialogPanel className="min-w-0 space-y-3">
+        {notes.length > 0 && <ul aria-label="Draft notes" className="space-y-1 rounded-xl border border-border bg-muted px-3 py-2 text-caption text-muted-foreground">{notes.map(note => <li key={note}>{note}</li>)}</ul>}
         <label className={FIELD}>Name<Input aria-label="Workflow name" className="mt-1" value={definition.name} onChange={event => update({ name: event.target.value })}/></label>
 
         <div className="grid gap-3 sm:grid-cols-2">

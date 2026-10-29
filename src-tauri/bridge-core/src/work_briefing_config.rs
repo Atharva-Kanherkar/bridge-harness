@@ -184,6 +184,7 @@ pub fn is_hidden_session_kind(kind: Option<&str>) -> bool {
         // Workflow runs stay out of chat lists, search and memory, but remain
         // in state so the Workflows page can open one by id.
         || kind == Some(crate::workflow_run::WORKFLOW_SESSION_KIND)
+        || kind == Some(crate::workflow_draft::DRAFT_SESSION_KIND)
 }
 
 #[cfg(test)]

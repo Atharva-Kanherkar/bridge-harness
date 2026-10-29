@@ -353,6 +353,8 @@ methods![
     (ReadWorkflowSettings, "workflows", "read_workflow_settings"),
     (WriteWorkflowSettings, "workflows", "write_workflow_settings"),
     (AlwaysAllowTool, "workflows", "always_allow_tool"),
+    (DraftWorkflowFromText, "workflows", "draft_workflow_from_text"),
+    (DraftWorkflowFromSession, "workflows", "draft_workflow_from_session"),
 ];
 
 impl MethodName {

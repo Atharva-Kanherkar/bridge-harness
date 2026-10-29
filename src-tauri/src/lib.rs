@@ -733,6 +733,32 @@ async fn list_workflow_runs(
 }
 
 #[tauri::command]
+async fn draft_workflow_from_text(
+    text: String,
+    project_id: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowDraftResult, BridgeError> {
+    let core = state.inner().clone();
+    // One model turn: a provider process, so off the async runtime.
+    blocking("Workflow draft", move || {
+        api::draft_workflow_from_text(&core, &bridge_protocol::messages::DraftWorkflowFromTextParams { text, project_id })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn draft_workflow_from_session(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkflowDraftResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workflow draft", move || {
+        api::draft_workflow_from_session(&core, &bridge_protocol::messages::DraftWorkflowFromSessionParams { session_id })
+    })
+    .await
+}
+
+#[tauri::command]
 async fn always_allow_tool(
     workflow_id: String,
     session_id: String,
@@ -3155,6 +3181,8 @@ pub fn run() -> i32 {
             read_workflow_settings,
             write_workflow_settings,
             always_allow_tool,
+            draft_workflow_from_text,
+            draft_workflow_from_session,
             get_state,
             get_session_forest,
             get_session_forest_digest,

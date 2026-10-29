@@ -1,6 +1,6 @@
 import { mockDefaultsView, mockSaveDefaults, mockResolveSettings, mockSessionSettings } from "./chatDefaultsMock";
 import type { ChatDefaultsView, SaveChatDefaultsParams, ResolveChatSettingsParams, ResolvedChatSettings, CreateConfiguredChatParams, ConfiguredChatResult, ChatSessionSettings, UpdateChatOptionsParams } from "./protocol/generated/protocol";
-import type { AlwaysAllowToolResult, RunWorkflowResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
+import type { AlwaysAllowToolResult, RunWorkflowResult, WorkflowDraftResult, SaveWorkflowResult, Workflow, WorkflowDefinition, WorkflowList, WorkflowOptions, WorkflowRun, WorkflowRunList, WorkflowRunSnapshot, WorkflowSettings, WorkflowSettingsSnapshot, WorkflowSnapshot, WorkflowSummary } from "./protocol/generated/protocol";
 import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
 import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
@@ -1973,6 +1973,29 @@ export const bridgeApi = {
     if (settings.quotaReservePercent < 0 || settings.quotaReservePercent > 90) throw new Error("The quota reserve is between 0 and 90 percent");
     mockWorkflowSettings = { configured: true, settings: { ...settings } };
     return structuredClone(mockWorkflowSettings);
+  },
+  // Draft a workflow from a sentence: a tool-less model turn, then Rust's own
+  // rules decide what survives. Nothing is saved.
+  draftWorkflowFromText: async (text: string, projectId: string | null = null): Promise<WorkflowDraftResult> => {
+    if (hasBackend()) return call("workflows/draft_workflow_from_text", { text, projectId });
+    const definition = structuredClone(mockWorkflowDefinition);
+    definition.name = text.split(/\s+/).slice(0, 6).join(" ");
+    definition.steps[0].instructions = text;
+    definition.trigger = { kind: "manual" };
+    definition.grants = [];
+    definition.expectedResult = "";
+    return { draft: { definition, notes: ["Drafting needs the desktop app, so this is your sentence as written. Fill in the rest below."] } };
+  },
+  // Draft from a chat: its first request, its agent, and the servers it used.
+  draftWorkflowFromSession: async (sessionId: string): Promise<WorkflowDraftResult> => {
+    if (hasBackend()) return call("workflows/draft_workflow_from_session", { sessionId });
+    const session = mockState.sessions.find(candidate => candidate.id === sessionId);
+    if (!session) throw new Error(`chat ${sessionId} does not exist`);
+    const definition = structuredClone(mockWorkflowDefinition);
+    definition.name = session.title?.trim() || session.label;
+    definition.trigger = { kind: "manual" };
+    definition.grants = [];
+    return { draft: { definition, notes: [`Made from the chat "${definition.name}". Check the instructions read as a standing job, then set when it runs.`] } };
   },
   // "Always allow for this workflow" on a run's pending card: answers the card
   // and records the tool in a new, already-approved revision.
