@@ -152,7 +152,8 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 
 - F30. A draft is never persisted until the user saves the prefilled form.
 - F31. A sentence naming an app with no connected server yields a "connect X first" note, not a grant.
-- F32. "Save as workflow" grants only tools the chat called, with their observed access class.
+- F32. "Save as workflow" grants only servers whose tools the chat called, read when it called a read-class tool and write-asking when it called a write-class one. It calls no model: the instructions are the chat's first request, the agent and model are the chat's. It sits in the sidebar chat menu beside "Fork chat…".
+- F32a. A drafted workflow grants `write: "ask"` only when the sentence carries a word that asks to change something (post, send, reply, create, file, open, update, add, comment, draft, label, archive, delete); otherwise every grant is read-only and the draft says so. A schedule the model proposes that does not parse becomes Run now, with a note.
 - F33. The C14 bar holds on replay in CI and on the recorded live run.
 
 ### Inbox and attention (P1.6)
@@ -222,6 +223,8 @@ Rust, in each module's `#[cfg(test)] mod tests`:
   - U-D1 `a_draft_is_never_persisted` (F30)
   - U-D2 `an_unconnected_app_becomes_a_connect_first_note` (F31)
   - U-D3 `save_as_workflow_grants_only_tools_the_chat_called` (F32)
+  - U-D4 `a_draft_grants_writes_only_when_the_sentence_asks_for_one` (F32a)
+  - U-D5 `an_unparseable_schedule_becomes_run_now_with_a_note` (F32a)
 - `workflow_inbox` (in `workflows.rs` or its own module)
   - U-I1 `unread_state_survives_restart` (F36)
 - `bridge-protocol`
