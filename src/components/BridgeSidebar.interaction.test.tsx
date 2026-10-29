@@ -152,6 +152,65 @@ describe("BridgeSidebar group folding", () => {
   });
 });
 
+describe("BridgeSidebar group cap", () => {
+  const PROJECT_VIEW = JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" });
+  const second = { id: "ws-2", title: "landing", branch: "main", status: "ready", dirtyFiles: 0 } as Workspace;
+  // Oldest first, so "<prefix> 0" is the row the cap hides.
+  const chatsIn = (workspaceId: string, prefix: string, count: number) => Array.from({ length: count }, (_, index) =>
+    session(`${workspaceId}-${index}`, { title: `${prefix} ${index}`, workspaceId, startedAt: new Date(Date.UTC(2026, 9, 1, index)).toISOString() }));
+  const capButton = (label: RegExp) =>
+    [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => label.test(button.textContent ?? ""));
+
+  it("collapses an expanded group back to the cap", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, PROJECT_VIEW);
+    mount({ chats: chatsIn("ws-1", "Harness", 15) });
+    const [more] = capButton(/^Show 3 more$/);
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    expect(text()).not.toContain("Harness 0");
+
+    click(more);
+    const [less] = capButton(/^Show less$/);
+    expect(less.getAttribute("aria-expanded")).toBe("true");
+    expect(text()).toContain("Harness 0");
+    expect(capButton(/^Show \d+ more$/)).toHaveLength(0);
+
+    click(less);
+    expect(text()).not.toContain("Harness 0");
+    expect(capButton(/^Show 3 more$/)).toHaveLength(1);
+    expect(capButton(/^Show less$/)).toHaveLength(0);
+  });
+
+  it("expands and collapses one project without touching another", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, PROJECT_VIEW);
+    mount({ workspaces: [workspace, second], chats: [...chatsIn("ws-1", "Harness", 14), ...chatsIn("ws-2", "Landing", 13)] });
+    click(capButton(/^Show 2 more$/)[0]);
+    expect(text()).toContain("Harness 0");
+    expect(text()).not.toContain("Landing 0");
+    expect(capButton(/^Show 1 more$/)).toHaveLength(1);
+
+    click(capButton(/^Show less$/)[0]);
+    expect(text()).not.toContain("Harness 0");
+    expect(capButton(/^Show 1 more$/)).toHaveLength(1);
+
+    click(capButton(/^Show 1 more$/)[0]);
+    expect(text()).toContain("Landing 0");
+    expect(text()).not.toContain("Harness 0");
+    expect(capButton(/^Show 2 more$/)).toHaveLength(1);
+  });
+
+  it("hides the control while its group is folded", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, PROJECT_VIEW);
+    mount({ chats: chatsIn("ws-1", "Harness", 15) });
+    click(capButton(/^Show 3 more$/)[0]);
+    click(groupHeader("harness"));
+    expect(capButton(/^Show (less|\d+ more)$/)).toHaveLength(0);
+
+    click(groupHeader("harness"));
+    expect(capButton(/^Show less$/)).toHaveLength(1);
+    expect(text()).toContain("Harness 0");
+  });
+});
+
 describe("BridgeSidebar repositories list", () => {
   it("shows plain chats and project chats in the same list", () => {
     mount();
