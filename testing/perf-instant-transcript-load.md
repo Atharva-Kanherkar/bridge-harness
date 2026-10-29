@@ -4,6 +4,10 @@ Opening a long chat must show its newest messages fast and keep rendering correc
 while the rest of the history arrives. This contract was written before any
 implementation and is the definition of done for the branch.
 
+> Review amendment: the review of the first implementation found three
+> correctness bugs and two performance gaps. Those corrections are folded into
+> the behavior and test lists below; they do not widen the product scope.
+
 ## Functional Behavior
 
 ### 1. One projection per unchanged forest
@@ -19,9 +23,11 @@ flush, send watermark, retry payload, conversation-started check).
 - A different `entries` identity re-projects, even when the contents are equal.
 - The result is always deep-equal to `projectSessionConversation` for the same
   inputs.
-- The cache cannot retain every forest forever: it holds at most 8 entries
-  arrays (the most recently used), and leaf-id variants per array are bounded
-  too. Evicted entries must not break later calls.
+- The cache holds the projection through a `WeakMap` keyed by the entries array,
+  so a forest the app drops can be collected; there is no outer LRU pinning old
+  forests. Leaf-id variants per array are bounded at 4.
+- Cached arrays are frozen in development so a caller cannot mutate a projection
+  another reader shares.
 
 ### 2. Settling thoughts is proportional to unsettled thoughts
 
@@ -55,14 +61,24 @@ turn-heavy replay.
   the session does not turn into a full mount.
 - Hydration uses `requestIdleCallback` when available and a `setTimeout`
   fallback otherwise (Safari/WKWebView and jsdom have no `requestIdleCallback`).
-- Reset is keyed by session, so switching chats starts from the newest rows
-  again and pending callbacks for the previous session cannot add rows to the
-  new one.
+- Reset is keyed by the chat the rows belong to, and seeding waits until the
+  forest matches the selected session. Selecting a chat commits the session one
+  commit before its forest, and seeding from the previous chat's row count is
+  how a ten-row chat used to open a three-hundred-row one fully mounted. A
+  remembered-offset full mount waits for the new forest too; applying it on the
+  mismatch commit would mount every row of the chat being left.
+- A branch that shrinks past the stored start clamps the start into state, so
+  the next idle slice advances from the rows actually mounted instead of
+  stalling on an index that no longer exists.
 - Hydrated (older) rows mount without entrance animation. Rows inside
-  `AnimatePresence` keep their existing entrance/exit behavior.
+  `AnimatePresence` keep their existing entrance/exit behavior. The opening
+  window's instant boundary is captured once per chat; tail growth does not move
+  it and flip an already-animated row to instant.
 - `ScrollFollow`'s signature includes the revealed row count, so a reader at the
-  bottom stays at the bottom while older rows are added above, and a reader who
-  scrolled up is not moved.
+  bottom stays at the bottom while older rows are added above. A reader who
+  scrolled up keeps the same text: the scroller disables native scroll anchoring
+  (WebKit does not implement it) and a layout effect adds the height that
+  arrived above them to `scrollTop` before paint.
 - The `entryWindow` notice for a trimmed snapshot is unchanged.
 
 ### 4. Code blocks colorize only when visible
@@ -75,6 +91,11 @@ turn-heavy replay.
   re-tokenized and not reset to plain.
 - When `IntersectionObserver` is unavailable, the block counts as visible
   immediately, so behavior is unchanged in environments without it.
+- The observer's root is the nearest scrollable ancestor (the transcript
+  scroller), not the window. A positive `rootMargin` cannot grow a nested
+  scroller's clip, so the default viewport root gave no look-ahead at all.
+- Fences under the same root share one observer per root and margin, instead of
+  creating one observer per fence.
 - `MAX_HIGHLIGHT_CHARS` and the plain fallback are unchanged.
 
 ### 5. Behavior that must not change
@@ -88,6 +109,20 @@ turn-heavy replay.
   unchanged entries array).
 - No protocol, backend, or snapshot-window changes in this PR.
 
+### 6. Hydration render cost is proportional to rows that arrive
+
+- `TranscriptEntry` and `ItemView` are memoized, so an idle slice re-renders
+  only the rows it adds. Rows already mounted bail out of the React render.
+- `AgentConversation`'s default `events`, `pendingMessages`,
+  `pendingAdoptions`, and `onAnswerQuestion` values are module constants. A
+  literal default is a new identity on every internal render and would defeat
+  the memo comparison for every row.
+- The projection cache is keyed by entries identity through a `WeakMap`, so a
+  dropped forest's projection does not keep it alive.
+- Thinking candidates retain `inProgress`; assistant candidates do not. Settling
+  still finds every unsettled thought, without growing the assistant candidate
+  set with settled rows.
+
 ## Unit Tests
 
 `src/transcript/projectionCache.test.ts`
@@ -96,22 +131,25 @@ turn-heavy replay.
   reference; `projectSessionConversation` is called once.
 - `re-projects when the leaf changes` — different leaf, different result,
   projected twice.
-- `re-projects when the entries array identity changes` — equal contents, new
-  array, projected twice.
+- `re-projects when the entries array identity changes even with equal contents`
+  — new array, projected twice.
 - `matches the uncached projection` — for a 200-entry branch, cached and
   uncached results deep-equal.
-- `evicts the oldest entries arrays` — 10 distinct arrays; the first is
-  re-projected after eviction, the ninth is still cached.
-- `bounds leaf variants per array` — more than the per-array leaf cap evicts in
-  LRU order without changing results.
+- `bounds leaf variants per array in LRU order` — more than the per-array leaf
+  cap evicts in LRU order without changing results.
+- `freezes the shared projection in development` — a cached array cannot be
+  mutated in place.
 
 `src/transcript/reducer.test.ts`
 
-- `settles thinking without walking the whole fold` — replay with 20,000
-  non-thinking items and 3 streaming thoughts; count `Map.prototype.values`
-  traversals across the settling frames and assert the fold's full size is never
-  traversed. Correctness: all 3 thoughts completed, candidates empty.
-- `leaves settled reasoning and non-reasoning candidates alone`.
+- `settles turns without walking the whole fold each time` — a 200-turn,
+  20,200-row replay; count `Map.prototype.values` traversals across the
+  settling frames and assert the fold's full size is never traversed once per
+  turn. Correctness: every reasoning row is completed and the fold holds 20,200
+  rows.
+- `settles streaming thinking when the turn ends` and `settles a thinking row a
+  provider left in progress` — `inProgress` stays a thinking candidate until it
+  settles.
 
 `src/components/transcriptWindow.test.ts`
 
@@ -124,12 +162,29 @@ turn-heavy replay.
   at 68 for a 100-row chat and stays 68 as the live tail grows, so no
   already-mounted row is remounted.
 
+`src/components/transcriptWindow.hook.test.tsx`
+
+- `opens on the newest rows` and `mounts everything once a chat is short
+  enough`.
+- `keeps showing the newest rows when a rewind shrinks the branch`.
+- `does not seed from the previous chat's rows while the forest catches up` —
+  a ten-row chat followed by a three-hundred-row forest starts at 268, not 0.
+- `drains hydration to the first row after a shrink past the stored start` —
+  a 600-row window clamped to a 200-row branch reaches row 0.
+- `keeps the old window on the mismatch commit when the next chat opens full` —
+  a remembered-position mount does not expand the outgoing chat's rows.
+- `keeps the opening boundary fixed when the tail grows` — `instantBefore` does
+  not move as new tail rows arrive.
+
 `src/components/useInViewport.test.tsx`
 
 - `returns visible when IntersectionObserver is unavailable`.
-- `starts hidden, then visible after an intersecting entry`.
-- `disconnects on unmount` and ignores a late entry after unmount.
-- `stays visible after the element leaves` (no flip back to hidden).
+- `starts hidden, turns visible on an intersecting entry, and stays visible` —
+  leaving the viewport does not flip it back to hidden.
+- `disconnects on unmount and ignores a late entry`.
+- `measures the look-ahead against the transcript scroller and shares one
+  observer` — `root` is the scroll parent, `rootMargin` is 200px, and two
+  fences under it use one observer.
 
 `src/components/Markdown.test.tsx` (extended)
 
@@ -143,22 +198,33 @@ turn-heavy replay.
 
 `src/components/AgentConversation.history.test.tsx` (extended)
 
-- `mounts only the newest rows first` — a 300-row history renders
-  `INITIAL_TRANSCRIPT_ROWS` rows on the first commit.
-- `hydrates older rows in idle slices` — advancing the idle queue mounts the
-  rest in `TRANSCRIPT_HYDRATE_CHUNK` steps, growing the mounted row count by at
-  most one chunk per step.
-- `mounts everything at once for a highlighted entry` — with
+- `mounts only the newest rows on the first commit` — a 300-row history
+  renders `INITIAL_TRANSCRIPT_ROWS` rows on the first commit.
+- `hydrates older rows one idle slice at a time` — advancing the idle queue
+  mounts the rest in `TRANSCRIPT_HYDRATE_CHUNK` steps, growing the mounted row
+  count by at most one chunk per step.
+- `mounts every row at once for a highlighted entry` — with
   `highlightEntryId` pointing at the oldest row, that row exists on the first
-  commit, and clearing the highlight leaves every row mounted.
-- `mounts everything at once for a remembered position`.
-- `keeps a streaming tail when older rows hydrate` — adding a tail row between
-  slices does not unmount an already-hydrated row.
+  commit.
+- `keeps the history mounted after a search highlight clears`.
+- `keeps an already-hydrated row mounted when a live row arrives` — adding a
+  tail row between slices does not unmount hydrated history.
+- `opens a long chat on its newest rows when switching from a short one` —
+  session A (10 rows) to B (300 rows) mounts 32 B rows on the first commit.
+- `finishes hydrating after the branch shrinks past the stored start` — a
+  same-chat 600 -> 200 shrink reaches `b0` after the idle queue drains.
 
 `src/components/AgentConversation.scroll.test.tsx` (extended)
 
 - `stays pinned to the bottom across hydration` — with the viewport at the
   bottom, each hydration slice leaves `scrollTop` at the new `scrollHeight`.
+- `keeps a reader who scrolled up on the same text while rows hydrate above` —
+  the offset grows by exactly the height added above, because native anchoring
+  is off, and the remembered offset is updated.
+- `mounts the whole transcript when reopening at a remembered position` — the
+  remembered-position mount waits for the chat's own forest before placing.
+- `waits for the chat's own history before placing` — a session switch does not
+  place the new chat using the outgoing chat's rows.
 
 `src/components/AgentConversation.test.tsx` (unchanged, must stay green)
 
