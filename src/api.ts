@@ -1524,6 +1524,9 @@ let mockWorkflows: Workflow[] = [{
   createdAt: "2026-10-27T09:00:00Z", updatedAt: "2026-10-27T09:00:00Z",
 }];
 
+// Mock mode's `workflows/run_changed`, so the sidebar count follows mark-read
+// the way it does against the daemon.
+const mockWorkflowRunListeners = new Set<(payload: { run: WorkflowRun }) => void>();
 let mockWorkflowRuns: WorkflowRun[] = [{
   id: "run-morning-1", workflowId: "wf-morning-brief", revisionId: "wf-morning-brief-r1", triggerKind: "schedule", missedSlots: 0,
   dryRun: false, status: "succeeded", failureCode: null, summary: "3 Slack mentions need replies; 2 Linear issues moved to In review.",
@@ -2003,9 +2006,16 @@ export const bridgeApi = {
     if (hasBackend()) return call("workflows/always_allow_tool", { workflowId, sessionId, eventId, toolIdentity });
     throw new Error("Approving a workflow run's tool requires the desktop app.");
   },
+  markWorkflowRunsRead: async (runIds: string[]): Promise<void> => {
+    if (hasBackend()) { await call("workflows/mark_workflow_runs_read", { runIds }); return; }
+    const changed = mockWorkflowRuns.filter(run => run.unread && runIds.includes(run.id)).map(run => ({ ...run, unread: false }));
+    mockWorkflowRuns = mockWorkflowRuns.map(run => changed.find(candidate => candidate.id === run.id) ?? run);
+    changed.forEach(run => mockWorkflowRunListeners.forEach(listener => listener({ run: structuredClone(run) })));
+  },
   onWorkflowRunChanged: (handler: (payload: { run: WorkflowRun }) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<{ run: WorkflowRun }>("workflows/run_changed", handler);
-    return Promise.resolve(() => {});
+    mockWorkflowRunListeners.add(handler);
+    return Promise.resolve(() => { mockWorkflowRunListeners.delete(handler); });
   },
   onWorkflowsChanged: (handler: (payload: { workflowId: string }) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<{ workflowId: string }>("workflows/changed", handler);

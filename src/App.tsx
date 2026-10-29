@@ -10,7 +10,8 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, use
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
-import type { ResolveReferenceResult, WorkflowDraft } from "./protocol/generated/protocol";
+import type { ResolveReferenceResult, WorkflowDraft, WorkflowRun } from "./protocol/generated/protocol";
+import { needsYouCount, workflowNotification } from "./components/workflows/notify";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
@@ -495,6 +496,49 @@ function AppContent() {
       return next;
     });
   };
+  // Workflow runs, app-wide: the sidebar count, Mission Control's strip, and a
+  // native notification once per run and status (see workflows/notify.ts).
+  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
+  const [workflowNames, setWorkflowNames] = useState<Map<string, string>>(() => new Map());
+  const [focusWorkflowRun, setFocusWorkflowRun] = useState<{ workflowId: string; runId: string } | null>(null);
+  const clearFocusWorkflowRun = useCallback(() => setFocusWorkflowRun(null), []);
+  const notifiedWorkflowRuns = useRef(new Set<string>());
+  const workflowNamesRef = useRef(workflowNames);
+  workflowNamesRef.current = workflowNames;
+  useEffect(() => {
+    let disposed = false;
+    const stops: Array<() => void> = [];
+    const refresh = async () => {
+      try {
+        const [list, recent] = await Promise.all([bridgeApi.listWorkflows(), bridgeApi.listWorkflowRuns({ limit: 100 })]);
+        if (disposed) return;
+        setWorkflowNames(new Map(list.workflows.map(workflow => [workflow.id, workflow.name])));
+        setWorkflowRuns(recent.runs);
+      } catch {
+        // Workflows are optional: an older daemon without them leaves the count at zero.
+      }
+    };
+    void refresh();
+    void bridgeApi.onWorkflowsChanged(() => void refresh()).then(stop => disposed ? stop() : stops.push(stop));
+    void bridgeApi.onWorkflowRunChanged(({ run }) => {
+      setWorkflowRuns(current => [run, ...current.filter(candidate => candidate.id !== run.id)]);
+      const name = workflowNamesRef.current.get(run.workflowId) ?? "A workflow";
+      const wantsSuccess = run.status === "succeeded"
+        ? bridgeApi.getWorkflow(run.workflowId).then(({ workflow }) => workflow.definition.notify?.onSuccess ?? false).catch(() => false)
+        : Promise.resolve(false);
+      void wantsSuccess.then(onSuccess => {
+        const notice = workflowNotification(run, name, onSuccess, notifiedWorkflowRuns.current);
+        // No session: a run's chat is hidden, so a notification only raises Bridge.
+        if (notice) void notifyAttention(notice.title, notice.body);
+      });
+    }).then(stop => disposed ? stop() : stops.push(stop));
+    return () => { disposed = true; stops.forEach(stop => stop()); };
+  }, []);
+  const openWorkflowRun = useCallback((run: WorkflowRun) => {
+    setFocusWorkflowRun({ workflowId: run.workflowId, runId: run.id });
+    setView("workflows");
+  }, []);
+
   // Sidebar "Save as workflow…": draft from the chat (no model call) and open
   // the Workflows page with the editor prefilled. Nothing is saved yet.
   const [workflowDraft, setWorkflowDraft] = useState<WorkflowDraft | null>(null);
@@ -3135,6 +3179,7 @@ function AppContent() {
       onOpenSavedSetups={() => setView("saved-setups")}
       onOpenWorkflows={() => setView("workflows")}
       workflowsActive={view === "workflows"}
+      workflowsBadge={needsYouCount(workflowRuns)}
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
@@ -3211,7 +3256,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} focusRun={focusWorkflowRun} onRunFocused={clearFocusWorkflowRun} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}
@@ -3230,6 +3275,9 @@ function AppContent() {
         onFocusSession={openSession}
         onStopWorker={stopWorker}
         onNewChat={workspaceId => void startChatInWorkspace(workspaceId)}
+        workflowRuns={workflowRuns}
+        workflowNames={workflowNames}
+        onOpenWorkflowRun={openWorkflowRun}
       /></Suspense> : session ? <>
         <SessionToolbar
           title={chatName(session)}
