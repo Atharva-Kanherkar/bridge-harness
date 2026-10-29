@@ -468,6 +468,18 @@ pub fn reclaim_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String
     Ok(reclaimed)
 }
 
+/// Mark runs read. Returns the ids that changed; unknown or already-read ids
+/// are not an error and change nothing.
+pub fn mark_read(db: &Connection, run_ids: &[String]) -> Result<Vec<String>, BridgeError> {
+    let mut changed = Vec::new();
+    for id in run_ids {
+        if db.execute("UPDATE workflow_runs SET unread=0 WHERE id=?1 AND unread=1", params![id])? == 1 {
+            changed.push(id.clone());
+        }
+    }
+    Ok(changed)
+}
+
 /// Park a held run until its provider has room (C11). It stays active, so
 /// nothing overlaps it, but holds no lease: nobody is working on it.
 pub fn park(db: &Connection, run_id: &str, lease_owner: &str) -> Result<bool, BridgeError> {
@@ -929,6 +941,45 @@ mod tests {
         let production = include_str!("workflow_trigger.rs").split("#[cfg(test)]").next().unwrap();
         assert!(!production.contains("automations::"));
         assert!(!production.contains("scheduled_tasks"));
+    }
+
+    #[test]
+    fn unread_state_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let run_id = {
+            let db = crate::store::open(&path).unwrap();
+            let workflow = approved(&db, dir.path(), "2026-10-26T00:00:00Z", "0 9 * * *");
+            let run = claimed(claim(&db, &workflow.id, &Occasion::manual(&workflow.id, "r1"), false, at("2026-10-29T10:00:00Z")).unwrap());
+            assert!(run.run.unread);
+            assert_eq!(mark_read(&db, std::slice::from_ref(&run.run.id)).unwrap(), vec![run.run.id.clone()]);
+            run.run.id
+        };
+        let reopened = crate::store::open(&path).unwrap();
+        assert!(!require_run(&reopened, &run_id).unwrap().unread);
+    }
+
+    #[test]
+    fn mark_workflow_runs_read_ignores_unknown_ids_and_publishes_once_each() {
+        let (_scratch, core) = test_support::core();
+        let run_id = {
+            let db = core.db.lock().unwrap();
+            let workflow = approved(&db, _scratch.path(), "2026-10-26T00:00:00Z", "0 9 * * *");
+            claimed(claim(&db, &workflow.id, &Occasion::manual(&workflow.id, "r1"), false, at("2026-10-29T10:00:00Z")).unwrap()).run.id
+        };
+        let mut events = core.events.subscribe();
+        let ids = vec![run_id.clone(), "nope".to_owned(), run_id.clone()];
+        crate::api::mark_workflow_runs_read(&core, &wire::MarkWorkflowRunsReadParams { run_ids: ids.clone() }).unwrap();
+        crate::api::mark_workflow_runs_read(&core, &wire::MarkWorkflowRunsReadParams { run_ids: ids }).unwrap();
+        let mut published = 0;
+        while let Ok(event) = events.try_recv() {
+            if let CoreEvent::WorkflowRunChanged { run } = event {
+                assert_eq!(run.id, run_id);
+                assert!(!run.unread);
+                published += 1;
+            }
+        }
+        assert_eq!(published, 1, "the first call changes it once; repeats and unknown ids publish nothing");
     }
 
     #[test]

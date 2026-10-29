@@ -275,7 +275,8 @@ export type BridgeMethod =
   | "workflows/write_workflow_settings"
   | "workflows/always_allow_tool"
   | "workflows/draft_workflow_from_text"
-  | "workflows/draft_workflow_from_session";
+  | "workflows/draft_workflow_from_session"
+  | "workflows/mark_workflow_runs_read";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -547,6 +548,7 @@ export const BRIDGE_METHODS = [
   { method: "workflows/always_allow_tool", domain: "workflows", command: "always_allow_tool" },
   { method: "workflows/draft_workflow_from_text", domain: "workflows", command: "draft_workflow_from_text" },
   { method: "workflows/draft_workflow_from_session", domain: "workflows", command: "draft_workflow_from_session" },
+  { method: "workflows/mark_workflow_runs_read", domain: "workflows", command: "mark_workflow_runs_read" },
 ] as const;
 
 export type BridgeNotification =
@@ -897,6 +899,7 @@ export interface BridgeMethodParams {
   "workflows/always_allow_tool": AlwaysAllowToolParams;
   "workflows/draft_workflow_from_text": DraftWorkflowFromTextParams;
   "workflows/draft_workflow_from_session": DraftWorkflowFromSessionParams;
+  "workflows/mark_workflow_runs_read": MarkWorkflowRunsReadParams;
 }
 
 /** Result types for every registered method. */
@@ -1170,6 +1173,7 @@ export interface BridgeMethodResults {
   "workflows/always_allow_tool": AlwaysAllowToolResult;
   "workflows/draft_workflow_from_text": WorkflowDraftResult;
   "workflows/draft_workflow_from_session": WorkflowDraftResult;
+  "workflows/mark_workflow_runs_read": UnitResult;
 }
 
 export type ActiveTurnInput = "steer" | "queue";
@@ -5106,6 +5110,10 @@ export interface WorkflowDraftResult {
 
 export interface DraftWorkflowFromSessionParams {
   sessionId: string;
+}
+
+export interface MarkWorkflowRunsReadParams {
+  runIds: string[];
 }
 
 export interface VoiceTranscriptEvent {

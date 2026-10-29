@@ -322,6 +322,12 @@ pub struct WriteWorkflowSettingsParams {
     pub settings: WorkflowSettings,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkWorkflowRunsReadParams {
+    pub run_ids: Vec<String>,
+}
+
 /// A prefilled, unsaved workflow and what drafting could not do for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

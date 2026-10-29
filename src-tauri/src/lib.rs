@@ -759,6 +759,14 @@ async fn draft_workflow_from_session(
 }
 
 #[tauri::command]
+async fn mark_workflow_runs_read(
+    run_ids: Vec<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UnitResult, BridgeError> {
+    api::mark_workflow_runs_read(state.inner(), &bridge_protocol::messages::MarkWorkflowRunsReadParams { run_ids })
+}
+
+#[tauri::command]
 async fn always_allow_tool(
     workflow_id: String,
     session_id: String,
@@ -3183,6 +3191,7 @@ pub fn run() -> i32 {
             always_allow_tool,
             draft_workflow_from_text,
             draft_workflow_from_session,
+            mark_workflow_runs_read,
             get_state,
             get_session_forest,
             get_session_forest_digest,

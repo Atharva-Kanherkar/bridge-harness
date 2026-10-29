@@ -355,6 +355,7 @@ methods![
     (AlwaysAllowTool, "workflows", "always_allow_tool"),
     (DraftWorkflowFromText, "workflows", "draft_workflow_from_text"),
     (DraftWorkflowFromSession, "workflows", "draft_workflow_from_session"),
+    (MarkWorkflowRunsRead, "workflows", "mark_workflow_runs_read"),
 ];
 
 impl MethodName {
