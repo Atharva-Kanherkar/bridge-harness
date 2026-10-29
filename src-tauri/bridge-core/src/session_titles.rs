@@ -4,32 +4,40 @@
 //! orchestrator is created with and nothing ever replaced it. A title is resolved
 //! in preference order:
 //!
-//! 1. the harness's own title, where it keeps one — Claude Code writes a
-//!    `custom-title` entry into its transcript once it has seen enough of the
-//!    conversation to name it;
-//! 2. a short topic label extracted from the first substantive user message.
+//! 1. a name the user chose;
+//! 2. the harness's own title, where it keeps one — Claude Code writes an
+//!    `ai-title` entry into its transcript once it has seen the first message,
+//!    and a `custom-title` one when the user renames the session;
+//! 3. a title Bridge generates on the chat's own harness ([`crate::title_jobs`]);
+//! 4. a short topic label extracted from the first substantive user message.
 //!
-//! Automatic names contain at most three words. User-chosen names are preserved.
+//! A write never lowers that rank (see [`TitleSource::rank`]). Headings cut
+//! locally contain at most three words; a harness or model title keeps up to six,
+//! because cutting "Paper and slate launch video" at three leaves "Paper and slate".
 //!
 //! Codex keeps no title of its own. A full rollout file carries `session_meta`,
 //! `event_msg`, `response_item`, `world_state` and `turn_context` entries and none
-//! of them names the conversation, so step 2 is what titles a Codex chat — and it
-//! is also what titles a Claude chat for the turn or two before Claude writes its
-//! own.
+//! of them names the conversation, so steps 3 and 4 are what title a Codex chat.
+//! OpenCode does name sessions, but on 2.1.1 its titler answered the prompt
+//! ("SQLite's WAL keeps growing when long-lived read…") rather than naming it, so
+//! Bridge keeps creating OpenCode sessions with a fixed title and generates its own.
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::BridgeError;
 
 /// Labels a session is born with. A session still wearing one has no real title.
-pub const PLACEHOLDER_TITLES: [&str; 3] = ["Orchestrator", "Bridge orchestrator", "New chat"];
+/// `Chat` is what a direct chat is born with (`sessions.rs`, `chat_defaults.rs`).
+pub const PLACEHOLDER_TITLES: [&str; 4] = ["Orchestrator", "Bridge orchestrator", "New chat", "Chat"];
 
 /// Longest heading worth keeping; past this a rail row truncates anyway.
-const MAX_HEADING: usize = 60;
+pub const MAX_HEADING: usize = 60;
 const MAX_TITLE_WORDS: usize = 3;
+/// A harness or model title is a phrase, not a bag of topic words.
+pub const MAX_NAMED_WORDS: usize = 6;
 
 /// Request scaffolding is not a topic: "can you please fix the" should never
 /// occupy all three words of a chat's name. This is a local fallback, not an
@@ -169,20 +177,38 @@ fn topic_words(line: &str) -> Vec<String> {
 
 /// Claude Code's own title for a session, read from its transcript.
 ///
-/// The transcript is looked up by scanning the project directories rather than by
-/// rebuilding Claude's slug for the cwd: the file is named after the provider
-/// session id, which is unique, and the slug rules are Claude's to change.
-pub fn claude_transcript_title(projects_dir: &Path, provider_session_id: &str) -> Option<String> {
-    let transcript = find_transcript(projects_dir, provider_session_id)?;
-    let contents = std::fs::read_to_string(transcript).ok()?;
-    title_from_transcript(&contents)
+/// The transcript is looked up through the slug Claude derives from the cwd
+/// first, and only then by scanning every project directory: the file is named
+/// after the provider session id, which is unique, but a real machine has tens
+/// of thousands of project directories and the slug rules are Claude's to change.
+pub fn claude_transcript_title(
+    projects_dir: &Path,
+    provider_session_id: &str,
+    cwd: Option<&str>,
+) -> Option<HarnessTitle> {
+    let transcript = find_transcript(projects_dir, provider_session_id, cwd)?;
+    title_from_transcript_file(&transcript)
 }
 
-fn find_transcript(projects_dir: &Path, provider_session_id: &str) -> Option<PathBuf> {
+/// Claude's project directory name for a cwd: every non-alphanumeric byte
+/// becomes `-`. Very long paths are shortened by Claude, which the scan covers.
+fn claude_project_slug(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+fn find_transcript(projects_dir: &Path, provider_session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
     let file_name = format!("{provider_session_id}.jsonl");
     let direct = projects_dir.join(&file_name);
     if direct.is_file() {
         return Some(direct);
+    }
+    if let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) {
+        let slugged = projects_dir.join(claude_project_slug(cwd)).join(&file_name);
+        if slugged.is_file() {
+            return Some(slugged);
+        }
     }
     for entry in std::fs::read_dir(projects_dir).ok()?.flatten() {
         if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
@@ -196,26 +222,157 @@ fn find_transcript(projects_dir: &Path, provider_session_id: &str) -> Option<Pat
     None
 }
 
-/// Reads the last title Claude wrote. A session can be renamed, and the transcript
-/// is append-only, so the last entry wins.
-pub fn title_from_transcript(contents: &str) -> Option<String> {
-    let mut found: Option<String> = None;
-    for line in contents.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
+/// Claude re-appends its title entries as a session goes on, so the newest one
+/// sits near the end of the file (within 32 KiB on every transcript measured, up
+/// to 117 MB). The tail is read first; the whole file only when the tail names
+/// nothing and the file is small enough to stream on a turn boundary.
+const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
+const TRANSCRIPT_FULL_SCAN_LIMIT: u64 = 32 * 1024 * 1024;
+
+fn title_from_transcript_file(path: &Path) -> Option<HarnessTitle> {
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let offset = size.saturating_sub(TRANSCRIPT_TAIL_BYTES);
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    let tail = String::from_utf8_lossy(&tail);
+    // a tail that starts mid-file starts mid-line.
+    let tail = if offset > 0 { tail.split_once('\n').map_or("", |(_, rest)| rest) } else { &tail };
+    let mut titles = TranscriptTitles::default();
+    tail.lines().for_each(|line| titles.observe(line));
+    if titles.best().is_some() || offset == 0 || size > TRANSCRIPT_FULL_SCAN_LIMIT {
+        return titles.best();
+    }
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let mut titles = TranscriptTitles::default();
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        titles.observe(&line);
+    }
+    titles.best()
+}
+
+/// Transcript entry types that name a session, in [`TranscriptTitles`] slot order.
+const TITLE_ENTRY_TYPES: [&[u8]; 3] = [
+    br#""type":"custom-title""#,
+    br#""type":"ai-title""#,
+    br#""type":"summary""#,
+];
+
+/// The last title of each kind a transcript carries.
+#[derive(Default)]
+struct TranscriptTitles {
+    custom: Option<String>,
+    ai: Option<String>,
+    summary: Option<String>,
+}
+
+impl TranscriptTitles {
+    fn observe(&mut self, line: &str) {
+        // Only title entries are parsed; a transcript is mostly tool output, and
+        // its type field leads every line Claude writes.
+        let head = &line.as_bytes()[..line.len().min(48)];
+        let kind = TITLE_ENTRY_TYPES.iter().position(|needle| contains(head, needle));
+        let Some(slot) = kind else { return };
+        let Ok(value) = serde_json::from_str::<Value>(line) else { return };
+        let (field, target) = match slot {
+            0 => ("customTitle", &mut self.custom),
+            1 => ("aiTitle", &mut self.ai),
+            _ => ("summary", &mut self.summary),
         };
-        let entry_type = value.get("type").and_then(Value::as_str);
-        let candidate = match entry_type {
-            Some("custom-title") => value.get("customTitle").and_then(Value::as_str),
-            // Older transcripts name a conversation with a summary entry instead.
-            Some("summary") => value.get("summary").and_then(Value::as_str),
-            _ => None,
-        };
-        if let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
-            found = Some(shorten(candidate));
+        if let Some(title) = value.get(field).and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty()) {
+            *target = Some(title.to_owned());
         }
     }
-    found.filter(|value| !value.is_empty())
+
+    /// A name the user gave the session beats one Claude generated, which beats
+    /// the summary older transcripts carried. Within a kind the last one wins,
+    /// because the transcript is append-only and a session can be renamed.
+    fn best(&self) -> Option<HarnessTitle> {
+        let (title, chosen) = match (&self.custom, &self.ai, &self.summary) {
+            (Some(custom), _, _) => (custom, true),
+            (None, Some(ai), _) => (ai, false),
+            (None, None, Some(summary)) => (summary, false),
+            _ => return None,
+        };
+        let title = bound(title, TitleSource::Provider.word_cap());
+        (!title.is_empty()).then_some(HarnessTitle { title, chosen })
+    }
+}
+
+/// A title read from the harness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessTitle {
+    pub title: String,
+    /// The user named the session in the harness (`/rename`), rather than the
+    /// harness naming it.
+    pub chosen: bool,
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|window| window == needle)
+}
+
+/// Reads Claude's title from transcript text. See [`TranscriptTitles::best`].
+pub fn title_from_transcript(contents: &str) -> Option<String> {
+    let mut titles = TranscriptTitles::default();
+    contents.lines().for_each(|line| titles.observe(line));
+    titles.best().map(|best| best.title)
+}
+
+/// Words that say nothing about which chat this is, on top of [`TITLE_FILLER`].
+/// Claude titles a Bridge chat "Continue work" or "Session start" when what it
+/// saw last was a resume or a greeting.
+const GENERIC_TITLE_WORDS: &[&str] = &[
+    "bridge", "session", "sessions", "continue", "continued", "continuing", "work", "start", "started",
+    "chat", "conversation", "new", "task", "request", "greeting", "hello",
+];
+
+/// Topic words of a title or a message, for [`grounded`]: alphanumeric runs of
+/// three or more characters, or any run with a digit (a PR number), minus filler,
+/// cut to a five-character stem so "review" meets "reviewing".
+fn topic_stems(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| word.chars().count() >= 3 || word.chars().any(|c| c.is_ascii_digit()))
+        .map(str::to_lowercase)
+        .filter(|word| !TITLE_FILLER.contains(&word.as_str()) && !GENERIC_TITLE_WORDS.contains(&word.as_str()))
+        .map(|word| word.chars().take(5).collect())
+}
+
+/// Does a harness title share a topic word with what the person actually said?
+///
+/// Claude names a session from everything it was sent, and Bridge sends more than
+/// the person typed: on a real store a chat about Dynamo bugs was titled "Bridge
+/// session capabilities" (from the session context Bridge prepends), a PR review
+/// "Bridge credential proxy verification", and real tasks "Continue work". A
+/// title with nothing in common with the person's own words is not used.
+pub fn grounded(title: &str, said: &str) -> bool {
+    let said: std::collections::HashSet<String> = topic_stems(said).collect();
+    topic_stems(title).any(|stem| said.contains(&stem))
+}
+
+/// What the person said, to ground a harness title in: their first and latest
+/// few messages, which is where a chat's topic and its current subject live.
+pub fn grounding_text(db: &Connection, session_id: &str) -> Result<String, BridgeError> {
+    let mut said = String::new();
+    for order in ["ASC", "DESC"] {
+        let mut statement = db.prepare(&format!(
+            "SELECT payload FROM session_entries WHERE session_id=?1 AND kind='user.message' ORDER BY rowid {order} LIMIT 6"
+        ))?;
+        let mut rows = statement.query(params![session_id])?;
+        while let Some(row) = rows.next()? {
+            let payload: String = row.get(0)?;
+            let Ok(value) = serde_json::from_str::<Value>(&payload) else { continue };
+            if let Some(text) = value.get("text").and_then(Value::as_str) {
+                said.extend(text.chars().take(2_000));
+                said.push('\n');
+            }
+        }
+    }
+    Ok(said)
 }
 
 fn strip_furniture(line: &str) -> String {
@@ -228,7 +385,12 @@ fn strip_furniture(line: &str) -> String {
 }
 
 fn shorten(value: &str) -> String {
-    let collapsed = value.split_whitespace().take(MAX_TITLE_WORDS).collect::<Vec<_>>().join(" ");
+    bound(value, MAX_TITLE_WORDS)
+}
+
+/// At most `words` words and [`MAX_HEADING`] characters.
+pub fn bound(value: &str, words: usize) -> String {
+    let collapsed = value.split_whitespace().take(words).collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= MAX_HEADING {
         return collapsed;
     }
@@ -297,20 +459,26 @@ pub fn naming_message(db: &Connection, session_id: &str) -> Result<Option<String
     Ok(None)
 }
 
-/// Where a stored title came from. Only a title Bridge derived is ever replaced:
-/// the harness's own, and one the user chose, are final.
+/// Where a stored title came from. A user's title has no source: it is NULL,
+/// as is every title from before this column existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleSource {
     /// Cut from the conversation by [`heading_from_message`].
     Derived,
+    /// Generated on the chat's own harness by [`crate::title_jobs`].
+    Generated,
     /// Read back from the harness.
     Provider,
 }
+
+/// A user's title, which nothing automatic replaces.
+pub const USER_RANK: u8 = 4;
 
 impl TitleSource {
     pub fn as_str(self) -> &'static str {
         match self {
             TitleSource::Derived => "derived",
+            TitleSource::Generated => "generated",
             TitleSource::Provider => "provider",
         }
     }
@@ -318,10 +486,46 @@ impl TitleSource {
     fn parse(value: Option<&str>) -> Option<Self> {
         match value {
             Some("derived") => Some(TitleSource::Derived),
+            Some("generated") => Some(TitleSource::Generated),
             Some("provider") => Some(TitleSource::Provider),
             _ => None,
         }
     }
+
+    /// Most words a title from this source keeps. A heading is a bag of topic
+    /// words, so three; a generated title is a phrase, so six; Claude's own is
+    /// bounded only by [`MAX_HEADING`], since it writes seven-word titles ("Show
+    /// less option in chats per project") that a word cap cuts mid-phrase.
+    pub fn word_cap(self) -> usize {
+        match self {
+            TitleSource::Derived => MAX_TITLE_WORDS,
+            TitleSource::Generated => MAX_NAMED_WORDS,
+            TitleSource::Provider => usize::MAX,
+        }
+    }
+
+    /// How much a title from this source is trusted. A write never lowers it.
+    pub fn rank(self) -> u8 {
+        match self {
+            TitleSource::Derived => 1,
+            TitleSource::Generated => 2,
+            TitleSource::Provider => 3,
+        }
+    }
+}
+
+/// The rank of what a session is called now: 0 for a placeholder, then the
+/// source's rank, and [`USER_RANK`] for a real title with no recorded source.
+pub fn current_rank(title: Option<&str>, label: &str, source: Option<&str>) -> u8 {
+    if needs_title(title.or(Some(label))) {
+        return 0;
+    }
+    TitleSource::parse(source).map_or(USER_RANK, TitleSource::rank)
+}
+
+/// Harnesses that keep a title Bridge can read back.
+pub fn harness_names_its_chats(harness: &str) -> bool {
+    harness == "claude"
 }
 
 /// Everything a title decision needs, read in one cheap pass so the caller can let
@@ -330,20 +534,25 @@ impl TitleSource {
 pub struct TitlePlan {
     pub harness: String,
     pub provider_session_id: Option<String>,
-    /// The message a heading would be cut from, when the session is still unnamed.
+    pub cwd: Option<String>,
+    /// The message a heading would be cut from, when the session has nothing
+    /// better than a heading.
     pub naming_message: Option<String>,
-    /// True when the only thing stored is a heading Bridge derived itself.
-    pub replaceable: bool,
+    /// The rank of the title stored now; see [`current_rank`].
+    pub rank: u8,
+    /// What the person said, for harnesses whose title is read back; see [`grounded`].
+    pub grounding: String,
 }
 
 /// Reads what is needed to decide a title. Returns None when there is nothing to
-/// do: the session is gone, or its title is the provider's or the user's.
+/// do: the session is gone, its title is the user's, or it has a generated or
+/// provider title and a harness with no title of its own to follow.
 ///
 /// Cheap by construction — one row plus at most eight entries — because callers
 /// hold a process-wide lock while they run it.
 pub fn plan(db: &Connection, session_id: &str) -> Result<Option<TitlePlan>, BridgeError> {
     let row = db.query_row(
-        "SELECT title,label,harness,provider_session_id,title_source FROM sessions WHERE id=?1",
+        "SELECT title,label,harness,provider_session_id,title_source,cwd FROM sessions WHERE id=?1",
         params![session_id],
         |row| {
             Ok((
@@ -352,51 +561,53 @@ pub fn plan(db: &Connection, session_id: &str) -> Result<Option<TitlePlan>, Brid
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         },
     );
-    let Ok((title, label, harness, provider_session_id, source)) = row else {
+    let Ok((title, label, harness, provider_session_id, source, cwd)) = row else {
         return Ok(None);
     };
-
-    let unnamed = needs_title(title.as_deref().or(Some(label.as_str())));
-    let source = TitleSource::parse(source.as_deref());
-    match (unnamed, source) {
-        // Named by the harness, or by the user before this column existed.
-        (false, Some(TitleSource::Provider) | None) => return Ok(None),
-        // A heading we cut ourselves; the harness may have named it since.
-        (false, Some(TitleSource::Derived)) => {
-            return Ok(Some(TitlePlan {
-                harness,
-                provider_session_id,
-                naming_message: naming_message(db, session_id)?,
-                replaceable: true,
-            }))
-        }
-        _ => {}
+    let rank = current_rank(title.as_deref(), &label, source.as_deref());
+    if rank >= USER_RANK {
+        return Ok(None);
     }
+    // Past a heading only the harness's own title can improve on what is stored,
+    // and Claude renames as a conversation moves on, so its title is followed.
+    let follows_provider = harness_names_its_chats(&harness) && provider_session_id.is_some();
+    if rank >= TitleSource::Generated.rank() && !follows_provider {
+        return Ok(None);
+    }
+    let naming_message = if rank <= TitleSource::Derived.rank() {
+        naming_message(db, session_id)?
+    } else {
+        None
+    };
+    let grounding = if follows_provider { grounding_text(db, session_id)? } else { String::new() };
+    Ok(Some(TitlePlan { harness, provider_session_id, cwd, naming_message, rank, grounding }))
+}
 
-    Ok(Some(TitlePlan {
-        harness,
-        provider_session_id,
-        naming_message: naming_message(db, session_id)?,
-        replaceable: false,
-    }))
+/// The harness's own title, where it keeps one and it can be trusted: a name the
+/// user gave the session in the harness always, a generated one only when it is
+/// [`grounded`] in what the person said. Walks Claude's project directories and
+/// reads a transcript, so it must not run under the database lock.
+pub fn provider_title(harness: &str, provider_session_id: Option<&str>, cwd: Option<&str>, grounding: &str) -> Option<String> {
+    let found = match (harness, provider_session_id) {
+        ("claude", Some(id)) => claude_projects_dir()
+            .as_deref()
+            .and_then(|dir| claude_transcript_title(dir, id, cwd)),
+        // Codex keeps no title, and OpenCode's names the answer rather than the
+        // question; both are titled by the title job instead.
+        _ => None,
+    }?;
+    (found.chosen || grounded(&found.title, grounding)).then_some(found.title)
 }
 
 /// Settles on a title. Takes no database handle on purpose: this is the half that
 /// walks Claude's project directories and reads a transcript, and it must not run
 /// while the caller holds the database.
 pub fn resolve(plan: &TitlePlan) -> Option<(String, TitleSource)> {
-    let provider = match (plan.harness.as_str(), plan.provider_session_id.as_deref()) {
-        ("claude", Some(id)) => claude_projects_dir()
-            .as_deref()
-            .and_then(|dir| claude_transcript_title(dir, id)),
-        // Codex keeps no title, and OpenCode's lives behind its HTTP API rather
-        // than on disk, so both fall through to the conversation.
-        _ => None,
-    };
-    if let Some(provider) = provider {
+    if let Some(provider) = provider_title(&plan.harness, plan.provider_session_id.as_deref(), plan.cwd.as_deref(), &plan.grounding) {
         return Some((provider, TitleSource::Provider));
     }
     // Recompute derived names too, so old sentence-length titles can be repaired.
@@ -406,19 +617,38 @@ pub fn resolve(plan: &TitlePlan) -> Option<(String, TitleSource)> {
         .map(|heading| (heading, TitleSource::Derived))
 }
 
-/// Writes a settled title. Cheap, so it is safe to hold the database across it.
+/// Writes a settled title unless it would lower the stored title's rank. Equal
+/// rank is allowed, so a heading can be recomputed and Claude's title followed.
+/// Returns whether anything changed. Cheap, so it is safe to hold the database
+/// across it, and the read and the write share that one hold.
 pub fn commit(
     db: &Connection,
     session_id: &str,
     title: &str,
     source: TitleSource,
-) -> Result<(), BridgeError> {
-    let title = shorten(title);
-    db.execute(
+) -> Result<bool, BridgeError> {
+    let title = bound(title, source.word_cap());
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let current = db
+        .query_row(
+            "SELECT title,label,title_source FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)),
+        )
+        .optional()?;
+    let Some((stored, label, stored_source)) = current else {
+        return Ok(false);
+    };
+    if current_rank(stored.as_deref(), &label, stored_source.as_deref()) > source.rank() {
+        return Ok(false);
+    }
+    let changed = db.execute(
         "UPDATE sessions SET title=?2,title_source=?3 WHERE id=?1 AND (title IS NOT ?2 OR title_source IS NOT ?3)",
         params![session_id, title, source.as_str()],
     )?;
-    Ok(())
+    Ok(changed > 0)
 }
 
 /// Plan, resolve and commit against one connection. Convenient for tests and for
@@ -431,19 +661,20 @@ pub fn refresh(db: &Connection, session_id: &str) -> Result<Option<String>, Brid
     let Some((title, source)) = resolve(&plan) else {
         return Ok(None);
     };
-    commit(db, session_id, &title, source)?;
-    Ok(Some(title))
+    if !commit(db, session_id, &title, source)? {
+        return Ok(None);
+    }
+    Ok(Some(bound(&title, source.word_cap())))
 }
 
 /// Catch up placeholders and old automatic names to the concise-title policy.
 /// Explicit user titles (no recorded automatic source) are never rewritten.
 ///
 /// Deliberately does no file or network I/O. Opening the database must stay cheap
-/// and side-effect free, and the harness's own title is picked up on that session's
-/// next completed turn anyway.
+/// and side-effect free; the harness's own title, and a generated one, arrive
+/// through the title job ([`crate::title_jobs`]) instead.
 pub fn backfill_from_messages(db: &Connection) -> Result<usize, BridgeError> {
     let mut untitled: Vec<(String, Option<String>, bool)> = Vec::new();
-    let mut provider_titles = Vec::new();
     {
         let mut statement = db.prepare("SELECT id,title,label,title_source FROM sessions")?;
         let mut rows = statement.query([])?;
@@ -456,11 +687,6 @@ pub fn backfill_from_messages(db: &Connection) -> Result<usize, BridgeError> {
                 // An old derived name can still be shortened if its original
                 // message has been pruned or carries no usable topic words.
                 untitled.push((id, title, source.as_deref() == Some("derived")));
-            } else if source.as_deref() == Some("provider") {
-                if let Some(title) = title {
-                    let concise = shorten(&title);
-                    if concise != title { provider_titles.push((id, concise)); }
-                }
             }
         }
     }
@@ -475,12 +701,9 @@ pub fn backfill_from_messages(db: &Connection) -> Result<usize, BridgeError> {
             continue;
         };
         if previous.as_deref() == Some(heading.as_str()) { continue; }
-        commit(db, &id, &heading, TitleSource::Derived)?;
-        named += 1;
-    }
-    for (id, title) in provider_titles {
-        commit(db, &id, &title, TitleSource::Provider)?;
-        named += 1;
+        if commit(db, &id, &heading, TitleSource::Derived)? {
+            named += 1;
+        }
     }
     Ok(named)
 }
@@ -492,7 +715,7 @@ mod tests {
     fn seeded() -> Connection {
         let db = Connection::open_in_memory().expect("db");
         db.execute_batch(
-            "CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT, label TEXT, harness TEXT, provider_session_id TEXT, title_source TEXT);
+            "CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT, label TEXT, harness TEXT, provider_session_id TEXT, title_source TEXT, cwd TEXT);
              CREATE TABLE session_entries(rowid INTEGER PRIMARY KEY, session_id TEXT, kind TEXT, payload TEXT);",
         )
         .expect("schema");
@@ -602,16 +825,18 @@ mod tests {
         )
         .expect("session");
         let pending = plan(&db, "s1").expect("plan").expect("still replaceable");
-        assert!(pending.replaceable);
+        assert_eq!(pending.rank, TitleSource::Derived.rank());
         assert_eq!(pending.provider_session_id.as_deref(), Some("prov-1"));
 
         // With a provider title available, it wins.
-        let named = resolve(&TitlePlan { harness: "claude".into(), provider_session_id: None, naming_message: None, replaceable: true });
+        let named = resolve(&TitlePlan { harness: "claude".into(), provider_session_id: None, cwd: None, naming_message: None, rank: 1, grounding: String::new() });
         assert_eq!(named, None, "no provider title and nothing new to derive");
-        commit(&db, "s1", "Sidebar redesign", TitleSource::Provider).expect("commit");
+        assert!(commit(&db, "s1", "Sidebar redesign", TitleSource::Provider).expect("commit"));
 
-        // And once it is the provider's, it is final.
-        assert!(plan(&db, "s1").expect("plan").is_none());
+        // Once it is the provider's, only the provider is consulted again.
+        let after = plan(&db, "s1").expect("plan").expect("claude is followed");
+        assert_eq!(after.rank, TitleSource::Provider.rank());
+        assert_eq!(after.naming_message, None);
     }
 
     #[test]
@@ -630,8 +855,10 @@ mod tests {
         let pending = TitlePlan {
             harness: "codex".into(),
             provider_session_id: Some("prov-1".into()),
+            cwd: None,
             naming_message: Some("fix the rail grouping".into()),
-            replaceable: true,
+            rank: 1,
+            grounding: String::new(),
         };
         assert_eq!(resolve(&pending), Some(("Rail grouping".into(), TitleSource::Derived)));
     }
@@ -647,7 +874,7 @@ mod tests {
             .expect("source");
         assert_eq!(source.as_deref(), Some("derived"));
         // Stamped derived, so the harness can still improve on it.
-        assert!(plan(&db, "s1").expect("plan").expect("replaceable").replaceable);
+        assert_eq!(plan(&db, "s1").expect("plan").expect("replaceable").rank, TitleSource::Derived.rank());
     }
 
     #[test]
@@ -696,14 +923,27 @@ mod tests {
     }
 
     #[test]
-    fn provider_titles_are_bounded_and_still_preferred() {
-        assert_eq!(title_from_transcript(r#"{"type":"custom-title","customTitle":"Mission Control drag and drop fixes"}"#), Some("Mission Control drag".into()));
+    fn provider_titles_keep_their_words_within_sixty_characters() {
+        // A harness title is a phrase; a word cap would cut it mid-thought.
+        assert_eq!(title_from_transcript(r#"{"type":"custom-title","customTitle":"Mission Control drag and drop fixes"}"#), Some("Mission Control drag and drop fixes".into()));
+        assert_eq!(title_from_transcript(r#"{"type":"ai-title","aiTitle":"Show less option in chats per project"}"#), Some("Show less option in chats per project".into()));
+        let long = title_from_transcript(r#"{"type":"ai-title","aiTitle":"Fix the Mission Control drag and drop regression that appeared after the layout refactor"}"#).unwrap();
+        assert_eq!(long, "Fix the Mission Control drag and drop regression that…");
+        assert!(long.chars().count() <= MAX_HEADING + 1);
+        // A generated title is held to six words.
         let db = seeded();
-        session(&db, "s1", None, "claude");
-        commit(&db, "s1", "Mission Control drag and drop fixes", TitleSource::Provider).unwrap();
-        assert!(plan(&db, "s1").unwrap().is_none());
+        session(&db, "g", None, "codex");
+        commit(&db, "g", "One two three four five six seven", TitleSource::Generated).unwrap();
+        assert_eq!(stored(&db, "g").0.as_deref(), Some("One two three four five six"));
+        let db = seeded();
+        session(&db, "s1", None, "codex");
+        commit(&db, "s1", "Paper and slate launch video", TitleSource::Generated).unwrap();
         let title: String = db.query_row("SELECT title FROM sessions WHERE id='s1'", [], |row| row.get(0)).unwrap();
-        assert_eq!(title, "Mission Control drag");
+        assert_eq!(title, "Paper and slate launch video");
+        // Codex has no title of its own to follow, so a generated one is settled.
+        assert!(plan(&db, "s1").unwrap().is_none());
+        // Headings cut locally stay at three words.
+        assert_eq!(heading_from_message("Paper and slate launch video").as_deref(), Some("Paper slate launch"));
     }
 
     #[test]
@@ -715,10 +955,10 @@ mod tests {
         session(&db, "manual", Some("My deliberately long personal chat name"), "codex");
         db.execute("UPDATE sessions SET title_source='derived' WHERE id='derived'", []).unwrap();
         db.execute("UPDATE sessions SET title_source='provider' WHERE id='provider'", []).unwrap();
-        assert_eq!(backfill_from_messages(&db).unwrap(), 2);
+        assert_eq!(backfill_from_messages(&db).unwrap(), 1);
         let title = |id: &str| db.query_row("SELECT title FROM sessions WHERE id=?1", [id], |row| row.get::<_, String>(0)).unwrap();
         assert_eq!(title("derived"), "Mission Control dragging");
-        assert_eq!(title("provider"), "Mission Control drag");
+        assert_eq!(title("provider"), "Mission Control drag and drop fixes");
         assert_eq!(title("manual"), "My deliberately long personal chat name");
         assert_eq!(backfill_from_messages(&db).unwrap(), 0);
     }
@@ -920,7 +1160,9 @@ mod tests {
                 }
                 total += 1;
                 let id = path.file_stem().unwrap().to_string_lossy().to_string();
-                if let Some(title) = claude_transcript_title(&dir, &id) {
+                // Read by path: looking each one up by id would scan every
+                // project directory once per transcript.
+                if let Some(HarnessTitle { title, .. }) = title_from_transcript_file(&path) {
                     named += 1;
                     println!("{id:<40} {title}");
                     assert!(!title.is_empty());
@@ -944,10 +1186,196 @@ mod tests {
         .expect("transcript");
 
         assert_eq!(
-            claude_transcript_title(&root, "session-42"),
+            claude_transcript_title(&root, "session-42", None).map(|found| found.title),
             Some("Found by id".into())
         );
-        assert_eq!(claude_transcript_title(&root, "missing"), None);
+        assert_eq!(claude_transcript_title(&root, "missing", None), None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chat_is_a_placeholder_label() {
+        // Every direct chat is born "Chat", and was never titled because of it.
+        assert!(needs_title(Some("Chat")));
+        assert!(needs_title(Some("chat")));
+        let db = seeded();
+        db.execute("INSERT INTO sessions(id,title,label,harness) VALUES('d1',NULL,'Chat','codex')", []).unwrap();
+        said(&db, "d1", "fix the model profile migration");
+        assert_eq!(refresh(&db, "d1").unwrap(), Some("Model profile migration".into()));
+        db.execute("INSERT INTO sessions(id,title,label,harness) VALUES('d2',NULL,'Chat','claude')", []).unwrap();
+        said(&db, "d2", "freeze AxonHub output_format drop");
+        assert_eq!(backfill_from_messages(&db).unwrap(), 1);
+        let title: String = db.query_row("SELECT title FROM sessions WHERE id='d2'", [], |row| row.get(0)).unwrap();
+        assert_eq!(title, "Freeze AxonHub output_format");
+    }
+
+    #[test]
+    fn claudes_ai_title_names_a_chat() {
+        let transcript = concat!(
+            r#"{"type":"user","message":{"role":"user"}}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"Slack inbox connector","sessionId":"abc"}"#, "\n",
+        );
+        assert_eq!(title_from_transcript(transcript), Some("Slack inbox connector".into()));
+    }
+
+    #[test]
+    fn a_custom_title_beats_a_later_ai_title() {
+        let transcript = concat!(
+            r#"{"type":"custom-title","customTitle":"Named by hand","sessionId":"abc"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"Named by Claude","sessionId":"abc"}"#, "\n",
+        );
+        assert_eq!(title_from_transcript(transcript), Some("Named by hand".into()));
+    }
+
+    #[test]
+    fn the_last_ai_title_wins() {
+        let transcript = concat!(
+            r#"{"type":"ai-title","aiTitle":"Early guess","sessionId":"abc"}"#, "\n",
+            r#"{"type":"summary","summary":"Old summary"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"Settled topic","sessionId":"abc"}"#, "\n",
+        );
+        assert_eq!(title_from_transcript(transcript), Some("Settled topic".into()));
+    }
+
+    #[test]
+    fn a_title_entry_type_inside_a_message_does_not_name_a_chat() {
+        // Tool output quoting a transcript is not a title entry: the type has to lead.
+        let quoted = r#"{"type":"user","message":{"content":"{\"type\":\"ai-title\",\"aiTitle\":\"Quoted\"}"}}"#;
+        assert_eq!(title_from_transcript(quoted), None);
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("bridge-titles-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_title_in_the_tail_of_a_large_transcript_is_found() {
+        let root = temp_root("tail");
+        let project = root.join("-tmp-big");
+        std::fs::create_dir_all(&project).unwrap();
+        let filler = format!("{}\n", r#"{"type":"assistant","message":{"content":"x"}}"#).repeat(30_000);
+        let body = format!(
+            "{}\n{filler}{}\n{filler}",
+            r#"{"type":"ai-title","aiTitle":"Stale early title"}"#,
+            r#"{"type":"ai-title","aiTitle":"Current topic"}"#,
+        );
+        assert!(body.len() as u64 > 2 * TRANSCRIPT_TAIL_BYTES);
+        std::fs::write(project.join("big.jsonl"), &body).unwrap();
+        // Out of the tail, but the file is small enough to stream.
+        assert_eq!(claude_transcript_title(&root, "big", None).map(|found| found.title), Some("Current topic".into()));
+        let near_end = format!("{filler}{}\n{}", r#"{"type":"ai-title","aiTitle":"Near the end"}"#, &filler[..4_000]);
+        std::fs::write(project.join("tail.jsonl"), near_end).unwrap();
+        assert_eq!(claude_transcript_title(&root, "tail", None).map(|found| found.title), Some("Near the end".into()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_transcript_is_found_through_its_cwd_slug() {
+        let root = temp_root("slug");
+        let cwd = "/Users/me/Library/Application Support/dev.bridge.deck/chats/abc";
+        let project = root.join("-Users-me-Library-Application-Support-dev-bridge-deck-chats-abc");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("s-1.jsonl"), r#"{"type":"ai-title","aiTitle":"Through the slug"}"#).unwrap();
+        assert_eq!(claude_project_slug(cwd), "-Users-me-Library-Application-Support-dev-bridge-deck-chats-abc");
+        assert_eq!(claude_transcript_title(&root, "s-1", Some(cwd)).map(|found| found.title), Some("Through the slug".into()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn stored(db: &Connection, id: &str) -> (Option<String>, Option<String>) {
+        db.query_row("SELECT title,title_source FROM sessions WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+    }
+
+    #[test]
+    fn a_generated_title_is_not_replaced_by_a_derived_one() {
+        let db = seeded();
+        session(&db, "s1", None, "codex");
+        said(&db, "s1", "pls isnt showijng the titles");
+        assert!(commit(&db, "s1", "Missing chat titles", TitleSource::Generated).unwrap());
+        assert!(!commit(&db, "s1", "Pls isnt showijng", TitleSource::Derived).unwrap());
+        assert_eq!(refresh(&db, "s1").unwrap(), None);
+        assert_eq!(backfill_from_messages(&db).unwrap(), 0);
+        assert_eq!(stored(&db, "s1"), (Some("Missing chat titles".into()), Some("generated".into())));
+    }
+
+    #[test]
+    fn a_provider_title_replaces_a_generated_one() {
+        let db = seeded();
+        session(&db, "s1", None, "claude");
+        assert!(commit(&db, "s1", "Missing chat titles", TitleSource::Generated).unwrap());
+        assert!(commit(&db, "s1", "Chat titles backfill and display", TitleSource::Provider).unwrap());
+        assert!(!commit(&db, "s1", "Something generated later", TitleSource::Generated).unwrap());
+        assert_eq!(stored(&db, "s1"), (Some("Chat titles backfill and display".into()), Some("provider".into())));
+    }
+
+    #[test]
+    fn a_provider_title_follows_claudes_newer_title() {
+        let root = temp_root("follow");
+        let project = root.join("p");
+        std::fs::create_dir_all(&project).unwrap();
+        let path = project.join("prov-9.jsonl");
+        std::fs::write(&path, r#"{"type":"ai-title","aiTitle":"First topic"}"#).unwrap();
+        let db = seeded();
+        db.execute("INSERT INTO sessions(id,title,label,harness,provider_session_id) VALUES('s1',NULL,'Chat','claude','prov-9')", []).unwrap();
+        let name = |db: &Connection| {
+            let plan = plan(db, "s1").unwrap().unwrap();
+            let title = claude_transcript_title(&root, plan.provider_session_id.as_deref().unwrap(), None).unwrap();
+            commit(db, "s1", &title.title, TitleSource::Provider).unwrap()
+        };
+        assert!(name(&db));
+        std::fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"First topic\"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Where it ended up\"}").unwrap();
+        assert!(name(&db));
+        assert_eq!(stored(&db, "s1"), (Some("Where it ended up".into()), Some("provider".into())));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_user_title_is_never_replaced() {
+        let db = seeded();
+        session(&db, "s1", Some("Chosen by hand"), "claude");
+        for source in [TitleSource::Derived, TitleSource::Generated, TitleSource::Provider] {
+            assert!(!commit(&db, "s1", "Automatic name", source).unwrap());
+        }
+        assert_eq!(stored(&db, "s1"), (Some("Chosen by hand".into()), None));
+        assert_eq!(current_rank(Some("Chosen by hand"), "Chat", None), USER_RANK);
+    }
+
+    #[test]
+    fn a_harness_title_must_share_a_topic_word_with_what_was_said() {
+        // Seen on a real store: Claude named these chats after Bridge's own
+        // session context or a resume, not after what the person asked.
+        assert!(!grounded("Bridge session capabilities", "We have found a lot of bugs in dyanamo in the past weeks"));
+        assert!(!grounded("Bridge credential proxy verification", "Please review trhis PR https://github.com/o/kairo/pull/65"));
+        assert!(!grounded("Continue work", "I want you to create two issues, one for chat defaults"));
+        assert!(!grounded("Session start", "hi"));
+        assert!(!grounded("Make a PR", "read agents.md and then find a bug in switchyard"));
+        // And these are what the person was talking about.
+        assert!(grounded("LINE WORKS account suspension", "why was our line works account suspended?"));
+        assert!(grounded("Issue 836 review", "look at issue 836 and document it"));
+        assert!(grounded("Chat titles backfill and display", "make a backfill queue job so past chats have ttitles"));
+        assert!(grounded("Kairo PR review", "review https://github.com/o/kairo/pull/65"));
+    }
+
+    #[test]
+    fn a_name_the_user_chose_in_claude_needs_no_grounding() {
+        let mut titles = TranscriptTitles::default();
+        titles.observe(r#"{"type":"custom-title","customTitle":"Friday sync","sessionId":"a"}"#);
+        assert_eq!(titles.best(), Some(HarnessTitle { title: "Friday sync".into(), chosen: true }));
+        let mut titles = TranscriptTitles::default();
+        titles.observe(r#"{"type":"ai-title","aiTitle":"Continue work","sessionId":"a"}"#);
+        assert_eq!(titles.best(), Some(HarnessTitle { title: "Continue work".into(), chosen: false }));
+    }
+
+    #[test]
+    fn grounding_reads_the_first_and_latest_messages() {
+        let db = seeded();
+        session(&db, "s1", None, "claude");
+        said(&db, "s1", "look at the dynamo router");
+        for _ in 0..10 { said(&db, "s1", "ok"); }
+        said(&db, "s1", "now the sentry alerts");
+        let text = grounding_text(&db, "s1").unwrap();
+        assert!(text.contains("dynamo router") && text.contains("sentry alerts"));
     }
 }

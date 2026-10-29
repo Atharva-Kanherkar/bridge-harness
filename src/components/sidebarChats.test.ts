@@ -341,7 +341,7 @@ describe("live agents under an idle chat", () => {
 
 describe("chatName", () => {
   it("names an untitled chat still wearing a placeholder label New chat", () => {
-    for (const label of ["Orchestrator", "Bridge orchestrator", "New chat"]) expect(chatName({ title: null, label })).toBe("New chat");
+    for (const label of ["Orchestrator", "Bridge orchestrator", "New chat", "Chat"]) expect(chatName({ title: null, label })).toBe("New chat");
   });
 
   it("keeps a real title, and a real label", () => {
