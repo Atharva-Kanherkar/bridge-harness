@@ -106,7 +106,8 @@ import { useComposerSuggestion } from "./useComposerSuggestion";
 import { ComposerSlashMenu } from "./components/ComposerSlashMenu";
 import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus";
 import { composerSlashMatches, composerSlashToken, insertComposerSlash } from "./composerSlash";
-import { projectSessionConversation, reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
+import { reduceConversation, undeliveredPending, userTurnWatermark, type ConversationItem } from "./conversation";
+import { projectSessionConversationCached } from "./transcript/projectionCache";
 import { resolveProfileOption } from "./modelProfiles";
 import { readAgentOnboardingComplete, shouldShowAgentOnboarding, writeAgentOnboardingComplete } from "./onboarding";
 import { resolveAsideModel } from "./asideModel";
@@ -1198,7 +1199,7 @@ function AppContent() {
     if (!session) return false;
     if (session.activeTurnId || session.status === "working") return true;
     if (pendingForSession.length > 0) return true;
-    const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    const durable = forest?.entries?.length ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
     return durable.some(item => item.type === "message" && item.role === "user");
   }, [forest, pendingForSession.length, session]);
   // Three signals, oldest to newest: the provider acknowledged a turn, Bridge
@@ -1569,7 +1570,7 @@ function AppContent() {
   useEffect(() => {
     setPending(current => {
       if (!current.length) return current;
-      const durableRows = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+      const durableRows = forest?.entries?.length ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
       return undeliveredPending(current, agentEvents, { sessionId: session?.id, durableRows });
     });
   }, [agentEvents, forest, session?.id]);
@@ -2411,7 +2412,7 @@ function AppContent() {
   function sendWatermark(sessionId: string, text: string): number | undefined {
     const live = reduceConversation(agentEvents.filter(event => event.sessionId === sessionId));
     const durable: ConversationItem[] = forest?.sessionId === sessionId && forest.entries?.length
-      ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+      ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [];
     return userTurnWatermark(text, live, durable);
   }
   /// The delivery core both composers share: prepare, cold-start if needed,
@@ -2677,7 +2678,7 @@ function AppContent() {
   const retryPayload = useMemo(() => signInRetryPayload(
     loginRetry,
     session?.id,
-    loginRetry && !loginRetry.payload && forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [],
+    loginRetry && !loginRetry.payload && forest?.entries?.length ? projectSessionConversationCached(forest.entries, forest.head?.activeEntryId ?? null) : [],
   ), [forest, loginRetry, session?.id]);
   const retryAfterSignIn = retryPayload ? () => { void sendPrompt(retryPayload.text, retryPayload.attachments); } : undefined;
   // Rethrow without also raising the global corner alert: the approval/question
