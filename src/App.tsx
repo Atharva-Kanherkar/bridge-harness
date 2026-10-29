@@ -10,7 +10,7 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useId, use
 import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
-import type { ResolveReferenceResult } from "./protocol/generated/protocol";
+import type { ResolveReferenceResult, WorkflowDraft } from "./protocol/generated/protocol";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
@@ -495,6 +495,20 @@ function AppContent() {
       return next;
     });
   };
+  // Sidebar "Save as workflow…": draft from the chat (no model call) and open
+  // the Workflows page with the editor prefilled. Nothing is saved yet.
+  const [workflowDraft, setWorkflowDraft] = useState<WorkflowDraft | null>(null);
+  const clearWorkflowDraft = useCallback(() => setWorkflowDraft(null), []);
+  const saveChatAsWorkflow = async (chat: Session) => {
+    try {
+      const { draft } = await bridgeApi.draftWorkflowFromSession(chat.id);
+      setWorkflowDraft(draft);
+      setView("workflows");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   // Sidebar "Fork chat…": the dialog needs an entry to fork at, so resolve the
   // chat's head first. A chat with no messages has nothing to fork.
   const forkChatFromSidebar = async (chat: Session) => {
@@ -3139,6 +3153,7 @@ function AppContent() {
       // a mention there would land in a composer nobody can see.
       onMentionChat={session ? mentionChat : undefined}
       onForkChat={chat => void forkChatFromSidebar(chat)}
+      onSaveChatAsWorkflow={chat => void saveChatAsWorkflow(chat)}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
       showWindowNav
@@ -3196,7 +3211,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
+      /> : view === "workflows" ? <Suspense fallback={<PanelLoading label="Opening workflows…"/>}><WorkflowsScreen projects={state.projects} onContinueInChat={result => { setState(result.state); openSession(result.sessionId); }} initialDraft={workflowDraft} onDraftOpened={clearWorkflowDraft} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "gitplace" ? <GitplaceScreen
         workspaces={state.workspaces}
         projects={state.projects}
         onJumpToFile={jumpFromGitplace}

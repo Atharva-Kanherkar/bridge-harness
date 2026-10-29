@@ -5949,6 +5949,37 @@ pub fn always_allow_tool(core: &Arc<BridgeCore>, params: &wire::AlwaysAllowToolP
     Ok(wire::AlwaysAllowToolResult { workflow: saved.workflow, resolution })
 }
 
+/// What drafting may know: Claude's connector servers, the person's
+/// timezone, and Claude's fast default model.
+fn workflow_draft_context(core: &Arc<BridgeCore>, servers: Vec<wire::WorkflowServerOption>) -> crate::workflow_draft::DraftContext {
+    crate::workflow_draft::DraftContext {
+        servers,
+        timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
+        harness: "claude".into(),
+        model: core
+            .adapter_registry
+            .resolve_model("claude", CapabilityTier::Fast, None)
+            .map(|resolution| resolution.actual_model)
+            .unwrap_or_else(|_| "haiku".into()),
+    }
+}
+
+/// Draft from a sentence: one tool-less turn, then Rust's rules. Never saved.
+pub fn draft_workflow_from_text(core: &Arc<BridgeCore>, params: &wire::DraftWorkflowFromTextParams) -> Result<wire::WorkflowDraftResult, BridgeError> {
+    let context = workflow_draft_context(core, workflow_options(core).servers);
+    let mut model = crate::workflow_draft::ClaudeDraftModel::new(core, &context.model);
+    let draft = crate::workflow_draft::draft_from_text(&params.text, params.project_id.clone(), &context, &mut model)?;
+    Ok(wire::WorkflowDraftResult { draft })
+}
+
+/// Draft from a chat: no model call. Never saved.
+pub fn draft_workflow_from_session(core: &Arc<BridgeCore>, params: &wire::DraftWorkflowFromSessionParams) -> Result<wire::WorkflowDraftResult, BridgeError> {
+    let configured: Vec<String> = crate::marketplace::claude_sdk_configuration().mcp_servers.into_keys().collect();
+    let context = workflow_draft_context(core, Vec::new());
+    let draft = crate::workflow_draft::draft_from_session(&core.db.lock().unwrap(), &params.session_id, &configured, &context)?;
+    Ok(wire::WorkflowDraftResult { draft })
+}
+
 pub fn read_workflow_settings(core: &Arc<BridgeCore>) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
     crate::workflow_trigger::read_settings(&core.db.lock().unwrap())
 }

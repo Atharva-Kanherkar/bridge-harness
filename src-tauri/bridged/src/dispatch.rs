@@ -1101,6 +1101,14 @@ pub fn dispatch(
             reply(api::list_workflow_runs(core, &p))
         }
         MethodName::ReadWorkflowSettings => reply(api::read_workflow_settings(core)),
+        MethodName::DraftWorkflowFromText => {
+            let p: wire::DraftWorkflowFromTextParams = decode(method, params)?;
+            reply(api::draft_workflow_from_text(core, &p))
+        }
+        MethodName::DraftWorkflowFromSession => {
+            let p: wire::DraftWorkflowFromSessionParams = decode(method, params)?;
+            reply(api::draft_workflow_from_session(core, &p))
+        }
         MethodName::AlwaysAllowTool => {
             let p: wire::AlwaysAllowToolParams = decode(method, params)?;
             reply(api::always_allow_tool(core, &p))

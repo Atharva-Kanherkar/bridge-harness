@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2, LoaderCircle, Play, Plus, Settings2, Workflow as WorkflowIcon } from "lucide-react";
+import { FolderGit2, LoaderCircle, Play, Plus, Settings2, Sparkles, Workflow as WorkflowIcon } from "lucide-react";
 import { bridgeApi } from "../api";
-import type { ForkSessionResult, Project, Workflow, WorkflowDefinition, WorkflowOptions, WorkflowRun, WorkflowSettingsSnapshot, WorkflowSummary } from "../protocol/generated/protocol";
+import type { ForkSessionResult, Project, Workflow, WorkflowDefinition, WorkflowDraft, WorkflowOptions, WorkflowRun, WorkflowSettingsSnapshot, WorkflowSummary } from "../protocol/generated/protocol";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ import { RUN_STATUS_LABEL, relativeTime, runTone, triggerSummary } from "./workf
 import { CHIP, Dot, ErrorNote, StatusChip, errorText } from "./workflows/parts";
 
 type Tab = "workflows" | "native";
-type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null } | null;
+type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null; notes?: string[] } | null;
 
 const requestId = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
 
@@ -24,10 +24,13 @@ function summaryStatus(row: WorkflowSummary): { label: string; tone: "ok" | "war
   return { label: "active", tone: "ok" };
 }
 
-export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "workflows" }: {
+export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "workflows", initialDraft = null, onDraftOpened }: {
   projects: Project[];
   onContinueInChat: (result: ForkSessionResult) => void;
   initialTab?: Tab;
+  /** A draft made elsewhere (Save as workflow), opened in the editor once. */
+  initialDraft?: WorkflowDraft | null;
+  onDraftOpened?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [rows, setRows] = useState<WorkflowSummary[] | null>(null);
@@ -42,6 +45,8 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
+  const [describe, setDescribe] = useState("");
+  const [drafting, setDrafting] = useState(false);
   const selectedId = useRef<string | null>(null);
   selectedId.current = selected?.id ?? null;
   const now = Date.now();
@@ -83,6 +88,31 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
     void bridgeApi.onWorkflowRunChanged(follow).then(stop => disposed ? stop() : unlisten.push(stop));
     return () => { disposed = true; unlisten.forEach(stop => stop()); };
   }, [refreshList, refreshSelected]);
+
+  useEffect(() => {
+    if (!initialDraft) return;
+    setEditorError(null);
+    setSelected(null);
+    setEditing({ workflow: null, initial: initialDraft.definition, notes: initialDraft.notes });
+    onDraftOpened?.();
+  }, [initialDraft, onDraftOpened]);
+
+  const draftFromText = async () => {
+    const text = describe.trim();
+    if (!text) return;
+    setDrafting(true);
+    setError(null);
+    try {
+      const { draft } = await bridgeApi.draftWorkflowFromText(text);
+      setEditorError(null);
+      setEditing({ workflow: null, initial: draft.definition, notes: draft.notes });
+      setDescribe("");
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setDrafting(false);
+    }
+  };
 
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -148,6 +178,13 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   } else {
     body = <>
       {heading}
+      <form className="mb-5 flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2" onSubmit={event => { event.preventDefault(); void draftFromText(); }}>
+        <Sparkles size={14} className="shrink-0 text-muted-foreground"/>
+        <input aria-label="Describe a job" value={describe} onChange={event => setDescribe(event.target.value)} disabled={drafting}
+          placeholder={'Describe a job: "every weekday at 9, summarise my Slack mentions and Linear issues"'}
+          className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground"/>
+        <Button size="xs" type="submit" disabled={drafting || !describe.trim()}>{drafting ? <LoaderCircle className="animate-spin" size={12}/> : null}Draft it</Button>
+      </form>
       <div className="u-segmented w-fit" role="tablist" aria-label="Workflows sections">
         <button type="button" role="tab" data-active={tab === "workflows"} aria-selected={tab === "workflows"} className="u-segmented-item" onClick={() => setTab("workflows")}>Workflows</button>
         <button type="button" role="tab" data-active={tab === "native"} aria-selected={tab === "native"} className="u-segmented-item" onClick={() => setTab("native")}>Native schedules</button>
@@ -191,7 +228,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   return <div className="h-full min-h-0 overflow-y-auto"><div className={SCREEN_CONTENT}>
     {body}
     <ErrorNote message={error}/>
-    <WorkflowEditor key={editing ? (editing.workflow?.revisionId ?? "new") : "closed"} open={!!editing} workflow={editing?.workflow ?? null} initial={editing?.initial ?? null}
+    <WorkflowEditor key={editing ? (editing.workflow?.revisionId ?? (editing.initial ? `draft-${editing.initial.name}` : "new")) : "closed"} open={!!editing} workflow={editing?.workflow ?? null} initial={editing?.initial ?? null} notes={editing?.notes ?? []}
       options={options} projects={projects} busy={busy} error={editorError} onCancel={() => setEditing(null)} onSubmit={submit => void submitEditor(submit)}/>
     <Dialog open={confirmDelete} onOpenChange={next => { if (!next && !busy) setConfirmDelete(false); }}>{confirmDelete && selected && <DialogContent showCloseButton={!busy}>
       <DialogHeader><DialogTitle>Delete this workflow?</DialogTitle><DialogDescription>Its runs and their record go too. Chats you continued from a run stay.</DialogDescription></DialogHeader>

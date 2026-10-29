@@ -477,6 +477,8 @@ typed_methods![
     (ReadWorkflowSettings, _, WorkflowSettingsSnapshot),
     (WriteWorkflowSettings, WriteWorkflowSettingsParams, WorkflowSettingsSnapshot),
     (AlwaysAllowTool, AlwaysAllowToolParams, AlwaysAllowToolResult),
+    (DraftWorkflowFromText, DraftWorkflowFromTextParams, WorkflowDraftResult),
+    (DraftWorkflowFromSession, DraftWorkflowFromSessionParams, WorkflowDraftResult),
 ];
 
 /// The documented exceptions to result typing: every method whose result is

@@ -273,7 +273,9 @@ export type BridgeMethod =
   | "workflows/list_workflow_runs"
   | "workflows/read_workflow_settings"
   | "workflows/write_workflow_settings"
-  | "workflows/always_allow_tool";
+  | "workflows/always_allow_tool"
+  | "workflows/draft_workflow_from_text"
+  | "workflows/draft_workflow_from_session";
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
@@ -543,6 +545,8 @@ export const BRIDGE_METHODS = [
   { method: "workflows/read_workflow_settings", domain: "workflows", command: "read_workflow_settings" },
   { method: "workflows/write_workflow_settings", domain: "workflows", command: "write_workflow_settings" },
   { method: "workflows/always_allow_tool", domain: "workflows", command: "always_allow_tool" },
+  { method: "workflows/draft_workflow_from_text", domain: "workflows", command: "draft_workflow_from_text" },
+  { method: "workflows/draft_workflow_from_session", domain: "workflows", command: "draft_workflow_from_session" },
 ] as const;
 
 export type BridgeNotification =
@@ -891,6 +895,8 @@ export interface BridgeMethodParams {
   "workflows/read_workflow_settings": undefined;
   "workflows/write_workflow_settings": WriteWorkflowSettingsParams;
   "workflows/always_allow_tool": AlwaysAllowToolParams;
+  "workflows/draft_workflow_from_text": DraftWorkflowFromTextParams;
+  "workflows/draft_workflow_from_session": DraftWorkflowFromSessionParams;
 }
 
 /** Result types for every registered method. */
@@ -1162,6 +1168,8 @@ export interface BridgeMethodResults {
   "workflows/read_workflow_settings": WorkflowSettingsSnapshot;
   "workflows/write_workflow_settings": WorkflowSettingsSnapshot;
   "workflows/always_allow_tool": AlwaysAllowToolResult;
+  "workflows/draft_workflow_from_text": WorkflowDraftResult;
+  "workflows/draft_workflow_from_session": WorkflowDraftResult;
 }
 
 export type ActiveTurnInput = "steer" | "queue";
@@ -3104,6 +3112,11 @@ export interface WorkflowDefinition {
   projectId?: string | null;
   steps: WorkflowStep[];
   trigger: WorkflowTrigger;
+}
+
+export interface WorkflowDraft {
+  definition: WorkflowDefinition;
+  notes: string[];
 }
 
 export type WorkflowFiles = "none" | "worktree";
@@ -5080,6 +5093,19 @@ export interface AlwaysAllowToolParams {
 export interface AlwaysAllowToolResult {
   resolution: InteractionResolutionResult;
   workflow: Workflow;
+}
+
+export interface DraftWorkflowFromTextParams {
+  projectId?: string | null;
+  text: string;
+}
+
+export interface WorkflowDraftResult {
+  draft: WorkflowDraft;
+}
+
+export interface DraftWorkflowFromSessionParams {
+  sessionId: string;
 }
 
 export interface VoiceTranscriptEvent {
