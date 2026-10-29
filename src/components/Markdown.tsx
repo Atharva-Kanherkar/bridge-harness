@@ -6,6 +6,7 @@ import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from ".
 import { isExternalUrl } from "../externalLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 import { StoragePlanCard } from "./StoragePlanCard";
+import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
 
 type Block =
@@ -318,8 +319,13 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   // the very first render after a change already falls back to plain.
   const [cache, setCache] = useState<{ body: string; lang: string; html: string } | null>(null);
   const html = cache && cache.body === body && cache.lang === lang ? cache.html : escapeHtml(body);
+  // A long chat can hold dozens of fences, all mounted when the reader jumps
+  // into older history. Only the ones that reach the viewport are worth a
+  // tokenization pass; the rest stay plain until they are scrolled to.
+  const [blockRef, visible] = useInViewport<HTMLDivElement>();
 
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     // Debounced: see `COLORIZE_DEBOUNCE_MS` — a streaming reply re-renders
     // this on every delta, and a still-growing fence shouldn't schedule a
@@ -328,10 +334,10 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
       void colorizeCode(body, lang).then(result => { if (live) setCache({ body, lang, html: result }); });
     }, COLORIZE_DEBOUNCE_MS);
     return () => { live = false; window.clearTimeout(timer); };
-  }, [body, lang]);
+  }, [body, lang, visible]);
   const label = normalizeLang(lang) || lang.toLowerCase() || "text";
   return (
-    <div className="code-block">
+    <div ref={blockRef} className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{label}</span>
         <CopyButton text={body} className="code-block-copy" />

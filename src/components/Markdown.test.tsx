@@ -281,6 +281,24 @@ describe("copy affordances (interactive)", () => {
   });
 });
 
+class MockIntersectionObserver {
+  static instances: MockIntersectionObserver[] = [];
+  readonly callback: IntersectionObserverCallback;
+  readonly observed: Element[] = [];
+  disconnected = false;
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+    MockIntersectionObserver.instances.push(this);
+  }
+  observe(element: Element) { this.observed.push(element); }
+  unobserve() { /* one-shot hook never unobserves */ }
+  disconnect() { this.disconnected = true; }
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+  trigger(isIntersecting: boolean) {
+    this.callback([{ isIntersecting } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+  }
+}
+
 describe("CodeBlock async colorization", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -289,6 +307,7 @@ describe("CodeBlock async colorization", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     pending = [];
+    MockIntersectionObserver.instances = [];
     vi.spyOn(highlight, "colorizeCode").mockImplementation(() => new Promise(resolve => { pending.push(resolve); }));
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -299,6 +318,7 @@ describe("CodeBlock async colorization", () => {
     act(() => { root.unmount(); });
     container.remove();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -357,6 +377,35 @@ describe("CodeBlock async colorization", () => {
     expect(code.innerHTML).toBe("&lt;script&gt;&amp;&lt;/script&gt;");
     expect(code.textContent).toBe(body);
     expect(code.querySelector("script, .stx-keyword")).toBeNull();
+  });
+
+  it("does not colorize a block that has never been in the viewport", () => {
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    startColorization();
+    expect(highlight.colorizeCode).not.toHaveBeenCalled();
+    expect((container.querySelector("code.stx") as HTMLElement).innerHTML).toBe("const x = 1;");
+  });
+
+  it("colorizes once the block reaches the viewport and keeps it after it leaves", async () => {
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    act(() => { root.render(<Markdown text={"```ts\nconst x = 1;\n```"} />); });
+    const observer = MockIntersectionObserver.instances[0];
+    startColorization();
+    expect(highlight.colorizeCode).not.toHaveBeenCalled();
+
+    act(() => observer.trigger(true));
+    startColorization();
+    expect(highlight.colorizeCode).toHaveBeenCalledTimes(1);
+    expect(highlight.colorizeCode).toHaveBeenCalledWith("const x = 1;", "ts");
+    await act(async () => { pending[0](colored("x")); });
+    const code = container.querySelector("code.stx") as HTMLElement;
+    expect(code.innerHTML).toBe(colored("x"));
+
+    act(() => observer.trigger(false));
+    startColorization();
+    expect(highlight.colorizeCode).toHaveBeenCalledTimes(1);
+    expect(code.innerHTML).toBe(colored("x"));
   });
 });
 
