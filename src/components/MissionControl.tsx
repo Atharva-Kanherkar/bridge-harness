@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUpRight, Hand, LayoutGrid, Maximize2, Minimize2, MessageSquarePlus, Pin, PinOff, Square, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import type { WorkflowRun } from "../protocol/generated/protocol";
+import { WorkflowRunsStrip } from "./workflows/WorkflowInbox";
 import { useShowWorkerChatsInMissionControl } from "../missionControlSettings";
 import { cn } from "@/lib/utils";
 import { MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
@@ -25,6 +27,10 @@ export type MissionControlProps = {
   onFocusSession: (sessionId: string) => void;
   onStopWorker?: (childSessionId: string) => Promise<void>;
   onNewChat?: (workspaceId: string) => void;
+  /** Workflow runs, for the strip of active ones; opening one goes to its run view. */
+  workflowRuns?: WorkflowRun[];
+  workflowNames?: Map<string, string>;
+  onOpenWorkflowRun?: (run: WorkflowRun) => void;
 };
 
 const ACTIVE_STATUSES = new Set<Session["status"]>(["working", "waiting", "starting", "resuming", "checkpointing"]);
@@ -265,7 +271,7 @@ function SplitTree({ node, path = "", actions }: { node: PaneNode; path?: string
   </div>;
 }
 
-export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat }: MissionControlProps) {
+export function MissionControl({ sessions, workspaces, projects = [], events, activeSessionId, onFocusSession, onStopWorker, onNewChat, workflowRuns = [], workflowNames, onOpenWorkflowRun }: MissionControlProps) {
   const [forests, setForests] = useState<Record<string, SessionForestSnapshot>>({});
   const [stored, setStored] = useState(() => readLayout());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -387,6 +393,7 @@ export function MissionControl({ sessions, workspaces, projects = [], events, ac
     className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar", dropOnCanvas && !root && "ring-2 ring-inset ring-ring")}>
     {/* the window title already reads "Mission Control"; this bar is the board's state. */}
     <h1 className="sr-only">Mission Control</h1>
+    {onOpenWorkflowRun && <div className="shrink-0 px-3 pt-3 empty:hidden"><WorkflowRunsStrip runs={workflowRuns} names={workflowNames ?? new Map()} onOpenRun={onOpenWorkflowRun}/></div>}
     {root && <div role="toolbar" aria-label="Board" className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-background px-3 text-xs">
       <div className="relative flex shrink-0 items-center gap-3">
         {/* announces only what needs you; the working count changes too often to speak. */}

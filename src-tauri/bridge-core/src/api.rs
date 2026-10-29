@@ -5980,6 +5980,12 @@ pub fn draft_workflow_from_session(core: &Arc<BridgeCore>, params: &wire::DraftW
     Ok(wire::WorkflowDraftResult { draft })
 }
 
+pub fn mark_workflow_runs_read(core: &Arc<BridgeCore>, params: &wire::MarkWorkflowRunsReadParams) -> Result<wire::UnitResult, BridgeError> {
+    let changed = crate::workflow_trigger::mark_read(&core.db.lock().unwrap(), &params.run_ids)?;
+    crate::workflow_trigger::publish_runs(core, &changed);
+    Ok(wire::UnitResult(()))
+}
+
 pub fn read_workflow_settings(core: &Arc<BridgeCore>) -> Result<wire::WorkflowSettingsSnapshot, BridgeError> {
     crate::workflow_trigger::read_settings(&core.db.lock().unwrap())
 }

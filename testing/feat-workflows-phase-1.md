@@ -162,7 +162,7 @@ One new migration (the next `LATEST_SCHEMA_VERSION`, 67 at the time of writing).
 - F35. Approve from the inbox resumes the run; decline skips that write and the run continues; "Always allow" behaves as C9.
 - F36. Opening a run clears its unread flag; the flag survives restart.
 - F37. Each run status change notifies at most once: failures and approvals always, successes only with `notify.onSuccess`.
-- F38. Running workflow runs appear in Mission Control and the dock's Agents pane.
+- F38. Running workflow runs appear in a strip on Mission Control that opens each run. They are not in the dock's Agents pane, which lists a chat's own agents: a run has no parent chat.
 
 ## Epic acceptance, mapped
 
@@ -245,7 +245,7 @@ Frontend, colocated vitest (`// @vitest-environment jsdom` where it mounts):
 - V-4 the run view calls `sessions/fork_session` on "Continue in chat" (F29)
 - V-5 the inbox orders, approves, declines and clears unread (F34 to F36)
 - V-6 the draft form is prefilled and saves nothing until confirmed (F30)
-- V-7 a running workflow run appears in Mission Control and the dock Agents pane (F38)
+- V-7 a running workflow run appears in Mission Control's workflow strip and opens its run (F38)
 
 ## Integration / Functional Tests
 

@@ -1109,6 +1109,10 @@ pub fn dispatch(
             let p: wire::DraftWorkflowFromSessionParams = decode(method, params)?;
             reply(api::draft_workflow_from_session(core, &p))
         }
+        MethodName::MarkWorkflowRunsRead => {
+            let p: wire::MarkWorkflowRunsReadParams = decode(method, params)?;
+            reply(api::mark_workflow_runs_read(core, &p))
+        }
         MethodName::AlwaysAllowTool => {
             let p: wire::AlwaysAllowToolParams = decode(method, params)?;
             reply(api::always_allow_tool(core, &p))

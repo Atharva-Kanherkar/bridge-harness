@@ -1883,6 +1883,13 @@
       "method": "workflows/draft_workflow_from_session",
       "paramsSchema": "draft-workflow-from-session-params.json",
       "resultSchema": "workflow-draft-result.json"
+    },
+    {
+      "command": "mark_workflow_runs_read",
+      "domain": "workflows",
+      "method": "workflows/mark_workflow_runs_read",
+      "paramsSchema": "mark-workflow-runs-read-params.json",
+      "resultSchema": "unit-result.json"
     }
   ],
   "protocolVersion": {

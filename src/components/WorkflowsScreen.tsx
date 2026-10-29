@@ -12,8 +12,10 @@ import { WorkflowEditor, type EditorSubmit } from "./workflows/WorkflowEditor";
 import { WorkflowRunView } from "./workflows/WorkflowRunView";
 import { RUN_STATUS_LABEL, relativeTime, runTone, triggerSummary } from "./workflows/format";
 import { CHIP, Dot, ErrorNote, StatusChip, errorText } from "./workflows/parts";
+import { WorkflowInbox } from "./workflows/WorkflowInbox";
+import { needsYouCount } from "./workflows/notify";
 
-type Tab = "workflows" | "native";
+type Tab = "workflows" | "inbox" | "native";
 type Editing = { workflow: Workflow | null; initial?: WorkflowDefinition | null; notes?: string[] } | null;
 
 const requestId = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
@@ -24,13 +26,16 @@ function summaryStatus(row: WorkflowSummary): { label: string; tone: "ok" | "war
   return { label: "active", tone: "ok" };
 }
 
-export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "workflows", initialDraft = null, onDraftOpened }: {
+export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "workflows", initialDraft = null, onDraftOpened, focusRun = null, onRunFocused }: {
   projects: Project[];
   onContinueInChat: (result: ForkSessionResult) => void;
   initialTab?: Tab;
   /** A draft made elsewhere (Save as workflow), opened in the editor once. */
   initialDraft?: WorkflowDraft | null;
   onDraftOpened?: () => void;
+  /** A run to open on arrival (from Mission Control or a notification). */
+  focusRun?: { workflowId: string; runId: string } | null;
+  onRunFocused?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [rows, setRows] = useState<WorkflowSummary[] | null>(null);
@@ -45,6 +50,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
+  const [allRuns, setAllRuns] = useState<WorkflowRun[]>([]);
   const [describe, setDescribe] = useState("");
   const [drafting, setDrafting] = useState(false);
   const selectedId = useRef<string | null>(null);
@@ -53,7 +59,9 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
 
   const refreshList = useCallback(async () => {
     try {
-      setRows((await bridgeApi.listWorkflows()).workflows);
+      const [list, recent] = await Promise.all([bridgeApi.listWorkflows(), bridgeApi.listWorkflowRuns({ limit: 100 })]);
+      setAllRuns(recent.runs);
+      setRows(list.workflows);
     } catch (reason) {
       setError(errorText(reason));
       setRows(current => current ?? []);
@@ -129,6 +137,26 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   };
 
   const open = (id: string) => void act(() => refreshSelected(id));
+  // Opening a run reads it: the inbox and the sidebar count stop asking.
+  const openRunOf = useCallback(async (run: WorkflowRun) => {
+    await refreshSelected(run.workflowId);
+    setOpenRun(run);
+    if (run.unread) {
+      await bridgeApi.markWorkflowRunsRead([run.id]).catch(() => {});
+      setAllRuns(current => current.map(candidate => candidate.id === run.id ? { ...candidate, unread: false } : candidate));
+    }
+  }, [refreshSelected]);
+
+  useEffect(() => {
+    if (!focusRun) return;
+    bridgeApi.listWorkflowRuns({ workflowId: focusRun.workflowId, limit: 50 })
+      .then(({ runs: found }) => {
+        const run = found.find(candidate => candidate.id === focusRun.runId);
+        if (run) void openRunOf(run);
+      })
+      .catch(reason => setError(errorText(reason)))
+      .finally(() => onRunFocused?.());
+  }, [focusRun, onRunFocused, openRunOf]);
   const runWorkflow = (workflowId: string, dryRun: boolean) => act(async () => {
     const result = await bridgeApi.runWorkflow(workflowId, requestId(), dryRun);
     await refreshSelected(workflowId);
@@ -174,7 +202,7 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       onApprove={() => void act(() => bridgeApi.approveWorkflow(selected.id, selected.revisionId))}
       onEdit={() => { setEditorError(null); setEditing({ workflow: selected }); }}
       onDelete={() => setConfirmDelete(true)}
-      onOpenRun={setOpenRun}/>;
+      onOpenRun={run => void act(() => openRunOf(run))}/>;
   } else {
     body = <>
       {heading}
@@ -187,9 +215,14 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
       </form>
       <div className="u-segmented w-fit" role="tablist" aria-label="Workflows sections">
         <button type="button" role="tab" data-active={tab === "workflows"} aria-selected={tab === "workflows"} className="u-segmented-item" onClick={() => setTab("workflows")}>Workflows</button>
+        <button type="button" role="tab" data-active={tab === "inbox"} aria-selected={tab === "inbox"} className="u-segmented-item" onClick={() => setTab("inbox")}>
+          <span className="inline-flex items-center gap-1.5">Inbox{needsYouCount(allRuns) > 0 && <span aria-label={`${needsYouCount(allRuns)} need you`} className="rounded-full bg-foreground px-1.5 text-[10px] font-semibold leading-4 text-background">{needsYouCount(allRuns)}</span>}</span>
+        </button>
         <button type="button" role="tab" data-active={tab === "native"} aria-selected={tab === "native"} className="u-segmented-item" onClick={() => setTab("native")}>Native schedules</button>
       </div>
-      {tab === "native" ? <div className="mt-4"><AutomationsPanel embedded/></div> : rows === null
+      {tab === "native" ? <div className="mt-4"><AutomationsPanel embedded/></div>
+        : tab === "inbox" ? <WorkflowInbox runs={allRuns} names={new Map((rows ?? []).map(row => [row.id, row.name]))} onOpenRun={run => void act(() => openRunOf(run))} onChanged={() => void refreshList()}/>
+        : rows === null
         ? <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15}/>Loading workflows…</div>
         : rows.length === 0
           ? <div className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-border px-6 py-12 text-center">

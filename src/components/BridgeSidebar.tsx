@@ -373,12 +373,15 @@ function ActionRow({
   active = false,
   disabled = false,
   chord,
+  badge = 0,
 }: {
   icon: LucideIcon;
   label: string;
   onClick: () => void;
   active?: boolean;
   disabled?: boolean;
+  /** A count of things waiting on the person; nothing shows at zero. */
+  badge?: number;
   /** Advertise the row's binding in its tooltip, read from the keymap so the
    *  two cannot disagree. The accessible name stays the plain label. */
   chord?: CommandId;
@@ -399,6 +402,7 @@ function ActionRow({
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       {label}
+      {badge > 0 && <span className="ml-auto rounded-full bg-foreground px-1.5 text-[10px] font-semibold leading-4 text-background">{badge}</span>}
     </button>
   );
 }
@@ -433,6 +437,8 @@ export type BridgeSidebarProps = {
   onOpenSavedSetups?: () => void;
   onOpenWorkflows?: () => void;
   workflowsActive?: boolean;
+  /** Workflow runs waiting on the person plus unread results. */
+  workflowsBadge?: number;
   /** Per-project "+" on a project group header, grouped-by-project only —
    * skips the picker step since the group already names the workspace. */
   onNewChatInProject?: (workspaceId: string) => void;
@@ -496,6 +502,7 @@ export function BridgeSidebar({
   onOpenSavedSetups,
   onOpenWorkflows,
   workflowsActive = false,
+  workflowsBadge = 0,
   onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
@@ -817,7 +824,7 @@ export function BridgeSidebar({
 
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
-          {onOpenWorkflows && <ActionRow icon={WorkflowIcon} label="Workflows" onClick={onOpenWorkflows} active={workflowsActive} />}
+          {onOpenWorkflows && <ActionRow icon={WorkflowIcon} label="Workflows" badge={workflowsBadge} onClick={onOpenWorkflows} active={workflowsActive} />}
           {/* The work-board stays off the nav for now. Routing props remain on the
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
