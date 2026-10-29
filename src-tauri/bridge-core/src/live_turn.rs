@@ -3704,6 +3704,11 @@ fn handle_agent_value_timed(
                 }
             }
         }
+        // A heading is a stand-in. If that is still all the chat has, the title
+        // job names it properly off this path (see `title_jobs`).
+        if let Ok(db) = state.db.lock() {
+            let _ = crate::title_jobs::enqueue_after_turn(&db, session_id, Utc::now());
+        }
     }
 
     if turn_completed {

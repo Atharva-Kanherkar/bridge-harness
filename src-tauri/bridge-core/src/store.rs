@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 66;
+const LATEST_SCHEMA_VERSION: i64 = 67;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +71,9 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // Chats created before titles existed still read "Orchestrator"; name them
     // from what they already contain. Local-only, so opening stays cheap.
     let _ = crate::session_titles::backfill_from_messages(&connection);
+    // Then queue whatever still has nothing better than a heading, so the title
+    // job names it: the harness's own title where there is one, else a generated one.
+    let _ = crate::title_jobs::enqueue_backfill(&connection, Utc::now());
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT OR IGNORE INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
@@ -737,6 +740,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // What a direct chat was created for (`storage`), which picks
             // an extra stable system-prompt section at launch.
             66 => add_column_if_missing(&transaction, "sessions", "purpose", "TEXT")?,
+            // The title job's queue: one row per chat that needs a better name,
+            // with its attempts, outcome and spend.
+            67 => crate::title_jobs::install_store(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
