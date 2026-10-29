@@ -328,6 +328,16 @@ describe("BridgeSidebar history", () => {
     expect(html).not.toContain("Chat 0");
   });
 
+  it("offers no control to a group that fits under the cap", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
+    const chats = Array.from({ length: 12 }, (_, index) =>
+      session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index) }));
+    const html = render({ chats });
+    expect(html).toContain("Chat 0");
+    expect(html).not.toContain("Show less");
+    expect(html).not.toMatch(/Show \d+ more/);
+  });
+
   it("honours a persisted grouping choice", () => {
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "status", sortBy: "recency" }));
     const html = render({ chats: [session("w", { status: "waiting" }), session("f", { status: "failed" })] });

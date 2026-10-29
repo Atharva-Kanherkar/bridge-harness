@@ -45,6 +45,13 @@ function readWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value));
 }
 
+function toggleKey(keys: Set<string>, key: string): Set<string> {
+  const next = new Set(keys);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
 // Working, waiting, and failure states pair a status dot with readable text.
 function rowStatus(status: SessionStatus, liveAgents = 0): { label: string; dot: string } | null {
   const bucket = statusBucket(status);
@@ -644,14 +651,8 @@ export function BridgeSidebar({
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
 
-  const toggleFold = useCallback((key: string) => {
-    setFoldedGroups(current => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
+  const toggleFold = useCallback((key: string) => setFoldedGroups(current => toggleKey(current, key)), []);
+  const toggleShownInFull = useCallback((key: string) => setShownInFull(current => toggleKey(current, key)), []);
 
   const agents = useMemo(() => agentOptions(chats), [chats]);
   const chatsById = useMemo(() => new Map(chats.map(chat => [chat.id, chat])), [chats]);
@@ -842,7 +843,8 @@ export function BridgeSidebar({
           {groups.map(group => {
             // Capped while searching too: a one-letter query matches nearly
             // every chat, and mounting all of them froze the field.
-            const capped = !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            const overCap = group.chats.length > GROUP_ROW_CAP;
+            const capped = overCap && !shownInFull.has(group.key);
             // Folding needs a header to unfold from.
             const folded = !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
@@ -895,16 +897,17 @@ export function BridgeSidebar({
                   />
                 );
               })}
-                {capped && !folded && (
+                {overCap && !folded && (
                   <button
                     type="button"
-                    onClick={() => setShownInFull(current => new Set(current).add(group.key))}
+                    aria-expanded={!capped}
+                    onClick={() => toggleShownInFull(group.key)}
                     className={cn(
                       "flex h-6 w-full items-center rounded-md text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                       group.label ? "pl-7" : "px-2",
                     )}
                   >
-                    Show {group.chats.length - GROUP_ROW_CAP} more
+                    {capped ? `Show ${group.chats.length - GROUP_ROW_CAP} more` : "Show less"}
                   </button>
                 )}
               </div>
