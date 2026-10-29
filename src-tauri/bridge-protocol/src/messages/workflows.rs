@@ -322,6 +322,36 @@ pub struct WriteWorkflowSettingsParams {
     pub settings: WorkflowSettings,
 }
 
+/// A prefilled, unsaved workflow and what drafting could not do for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDraft {
+    pub definition: WorkflowDefinition,
+    /// Plain sentences for the person: an app to connect, writes held back,
+    /// a schedule that did not parse.
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDraftResult {
+    pub draft: WorkflowDraft,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DraftWorkflowFromTextParams {
+    pub text: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DraftWorkflowFromSessionParams {
+    pub session_id: String,
+}
+
 /// "Always allow for this workflow" on a pending card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

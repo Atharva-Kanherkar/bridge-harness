@@ -39,6 +39,9 @@ export const CHAT_SEARCH_SESSION_KIND = "chat_search";
 /** Mirrors `workflow_run::WORKFLOW_SESSION_KIND`. */
 export const WORKFLOW_SESSION_KIND = "workflow";
 
+/** Mirrors `workflow_draft::DRAFT_SESSION_KIND`: one tool-less turn per drafted workflow. */
+export const WORKFLOW_DRAFT_SESSION_KIND = "workflow_draft";
+
 const HIDDEN_SESSION_KINDS = [
   BRIEFING_SESSION_KIND,
   SUGGESTION_SESSION_KIND,
@@ -49,6 +52,7 @@ const HIDDEN_SESSION_KINDS = [
   CHAT_SEARCH_SESSION_KIND,
   // A workflow run opens from the Workflows page, never from the chat list.
   WORKFLOW_SESSION_KIND,
+  WORKFLOW_DRAFT_SESSION_KIND,
 ];
 
 export function isHiddenSession(chat: Pick<Session, "kind">): boolean {
