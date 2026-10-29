@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentConversation } from "./AgentConversation";
 import { INITIAL_TRANSCRIPT_ROWS, TRANSCRIPT_HYDRATE_CHUNK } from "./transcriptWindow";
 import { asWireKind } from "../transcript/wire";
@@ -34,6 +34,34 @@ const rowCount = (container: HTMLElement) => container.querySelectorAll("[data-t
 /// The idle fallback is a frame-spaced timeout, so a real 40ms wait lets one
 /// hydration slice commit.
 const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); }); };
+
+/// A manual idle queue. The opening window is asserted on the first commit, so
+/// the slice must not fire from a timer racing the assertion: capture the
+/// callbacks and run exactly one per `slice()`.
+const pendingIdle = new Map<number, () => void>();
+let nextIdleId = 1;
+
+function manualIdle() {
+  vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) => {
+    const id = nextIdleId++;
+    pendingIdle.set(id, () => callback({ didTimeout: false, timeRemaining: () => 50 }));
+    return id;
+  });
+  vi.stubGlobal("cancelIdleCallback", (id: number) => { pendingIdle.delete(id); });
+}
+
+async function slice() {
+  const next = pendingIdle.entries().next();
+  if (next.done) throw new Error("no idle slice was scheduled");
+  const [id, task] = next.value;
+  pendingIdle.delete(id);
+  await act(async () => { task(); });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  pendingIdle.clear();
+});
 
 describe("AgentConversation history loading", () => {
   it("shows a skeleton while an empty transcript's history is in flight", async () => {
@@ -88,6 +116,7 @@ describe("AgentConversation history loading", () => {
   });
 
   it("mounts only the newest rows on the first commit", async () => {
+    manualIdle();
     const entries = history(300);
     const { container, cleanup } = await render(
       <AgentConversation session={session} onResolve={() => undefined}
@@ -104,6 +133,7 @@ describe("AgentConversation history loading", () => {
   });
 
   it("hydrates older rows one idle slice at a time", async () => {
+    manualIdle();
     const entries = history(300);
     const { container, cleanup } = await render(
       <AgentConversation session={session} onResolve={() => undefined}
@@ -111,9 +141,9 @@ describe("AgentConversation history loading", () => {
     );
     try {
       expect(rowCount(container)).toBe(INITIAL_TRANSCRIPT_ROWS);
-      await settle();
+      await slice();
       expect(rowCount(container)).toBe(INITIAL_TRANSCRIPT_ROWS + TRANSCRIPT_HYDRATE_CHUNK);
-      await settle();
+      await slice();
       expect(rowCount(container)).toBe(INITIAL_TRANSCRIPT_ROWS + 2 * TRANSCRIPT_HYDRATE_CHUNK);
       expect(container.querySelector('[data-entry-id="h219"]')).not.toBeNull();
     } finally {
