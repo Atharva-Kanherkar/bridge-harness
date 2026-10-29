@@ -86,8 +86,10 @@ export function useTranscriptWindow(total: number, key: string, full: boolean): 
       : windowState(key, total, false);
     setState(current);
   }
-  // A rewind can shrink the branch under the window.
-  const start = full ? 0 : Math.min(current.start, Math.max(0, total));
+  // A rewind can shrink the branch under the window. Clamp to the opening
+  // window rather than to `total`: clamping to the row count would leave no
+  // rows at all when the branch shrinks past the stored start.
+  const start = full ? 0 : Math.min(current.start, initialWindowStart(total));
   const startRef = useRef(start);
   startRef.current = start;
 
