@@ -295,7 +295,7 @@ class MockIntersectionObserver {
   disconnect() { this.disconnected = true; }
   takeRecords(): IntersectionObserverEntry[] { return []; }
   trigger(isIntersecting: boolean) {
-    this.callback([{ isIntersecting } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    this.callback([{ isIntersecting, target: this.observed[0] } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
   }
 }
 
