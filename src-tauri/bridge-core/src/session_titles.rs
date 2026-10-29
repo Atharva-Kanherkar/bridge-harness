@@ -298,7 +298,7 @@ impl TranscriptTitles {
             (None, None, Some(summary)) => (summary, false),
             _ => return None,
         };
-        let title = bound(title, MAX_NAMED_WORDS);
+        let title = bound(title, TitleSource::Provider.word_cap());
         (!title.is_empty()).then_some(HarnessTitle { title, chosen })
     }
 }
@@ -492,6 +492,18 @@ impl TitleSource {
         }
     }
 
+    /// Most words a title from this source keeps. A heading is a bag of topic
+    /// words, so three; a generated title is a phrase, so six; Claude's own is
+    /// bounded only by [`MAX_HEADING`], since it writes seven-word titles ("Show
+    /// less option in chats per project") that a word cap cuts mid-phrase.
+    pub fn word_cap(self) -> usize {
+        match self {
+            TitleSource::Derived => MAX_TITLE_WORDS,
+            TitleSource::Generated => MAX_NAMED_WORDS,
+            TitleSource::Provider => usize::MAX,
+        }
+    }
+
     /// How much a title from this source is trusted. A write never lowers it.
     pub fn rank(self) -> u8 {
         match self {
@@ -615,8 +627,7 @@ pub fn commit(
     title: &str,
     source: TitleSource,
 ) -> Result<bool, BridgeError> {
-    let words = if source == TitleSource::Derived { MAX_TITLE_WORDS } else { MAX_NAMED_WORDS };
-    let title = bound(title, words);
+    let title = bound(title, source.word_cap());
     if title.is_empty() {
         return Ok(false);
     }
@@ -653,7 +664,7 @@ pub fn refresh(db: &Connection, session_id: &str) -> Result<Option<String>, Brid
     if !commit(db, session_id, &title, source)? {
         return Ok(None);
     }
-    Ok(Some(bound(&title, if source == TitleSource::Derived { MAX_TITLE_WORDS } else { MAX_NAMED_WORDS })))
+    Ok(Some(bound(&title, source.word_cap())))
 }
 
 /// Catch up placeholders and old automatic names to the concise-title policy.
@@ -912,10 +923,18 @@ mod tests {
     }
 
     #[test]
-    fn provider_titles_keep_up_to_six_words() {
-        // A harness title is a phrase; three words would cut it mid-thought.
+    fn provider_titles_keep_their_words_within_sixty_characters() {
+        // A harness title is a phrase; a word cap would cut it mid-thought.
         assert_eq!(title_from_transcript(r#"{"type":"custom-title","customTitle":"Mission Control drag and drop fixes"}"#), Some("Mission Control drag and drop fixes".into()));
-        assert_eq!(title_from_transcript(r#"{"type":"ai-title","aiTitle":"Fix the Mission Control drag and drop regression today"}"#), Some("Fix the Mission Control drag and".into()));
+        assert_eq!(title_from_transcript(r#"{"type":"ai-title","aiTitle":"Show less option in chats per project"}"#), Some("Show less option in chats per project".into()));
+        let long = title_from_transcript(r#"{"type":"ai-title","aiTitle":"Fix the Mission Control drag and drop regression that appeared after the layout refactor"}"#).unwrap();
+        assert_eq!(long, "Fix the Mission Control drag and drop regression that…");
+        assert!(long.chars().count() <= MAX_HEADING + 1);
+        // A generated title is held to six words.
+        let db = seeded();
+        session(&db, "g", None, "codex");
+        commit(&db, "g", "One two three four five six seven", TitleSource::Generated).unwrap();
+        assert_eq!(stored(&db, "g").0.as_deref(), Some("One two three four five six"));
         let db = seeded();
         session(&db, "s1", None, "codex");
         commit(&db, "s1", "Paper and slate launch video", TitleSource::Generated).unwrap();
@@ -1148,7 +1167,6 @@ mod tests {
                     println!("{id:<40} {title}");
                     assert!(!title.is_empty());
                     assert!(title.chars().count() <= MAX_HEADING + 1);
-                    assert!(title.split_whitespace().count() <= MAX_NAMED_WORDS);
                 }
             }
         }
