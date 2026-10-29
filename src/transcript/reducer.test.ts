@@ -116,6 +116,45 @@ describe("reduceTranscript", () => {
     expect(items).toEqual([expect.objectContaining({ type: "reasoning", status: "completed", text: "Thinking deeply..." })]);
   });
 
+  it("settles a thinking row a provider left in progress", () => {
+    const items = reduce([
+      live(1, "reasoning.started", { itemId: "r1", status: "inProgress", text: "Thinking deeply..." }),
+      live(2, "turn.completed", { status: "completed" }),
+    ]);
+    expect(items).toEqual([expect.objectContaining({ type: "reasoning", status: "completed" })]);
+  });
+
+  it("settles turns without walking the whole fold each time", () => {
+    const events: AgentEvent[] = [];
+    let id = 1;
+    for (let turn = 0; turn < 200; turn += 1) {
+      events.push(live(id++, "turn.started", { status: "working" }));
+      events.push(live(id++, "reasoning.delta", { sequence: 0, itemId: `r${turn}`, text: `thinking ${turn}` }));
+      for (let index = 0; index < 100; index += 1) {
+        events.push(live(id++, "message.completed", {
+          itemId: `m${turn}-${index}`, role: "assistant", status: "completed", text: `message ${turn}-${index}`,
+        }));
+      }
+      events.push(live(id++, "turn.completed", { status: "completed" }));
+    }
+    // Count the sizes of maps traversed, independently of CPU/JIT timings.
+    // Scanning every row on each of the 200 settles visits ~2,000,000 entries.
+    let visited = 0;
+    const values = Map.prototype.values;
+    const spy = vi.spyOn(Map.prototype, "values").mockImplementation(function(this: Map<unknown, unknown>) {
+      visited += this.size;
+      return values.call(this);
+    });
+    const items = (() => {
+      try { return reduce(events); }
+      finally { spy.mockRestore(); }
+    })();
+    expect(items).toHaveLength(20_200);
+    expect(items.filter(item => item.type === "reasoning").every(item => item.status === "completed")).toBe(true);
+    // One final pass over the fold is unavoidable; the per-turn scans are not.
+    expect(visited).toBeLessThan(60_000);
+  });
+
   it("keeps separate thinking cards across turns when the provider names none", () => {
     const items = reduce([
       live(1, "turn.started"), live(2, "reasoning.delta", { sequence: 0, text: "Turn 1" }), live(3, "turn.completed"),

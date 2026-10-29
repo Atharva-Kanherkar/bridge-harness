@@ -58,7 +58,11 @@ class StreamingCandidates {
   register(item: ConversationItem): void { this.order.set(item, this.nextOrder++); }
 
   update(item: ConversationItem): void {
-    if (item.status !== "streaming") { this.delete(item); return; }
+    // `inProgress` is retained for reasoning rows: the codec spells a
+    // `thinking.started` frame "streaming", but a provider or an older durable
+    // entry may label it "inProgress", and `settleThinking` below has to be
+    // able to find it when the turn ends without walking the whole fold.
+    if (item.status !== "streaming" && item.status !== "inProgress") { this.delete(item); return; }
     if (this.nodes.has(item)) return;
     if (!this.order.has(item)) this.register(item);
     let previous = this.tail;
@@ -565,11 +569,20 @@ function settleThinking(fold: Fold): void {
   // Both spellings are recognized defensively: the codec defaults a
   // `thinking.started` frame to "streaming", but a provider or an older
   // durable entry may still label it "inProgress".
-  for (const item of fold.items.values()) {
-    if (item.type === "reasoning" && (item.status === "streaming" || item.status === "inProgress")) {
-      item.status = "completed";
-      fold.thinkingCandidates.delete(item);
+  //
+  // Walk the candidates, never `items`: a long turn-heavy replay ends a turn
+  // hundreds of times, and scanning every row each time made the fold
+  // quadratic. Candidates are drained into an array first because deleting
+  // during `reverse()` would break the linked list it is walking.
+  const settled: ConversationItem[] = [];
+  for (const candidate of fold.thinkingCandidates.reverse()) {
+    if (candidate.type === "reasoning" && (candidate.status === "streaming" || candidate.status === "inProgress")) {
+      settled.push(candidate);
     }
+  }
+  for (const item of settled) {
+    item.status = "completed";
+    fold.thinkingCandidates.delete(item);
   }
 }
 
