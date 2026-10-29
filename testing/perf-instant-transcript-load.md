@@ -118,8 +118,9 @@ turn-heavy replay.
 - `forced window reveals everything` — `initialHydratedCount(1500, true) = 1500`.
 - `hydration grows by one chunk and clamps` — `nextHydratedCount(1468, 1500) =
   1500`, `nextHydratedCount(0, 10) = 10`.
-- `the boundary never moves when tail rows arrive` — boundary for
-  `(100, 68)` is 32; after two tail rows `(102, 68)` is still 32.
+- `the hydrated prefix is stable when tail rows arrive` — with 68 of 100 rows
+  hydrated, adding two tail rows keeps the first 68 rows hydrated, so no
+  already-mounted row is unmounted.
 
 `src/components/useInViewport.test.tsx`
 
