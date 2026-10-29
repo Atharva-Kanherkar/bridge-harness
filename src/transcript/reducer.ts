@@ -55,14 +55,18 @@ class StreamingCandidates {
   private order = new WeakMap<ConversationItem, number>();
   private nextOrder = 0;
 
+  /// Only the thinking set keeps `inProgress`. The codec spells a
+  /// `thinking.started` frame "streaming", but a provider or an older durable
+  /// entry may label it "inProgress", and `settleThinking` below has to find it
+  /// when the turn ends without walking the whole fold. Assistant candidates
+  /// answer a different question ("what is still arriving?") and must not grow
+  /// with rows whose only remaining claim is their label.
+  constructor(private readonly retainInProgress = false) {}
+
   register(item: ConversationItem): void { this.order.set(item, this.nextOrder++); }
 
   update(item: ConversationItem): void {
-    // `inProgress` is retained for reasoning rows: the codec spells a
-    // `thinking.started` frame "streaming", but a provider or an older durable
-    // entry may label it "inProgress", and `settleThinking` below has to be
-    // able to find it when the turn ends without walking the whole fold.
-    if (item.status !== "streaming" && item.status !== "inProgress") { this.delete(item); return; }
+    if (item.status !== "streaming" && !(this.retainInProgress && item.status === "inProgress")) { this.delete(item); return; }
     if (this.nodes.has(item)) return;
     if (!this.order.has(item)) this.register(item);
     let previous = this.tail;
@@ -139,7 +143,7 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
   const fold: Fold = {
     items: new Map(),
     assistantCandidates: new StreamingCandidates(),
-    thinkingCandidates: new StreamingCandidates(),
+    thinkingCandidates: new StreamingCandidates(true),
     requests: new Map(),
     byItemId: new Map(),
     internal: new Set(),
