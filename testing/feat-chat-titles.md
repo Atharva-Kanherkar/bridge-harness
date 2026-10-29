@@ -88,8 +88,9 @@ cut locally from the first message, and finally the placeholder.
      rank-checked as `generated`, and publishes `StateChanged` once if anything
      changed.
 - Failures (start error, deadline, tool attempt, unparseable output, rejected
-  title) increment `attempts` and back off (2, 4, 8 minutes). After three
-  attempts the job is `failed`. A derived heading stays in place throughout.
+  title, or an installed harness that is unavailable right now) increment
+  `attempts` and back off 2, then 4 minutes; the third failure leaves the job
+  `failed`. A derived heading stays in place throughout.
 - No `sessions` row is created for a title run, so nothing new appears in any
   list. Tokens and spend are recorded on the job row.
 - The lock is never held across transcript reads or model turns.
