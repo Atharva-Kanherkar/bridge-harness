@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid, Workflow as WorkflowIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -420,8 +420,8 @@ export type BridgeSidebarProps = {
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
   onOpenSavedSetups?: () => void;
-  onOpenAutomations?: () => void;
-  automationsActive?: boolean;
+  onOpenWorkflows?: () => void;
+  workflowsActive?: boolean;
   /** Per-project "+" on a project group header, grouped-by-project only —
    * skips the picker step since the group already names the workspace. */
   onNewChatInProject?: (workspaceId: string) => void;
@@ -481,8 +481,8 @@ export function BridgeSidebar({
   onCloseMobile,
   onOpenNewChat,
   onOpenSavedSetups,
-  onOpenAutomations,
-  automationsActive = false,
+  onOpenWorkflows,
+  workflowsActive = false,
   onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
@@ -803,7 +803,7 @@ export function BridgeSidebar({
 
         <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
-          {onOpenAutomations && <ActionRow icon={Clock} label="Scheduled tasks" onClick={onOpenAutomations} active={automationsActive} />}
+          {onOpenWorkflows && <ActionRow icon={WorkflowIcon} label="Workflows" onClick={onOpenWorkflows} active={workflowsActive} />}
           {/* The work-board stays off the nav for now. Routing props remain on the
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}

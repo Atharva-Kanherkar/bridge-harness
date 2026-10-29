@@ -1530,6 +1530,20 @@ let mockWorkflowRuns: WorkflowRun[] = [{
   sessionId: null, quotaUnknown: false, costMicrousd: 40000, tokens: 18200, unread: true,
   scheduledFor: "2026-10-28T03:30:00.000Z", startedAt: "2026-10-28T03:30:02.000Z", finishedAt: "2026-10-28T03:31:14.000Z", createdAt: "2026-10-28T03:30:01.000Z",
 }];
+// A run waiting on a write, so the run view shows its transcript and a card.
+mockWorkflowRuns.unshift({
+  id: "run-morning-2", workflowId: "wf-morning-brief", revisionId: "wf-morning-brief-r1", triggerKind: "manual", missedSlots: 0,
+  dryRun: false, status: "waiting_approval", failureCode: null, summary: null, sessionId: "wf-run-session", quotaUnknown: false,
+  costMicrousd: null, tokens: 4100, unread: true, scheduledFor: null, startedAt: "2026-10-28T23:30:02.000Z", finishedAt: null,
+  createdAt: "2026-10-28T23:30:01.000Z",
+});
+mockState.agentEvents.push(
+  agentEvent(9001, "wf-run-session", "user.message", { role: "user", text: "Someone pressed Run now. Do the job now." }),
+  agentEvent(9002, "wf-run-session", "tool.started", { data: { toolName: "mcp__claude_ai_Slack__slack_search_messages" } }),
+  agentEvent(9003, "wf-run-session", "tool.started", { data: { toolName: "mcp__claude_ai_Linear__list_issues" } }),
+  agentEvent(9004, "wf-run-session", "assistant.message", { role: "assistant", text: "Three mentions need replies. I drafted a note to #team to say I'm on it." }),
+  agentEvent(9005, "wf-run-session", "permission.requested", { status: "pending", title: "Use claude_ai_Slack · slack_send_message?", data: { tool_name: "mcp__claude_ai_Slack__slack_send_message", tool_input: { channel: "#team", text: "On it: replying to the three threads this morning." } } }),
+);
 let mockWorkflowSettings: WorkflowSettingsSnapshot = { configured: false, settings: { paused: false, quotaReservePercent: 25 } };
 
 /** The mock's mirror of `workflows::widens`. */
