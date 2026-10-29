@@ -58,24 +58,6 @@ describe("projectSessionConversationCached", () => {
     expect(projectSessionConversationCached(entries, "e199")).toEqual(expected);
   });
 
-  it("evicts the oldest entries arrays", () => {
-    const arrays = Array.from({ length: 10 }, (_, index) => branch(4, `s${index}`));
-    const spy = vi.spyOn(conversation, "projectSessionConversation");
-    arrays.forEach(entries => projectSessionConversationCached(entries, "e3"));
-    expect(spy).toHaveBeenCalledTimes(10);
-    // The newest array is still warm.
-    projectSessionConversationCached(arrays[9], "e3");
-    expect(spy).toHaveBeenCalledTimes(10);
-    // The cap is eight, so the first two were evicted; re-adding one evicts the
-    // array that is oldest at that moment.
-    projectSessionConversationCached(arrays[1], "e3");
-    expect(spy).toHaveBeenCalledTimes(11);
-    projectSessionConversationCached(arrays[2], "e3");
-    expect(spy).toHaveBeenCalledTimes(12);
-    projectSessionConversationCached(arrays[9], "e3");
-    expect(spy).toHaveBeenCalledTimes(12);
-  });
-
   it("bounds leaf variants per array in LRU order", () => {
     const entries = branch(8);
     const spy = vi.spyOn(conversation, "projectSessionConversation");
@@ -93,5 +75,11 @@ describe("projectSessionConversationCached", () => {
     expect(spy).toHaveBeenCalledTimes(6);
     projectSessionConversationCached(entries, "e5");
     expect(spy).toHaveBeenCalledTimes(7);
+  });
+
+  it("freezes the shared projection in development", () => {
+    const entries = branch(4);
+    const items = projectSessionConversationCached(entries, "e3");
+    expect(Object.isFrozen(items)).toBe(true);
   });
 });

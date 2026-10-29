@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { projectSessionConversation, type ConversationItem } from "../conversation";
 import type { SessionEntry } from "../types";
 
@@ -14,11 +15,12 @@ import type { SessionEntry } from "../types";
  * sound key. This wrapper memoizes the projection without changing the pure
  * function's contract.
  *
- * The caches are deliberately small: a session's snapshot is the only entry
- * array the UI re-reads, and a leaf changes only when the branch does. Both are
- * LRU-bounded so an app left open for days cannot pin every forest it has seen.
+ * The outer key is a `WeakMap`: a forest snapshot belongs to one session, and
+ * once the app drops it the projection goes with it. An LRU of arrays would
+ * hold eight whole forests alive and would have to guess when one is dead. Only
+ * the leaves within one array are bounded, because that array is the snapshot
+ * the UI is still reading and a branch switch should not replay it.
  */
-const MAX_ENTRY_ARRAYS = 8;
 const MAX_LEAVES_PER_ARRAY = 4;
 
 interface LeafVariant {
@@ -31,7 +33,16 @@ interface EntryVariants {
   variants: LeafVariant[];
 }
 
-const cache = new Map<SessionEntry[], EntryVariants>();
+let cache = new WeakMap<SessionEntry[], EntryVariants>();
+
+function project(entries: SessionEntry[], leaf: string | null): ConversationItem[] {
+  const items = projectSessionConversation(entries, leaf);
+  // A cached array is shared by every caller. Freezing it in development turns
+  // an accidental in-place edit into a loud error instead of a projection that
+  // silently changes under another reader.
+  if (import.meta.env.DEV) Object.freeze(items);
+  return items;
+}
 
 export function projectSessionConversationCached(
   entries: SessionEntry[],
@@ -42,31 +53,22 @@ export function projectSessionConversationCached(
   if (cached) {
     const index = cached.variants.findIndex(variant => variant.leaf === leaf);
     if (index !== -1) {
-      // Refresh both levels so the eviction order tracks real use.
       const [hit] = cached.variants.splice(index, 1);
       cached.variants.unshift(hit);
-      cache.delete(entries);
-      cache.set(entries, cached);
       return hit.items;
     }
-    const items = projectSessionConversation(entries, leaf);
+    const items = project(entries, leaf);
     cached.variants.unshift({ leaf, items });
     if (cached.variants.length > MAX_LEAVES_PER_ARRAY) cached.variants.pop();
-    cache.delete(entries);
-    cache.set(entries, cached);
     return items;
   }
 
-  const items = projectSessionConversation(entries, leaf);
+  const items = project(entries, leaf);
   cache.set(entries, { variants: [{ leaf, items }] });
-  if (cache.size > MAX_ENTRY_ARRAYS) {
-    const oldest = cache.keys().next();
-    if (!oldest.done) cache.delete(oldest.value);
-  }
   return items;
 }
 
 /** Test seam: start each test from a clean cache. */
 export function resetProjectionCache(): void {
-  cache.clear();
+  cache = new WeakMap();
 }
