@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
+import { WorkflowsScreen } from "../WorkflowsScreen";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../../api";
@@ -72,9 +73,15 @@ describe("WorkflowInbox", () => {
     expect(opened).toHaveBeenCalledWith(runs[1]);
   });
 
-  it("clears unread on open through the screen", () => {
-    const screen = readFileSync(resolve(process.cwd(), "src/components/WorkflowsScreen.tsx"), "utf8");
-    expect(screen).toContain("bridgeApi.markWorkflowRunsRead([run.id])");
+  it("clears unread when a result is opened from the screen", async () => {
+    const read = vi.spyOn(bridgeApi, "markWorkflowRunsRead").mockResolvedValue();
+    vi.spyOn(bridgeApi, "replaySessionEvents").mockResolvedValue([]);
+    await act(async () => root.render(<WorkflowsScreen projects={[]} onContinueInChat={() => {}} initialTab="inbox"/>));
+    await settle();
+    const result = [...container.querySelectorAll<HTMLButtonElement>("button")].find(candidate => candidate.textContent?.includes("succeeded"))!;
+    await act(async () => result.click());
+    await settle();
+    expect(read).toHaveBeenCalledWith(["run-morning-1"]);
   });
 });
 

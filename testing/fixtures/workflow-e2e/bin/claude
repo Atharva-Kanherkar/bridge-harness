@@ -1,0 +1,9 @@
+#!/bin/sh
+# Answers Bridge's discovery questions in place of the Claude CLI: two
+# connected claude.ai connectors, no plugins. Anything else is refused.
+case "$1 $2" in
+  "plugin list") echo "[]" ;;
+  "mcp list") printf 'Checking MCP server health...\n\nclaude.ai Slack: https://mcp.example/slack - \342\234\224 Connected\nclaude.ai Linear: https://mcp.example/linear - \342\234\224 Connected\n' ;;
+  "--version ") echo "2.1.261 (Claude Code)" ;;
+  *) exit 1 ;;
+esac

@@ -1878,6 +1878,10 @@ pub(crate) fn fork_session_records(
     if model.is_some_and(|value| value.trim().is_empty()) {
         return Err(BridgeError::Invalid("Model override must not be empty".into()));
     }
+    // Continue in chat: a workflow run's conversation goes on as an ordinary
+    // chat. The run itself stays hidden and refuses user turns; its fork must
+    // do neither.
+    let kind = if kind == crate::workflow_run::WORKFLOW_SESSION_KIND { "direct".to_owned() } else { kind };
     let fork_harness = harness.map(|value| store::harness_name(value).into_owned());
     let child_harness = fork_harness.as_deref().unwrap_or(&parent_harness);
     let child_model = match (model, parent_model.as_deref()) {
@@ -5426,6 +5430,16 @@ mod fork_tests {
         assert!(error.to_string().contains("Worker sessions cannot be forked"), "got: {error}");
         let count: i64 = db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn a_fork_of_a_workflow_run_is_an_ordinary_chat() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let (_root, _checkpoint, fork_point, _leaf) = seed_forkable_chat(&db);
+        db.execute("UPDATE sessions SET kind=?1 WHERE id='parent'", [crate::workflow_run::WORKFLOW_SESSION_KIND]).unwrap();
+        let id = fork_ok(&db, &fork_point, "shared", None);
+        let kind: String = db.query_row("SELECT kind FROM sessions WHERE id=?1", [&id], |row| row.get(0)).unwrap();
+        assert_eq!(kind, "direct", "Continue in chat must be visible and take turns");
     }
 
     #[test]

@@ -17,5 +17,6 @@ signal-hook = "0.3"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
+chrono = { workspace = true }
 tempfile = { workspace = true }
 rusqlite = { workspace = true }

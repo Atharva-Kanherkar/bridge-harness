@@ -10,7 +10,7 @@ import { AutomationsPanel } from "./AutomationsPanel";
 import { WorkflowDetail } from "./workflows/WorkflowDetail";
 import { WorkflowEditor, type EditorSubmit } from "./workflows/WorkflowEditor";
 import { WorkflowRunView } from "./workflows/WorkflowRunView";
-import { RUN_STATUS_LABEL, relativeTime, runTone, triggerSummary } from "./workflows/format";
+import { ACTIVE_RUN_STATUSES, RUN_STATUS_LABEL, relativeTime, runTone, triggerSummary } from "./workflows/format";
 import { CHIP, Dot, ErrorNote, StatusChip, errorText } from "./workflows/parts";
 import { WorkflowInbox } from "./workflows/WorkflowInbox";
 import { needsYouCount } from "./workflows/notify";
@@ -137,15 +137,23 @@ export function WorkflowsScreen({ projects, onContinueInChat, initialTab = "work
   };
 
   const open = (id: string) => void act(() => refreshSelected(id));
-  // Opening a run reads it: the inbox and the sidebar count stop asking.
+  // Opening a run reads it (see the effect below): the inbox and the sidebar
+  // count stop asking.
   const openRunOf = useCallback(async (run: WorkflowRun) => {
     await refreshSelected(run.workflowId);
     setOpenRun(run);
-    if (run.unread) {
-      await bridgeApi.markWorkflowRunsRead([run.id]).catch(() => {});
-      setAllRuns(current => current.map(candidate => candidate.id === run.id ? { ...candidate, unread: false } : candidate));
-    }
   }, [refreshSelected]);
+
+  // A finished run that is open has been seen: opened from a list, or watched
+  // until it finished.
+  useEffect(() => {
+    if (!openRun?.unread || ACTIVE_RUN_STATUSES.includes(openRun.status)) return;
+    const id = openRun.id;
+    void bridgeApi.markWorkflowRunsRead([id]).then(() => {
+      setOpenRun(current => current?.id === id ? { ...current, unread: false } : current);
+      setAllRuns(current => current.map(candidate => candidate.id === id ? { ...candidate, unread: false } : candidate));
+    }).catch(() => {});
+  }, [openRun?.id, openRun?.unread, openRun?.status]);
 
   useEffect(() => {
     if (!focusRun) return;

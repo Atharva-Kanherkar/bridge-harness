@@ -172,4 +172,32 @@ describe("WorkflowRunView", () => {
     expect(steps[1].title).toBe("Slack · slack_delete_message");
     expect(steps[1].identity).toBe("mcp__claude_ai_Slack__slack_delete_message");
   });
+
+  it("shows each tool call once, with what was decided and whether it ran", () => {
+    // The shapes a real dry run records: a call's events share its tool_use id.
+    const event = (sequence: number, kind: string, fields: Record<string, unknown>) =>
+      ({ sequence, kind: asWireKind(kind), itemId: null, data: {}, status: null, role: null, text: null, title: null, providerMeta: {}, ...fields }) as unknown as AgentEvent;
+    const slack = "mcp__claude_ai_Slack__slack_send_message";
+    const steps = runSteps([
+      event(4, "tool.started", { itemId: "t1", title: "mcp__claude_ai_Linear__list_issues", data: { name: "mcp__claude_ai_Linear__list_issues" } }),
+      event(5, "tool.completed", { itemId: "t1", status: "completed", text: "ok" }),
+      event(6, "tool.started", { itemId: "t2", title: slack, data: { name: slack } }),
+      event(7, "permission.requested", { itemId: "t2", status: "settling", data: { tool_name: slack } }),
+      event(9, "permission.resolved", { itemId: "t2", status: "declined", data: { requestEventId: 7, decision: "decline", resolvedBy: "workflow", reason: "dry run: `x` was recorded as a preview, not sent" } }),
+      event(10, "tool.completed", { itemId: "t2", status: "failed", text: "not approved for this run" }),
+      event(11, "assistant.message", { role: "assistant", text: "Would post.\n```workflow-result\n{\"status\":\"done\",\"summary\":\"Would post.\"}\n```" }),
+    ], false);
+    expect(steps.map(step => [step.title, step.icon, step.detail])).toEqual([
+      ["Linear · list_issues", "ok", "ran"],
+      ["Slack · slack_send_message", "denied", "dry run: recorded as a preview, not sent"],
+      ["Agent", "say", "Would post."],
+    ]);
+    const allowed = runSteps([
+      event(6, "tool.started", { itemId: "t2", title: slack, data: { name: slack } }),
+      event(7, "permission.requested", { itemId: "t2", status: "pending", data: { tool_name: slack } }),
+      event(9, "permission.resolved", { itemId: "t2", data: { requestEventId: 7, decision: "accept", resolvedBy: "user" } }),
+      event(10, "tool.completed", { itemId: "t2", status: "completed" }),
+    ]);
+    expect(allowed.map(step => step.detail)).toEqual(["allowed by you, then ran"]);
+  });
 });
