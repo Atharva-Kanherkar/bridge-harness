@@ -352,6 +352,7 @@ methods![
     (ListWorkflowRuns, "workflows", "list_workflow_runs"),
     (ReadWorkflowSettings, "workflows", "read_workflow_settings"),
     (WriteWorkflowSettings, "workflows", "write_workflow_settings"),
+    (AlwaysAllowTool, "workflows", "always_allow_tool"),
 ];
 
 impl MethodName {

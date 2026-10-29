@@ -322,6 +322,26 @@ pub struct WriteWorkflowSettingsParams {
     pub settings: WorkflowSettings,
 }
 
+/// "Always allow for this workflow" on a pending card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AlwaysAllowToolParams {
+    pub workflow_id: String,
+    /// The run's session, which holds the pending card.
+    pub session_id: String,
+    /// The card's durable sequence.
+    pub event_id: i64,
+    /// Must be the tool the card asks about.
+    pub tool_identity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AlwaysAllowToolResult {
+    pub workflow: Workflow,
+    pub resolution: super::InteractionResolutionResult,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetWorkflowParams {

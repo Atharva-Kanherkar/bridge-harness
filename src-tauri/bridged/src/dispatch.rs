@@ -1101,6 +1101,10 @@ pub fn dispatch(
             reply(api::list_workflow_runs(core, &p))
         }
         MethodName::ReadWorkflowSettings => reply(api::read_workflow_settings(core)),
+        MethodName::AlwaysAllowTool => {
+            let p: wire::AlwaysAllowToolParams = decode(method, params)?;
+            reply(api::always_allow_tool(core, &p))
+        }
         MethodName::WriteWorkflowSettings => {
             let p: wire::WriteWorkflowSettingsParams = decode(method, params)?;
             reply(api::write_workflow_settings(core, &p))
@@ -1235,6 +1239,14 @@ mod tests {
         let error = dispatch(&core, MethodName::ListWorkflows, Some(json!({}))).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
 
+        // A run is dispatched for real. Turn Claude off first so it settles as
+        // a provider failure without ever starting a provider in a test.
+        {
+            let db = core.db.lock().unwrap();
+            let mut claude = bridge_core::agent_config::harness_config(&db, "claude").expect("Claude's built-in config");
+            claude.enabled = false;
+            bridge_core::agent_config::save_harness(&db, claude).unwrap();
+        }
         let first = dispatch(&core, MethodName::RunWorkflow, Some(json!({ "workflowId": id, "requestId": "r1", "dryRun": true }))).unwrap();
         assert_eq!(first["created"], true);
         let second = dispatch(&core, MethodName::RunWorkflow, Some(json!({ "workflowId": id, "requestId": "r1", "dryRun": true }))).unwrap();
@@ -1242,6 +1254,13 @@ mod tests {
         assert_eq!(second["run"]["id"], first["run"]["id"]);
         let runs = dispatch(&core, MethodName::ListWorkflowRuns, Some(json!({ "workflowId": id, "limit": 10 }))).unwrap();
         assert_eq!(runs["runs"][0]["id"], first["run"]["id"]);
+        let settled = (0..100).find_map(|_| {
+            let runs = dispatch(&core, MethodName::ListWorkflowRuns, Some(json!({ "workflowId": id, "limit": 1 }))).unwrap();
+            let status = runs["runs"][0]["status"].as_str().unwrap_or_default().to_owned();
+            if status == "failed" { Some(runs["runs"][0].clone()) } else { std::thread::sleep(std::time::Duration::from_millis(50)); None }
+        }).expect("the run settles");
+        assert_eq!(settled["failureCode"], "provider_failed");
+        assert!(settled["summary"].as_str().unwrap().contains("disabled"));
         let settings = dispatch(&core, MethodName::ReadWorkflowSettings, None).unwrap();
         assert_eq!(settings["settings"]["quotaReservePercent"], 25);
 
@@ -1249,6 +1268,40 @@ mod tests {
         let codex = options["harnesses"].as_array().unwrap().iter().find(|harness| harness["id"] == "codex").unwrap();
         assert_eq!(codex["connectorsAllowed"], false);
         assert!(codex["connectorsReason"].as_str().unwrap().contains("per-tool"));
+    }
+
+    /// Live: runs one real Claude workflow with no tools and waits for it to
+    /// settle. Spends a few hundred Haiku tokens, so it is run by hand:
+    /// `cargo test -p bridged --lib live_claude_workflow_run -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "starts a real Claude session"]
+    fn live_claude_workflow_run_settles_on_its_result_block() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+        let definition = json!({
+            "name": "Hello smoke",
+            "steps": [{ "harness": "claude", "model": "haiku", "instructions": "Say hello in one short sentence. Use no tools." }],
+            "trigger": { "kind": "manual" },
+            "files": "none",
+            "budget": { "maxWallSeconds": 180, "maxTurns": 4, "maxToolCalls": 4, "maxOutputTokens": null, "costCeilingMicrousd": null },
+            "expectedResult": "One sentence."
+        });
+        let saved = dispatch(&core, MethodName::SaveWorkflow, Some(json!({ "definition": definition }))).unwrap();
+        let id = saved["workflow"]["id"].as_str().unwrap().to_owned();
+        let revision = saved["workflow"]["revisionId"].as_str().unwrap().to_owned();
+        dispatch(&core, MethodName::ApproveWorkflow, Some(json!({ "workflowId": id, "revisionId": revision }))).unwrap();
+        dispatch(&core, MethodName::RunWorkflow, Some(json!({ "workflowId": id, "requestId": "live", "dryRun": true }))).unwrap();
+        let settled = (0..400).find_map(|_| {
+            let runs = dispatch(&core, MethodName::ListWorkflowRuns, Some(json!({ "workflowId": id, "limit": 1 }))).unwrap();
+            let run = runs["runs"][0].clone();
+            match run["status"].as_str().unwrap_or_default() {
+                "succeeded" | "failed" | "unverified" | "cancelled" => Some(run),
+                _ => { std::thread::sleep(std::time::Duration::from_millis(500)); None }
+            }
+        }).expect("the run settles within its budget");
+        eprintln!("settled: {settled:#}");
+        assert_eq!(settled["status"], "succeeded", "{settled:#}");
+        assert!(settled["tokens"].as_i64().unwrap_or(0) > 0);
     }
 
     #[test]

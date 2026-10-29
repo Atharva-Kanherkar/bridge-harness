@@ -245,6 +245,9 @@ fn launch(
                 // No tool definitions and no coding preset. Present only for a
                 // policy compiled toolless, whose scope is empty by construction.
                 "toolless": policy.toolless(),
+                // A workflow run: the sidecar asks Bridge before any call that
+                // is not a read on a read-granted server. Absent otherwise.
+                "workflow": policy.workflow_servers().map(|servers| json!({ "servers": servers })),
             }))
         }
         None => None,

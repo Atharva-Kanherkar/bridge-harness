@@ -1862,6 +1862,13 @@
       "method": "workflows/write_workflow_settings",
       "paramsSchema": "write-workflow-settings-params.json",
       "resultSchema": "workflow-settings-snapshot.json"
+    },
+    {
+      "command": "always_allow_tool",
+      "domain": "workflows",
+      "method": "workflows/always_allow_tool",
+      "paramsSchema": "always-allow-tool-params.json",
+      "resultSchema": "always-allow-tool-result.json"
     }
   ],
   "protocolVersion": {

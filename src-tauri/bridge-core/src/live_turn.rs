@@ -115,6 +115,24 @@ fn compile_purposed_session_prompt(
     compiler.compile()
 }
 
+/// A workflow run's prompt: a direct session's, plus the run brief as its own
+/// stable section. The brief is the session's stored `purpose` text; unlike the
+/// keyed purposes above it is the workflow's own words, compiled per revision.
+fn compile_workflow_session_prompt(
+    stack: &prompt_sections::ResolvedPromptStack,
+    configured_prompt: &str,
+    checkpoint_context: Option<&str>,
+    brief: &str,
+) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
+    let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::DirectSession)?
+        .project_rule("configured_project_rules", configured_prompt)
+        .stable_section("workflow_brief", brief);
+    if let Some(context) = checkpoint_context {
+        compiler = compiler.variable_section("restoration_context", context);
+    }
+    compiler.compile()
+}
+
 /// The packet at its delivery boundary: best-effort, because memory must never
 /// keep a session from starting. Skipped-on-error is consistent — no packet
 /// injected, no audit claiming one.
@@ -1666,8 +1684,21 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         )?
     };
     let dispatch_id = launch_plan.adapter_id.clone();
-    let root_write_mode = crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?;
-    let interactive = crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
+    // A workflow run carries its own authority, compiled from the revision it
+    // runs, never the chat defaults: a run with no built-in tools starts under
+    // a briefing-mode policy, a worktree run under the Isolated write mode.
+    let is_workflow = kind == crate::workflow_run::WORKFLOW_SESSION_KIND;
+    let workflow_policy = if is_workflow {
+        crate::workflow_run::policy_for_session(&state.db.lock().unwrap(), &session_id)?
+    } else {
+        None
+    };
+    let root_write_mode = if is_workflow {
+        crate::workflow_run::write_mode_for_session(&state.db.lock().unwrap(), &session_id)?
+    } else {
+        crate::chat_defaults::root_write_mode(&state.db.lock().unwrap(), &session_id)?
+    };
+    let interactive = !is_workflow && crate::chat_defaults::is_top_level_chat(&state.db.lock().unwrap(), &session_id)?;
     let scoped_settings = crate::chat_defaults::validate_launch(&state.db.lock().unwrap(), &state.adapter_registry, &session_id, adapter_id, model.as_deref(), effort.as_deref())?;
     let tier = if is_orchestrator {
         orchestrator::TIER
@@ -1771,6 +1802,8 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
     // actually launched with, not what a future cold start would deliver.
     let hot_check_prompt = if is_orchestrator {
         compile_orchestrator_prompt(&prompt_stack, &configured_prompt, None)?
+    } else if is_workflow {
+        compile_workflow_session_prompt(&prompt_stack, &configured_prompt, None, purpose.as_deref().unwrap_or_default())?
     } else {
         compile_purposed_session_prompt(&prompt_stack, &configured_prompt, None, purpose.as_deref())?
     };
@@ -1896,7 +1929,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 write_mode: root_write_mode,
                 interactive,
                 read_only_sandbox: None,
-                briefing: None,
+                briefing: workflow_policy.as_ref(),
                 on_progress: Some(&on_startup_progress),
             },
         )
@@ -1906,6 +1939,8 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         .map(|context| {
             if is_orchestrator {
                 compile_orchestrator_prompt(&prompt_stack, &configured_prompt, Some(context))
+            } else if is_workflow {
+                compile_workflow_session_prompt(&prompt_stack, &configured_prompt, Some(context), purpose.as_deref().unwrap_or_default())
             } else {
                 compile_purposed_session_prompt(&prompt_stack, &configured_prompt, Some(context), purpose.as_deref())
             }
@@ -1928,7 +1963,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     write_mode: root_write_mode,
                     interactive,
                     read_only_sandbox: None,
-                    briefing: None,
+                    briefing: workflow_policy.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -1998,7 +2033,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     write_mode: root_write_mode,
                     interactive,
                     read_only_sandbox: None,
-                    briefing: None,
+                    briefing: workflow_policy.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -2689,6 +2724,9 @@ fn handle_agent_value_timed(
     // the same call a human click makes. Holds the persisted sequence, which is
     // the id `resolve_approval` answers by.
     let mut pending_auto_approvals = Vec::new();
+    // Workflow runs' asks Bridge decides itself (a repeat, a dry run, an
+    // always-allowed tool), resolved after the request row exists.
+    let mut pending_workflow_decisions: Vec<(i64, crate::workflow_run::PermissionDecision)> = Vec::new();
     // Child approvals and their resolutions are surfaced to the parent after the
     // correctness lock is released, because reaching the parent's live runtime
     // needs the adapter map.
@@ -3201,6 +3239,14 @@ fn handle_agent_value_timed(
         }
         for mut normalized_event in normalized {
             let auto_approve_this_event = should_auto_approve_permission(&db, session_id, &normalized_event);
+            // A failure to decide shows the card: asking a person is the safe default.
+            let workflow_decision = crate::workflow_run::permission_decision(&db, session_id, &normalized_event)
+                .ok()
+                .flatten();
+            if workflow_decision.is_some() {
+                normalized_event.status = Some("settling".into());
+                normalized_event.data["resolvedBy"] = serde_json::json!("workflow");
+            }
             // Policy-owned permission requests are born settling. Clients may
             // observe this request before the provider reply returns, but they
             // must never observe an actionable human race window.
@@ -3510,6 +3556,11 @@ fn handle_agent_value_timed(
                     if auto_approve_this_event && event.kind == "permission.requested" && event.sequence > 0 {
                         pending_auto_approvals.push(event.sequence);
                     }
+                    if let Some(decision) = workflow_decision.clone() {
+                        if event.kind == "permission.requested" && event.sequence > 0 {
+                            pending_workflow_decisions.push((event.sequence, decision));
+                        }
+                    }
                     // Publish while the database mutex is still held. This keeps
                     // durable live delivery in commit/sequence order: another
                     // thread cannot persist and publish sequence N+1 before N.
@@ -3743,6 +3794,9 @@ fn handle_agent_value_timed(
     // the approval, nobody is blocked and mirroring a card would be a lie.
     for event_id in pending_auto_approvals {
         apply_bypass_approval(core, session_id, event_id);
+    }
+    for (event_id, decision) in pending_workflow_decisions {
+        crate::api::resolve_workflow_permission(core, session_id, event_id, &decision);
     }
     if let Some(detail) = &pending_child_approval {
         surface_child_approval_on_parent(core, session_id, detail);
@@ -6633,7 +6687,10 @@ fn queue_parent_prompt_notice(
 }
 
 fn should_auto_approve_permission(db: &Connection, session_id: &str, event: &agent::NormalizedEvent) -> bool {
+    // Chat Full access never reaches a workflow run: its writes are outward
+    // effects, decided by `workflow_run::permission_decision` or a person.
     event.kind == "permission.requested"
+        && !crate::workflow_run::is_workflow_session(db, session_id)
         && !matches!(event.data.get("approvalType")
             .or_else(|| event.data.pointer("/data/approvalType"))
             .and_then(serde_json::Value::as_str),
@@ -11076,6 +11133,27 @@ pub fn submit_input(
     session_id: String,
     text: String,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
+    refuse_user_turn_to_workflow(core, &session_id)?;
+    submit_input_internal(core, session_id, text, false, Vec::new(), None)
+}
+
+/// A person may read a workflow run, not steer it: a follow-up turn would run
+/// with the workflow's grants and no review. "Continue in chat" forks it.
+fn refuse_user_turn_to_workflow(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    if crate::workflow_run::is_workflow_session(&core.db.lock().unwrap(), session_id) {
+        return Err(BridgeError::Invalid(
+            "A workflow run is read-only. Use Continue in chat to keep going in a normal chat.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The workflow runner's own turn into the session it created.
+pub(crate) fn submit_workflow_turn(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+) -> Result<wire::SubmitInputResult, BridgeError> {
     submit_input_internal(core, session_id, text, false, Vec::new(), None)
 }
 
@@ -11088,6 +11166,7 @@ pub fn submit_input_with_attachments(
     text: String,
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
+    refuse_user_turn_to_workflow(core, &session_id)?;
     submit_input_internal(core, session_id, text, false, attachments, None)
 }
 
@@ -11095,6 +11174,7 @@ pub fn submit_input_with_preference(
     core: &Arc<BridgeCore>, session_id: String, text: String,
     attachments: Vec<wire::TurnImage>, preference: Option<wire::ActiveTurnInput>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
+    refuse_user_turn_to_workflow(core, &session_id)?;
     submit_input_internal(core, session_id, text, false, attachments, preference)
 }
 
@@ -12774,9 +12854,12 @@ pub fn stop_session(
                 "user.message" | "assistant.message" | "worker.result" | "tool.completed"
             )
         });
+        // A workflow run is one-shot: a checkpoint before shutdown would be a
+        // paid turn nobody resumes from.
         if has_process
             && meaningful
             && !matches!(status.as_str(), "working" | "waiting" | "checkpointing")
+            && !crate::workflow_run::is_workflow_session(&db, &session_id)
         {
             let tokens = compaction_controller::active_token_estimate(&db, &session_id)?;
             compaction_controller::CompactionController::begin(
@@ -14096,6 +14179,84 @@ mod submit_input_tests {
             )
             .unwrap();
         (fixture, Arc::new(core), managed_root)
+    }
+
+    #[test]
+    fn a_workflow_session_prompt_carries_the_run_brief() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let stack = prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
+        let brief = crate::workflow_run::run_brief(&crate::workflows::test_support::definition());
+        let compiled = compile_workflow_session_prompt(&stack, "", None, &brief).unwrap();
+        assert!(compiled.instructions().contains("```workflow-result"));
+        assert!(compiled.instructions().contains("Summarise my Slack mentions."));
+    }
+
+    #[test]
+    fn a_workflow_ask_is_decided_by_bridge_and_a_user_turn_is_refused() {
+        let (dir, core, _guard) = core_with_chat("working");
+        let mut definition = crate::workflows::test_support::definition();
+        definition.grants = vec![wire::WorkflowGrant { server: "claude_ai_Slack".into(), read: true, write: wire::WorkflowWriteAccess::Ask }];
+        definition.always_allow = vec!["mcp__claude_ai_Slack__slack_send_message".into()];
+        let run_id = {
+            let db = core.db.lock().unwrap();
+            db.execute("UPDATE sessions SET kind='workflow' WHERE id='chat'", []).unwrap();
+            let workflow = crate::workflows::test_support::save_approved(&db, dir.path(), &definition);
+            let occasion = crate::workflow_trigger::Occasion::manual(&workflow.id, "r");
+            let claimed = match crate::workflow_trigger::claim(&db, &workflow.id, &occasion, false, Utc::now()).unwrap() {
+                crate::workflow_trigger::ClaimOutcome::Claimed(claimed) => claimed,
+                other => panic!("{other:?}"),
+            };
+            crate::workflow_trigger::transition(&db, &claimed.run.id, &claimed.lease_owner, wire::WorkflowRunStatus::Running, Some("chat"), Utc::now()).unwrap();
+            claimed.run.id
+        };
+        let (runtime, handles) = FakeRuntime::new(false);
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        let turn = Arc::new(Mutex::new(Some("turn-1".into())));
+        let ask = |id: &str, tool: &str| serde_json::json!({
+            "type": "control_request", "request_id": id,
+            "request": { "subtype": "can_use_tool", "tool_name": tool, "tool_input": { "text": "hi" }, "tool_use_id": format!("t-{id}") }
+        });
+
+        handle_agent_value(&core, "chat", &turn, &ask("wf-1", "mcp__claude_ai_Slack__slack_send_message"));
+        assert_eq!(handles.responded.lock().unwrap().as_slice(), &[(serde_json::json!("wf-1"), "accept".to_owned())]);
+        // The same call again in this run is a repeat: declined, no card.
+        handle_agent_value(&core, "chat", &turn, &ask("wf-2", "mcp__claude_ai_Slack__slack_send_message"));
+        assert_eq!(handles.responded.lock().unwrap()[1], (serde_json::json!("wf-2"), "decline".to_owned()));
+        // A write nobody always-allowed waits for the person.
+        handle_agent_value(&core, "chat", &turn, &ask("wf-3", "mcp__claude_ai_Slack__slack_delete_message"));
+        assert_eq!(handles.responded.lock().unwrap().len(), 2);
+        let effects = crate::workflow_run::effects(&core.db.lock().unwrap(), &run_id).unwrap();
+        assert_eq!(effects, vec![("mcp__claude_ai_Slack__slack_send_message".to_owned(), "always_allowed".to_owned(), None)]);
+
+        // "Always allow for this workflow" answers the pending card and records the tool.
+        let card: i64 = core.db.lock().unwrap().query_row(
+            "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='permission.requested' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let workflow_id = crate::workflow_trigger::require_run(&core.db.lock().unwrap(), &run_id).unwrap().workflow_id;
+        let wrong = crate::api::always_allow_tool(&core, &wire::AlwaysAllowToolParams {
+            workflow_id: workflow_id.clone(), session_id: "chat".into(), event_id: card, tool_identity: "mcp__claude_ai_Slack__slack_send_message".into(),
+        });
+        assert!(wrong.unwrap_err().to_string().contains("slack_delete_message"), "the identity must be the card's");
+        let allowed = crate::api::always_allow_tool(&core, &wire::AlwaysAllowToolParams {
+            workflow_id, session_id: "chat".into(), event_id: card, tool_identity: "mcp__claude_ai_Slack__slack_delete_message".into(),
+        }).unwrap();
+        assert!(allowed.workflow.approved, "an always-allow revision is approved by construction");
+        assert!(allowed.workflow.definition.always_allow.contains(&"mcp__claude_ai_Slack__slack_delete_message".to_owned()));
+        assert_eq!(handles.responded.lock().unwrap()[2], (serde_json::json!("wf-3"), "accept".to_owned()));
+        let decisions: Vec<String> = crate::workflow_run::effects(&core.db.lock().unwrap(), &run_id).unwrap().into_iter().map(|(_, decision, _)| decision).collect();
+        assert_eq!(decisions, vec!["always_allowed".to_owned(), "approved".to_owned()]);
+
+        let error = submit_input(&core, "chat".into(), "and also do this".into()).unwrap_err();
+        assert!(error.to_string().contains("read-only"), "{error}");
+
+        // Chat Full access never reaches a workflow session.
+        let request = agent::normalize_claude_message(&ask("wf-4", "mcp__claude_ai_Slack__slack_delete_message"))
+            .into_iter()
+            .find(|event| event.kind == "permission.requested")
+            .unwrap();
+        assert!(!should_auto_approve_permission(&core.db.lock().unwrap(), "chat", &request));
     }
 
     #[test]
