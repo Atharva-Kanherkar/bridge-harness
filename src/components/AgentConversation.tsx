@@ -2,13 +2,14 @@ import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, BookmarkPlus, Brain, Check, ChevronDown, ChevronRight, Circle, Copy, CornerDownRight, FileText, Gauge, GitFork, LoaderCircle, MessageSquarePlus, Navigation, PanelRight, RotateCcw, SquareTerminal, X } from "lucide-react";
-import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, answeredPending, attachmentUris, compactionInFlight, delegationChildSessionId, deliveryNotes, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, subagentLabel, subagentSource, toolCallDisplay, type ConversationItem, type DeliveryNote, type PendingMessage, type Rendered, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError, isThrottleKind } from "../errors";
 import { looksLikeDiff } from "./highlight";
+import { INITIAL_TRANSCRIPT_ROWS, useTranscriptWindow } from "./transcriptWindow";
 import { PatchView } from "./DiffView";
 import { CopyButton, FileLinkContext, Markdown, MentionText, parseFileRef, useCopy, type FileLinks } from "./Markdown";
 import { VisualActionsContext, VisualCall } from "./VisualCall";
@@ -87,11 +88,14 @@ const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg borde
 /// so a row present on the first render appears without animating and only the
 /// rows that actually arrive later rise in — switching sessions must not replay
 /// the whole history.
-function TranscriptRow({ tone = "quiet", className, id, entryId, children }: {
+function TranscriptRow({ tone = "quiet", className, id, entryId, instant = false, children }: {
   tone?: "quiet" | "alert";
   className?: string;
   id?: string;
   entryId?: string;
+  /** Mount in place without an entrance animation: the row was already part of
+   *  the conversation, it just arrived from a hydration slice. */
+  instant?: boolean;
   children: ReactNode;
 }) {
   // An error has further to travel than an ordinary row: the extra 6px and the
@@ -103,9 +107,10 @@ function TranscriptRow({ tone = "quiet", className, id, entryId, children }: {
     <motion.div
       id={id}
       data-entry-id={entryId}
+      data-transcript-row=""
       className={className}
-      layout="position"
-      initial={{ opacity: 0, y: alert ? 12 : 6 }}
+      layout={instant ? false : "position"}
+      initial={instant ? false : { opacity: 0, y: alert ? 12 : 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -4 }}
       transition={transition}
@@ -875,6 +880,27 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const shownItems = showThinking
     ? renderedItems
     : renderedItems.filter(entry => entry.kind !== "item" || entry.item.type !== "reasoning" || isStreamingText(entry.item.status));
+  // Selecting a chat swaps `session` a commit before its forest snapshot
+  // follows, so this is also the guard `ScrollFollow` places against: it keys
+  // its remembered offset by the same id, and the row window resets with it.
+  const historySessionId = forestEntries?.[0]?.sessionId ?? (readOnly ? events[0]?.sessionId : undefined);
+  const transcriptKey = session?.id ?? historySessionId ?? "preview";
+  // A search/recall jump must land on a row that exists, and a chat reopening
+  // at a remembered offset needs its full height to restore it. Every other
+  // open mounts the newest rows and hydrates the rest above them.
+  //
+  // The remembered answer is captured once per chat: re-reading it every
+  // render would turn a reader scrolling up mid-stream into a full mount of
+  // the whole history, which is the stall this window exists to avoid.
+  const rememberedAway = useRef<{ key: string; away: boolean }>({ key: "", away: false });
+  if (rememberedAway.current.key !== transcriptKey) {
+    rememberedAway.current = { key: transcriptKey, away: readPositions.get(transcriptKey)?.pinned === false };
+  }
+  const fullTranscript = !!highlightEntryId || rememberedAway.current.away;
+  const windowStart = useTranscriptWindow(shownItems.length, transcriptKey, fullTranscript);
+  // Everything older than the opening window arrives without an entrance: it
+  // was always part of the conversation, it just had not been mounted yet.
+  const instantBefore = Math.max(0, shownItems.length - INITIAL_TRANSCRIPT_ROWS);
 
   // Every file name in the transcript resolves against this one set; without
   // an opener the transcript renders exactly as before.
@@ -951,12 +977,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const clock = now ?? Date.now();
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
-  const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
-  // Selecting a chat swaps `session` a commit before its forest snapshot
-  // follows, so the render in between shows the previous chat's history under
-  // the new chat's id. `ScrollFollow` must not place against that: it would
-  // measure the wrong transcript and count the chat as opened.
-  const historySessionId = forestEntries?.[0]?.sessionId ?? (readOnly ? events[0]?.sessionId : undefined);
+  // Hydration is a layout change above the reader: when they are pinned to the
+  // bottom it must re-place them there, and when they scrolled up it must not.
+  const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}:${shownItems.length - windowStart}`;
   const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   // The reply whose action bar stays visible: the last settled assistant message.
@@ -966,7 +989,20 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     if (item.type === "message" && item.role === "assistant") latestReplyKey = item.key;
   }
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
-  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
+  const renderEntry = (entry: Rendered, instant = false) => entry.kind === "group"
+    ? <TranscriptRow key={entry.key} instant={instant}><ActivityGroup items={entry.items} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/></TranscriptRow>
+    : entry.kind === "raw-group" ? <TranscriptRow key={entry.key} instant={instant}><RawEventGroup items={entry.items}/></TranscriptRow>
+    : <TranscriptRow
+        key={entry.key}
+        instant={instant}
+        tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
+        id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
+        entryId={entry.item.entryId}
+        className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
+      >
+        <ItemView item={entry.item} sessionId={session?.id} delivery={delivery.get(entry.item.key)} latest={entry.item.key === latestReplyKey} readOnly={readOnly} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
+      </TranscriptRow>;
+  return <TranscriptHarness.Provider value={session?.harness}><ShowThinking.Provider value={showThinking}><FileLinkContext.Provider value={fileLinks}><VisualActionsContext.Provider value={visualActions}><ScrollFollow sessionKey={transcriptKey} populated={populated} signature={scrollSignature} className={cn("absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth",
     // a tile is narrow at any viewport width, so compact padding cannot key off `sm:`.
     density === "compact" ? "overflow-x-hidden px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
@@ -991,18 +1027,9 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           removals (a resolved optimistic bubble, the working shimmer) still
           get their exit. */}
       <AnimatePresence initial={false} key={session?.id ?? "preview"}>
-        {shownItems.map(entry => entry.kind === "group"
-          ? <TranscriptRow key={entry.key}><ActivityGroup items={entry.items} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity}/></TranscriptRow>
-          : entry.kind === "raw-group" ? <TranscriptRow key={entry.key}><RawEventGroup items={entry.items}/></TranscriptRow>
-          : <TranscriptRow
-              key={entry.key}
-              tone={entry.item.type === "error" || (entry.item.status === "failed" && !isVisualItem(entry.item)) ? "alert" : "quiet"}
-              id={entry.item.entryId ? `forest-entry-${entry.item.entryId}` : undefined}
-              entryId={entry.item.entryId}
-              className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
-            >
-              <ItemView item={entry.item} sessionId={session?.id} delivery={delivery.get(entry.item.key)} latest={entry.item.key === latestReplyKey} readOnly={readOnly} turnActive={turnActive} autoExpandEditActivity={autoExpandEditActivity} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onOpenAgent={onOpenAgent} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} onForkSession={readOnly ? undefined : onForkSession} onRewind={readOnly ? undefined : onRewindEntry} rewindable={leafEntryIds?.includes(entry.item.entryId ?? "")} errorContext={errorContext}/>
-            </TranscriptRow>)}
+        {/* Hydrated rows mount in place without an entrance: they were always
+            part of the conversation, they just arrived from an idle slice. */}
+        {shownItems.slice(windowStart).map((entry, index) => renderEntry(entry, windowStart + index < instantBefore))}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
           {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
