@@ -495,11 +495,14 @@ pub fn guard(raw: &str) -> Option<String> {
     Some(title)
 }
 
-/// The model a harness names chats with: Claude's small model, else the model
-/// the chat itself ran on, which the account evidently has.
+/// The model a harness names chats with: Claude's small model; for Codex the
+/// model the chat itself ran on, which the account evidently has; for OpenCode
+/// its configured default, because a chat's model is often a free one that has
+/// since been withdrawn ("opencode/space-bunny-free is not exposed").
 pub fn title_model(harness: &str, chat_model: Option<&str>) -> Option<String> {
     match harness {
         "claude" => Some("haiku".into()),
+        "opencode" => None,
         _ => chat_model.map(str::trim).filter(|model| !model.is_empty()).map(str::to_owned),
     }
 }
@@ -569,17 +572,21 @@ pub fn drain_once(
 
     // A claimed batch is one harness, so whether it can generate is asked once,
     // before the lock: building a descriptor can run the harness's `--version`.
-    let generable = remaining.iter().find(|candidate| candidate.excerpt.is_some()).is_some_and(|candidate| {
-        GENERATION_HARNESSES.contains(&candidate.harness.as_str()) && backend.can_generate(&candidate.harness)
-    });
+    let harness = remaining.iter().find(|candidate| candidate.excerpt.is_some()).map(|candidate| candidate.harness.clone());
+    let supported = harness.as_deref().is_some_and(|harness| GENERATION_HARNESSES.contains(&harness));
+    let available = supported && harness.as_deref().is_some_and(|harness| backend.can_generate(harness));
     let mut batch = Vec::new();
     {
         let db = db.lock().unwrap();
         for candidate in remaining {
             if candidate.excerpt.is_none() {
                 settle_done(&db, &candidate.session_id, Outcome::NoTopic, None, now())?;
-            } else if !generable {
+            } else if !supported {
                 settle_done(&db, &candidate.session_id, Outcome::HarnessUnavailable, Some(&candidate.harness), now())?;
+            } else if !available {
+                // Installed but not usable right now (signed out, still being
+                // discovered): worth another look, not worth spinning on.
+                settle_failure(&db, &candidate.session_id, &format!("{} is unavailable", candidate.harness), now())?;
             } else {
                 batch.push(candidate);
             }
@@ -1052,6 +1059,30 @@ mod tests {
         assert_eq!(job(&conn, "a").unwrap().2.as_deref(), Some("harness_unavailable"));
         // the local heading is still there for it.
         assert!(title(&conn, "a").0.is_none() || title(&conn, "a").1.as_deref() == Some("derived"));
+    }
+
+    #[test]
+    fn a_supported_harness_that_is_down_is_retried_not_dropped() {
+        let db = drained(store(), |db| {
+            chat(db, "a", "codex", "direct", None, None, "2026-10-02");
+            said(db, "a", "user.message", "port the grid to swift");
+        });
+        struct Down;
+        impl TitleBackend for Down {
+            fn provider_title(&self, _: &Candidate) -> Option<String> { None }
+            fn can_generate(&self, _: &str) -> bool { false }
+            fn generate(&self, _: &str, _: Option<&str>, _: &str, _: &str) -> Result<Generation, String> { unreachable!() }
+        }
+        drain_once(&db, &Down, "host", || at(0)).unwrap();
+        let conn = db.lock().unwrap();
+        assert_eq!(job(&conn, "a").unwrap(), ("pending".into(), "backfill".into(), Some("error".into()), 1));
+    }
+
+    #[test]
+    fn opencode_names_with_its_default_model() {
+        assert_eq!(title_model("opencode", Some("opencode/space-bunny-free")), None);
+        assert_eq!(title_model("codex", Some("gpt-6.1-sol")).as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(title_model("claude", Some("opus")).as_deref(), Some("haiku"));
     }
 
     #[test]

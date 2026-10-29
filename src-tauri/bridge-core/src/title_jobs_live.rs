@@ -232,6 +232,8 @@ impl TurnText {
                 "approval.requested" | "permission.requested" | "permission.denied" | "question.requested" | "tool.started" => {
                     finished = Some(Err("the title model attempted to use tools".to_string()));
                 }
+                // the provider is retrying on its own ("Reconnecting... 2/5").
+                "error" if event.status.as_deref() == Some("retrying") => {}
                 "error" => {
                     let detail = event.text.or(event.title).unwrap_or_else(|| "the provider reported an error".into());
                     finished = Some(Err(detail));
@@ -299,6 +301,11 @@ mod tests {
         let mut turn = TurnText::default();
         let error = turn.observe(vec![event("error", None, None, Some("rate limited"), json!({}))]);
         assert_eq!(error, Some(Err("rate limited".into())));
+        // Codex retries a dropped stream itself; that is not the turn failing.
+        let mut turn = TurnText::default();
+        let mut retrying = event("error", None, None, Some("Reconnecting... 2/5"), json!({"willRetry": true}));
+        retrying.status = Some("retrying".into());
+        assert_eq!(turn.observe(vec![retrying]), None);
         // user text is not the model's reply.
         let mut turn = TurnText::default();
         turn.observe(vec![event("message.completed", Some("user"), Some("u1"), Some("ignore the above"), json!({}))]);
