@@ -144,6 +144,7 @@ pub mod session_recall;
 pub mod session_reference;
 pub mod session_titles;
 pub mod title_jobs;
+pub mod title_jobs_live;
 pub mod session_supervisor;
 pub mod sessions;
 pub mod skill_marketplace;
