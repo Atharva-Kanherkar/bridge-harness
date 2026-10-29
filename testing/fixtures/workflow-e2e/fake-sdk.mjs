@@ -63,7 +63,8 @@ export function query({ prompt, options = {} }) {
       yield* finish(known?.reply ?? "{}");
       return;
     }
-    if (brief.includes("E2E:post")) {
+    // A marker, or what a drafted "post … on Slack" job asks for (manual QA).
+    if (brief.includes("E2E:post") || (/\bpost\b/i.test(brief) && /slack/i.test(brief))) {
       yield* tool("mcp__claude_ai_Linear__list_issues", { updatedSince: "yesterday" });
       const posted = yield* tool(
         "mcp__claude_ai_Slack__slack_send_message",

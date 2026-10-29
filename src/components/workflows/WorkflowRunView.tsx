@@ -11,7 +11,7 @@ import { Card, ErrorNote, StatusChip, errorText } from "./parts";
 
 const TRIGGER_LABEL: Record<WorkflowRun["triggerKind"], string> = { manual: "Run now", schedule: "schedule", catch_up: "catch-up" };
 
-type Step = { key: string; icon: "ok" | "denied" | "ask" | "say"; title: string; detail: string; identity?: string; pending?: AgentEvent };
+type Step = { key: string; icon: "ok" | "denied" | "ask" | "say" | "wait"; title: string; detail: string; identity?: string; pending?: AgentEvent };
 
 /** `mcp__claude_ai_Slack__slack_send_message` reads as `Slack · slack_send_message`. */
 export function toolLabel(identity: string): string {
@@ -20,31 +20,75 @@ export function toolLabel(identity: string): string {
   return `${match[1].replace(/^claude_ai_/, "").replace(/_/g, " ")} · ${match[2]}`;
 }
 
-/** The run's transcript, reduced to what a person reviewing it needs. */
-export function runSteps(events: AgentEvent[]): Step[] {
-  const resolved = new Set<number>();
+/** What Bridge or the person decided about a write, in words. */
+function decisionText(resolution: Record<string, unknown>): string {
+  const byWorkflow = resolution.resolvedBy === "workflow";
+  const reason = typeof resolution.reason === "string" ? resolution.reason : "";
+  if (resolution.decision === "accept") return byWorkflow ? "always allowed for this workflow" : "allowed by you";
+  if (byWorkflow && reason.startsWith("dry run")) return "dry run: recorded as a preview, not sent";
+  return byWorkflow ? reason || "declined by Bridge" : "declined by you";
+}
+
+/** The agent's text without the machine-read result block: the summary shows it. */
+function withoutResultBlock(text: string): string {
+  return text.replace(/\n?```workflow-result[\s\S]*?```/g, "").trim();
+}
+
+/**
+ * The run's transcript, reduced to what a person reviewing it needs: one row
+ * per tool call (its events share an `itemId`), saying what was decided and
+ * whether it ran, and what the agent said.
+ */
+export function runSteps(events: AgentEvent[], active = true): Step[] {
+  const resolutions = new Map<number, Record<string, unknown>>();
   for (const event of events) {
-    if (readWireKind(event.kind) === "approval.resolved") {
-      const id = Number((event.data as Record<string, unknown>).requestEventId ?? (event.data as Record<string, unknown>).eventId);
-      if (Number.isFinite(id)) resolved.add(id);
+    const kind = readWireKind(event.kind);
+    if (kind === "permission.resolved" || kind === "permission.resolving" || kind === "approval.resolved") {
+      const data = event.data as Record<string, unknown>;
+      const id = Number(data.requestEventId ?? data.eventId);
+      if (Number.isFinite(id)) resolutions.set(id, data);
     }
   }
-  const steps: Step[] = [];
+  type Call = Step & { decided?: string; outcome?: "ran" | "failed"; failure?: string };
+  const steps: Call[] = [];
+  const calls = new Map<string, Call>();
+  const call = (event: AgentEvent, identity: string): Call => {
+    const key = event.itemId ?? `s${event.sequence}`;
+    let found = calls.get(key);
+    if (!found) {
+      found = { key, icon: "wait", title: toolLabel(identity), identity, detail: "" };
+      calls.set(key, found);
+      steps.push(found);
+    }
+    return found;
+  };
   for (const event of events) {
     const data = event.data as Record<string, unknown>;
     const kind = readWireKind(event.kind);
     if (kind === "tool.started") {
-      const identity = String(data.toolName ?? data.name ?? event.title ?? "tool");
-      steps.push({ key: `t${event.sequence}`, icon: "ok", title: toolLabel(identity), identity, detail: "called" });
+      call(event, String(data.toolName ?? data.name ?? event.title ?? "tool"));
     } else if (kind === "permission.requested") {
-      const tool = String(data.tool_name ?? event.title ?? "tool");
-      const decided = data.resolvedBy === "workflow" || resolved.has(event.sequence) || event.status === "settling" || event.status === "resolved";
-      steps.push({ key: `p${event.sequence}`, icon: decided ? "denied" : "ask", title: toolLabel(tool), identity: tool, detail: decided ? "decided" : "write: asking you", pending: decided ? undefined : event });
+      const current = call(event, String(data.tool_name ?? event.title ?? "tool"));
+      const resolution = resolutions.get(event.sequence) ?? (data.resolvedBy ? data : undefined);
+      if (resolution) current.decided = decisionText(resolution);
+      else if (event.status === "settling" || event.status === "resolved") current.decided = "decided";
+      else current.pending = event;
+    } else if (kind === "tool.completed" && event.itemId && calls.has(event.itemId)) {
+      const current = calls.get(event.itemId)!;
+      current.outcome = event.status === "failed" ? "failed" : "ran";
+      current.failure = event.text ?? undefined;
     } else if ((kind === "assistant.message" || kind === "message.completed") && (event.role ?? "assistant") === "assistant" && event.text) {
-      steps.push({ key: `m${event.sequence}`, icon: "say", title: "Agent", detail: event.text });
+      const text = withoutResultBlock(event.text);
+      if (text) steps.push({ key: `m${event.sequence}`, icon: "say", title: "Agent", detail: text });
     }
   }
-  return steps;
+  return steps.map(({ decided, outcome, failure, ...step }) => {
+    if (step.icon === "say") return step;
+    if (step.pending) return { ...step, icon: "ask", detail: "write: asking you" };
+    if (outcome === "ran") return { ...step, icon: "ok", detail: decided ? `${decided}, then ran` : "ran" };
+    if (outcome === "failed" || decided) return { ...step, icon: "denied", detail: decided ?? failure ?? "failed" };
+    return { ...step, detail: active ? "running" : "did not finish" };
+  });
 }
 
 export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
@@ -95,7 +139,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
     onContinue(await bridgeApi.forkSession(run.sessionId, last.id, `${workflow.definition.name} (continued)`, null, null, "shared"));
   });
 
-  const steps = runSteps(events);
+  const steps = runSteps(events, active);
   const when = run.startedAt ?? run.createdAt;
   const tokens = run.tokens ? `${run.tokens.toLocaleString()} tokens` : null;
   const meta = [workflow.definition.projectId ? null : "No project", TRIGGER_LABEL[run.triggerKind], run.dryRun ? "dry run" : null,
@@ -116,7 +160,7 @@ export function WorkflowRunView({ workflow, run, onBack, onContinue }: {
       {run.sessionId && steps.length === 0 && <p className="flex items-center gap-2 py-3 text-caption text-muted-foreground">{active && <LoaderCircle className="animate-spin" size={12}/>}{active ? "Working…" : "Nothing was recorded for this run."}</p>}
       <div className="divide-y divide-border">{steps.map(step => <div key={step.key} className="flex items-start gap-3 py-2.5">
         <div className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${step.icon === "ask" ? "border-foreground text-foreground" : "border-border text-muted-foreground"}`}>
-          {step.icon === "ok" ? <Check size={12}/> : step.icon === "denied" ? <X size={12}/> : step.icon === "ask" ? <Bell size={12}/> : <MessageSquare size={12}/>}
+          {step.icon === "ok" ? <Check size={12}/> : step.icon === "denied" ? <X size={12}/> : step.icon === "ask" ? <Bell size={12}/> : step.icon === "wait" ? <LoaderCircle size={12} className={active ? "animate-spin" : ""}/> : <MessageSquare size={12}/>}
         </div>
         <div className="min-w-0 flex-1">
           <p className={`${step.icon === "say" ? "font-sans" : "font-mono"} text-[12px] text-foreground`}>{step.title}</p>
