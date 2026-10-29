@@ -165,7 +165,7 @@ export function chatBucket(chat: Session, liveAgents?: LiveAgents): StatusBucket
  *  Until the backend titles a chat from its first message, these say nothing
  *  about it, and three rows reading "Orchestrator" tell the user less than one
  *  reading "New chat". */
-const PLACEHOLDER_LABELS = new Set(["orchestrator", "bridge orchestrator", "new chat"]);
+export const PLACEHOLDER_LABELS = new Set(["orchestrator", "bridge orchestrator", "new chat", "chat"]);
 
 export function chatName(chat: Pick<Session, "title" | "label">): string {
   if (chat.title) return chat.title;

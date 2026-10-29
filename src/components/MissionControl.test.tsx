@@ -445,6 +445,12 @@ it("titles an unnamed chat by what was asked", async () => {
   expect(host.querySelector("[data-session-id='a'] [data-tile-subtitle]")?.textContent).toBe("Claude · opus");
 });
 
+it("titles an untitled direct chat by what was asked", async () => {
+  vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), entries: [entry(id, 1, "user.message", { text: "Port the grid to Swift" })] } as unknown as SessionForestSnapshot));
+  await render({ sessions: [session("a", "working", { label: "Chat", kind: "direct", title: null, model: "opus" })] });
+  expect(host.querySelector("[data-session-id='a'] h2")?.textContent).toBe("Port the grid to Swift");
+});
+
 it("does not repeat the chat title in the composer", async () => {
   await render({ sessions: [session("a", "working", { title: "Session supervisor" }), session("b", "completed", { title: "Idle one" })] });
   expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")?.placeholder).toBe("Steer this chat…");

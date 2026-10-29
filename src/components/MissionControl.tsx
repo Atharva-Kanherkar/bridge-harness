@@ -15,6 +15,7 @@ import { workerStatus, type WorkerStatus, type WorkerTone } from "./workerStatus
 import { arrangeLeaves, dropEdge, groupedOrder, insertLeaf, minimumSize, moveLeaf, readLayout, reconcileLeaves, writeLayout, type DropEdge } from "./missionControl/layout";
 import { isChatDrag, readChatDrag, SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
 import { askText, displayTitle, latestAsk, projectLabel } from "./missionControl/identity";
+import { PLACEHOLDER_LABELS } from "./sidebarChats";
 
 export type MissionControlProps = {
   sessions: Session[];
@@ -29,7 +30,6 @@ export type MissionControlProps = {
 
 const ACTIVE_STATUSES = new Set<Session["status"]>(["working", "waiting", "starting", "resuming", "checkpointing"]);
 const FOREST_DEBOUNCE_MS = 300;
-const PLACEHOLDER_LABELS = new Set(["orchestrator", "bridge orchestrator", "new chat"]);
 
 // one signal pops: a tile that needs you is the only inverted ink on the board.
 // warning is a warm grey by design, so the salience is luminance plus an icon and
