@@ -228,8 +228,8 @@ pub fn settle_done(
     Ok(())
 }
 
-/// Count a failed attempt. Retries back off 2, 4, then 8 minutes; after
-/// [`MAX_ATTEMPTS`] the job is `failed` and the chat keeps its heading.
+/// Count a failed attempt. Retries back off 2, then 4 minutes; the
+/// [`MAX_ATTEMPTS`]th failure leaves the job `failed` and the chat its heading.
 pub fn settle_failure(db: &Connection, session_id: &str, detail: &str, now: DateTime<Utc>) -> Result<(), BridgeError> {
     let attempts: i64 = db
         .query_row(
