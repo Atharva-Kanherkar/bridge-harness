@@ -196,6 +196,7 @@ export type BridgeMethod =
   | "config/refresh_opencode_catalog"
   | "config/set_opencode_provider_api_key"
   | "config/remove_opencode_provider_auth"
+  | "config/set_account_api_key"
   | "config/save_agent_config"
   | "config/delete_agent_config"
   | "config/set_default_agent"
@@ -452,6 +453,7 @@ export const BRIDGE_METHODS = [
   { method: "config/refresh_opencode_catalog", domain: "config", command: "refresh_opencode_catalog" },
   { method: "config/set_opencode_provider_api_key", domain: "config", command: "set_opencode_provider_api_key" },
   { method: "config/remove_opencode_provider_auth", domain: "config", command: "remove_opencode_provider_auth" },
+  { method: "config/set_account_api_key", domain: "config", command: "set_account_api_key" },
   { method: "config/save_agent_config", domain: "config", command: "save_agent_config" },
   { method: "config/delete_agent_config", domain: "config", command: "delete_agent_config" },
   { method: "config/set_default_agent", domain: "config", command: "set_default_agent" },
@@ -783,6 +785,7 @@ export interface BridgeMethodParams {
   "config/refresh_opencode_catalog": RefreshOpencodeCatalogParams;
   "config/set_opencode_provider_api_key": SetOpencodeProviderApiKeyParams;
   "config/remove_opencode_provider_auth": RemoveOpencodeProviderAuthParams;
+  "config/set_account_api_key": SetAccountApiKeyParams;
   "config/save_agent_config": SaveAgentConfigParams;
   "config/delete_agent_config": DeleteAgentConfigParams;
   "config/set_default_agent": SetDefaultAgentParams;
@@ -1041,6 +1044,7 @@ export interface BridgeMethodResults {
   "config/refresh_opencode_catalog": unknown;
   "config/set_opencode_provider_api_key": unknown;
   "config/remove_opencode_provider_auth": unknown;
+  "config/set_account_api_key": ConfigState;
   "config/save_agent_config": ConfigState;
   "config/delete_agent_config": ConfigState;
   "config/set_default_agent": ConfigState;
@@ -1250,6 +1254,7 @@ export interface ChatEffortChoice {
 export type ChatLaunchTarget = { kind: "direct" } | { kind: "orchestrator" } | { agentId: string; kind: "agent" };
 
 export interface ChatModelChoice {
+  account?: string | null;
   harness: string;
   model?: string | null;
 }
@@ -2344,6 +2349,7 @@ export interface ServerInfo {
 }
 
 export interface Session {
+  account?: string | null;
   activeTurnId?: string | null;
   contextPercent?: JsSafeI64 | null;
   continuationFidelity: ContinuationFidelity;
@@ -3612,6 +3618,7 @@ export interface StartChatParams {
 }
 
 export interface UpdateChatModelParams {
+  account?: string | null;
   effort?: string | null;
   harness: HarnessId;
   model?: string | null;
@@ -4480,6 +4487,7 @@ export interface RefreshOpencodeCatalogParams {
 }
 
 export interface SetOpencodeProviderApiKeyParams {
+  account?: string | null;
   apiKey: string;
   directory?: string | null;
   providerId: string;
@@ -4488,6 +4496,12 @@ export interface SetOpencodeProviderApiKeyParams {
 export interface RemoveOpencodeProviderAuthParams {
   directory?: string | null;
   providerId: string;
+}
+
+export interface SetAccountApiKeyParams {
+  account: string;
+  apiKey: string;
+  harness: string;
 }
 
 export interface SaveAgentConfigParams {

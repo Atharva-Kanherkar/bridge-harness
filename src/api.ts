@@ -34,6 +34,7 @@ import type {
   PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
+import { accountsOf, normalizeAccount, supportsAccounts } from "./providerAccounts";
 import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
   ManagedAgentInspection,
@@ -1495,7 +1496,7 @@ export const bridgeApi = {
     if (hasBackend()) return call("sessions/create_configured_chat", params);
     const settings = mockResolveSettings(mockState,mockHealth.adapters,mockConfigState.agents,params);
     const id=crypto.randomUUID();
-    mockState.sessions.push({ id, workspaceId: params.workspaceId ?? null, harness: settings.model.harness, label: settings.target.kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt:null, endedAt:null, contextPercent:null,usagePercent:null,metricSource:"estimated",providerSessionId:null,activeTurnId:null,model:settings.model.model ?? null,effort:settings.effort,requestedTier:"standard",restorationMode:"fresh",continuationFidelity:"native",title:params.title ?? null,kind:settings.target.kind === "direct" ? "direct" : "orchestrator",cwd:settings.createWorktree ? `/tmp/bridge/worktrees/${id}` : mockState.workspaces.find(w=>w.id===params.workspaceId)?.path ?? null });
+    mockState.sessions.push({ id, workspaceId: params.workspaceId ?? null, harness: settings.model.harness, label: settings.target.kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt:null, endedAt:null, contextPercent:null,usagePercent:null,metricSource:"estimated",providerSessionId:null,activeTurnId:null,model:settings.model.model ?? null,account:normalizeAccount(settings.model.harness,settings.model.account),effort:settings.effort,requestedTier:"standard",restorationMode:"fresh",continuationFidelity:"native",title:params.title ?? null,kind:settings.target.kind === "direct" ? "direct" : "orchestrator",cwd:settings.createWorktree ? `/tmp/bridge/worktrees/${id}` : mockState.workspaces.find(w=>w.id===params.workspaceId)?.path ?? null });
     const configuration={revision:1,settings};mockSessionSettings.set(id,configuration);emitState();return {sessionId:id,state:snapshot(),configuration};
   },
   chatSettings: async (sessionId: string): Promise<ChatSessionSettings> => {
@@ -1503,7 +1504,7 @@ export const bridgeApi = {
     const session=mockState.sessions.find(s=>s.id===sessionId);if(!session) throw new Error("Chat no longer exists");
     const stored=mockSessionSettings.get(sessionId);
     const settings=stored?.settings ?? { workspaceId:session.workspaceId,projectId:mockState.workspaces.find(w=>w.id===session.workspaceId)?.projectId,revision:{application:0,project:0},target:{kind:session.kind === "direct" ? "direct" as const : "orchestrator" as const},model:{harness:session.harness,model:session.model},effort:session.effort,access:mockConfigState.permissionPolicy.autoApproveProviderPermissions ? "full" as const : "ask" as const,createWorktree:false,activeTurnInput:"steer" as const,sources:{} };
-    return structuredClone({revision:stored?.revision ?? 0,settings:{...settings,model:{harness:session.harness,model:session.model},effort:session.effort}});
+    return structuredClone({revision:stored?.revision ?? 0,settings:{...settings,model:{harness:session.harness,model:session.model,account:session.account ?? null},effort:session.effort}});
   },
   updateChatOptions: async (params: UpdateChatOptionsParams): Promise<ChatSessionSettings> => {
     if(hasBackend()) return call("sessions/update_chat_options",params);
@@ -2018,22 +2019,38 @@ export const bridgeApi = {
   saveHarnessConfig: (config: HarnessConfig): Promise<ConfigState> => {
     if (hasBackend()) return call("config/save_harness_config", { config });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === config.id ? { ...structuredClone(config), isOverride: true } : item);
+    // Like the host: every model picker lists Claude and Codex accounts.
+    if (supportsAccounts(config.id)) emitState();
     return Promise.resolve(structuredClone(mockConfigState));
   },
   resetHarnessConfig: (id: HarnessConfig["id"]): Promise<ConfigState> => {
     if (hasBackend()) return call("config/reset_harness_config", { id });
     mockConfigState.harnesses = mockConfigState.harnesses.map(item => item.id === id ? { ...item, enabled: true, defaultModel: null, effort: null, systemPrompt: "", advanced: {}, isOverride: false } : item);
+    if (supportsAccounts(id)) emitState();
     return Promise.resolve(structuredClone(mockConfigState));
   },
   refreshOpenCodeCatalog: (directory?: string): Promise<OpenCodeCatalog> => {
     if (hasBackend()) return call("config/refresh_opencode_catalog", { directory: directory || null }) as Promise<OpenCodeCatalog>;
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
-  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string): Promise<OpenCodeCatalog> => {
-    if (hasBackend()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null }) as Promise<OpenCodeCatalog>;
+  /** `account` connects the key inside that extra OpenCode account's own
+   *  folder and returns its catalog; the user's own catalog is untouched. */
+  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string, account?: string): Promise<OpenCodeCatalog> => {
+    if (hasBackend()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null, ...(account ? { account } : {}) }) as Promise<OpenCodeCatalog>;
     void apiKey;
+    if (account) return Promise.resolve(structuredClone(mockOpenCodeCatalog));
     mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: true } : provider) };
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
+  /** Save an extra account's API key (Cursor). The host keeps it in the macOS
+   *  Keychain; it never enters the settings record. */
+  setAccountApiKey: (harness: string, account: string, apiKey: string): Promise<ConfigState> => {
+    if (hasBackend()) return call("config/set_account_api_key", { harness, account, apiKey });
+    const config = mockConfigState.harnesses.find(item => item.id === harness);
+    const known = accountsOf(config).some(item => item.id === account);
+    if (!known) return Promise.reject(new Error(`The account "${account}" is no longer in Settings.`));
+    if (!apiKey.trim()) return Promise.reject(new Error("The API key cannot be empty"));
+    return Promise.resolve(structuredClone(mockConfigState));
   },
   removeOpenCodeProviderAuth: (providerId: string, directory?: string): Promise<OpenCodeCatalog> => {
     if (hasBackend()) return call("config/remove_opencode_provider_auth", { providerId, directory: directory || null }) as Promise<OpenCodeCatalog>;
@@ -2889,11 +2906,16 @@ export const bridgeApi = {
     const cwd = createWorktree ? `/tmp/bridge/worktrees/${id}` : workspace?.path ?? null;
     mockState.sessions.push({ id, workspaceId, harness: kind === "direct" ? harness ?? "codex" : "codex", label: kind === "direct" ? "Chat" : "Orchestrator", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model: kind === "direct" ? model ?? null : null, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: null, kind, cwd }); emitState(); return snapshot();
   },
-  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null): Promise<BridgeState> => {
-    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort });
+  /** `account` is an extra sign-in's id, or the harness id for the user's own
+   *  login; omitted keeps the chat's account on the same harness. */
+  updateChatModel: async (sessionId: string, harness: Harness, model: string | null, effort?: string | null, account?: string): Promise<BridgeState> => {
+    if (hasBackend()) return call("sessions/update_chat_model", { sessionId, harness, model, effort, ...(account === undefined ? {} : { account }) });
     const session = mockState.sessions.find(item => item.id === sessionId);
     if (session?.activeTurnId) throw new Error("Wait for the current response before switching models");
-    if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) { session.harness = harness; session.model = model; if (effort) session.effort = effort; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh"; }
+    if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) {
+      const nextAccount = account === undefined ? (session.harness === harness ? session.account ?? null : null) : normalizeAccount(harness, account);
+      session.harness = harness; session.model = model; session.account = nextAccount; if (effort) session.effort = effort; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh";
+    }
     emitState(); return snapshot();
   },
   carrySessionHandoff: async (targetSessionId: string, sourceSessionId: string): Promise<boolean> => {

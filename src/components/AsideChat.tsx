@@ -8,6 +8,7 @@ import { useActiveTurnInput } from "../activeTurnSettings";
 import { activeTurnAction } from "../sessionInput";
 import { ComposerPill } from "./ComposerPill";
 import { ChatModelControl } from "./ChatModelControl";
+import type { AccountChoice } from "../providerAccounts";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
 import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
@@ -30,10 +31,13 @@ import type { InteractionResolutionResult, QuestionAction, SuggestionSettingsSna
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose, docked = false, tag = "aside", leading }: {
+export function AsideChat({ session, adapters, accounts, events, pendingMessages, working, queuedFollowUpCount = 0, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], suggestionSettings, onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose, docked = false, tag = "aside", leading }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
+  /** Extra Claude Code and Codex sign-ins the picker offers, as in the main
+   *  composer. The aside's own account is `session.account`. */
+  accounts?: readonly AccountChoice[];
   /** The global live stream; the panel filters to its own session. */
   events: AgentEvent[];
   pendingMessages: readonly PendingMessage[];
@@ -55,7 +59,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
    *  May reject — the panel wears the failure itself, because the main error
    *  banner sits behind the scrim where nobody is looking. */
   onChangeEffort?: (effort: string) => void | Promise<void>;
-  onChangeModel: (harness: Harness, model: string | null) => void | Promise<void>;
+  /** `account` is the extra sign-in picked, or null for the user's own login. */
+  onChangeModel: (harness: Harness, model: string | null, account: string | null) => void | Promise<void>;
   onResolve: (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
   onAnswerQuestion?: (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
   onRetryCompaction?: () => Promise<void>;
@@ -267,13 +272,15 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             <div className="-ml-1 flex min-w-0 items-center gap-1">
               <ChatModelControl
                 adapters={adapters}
+                accounts={accounts}
+                account={session.account ?? null}
                 harness={session.harness}
                 model={session.model ?? null}
                 disabled={working || !!modelSwitch || changingEffort}
                 disabledReason={working ? "Wait for the current response before switching models" : undefined}
-                onChange={(harness, model) => {
+                onChange={(harness, model, account) => {
                   setComposerError(undefined);
-                  void Promise.resolve(onChangeModel(harness, model))
+                  void Promise.resolve(onChangeModel(harness, model, account))
                     .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
                 }}
                 effort={session.effort}

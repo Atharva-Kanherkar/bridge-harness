@@ -156,6 +156,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
             interactive: request.interactive,
+            account: request.account,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -189,6 +190,7 @@ fn launch(
         read_only_sandbox,
         briefing,
         interactive,
+        account,
         on_progress,
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
@@ -198,7 +200,13 @@ fn launch(
     // the sidecar remains isolated from unrelated global hooks and permissions.
     // A restrictive credential policy is checked against the environment the
     // sidecar will inherit, before anything spawns.
-    crate::credential_policy::admit_claude_launch()?;
+    // An account launch signs in from its folder alone (see
+    // `provider_accounts::apply_account`), so the policy judges the
+    // environment after the overrides it removes are gone.
+    crate::credential_policy::admit_claude_environment(
+        crate::credential_policy::active().credential_policy,
+        |key| crate::provider_accounts::launch_variable("claude", account.is_some(), key, |key| std::env::var(key).ok()),
+    )?;
     let node = binary::resolve("node").ok_or_else(|| {
         BridgeError::Invalid(
             "Node.js is required to run Claude (expected `node` on PATH). Install Node 18+ to use Claude models."
@@ -344,6 +352,9 @@ fn launch(
         // policy was satisfied by.
         command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
     }
+    // An extra account signs in from its own config directory. A read-only
+    // sandbox below replaces it with its own isolated one.
+    crate::provider_accounts::apply_account(&mut command, account);
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -1428,6 +1439,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1505,6 +1517,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1523,6 +1536,7 @@ mod tests {
             briefing: None,
             provider_session_id: &session_id,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();

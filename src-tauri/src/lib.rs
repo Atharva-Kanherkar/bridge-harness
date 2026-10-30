@@ -1299,13 +1299,26 @@ async fn set_opencode_provider_api_key(
     provider_id: String,
     api_key: String,
     directory: Option<String>,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let core = state.inner().clone();
     blocking("OpenCode authentication", move || {
-        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory)
+        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory, account)
     })
     .await
+}
+
+/// Save an extra account's API key in the macOS Keychain (Cursor accounts).
+#[tauri::command]
+async fn set_account_api_key(
+    harness: String,
+    account: String,
+    api_key: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Account key", move || api::set_account_api_key(&core, &harness, &account, &api_key)).await
 }
 
 #[tauri::command]
@@ -1665,13 +1678,14 @@ async fn update_chat_model(
     harness: Harness,
     model: Option<String>,
     effort: Option<String>,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Stopping the old adapter can block on process teardown; run the whole
     // claim -> teardown -> commit window on the blocking pool.
     let core = state.inner().clone();
     blocking("Adapter shutdown", move || {
-        api::update_chat_model(&core, &session_id, &harness, model.as_deref(), effort.as_deref())
+        api::update_chat_model_with_account(&core, &session_id, &harness, model.as_deref(), effort.as_deref(), account.as_deref())
     })
     .await
 }
@@ -3064,6 +3078,7 @@ pub fn run() -> i32 {
             reset_harness_config,
             refresh_opencode_catalog,
             set_opencode_provider_api_key,
+            set_account_api_key,
             remove_opencode_provider_auth,
             save_agent_config,
             delete_agent_config,

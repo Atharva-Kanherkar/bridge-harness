@@ -249,6 +249,23 @@ pub struct SetOpencodeProviderApiKeyParams {
     pub api_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
+    /// An extra OpenCode account (its id in the harness's `advanced.accounts`):
+    /// the key is connected inside that account's own data folder, and the
+    /// result is that account's catalog. Absent is the user's own login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+/// Save the API key of an extra account on an agent whose accounts sign in
+/// with a key (Cursor). Bridge keeps it in the macOS Keychain, never in the
+/// settings record, and deletes it when the account is removed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAccountApiKeyParams {
+    pub harness: String,
+    /// The account's id in the harness's `advanced.accounts`.
+    pub account: String,
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -653,6 +670,7 @@ mod tests {
             provider_id: "openrouter".into(),
             api_key: "sk-test".into(),
             directory: None,
+            account: None,
         };
         assert_eq!(
             serde_json::to_value(&key).unwrap(),
@@ -660,6 +678,19 @@ mod tests {
             "absent options stay off the wire"
         );
         assert_eq!(round_trip(&key), key);
+        let go = SetOpencodeProviderApiKeyParams { provider_id: "opencode-go".into(), account: Some("go".into()), ..key };
+        assert_eq!(
+            serde_json::to_value(&go).unwrap(),
+            json!({"providerId": "opencode-go", "apiKey": "sk-test", "account": "go"})
+        );
+        assert_eq!(round_trip(&go), go);
+
+        let cursor = SetAccountApiKeyParams { harness: "cursor".into(), account: "work".into(), api_key: "key_x".into() };
+        assert_eq!(
+            serde_json::to_value(&cursor).unwrap(),
+            json!({"harness": "cursor", "account": "work", "apiKey": "key_x"})
+        );
+        assert_eq!(round_trip(&cursor), cursor);
 
         let remove = RemoveOpencodeProviderAuthParams {
             provider_id: "openrouter".into(),

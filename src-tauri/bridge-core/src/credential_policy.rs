@@ -160,13 +160,17 @@ pub fn claude_auth_source(read: impl Fn(&str) -> Option<String>) -> AuthSource {
     }
 }
 
-/// Gate a Claude launch on the environment it will inherit.
-pub fn admit_claude_launch() -> Result<(), BridgeError> {
-    let policy = active().credential_policy;
+/// Gate a Claude launch on the environment it will actually run with, which
+/// for an extra account is the inherited one minus the credentials the account
+/// launch removes.
+pub fn admit_claude_environment(
+    policy: CredentialPolicy,
+    read: impl Fn(&str) -> Option<String>,
+) -> Result<(), BridgeError> {
     if !policy.restricts() {
         return Ok(());
     }
-    admit("Claude", policy, claude_auth_source(|key| std::env::var(key).ok()))
+    admit("Claude", policy, claude_auth_source(read))
 }
 
 /// Harnesses Bridge can verify itself (Codex and Claude check their own

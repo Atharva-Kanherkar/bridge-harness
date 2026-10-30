@@ -786,6 +786,7 @@ mod tests {
             read_only_sandbox: Some(&codex_sandbox),
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -846,6 +847,7 @@ mod tests {
             read_only_sandbox: Some(&claude_sandbox),
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();

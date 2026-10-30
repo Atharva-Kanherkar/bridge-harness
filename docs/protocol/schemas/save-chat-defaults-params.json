@@ -148,6 +148,13 @@
     "ChatModelChoice": {
       "additionalProperties": false,
       "properties": {
+        "account": {
+          "description": "The extra Claude or Codex account the chat signs in with, by its id in the harness's `advanced.accounts`. Absent is the user's own login.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "harness": {
           "type": "string"
         },

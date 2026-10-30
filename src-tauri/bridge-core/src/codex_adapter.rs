@@ -94,6 +94,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
             interactive: request.interactive,
+            account: request.account,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -178,6 +179,7 @@ fn launch(
         read_only_sandbox,
         briefing,
         interactive,
+        account,
         on_progress,
     } = request;
     // Codex cannot express one connector tool's exact identity, so a briefing
@@ -219,6 +221,9 @@ fn launch(
         // Piped and tail-captured: a worker that dies before its typed result
         // reports the provider's own error, not a generic exit.
         .stderr(Stdio::piped());
+    // An extra account signs in from its own Codex home. A read-only sandbox
+    // below replaces it with its own isolated one.
+    crate::provider_accounts::apply_account(&mut command, account);
     if let Some(sandbox) = read_only_sandbox {
         let codex_home = prepare_isolated_codex_home(sandbox)?;
         command
@@ -1551,6 +1556,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1628,6 +1634,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();
@@ -1646,6 +1653,7 @@ mod tests {
             briefing: None,
             provider_session_id: &thread_id,
             interactive: false,
+            account: None,
             on_progress: None,
         })
         .unwrap();

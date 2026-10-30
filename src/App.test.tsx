@@ -69,7 +69,7 @@ describe("ChatModelControl", () => {
 
     const opus = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Claude Opus"))!;
     await act(async () => opus.click());
-    expect(onChange).toHaveBeenCalledWith("claude", "opus");
+    expect(onChange).toHaveBeenCalledWith("claude", "opus", null);
     await act(async () => root.unmount());
   });
 });
@@ -817,7 +817,7 @@ describe("the dock in the session view", () => {
     const opus = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Opus"))!;
     await click(opus);
     const asideId = updateSpy.mock.calls[0]?.[0];
-    expect(updateSpy).toHaveBeenCalledWith(asideId, "claude", "opus");
+    expect(updateSpy).toHaveBeenCalledWith(asideId, "claude", "opus", undefined, "claude");
     expect(asideId).not.toBe("session-1");
   });
 

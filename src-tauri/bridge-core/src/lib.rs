@@ -6,6 +6,7 @@
 //! that state; hosts (the Tauri shell today, a headless daemon later) wrap it
 //! in their own transport.
 
+pub mod account_secrets;
 pub mod acp_events;
 pub mod acp_registry;
 pub mod acp_session;
@@ -115,6 +116,7 @@ pub mod orchestrator;
 pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
+pub mod provider_accounts;
 pub mod provider_limit;
 pub mod policy_replay;
 pub mod project_onboarding;

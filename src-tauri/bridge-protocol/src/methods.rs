@@ -257,6 +257,7 @@ methods![
     (RefreshOpencodeCatalog, "config", "refresh_opencode_catalog"),
     (SetOpencodeProviderApiKey, "config", "set_opencode_provider_api_key"),
     (RemoveOpencodeProviderAuth, "config", "remove_opencode_provider_auth"),
+    (SetAccountApiKey, "config", "set_account_api_key"),
     (SaveAgentConfig, "config", "save_agent_config"),
     (DeleteAgentConfig, "config", "delete_agent_config"),
     (SetDefaultAgent, "config", "set_default_agent"),

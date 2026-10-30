@@ -86,6 +86,7 @@ fn a_pinned_deployment_is_reported_and_enforced_at_harness_start() {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
+                account: None,
                 on_progress: None,
             },
         )

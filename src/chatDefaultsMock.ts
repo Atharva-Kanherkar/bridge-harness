@@ -41,7 +41,10 @@ export function mockResolveSettings(state: BridgeState, adapters: AdapterDescrip
   if (target.kind === "agent" && !agent) throw new Error("Selected agent was removed or disabled");
   const adapter = adapters.find(a => a.id === (values.model?.harness ?? (agent?.harness !== "bridge" ? agent?.harness : undefined)) && a.available) ?? (!values.model ? adapters.find(a => a.available) : undefined);
   if (!adapter) throw new Error("Selected harness is unavailable");
-  const model = values.model ?? { harness: adapter.id, model: agent?.model ?? adapter.models.find(m => m.tier === "standard" && m.defaultForTier)?.id ?? adapter.defaultModel ?? null };
+  const chosen = values.model ?? { harness: adapter.id, model: agent?.model ?? adapter.models.find(m => m.tier === "standard" && m.defaultForTier)?.id ?? adapter.defaultModel ?? null };
+  // Like the host: a specialist runs as a worker on the user's own login.
+  const { account, ...rest } = chosen;
+  const model = agent || !account ? rest : chosen;
   const selected = adapter.models.find(m => m.id === model.model);
   if (model.model && (!selected || selected.available === false || selected.compatible === false)) throw new Error("Selected model is unavailable or incompatible");
   const effort = values.effort ? values.effort.value ?? null : !values.model && selected?.supportedEffortLevels?.includes(agent?.effort ?? "medium") ? agent?.effort ?? "medium" : null;

@@ -3,6 +3,13 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
+    "account": {
+      "description": "An extra OpenCode account (its id in the harness's `advanced.accounts`): the key is connected inside that account's own data folder, and the result is that account's catalog. Absent is the user's own login.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "apiKey": {
       "description": "Stored by OpenCode's own auth file, never persisted by Bridge.",
       "type": "string"

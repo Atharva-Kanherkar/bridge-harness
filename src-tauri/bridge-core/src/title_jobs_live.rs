@@ -123,6 +123,7 @@ fn one_hidden_turn(
                 read_only_sandbox: None,
                 briefing: Some(&policy),
                 interactive: false,
+                account: None,
                 on_progress: None,
             },
         )
@@ -140,6 +141,7 @@ fn one_hidden_turn(
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
+                account: None,
                 on_progress: None,
             },
         )

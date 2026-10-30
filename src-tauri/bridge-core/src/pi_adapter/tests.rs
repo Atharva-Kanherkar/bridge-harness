@@ -101,6 +101,7 @@ fn request(cwd: &str) -> StartRequest<'_> {
         read_only_sandbox: None,
         briefing: None,
         interactive: false,
+        account: None,
         on_progress: None,
     }
 }
