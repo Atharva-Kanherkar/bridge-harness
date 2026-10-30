@@ -89,7 +89,7 @@ describe("ChatModelControl accounts", () => {
   it("marks the chat's account and names it on the pill", async () => {
     const onChange = vi.fn();
     await act(async () => root.render(<ChatModelControl adapters={claudeAdapters} accounts={accounts} account="personal" harness="claude" model="sonnet" onChange={onChange} />));
-    expect(trigger().textContent).toContain("Personal");
+    expect(trigger().textContent).toBe("Personal · Claude Sonnet");
     expect(trigger().getAttribute("aria-label")).toContain("Personal");
     await act(async () => trigger().click());
     expect(optionIn("Claude · Personal", "Sonnet").getAttribute("aria-selected")).toBe("true");

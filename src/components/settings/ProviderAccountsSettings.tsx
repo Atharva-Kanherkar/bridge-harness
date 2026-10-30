@@ -90,11 +90,11 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
   return <SettingsBlockRow label="Add an account" description={`Each account signs in from its own folder. Your own ${label} login is not changed.`}>
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-3">
-        <span className="w-28 text-[12px] text-muted-foreground">Name</span>
+        <span className="w-36 shrink-0 text-[12px] text-muted-foreground">Name</span>
         <Field label="Account name" value={name} disabled={disabled} placeholder="e.g. Personal or Work" onChange={setName} />
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <span className="w-28 text-[12px] text-muted-foreground">{provider.variable}</span>
+        <span className="w-36 shrink-0 text-[12px] text-muted-foreground">{provider.variable}</span>
         <Field label="Account folder" value={folder} disabled={disabled} mono placeholder={suggestedFolder(harness, "work")} onChange={value => setFolderEdited(value)} />
       </div>
       {provider.sharedHome && <div className="flex flex-wrap items-center gap-3">

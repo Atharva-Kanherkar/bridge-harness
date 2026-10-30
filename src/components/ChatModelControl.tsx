@@ -236,10 +236,14 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // MiMo V2.5"), and prefixing the harness again read as a stutter:
   // "OpenCode · OpenCode Go · MiMo V2.5". When the model label already opens
   // with the harness label, it carries the whole pill by itself.
-  const harnessName = activeAccountLabel ? `${harnessLabel(activeHarness)} · ${activeAccountLabel}` : harnessLabel(activeHarness);
-  const compactLabel = modelLabel.toLowerCase().startsWith(harnessName.toLowerCase())
+  const baseHarnessName = harnessLabel(activeHarness);
+  const harnessName = activeAccountLabel ? `${baseHarnessName} · ${activeAccountLabel}` : baseHarnessName;
+  const modelWithHarness = modelLabel.toLowerCase().startsWith(baseHarnessName.toLowerCase())
     ? modelLabel
-    : `${harnessName} · ${modelLabel}`;
+    : `${baseHarnessName} · ${modelLabel}`;
+  // The account leads, so a narrow pill truncates the model rather than
+  // hiding which subscription the chat bills.
+  const compactLabel = activeAccountLabel ? `${activeAccountLabel} · ${modelWithHarness}` : modelWithHarness;
   const effortLevels = effortLevelsFrom(currentModel?.supportedEffortLevels?.filter(value => !allowedEfforts || allowedEfforts.includes(value)));
   // A surface that wires neither the value nor a setter does not do effort at
   // all; one that wires either shows the current level, editable or not.
