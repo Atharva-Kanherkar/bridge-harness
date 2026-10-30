@@ -101,6 +101,9 @@ pub struct NotesService {
     root: Mutex<PathBuf>,
     project_exists: ProjectCheck,
     listener: Mutex<Option<ChangeListener>>,
+    /// Held for a whole file import, so two importers (the poll and a list)
+    /// never merge the same outside edit twice.
+    import_lock: Mutex<()>,
 }
 
 impl NotesService {
@@ -124,6 +127,7 @@ impl NotesService {
             root: Mutex::new(root),
             project_exists,
             listener: Mutex::new(None),
+            import_lock: Mutex::new(()),
         })
     }
 
@@ -544,6 +548,11 @@ impl NotesService {
             listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
         }
         Ok(())
+    }
+
+    /// Exclusive right to import outside file edits; see `projector::import_changes`.
+    pub(crate) fn import_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.import_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The device this service stamps changes with.

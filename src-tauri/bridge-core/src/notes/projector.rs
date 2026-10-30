@@ -186,6 +186,10 @@ pub fn find_files(root: &Path) -> std::collections::HashMap<String, (PathBuf, St
 /// Apply edits made to mirrored files outside Bridge. Returns how many pages
 /// changed.
 pub fn import_changes(notes: &NotesService) -> Result<usize, BridgeError> {
+    // One importer at a time, and the candidates (hash, base) are read after
+    // taking it: two importers holding the same old base would each merge the
+    // same outside edit as a fresh change.
+    let _import = notes.import_guard();
     let candidates: Vec<(String, String, String, i64)> = notes.with_db(|db| {
         let mut statement = db.prepare(
             "SELECT id, path, content_hash, projected_seq FROM pages
@@ -274,6 +278,32 @@ mod tests {
         assert_eq!(page.note.tags, vec!["vim"]);
         assert_eq!(page.note.last_actor, FILE_IMPORT);
         assert_eq!(import_changes(&notes).unwrap(), 0, "an imported file is not imported again");
+    }
+
+    #[test]
+    fn concurrent_imports_apply_an_outside_edit_once() {
+        for _ in 0..5 {
+            let (_dir, notes) = service();
+            let notes = std::sync::Arc::new(notes);
+            let note = notes.create(CreatePage { content: Some("start\n".into()), ..Default::default() }, PERSON).unwrap();
+            let path = PathBuf::from(note.path.clone().unwrap());
+            let original = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, original.replace("start\n", "start\nfrom editor\n")).unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    let (notes, barrier) = (notes.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        import_changes(&notes).unwrap();
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            assert_eq!(notes.read(&note.id).unwrap().markdown, "start\nfrom editor\n");
+        }
     }
 
     #[test]
