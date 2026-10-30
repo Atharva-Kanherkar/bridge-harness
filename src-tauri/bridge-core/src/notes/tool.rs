@@ -2,7 +2,7 @@
 //!
 //! Bridge's `bridge` tool server (the one that gives chats `visualize`) runs
 //! as a separate stdio process per chat. When the core launches a chat it puts
-//! `BRIDGE_NOTES_URL` (this host's loopback route for that session) and
+//! `BRIDGE_NOTES_URL` (this host's notes-tool listener, on an ephemeral loopback port, for that session) and
 //! `BRIDGE_NOTES_TOKEN` in the server's environment. The token is an HMAC of
 //! the session id under a secret that lives only in this process, so a call
 //! proves which chat it speaks for without the core storing tokens, and a
@@ -27,7 +27,6 @@ pub const URL_PREFIX: &str = "/notes-tool/";
 pub const AUTH_HEADER: &str = "x-bridge-notes-auth";
 pub const ENV_URL: &str = "BRIDGE_NOTES_URL";
 pub const ENV_TOKEN: &str = "BRIDGE_NOTES_TOKEN";
-pub const LOOPBACK: &str = "http://127.0.0.1:4317";
 pub const READ_TOOLS: [&str; 2] = ["notes_search", "notes_read"];
 pub const WRITE_TOOLS: [&str; 4] = ["notes_create", "notes_edit", "notes_append", "notes_set"];
 /// Largest tool request body the route reads.
@@ -67,16 +66,52 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
     (0..text.len()).step_by(2).map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok()).collect()
 }
 
-/// Where this host's loopback server listens. `BRIDGE_NOTES_LOOPBACK`
-/// overrides it for evals that run their own server beside a live app.
-fn loopback() -> String {
-    std::env::var("BRIDGE_NOTES_LOOPBACK").ok().filter(|url| url.starts_with("http://127.0.0.1:")).unwrap_or_else(|| LOOPBACK.to_owned())
+fn listener_slot() -> &'static OnceLock<String> {
+    static URL: OnceLock<String> = OnceLock::new();
+    &URL
 }
 
-/// The environment the `bridge` tool server gets for one chat.
+/// Start this process's notes-tool listener, once, and return its base URL.
+///
+/// Its own server on an ephemeral loopback port rather than a route on the
+/// desktop's fixed 4317 server: the daemon host never runs that server, and
+/// a fixed port can belong to another Bridge on the same machine. Helpers are
+/// launched with the address this returns.
+pub fn serve_listener() -> std::io::Result<String> {
+    static START: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _start = START.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(url) = listener_slot().get() {
+        return Ok(url.clone());
+    }
+    let server = tiny_http::Server::http("127.0.0.1:0").map_err(|error| std::io::Error::other(error.to_string()))?;
+    let port = server.server_addr().to_ip().map(|address| address.port()).ok_or_else(|| std::io::Error::other("no loopback port"))?;
+    let url = format!("http://127.0.0.1:{port}");
+    std::thread::Builder::new().name("notes-tools".into()).spawn(move || {
+        for request in server.incoming_requests() {
+            if request.url().starts_with(URL_PREFIX) {
+                // One thread per call, so a slow write never blocks the next.
+                std::thread::spawn(move || respond(request));
+            } else {
+                let _ = request.respond(tiny_http::Response::from_string(json!({"error": "not found"}).to_string()).with_status_code(404));
+            }
+        }
+    })?;
+    let _ = listener_slot().set(url.clone());
+    Ok(url)
+}
+
+/// The listener's base URL, once it is serving.
+pub fn listener_url() -> Option<String> {
+    listener_slot().get().cloned()
+}
+
+/// The environment the `bridge` tool server gets for one chat. Empty when
+/// this process serves no notes listener: a tool that could only fail is
+/// worse than no tool.
 pub fn launch_env(session_id: &str) -> Vec<(String, String)> {
+    let Some(base) = listener_url() else { return Vec::new() };
     vec![
-        (ENV_URL.to_owned(), format!("{}{URL_PREFIX}{session_id}", loopback())),
+        (ENV_URL.to_owned(), format!("{base}{URL_PREFIX}{session_id}")),
         (ENV_TOKEN.to_owned(), token_for(session_id)),
     ]
 }
@@ -298,8 +333,11 @@ mod tests {
         assert_eq!(token, token_for("session-a"), "stable within a process");
         assert_ne!(token, token_for("session-b"));
         assert!(verify("session-a", &token));
+        let base = serve_listener().unwrap();
+        assert!(base.starts_with("http://127.0.0.1:") && !base.ends_with(":4317"), "{base}");
+        assert_eq!(serve_listener().unwrap(), base, "one listener per process");
         let env = launch_env("session-a");
-        assert_eq!(env[0], (ENV_URL.to_owned(), "http://127.0.0.1:4317/notes-tool/session-a".to_owned()));
+        assert_eq!(env[0], (ENV_URL.to_owned(), format!("{base}/notes-tool/session-a")));
         assert_eq!(env[1].1, token);
     }
 

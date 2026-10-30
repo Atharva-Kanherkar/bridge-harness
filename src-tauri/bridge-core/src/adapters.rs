@@ -2025,6 +2025,7 @@ mod tests {
         assert_eq!(start.session_id, Some("chat-1"));
         assert!(start.interactive);
         assert_eq!((start.cwd, start.model, start.write_mode), ("/tmp/chat", Some("m"), Some(WriteMode::Full)));
+        crate::notes::tool::serve_listener().unwrap();
         let env = crate::notes::tool::launch_env(start.session_id.unwrap());
         assert!(env.iter().any(|(key, value)| key == crate::notes::tool::ENV_URL && value.ends_with("/chat-1")));
         // Every adapter resumes through `as_start`, so none can drop the session.

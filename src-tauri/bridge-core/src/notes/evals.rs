@@ -291,15 +291,8 @@ fn live_tools() {
         .unwrap();
     }
     super::tool::install(&core);
-    let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
-    let port = server.server_addr().to_ip().unwrap().port();
-    let serving = server.clone();
-    std::thread::spawn(move || {
-        for request in serving.incoming_requests() {
-            super::tool::respond(request);
-        }
-    });
-    std::env::set_var("BRIDGE_NOTES_LOOPBACK", format!("http://127.0.0.1:{port}"));
+    // The same listener a host serves; helpers launched below get its address.
+    super::tool::serve_listener().expect("the notes-tool listener");
     let registry = registry();
     let cwd = dir.path().join("cwd");
     std::fs::create_dir_all(&cwd).unwrap();

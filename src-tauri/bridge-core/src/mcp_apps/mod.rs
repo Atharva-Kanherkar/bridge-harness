@@ -211,12 +211,13 @@ mod tests {
 
     #[test]
     fn launch_entries_carry_notes_env_for_all_three_harnesses() {
+        let base = crate::notes::tool::serve_listener().unwrap();
         let chat = ServerLaunch { env: crate::notes::tool::launch_env("chat-7"), ..launch() };
         let token = crate::notes::tool::token_for("chat-7");
-        let url = "http://127.0.0.1:4317/notes-tool/chat-7";
+        let url = format!("{base}/notes-tool/chat-7");
 
         let claude = chat.claude_entry();
-        assert_eq!(claude["env"]["BRIDGE_NOTES_URL"], url);
+        assert_eq!(claude["env"]["BRIDGE_NOTES_URL"], url.as_str());
         assert_eq!(claude["env"]["BRIDGE_NOTES_TOKEN"], token.as_str());
 
         let codex = chat.codex_overrides();
@@ -224,7 +225,7 @@ mod tests {
         assert_eq!(codex[2], format!(r#"mcp_servers.bridge.env={{BRIDGE_NOTES_URL="{url}",BRIDGE_NOTES_TOKEN="{token}"}}"#));
 
         let opencode: Value = serde_json::from_str(&merge_opencode_config(None, &chat)).unwrap();
-        assert_eq!(opencode["mcp"]["bridge"]["environment"]["BRIDGE_NOTES_URL"], url);
+        assert_eq!(opencode["mcp"]["bridge"]["environment"]["BRIDGE_NOTES_URL"], url.as_str());
         assert_eq!(opencode["mcp"]["bridge"]["environment"]["BRIDGE_NOTES_TOKEN"], token.as_str());
 
         // Without a session (a background job), nothing extra is passed.

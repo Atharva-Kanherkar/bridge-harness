@@ -996,13 +996,6 @@ pub fn start_health_server(
                 let _ = request.respond(response);
                 continue;
             }
-            if request.url().starts_with(crate::notes::tool::URL_PREFIX) {
-                // The notes tools for one chat; see `notes::tool`. Each call on
-                // its own thread, like the proxy below, so a slow write never
-                // blocks /health.
-                thread::spawn(move || crate::notes::tool::respond(request));
-                continue;
-            }
             if let Some(route) = request.url().strip_prefix(credential_broker::PROXY_PREFIX) {
                 // Handle each proxy call on its own thread so a slow (or
                 // deliberately slow-drip) upstream request cannot block /health

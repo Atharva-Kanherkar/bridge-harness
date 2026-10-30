@@ -127,6 +127,10 @@ pub(crate) fn spawn_loops(notes: Arc<NotesService>, backend: Arc<dyn ModelBacken
 /// Started once per host beside the other maintenance loops.
 pub fn start_note_maintenance(core: Arc<BridgeCore>) {
     super::tool::install(&core);
+    if let Err(error) = super::tool::serve_listener() {
+        // Chats then launch without notes tools rather than with broken ones.
+        eprintln!("[notes] could not start the notes-tool listener: {error}");
+    }
     let backend = Arc::new(LiveBackend::new(core.clone()));
     let _ = spawn_loops(core.notes.clone(), backend, IMPORT_EVERY);
 }
