@@ -308,12 +308,50 @@ pub fn prepare_launch(
     }
 }
 
+/// Inherited variables Claude Code prefers over the login in its config
+/// folder. Any of them would run a chat labelled with an account on some
+/// other credential, so an account launch drops them all. Codex reads its
+/// login from `CODEX_HOME` alone and needs no such list.
+pub const CLAUDE_CREDENTIAL_OVERRIDES: [&str; 6] = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/// Whether an account launch on `harness` removes the inherited `variable`.
+pub fn overridden_by_account(harness: &str, variable: &str) -> bool {
+    harness == "claude" && CLAUDE_CREDENTIAL_OVERRIDES.contains(&variable)
+}
+
+/// What a launch reads for `key`: the inherited value, unless an account
+/// launch removes it. The credential policy judges this view, not the raw
+/// environment.
+pub fn launch_variable(
+    harness: &str,
+    has_account: bool,
+    key: &str,
+    inherited: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if has_account && overridden_by_account(harness, key) {
+        None
+    } else {
+        inherited(key)
+    }
+}
+
 /// Point a provider launch at an account's home. Only the provider's own
 /// variable changes: Claude keeps `HOME`, since moving it would hide the
-/// Keychain login (T3 `makeClaudeEnvironment`).
+/// Keychain login (T3 `makeClaudeEnvironment`). Inherited credentials that
+/// would outrank the account's own login are removed.
 pub fn apply_account_home(command: &mut std::process::Command, harness: &str, home: Option<&Path>) {
     if let (Some(variable), Some(home)) = (home_variable(harness), home) {
         command.env(variable, home);
+        for name in CLAUDE_CREDENTIAL_OVERRIDES.into_iter().filter(|name| overridden_by_account(harness, name)) {
+            command.env_remove(name);
+        }
     }
 }
 
@@ -746,10 +784,58 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let home = Path::new("/home/ada/.claude_personal");
-        assert_eq!(envs("claude", Some(home)), vec![("CLAUDE_CONFIG_DIR".into(), Some("/home/ada/.claude_personal".into()))]);
+        let claude = envs("claude", Some(home));
+        let set: Vec<_> = claude.iter().filter(|(_, value)| value.is_some()).cloned().collect();
+        assert_eq!(set, vec![("CLAUDE_CONFIG_DIR".into(), Some("/home/ada/.claude_personal".into()))]);
+        let mut removed: Vec<_> = claude.iter().filter(|(_, value)| value.is_none()).map(|(key, _)| key.clone()).collect();
+        let mut expected: Vec<String> = CLAUDE_CREDENTIAL_OVERRIDES.iter().map(|name| (*name).to_owned()).collect();
+        removed.sort();
+        expected.sort();
+        assert_eq!(removed, expected, "HOME and everything else is left alone");
         assert_eq!(envs("codex", Some(home)), vec![("CODEX_HOME".into(), Some("/home/ada/.claude_personal".into()))]);
         assert!(envs("claude", None).is_empty(), "no account inherits the user's own login");
         assert!(envs("opencode", Some(home)).is_empty());
+    }
+
+    #[test]
+    fn explicit_claude_account_drops_inherited_credentials() {
+        let home = tempfile::tempdir().unwrap();
+        let run = |harness: &str, account: Option<&Path>| {
+            // Stands in for what the daemon inherits; `env` prints what the
+            // provider would actually see.
+            let mut command = std::process::Command::new("/usr/bin/env");
+            command
+                .env("ANTHROPIC_API_KEY", "sk-ant-inherited")
+                .env("CLAUDE_CODE_OAUTH_TOKEN", "inherited-oauth")
+                .env("ANTHROPIC_AUTH_TOKEN", "inherited-bearer")
+                .env("CLAUDE_CODE_USE_BEDROCK", "1");
+            apply_account_home(&mut command, harness, account);
+            String::from_utf8(command.output().unwrap().stdout).unwrap()
+        };
+        let with_account = run("claude", Some(home.path()));
+        for name in CLAUDE_CREDENTIAL_OVERRIDES {
+            assert!(!with_account.lines().any(|line| line.starts_with(&format!("{name}="))), "{name} survived:\n{with_account}");
+        }
+        assert!(with_account.contains(&format!("CLAUDE_CONFIG_DIR={}", home.path().display())));
+        // The user's own login keeps whatever it was configured with.
+        let own = run("claude", None);
+        assert!(own.contains("ANTHROPIC_API_KEY=sk-ant-inherited") && own.contains("CLAUDE_CODE_OAUTH_TOKEN=inherited-oauth"));
+        // Codex reads its login from CODEX_HOME alone.
+        assert!(run("codex", Some(home.path())).contains("ANTHROPIC_API_KEY=sk-ant-inherited"));
+    }
+
+    #[test]
+    fn the_credential_policy_judges_the_account_launch_environment() {
+        use crate::credential_policy::{admit_claude_environment, CredentialPolicy};
+        let inherited = |key: &str| (key == "ANTHROPIC_API_KEY").then(|| "sk-ant-inherited".to_owned());
+        let view = |account: bool| move |key: &str| launch_variable("claude", account, key, inherited);
+        // The user's own login runs on the inherited key, which API-key-only admits.
+        assert!(admit_claude_environment(CredentialPolicy::ApiKeyOnly, view(false)).is_ok());
+        // An account runs on its subscription login, which that policy refuses.
+        let refused = admit_claude_environment(CredentialPolicy::ApiKeyOnly, view(true)).unwrap_err().to_string();
+        assert!(refused.contains("a subscription login"), "{refused}");
+        assert!(admit_claude_environment(CredentialPolicy::UserManaged, view(true)).is_ok());
+        assert_eq!(launch_variable("codex", true, "ANTHROPIC_API_KEY", inherited).as_deref(), Some("sk-ant-inherited"));
     }
 
     #[test]

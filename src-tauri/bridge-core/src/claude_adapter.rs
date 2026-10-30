@@ -200,7 +200,13 @@ fn launch(
     // the sidecar remains isolated from unrelated global hooks and permissions.
     // A restrictive credential policy is checked against the environment the
     // sidecar will inherit, before anything spawns.
-    crate::credential_policy::admit_claude_launch()?;
+    // An account launch signs in from its folder alone (see
+    // `provider_accounts::apply_account_home`), so the policy judges the
+    // environment after the overrides it removes are gone.
+    crate::credential_policy::admit_claude_environment(
+        crate::credential_policy::active().credential_policy,
+        |key| crate::provider_accounts::launch_variable("claude", account_home.is_some(), key, |key| std::env::var(key).ok()),
+    )?;
     let node = binary::resolve("node").ok_or_else(|| {
         BridgeError::Invalid(
             "Node.js is required to run Claude (expected `node` on PATH). Install Node 18+ to use Claude models."
