@@ -19,10 +19,11 @@
 use crate::BridgeError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 const MAX_ID_CHARS: usize = 64;
 const MAX_LABEL_CHARS: usize = 64;
@@ -378,6 +379,12 @@ pub fn materialize_codex_shadow_home(layout: &CodexHomeLayout) -> Result<(), Bri
             path.display()
         ))
     };
+    // Two chats starting on one new account would both find a link missing,
+    // and the second `symlink` would fail. Launches in this process take
+    // turns; another process racing it is met by `create_link` and the
+    // NotFound-tolerant removals below.
+    let lock = shadow_home_lock(shadow);
+    let _setup = lock.lock().unwrap_or_else(PoisonError::into_inner);
     fs::create_dir_all(shared).map_err(|e| fs_error("create", shared, e))?;
     fs::create_dir_all(shadow).map_err(|e| fs_error("create", shadow, e))?;
     for directory in KNOWN_SHARED_DIRECTORIES {
@@ -404,7 +411,7 @@ pub fn materialize_codex_shadow_home(layout: &CodexHomeLayout) -> Result<(), Bri
         }
         let path = shadow.join(name);
         if let LinkState::Symlink(_) = link_state(&path).map_err(|e| fs_error("inspect", &path, e))? {
-            fs::remove_file(&path).map_err(|e| fs_error("remove", &path, e))?;
+            remove_if_present(fs::remove_file(&path)).map_err(|e| fs_error("remove", &path, e))?;
         }
     }
     for name in &entries {
@@ -450,7 +457,7 @@ fn ensure_symlink(shared: &Path, shadow: &Path, name: &str) -> Result<(), LinkEr
         let path = path.to_path_buf();
         move |error| LinkError::Io(operation, path, error)
     };
-    let create = || std::os::unix::fs::symlink(&target, &link).map_err(io_error("link", &link));
+    let create = || create_link(&target, &link).map_err(io_error("link", &link));
     match link_state(&link).map_err(io_error("inspect", &link))? {
         LinkState::Missing => create(),
         LinkState::NotSymlink => {
@@ -476,21 +483,58 @@ fn ensure_symlink(shared: &Path, shadow: &Path, name: &str) -> Result<(), LinkEr
                     return Ok(());
                 }
             }
-            if fs::symlink_metadata(&link).is_ok_and(|meta| meta.is_dir()) {
-                fs::remove_dir_all(&link).map_err(io_error("remove", &link))?;
+            let removed = if fs::symlink_metadata(&link).is_ok_and(|meta| meta.is_dir()) {
+                fs::remove_dir_all(&link)
             } else {
-                fs::remove_file(&link).map_err(io_error("remove", &link))?;
-            }
+                fs::remove_file(&link)
+            };
+            remove_if_present(removed).map_err(io_error("remove", &link))?;
             create()
         }
         LinkState::Symlink(existing) => {
             let resolved = normalize(&link.parent().unwrap_or(shadow).join(existing));
             if resolved != target {
-                fs::remove_file(&link).map_err(io_error("remove", &link))?;
+                remove_if_present(fs::remove_file(&link)).map_err(io_error("remove", &link))?;
                 create()?;
             }
             Ok(())
         }
+    }
+}
+
+/// The setup lock for one shadow home, shared by every launch in this process.
+fn shadow_home_lock(shadow: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(normalize(shadow))
+        .or_default()
+        .clone()
+}
+
+/// Link `link` to `target`, accepting a link someone else made a moment ago
+/// if it points where this one would.
+fn create_link(target: &Path, link: &Path) -> io::Result<()> {
+    match std::os::unix::fs::symlink(target, link) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let made = fs::read_link(link).map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, error.to_string()))?;
+            if normalize(&link.parent().unwrap_or(link).join(made)) == target {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+        other => other,
+    }
+}
+
+/// A removal another launch already made is not a failure.
+fn remove_if_present(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
     }
 }
 
@@ -836,6 +880,51 @@ mod tests {
         assert!(refused.contains("a subscription login"), "{refused}");
         assert!(admit_claude_environment(CredentialPolicy::UserManaged, view(true)).is_ok());
         assert_eq!(launch_variable("codex", true, "ANTHROPIC_API_KEY", inherited).as_deref(), Some("sk-ant-inherited"));
+    }
+
+    #[test]
+    fn concurrent_first_launches_share_one_shadow_home() {
+        for _ in 0..40 {
+            let shared_dir = tempfile::tempdir().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let shared = shared_dir.path().to_path_buf();
+            let shadow = root.path().join("shadow");
+            write(&shared.join("config.toml"), "model = \"x\"\n");
+            write(&shared.join("auth.json"), "{}");
+            let start = Arc::new(std::sync::Barrier::new(8));
+            let results: Vec<_> = (0..8)
+                .map(|_| {
+                    let (start, layout) = (start.clone(), overlay(&shared, &shadow));
+                    std::thread::spawn(move || {
+                        start.wait();
+                        materialize_codex_shadow_home(&layout)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect();
+            assert!(results.iter().all(Result::is_ok), "{results:?}");
+            assert_eq!(fs::read_link(shadow.join("sessions")).unwrap(), shared.join("sessions"));
+            assert_eq!(fs::read_link(shadow.join("config.toml")).unwrap(), shared.join("config.toml"));
+        }
+    }
+
+    #[test]
+    fn a_link_created_by_another_launch_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("shared/sessions");
+        let link = dir.path().join("sessions");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        create_link(&target, &link).unwrap();
+        // One pointing elsewhere is still a conflict.
+        let other = dir.path().join("elsewhere");
+        assert_eq!(create_link(&other, &link).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        // So is a real file in the way.
+        let file = dir.path().join("config.toml");
+        fs::write(&file, "x").unwrap();
+        assert!(create_link(&target, &file).is_err());
+        remove_if_present(fs::remove_file(dir.path().join("gone"))).unwrap();
     }
 
     #[test]
