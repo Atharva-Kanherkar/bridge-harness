@@ -536,6 +536,16 @@ impl NotesService {
         Ok(Note { path: mirrored.path, ..note })
     }
 
+    /// Announce a change made beside the page rather than to it (a stored
+    /// structured view), at the page's current sequence.
+    pub fn announce(&self, page_id: &str, actor: &str) -> Result<(), BridgeError> {
+        let seq: i64 = self.with_db(|db| Ok(db.query_row("SELECT seq FROM pages WHERE id=?1", params![page_id], |row| row.get(0))?))?;
+        if let Some(listener) = self.listener.lock().unwrap().clone() {
+            listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
+        }
+        Ok(())
+    }
+
     /// The device this service stamps changes with.
     pub fn device(&self) -> &str {
         &self.device

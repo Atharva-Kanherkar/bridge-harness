@@ -11,7 +11,7 @@ use rusqlite::params;
 
 use super::guards;
 use super::jobs::ProjectChoice;
-use super::service::{body_hash, NotesService};
+use super::service::{body_hash, model_actor, NotesService};
 
 const MAX_BODY_CHARS: usize = 8000;
 const MAX_ITEMS: usize = 12;
@@ -88,6 +88,9 @@ pub fn accept(notes: &NotesService, page: &NotePage, text: &str, projects: &[Pro
             Ok(())
         })
         .map_err(|error| error.to_string())?;
+    // After the commit: a client following `notes/page_changed` learns the
+    // view it asked for is ready.
+    notes.announce(&page.note.id, &model_actor("structure", model.unwrap_or(harness))).map_err(|error| error.to_string())?;
     Ok(format!("{} item(s)", view.items.len()))
 }
 
@@ -139,6 +142,21 @@ mod tests {
         assert_eq!(notes.read(&split.id).unwrap().markdown, "call the bank about the card.");
         assert_eq!(notes.read(&page.id).unwrap().markdown, NOTE);
         assert!(notes.split_item(&page.id, 5, PERSON).is_err());
+    }
+
+    #[test]
+    fn a_stored_view_announces_a_page_change() {
+        let (_dir, notes) = service();
+        let page = notes.capture(NOTE, PERSON).unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        notes.set_listener(std::sync::Arc::new(move |change: &bridge_protocol::messages::NotePageChanged| sink.lock().unwrap().push(change.clone())));
+        run(&notes, &page.id, json!({"title": "Two things", "kind": "note", "items": []}), vec![]);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one refresh for the stored view");
+        assert_eq!(seen[0].page_id, page.id);
+        assert_eq!(seen[0].actor, "model:structure:haiku");
+        assert_eq!(seen[0].seq, page.seq, "the body did not change");
     }
 
     #[test]
