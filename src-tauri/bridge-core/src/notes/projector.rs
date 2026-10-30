@@ -140,22 +140,26 @@ fn apply_import(
         )?;
         touched |= result.warnings.is_empty();
     }
-    let note = notes.read(id)?.note;
+    // The file was written from the page at `projected_seq`; only what the
+    // file changed relative to that version is an edit. Comparing with the
+    // latest page would treat stale frontmatter as new and undo concurrent
+    // property changes.
+    let base = notes.with_db(|db| Ok(super::doc::load_page(db, id, Some(projected_seq))?.0.props()))?;
     let mut update = UpdateNote { id: id.to_owned(), ..Default::default() };
     let mut wants = false;
-    if front.title != note.title {
+    if front.title != base.title {
         update.title = Some(front.title.clone().unwrap_or_default());
         wants = true;
     }
-    if let Some(kind) = front.kind.filter(|kind| KINDS.contains(&kind.as_str()) && *kind != note.kind) {
+    if let Some(kind) = front.kind.filter(|kind| KINDS.contains(&kind.as_str()) && Some(kind) != base.kind.as_ref()) {
         update.kind = Some(kind);
         wants = true;
     }
-    if let Some(state) = front.state.filter(|state| STATES.contains(&state.as_str()) && *state != note.state) {
+    if let Some(state) = front.state.filter(|state| STATES.contains(&state.as_str()) && Some(state) != base.state.as_ref()) {
         update.state = Some(state);
         wants = true;
     }
-    if front.tags != note.tags {
+    if front.tags != base.tags {
         update.tags = Some(front.tags);
         wants = true;
     }
@@ -304,6 +308,28 @@ mod tests {
             }
             assert_eq!(notes.read(&note.id).unwrap().markdown, "start\nfrom editor\n");
         }
+    }
+
+    #[test]
+    fn a_body_only_file_edit_keeps_concurrent_property_changes() {
+        let (_dir, notes) = service();
+        let note = notes.create(CreatePage { title: Some("Original".into()), content: Some("body\n".into()), tags: vec!["a".into()], ..Default::default() }, PERSON).unwrap();
+        let path = PathBuf::from(note.path.clone().unwrap());
+        let original = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, original.replace("body\n", "body edited in vim\n")).unwrap();
+        // Meanwhile an agent changes every property; the file still has the old ones.
+        notes.update(UpdateNote { id: note.id.clone(), title: Some("Agent title".into()), state: Some("done".into()), kind: Some("idea".into()), tags: Some(vec!["b".into()]), ..Default::default() }, "agent:claude:s1").unwrap();
+        import_changes(&notes).unwrap();
+        let page = notes.read(&note.id).unwrap();
+        assert_eq!(page.markdown, "body edited in vim\n");
+        assert_eq!((page.note.title.as_deref(), page.note.state.as_str(), page.note.kind.as_str()), (Some("Agent title"), "done", "idea"));
+        assert_eq!(page.note.tags, vec!["b"]);
+        // A property the file really changes is still imported.
+        let current = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, current.replace("title: \"Agent title\"", "title: \"Renamed in vim\"")).unwrap();
+        import_changes(&notes).unwrap();
+        let page = notes.read(&note.id).unwrap();
+        assert_eq!((page.note.title.as_deref(), page.note.state.as_str()), (Some("Renamed in vim"), "done"));
     }
 
     #[test]
