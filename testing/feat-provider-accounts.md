@@ -50,6 +50,14 @@ The T3 model, and how it maps onto Bridge:
   private entry that is a symlink is removed (or refused for `auth.json`); a
   real file blocking a shared link is an error naming the entry; the runtime
   lock dirs are replaced. Then `CODEX_HOME=<shadow>`.
+- A Claude account launch removes inherited credentials that outrank the
+  folder's login (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK|VERTEX|FOUNDRY`), and the
+  credential policy judges that environment, so an API-key-only deployment
+  refuses an account. Codex reads its login from `CODEX_HOME` alone.
+- Shadow-home setup is serialised per shadow folder, and a link another
+  launch has just created with the right target is accepted, so two chats
+  starting on one new account both launch.
 - Read-only worker sandboxes keep their own isolated homes; account env never
   overrides the sandbox.
 - A chat bound to an account that was since removed fails to start with a
@@ -70,6 +78,10 @@ The T3 model, and how it maps onto Bridge:
   accounts share a continuation key. Otherwise the provider session id is
   cleared and the next turn starts fresh with the projected history.
 - `Session.account` is reported in state so every client shows it.
+- The aside picker shows and sends the account exactly like the main
+  composer.
+- A specialist agent target runs on the user's own login, so choosing one
+  clears the account in the draft and resolved settings never carry one.
 - A fork or an aside on the same agent keeps the source chat's account (the
   only home its forked thread can be read from); one on another agent starts
   on the user's own login.
@@ -79,7 +91,8 @@ The T3 model, and how it maps onto Bridge:
   lists added accounts, removes one, and adds one with a name and a folder.
   Codex has a "Share chats with your main Codex" switch (shadow mode, on by
   default). The add form shows the exact sign-in command for the folder, e.g.
-  `CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login`.
+  `CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login`, with the folder
+  shell-quoted (keeping a leading `~/`) when it holds spaces or metacharacters.
 - The model picker shows one group per account ("Claude Code · Personal")
   beside the default group; picking a model there switches the chat to that
   account. The pill label names the account.
@@ -102,6 +115,10 @@ Rust (`bridge-core`):
 - `provider_accounts::tests::shadow_home_refuses_real_file_blocking_a_shared_link`
 - `provider_accounts::tests::shadow_home_refuses_symlinked_auth`
 - `provider_accounts::tests::shadow_home_equal_to_shared_home_is_refused`
+- `provider_accounts::tests::explicit_claude_account_drops_inherited_credentials`
+- `provider_accounts::tests::the_credential_policy_judges_the_account_launch_environment`
+- `provider_accounts::tests::concurrent_first_launches_share_one_shadow_home`
+- `provider_accounts::tests::a_link_created_by_another_launch_is_accepted`
 - `agent_config::tests::save_harness_validates_accounts`
 - `sessions::tests::account_only_switch_is_a_change`
 - `sessions::tests::account_switch_across_homes_clears_the_thread`
@@ -111,6 +128,7 @@ Rust (`bridge-core`):
 - `sessions::tests::asides_on_the_same_agent_keep_the_account`
 - `chat_defaults::tests::configured_chat_stores_the_chosen_account`
 - `chat_defaults::tests::unknown_account_in_choice_is_rejected`
+- `chat_defaults::tests::a_specialist_target_drops_the_account`
 - `store` migration test: schema 68 adds `sessions.account`.
 - `live_turn`: launch resolves the account home and refuses a removed account.
 
@@ -118,6 +136,9 @@ Frontend (Vitest):
 - `providerAccounts.test.ts` — parse accounts from harness config, login command text, group labels.
 - `ChatModelControl.test.tsx` — account groups render; picking emits `(harness, model, account)`; selected row matches account; no accounts = unchanged.
 - `ProviderAccountsSettings.test.tsx` — add (writes `advanced.accounts` and keeps other keys), remove, validation, codex share switch → `shadowHomePath`, login command shown.
+- `providerAccounts.test.ts` — sign-in command quotes folders with spaces and shell metacharacters.
+- `AsideChat.test.tsx` — the aside picker shows the account and emits the account picked.
+- `App.deferNewChat.test.tsx` — picking a specialist after an account clears it.
 
 ## Integration / Functional Tests
 - Protocol artifacts regenerated; `cargo test -p bridge-protocol` (schema drift, params strictness, mirror) green.
