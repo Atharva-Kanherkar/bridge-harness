@@ -3671,7 +3671,12 @@ function AppContent() {
         onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
         agents={configuredAgents}
         selectedAgent={configuredAgents.find(agent => draftSettings.settings?.target.kind === "agent" && agent.id === draftSettings.settings.target.agentId) ?? null}
-        onSelectAgent={agent => patchDraft({target:agent?.id ? {kind:"agent",agentId:agent.id} : {kind:"orchestrator"}})}
+        onSelectAgent={agent => {
+          // A specialist runs as a worker on the user's own login, so an
+          // account picked earlier in this draft goes with the switch.
+          const model = newChatDraft?.overrides?.model;
+          patchDraft({target:agent?.id ? {kind:"agent",agentId:agent.id} : {kind:"orchestrator"}, ...(agent?.id && model?.account ? {model:{harness:model.harness,model:model.model}} : {})});
+        }}
         defaultsNotice={draftSettings.error ?? (draftSettings.loading ? "Loading project defaults…" : undefined)}
         onToggleWorktree={() => patchDraft({createWorktree:!(draftSettings.settings?.createWorktree ?? false)})}
         onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}

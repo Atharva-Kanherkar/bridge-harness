@@ -342,8 +342,12 @@ pub fn resolve(
                 })
         }
     });
-    // The harness id is the user's own login, the same as no account.
-    model.account = crate::provider_accounts::normalize_choice(&model.harness, model.account.as_deref());
+    // The harness id is the user's own login, the same as no account. A
+    // specialist runs as a worker, and workers always use the user's own
+    // login, so the resolved settings say so rather than naming an account
+    // the run would never use.
+    model.account = crate::provider_accounts::normalize_choice(&model.harness, model.account.as_deref())
+        .filter(|_| preset.is_none());
     let descriptors = registry.descriptors();
     validate_model(&model, effort.as_deref(), &descriptors, db)?;
     if let (Some(_), Some(value)) = (&preset, effort.as_deref()) {
@@ -1084,6 +1088,30 @@ mod tests {
         // The harness id is the user's own login, stored as no account.
         let own = create_value(&core, "a", json!({"model":{"harness":"codex","model":"standard","account":"codex"}}));
         assert_eq!(own.configuration.settings.model.account, None);
+    }
+    #[test]
+    fn a_specialist_target_drops_the_account() {
+        let (_dir, core) = fixture();
+        add_codex_account(&core);
+        let agent = agent_config::state(&core.db.lock().unwrap())
+            .unwrap()
+            .agents
+            .into_iter()
+            .find(|a| a.enabled && a.role == "research")
+            .unwrap()
+            .id;
+        let direct = resolve_value(&core, Some("a"), json!({"model":{"harness":"codex","model":"standard","account":"work"}}));
+        assert_eq!(direct.model.account.as_deref(), Some("work"));
+        // The same account choice, then a specialist picked: the run is a
+        // worker on the user's own login, and the settings say so.
+        let value = json!({"target":{"kind":"agent","agentId":agent},"model":{"harness":"codex","model":"standard","account":"work"}});
+        assert_eq!(resolve_value(&core, Some("a"), value.clone()).model.account, None);
+        let created = create_value(&core, "a", value);
+        assert_eq!(created.configuration.settings.model.account, None);
+        let stored: Option<String> = core.db.lock().unwrap()
+            .query_row("SELECT account FROM sessions WHERE id=?1", [&created.session_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, None);
     }
     #[test]
     fn unknown_account_in_choice_is_rejected() {
