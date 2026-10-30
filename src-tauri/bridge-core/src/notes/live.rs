@@ -86,6 +86,9 @@ pub fn start_note_maintenance(core: Arc<BridgeCore>) {
         let mut last_import = Instant::now() - IMPORT_EVERY;
         loop {
             if last_import.elapsed() >= IMPORT_EVERY {
+                if let Err(error) = projector::reconcile(&core.notes) {
+                    eprintln!("[notes] mirror retry failed: {error}");
+                }
                 if let Err(error) = projector::import_changes(&core.notes) {
                     eprintln!("[notes] import failed: {error}");
                 }

@@ -122,7 +122,7 @@ impl NotesService {
         let newest = store::newest_stamp(&connection, &device)?;
         let root = store::get_setting(&connection, "root")?.map(PathBuf::from).unwrap_or(default_root);
         jobs::recover(&connection)?;
-        Ok(Self {
+        let service = Self {
             clock: Mutex::new(Hlc::resume(device.clone(), newest.as_deref())),
             db: Mutex::new(connection),
             device,
@@ -132,7 +132,13 @@ impl NotesService {
             listener: Mutex::new(None),
             import_lock: Mutex::new(()),
             projection_lock: Mutex::new(()),
-        })
+        };
+        // Pages committed but never mirrored (a failed write, a crash between
+        // commit and projection) get their files now.
+        if let Err(error) = projector::reconcile(&service) {
+            eprintln!("[notes] could not mirror pending pages: {error}");
+        }
+        Ok(service)
     }
 
     pub fn root(&self) -> PathBuf {

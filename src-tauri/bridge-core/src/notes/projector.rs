@@ -182,6 +182,32 @@ fn apply_import(
     Ok(touched)
 }
 
+/// Mirror every page whose newest committed version was never written to
+/// its file. Returns how many pages it mirrored.
+///
+/// A mirror write can fail (a blocked folder, a full disk) and a crash can
+/// land between a commit and its projection; either leaves `projected_seq`
+/// behind `seq`. Runs when the store opens and on every maintenance pass.
+pub fn reconcile(notes: &NotesService) -> Result<usize, BridgeError> {
+    let behind: Vec<String> = notes.with_db(|db| {
+        let mut statement = db.prepare(
+            "SELECT id FROM pages
+             WHERE (projected_seq IS NULL OR projected_seq < seq)
+               AND (deleted_at IS NULL OR path IS NOT NULL)",
+        )?;
+        let ids = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+        Ok(ids)
+    })?;
+    let mut mirrored = 0;
+    for id in behind {
+        let before = notes.with_db(|db| Ok(db.query_row("SELECT projected_seq FROM pages WHERE id=?1", params![id], |row| row.get::<_, Option<i64>>(0))?))?;
+        notes.project(&id)?;
+        let after = notes.with_db(|db| Ok(db.query_row("SELECT projected_seq FROM pages WHERE id=?1", params![id], |row| row.get::<_, Option<i64>>(0))?))?;
+        mirrored += usize::from(after != before);
+    }
+    Ok(mirrored)
+}
+
 /// Every mirrored file under `root`, by the page id in its frontmatter.
 pub fn find_files(root: &Path) -> std::collections::HashMap<String, (PathBuf, String)> {
     let mut found = std::collections::HashMap::new();
@@ -392,6 +418,32 @@ mod tests {
         std::fs::write(&path, accepted.replace("top\nagent line\n", "top\nagent line\nexternal line\n")).unwrap();
         import_changes(&notes).unwrap();
         assert_eq!(notes.read(&note.id).unwrap().markdown, "top\nagent line\nexternal line\n");
+    }
+
+    #[test]
+    fn a_failed_projection_is_retried_by_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("notes");
+        let check: crate::notes::service::ProjectCheck = std::sync::Arc::new(|_: &str| false);
+        // A file where the notes folder should be: every mirror write fails.
+        std::fs::write(&blocked, "not a folder").unwrap();
+        let notes = NotesService::open(dir.path(), check.clone()).unwrap();
+        let first = notes.capture("written while blocked\n", PERSON).unwrap();
+        assert!(first.path.is_none(), "the capture itself succeeds");
+        std::fs::remove_file(&blocked).unwrap();
+        drop(notes);
+        // Reopening repairs it.
+        let notes = NotesService::open(dir.path(), check).unwrap();
+        let path = notes.read(&first.id).unwrap().note.path.expect("mirrored on open");
+        assert_eq!(markdown::parse(&std::fs::read_to_string(&path).unwrap()).1, "written while blocked\n");
+        // So does a maintenance pass, without a restart.
+        std::fs::remove_dir_all(&blocked).unwrap();
+        std::fs::write(&blocked, "not a folder").unwrap();
+        let second = notes.capture("also blocked\n", PERSON).unwrap();
+        assert!(second.path.is_none());
+        std::fs::remove_file(&blocked).unwrap();
+        reconcile(&notes).unwrap();
+        assert!(notes.read(&second.id).unwrap().note.path.is_some());
     }
 
     #[test]
