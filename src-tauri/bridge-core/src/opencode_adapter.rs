@@ -196,6 +196,7 @@ pub fn resume_with_settings(
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
             interactive: request.interactive,
+            account_home: request.account_home,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -3214,6 +3215,7 @@ mod tests {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
+                account_home: None,
                 on_progress: None,
             },
             &OpenCodeSettings {
@@ -3359,6 +3361,7 @@ mod tests {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
+                account_home: None,
                 on_progress: None,
             },
             &OpenCodeSettings {

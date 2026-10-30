@@ -1288,6 +1288,7 @@ pub fn start_session(
                 interactive,
                 read_only_sandbox: None,
                 briefing: None,
+                account_home: None,
                 on_progress: None,
             },
         )
@@ -1322,6 +1323,7 @@ pub fn start_session(
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
+                    account_home: None,
                     on_progress: None,
                 },
             ) {
@@ -1897,6 +1899,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 interactive,
                 read_only_sandbox: None,
                 briefing: None,
+                account_home: None,
                 on_progress: Some(&on_startup_progress),
             },
         )
@@ -1929,6 +1932,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
+                    account_home: None,
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -1999,6 +2003,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
+                    account_home: None,
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -5825,6 +5830,7 @@ pub fn launch_worker_outcome(
                         read_only_sandbox: read_only_sandbox.as_ref(),
                         briefing: None,
                         interactive: false,
+                        account_home: None,
                         on_progress: None,
                     },
                 )
@@ -5851,6 +5857,7 @@ pub fn launch_worker_outcome(
                                 read_only_sandbox: read_only_sandbox.as_ref(),
                                 briefing: None,
                                 interactive: false,
+                                account_home: None,
                                 on_progress: None,
                             },
                         )
@@ -5870,6 +5877,7 @@ pub fn launch_worker_outcome(
                             read_only_sandbox: read_only_sandbox.as_ref(),
                             briefing: None,
                             interactive: false,
+                            account_home: None,
                             on_progress: None,
                         },
                     )
@@ -5890,6 +5898,7 @@ pub fn launch_worker_outcome(
                     read_only_sandbox: read_only_sandbox.as_ref(),
                     briefing: None,
                     interactive: false,
+                    account_home: None,
                     on_progress: None,
                 },
             )

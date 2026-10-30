@@ -463,6 +463,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
             read_only_sandbox: None,
             briefing: Some(&policy),
             interactive: false,
+            account_home: None,
             on_progress: None,
         },
     );

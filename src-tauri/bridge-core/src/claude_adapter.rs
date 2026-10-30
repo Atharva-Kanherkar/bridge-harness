@@ -156,6 +156,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
             interactive: request.interactive,
+            account_home: request.account_home,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -189,6 +190,7 @@ fn launch(
         read_only_sandbox,
         briefing,
         interactive,
+        account_home,
         on_progress,
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
@@ -344,6 +346,9 @@ fn launch(
         // policy was satisfied by.
         command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
     }
+    // An extra account signs in from its own config directory. A read-only
+    // sandbox below replaces it with its own isolated one.
+    crate::provider_accounts::apply_account_home(&mut command, "claude", account_home);
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -1428,6 +1433,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account_home: None,
             on_progress: None,
         })
         .unwrap();
@@ -1505,6 +1511,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account_home: None,
             on_progress: None,
         })
         .unwrap();
@@ -1523,6 +1530,7 @@ mod tests {
             briefing: None,
             provider_session_id: &session_id,
             interactive: false,
+            account_home: None,
             on_progress: None,
         })
         .unwrap();

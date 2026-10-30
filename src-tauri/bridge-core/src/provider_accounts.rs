@@ -308,6 +308,15 @@ pub fn prepare_launch(
     }
 }
 
+/// Point a provider launch at an account's home. Only the provider's own
+/// variable changes: Claude keeps `HOME`, since moving it would hide the
+/// Keychain login (T3 `makeClaudeEnvironment`).
+pub fn apply_account_home(command: &mut std::process::Command, harness: &str, home: Option<&Path>) {
+    if let (Some(variable), Some(home)) = (home_variable(harness), home) {
+        command.env(variable, home);
+    }
+}
+
 /// T3 `materializeCodexShadowHome`: link every shared entry into the shadow
 /// home and keep the login private. Safe to run before every launch.
 pub fn materialize_codex_shadow_home(layout: &CodexHomeLayout) -> Result<(), BridgeError> {
@@ -724,6 +733,23 @@ mod tests {
         let direct = CodexHomeLayout { mode: CodexHomeMode::Direct, ..overlay(dir.path(), &dir.path().join("x")) };
         materialize_codex_shadow_home(&direct).unwrap();
         assert!(!dir.path().join("x").exists());
+    }
+
+    #[test]
+    fn apply_account_home_sets_only_the_provider_variable() {
+        let envs = |harness: &str, home: Option<&Path>| {
+            let mut command = std::process::Command::new("true");
+            apply_account_home(&mut command, harness, home);
+            command
+                .get_envs()
+                .map(|(key, value)| (key.to_string_lossy().into_owned(), value.map(|v| v.to_string_lossy().into_owned())))
+                .collect::<Vec<_>>()
+        };
+        let home = Path::new("/home/ada/.claude_personal");
+        assert_eq!(envs("claude", Some(home)), vec![("CLAUDE_CONFIG_DIR".into(), Some("/home/ada/.claude_personal".into()))]);
+        assert_eq!(envs("codex", Some(home)), vec![("CODEX_HOME".into(), Some("/home/ada/.claude_personal".into()))]);
+        assert!(envs("claude", None).is_empty(), "no account inherits the user's own login");
+        assert!(envs("opencode", Some(home)).is_empty());
     }
 
     #[test]

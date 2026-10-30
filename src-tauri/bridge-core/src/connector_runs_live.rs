@@ -476,6 +476,7 @@ fn one_bounded_turn(
             read_only_sandbox: None,
             briefing: Some(&policy),
             interactive: false,
+            account_home: None,
             on_progress: None,
         },
     );

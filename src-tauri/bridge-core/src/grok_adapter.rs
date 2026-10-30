@@ -1494,6 +1494,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
+            account_home: None,
             on_progress: None,
         });
         std::env::remove_var("BRIDGE_GROK_BIN");
