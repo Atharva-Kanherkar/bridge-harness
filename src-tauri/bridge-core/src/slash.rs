@@ -44,6 +44,8 @@ pub enum SlashDispatch {
     Find { query: String },
     /// Bridge-handled: save an about-me pin to `account:local`.
     Pin { body: String },
+    /// Bridge-handled: save the text to the Notes Inbox as typed. No model turn.
+    Note { body: String },
     /// Bridge-handled: list active `account:local` pins.
     Pins,
     /// Bridge-handled: tombstone an `account:local` pin.
@@ -90,6 +92,12 @@ pub fn list_commands_for_project(
         SlashCommand {
             name: "find".into(),
             description: "Find a past chat from what you remember about it".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "note".into(),
+            description: "Save your words to the Notes Inbox exactly as typed".into(),
             harness: "bridge".into(),
             kind: "builtin".into(),
         },
@@ -259,6 +267,11 @@ pub fn dispatch_for_project(
                 query: args.unwrap_or("").to_string(),
             };
         }
+        "note" => {
+            return SlashDispatch::Note {
+                body: args.unwrap_or("").to_string(),
+            };
+        }
         "pin" => {
             return SlashDispatch::Pin {
                 body: args.unwrap_or("").to_string(),
@@ -393,6 +406,7 @@ pub fn is_bridge_local(name: &str) -> bool {
             | "recall"
             | "find"
             | "pin"
+            | "note"
             | "pins"
             | "unpin"
     )
@@ -961,5 +975,19 @@ mod tests {
             assert!(!is_forwardable_builtin("claude", name));
             assert!(!is_forwardable_builtin("codex", name));
         }
+    }
+
+    #[test]
+    fn note_captures_without_a_model_turn() {
+        let available = std::collections::HashSet::from(["claude".to_string()]);
+        assert!(matches!(
+            dispatch("/note buy a domain for the side project", "claude", &available),
+            SlashDispatch::Note { body } if body == "buy a domain for the side project"
+        ));
+        assert!(matches!(dispatch("/note", "codex", &available), SlashDispatch::Note { body } if body.is_empty()));
+        // Bridge-local: never forwarded to a provider and never switches harness.
+        assert!(is_bridge_local("note"));
+        assert!(list_commands(&available).iter().any(|command| command.name == "note" && command.harness == "bridge"));
+        assert!(!crate::session_input::requires_idle_session(&SlashDispatch::Note { body: "x".into() }));
     }
 }
