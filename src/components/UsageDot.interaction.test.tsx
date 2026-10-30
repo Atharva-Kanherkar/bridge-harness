@@ -144,6 +144,29 @@ describe("ChatUsageDot", () => {
     expect(panel().querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]')!.disabled).toBe(false);
   });
 
+  it("puts Refresh beside a provider's error so the fix stays in the card", async () => {
+    const failed = overviews(63);
+    const now = failed.generatedAt;
+    failed.providers.push({ schemaVersion: 1, generatedAt: now, provider: "opencode", observedAt: null, coverage: "test", today: empty, month: empty, windows: [],
+      error: "OpenCode Go rejected the saved sign-in. Run opencode auth login, or save a new Go API key in Menu Bar settings." });
+    vi.mocked(bridgeApi.getProviderUsageOverviews).mockResolvedValue(failed);
+    let finish!: (value: ProviderUsageOverviews) => void;
+    vi.mocked(bridgeApi.refreshProviderUsageOverviews).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    await mount();
+    await act(async () => { trigger().click(); });
+    const codex = panel().querySelector<HTMLElement>('section[aria-label="Codex usage"]')!;
+    const opencode = panel().querySelector<HTMLElement>('section[aria-label="OpenCode usage"]')!;
+    expect(codex.textContent).not.toContain("Refresh");
+    expect(opencode.textContent).toContain("rejected the saved sign-in");
+    const inline = [...opencode.querySelectorAll("button")].find(button => button.textContent === "Refresh")!;
+    await act(async () => { inline.click(); });
+    expect(bridgeApi.refreshProviderUsageOverviews).toHaveBeenCalledTimes(1);
+    expect(inline.disabled).toBe(true);
+    expect(inline.textContent).toBe("Refreshing");
+    await act(async () => { finish(overviews(71, now + 5)); });
+    expect(panel().querySelector('section[aria-label="OpenCode usage"]')).toBeNull();
+  });
+
   it("drops an older push instead of letting it overwrite a newer reading", async () => {
     await mount();
     await act(async () => { listener?.(overviews(20, 1)); });

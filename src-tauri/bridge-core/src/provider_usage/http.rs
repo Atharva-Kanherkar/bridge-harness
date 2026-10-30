@@ -10,6 +10,8 @@ use std::{io::Read, time::Duration};
 pub(super) struct RequestError {
     pub message: String,
     pub retryable: bool,
+    /// 401 or 403: the provider refused this credential.
+    pub rejected: bool,
 }
 
 pub(super) fn client() -> Result<Client, String> {
@@ -38,12 +40,14 @@ pub(super) fn text(request: RequestBuilder, provider: &str) -> Result<String, St
 fn status_error(status: reqwest::StatusCode, provider: &str) -> RequestError {
     RequestError {
         message: match status.as_u16() {
+            401 if provider == "OpenCode Go" => "OpenCode Go rejected the saved sign-in. Run opencode auth login, or save a new Go API key in Menu Bar settings.".into(),
             403 if provider == "OpenCode Go" => "OpenCode Go access is unavailable. Check that this API key belongs to a workspace with an active Go subscription.".into(),
             401 | 403 => format!("Reconnect {provider} to read account usage."),
             429 => format!("{provider} is rate limited. Wait a few minutes before refreshing."),
             _ => format!("{provider} usage is unavailable (HTTP {}).", status.as_u16()),
         },
         retryable: status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error(),
+        rejected: matches!(status.as_u16(), 401 | 403),
     }
 }
 
@@ -53,6 +57,7 @@ fn text_result(request: RequestBuilder, provider: &str) -> Result<String, Reques
         .map_err(|error| RequestError {
             message: format!("{provider} usage request failed or timed out. Try Refresh."),
             retryable: error.is_timeout() || error.is_connect() || error.is_body() || error.is_request(),
+            rejected: false,
         })?;
     let status = response.status();
     if !status.is_success() {
@@ -62,11 +67,11 @@ fn text_result(request: RequestBuilder, provider: &str) -> Result<String, Reques
     response
         .take(1_048_577)
         .read_to_end(&mut bytes)
-        .map_err(|_| RequestError { message: format!("{provider} response could not be read"), retryable: true })?;
+        .map_err(|_| RequestError { message: format!("{provider} response could not be read"), retryable: true, rejected: false })?;
     if bytes.len() > 1_048_576 {
-        return Err(RequestError { message: format!("{provider} response is too large"), retryable: false });
+        return Err(RequestError { message: format!("{provider} response is too large"), retryable: false, rejected: false });
     }
-    String::from_utf8(bytes).map_err(|_| RequestError { message: format!("{provider} response is not valid text"), retryable: false })
+    String::from_utf8(bytes).map_err(|_| RequestError { message: format!("{provider} response is not valid text"), retryable: false, rejected: false })
 }
 pub(super) fn json(request: RequestBuilder, provider: &str) -> Result<Value, String> {
     json_result(request, provider).map_err(|error| error.message)
@@ -74,7 +79,7 @@ pub(super) fn json(request: RequestBuilder, provider: &str) -> Result<Value, Str
 
 pub(super) fn json_result(request: RequestBuilder, provider: &str) -> Result<Value, RequestError> {
     serde_json::from_str(&text_result(request, provider)?)
-        .map_err(|_| RequestError { message: format!("{provider} returned an unrecognized usage response"), retryable: false })
+        .map_err(|_| RequestError { message: format!("{provider} returned an unrecognized usage response"), retryable: false, rejected: false })
 }
 
 #[cfg(test)]
