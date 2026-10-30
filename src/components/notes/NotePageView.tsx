@@ -2,13 +2,15 @@
 // the only text background AI never edits), the opt-in Structured view beside
 // it, and its tasks. Keyed by page id, so the draft starts fresh per page.
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Bot, ListChecks, MessageSquarePlus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { actorLabel } from "../../notesBrief";
 import { noteDisplayTitle } from "../../notesDraft";
 import type { AdapterDescriptor, Note, NoteJob, NotePage, StructuredView, Workspace } from "../../types";
-import { cn } from "@/lib/utils";
+// clsx rather than cn: tailwind-merge does not know the text-ui and
+// text-caption sizes, and drops them beside a text color.
+import { clsx } from "clsx";
 import { HarnessPicker, StartPicker, type StartChoice } from "./NotePickers";
 import { NoteTasks } from "./NoteTasks";
 import { useNoteDraft, type DraftStatus } from "./useNoteDraft";
@@ -59,6 +61,15 @@ export function NotePageView({ page, jobs, adapters, workspaces, defaultHarness,
   const [notice, setNotice] = useState<string | null>(null);
   const [title, setTitle] = useState(note.title ?? "");
   const [editingTitle, setEditingTitle] = useState(false);
+  const editor = useRef<HTMLTextAreaElement>(null);
+
+  // The page grows with its words, so the tasks below sit right after them.
+  useLayoutEffect(() => {
+    const box = editor.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${box.scrollHeight}px`;
+  }, [draft.text, view]);
 
   useEffect(() => { draft.load(page); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!editingTitle) setTitle(note.title ?? ""); }, [note.title, editingTitle]);
@@ -117,7 +128,7 @@ export function NotePageView({ page, jobs, adapters, workspaces, defaultHarness,
         aria-label="Project"
         value={note.workspaceId ?? ""}
         onChange={event => void update(event.target.value ? { id: note.id, workspaceId: event.target.value } : { id: note.id, clearWorkspace: true })}
-        className={cn(FIELD, "max-w-56")}
+        className={clsx(FIELD, "max-w-56")}
       >
         <option value="">No project</option>
         {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.title}</option>)}
@@ -138,7 +149,7 @@ export function NotePageView({ page, jobs, adapters, workspaces, defaultHarness,
       </button>
       {note.sessionIds.length > 0 && <button type="button" onClick={() => onOpenChat(note.sessionIds[note.sessionIds.length - 1])} className={ACTION}>Open chat</button>}
       <span className="flex-1" />
-      <button type="button" aria-label="Delete note" onClick={() => setPanel(current => current === "delete" ? null : "delete")} className={cn(ACTION, "border-transparent text-muted-foreground hover:text-foreground")}>
+      <button type="button" aria-label="Delete note" onClick={() => setPanel(current => current === "delete" ? null : "delete")} className={clsx(ACTION, "border-transparent text-muted-foreground hover:text-foreground")}>
         <Trash2 size={14} aria-hidden="true" />
       </button>
     </div>
@@ -161,7 +172,7 @@ export function NotePageView({ page, jobs, adapters, workspaces, defaultHarness,
     <div className="mt-6 flex items-center gap-3 border-b border-border">
       <div role="tablist" aria-label="Views" className="flex gap-1">
         {([["words", "Your words"], ["structured", "Structured"]] as const).map(([id, label]) =>
-          <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)} className={cn("-mb-px border-b-2 px-2 pb-2 text-ui transition-colors", view === id ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
+          <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => setView(id)} className={clsx("-mb-px border-b-2 px-2 pb-2 text-ui transition-colors", view === id ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {label}{id === "structured" && page.structured?.stale ? <span aria-label="stale" className="ml-1.5 inline-block size-1.5 rounded-full bg-muted-foreground align-middle" /> : null}
           </button>)}
       </div>
@@ -173,13 +184,14 @@ export function NotePageView({ page, jobs, adapters, workspaces, defaultHarness,
       ? <>
         {draft.changedUnderneath && <p role="status" className="m-0 mt-3 rounded-lg bg-accent px-3 py-2 text-caption text-foreground">This page changed while you were typing. Your typing is kept and merges when it saves.</p>}
         <textarea
+          ref={editor}
           aria-label="Your words"
           value={draft.text}
           onChange={event => draft.setText(event.target.value)}
           onBlur={draft.flush}
           spellCheck
           placeholder="Write anything. Markdown works."
-          className="mt-3 block min-h-[28rem] w-full resize-y bg-transparent text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/60"
+          className="mt-3 block min-h-48 w-full resize-none overflow-hidden bg-transparent text-[14.5px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground/60"
         />
       </>
       : <StructuredPanel view={page.structured ?? null} busy={busy(structureJob)} onStructure={() => setPanel("structure")} onSplit={index => void split(index)} />}
@@ -204,7 +216,7 @@ function StructuredPanel({ view, busy, onStructure, onSplit }: { view: Structure
     return <div className="mt-4 rounded-xl border border-dashed border-border px-5 py-8 text-center">
       <p className="m-0 text-ui font-medium text-foreground">{busy ? "Structuring…" : "No structured view yet"}</p>
       <p className="mx-auto mt-1 max-w-sm text-caption leading-relaxed text-muted-foreground">Structure is opt-in. It builds a second view from your words and never changes them.</p>
-      {!busy && <button type="button" onClick={onStructure} className={cn(ACTION, "mt-3")}><Sparkles size={14} aria-hidden="true" />Structure</button>}
+      {!busy && <button type="button" onClick={onStructure} className={clsx(ACTION, "mt-3")}><Sparkles size={14} aria-hidden="true" />Structure</button>}
     </div>;
   }
   return <section aria-label="Structured view" className="mt-4">

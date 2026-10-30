@@ -7,7 +7,9 @@ import { useRef, useState, type ReactNode } from "react";
 import { ArrowUp, FileSearch, ListTree, PenLine, Sparkles } from "lucide-react";
 import { notesContext, withNotesContext } from "../../notesBrief";
 import type { NotePage } from "../../types";
-import { cn } from "@/lib/utils";
+// clsx rather than cn: tailwind-merge does not know the text-ui and
+// text-caption sizes, and drops them beside a text color.
+import { clsx } from "clsx";
 
 export interface NotesQuickAsk { label: string; prompt: string; icon: typeof Sparkles; series: string; needsPage: boolean }
 
@@ -42,7 +44,7 @@ export function NotesCopilot({ page, projectName, starting = false, onAsk, rende
   const chat = renderChat?.(brief);
 
   if (chat) {
-    return <div className={cn(RAIL, "gap-2")}>
+    return <div className={clsx(RAIL, "gap-2")}>
       <QuickAsks compact asks={asks} disabled={starting} onAsk={ask} />
       <div className="min-h-0 flex-1">{chat}</div>
     </div>;
@@ -55,7 +57,7 @@ function QuickAsks({ compact = false, asks, disabled, onAsk }: { compact?: boole
     return <ul aria-label="Quick asks" className="m-0 flex shrink-0 list-none gap-1.5 overflow-x-auto p-0 pb-0.5 [scrollbar-width:none]">
       {asks.map(ask => <li key={ask.label} className="shrink-0">
         <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-caption text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
-          <span aria-hidden="true" className={cn("size-1.5 rounded-full", ask.series)} />{ask.label}
+          <span aria-hidden="true" className={clsx("size-1.5 rounded-full", ask.series)} />{ask.label}
         </button>
       </li>)}
     </ul>;
@@ -65,7 +67,7 @@ function QuickAsks({ compact = false, asks, disabled, onAsk }: { compact?: boole
       const Icon = ask.icon;
       return <li key={ask.label}>
         <button type="button" disabled={disabled} onClick={() => onAsk(ask.prompt)} className="flex h-full w-full flex-col items-start gap-2 rounded-xl border border-border bg-card p-3 text-left text-caption text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
-          <span aria-hidden="true" className={cn("grid size-6 place-items-center rounded-md text-background", ask.series)}><Icon size={13} /></span>
+          <span aria-hidden="true" className={clsx("grid size-6 place-items-center rounded-md text-background", ask.series)}><Icon size={13} /></span>
           {ask.label}
         </button>
       </li>;
@@ -80,7 +82,7 @@ function NotesCopilotIntro({ asks, hasPage, starting, onAsk }: { asks: NotesQuic
     onAsk(text);
     setQuestion("");
   };
-  return <aside aria-label="Notes chat" className={cn(RAIL, "overflow-hidden rounded-xl border border-border bg-background")}>
+  return <aside aria-label="Notes chat" className={clsx(RAIL, "overflow-hidden rounded-xl border border-border bg-background")}>
     <header className="shrink-0 border-b border-border px-4 py-3">
       <h3 className="m-0 text-ui font-medium text-foreground">Notes agent</h3>
       <p className="m-0 mt-1 text-caption leading-relaxed text-muted-foreground">

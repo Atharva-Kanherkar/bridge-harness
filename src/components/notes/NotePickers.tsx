@@ -6,7 +6,9 @@
 import { useState } from "react";
 import type { AdapterDescriptor, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
-import { cn } from "@/lib/utils";
+// clsx rather than cn: tailwind-merge does not know the text-ui and
+// text-caption sizes, and drops them beside a text color.
+import { clsx } from "clsx";
 
 /** Harnesses that can run a note pass: hidden, tool-less generations. */
 export const PASS_HARNESSES = ["claude", "codex", "opencode"];
@@ -83,7 +85,7 @@ export function StartPicker({ subject = "task", adapters, workspaces, defaultHar
     <div className="flex flex-wrap items-center gap-2">
       <label className="flex min-w-0 items-center gap-2 text-muted-foreground">
         Project
-        <select aria-label="Project" value={workspaceId} onChange={event => setWorkspaceId(event.target.value)} className={cn(SELECT, "max-w-56")}>
+        <select aria-label="Project" value={workspaceId} onChange={event => setWorkspaceId(event.target.value)} className={clsx(SELECT, "max-w-56")}>
           <option value="">No project</option>
           {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.title}</option>)}
         </select>

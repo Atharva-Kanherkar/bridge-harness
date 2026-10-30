@@ -12,7 +12,9 @@ import { bridgeApi } from "../api";
 import { taskBrief } from "../notesBrief";
 import { noteDisplayTitle } from "../notesDraft";
 import type { AdapterDescriptor, Note, NotePage, NotesList, NotesSettings, Session, Workspace } from "../types";
-import { cn } from "@/lib/utils";
+// clsx rather than cn: tailwind-merge does not know the text-ui and
+// text-caption sizes, and drops them beside a text color.
+import { clsx } from "clsx";
 import { chordLabel } from "../keymap";
 import { chatName } from "./sidebarChats";
 import { NotePageView } from "./notes/NotePageView";
@@ -175,11 +177,11 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const parent = page?.note.parentId ? byId.get(page.note.parentId) ?? null : null;
 
   return <div className="flex h-full min-h-0">
-    <aside aria-label="Notes list" className={cn("min-h-0 w-full shrink-0 flex-col border-r border-border md:flex md:w-80", selectedId ? "hidden" : "flex")}>
+    <aside aria-label="Notes list" className={clsx("min-h-0 w-full shrink-0 flex-col border-r border-border md:flex md:w-80", selectedId ? "hidden" : "flex")}>
       <NotesCapture focusRequest={captureRequest} onCapture={capture} />
       <div className="flex shrink-0 items-center gap-1 px-3 pb-2">
         <div role="tablist" aria-label="Filter notes" className="flex gap-0.5 rounded-lg bg-muted p-0.5">
-          {FILTERS.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={filter === id} onClick={() => setFilter(id)} className={cn("rounded-md px-2 py-0.5 text-caption transition-colors", filter === id ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
+          {FILTERS.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={filter === id} onClick={() => setFilter(id)} className={clsx("rounded-md px-2 py-0.5 text-caption transition-colors", filter === id ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
         </div>
         <label className="ml-auto flex min-w-0 flex-1 items-center gap-1 rounded-lg border border-border px-2 focus-within:ring-2 focus-within:ring-ring">
           <Search size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -201,7 +203,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       <NotesFooter root={list?.root} onNewPage={() => void createPage()} onError={fail} />
     </aside>
 
-    <main className={cn("min-h-0 min-w-0 flex-1 overflow-y-auto", selectedId ? "block" : "hidden md:block")}>
+    <main className={clsx("min-h-0 min-w-0 flex-1 overflow-y-auto", selectedId ? "block" : "hidden md:block")}>
       {selectedId && <button type="button" onClick={() => select(null)} className="m-3 mb-0 text-caption text-muted-foreground hover:text-foreground md:hidden">All notes</button>}
       {page ? <NotePageView
         key={page.note.id}
@@ -262,13 +264,13 @@ function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCa
 function NoteRow({ note, active, parent, project, onOpen }: { note: Note; active: boolean; parent?: Note; project?: string; onOpen: () => void }) {
   const title = noteDisplayTitle(note);
   const preview = note.preview.replace(/^#+\s*/, "").replace(/\s+/g, " ").trim();
-  return <button type="button" aria-current={active ? "true" : undefined} onClick={onOpen} className={cn("block w-full rounded-lg px-2.5 py-2 text-left transition-colors", active ? "bg-selection text-selection-foreground" : "hover:bg-accent")}>
+  return <button type="button" aria-current={active ? "true" : undefined} onClick={onOpen} className={clsx("block w-full rounded-lg px-2.5 py-2 text-left transition-colors", active ? "bg-selection text-selection-foreground" : "hover:bg-accent")}>
     <span className="flex min-w-0 items-center gap-1.5">
       {(isAgent(note.createdBy) || isAgent(note.lastActor)) && <Bot size={12} className="shrink-0 text-muted-foreground" aria-label="Agent" />}
-      <span className={cn("min-w-0 flex-1 truncate text-ui font-medium", note.state === "done" && "text-muted-foreground line-through")}>{title}</span>
+      <span className={clsx("min-w-0 flex-1 truncate text-ui font-medium", note.state === "done" && "text-muted-foreground line-through")}>{title}</span>
       {note.kind !== "note" && <span className="shrink-0 text-[11px] text-muted-foreground">{note.kind}</span>}
     </span>
-    {preview && preview !== title && <span className="mt-0.5 line-clamp-2 block text-caption leading-snug text-muted-foreground">{preview}</span>}
+    {preview && preview !== title && <span className="mt-0.5 line-clamp-2 text-caption leading-snug text-muted-foreground">{preview}</span>}
     {(parent || project || note.tags.length > 0) && <span className="mt-1 flex min-w-0 flex-wrap gap-1 text-[11px] text-muted-foreground">
       {parent && <span className="truncate">from {noteDisplayTitle(parent)}</span>}
       {project && <span className="truncate rounded-full border border-border px-1.5">{project}</span>}
