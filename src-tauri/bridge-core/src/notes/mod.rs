@@ -9,6 +9,8 @@
 
 pub mod agent;
 pub mod doc;
+#[cfg(test)]
+mod evals;
 pub mod guards;
 pub mod ids;
 pub mod jobs;

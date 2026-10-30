@@ -67,10 +67,16 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
     (0..text.len()).step_by(2).map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok()).collect()
 }
 
+/// Where this host's loopback server listens. `BRIDGE_NOTES_LOOPBACK`
+/// overrides it for evals that run their own server beside a live app.
+fn loopback() -> String {
+    std::env::var("BRIDGE_NOTES_LOOPBACK").ok().filter(|url| url.starts_with("http://127.0.0.1:")).unwrap_or_else(|| LOOPBACK.to_owned())
+}
+
 /// The environment the `bridge` tool server gets for one chat.
 pub fn launch_env(session_id: &str) -> Vec<(String, String)> {
     vec![
-        (ENV_URL.to_owned(), format!("{LOOPBACK}{URL_PREFIX}{session_id}")),
+        (ENV_URL.to_owned(), format!("{}{URL_PREFIX}{session_id}", loopback())),
         (ENV_TOKEN.to_owned(), token_for(session_id)),
     ]
 }
