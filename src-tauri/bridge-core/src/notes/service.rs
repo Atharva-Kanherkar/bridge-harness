@@ -104,6 +104,9 @@ pub struct NotesService {
     /// Held for a whole file import, so two importers (the poll and a list)
     /// never merge the same outside edit twice.
     import_lock: Mutex<()>,
+    /// Held while mirroring, so projections follow commit order: each one
+    /// reads the newest committed row and the hash the previous one wrote.
+    projection_lock: Mutex<()>,
 }
 
 impl NotesService {
@@ -128,6 +131,7 @@ impl NotesService {
             project_exists,
             listener: Mutex::new(None),
             import_lock: Mutex::new(()),
+            projection_lock: Mutex::new(()),
         })
     }
 
@@ -491,7 +495,7 @@ impl NotesService {
         actor: &str,
         change: impl FnOnce(&Connection, &PageDoc, i64) -> Result<Option<Vec<u8>>, BridgeError>,
     ) -> Result<(Note, i64, bool), BridgeError> {
-        let (note, seq, changed, body) = {
+        let (note, seq, changed) = {
             let db = self.db.lock().unwrap();
             let transaction = db.unchecked_transaction()?;
             let (live, current_seq) = doc::load_page(&transaction, page_id, None)?;
@@ -507,37 +511,54 @@ impl NotesService {
                 None => (current_seq, false),
             };
             transaction.commit()?;
-            let (note, body, hash, deleted) = db.query_row(
-                &format!("SELECT {NOTE_COLUMNS}, body, content_hash FROM pages WHERE id=?1"),
-                params![page_id],
-                |row| Ok((note_from_row(row)?, row.get::<_, String>(19)?, row.get::<_, Option<String>>(20)?, row.get::<_, Option<String>>(18)?.is_some())),
-            )?;
-            (note, seq, changed, (body, hash, deleted))
+            let note = db.query_row(&format!("SELECT {NOTE_COLUMNS} FROM pages WHERE id=?1"), params![page_id], note_from_row)?;
+            (note, seq, changed)
         };
         if !changed {
             return Ok((note, seq, false));
         }
-        let (body, hash, deleted) = body;
-        let note = self.mirror_page(note, &body, hash.as_deref(), deleted, seq)?;
+        let note = self.project(page_id)?.unwrap_or(note);
         if let Some(listener) = self.listener.lock().unwrap().clone() {
             listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
         }
         Ok((note, seq, true))
     }
 
-    fn mirror_page(&self, note: Note, body: &str, previous_hash: Option<&str>, deleted: bool, seq: i64) -> Result<Note, BridgeError> {
-        let input = projector::MirrorInput { note: &note, body, deleted, previous_path: note.path.as_deref(), previous_hash };
+    /// Mirror the newest committed version of a page, if it is not mirrored
+    /// yet. Serialized, and it reads the row after taking the lock, so an
+    /// earlier snapshot can never overwrite a later one or mistake Bridge's
+    /// own previous write for an outside edit.
+    pub(crate) fn project(&self, page_id: &str) -> Result<Option<Note>, BridgeError> {
+        let _projection = self.projection_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let row = self.with_db(|db| {
+            Ok(db
+                .query_row(&format!("SELECT {NOTE_COLUMNS}, body, content_hash, projected_seq FROM pages WHERE id=?1"), params![page_id], |row| {
+                    Ok((
+                        note_from_row(row)?,
+                        row.get::<_, Option<String>>(18)?.is_some(),
+                        row.get::<_, String>(19)?,
+                        row.get::<_, Option<String>>(20)?,
+                        row.get::<_, Option<i64>>(21)?,
+                    ))
+                })
+                .optional()?)
+        })?;
+        let Some((note, deleted, body, hash, projected)) = row else { return Ok(None) };
+        if projected.is_some_and(|projected| projected >= note.seq) {
+            return Ok(Some(note));
+        }
+        let input = projector::MirrorInput { note: &note, body: &body, deleted, previous_path: note.path.as_deref(), previous_hash: hash.as_deref() };
         let Some(mirrored) = projector::mirror(&self.root(), &input) else {
-            return Ok(note);
+            return Ok(Some(note));
         };
         self.with_db(|db| {
             db.execute(
                 "UPDATE pages SET path=?2, content_hash=?3, projected_seq=?4 WHERE id=?1",
-                params![note.id, mirrored.path, mirrored.hash, seq],
+                params![note.id, mirrored.path, mirrored.hash, note.seq],
             )?;
             Ok(())
         })?;
-        Ok(Note { path: mirrored.path, ..note })
+        Ok(Some(Note { path: mirrored.path, ..note }))
     }
 
     /// Announce a change made beside the page rather than to it (a stored
@@ -815,6 +836,34 @@ pub(crate) mod tests {
         let current = notes.read(&page.id).unwrap();
         let removal = notes.edit(EditPage { base_seq: Some(current.seq), text: Some("plan v2\n".into()), ..edit(&page.id) }, PERSON);
         assert!(removal.unwrap_err().to_string().contains("allowDeletingChildren"));
+    }
+
+    #[test]
+    fn concurrent_writes_leave_the_file_at_the_newest_version() {
+        let mut stale = 0;
+        for _ in 0..30 {
+            let (_dir, notes) = service();
+            let notes = Arc::new(notes);
+            let note = notes.create(CreatePage { content: Some("original\n".into()), ..Default::default() }, PERSON).unwrap();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let writers: Vec<_> = ["first\n", "second\n"]
+                .into_iter()
+                .map(|line| {
+                    let (notes, barrier, id) = (notes.clone(), barrier.clone(), note.id.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        notes.edit(EditPage { id, append: Some(NoteAppend { content: line.into(), position: "end".into() }), ..Default::default() }, PERSON).unwrap();
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            let page = notes.read(&note.id).unwrap();
+            let file = std::fs::read_to_string(page.note.path.clone().unwrap()).unwrap();
+            stale += usize::from(super::super::markdown::parse(&file).1 != page.markdown);
+        }
+        assert_eq!(stale, 0, "the mirror fell behind the database in {stale}/30 runs");
     }
 
     #[test]
