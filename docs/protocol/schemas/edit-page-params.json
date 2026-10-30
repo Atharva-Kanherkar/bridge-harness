@@ -41,9 +41,12 @@
   "description": "Exactly one of `text` (a person's save, merged against `base_seq`), `edits` (targeted replacements) or `append`.",
   "properties": {
     "allowDeletingChildren": {
-      "default": false,
+      "default": null,
       "description": "Allow the edit to remove child page or database tags. Only after the person confirmed.",
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "append": {
       "anyOf": [
@@ -65,11 +68,14 @@
       ]
     },
     "edits": {
-      "default": [],
+      "default": null,
       "items": {
         "$ref": "#/definitions/NoteTextEdit"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "id": {
       "type": "string"

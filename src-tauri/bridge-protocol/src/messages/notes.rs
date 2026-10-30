@@ -165,7 +165,7 @@ pub struct ListNotesParams {
     #[serde(default)]
     pub query: Option<String>,
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -173,7 +173,7 @@ pub struct ListNotesParams {
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
-    pub include_archived: bool,
+    pub include_archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -201,7 +201,7 @@ pub struct CreatePageParams {
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub tags: Option<Vec<String>>,
     /// Optional project link. Never required.
     #[serde(default)]
     pub workspace_id: Option<String>,
@@ -218,13 +218,13 @@ pub struct EditPageParams {
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
-    pub edits: Vec<NoteTextEdit>,
+    pub edits: Option<Vec<NoteTextEdit>>,
     #[serde(default)]
     pub append: Option<NoteAppend>,
     /// Allow the edit to remove child page or database tags. Only after the
     /// person confirmed.
     #[serde(default)]
-    pub allow_deleting_children: bool,
+    pub allow_deleting_children: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -240,7 +240,7 @@ pub struct UpdateNoteParams {
     #[serde(default)]
     pub workspace_id: Option<String>,
     #[serde(default)]
-    pub clear_workspace: bool,
+    pub clear_workspace: Option<bool>,
     #[serde(default)]
     pub state: Option<String>,
     /// Record a chat started from this page.
@@ -290,4 +290,23 @@ pub struct SaveNotesSettingsParams {
     pub auto_structure: Option<bool>,
     #[serde(default)]
     pub root: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notes_params_deserialize_from_only_their_required_fields() {
+        let list: ListNotesParams = serde_json::from_str("{}").unwrap();
+        assert_eq!((list.tags, list.include_archived), (None, None));
+        let create: CreatePageParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(create.tags, None);
+        let edit: EditPageParams = serde_json::from_str(r#"{"id":"p1"}"#).unwrap();
+        assert_eq!((edit.edits, edit.allow_deleting_children), (None, None));
+        let update: UpdateNoteParams = serde_json::from_str(r#"{"id":"p1"}"#).unwrap();
+        assert_eq!(update.clear_workspace, None);
+        let append: NoteAppend = serde_json::from_str(r#"{"content":"x"}"#).unwrap();
+        assert_eq!(append.position, "end");
+    }
 }

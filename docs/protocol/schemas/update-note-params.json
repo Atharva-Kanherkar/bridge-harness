@@ -12,8 +12,11 @@
       ]
     },
     "clearWorkspace": {
-      "default": false,
-      "type": "boolean"
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "id": {
       "type": "string"

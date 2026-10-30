@@ -6810,11 +6810,11 @@ pub fn update_chat_options(core: &Arc<BridgeCore>, params: &wire::UpdateChatOpti
 fn notes_list_filter(params: &wire::ListNotesParams) -> crate::notes::service::ListFilter {
     crate::notes::service::ListFilter {
         query: params.query.clone(),
-        tags: params.tags.clone(),
+        tags: params.tags.clone().unwrap_or_default(),
         kind: params.kind.clone(),
         state: params.state.clone(),
         parent_id: params.parent_id.clone(),
-        include_archived: params.include_archived,
+        include_archived: params.include_archived.unwrap_or(false),
         limit: None,
     }
 }
@@ -6846,7 +6846,7 @@ pub(crate) fn notes_create_page(params: &wire::CreatePageParams) -> crate::notes
         content: params.content.clone(),
         parent_id: params.parent_id.clone(),
         kind: params.kind.clone(),
-        tags: params.tags.clone(),
+        tags: params.tags.clone().unwrap_or_default(),
         workspace_id: params.workspace_id.clone(),
         ..Default::default()
     }
@@ -6861,9 +6861,9 @@ pub(crate) fn notes_edit_page(params: &wire::EditPageParams) -> crate::notes::se
         id: params.id.clone(),
         base_seq: params.base_seq,
         text: params.text.clone(),
-        edits: params.edits.clone(),
+        edits: params.edits.clone().unwrap_or_default(),
         append: params.append.clone(),
-        allow_deleting_children: params.allow_deleting_children,
+        allow_deleting_children: params.allow_deleting_children.unwrap_or(false),
     }
 }
 
@@ -6878,7 +6878,7 @@ pub(crate) fn notes_update_note(params: &wire::UpdateNoteParams) -> crate::notes
         kind: params.kind.clone(),
         tags: params.tags.clone(),
         workspace_id: params.workspace_id.clone(),
-        clear_workspace: params.clear_workspace,
+        clear_workspace: params.clear_workspace.unwrap_or(false),
         state: params.state.clone(),
         add_session_id: params.add_session_id.clone(),
     }

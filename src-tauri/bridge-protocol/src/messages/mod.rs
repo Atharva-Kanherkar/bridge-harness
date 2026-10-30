@@ -532,6 +532,27 @@ impl TypedMethod {
         )
     }
 
+    /// The params fields a request must send: the schema's `required` list.
+    /// Every other field may be omitted, so a transport that takes flat
+    /// arguments must accept it as optional.
+    pub fn params_required_fields(method: MethodName) -> Option<Vec<String>> {
+        let name = TypedMethod::for_method(method).params?;
+        let (_, schema) = payload_schemas()
+            .into_iter()
+            .find(|(candidate, _)| *candidate == name)
+            .unwrap_or_else(|| panic!("{name} has no schema"));
+        Some(
+            schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
     /// The wire fields and JSON Schema fragments for a method's params,
     /// sorted by field name. The shell's drift gate uses the fragments to
     /// compare both argument names and their Rust/JSON types.

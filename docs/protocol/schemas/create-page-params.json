@@ -25,11 +25,14 @@
       ]
     },
     "tags": {
-      "default": [],
+      "default": null,
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "title": {
       "default": null,

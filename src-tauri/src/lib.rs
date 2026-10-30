@@ -921,7 +921,7 @@ async fn empty_trash(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protoco
 }
 
 #[tauri::command]
-async fn list_notes(query: Option<String>, tags: Vec<String>, kind: Option<String>, state: Option<String>, parent_id: Option<String>, include_archived: bool, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesList, BridgeError> {
+async fn list_notes(query: Option<String>, tags: Option<Vec<String>>, kind: Option<String>, state: Option<String>, parent_id: Option<String>, include_archived: Option<bool>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesList, BridgeError> {
     let core = core.inner().clone();
     blocking("list notes", move || api::list_notes(&core, &bridge_protocol::messages::ListNotesParams { query, tags, kind, state, parent_id, include_archived })).await
 }
@@ -939,19 +939,19 @@ async fn capture_note(body: String, core: State<'_, Arc<BridgeCore>>) -> Result<
 }
 
 #[tauri::command]
-async fn create_page(title: Option<String>, content: Option<String>, parent_id: Option<String>, kind: Option<String>, tags: Vec<String>, workspace_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+async fn create_page(title: Option<String>, content: Option<String>, parent_id: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
     let core = core.inner().clone();
     blocking("create page", move || api::create_page(&core, &bridge_protocol::messages::CreatePageParams { title, content, parent_id, kind, tags, workspace_id })).await
 }
 
 #[tauri::command]
-async fn edit_page(id: String, base_seq: Option<i64>, text: Option<String>, edits: Vec<bridge_protocol::messages::NoteTextEdit>, append: Option<bridge_protocol::messages::NoteAppend>, allow_deleting_children: bool, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteEditResult, BridgeError> {
+async fn edit_page(id: String, base_seq: Option<i64>, text: Option<String>, edits: Option<Vec<bridge_protocol::messages::NoteTextEdit>>, append: Option<bridge_protocol::messages::NoteAppend>, allow_deleting_children: Option<bool>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteEditResult, BridgeError> {
     let core = core.inner().clone();
     blocking("edit page", move || api::edit_page(&core, &bridge_protocol::messages::EditPageParams { id, base_seq, text, edits, append, allow_deleting_children })).await
 }
 
 #[tauri::command]
-async fn update_note(id: String, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: bool, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+async fn update_note(id: String, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
     let core = core.inner().clone();
     blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, title, kind, tags, workspace_id, clear_workspace, state, add_session_id })).await
 }
@@ -3761,6 +3761,30 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn notes_commands_take_every_optional_field_as_option() {
+        // A field the wire lets a client omit must be an `Option` in the
+        // Tauri command too: its argument decoder rejects a missing key for
+        // any other type, and the params struct's serde defaults never run.
+        let source = include_str!("lib.rs");
+        let mut checked = 0;
+        for method in bridge_protocol::MethodName::ALL.iter().copied().filter(|method| method.domain() == "notes") {
+            let Some(arguments) = command_arguments(source, method.command_name()) else { continue };
+            let required = bridge_protocol::TypedMethod::params_required_fields(method).unwrap_or_default();
+            for argument in arguments.iter().filter(|argument| !required.contains(&argument.name)) {
+                checked += 1;
+                assert!(
+                    argument.kind.starts_with("Option<"),
+                    "{} {} may be omitted on the wire but the command requires it ({})",
+                    method.as_str(),
+                    argument.name,
+                    argument.kind
+                );
+            }
+        }
+        assert!(checked > 10, "the notes commands have optional fields to check");
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4297,12 +4297,12 @@ export interface EmptyTrashResult {
 }
 
 export interface ListNotesParams {
-  includeArchived?: boolean;
+  includeArchived?: boolean | null;
   kind?: string | null;
   parentId?: string | null;
   query?: string | null;
   state?: string | null;
-  tags?: string[];
+  tags?: string[] | null;
 }
 
 export interface NotesList {
@@ -4331,16 +4331,16 @@ export interface CreatePageParams {
   content?: string | null;
   kind?: string | null;
   parentId?: string | null;
-  tags?: string[];
+  tags?: string[] | null;
   title?: string | null;
   workspaceId?: string | null;
 }
 
 export interface EditPageParams {
-  allowDeletingChildren?: boolean;
+  allowDeletingChildren?: boolean | null;
   append?: NoteAppend | null;
   baseSeq?: number | null;
-  edits?: NoteTextEdit[];
+  edits?: NoteTextEdit[] | null;
   id: string;
   text?: string | null;
 }
@@ -4353,7 +4353,7 @@ export interface NoteEditResult {
 
 export interface UpdateNoteParams {
   addSessionId?: string | null;
-  clearWorkspace?: boolean;
+  clearWorkspace?: boolean | null;
   id: string;
   kind?: string | null;
   state?: string | null;

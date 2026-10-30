@@ -4,8 +4,11 @@
   "additionalProperties": false,
   "properties": {
     "includeArchived": {
-      "default": false,
-      "type": "boolean"
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "kind": {
       "default": null,
@@ -36,11 +39,14 @@
       ]
     },
     "tags": {
-      "default": [],
+      "default": null,
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     }
   },
   "title": "ListNotesParams",
