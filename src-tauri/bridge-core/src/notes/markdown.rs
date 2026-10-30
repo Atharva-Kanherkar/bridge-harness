@@ -61,13 +61,27 @@ fn read_list(raw: &str) -> Vec<String> {
 /// all body.
 pub fn parse(text: &str) -> (Frontmatter, String) {
     let mut front = Frontmatter::default();
-    let Some(rest) = text.strip_prefix("---\n") else {
+    // Either line ending: editors on Windows, and some sync tools, save CRLF.
+    let opening = if text.starts_with("---\r\n") {
+        5
+    } else if text.starts_with("---\n") {
+        4
+    } else {
         return (front, text.to_owned());
     };
-    let Some(end) = rest.find("\n---\n").map(|index| (index, index + 5)).or_else(|| rest.strip_suffix("\n---").map(|head| (head.len(), rest.len()))) else {
+    let mut position = opening;
+    let mut close = None;
+    for line in text[opening..].split_inclusive('\n') {
+        if line.trim_end_matches('\n').trim_end_matches('\r') == "---" {
+            close = Some((position, position + line.len()));
+            break;
+        }
+        position += line.len();
+    }
+    let Some((header_end, body_start)) = close else {
         return (front, text.to_owned());
     };
-    let (header, body_start) = (&rest[..end.0], end.1);
+    let header = &text[opening..header_end];
     for line in header.lines() {
         let Some((key, value)) = line.split_once(':') else {
             if !line.trim().is_empty() {
@@ -88,7 +102,7 @@ pub fn parse(text: &str) -> (Frontmatter, String) {
             _ => front.unknown.push(line.to_owned()),
         }
     }
-    (front, rest[body_start..].to_owned())
+    (front, text[body_start..].to_owned())
 }
 
 /// Render frontmatter and body back into a file.
@@ -152,6 +166,20 @@ mod tests {
         let rewritten = render(&parsed, &parsed_body);
         assert!(rewritten.contains("aliases: [\"lp\"]\nobsidian-cssclass: wide\n---\n"));
         assert_eq!(parse(&rewritten), (parsed, parsed_body));
+    }
+
+    #[test]
+    fn crlf_frontmatter_is_recognized_and_the_body_kept_exactly() {
+        let front = Frontmatter { id: Some("x".into()), title: Some("Original".into()), tags: vec!["a".into()], ..Default::default() };
+        let crlf = render(&front, "line one\nline two\n").replace('\n', "\r\n");
+        let (parsed, body) = parse(&crlf);
+        assert_eq!(parsed.title.as_deref(), Some("Original"));
+        assert_eq!(parsed.tags, vec!["a"]);
+        assert!(parsed.unknown.is_empty(), "{:?}", parsed.unknown);
+        assert_eq!(body, "line one\r\nline two\r\n");
+        // No body at all, closing delimiter at the very end.
+        let (parsed, body) = parse("---\r\ntitle: \"T\"\r\n---");
+        assert_eq!((parsed.title.as_deref(), body.as_str()), (Some("T"), ""));
     }
 
     #[test]
