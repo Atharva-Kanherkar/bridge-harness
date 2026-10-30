@@ -268,9 +268,7 @@ pub fn dispatch_for_project(
             };
         }
         "note" => {
-            return SlashDispatch::Note {
-                body: args.unwrap_or("").to_string(),
-            };
+            return SlashDispatch::Note { body: raw_argument(text, name) };
         }
         "pin" => {
             return SlashDispatch::Pin {
@@ -389,6 +387,23 @@ fn expand_inline_commands(
     if expanded.is_empty() { return None; }
     expanded.push_str(text);
     Some(expanded)
+}
+
+/// Everything after `/<name>` and one delimiter, verbatim: `/note` saves the
+/// person's words exactly, indentation and trailing newlines included. Empty
+/// when nothing but whitespace follows.
+fn raw_argument(text: &str, name: &str) -> String {
+    let start = text.trim_start();
+    let after = start.get(1 + name.len()..).unwrap_or_default();
+    let after = after
+        .strip_prefix("\r\n")
+        .or_else(|| after.strip_prefix(|c: char| c == ' ' || c == '\t' || c == '\n'))
+        .unwrap_or(after);
+    if after.trim().is_empty() {
+        String::new()
+    } else {
+        after.to_owned()
+    }
 }
 
 /// True when Bridge handles the slash locally and must never auto-switch harness.
@@ -989,5 +1004,19 @@ mod tests {
         assert!(is_bridge_local("note"));
         assert!(list_commands(&available).iter().any(|command| command.name == "note" && command.harness == "bridge"));
         assert!(!crate::session_input::requires_idle_session(&SlashDispatch::Note { body: "x".into() }));
+    }
+
+    #[test]
+    fn note_keeps_the_raw_text_after_the_command() {
+        let available = std::collections::HashSet::new();
+        let body = |input: &str| match dispatch(input, "claude", &available) {
+            SlashDispatch::Note { body } => body,
+            other => panic!("expected a note, got {other:?}"),
+        };
+        assert_eq!(body("/note     def foo():\n        pass\n"), "    def foo():\n        pass\n");
+        assert_eq!(body("/note\n- one\n- two\n"), "- one\n- two\n");
+        assert_eq!(body("/note\r\nline"), "line");
+        assert_eq!(body("  /NOTE keep  trailing  "), "keep  trailing  ");
+        assert_eq!(body("/note   \n  "), "", "whitespace only is no note");
     }
 }
