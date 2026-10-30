@@ -86,6 +86,7 @@ pub fn start(request: StartRequest<'_>) -> Result<StartedCodex, BridgeError> {
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
     launch(
         StartRequest {
+            session_id: None,
             cwd: request.cwd,
             model: request.model,
             effort: request.effort,
@@ -170,6 +171,7 @@ fn launch(
     fork: bool,
 ) -> Result<StartedCodex, BridgeError> {
     let StartRequest {
+        session_id: bridge_session_id,
         cwd,
         model,
         effort,
@@ -206,7 +208,7 @@ fn launch(
     // Root-level overrides, ahead of the subcommand: an interactive chat gets
     // Bridge's `visualize` server alongside the user's own servers.
     let visualize = crate::mcp_apps::attaches_to(interactive, write_mode, read_only_sandbox, briefing)
-        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .then(|| crate::mcp_apps::ServerLaunch::for_session(bridge_session_id.filter(|_| interactive)))
         .flatten();
     for value in chat_config_overrides(visualize.as_ref()) {
         command.args(["-c", &value]);
@@ -1543,6 +1545,7 @@ mod tests {
         use std::{sync::mpsc, thread, time::Duration};
         let cwd = std::env::current_dir().unwrap();
         let started = start(StartRequest {
+            session_id: None,
             cwd: cwd.to_str().unwrap(),
             model: None,
             effort: None,
@@ -1620,6 +1623,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let cwd = cwd.to_str().unwrap();
         let mut started = start(StartRequest {
+            session_id: None,
             cwd,
             model: None,
             effort: None,
@@ -1762,6 +1766,7 @@ mod tests {
         let launch = crate::mcp_apps::ServerLaunch {
             command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
             args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         };
         let overrides = chat_config_overrides(Some(&launch));
         assert_eq!(

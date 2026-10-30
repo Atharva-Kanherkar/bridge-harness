@@ -168,6 +168,7 @@ fn selected(id: &str) -> bool {
 
 fn start(provider: &str, cwd: &str) -> (Box<dyn AdapterRuntime>, BufReader<ChildStdout>) {
     let request = StartRequest {
+        session_id: None,
         cwd,
         model: None,
         effort: None,

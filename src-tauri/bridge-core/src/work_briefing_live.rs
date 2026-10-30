@@ -455,6 +455,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
     let started = core.adapter_registry.start(
         &selection.harness,
         StartRequest {
+            session_id: None,
             cwd: &cwd,
             model: Some(&selection.model),
             effort: selection.effort.as_deref(),

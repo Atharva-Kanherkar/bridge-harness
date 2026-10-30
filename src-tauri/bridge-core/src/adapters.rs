@@ -593,6 +593,9 @@ pub type StartupProgress<'a> = &'a dyn Fn(StartupPhase);
 
 #[derive(Clone, Copy)]
 pub struct StartRequest<'a> {
+    /// The Bridge session this process serves, when there is one. Lets an
+    /// interactive chat's tool server act for that chat (the notes tools).
+    pub session_id: Option<&'a str>,
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
@@ -619,6 +622,7 @@ pub struct StartRequest<'a> {
 impl std::fmt::Debug for StartRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StartRequest")
+            .field("session_id", &self.session_id)
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)

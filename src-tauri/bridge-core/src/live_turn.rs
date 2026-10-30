@@ -1280,6 +1280,7 @@ pub fn start_session(
         state.adapter_registry.start(
             dispatch_id,
             adapters::StartRequest {
+                session_id: Some(session_id.as_str()),
                 cwd: &path,
                 model: chosen_model.as_deref(),
                 effort: chosen_effort_name,
@@ -1889,6 +1890,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         registry.start(
             &launch_adapter_id,
             adapters::StartRequest {
+                session_id: Some(session_id.as_str()),
                 cwd: &launch_cwd,
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
@@ -5843,6 +5845,7 @@ pub fn launch_worker_outcome(
                         state.adapter_registry.start(
                             &dispatch_id,
                             adapters::StartRequest {
+                                session_id: None,
                                 cwd: &reservation.path,
                                 model: Some(model.as_str()),
                                 effort: Some(&effort),
@@ -5862,6 +5865,7 @@ pub fn launch_worker_outcome(
                     state.adapter_registry.start(
                         &dispatch_id,
                         adapters::StartRequest {
+                            session_id: None,
                             cwd: &reservation.path,
                             model: Some(model.as_str()),
                             effort: Some(&effort),
@@ -5882,6 +5886,7 @@ pub fn launch_worker_outcome(
             .start(
                 &dispatch_id,
                 adapters::StartRequest {
+                    session_id: None,
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),

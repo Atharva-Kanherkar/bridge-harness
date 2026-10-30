@@ -115,6 +115,7 @@ pub(crate) fn one_hidden_turn(
         registry.start(
             harness,
             StartRequest {
+                session_id: None,
                 cwd: &cwd,
                 model,
                 effort: None,
@@ -130,6 +131,7 @@ pub(crate) fn one_hidden_turn(
         registry.start_completion(
             harness,
             StartRequest {
+                session_id: None,
                 cwd: &cwd,
                 model,
                 // a title needs no deliberation; harnesses without the knob drop it.

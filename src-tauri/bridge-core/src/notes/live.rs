@@ -79,6 +79,7 @@ impl ModelBackend for LiveBackend {
 
 /// Started once per host beside the other maintenance loops.
 pub fn start_note_maintenance(core: Arc<BridgeCore>) {
+    super::tool::install(&core);
     let _ = std::thread::Builder::new().name("notes".into()).spawn(move || {
         let owner = format!("notes-{}", Uuid::new_v4());
         let backend = LiveBackend::new(core.clone());

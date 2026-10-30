@@ -59,6 +59,9 @@ tempfile = { workspace = true }
 yrs = "0.28"
 # Turns a person's full-text save into minimal text edits on the page doc.
 similar = "2.7"
+# Per-chat tokens for the notes tools: HMAC of the session id under a
+# per-process secret, so the core verifies a call without storing tokens.
+hmac = "0.12"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"

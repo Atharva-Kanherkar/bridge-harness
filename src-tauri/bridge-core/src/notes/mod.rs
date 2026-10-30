@@ -18,3 +18,4 @@ pub mod service;
 pub mod store;
 pub mod structure;
 pub mod tasks;
+pub mod tool;

@@ -188,6 +188,7 @@ pub fn resume_with_settings(
 ) -> Result<StartedOpenCode, BridgeError> {
     launch(
         StartRequest {
+            session_id: None,
             cwd: request.cwd,
             model: request.model,
             effort: request.effort,
@@ -249,7 +250,7 @@ fn launch(
     // whatever inline config the user already passes OpenCode.
     let visualize = (!completion_only
         && crate::mcp_apps::attaches_to(request.interactive, request.write_mode, request.read_only_sandbox, request.briefing))
-        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .then(|| crate::mcp_apps::ServerLaunch::for_session(request.session_id.filter(|_| request.interactive)))
         .flatten();
     if let Some(config) = chat_config_content(
         visualize.as_ref(),
@@ -3206,6 +3207,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let started = start_with_settings(
             StartRequest {
+                session_id: None,
                 cwd: directory.path().to_str().unwrap(),
                 model: Some(&model),
                 effort: None,
@@ -3351,6 +3353,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut started = start_with_settings(
             StartRequest {
+                session_id: None,
                 cwd: directory.path().to_str().unwrap(),
                 model: Some("opencode-go/glm-5.2"),
                 effort: None,
@@ -3488,6 +3491,7 @@ mod model_variant_tests {
         let launch = crate::mcp_apps::ServerLaunch {
             command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
             args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         };
         let content: serde_json::Value = serde_json::from_str(
             &chat_config_content(Some(&launch), Some(r#"{"theme":"system"}"#)).unwrap(),
