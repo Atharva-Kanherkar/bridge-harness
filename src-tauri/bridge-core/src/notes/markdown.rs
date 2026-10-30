@@ -57,6 +57,26 @@ fn read_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Group header lines into top-level entries: a key line plus every indented
+/// or list line under it, so nested YAML never reads as a page field.
+fn top_level_blocks(header: &str) -> Vec<Vec<&str>> {
+    let mut blocks: Vec<Vec<&str>> = Vec::new();
+    for line in header.lines() {
+        let continuation = line.starts_with(' ') || line.starts_with('\t') || line.starts_with("- ") || line == "-" || line.trim().is_empty();
+        match blocks.last_mut() {
+            Some(block) if continuation => block.push(line),
+            _ if line.trim().is_empty() => {}
+            _ => blocks.push(vec![line]),
+        }
+    }
+    for block in &mut blocks {
+        while block.len() > 1 && block.last().is_some_and(|line| line.trim().is_empty()) {
+            block.pop();
+        }
+    }
+    blocks
+}
+
 /// Split a file into its frontmatter and body. A file with no frontmatter is
 /// all body.
 pub fn parse(text: &str) -> (Frontmatter, String) {
@@ -82,24 +102,30 @@ pub fn parse(text: &str) -> (Frontmatter, String) {
         return (front, text.to_owned());
     };
     let header = &text[opening..header_end];
-    for line in header.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            if !line.trim().is_empty() {
-                front.unknown.push(line.to_owned());
-            }
+    for block in top_level_blocks(header) {
+        let first = block[0];
+        let continued = block.len() > 1;
+        let Some((key, value)) = first.split_once(':').filter(|_| !first.starts_with('#')) else {
+            front.unknown.push(block.join("\n"));
             continue;
         };
-        match key.trim() {
-            "id" => front.id = read_scalar(value),
-            "title" => front.title = read_scalar(value),
-            "kind" => front.kind = read_scalar(value),
-            "tags" => front.tags = read_list(value),
-            "project" => front.project = read_scalar(value),
-            "state" => front.state = read_scalar(value),
-            "parent" => front.parent = read_scalar(value),
-            "created" => front.created = read_scalar(value),
-            "updated" => front.updated = read_scalar(value),
-            _ => front.unknown.push(line.to_owned()),
+        let list_items = || -> Vec<String> {
+            block[1..].iter().filter_map(|line| line.trim_start().strip_prefix('-')).filter_map(read_scalar).collect()
+        };
+        match (key.trim(), continued) {
+            ("tags", true) if value.trim().is_empty() => front.tags = list_items(),
+            ("id", false) => front.id = read_scalar(value),
+            ("title", false) => front.title = read_scalar(value),
+            ("kind", false) => front.kind = read_scalar(value),
+            ("tags", false) => front.tags = read_list(value),
+            ("project", false) => front.project = read_scalar(value),
+            ("state", false) => front.state = read_scalar(value),
+            ("parent", false) => front.parent = read_scalar(value),
+            ("created", false) => front.created = read_scalar(value),
+            ("updated", false) => front.updated = read_scalar(value),
+            // Anything else, including a known key written in a form this
+            // reader does not interpret, is kept verbatim rather than guessed at.
+            _ => front.unknown.push(block.join("\n")),
         }
     }
     (front, text[body_start..].to_owned())
@@ -180,6 +206,19 @@ mod tests {
         // No body at all, closing delimiter at the very end.
         let (parsed, body) = parse("---\r\ntitle: \"T\"\r\n---");
         assert_eq!((parsed.title.as_deref(), body.as_str()), (Some("T"), ""));
+    }
+
+    #[test]
+    fn nested_and_block_yaml_stays_with_its_key() {
+        let file = "---\nid: \"x\"\ntitle: \"Original\"\ncustom:\n  title: Nested\n  list:\n    - a\naliases:\n- lp\n- launch\ntags:\n  - one\n  - \"two\"\n---\nbody\n";
+        let (parsed, body) = parse(file);
+        assert_eq!(parsed.title.as_deref(), Some("Original"), "a nested title is not the page title");
+        assert_eq!(parsed.tags, vec!["one", "two"], "block-style lists are read");
+        assert_eq!(parsed.unknown, vec!["custom:\n  title: Nested\n  list:\n    - a", "aliases:\n- lp\n- launch"]);
+        assert_eq!(body, "body\n");
+        let rendered = render(&parsed, &body);
+        assert!(rendered.contains("custom:\n  title: Nested\n  list:\n    - a\naliases:\n- lp\n- launch\n---\n"), "{rendered}");
+        assert_eq!(parse(&rendered), (parsed, body));
     }
 
     #[test]
