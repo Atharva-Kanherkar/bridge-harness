@@ -54,6 +54,11 @@ tar = "0.4"
 flate2 = "1"
 bzip2 = "0.6"
 tempfile = { workspace = true }
+# Notes pages are Yjs documents (CRDTs): concurrent edits from a person and an
+# agent merge, and the update log is what a later sync service exchanges.
+yrs = "0.28"
+# Turns a person's full-text save into minimal text edits on the page doc.
+similar = "2.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"

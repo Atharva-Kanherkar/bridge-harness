@@ -7,5 +7,6 @@
 //! tasks) run only when someone asks. See issue #865 and
 //! `testing/feat-notes-backend.md`.
 
+pub mod doc;
 pub mod ids;
 pub mod store;
