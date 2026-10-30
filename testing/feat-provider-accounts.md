@@ -70,6 +70,9 @@ The T3 model, and how it maps onto Bridge:
   accounts share a continuation key. Otherwise the provider session id is
   cleared and the next turn starts fresh with the projected history.
 - `Session.account` is reported in state so every client shows it.
+- A fork or an aside on the same agent keeps the source chat's account (the
+  only home its forked thread can be read from); one on another agent starts
+  on the user's own login.
 
 ### UI
 - Settings → Coding agents → Claude Code / Codex has an **Accounts** group:
@@ -105,6 +108,7 @@ Rust (`bridge-core`):
 - `sessions::tests::account_switch_inside_a_codex_shadow_group_resumes_natively`
 - `sessions::tests::absent_account_keeps_the_chat_account_on_same_harness`
 - `sessions::tests::unknown_account_is_rejected`
+- `sessions::tests::asides_on_the_same_agent_keep_the_account`
 - `chat_defaults::tests::configured_chat_stores_the_chosen_account`
 - `chat_defaults::tests::unknown_account_in_choice_is_rejected`
 - `store` migration test: schema 68 adds `sessions.account`.
