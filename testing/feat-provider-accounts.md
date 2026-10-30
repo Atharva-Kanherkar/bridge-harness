@@ -52,9 +52,17 @@ The T3 model, and how it maps onto Bridge:
   lock dirs are replaced. Then `CODEX_HOME=<shadow>`.
 - A Claude account launch removes inherited credentials that outrank the
   folder's login (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-  `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK|VERTEX|FOUNDRY`), and the
-  credential policy judges that environment, so an API-key-only deployment
-  refuses an account. Codex reads its login from `CODEX_HOME` alone.
+  `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK|VERTEX|FOUNDRY`) and an
+  inherited endpoint or headers (`ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_CUSTOM_HEADERS`), so neither another credential nor the
+  account's own token reaches an inherited endpoint. Generic `HTTPS_PROXY`
+  stays (it tunnels TLS). The credential policy judges that environment, so
+  an API-key-only deployment refuses an account. Codex reads its login from
+  `CODEX_HOME` alone.
+- Shadow and shared homes are compared by where they resolve, before either
+  is touched: a shadow that is, sits inside, or contains the shared home
+  (directly or through a symlink) is refused and the shared home is left
+  intact.
 - Shadow-home setup is serialised per shadow folder, and a link another
   launch has just created with the right target is accepted, so two chats
   starting on one new account both launch.
@@ -85,6 +93,9 @@ The T3 model, and how it maps onto Bridge:
 - A fork or an aside on the same agent keeps the source chat's account (the
   only home its forked thread can be read from); one on another agent starts
   on the user's own login.
+- An unstarted aside holds its source's thread id only to fork it. A switch
+  that keeps the thread keeps that fork instruction; one that cannot reach
+  the thread clears the id. Neither ever resumes the source.
 
 ### UI
 - Settings → Coding agents → Claude Code / Codex has an **Accounts** group:
@@ -119,6 +130,9 @@ Rust (`bridge-core`):
 - `provider_accounts::tests::the_credential_policy_judges_the_account_launch_environment`
 - `provider_accounts::tests::concurrent_first_launches_share_one_shadow_home`
 - `provider_accounts::tests::a_link_created_by_another_launch_is_accepted`
+- `provider_accounts::tests::an_account_launch_never_reaches_an_inherited_endpoint` (real `claude`, synthetic credentials, local recorders; skipped when `claude` is not installed)
+- `provider_accounts::tests::a_shadow_that_aliases_the_shared_home_is_refused_untouched`
+- `sessions::tests::a_pending_aside_still_forks_its_source_after_a_same_home_switch`
 - `agent_config::tests::save_harness_validates_accounts`
 - `sessions::tests::account_only_switch_is_a_change`
 - `sessions::tests::account_switch_across_homes_clears_the_thread`
