@@ -216,6 +216,10 @@ pub struct ChatModelChange {
     /// The account the chat signs in with after the switch; `None` is the
     /// user's own login.
     account: Option<String>,
+    /// An unstarted aside: its stored thread id is its source's, held only so
+    /// the first launch can fork it. A switch that keeps the thread must keep
+    /// that instruction too, or the next launch resumes the source instead.
+    pending_fork: bool,
 }
 
 /// What a switch does with the chat's account (`provider_accounts`).
@@ -692,16 +696,17 @@ impl BridgeCore {
                 harness.label()
             )));
         }
-        let (kind, previous_harness, previous_model, provider_session_id, active_turn_id, parent_session_id, previous_account): (
+        let (kind, previous_harness, previous_model, provider_session_id, active_turn_id, parent_session_id, previous_account, head_mode): (
             String,
             String,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
         ) = self.db.lock().unwrap().query_row(
-            "SELECT kind,harness,model,provider_session_id,active_turn_id,parent_session_id,account FROM sessions WHERE id=?1",
+            "SELECT s.kind,s.harness,s.model,s.provider_session_id,s.active_turn_id,s.parent_session_id,s.account,h.restoration_mode FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
             params![session_id],
             |row| {
                 Ok((
@@ -712,6 +717,7 @@ impl BridgeCore {
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )?;
@@ -842,6 +848,7 @@ impl BridgeCore {
             native_continuation,
             previous_account,
             account,
+            pending_fork: head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str()),
         }))
     }
 
@@ -1400,11 +1407,13 @@ impl BridgeCore {
         if resumes_natively {
             // The stored thread is still this agent's own, so the next turn
             // resumes it under the new model. `set_head_state` coalesces a
-            // `None` id, which is what keeps the identity here.
+            // `None` id, which is what keeps the identity here. An unstarted
+            // aside's id is its source's thread: it keeps the instruction to
+            // fork it, never to resume it.
             restoration::set_head_state(
                 &transaction,
                 session_id,
-                RestorationMode::Native,
+                if change.pending_fork { RestorationMode::NativeFork } else { RestorationMode::Native },
                 ResumeEligibility::Native,
                 None,
             )?;
@@ -1432,7 +1441,13 @@ impl BridgeCore {
         } else {
             "Chat"
         };
-        let detail = if resumes_natively {
+        let detail = if resumes_natively && change.pending_fork {
+            format!(
+                "{subject} model changed from {} to {}. The first message still branches from the source conversation.",
+                change.previous_model.as_deref().unwrap_or("automatic"),
+                change.selected_model().unwrap_or("default"),
+            )
+        } else if resumes_natively {
             format!(
                 "{subject} model changed from {} to {}. The conversation continues on the same {} session.",
                 change.previous_model.as_deref().unwrap_or("automatic"),
@@ -3966,6 +3981,66 @@ mod tests {
         let (other, _, _) = core.create_aside_chat_id(&source, &Harness::Claude, Some("stub-opus"), None).unwrap();
         assert_eq!(account_and_thread(&core, &same).0.as_deref(), Some("separate"));
         assert_eq!(account_and_thread(&core, &other).0, None);
+    }
+
+    /// What `create_aside_chat_id` writes for a Codex aside that will fork its
+    /// source on first launch, built directly because that path asks the
+    /// installed Codex whether it can fork at all.
+    fn pending_aside(core: &BridgeCore, session_id: &str) {
+        let db = core.db.lock().unwrap();
+        db.execute("UPDATE sessions SET provider_session_id='source-thread' WHERE id=?1", params![session_id]).unwrap();
+        restoration::set_head_state(&db, session_id, RestorationMode::NativeFork, ResumeEligibility::Native, Some("source-thread")).unwrap();
+    }
+
+    fn head_and_next_plan(core: &BridgeCore, session_id: &str) -> (String, Option<String>, restoration::RestorationPlan) {
+        let (mode, provider): (String, Option<String>) = core.db.lock().unwrap()
+            .query_row(
+                "SELECT h.restoration_mode,s.provider_session_id FROM sessions s JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        // The same ladder `start_chat` climbs, for a Codex that can fork.
+        let plan = restoration::select_plan(false, provider.as_deref(), true, true, false, mode == RestorationMode::NativeFork.as_str());
+        (mode, provider, plan)
+    }
+
+    #[test]
+    fn a_pending_aside_still_forks_its_source_after_a_same_home_switch() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        pending_aside(&core, &session_id);
+
+        // Account only, inside the shared home: the thread is reachable, so the
+        // switch keeps it, and keeps forking it rather than resuming it.
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("shadow"))
+            .unwrap()
+            .unwrap();
+        assert!(change.resumes_natively());
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(
+            head_and_next_plan(&core, &session_id),
+            ("native_fork".into(), Some("source-thread".into()), restoration::RestorationPlan::NativeFork),
+        );
+
+        // A model change alone keeps it too.
+        let change = core.plan_chat_model_change(&session_id, &Harness::Codex, Some("stub-standard")).unwrap().unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(head_and_next_plan(&core, &session_id).2, restoration::RestorationPlan::NativeFork);
+
+        // A separate home cannot read the source thread: the id goes, and
+        // nothing can resume the source.
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-standard"), AccountRequest::Choose("separate"))
+            .unwrap()
+            .unwrap();
+        assert!(!change.resumes_natively());
+        core.commit_chat_model_change(change).unwrap();
+        let (_, provider, plan) = head_and_next_plan(&core, &session_id);
+        assert_eq!(provider, None);
+        assert_ne!(plan, restoration::RestorationPlan::Native);
     }
 
     #[test]
