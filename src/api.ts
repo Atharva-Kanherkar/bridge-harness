@@ -18,6 +18,9 @@ import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, Summ
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
+import type { Note, NoteEditResult, NotePage, NotePageChangedPayload, NotesList, NotesSettings } from "./types";
+import type { CreatePageParams, EditPageParams, ListNotesParams, NoteJobQueued, SaveNotesSettingsParams, UpdateNoteParams } from "./protocol/generated/protocol";
+import { mockCaptureNote, mockCreatePage, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesSettings, mockReadPage, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
@@ -2392,6 +2395,60 @@ export const bridgeApi = {
     if (hasBackend()) return call("storage/empty_trash");
     mockTrashEmpty = true;
     return { emptied: mockTrashEmpty, detail: null };
+  },
+  // Bridge Notes. Every write goes through the core's one write path; the
+  // mock keeps the same shapes and merge rule in memory.
+  listNotes: async (params: ListNotesParams = {}): Promise<NotesList> => {
+    if (hasBackend()) return call("notes/list_notes", params);
+    return mockListNotes(params);
+  },
+  readNotePage: async (id: string): Promise<NotePage> => {
+    if (hasBackend()) return call("notes/read_page", { id });
+    return mockReadPage(id);
+  },
+  captureNote: async (body: string): Promise<Note> => {
+    if (hasBackend()) return call("notes/capture_note", { body });
+    return mockCaptureNote(body);
+  },
+  createNotePage: async (params: CreatePageParams): Promise<Note> => {
+    if (hasBackend()) return call("notes/create_page", params);
+    return mockCreatePage(params);
+  },
+  editNotePage: async (params: EditPageParams): Promise<NoteEditResult> => {
+    if (hasBackend()) return call("notes/edit_page", params);
+    return mockEditPage(params);
+  },
+  updateNote: async (params: UpdateNoteParams): Promise<Note> => {
+    if (hasBackend()) return call("notes/update_note", params);
+    return mockUpdateNote(params);
+  },
+  deleteNote: async (id: string): Promise<void> => {
+    if (hasBackend()) { await call("notes/delete_note", { id }); return; }
+    mockDeleteNote(id);
+  },
+  structureNote: async (id: string, harness?: string): Promise<NoteJobQueued> => {
+    if (hasBackend()) return call("notes/structure_note", { id, harness: harness ?? null });
+    return mockStructureNote({ id, harness });
+  },
+  extractNoteTasks: async (id: string, harness?: string): Promise<NoteJobQueued> => {
+    if (hasBackend()) return call("notes/extract_tasks", { id, harness: harness ?? null });
+    return mockExtractTasks({ id, harness });
+  },
+  splitNoteItem: async (id: string, itemIndex: number): Promise<Note> => {
+    if (hasBackend()) return call("notes/split_item", { id, itemIndex });
+    return mockSplitItem({ id, itemIndex });
+  },
+  notesSettings: async (): Promise<NotesSettings> => {
+    if (hasBackend()) return call("notes/get_notes_settings");
+    return mockNotesSettings();
+  },
+  saveNotesSettings: async (params: SaveNotesSettingsParams): Promise<NotesSettings> => {
+    if (hasBackend()) return call("notes/save_notes_settings", params);
+    return mockSaveNotesSettings(params);
+  },
+  onNotesPageChanged: async (handler: (payload: NotePageChangedPayload) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<NotePageChangedPayload>("notes/page_changed", handler);
+    return onMockNotesPageChanged(handler);
   },
   listWorktrees: async (): Promise<WorktreeInventoryEntry[]> => {
     if (hasBackend()) return call("worktrees/list_worktrees");

@@ -43,6 +43,14 @@ export type { WireKind } from "./transcript/wire";
 export type {
   AdapterDescriptor,
   AgentDefinition,
+  Note,
+  NoteEditResult,
+  NoteJob,
+  NotePage,
+  NotesList,
+  NotesSettings,
+  StructuredItem,
+  StructuredView,
   ApprovalDecision,
   AuthState,
   AutomationAction,
@@ -233,6 +241,10 @@ export interface TerminalExit { sessionId: string; terminalId: string }
 
 /** `memory-changed` refetch hint: names the scope, never carries a record. */
 export interface MemoryChangedPayload { scopeKey: string }
+
+/** `notes/page_changed`: a page committed a change. A refetch hint; `actor`
+ *  is `person`, `agent:<harness>:<session>`, `file-import` or `model:*`. */
+export interface NotePageChangedPayload { pageId: string; actor: string; seq: number }
 
 /** `session-startup` cold-start phase, observed at a real adapter launch
  *  boundary. Transient and best-effort: never replayed, never a timer. */
