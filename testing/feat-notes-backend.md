@@ -183,3 +183,60 @@ ignored evals instead:
   state from pages"` shows it, and `<data_dir>/notes/notes-smoke-test-*.md` exists with the
   bullets.
 - Edit that `.md` file in an editor; within 5 s `read_page` (or the next tool read) shows the edit.
+
+## Review fixes (PR #869 review 5713724060)
+
+Locked before the fixes. Each item is one commit with a regression test that
+fails without its fix.
+
+1. **The daemon serves the notes tools.** Each host starts its own notes-tool
+   listener on `127.0.0.1:<ephemeral>`; helpers receive that address, not a
+   fixed 4317. Test: `bridged/tests/notes.rs::the_daemon_serves_notes_tools_on_its_own_listener`
+   (a chat's token creates a page over HTTP against `Daemon::start`).
+2. **OpenCode Ask asks before notes writes.** Ask/Isolated rules end with
+   `ask` for `bridge_notes_create|edit|append|set` in both API versions; Full
+   allows; ReadOnly denies. Test: `opencode_adapter::tests::ask_mode_asks_before_notes_writes_in_both_api_versions`.
+3. **One import per page at a time.** Concurrent `import_changes` calls apply an
+   outside edit exactly once. Test: `notes::projector::tests::concurrent_imports_apply_an_outside_edit_once`.
+4. **Imported properties diff against the projected base.** Only frontmatter
+   fields the file changed relative to `projected_seq` are applied; concurrent
+   property updates survive a body-only file edit. Test:
+   `notes::projector::tests::a_body_only_file_edit_keeps_concurrent_property_changes`.
+5. **Projection follows commit order.** Projection is serialized and always
+   writes the newest committed version. Test:
+   `notes::service::tests::concurrent_writes_leave_the_file_at_the_newest_version`.
+6. **Accepting a file advances its base.** When an accepted file needs no body
+   operation, `projected_seq` moves to the version it represents. Test:
+   `notes::projector::tests::accepting_a_matching_body_advances_the_import_base`.
+7. **CRLF frontmatter.** `---\r\n` delimiters are recognized; the body's bytes
+   are kept. Test: `notes::markdown::tests::crlf_frontmatter_is_recognized_and_the_body_kept_exactly`.
+8. **YAML nesting.** Only top-level keys are page fields; indented and list
+   continuation lines stay with their key and round-trip; block-style `tags`
+   lists are read. Test: `notes::markdown::tests::nested_and_block_yaml_stays_with_its_key`.
+9. **Resume and fork keep notes tools.** `ResumeRequest` carries the Bridge
+   session id into all three adapters' launches. Test:
+   `adapters::tests::resume_requests_carry_the_bridge_session_into_launches`.
+10. **Embedded handlers accept omitted defaults.** Every defaulted notes param is
+    optional on the wire and in the Tauri command. Tests:
+    `tests::notes_commands_take_every_optional_field_as_option` (src-tauri) and
+    `notes params deserialize from {}` in bridge-protocol.
+11. **Failed projections are retried.** Pages whose committed version was never
+    mirrored are re-projected on open and every maintenance tick. Test:
+    `notes::projector::tests::a_failed_projection_is_retried_by_maintenance`.
+12. **Imports keep running during a model job.** Imports and model jobs run on
+    separate threads. Test: `notes::live::tests::file_imports_continue_while_a_model_job_is_in_flight`.
+13. **A stored view announces itself.** A successful Structure pass publishes
+    `notes/page_changed`. Test: `notes::structure::tests::a_stored_view_announces_a_page_change`.
+14. **Project frontmatter imports.** A changed `project:` assigns (validated) or
+    clears the page's project. Test: `notes::projector::tests::project_frontmatter_is_imported`.
+15. **Stale saves keep later children.** The child-deletion guard checks the
+    merged result, not the submitted text. Test:
+    `notes::service::tests::a_stale_save_keeps_children_added_since_its_base`.
+16. **`/note` keeps raw text.** The body is everything after the command and one
+    delimiter, verbatim; trim only rejects whitespace-only input. Test:
+    `slash::tests::note_keeps_the_raw_text_after_the_command`.
+17. **Evals fail on broken wiring.** Every live eval asserts that its cases ran
+    and enforces its behavior gates (tools: all cases started and at least 5/6
+    behave; tasks: all generations ran, recall >= 13/15, precision >= 12/15,
+    empty pages empty; structure: all generations ran). Check: each eval fails
+    with `BRIDGE_NOTES_EVAL_HARNESS=does-not-exist`.
