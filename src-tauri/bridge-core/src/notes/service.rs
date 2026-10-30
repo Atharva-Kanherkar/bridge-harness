@@ -253,11 +253,15 @@ impl NotesService {
             let base_seq = edit.base_seq;
             self.write_with(&edit.id, actor, |db, live, current_seq| {
                 let base = base_seq.unwrap_or(current_seq).min(current_seq);
-                check_children_kept(&live.body(), &text, allow)?;
+                let before = live.body();
                 let update = doc::merge_save(db, &edit.id, base, &text)?;
                 if let Some(update) = &update {
                     live.apply(update)?;
                 }
+                // Judge the merged result: children added after `base` survive
+                // the merge, so a stale save that never saw them deletes nothing.
+                // An error here drops the uncommitted transaction.
+                check_children_kept(&before, &live.body(), allow)?;
                 Ok(update)
             })?
         } else if !edit.edits.is_empty() {
@@ -775,6 +779,23 @@ pub(crate) mod tests {
         assert_eq!(notes.read(&page.id).unwrap().markdown, body);
         notes.edit(EditPage { text: Some("Research\n".into()), base_seq: Some(page.seq), allow_deleting_children: true, ..edit(&page.id) }, PERSON).unwrap();
         assert_eq!(notes.read(&page.id).unwrap().markdown, "Research\n");
+    }
+
+    #[test]
+    fn a_stale_save_keeps_children_added_since_its_base() {
+        let (_dir, notes) = service();
+        let page = notes.capture("plan\n", PERSON).unwrap();
+        let child = "<page url=\"bridge://p/1\">Child</page>";
+        notes.edit(EditPage { append: Some(NoteAppend { content: child.into(), position: "end".into() }), ..edit(&page.id) }, "agent:claude:s1").unwrap();
+        // The person's editor still holds the original text at its original base.
+        let unchanged = notes.edit(EditPage { base_seq: Some(page.seq), text: Some("plan\n".into()), ..edit(&page.id) }, PERSON).unwrap();
+        assert_eq!(unchanged.warnings, vec!["nothing changed"]);
+        notes.edit(EditPage { base_seq: Some(page.seq), text: Some("plan v2\n".into()), ..edit(&page.id) }, PERSON).unwrap();
+        assert_eq!(notes.read(&page.id).unwrap().markdown, format!("plan v2\n{child}"));
+        // A save that really removes the child is still refused.
+        let current = notes.read(&page.id).unwrap();
+        let removal = notes.edit(EditPage { base_seq: Some(current.seq), text: Some("plan v2\n".into()), ..edit(&page.id) }, PERSON);
+        assert!(removal.unwrap_err().to_string().contains("allowDeletingChildren"));
     }
 
     #[test]
