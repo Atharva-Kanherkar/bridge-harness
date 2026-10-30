@@ -34,7 +34,7 @@ import type {
   PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
-import { normalizeAccount, supportsAccounts } from "./providerAccounts";
+import { accountsOf, normalizeAccount, supportsAccounts } from "./providerAccounts";
 import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
   ManagedAgentInspection,
@@ -2033,11 +2033,24 @@ export const bridgeApi = {
     if (hasBackend()) return call("config/refresh_opencode_catalog", { directory: directory || null }) as Promise<OpenCodeCatalog>;
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
   },
-  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string): Promise<OpenCodeCatalog> => {
-    if (hasBackend()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null }) as Promise<OpenCodeCatalog>;
+  /** `account` connects the key inside that extra OpenCode account's own
+   *  folder and returns its catalog; the user's own catalog is untouched. */
+  setOpenCodeProviderApiKey: (providerId: string, apiKey: string, directory?: string, account?: string): Promise<OpenCodeCatalog> => {
+    if (hasBackend()) return call("config/set_opencode_provider_api_key", { providerId, apiKey, directory: directory || null, ...(account ? { account } : {}) }) as Promise<OpenCodeCatalog>;
     void apiKey;
+    if (account) return Promise.resolve(structuredClone(mockOpenCodeCatalog));
     mockOpenCodeCatalog = { ...mockOpenCodeCatalog, providers: mockOpenCodeCatalog.providers.map(provider => provider.id === providerId ? { ...provider, connected: true } : provider) };
     return Promise.resolve(structuredClone(mockOpenCodeCatalog));
+  },
+  /** Save an extra account's API key (Cursor). The host keeps it in the macOS
+   *  Keychain; it never enters the settings record. */
+  setAccountApiKey: (harness: string, account: string, apiKey: string): Promise<ConfigState> => {
+    if (hasBackend()) return call("config/set_account_api_key", { harness, account, apiKey });
+    const config = mockConfigState.harnesses.find(item => item.id === harness);
+    const known = accountsOf(config).some(item => item.id === account);
+    if (!known) return Promise.reject(new Error(`The account "${account}" is no longer in Settings.`));
+    if (!apiKey.trim()) return Promise.reject(new Error("The API key cannot be empty"));
+    return Promise.resolve(structuredClone(mockConfigState));
   },
   removeOpenCodeProviderAuth: (providerId: string, directory?: string): Promise<OpenCodeCatalog> => {
     if (hasBackend()) return call("config/remove_opencode_provider_auth", { providerId, directory: directory || null }) as Promise<OpenCodeCatalog>;

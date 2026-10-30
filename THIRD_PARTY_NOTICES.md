@@ -43,8 +43,11 @@ adapted from T3 Code's provider instances, https://github.com/pingdotgg/t3code a
 revision 97e35bcf23e4dcf34c2dcffadd37c08db0e01e52:
 `packages/contracts/src/providerInstance.ts`,
 `packages/provider-core/src/server/pathExpansion.ts` and `instanceEnvironment.ts`,
-`apps/server/src/provider/Drivers/ClaudeHome.ts` and `CodexHomeLayout.ts`, and the
-setup guidance in `docs/user/providers-claude.md` and `providers-codex.md`.
+`apps/server/src/provider/Drivers/ClaudeHome.ts` and `CodexHomeLayout.ts`, the
+driver contract in `packages/provider-core/src/server/driver.ts` (multiple
+instances per driver, default continuation keys), the Cursor driver's per-instance
+`CURSOR_API_KEY` in `packages/provider-cursor/src/server/driver.ts`, and the setup
+guidance in `docs/user/providers-claude.md` and `providers-codex.md`.
 
 MIT License
 

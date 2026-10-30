@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessConfig } from "./types";
 import {
-  accountChoices, accountIdFromLabel, accountLabel, accountsOf, folderError, loginCommand, normalizeAccount, shellPath, suggestedFolder, supportsAccounts,
+  ACCOUNT_HARNESSES, ACCOUNT_PROVIDERS, accountChoices, accountIdFromLabel, accountLabel, accountsOf, folderError, loginCommand, normalizeAccount, shellPath, suggestedFolder, supportsAccounts,
 } from "./providerAccounts";
 
 const config = (id: string, advanced: unknown, enabled = true) =>
@@ -19,15 +19,33 @@ describe("provider accounts", () => {
     expect(accountsOf(undefined)).toEqual([]);
   });
 
-  it("offers accounts only for enabled Claude and Codex", () => {
+  it("offers accounts only for enabled agents that take them", () => {
     const accounts = [{ id: "work", label: "Work", homePath: "~/.x" }];
     expect(accountChoices([
       config("claude", { accounts }),
       config("codex", { accounts }, false),
       config("opencode", { accounts }),
-    ])).toEqual([{ harness: "claude", id: "work", label: "Work" }]);
+      config("cursor", { accounts: [{ id: "team", label: "Team" }] }),
+      config("grok", { accounts }),
+    ])).toEqual([
+      { harness: "claude", id: "work", label: "Work" },
+      { harness: "opencode", id: "work", label: "Work" },
+      { harness: "cursor", id: "team", label: "Team" },
+    ]);
+    // Mirrors DRIVERS in provider_accounts.rs.
+    expect(ACCOUNT_HARNESSES).toEqual(["claude", "codex", "opencode", "cursor"]);
     expect(supportsAccounts("codex")).toBe(true);
-    expect(supportsAccounts("opencode")).toBe(false);
+    expect(supportsAccounts("grok")).toBe(false);
+    expect(supportsAccounts("toString")).toBe(false);
+  });
+
+  it("signs OpenCode and Cursor accounts in inside Bridge, not with a CLI command", () => {
+    expect(loginCommand("opencode", { homePath: "~/.opencode_go" })).toBeNull();
+    expect(loginCommand("cursor", {})).toBeNull();
+    expect(ACCOUNT_PROVIDERS.opencode.signIn).toBe("folderKey");
+    expect(ACCOUNT_PROVIDERS.cursor.signIn).toBe("apiKey");
+    expect(ACCOUNT_PROVIDERS.cursor.key.required).toBe(true);
+    expect(suggestedFolder("opencode", "go")).toBe("~/.opencode_go");
   });
 
   it("treats the harness id and blank as the user's own login", () => {
