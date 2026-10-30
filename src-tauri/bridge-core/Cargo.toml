@@ -15,7 +15,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
 portable-pty = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 chrono = { workspace = true }
 # IANA zones for usage day buckets: a fixed offset is wrong for any window
 # that crosses a DST boundary, and the caller names the zone it lives in.
