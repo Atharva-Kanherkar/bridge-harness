@@ -1523,12 +1523,27 @@ pub fn update_chat_model(
     model: Option<&str>,
     effort: Option<&str>,
 ) -> Result<BridgeState, BridgeError> {
+    update_chat_model_with_account(core, session_id, harness, model, effort, None)
+}
+
+/// [`update_chat_model`] with the account the chat signs in with. `None`
+/// keeps the chat's account on the same harness; the harness id is the
+/// user's own login.
+pub fn update_chat_model_with_account(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    harness: &Harness,
+    model: Option<&str>,
+    effort: Option<&str>,
+    account: Option<&str>,
+) -> Result<BridgeState, BridgeError> {
     // Exclusive for the whole plan -> teardown -> commit window: a concurrent
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
     let _lifecycle = core.claim_session_lifecycle(session_id, "model switch")?;
     crate::chat_defaults::validate_model_switch(&core.db.lock().unwrap(), &core.adapter_registry, session_id, &store::harness_name(harness))?;
-    let change = core.plan_chat_model_change(session_id, harness, model)?;
+    let account = account.map_or(crate::sessions::AccountRequest::Keep, crate::sessions::AccountRequest::Choose);
+    let change = core.plan_chat_selection_change(session_id, harness, model, account)?;
     let (previous_model, previous_effort): (Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
         "SELECT model,effort FROM sessions WHERE id=?1", params![session_id],
         |row| Ok((row.get(0)?, row.get(1)?)),

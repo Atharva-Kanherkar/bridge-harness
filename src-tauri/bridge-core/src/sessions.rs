@@ -212,6 +212,20 @@ pub struct ChatModelChange {
     /// projection path, or the switch would promise a continuation the next
     /// start cannot deliver.
     native_continuation: bool,
+    previous_account: Option<String>,
+    /// The account the chat signs in with after the switch; `None` is the
+    /// user's own login.
+    account: Option<String>,
+}
+
+/// What a switch does with the chat's account (`provider_accounts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountRequest<'a> {
+    /// The chat's account on the same harness, the user's own login on
+    /// another one.
+    Keep,
+    /// This account. The harness id, or blank, is the user's own login.
+    Choose(&'a str),
 }
 
 impl ChatModelChange {
@@ -331,17 +345,21 @@ impl BridgeCore {
         let codex_can_fork = adapter_id.as_ref() == "codex" && crate::codex_adapter::supports_native_fork();
         let mut db = self.db.lock().unwrap();
         let transaction = db.transaction()?;
-        let (workspace_id, source_cwd, source_harness, source_thread, source_turn): (
+        let (workspace_id, source_cwd, source_harness, source_thread, source_turn, source_account): (
             Option<String>,
             Option<String>,
             String,
             Option<String>,
             Option<String>,
+            Option<String>,
         ) = transaction.query_row(
-            "SELECT workspace_id,cwd,harness,provider_session_id,active_turn_id FROM sessions WHERE id=?1",
+            "SELECT workspace_id,cwd,harness,provider_session_id,active_turn_id,account FROM sessions WHERE id=?1",
             params![source_session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         ).optional()?.ok_or_else(|| BridgeError::Invalid("Aside source session does not exist".into()))?;
+        // An aside on the source's agent signs in as the same account, which is
+        // also the only home its forked thread can be read from.
+        let account = (source_harness == adapter_id.as_ref()).then_some(source_account).flatten();
         let cwd = source_cwd.unwrap_or_else(|| self.chat_scratch_dir(&id).to_string_lossy().into_owned());
         // A fork must target the same harness that owns the thread, on a
         // source with a resumable thread id and no turn in flight.
@@ -356,14 +374,14 @@ impl BridgeCore {
         match insert_thread.as_deref() {
             Some(thread) => {
                 transaction.execute(
-                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,provider_session_id,continuation_fidelity) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0,?8,'native')",
-                    params![id, workspace_id, adapter_id, label, model, title, cwd, thread],
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,provider_session_id,continuation_fidelity,account) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0,?8,'native',?9)",
+                    params![id, workspace_id, adapter_id, label, model, title, cwd, thread, account],
                 )?;
             }
             None => {
                 transaction.execute(
-                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0)",
-                    params![id, workspace_id, adapter_id, label, model, title, cwd],
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,account) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0,?8)",
+                    params![id, workspace_id, adapter_id, label, model, title, cwd, account],
                 )?;
             }
         }
@@ -653,6 +671,20 @@ impl BridgeCore {
         harness: &Harness,
         model: Option<&str>,
     ) -> Result<Option<ChatModelChange>, BridgeError> {
+        self.plan_chat_selection_change(session_id, harness, model, AccountRequest::Keep)
+    }
+
+    /// [`Self::plan_chat_model_change`] with an account choice. A change of
+    /// account alone is a change: it keeps the provider thread only when both
+    /// accounts share a continuation key (T3 Code's continuation group), and
+    /// otherwise hands over like a change of harness.
+    pub fn plan_chat_selection_change(
+        &self,
+        session_id: &str,
+        harness: &Harness,
+        model: Option<&str>,
+        account: AccountRequest<'_>,
+    ) -> Result<Option<ChatModelChange>, BridgeError> {
         let adapter_id = store::harness_name(harness);
         if !agent_config::is_harness_enabled(&self.db.lock().unwrap(), &adapter_id) {
             return Err(BridgeError::Invalid(format!(
@@ -660,15 +692,16 @@ impl BridgeCore {
                 harness.label()
             )));
         }
-        let (kind, previous_harness, previous_model, provider_session_id, active_turn_id, parent_session_id): (
+        let (kind, previous_harness, previous_model, provider_session_id, active_turn_id, parent_session_id, previous_account): (
             String,
             String,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
         ) = self.db.lock().unwrap().query_row(
-            "SELECT kind,harness,model,provider_session_id,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
+            "SELECT kind,harness,model,provider_session_id,active_turn_id,parent_session_id,account FROM sessions WHERE id=?1",
             params![session_id],
             |row| {
                 Ok((
@@ -678,6 +711,7 @@ impl BridgeCore {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )?;
@@ -754,16 +788,47 @@ impl BridgeCore {
                 return Err(BridgeError::Invalid(format!("{} is not available for this session", selected.label)));
             }
         }
-        if previous_harness == adapter_id && previous_model.as_deref() == selected.as_ref().map(|model| model.id.as_str())
+        let account = match account {
+            AccountRequest::Keep if previous_harness == adapter_id => previous_account.clone(),
+            AccountRequest::Keep => None,
+            AccountRequest::Choose(id) => crate::provider_accounts::normalize_choice(&adapter_id, Some(id)),
+        };
+        let account_record = {
+            let db = self.db.lock().unwrap();
+            account
+                .as_deref()
+                .map(|id| agent_config::account(&db, &adapter_id, id))
+                .transpose()?
+        };
+        if previous_harness == adapter_id
+            && previous_model.as_deref() == selected.as_ref().map(|model| model.id.as_str())
+            && previous_account == account
         {
             return Ok(None);
         }
+        // Two accounts continue one provider thread only when they read it from
+        // the same home. One that was removed from Settings shares nothing.
+        let same_home = previous_account == account || {
+            let host = crate::provider_accounts::HostHomes::from_env();
+            let key = |record: Option<&crate::provider_accounts::ProviderAccount>| {
+                crate::provider_accounts::continuation_key(&adapter_id, record, &host)
+            };
+            let previous = {
+                let db = self.db.lock().unwrap();
+                previous_account
+                    .as_deref()
+                    .map(|id| agent_config::account(&db, &adapter_id, id))
+                    .transpose()
+            };
+            previous.is_ok_and(|previous| key(previous.as_ref()) == key(account_record.as_ref()))
+        };
         // Native continuation is an eligibility check, not a harness
         // comparison: `start_chat` gates `RestorationPlan::Native` on the
         // adapter's resume support and a stored thread id, so the switch must
         // apply the same gate before skipping the summary and claiming the
         // conversation continues. Anything else takes the handover path.
         let native_continuation = previous_harness == adapter_id
+            && same_home
             && self.adapter_registry.supports_native_resume(adapter_id.as_ref())
             && provider_session_id.is_some();
         Ok(Some(ChatModelChange {
@@ -775,6 +840,8 @@ impl BridgeCore {
             tier: selected.as_ref().map_or(default_tier, |model| model.tier),
             selected,
             native_continuation,
+            previous_account,
+            account,
         }))
     }
 
@@ -1325,6 +1392,10 @@ impl BridgeCore {
                     .into(),
             ));
         }
+        transaction.execute(
+            "UPDATE sessions SET account=?2 WHERE id=?1",
+            params![session_id, change.account],
+        )?;
         let resumes_natively = change.resumes_natively();
         if resumes_natively {
             // The stored thread is still this agent's own, so the next turn
@@ -1388,6 +1459,16 @@ impl BridgeCore {
                 change.adapter_id,
                 change.selected_model().unwrap_or("default"),
                 carry_note,
+            )
+        };
+        let detail = if change.previous_account == change.account {
+            detail
+        } else {
+            let name = |account: &Option<String>| account.clone().unwrap_or_else(|| "your own login".into());
+            format!(
+                "{detail} Account changed from {} to {}.",
+                name(&change.previous_account),
+                name(&change.account),
             )
         };
         store::event(
@@ -1844,7 +1925,7 @@ pub(crate) fn fork_session_records(
         ));
     }
     let transaction = db.unchecked_transaction()?;
-    let (parent_harness, parent_workspace_id, parent_depth, kind, cwd, parent_model, parent_title): (
+    let (parent_harness, parent_workspace_id, parent_depth, kind, cwd, parent_model, parent_title, parent_account): (
         String,
         Option<String>,
         i64,
@@ -1852,9 +1933,10 @@ pub(crate) fn fork_session_records(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
     ) = transaction
         .query_row(
-            "SELECT harness,workspace_id,depth,kind,cwd,model,title FROM sessions WHERE id=?1",
+            "SELECT harness,workspace_id,depth,kind,cwd,model,title,account FROM sessions WHERE id=?1",
             params![session_id],
             |row| {
                 Ok((
@@ -1865,6 +1947,7 @@ pub(crate) fn fork_session_records(
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
@@ -1885,6 +1968,9 @@ pub(crate) fn fork_session_records(
         (None, Some(value)) => Some(value.to_owned()),
         (None, None) => None,
     };
+    // A fork on the same agent keeps signing in as the same account; another
+    // agent starts on the user's own login.
+    let child_account = (child_harness == parent_harness).then_some(parent_account).flatten();
     // The prefix is the parent's branch up to and including the fork point.
     // `branch_to_leaf` validates that the entry exists and belongs to the
     // session and that it sits on a leaf branch (the rendered branch or any
@@ -1917,8 +2003,8 @@ pub(crate) fn fork_session_records(
     // hide it entirely. So the fork stays top-level and records its origin in
     // its own columns.
     transaction.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,parent_session_id,continuation_fidelity,fork_parent_session_id,fork_parent_entry_id,fork_worktree_policy)
-         VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,NULL,'projected_at_boundary',?10,?11,?12)",
+        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,parent_session_id,continuation_fidelity,fork_parent_session_id,fork_parent_entry_id,fork_worktree_policy,account)
+         VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,NULL,'projected_at_boundary',?10,?11,?12,?13)",
         params![
             id,
             parent_workspace_id,
@@ -1932,6 +2018,7 @@ pub(crate) fn fork_session_records(
             session_id,
             entry_id,
             worktree_policy,
+            child_account,
         ],
     )?;
     let mut copied_parent: Option<String> = None;
@@ -3710,6 +3797,188 @@ mod tests {
             0,
             "a failed outgoing summary cannot create a reconstructed boundary"
         );
+    }
+
+    /// The codex stub with native resume, so switches between Codex accounts
+    /// can show which of them keep the provider thread.
+    struct ResumableCodexStub(StubAdapter);
+    impl adapters::HarnessAdapter for ResumableCodexStub {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            self.0.descriptor()
+        }
+        fn start(&self, request: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            self.0.start(request)
+        }
+        fn resume(&self, request: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+            self.0.resume(request)
+        }
+        fn supports_native_resume(&self) -> bool {
+            true
+        }
+        fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
+            self.0.normalize(value)
+        }
+    }
+
+    /// Codex with a shadow account (same shared home as the user's own login)
+    /// and a separate one, plus Claude with one extra account.
+    fn account_fixture() -> (tempfile::TempDir, BridgeCore) {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry
+            .register(Box::new(ResumableCodexStub(StubAdapter { catalog_empty: false, expected_model: None })))
+            .unwrap();
+        registry.register(Box::new(ResumableStubAdapter)).unwrap();
+        core.adapter_registry = std::sync::Arc::new(registry);
+        {
+            let db = core.db.lock().unwrap();
+            let harnesses = agent_config::state(&db).unwrap().harnesses;
+            for (id, accounts) in [
+                ("codex", serde_json::json!([
+                    {"id": "shadow", "label": "Shadow", "shadowHomePath": "~/.codex_shadow_test"},
+                    {"id": "separate", "label": "Separate", "homePath": "~/.codex_separate_test"},
+                ])),
+                ("claude", serde_json::json!([
+                    {"id": "personal", "label": "Personal", "homePath": "~/.claude_personal_test"},
+                ])),
+            ] {
+                let mut config = harnesses.iter().find(|item| item.id == id).unwrap().clone();
+                config.advanced = serde_json::json!({"accounts": accounts});
+                agent_config::save_harness(&db, config).unwrap();
+            }
+        }
+        (scratch, core)
+    }
+
+    fn with_thread(core: &BridgeCore, session_id: &str) {
+        let db = core.db.lock().unwrap();
+        db.execute("UPDATE sessions SET provider_session_id='thread-1' WHERE id=?1", params![session_id]).unwrap();
+        restoration::set_head_state(&db, session_id, RestorationMode::Native, ResumeEligibility::Native, Some("thread-1")).unwrap();
+    }
+
+    fn account_and_thread(core: &BridgeCore, session_id: &str) -> (Option<String>, Option<String>) {
+        core.db.lock().unwrap()
+            .query_row("SELECT account,provider_session_id FROM sessions WHERE id=?1", params![session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+    }
+
+    #[test]
+    fn account_only_switch_is_a_change() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        assert!(core.plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Keep).unwrap().is_none());
+        assert!(core.plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("codex")).unwrap().is_none(), "the harness id is the user's own login");
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("separate"))
+            .unwrap()
+            .expect("a different account is a change");
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id).0.as_deref(), Some("separate"));
+        let body: String = core.db.lock().unwrap()
+            .query_row("SELECT body FROM events WHERE kind='session.model_changed' ORDER BY id DESC LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(body.contains("Account changed from your own login to separate"), "{body}");
+        let state = store::state(&core.db.lock().unwrap()).unwrap();
+        assert_eq!(state.sessions[0].account.as_deref(), Some("separate"));
+    }
+
+    #[test]
+    fn account_switch_across_homes_clears_the_thread() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        with_thread(&core, &session_id);
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("separate"))
+            .unwrap()
+            .unwrap();
+        assert!(!change.resumes_natively(), "a separate CODEX_HOME cannot read this thread");
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id), (Some("separate".into()), None));
+    }
+
+    #[test]
+    fn account_switch_inside_a_codex_shadow_group_resumes_natively() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        with_thread(&core, &session_id);
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("shadow"))
+            .unwrap()
+            .unwrap();
+        assert!(change.resumes_natively(), "a shadow home shares the user's sessions");
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id), (Some("shadow".into()), Some("thread-1".into())));
+
+        let back = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("codex"))
+            .unwrap()
+            .unwrap();
+        assert!(back.resumes_natively());
+        core.commit_chat_model_change(back).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id), (None, Some("thread-1".into())));
+    }
+
+    #[test]
+    fn absent_account_keeps_the_chat_account_on_same_harness() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("shadow"))
+            .unwrap()
+            .unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        // A model change alone keeps the account.
+        let change = core.plan_chat_model_change(&session_id, &Harness::Codex, Some("stub-standard")).unwrap().unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id).0.as_deref(), Some("shadow"));
+        // Another harness cannot use a Codex account.
+        let change = core.plan_chat_model_change(&session_id, &Harness::Claude, Some("stub-opus")).unwrap().unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id).0, None);
+        // Claude has its own.
+        let change = core
+            .plan_chat_selection_change(&session_id, &Harness::Claude, Some("stub-opus"), AccountRequest::Choose("personal"))
+            .unwrap()
+            .unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        assert_eq!(account_and_thread(&core, &session_id).0.as_deref(), Some("personal"));
+    }
+
+    #[test]
+    fn asides_on_the_same_agent_keep_the_account() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let source = only_session_id(&core);
+        let change = core
+            .plan_chat_selection_change(&source, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("separate"))
+            .unwrap()
+            .unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        let (same, _, _) = core.create_aside_chat_id(&source, &Harness::Codex, Some("stub-fast"), None).unwrap();
+        let (other, _, _) = core.create_aside_chat_id(&source, &Harness::Claude, Some("stub-opus"), None).unwrap();
+        assert_eq!(account_and_thread(&core, &same).0.as_deref(), Some("separate"));
+        assert_eq!(account_and_thread(&core, &other).0, None);
+    }
+
+    #[test]
+    fn unknown_account_is_rejected() {
+        let (_scratch, core) = account_fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        let error = core
+            .plan_chat_selection_change(&session_id, &Harness::Codex, Some("stub-fast"), AccountRequest::Choose("personal"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Codex account \"personal\" is no longer in Settings"), "{error}");
+        assert_eq!(account_and_thread(&core, &session_id).0, None);
     }
 
     #[test]

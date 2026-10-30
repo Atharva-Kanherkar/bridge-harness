@@ -1250,6 +1250,7 @@ export interface ChatEffortChoice {
 export type ChatLaunchTarget = { kind: "direct" } | { kind: "orchestrator" } | { agentId: string; kind: "agent" };
 
 export interface ChatModelChoice {
+  account?: string | null;
   harness: string;
   model?: string | null;
 }
@@ -2344,6 +2345,7 @@ export interface ServerInfo {
 }
 
 export interface Session {
+  account?: string | null;
   activeTurnId?: string | null;
   contextPercent?: JsSafeI64 | null;
   continuationFidelity: ContinuationFidelity;
@@ -3612,6 +3614,7 @@ export interface StartChatParams {
 }
 
 export interface UpdateChatModelParams {
+  account?: string | null;
   effort?: string | null;
   harness: HarnessId;
   model?: string | null;

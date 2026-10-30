@@ -427,6 +427,14 @@
     "Session": {
       "description": "Mirrors `bridge_core::model::Session`.",
       "properties": {
+        "account": {
+          "default": null,
+          "description": "The extra Claude or Codex account this chat signs in with, by its id in the harness's `advanced.accounts`. Null is the user's own login.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "activeTurnId": {
           "type": [
             "string",

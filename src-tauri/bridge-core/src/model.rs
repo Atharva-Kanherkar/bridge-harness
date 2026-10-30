@@ -520,6 +520,9 @@ pub struct Session {
     /// these are the only honest way to tell a fork from a delegated worker.
     pub fork_parent_session_id: Option<String>,
     pub fork_parent_entry_id: Option<String>,
+    /// The extra Claude or Codex account this chat signs in with
+    /// (`provider_accounts`); `None` is the user's own login.
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

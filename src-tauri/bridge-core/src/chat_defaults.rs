@@ -91,6 +91,9 @@ fn validate_shape(settings: &ChatDefaults) -> Result<(), BridgeError> {
         if let Some(id) = &model.model {
             bounded(id, 512, "model id")?;
         }
+        if let Some(account) = &model.account {
+            bounded(account, 128, "account id")?;
+        }
     }
     if let Some(effort) = settings.effort.as_ref().and_then(|e| e.value.as_deref()) {
         if effort.len() > 32
@@ -119,6 +122,9 @@ fn validate_model(
             "{} is unavailable or disabled",
             descriptor.label
         )));
+    }
+    if let Some(account) = &choice.account {
+        agent_config::account(db, &choice.harness, account)?;
     }
     let model = choice
         .model
@@ -302,20 +308,23 @@ pub fn resolve(
         } else {
             None
         };
-    let model = combined.model.unwrap_or_else(|| match &preset {
+    let mut model = combined.model.unwrap_or_else(|| match &preset {
         Some(a) if a.harness != "bridge" => ChatModelChoice {
             harness: a.harness.clone(),
             model: a.model.clone(),
+            account: None,
         },
         _ => selection
             .as_ref()
             .map(|s| ChatModelChoice {
                 harness: s.adapter_id.clone(),
                 model: s.model.clone(),
+                account: None,
             })
             .unwrap_or_else(|| ChatModelChoice {
                 harness: "codex".into(),
                 model: None,
+                account: None,
             }),
     });
     let effort = combined.effort.map(|e| e.value).unwrap_or_else(|| {
@@ -333,6 +342,8 @@ pub fn resolve(
                 })
         }
     });
+    // The harness id is the user's own login, the same as no account.
+    model.account = crate::provider_accounts::normalize_choice(&model.harness, model.account.as_deref());
     let descriptors = registry.descriptors();
     validate_model(&model, effort.as_deref(), &descriptors, db)?;
     if let (Some(_), Some(value)) = (&preset, effort.as_deref()) {
@@ -415,16 +426,17 @@ pub fn session_settings(
     db: &Connection,
     session_id: &str,
 ) -> Result<ChatSessionSettings, BridgeError> {
-    let (harness, model, effort, workspace_id, kind): (
+    let (harness, model, effort, workspace_id, kind, account): (
         String,
         Option<String>,
         Option<String>,
         Option<String>,
         String,
+        Option<String>,
     ) = db.query_row(
-        "SELECT harness,model,effort,workspace_id,kind FROM sessions WHERE id=?1",
+        "SELECT harness,model,effort,workspace_id,kind,account FROM sessions WHERE id=?1",
         [session_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     )?;
     let mut snapshot = snapshot(db, session_id)?.unwrap_or(ChatSessionSettings {
         revision: 0,
@@ -442,6 +454,7 @@ pub fn session_settings(
             model: ChatModelChoice {
                 harness: harness.clone(),
                 model: model.clone(),
+                account: account.clone(),
             },
             effort: effort.clone(),
             access: effective_access(db, session_id)?,
@@ -450,7 +463,7 @@ pub fn session_settings(
             sources: BTreeMap::new(),
         },
     });
-    snapshot.settings.model = ChatModelChoice { harness, model };
+    snapshot.settings.model = ChatModelChoice { harness, model, account };
     snapshot.settings.effort = effort;
     Ok(snapshot)
 }
@@ -590,7 +603,7 @@ pub fn create(
         } else {
             "orchestrator"
         };
-        tx.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,effort,kind,title,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,0)",params![id,params.workspace_id,settings.model.harness,if kind=="direct" {"Chat"} else {"Orchestrator"},settings.model.model,settings.effort,kind,params.title,cwd])?;
+        tx.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,effort,kind,title,cwd,depth,account) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,?8,?9,0,?10)",params![id,params.workspace_id,settings.model.harness,if kind=="direct" {"Chat"} else {"Orchestrator"},settings.model.model,settings.effort,kind,params.title,cwd,settings.model.account])?;
         let configuration = ChatSessionSettings {
             revision: 1,
             settings,
@@ -1050,6 +1063,43 @@ mod tests {
         );
         assert!(core.adapters.lock().unwrap().is_empty());
         assert!(!core.chat_scratch_dir(&first.session_id).exists());
+    }
+    fn add_codex_account(core: &Arc<BridgeCore>) {
+        let db = core.db.lock().unwrap();
+        let mut codex = agent_config::state(&db).unwrap().harnesses.into_iter().find(|item| item.id == "codex").unwrap();
+        codex.advanced = json!({"accounts": [{"id": "work", "label": "Work", "homePath": "~/.codex_work_test"}]});
+        agent_config::save_harness(&db, codex).unwrap();
+    }
+    #[test]
+    fn configured_chat_stores_the_chosen_account() {
+        let (_dir, core) = fixture();
+        add_codex_account(&core);
+        let created = create_value(&core, "a", json!({"model":{"harness":"codex","model":"standard","account":"work"}}));
+        assert_eq!(created.configuration.settings.model.account.as_deref(), Some("work"));
+        let stored: Option<String> = core.db.lock().unwrap()
+            .query_row("SELECT account FROM sessions WHERE id=?1", [&created.session_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("work"));
+        assert_eq!(session_settings(&core.db.lock().unwrap(), &created.session_id).unwrap().settings.model.account.as_deref(), Some("work"));
+        // The harness id is the user's own login, stored as no account.
+        let own = create_value(&core, "a", json!({"model":{"harness":"codex","model":"standard","account":"codex"}}));
+        assert_eq!(own.configuration.settings.model.account, None);
+    }
+    #[test]
+    fn unknown_account_in_choice_is_rejected() {
+        let (_dir, core) = fixture();
+        let error = resolve(
+            &core.db.lock().unwrap(),
+            &core.adapter_registry,
+            &ResolveChatSettingsParams {
+                workspace_id: Some("a".into()),
+                overrides: defaults(json!({"model":{"harness":"codex","model":"standard","account":"work"}})),
+                expected_revision: None,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Codex account \"work\" is no longer in Settings"), "{error}");
     }
     #[test]
     fn stale_reviewed_revision_creates_no_session() {
@@ -1755,9 +1805,12 @@ pub fn validate_launch(
     };
     let descriptors = registry.descriptors();
     validate_model(
+        // The account is resolved by the launch itself, which names a removed
+        // one in its error; this check is about the model.
         &ChatModelChoice {
             harness: harness.into(),
             model: model.map(str::to_owned),
+            account: None,
         },
         effort,
         &descriptors,
@@ -1777,21 +1830,22 @@ pub fn inherit_session_settings(
     // detached copy must carry that authority, not fall back to the legacy
     // global policy.
     if let Some(mut stored) = scoped_snapshot(db, source)? {
-        let (harness, model, effort, workspace): (
+        let (harness, model, effort, workspace, account): (
             String,
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
         ) = db.query_row(
-            "SELECT harness,model,effort,workspace_id FROM sessions WHERE id=?1",
+            "SELECT harness,model,effort,workspace_id,account FROM sessions WHERE id=?1",
             [target],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )?;
         stored.revision = 1;
         stored.settings.target = ChatLaunchTarget::Direct;
         stored.settings.workspace_id = workspace.clone();
         stored.settings.project_id = workspace_project(db, workspace.as_deref())?;
-        stored.settings.model = ChatModelChoice { harness, model };
+        stored.settings.model = ChatModelChoice { harness, model, account };
         stored.settings.effort = effort;
         stored
             .settings

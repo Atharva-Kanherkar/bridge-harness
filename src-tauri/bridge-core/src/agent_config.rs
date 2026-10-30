@@ -486,6 +486,23 @@ pub fn harness_config(db: &Connection, harness: &str) -> Option<HarnessConfig> {
         .filter(|item| item.enabled)
 }
 
+/// One of a harness's extra accounts, or a message naming the missing one.
+/// Read from the stored record whether or not the harness is enabled; the
+/// enabled check belongs to the caller choosing the harness.
+pub fn account(
+    db: &Connection,
+    harness: &str,
+    id: &str,
+) -> Result<crate::provider_accounts::ProviderAccount, BridgeError> {
+    let advanced = state(db)?
+        .harnesses
+        .into_iter()
+        .find(|item| item.id == harness)
+        .map(|item| item.advanced)
+        .unwrap_or_else(empty_object);
+    crate::provider_accounts::find(harness, &advanced, id)
+}
+
 pub fn is_harness_enabled(db: &Connection, harness: &str) -> bool {
     state(db)
         .ok()

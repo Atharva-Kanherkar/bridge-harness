@@ -1078,6 +1078,84 @@ mod start_model_tests {
     }
 }
 
+/// The provider home of the extra account a root chat signs in with, made
+/// ready to launch from (`provider_accounts`). `None` is the user's own login.
+/// A chat whose account was removed from Settings is refused with a message
+/// that names it, rather than quietly billed to another login.
+fn launch_account_home(
+    core: &BridgeCore,
+    session_id: &str,
+    adapter_id: &str,
+) -> Result<Option<PathBuf>, BridgeError> {
+    use rusqlite::OptionalExtension;
+    let account = {
+        let db = core.db.lock().unwrap();
+        let id: Option<String> = db
+            .query_row("SELECT account FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))
+            .optional()?
+            .flatten();
+        id.map(|id| agent_config::account(&db, adapter_id, &id)).transpose()?
+    };
+    // Off the database lock: a Codex shadow home is linked on disk first.
+    account
+        .map(|account| {
+            crate::provider_accounts::prepare_launch(
+                adapter_id,
+                &account,
+                &crate::provider_accounts::HostHomes::from_env(),
+            )
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod account_launch_tests {
+    use super::launch_account_home;
+    use crate::{agent_config, runtime::BridgeCore};
+    use rusqlite::params;
+    use serde_json::json;
+
+    fn set_accounts(core: &BridgeCore, harness: &str, accounts: serde_json::Value) {
+        let db = core.db.lock().unwrap();
+        let mut config = agent_config::state(&db).unwrap().harnesses.into_iter().find(|item| item.id == harness).unwrap();
+        config.advanced = json!({"accounts": accounts});
+        agent_config::save_harness(&db, config).unwrap();
+    }
+
+    fn chat(core: &BridgeCore, id: &str, harness: &str, account: Option<&str>) {
+        core.db.lock().unwrap()
+            .execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,account) VALUES(?1,?2,'Chat','idle','reported',?3)",
+                params![id, harness, account],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn launch_resolves_the_account_home_and_refuses_a_removed_account() {
+        let scratch = tempfile::tempdir().unwrap();
+        let homes = tempfile::tempdir().unwrap();
+        let core = BridgeCore::for_tests(scratch.path());
+        let claude_home = homes.path().join("claude-personal");
+        let shared = homes.path().join("codex");
+        let shadow = homes.path().join("codex-personal");
+        set_accounts(&core, "claude", json!([{"id": "personal", "label": "Personal", "homePath": claude_home}]));
+        set_accounts(&core, "codex", json!([{"id": "personal", "label": "Personal", "homePath": shared, "shadowHomePath": shadow}]));
+        chat(&core, "own", "claude", None);
+        chat(&core, "claude-chat", "claude", Some("personal"));
+        chat(&core, "codex-chat", "codex", Some("personal"));
+
+        assert_eq!(launch_account_home(&core, "own", "claude").unwrap(), None, "no account keeps the user's own login");
+        assert_eq!(launch_account_home(&core, "claude-chat", "claude").unwrap(), Some(claude_home));
+        assert_eq!(launch_account_home(&core, "codex-chat", "codex").unwrap(), Some(shadow.clone()));
+        assert_eq!(std::fs::read_link(shadow.join("sessions")).unwrap(), shared.join("sessions"), "the shadow home is linked before launch");
+
+        set_accounts(&core, "claude", json!([]));
+        let error = launch_account_home(&core, "claude-chat", "claude").unwrap_err().to_string();
+        assert!(error.contains("Claude Code account \"personal\" is no longer in Settings"), "{error}");
+    }
+}
+
 pub fn start_session(
     core: &Arc<BridgeCore>,
     workspace_id: String,
@@ -1276,6 +1354,7 @@ pub fn start_session(
         checkpoint_context.is_some(),
         false,
     );
+    let account_home = launch_account_home(state, &session_id, adapter_id)?;
     let start_fresh = |instructions: &str| {
         state.adapter_registry.start(
             dispatch_id,
@@ -1288,7 +1367,7 @@ pub fn start_session(
                 interactive,
                 read_only_sandbox: None,
                 briefing: None,
-                account_home: None,
+                account_home: account_home.as_deref(),
                 on_progress: None,
             },
         )
@@ -1323,7 +1402,7 @@ pub fn start_session(
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
-                    account_home: None,
+                    account_home: account_home.as_deref(),
                     on_progress: None,
                 },
             ) {
@@ -1887,6 +1966,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             phase,
         });
     };
+    let account_home = launch_account_home(state, &session_id, adapter_id)?;
     let start_fresh = |instructions: &str| {
         registry.start(
             &launch_adapter_id,
@@ -1899,7 +1979,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 interactive,
                 read_only_sandbox: None,
                 briefing: None,
-                account_home: None,
+                account_home: account_home.as_deref(),
                 on_progress: Some(&on_startup_progress),
             },
         )
@@ -1932,7 +2012,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
-                    account_home: None,
+                    account_home: account_home.as_deref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -2003,7 +2083,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
-                    account_home: None,
+                    account_home: account_home.as_deref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
