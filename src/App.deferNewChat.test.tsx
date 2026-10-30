@@ -272,6 +272,30 @@ describe("deferred new-chat creation (#350)", () => {
     expect(created?.kind).toBe("direct");
 
   });
+  it("starts a new chat on the extra account picked in the draft", async () => {
+    const config = await bridgeApi.configState();
+    const claude = config.harnesses.find(harness => harness.id === "claude")!;
+    await act(async () => { await bridgeApi.saveHarnessConfig({ ...claude, advanced: { accounts: [{ id: "personal", label: "Personal", homePath: "~/.claude_personal" }] } }); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const picker = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-label")?.startsWith("Chat model:"))!;
+    await act(async () => picker.click());
+    const group = [...document.querySelectorAll<HTMLElement>('[role="group"]')].find(item => item.getAttribute("aria-label")?.endsWith("· Personal"));
+    expect(group, "the account has its own picker group").toBeTruthy();
+    await act(async () => group!.querySelector<HTMLButtonElement>('button[role="option"]')!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(picker.getAttribute("aria-label")).toContain("Personal");
+
+    const creates = spyCreates();
+    await type(composerField()!, "bill the other subscription");
+    await act(async () => pressEnter(composerField()!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+    expect(creates.configured.mock.calls[0][0].overrides.model).toMatchObject({ harness: "claude", account: "personal" });
+    const result: Awaited<ReturnType<typeof bridgeApi.createConfiguredChat>> = await creates.configured.mock.results[0].value;
+    expect(result.state.sessions.find(session => session.id === result.sessionId)?.account).toBe("personal");
+    await act(async () => { await bridgeApi.resetHarnessConfig("claude"); });
+  });
   it("starts with saved project settings and keeps access edits local to the draft",async()=>{
     const state=await bridgeApi.state();const projectId=state.workspaces.find(w=>w.id==="demo-1")!.projectId!;
     const view=await bridgeApi.getChatDefaults(projectId);

@@ -69,7 +69,7 @@ describe("ChatModelControl", () => {
 
     const opus = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Claude Opus"))!;
     await act(async () => opus.click());
-    expect(onChange).toHaveBeenCalledWith("claude", "opus");
+    expect(onChange).toHaveBeenCalledWith("claude", "opus", null);
     await act(async () => root.unmount());
   });
 });

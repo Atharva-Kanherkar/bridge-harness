@@ -70,6 +70,60 @@ afterEach(() => {
 const trigger = () => container.querySelector<HTMLButtonElement>("button")!;
 const panel = () => container.querySelector<HTMLElement>(".u-glass-popover")!;
 
+describe("ChatModelControl accounts", () => {
+  const accounts = [{ harness: "claude" as const, id: "personal", label: "Personal" }, { harness: "codex" as const, id: "work", label: "Work" }];
+  const groups = () => [...panel().querySelectorAll<HTMLElement>('[role="group"]')].map(group => group.getAttribute("aria-label"));
+  const optionIn = (group: string, text: string) => [...panel().querySelectorAll<HTMLElement>(`[role="group"][aria-label="${group}"] button[role="option"]`)].find(button => button.textContent?.includes(text))!;
+
+  it("offers each account as its own group and emits the account picked", async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(<ChatModelControl adapters={[...claudeAdapters, adapters[0]]} accounts={accounts} harness="claude" model="sonnet" onChange={onChange} />));
+    await act(async () => trigger().click());
+    expect(groups()).toEqual(["Claude", "Claude · Personal", "Codex", "Codex · Work"]);
+    expect(optionIn("Claude", "Sonnet").getAttribute("aria-selected")).toBe("true");
+    expect(optionIn("Claude · Personal", "Sonnet").getAttribute("aria-selected")).toBe("false");
+    await act(async () => optionIn("Claude · Personal", "Haiku").click());
+    expect(onChange).toHaveBeenCalledWith("claude", "haiku", "personal");
+  });
+
+  it("marks the chat's account and names it on the pill", async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(<ChatModelControl adapters={claudeAdapters} accounts={accounts} account="personal" harness="claude" model="sonnet" onChange={onChange} />));
+    expect(trigger().textContent).toContain("Personal");
+    expect(trigger().getAttribute("aria-label")).toContain("Personal");
+    await act(async () => trigger().click());
+    expect(optionIn("Claude · Personal", "Sonnet").getAttribute("aria-selected")).toBe("true");
+    expect(optionIn("Claude", "Sonnet").getAttribute("aria-selected")).toBe("false");
+    await act(async () => optionIn("Claude", "Sonnet").click());
+    expect(onChange).toHaveBeenCalledWith("claude", "sonnet", null);
+  });
+
+  it("treats the harness id as the user's own login", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={claudeAdapters} accounts={accounts} account="claude" harness="claude" model="sonnet" onChange={vi.fn()} />));
+    expect(trigger().textContent).not.toContain("Personal");
+    await act(async () => trigger().click());
+    expect(optionIn("Claude", "Sonnet").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("finds an account group by its name", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={claudeAdapters} accounts={accounts} harness="claude" model="sonnet" onChange={vi.fn()} />));
+    await act(async () => trigger().click());
+    const search = panel().querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(search, "personal");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(groups()).toEqual(["Claude · Personal"]);
+  });
+
+  it("looks exactly as before with no accounts", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} />));
+    await act(async () => trigger().click());
+    expect(groups()).toEqual(["Claude"]);
+  });
+});
+
 describe("ChatModelControl", () => {
   it("keeps distinct provider releases in the full catalogue", async () => {
     const onChange = vi.fn();
@@ -79,7 +133,7 @@ describe("ChatModelControl", () => {
     expect(panel().textContent).toContain("Claude Fable 5.1");
     const latest = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("5.1"))!;
     await act(async () => latest.click());
-    expect(onChange).toHaveBeenCalledWith("claude", "fable-5-1");
+    expect(onChange).toHaveBeenCalledWith("claude", "fable-5-1", null);
   });
 
   it("refreshes provider catalogues from the picker", async () => {
@@ -148,7 +202,7 @@ describe("ChatModelControl", () => {
     await act(async () => trigger().click());
     const row = [...panel().querySelectorAll("button")].find(button => button.textContent?.startsWith("default"))!;
     await act(async () => row.click());
-    expect(onChange).toHaveBeenCalledWith("cursor", "cursor/default");
+    expect(onChange).toHaveBeenCalledWith("cursor", "cursor/default", null);
   });
 
   it("opens the panel upward by default, where the composer sits at the bottom of the view", async () => {
@@ -196,7 +250,7 @@ describe("ChatModelControl", () => {
     await act(async () => trigger().click());
     const option = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Ox Alpha Free"))!;
     await act(async () => option.click());
-    expect(onChange).toHaveBeenCalledWith("opencode", "ox-alpha-free");
+    expect(onChange).toHaveBeenCalledWith("opencode", "ox-alpha-free", null);
   });
 
   it("derives Cursor from descriptors and returns its exact ACP model id", async () => {
@@ -207,7 +261,7 @@ describe("ChatModelControl", () => {
     await act(async () => trigger().click());
     const option = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Claude Opus 4.1"))!;
     await act(async () => option.click());
-    expect(onChange).toHaveBeenCalledWith("cursor", "cursor/claude-opus-4.1");
+    expect(onChange).toHaveBeenCalledWith("cursor", "cursor/claude-opus-4.1", null);
   });
 
   it("closes an open picker on Escape without letting the key reach modal hosts", async () => {
@@ -471,7 +525,7 @@ describe("ChatModelControl effort styles", () => {
       expect([...control().querySelectorAll("[data-effort]")].map(el => el.getAttribute("data-effort"))).toEqual(["low", "high", "xhigh"]);
       const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
       await act(async () => opus.click());
-      expect(onChange).toHaveBeenCalledWith("claude", "opus");
+      expect(onChange).toHaveBeenCalledWith("claude", "opus", null);
       // Still open, the picked row already reads as selected, and the footer
       // is Opus's five-step ladder — before the host has confirmed anything.
       expect(panel()).not.toBeNull();
@@ -755,7 +809,7 @@ describe("ChatModelControl effort styles", () => {
 
       const sonnet = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Sonnet"))!;
       await act(async () => sonnet.click());
-      expect(onChange).toHaveBeenCalledWith("claude", "sonnet");
+      expect(onChange).toHaveBeenCalledWith("claude", "sonnet", null);
       expect(panel()).not.toBeNull();
     });
 

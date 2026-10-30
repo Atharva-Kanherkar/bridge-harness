@@ -18,6 +18,8 @@ import { advertisedEfforts } from "../../modelProfiles";
 import { HarnessMark } from "../harnessMarks";
 import { ManagedAgentDetail, ManagedAgentRows, type ManagedAgents } from "../ManagedAgentsPanel";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "../OpenCodeHarnessSettings";
+import { accountsOf, supportsAccounts } from "../../providerAccounts";
+import { ProviderAccountsSettings } from "./ProviderAccountsSettings";
 import {
   Field, SaveBar, Select, SettingsBlockRow, SettingsGroup, SettingsPage, SettingsRow, StatusPill,
   Switch, TextArea, TextButton, useSavedFlash,
@@ -203,6 +205,19 @@ function HarnessDetail({
         />}
       />
     </SettingsGroup>
+
+    {supportsAccounts(harness.id) && <ProviderAccountsSettings
+      harness={harness.id}
+      label={harness.label}
+      accounts={accountsOf(harness)}
+      disabled={busy}
+      onChange={async accounts => {
+        // Written onto the stored record, never the half-edited JSON draft.
+        const { accounts: _previous, ...rest } = (harness.advanced ?? {}) as Record<string, unknown>;
+        try { await onSaveHarness({ ...harness, advanced: accounts.length ? { ...rest, accounts } : rest }); }
+        catch (error) { onError(error instanceof Error ? error.message : String(error)); throw error; }
+      }}
+    />}
 
     <SettingsGroup label="Custom instructions" note="Used in new chats with this agent. Permissions still apply.">
       <SettingsBlockRow>

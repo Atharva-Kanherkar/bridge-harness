@@ -4928,10 +4928,15 @@ pub fn save_harness_config(
     let opencode_settings = (config.id == "opencode")
         .then(|| agent_config::opencode_settings(Some(&config)))
         .transpose()?;
+    let accounts_may_change = crate::provider_accounts::supports_accounts(&config.id);
     let next = agent_config::save_harness(&core.db.lock().unwrap(), config)?;
     if let Some(settings) = opencode_settings {
         let directory = opencode_directory(None)?;
         let _ = core.adapter_registry.refresh_opencode(settings, &directory);
+    }
+    // Every window's model picker lists the accounts; let them re-read.
+    if accounts_may_change {
+        core.events.publish(crate::events::CoreEvent::StateChanged);
     }
     Ok(next)
 }
@@ -4941,6 +4946,9 @@ pub fn reset_harness_config(
     id: &str,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     let next = agent_config::reset_harness(&core.db.lock().unwrap(), id)?;
+    if crate::provider_accounts::supports_accounts(id) {
+        core.events.publish(crate::events::CoreEvent::StateChanged);
+    }
     if id == "opencode" {
         let directory = opencode_directory(None)?;
         let _ = core

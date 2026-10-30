@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown, RefreshCw, Search } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
+import { accountLabel, normalizeAccount, type AccountChoice } from "../providerAccounts";
 import { HarnessMark } from "./harnessMarks";
 import { useEffortSelectorStyle } from "../theme";
 import { effortLevelsFrom } from "./effort/effortLevels";
@@ -40,7 +41,15 @@ export type ChatModelControlProps = {
   model: string | null;
   disabled?: boolean;
   disabledReason?: string;
-  onChange: (harness: Harness, model: string | null) => void;
+  /** `account` is the extra sign-in picked, or null for the user's own login.
+   *  Only surfaces that pass `accounts` ever receive a non-null one. */
+  onChange: (harness: Harness, model: string | null, account: string | null) => void;
+  /** Extra Claude Code and Codex sign-ins, each offered as its own group
+   *  beside the harness (T3 Code's provider instances). */
+  accounts?: readonly AccountChoice[];
+  /** The account the chat signs in with; null or the harness id is the
+   *  user's own login. */
+  account?: string | null;
   compact?: boolean;
   roleLabel?: string;
   /** Overrides the pill's width cap. Defaults to the composer's width; the
@@ -65,12 +74,15 @@ export type ChatModelControlProps = {
   onRefresh?: () => Promise<void> | void;
 };
 
+const NO_ACCOUNTS: readonly AccountChoice[] = [];
+
 /** The popover's tallest and shortest useful heights, in CSS pixels. */
 const MAX_POPOVER_HEIGHT = 420;
 const MIN_POPOVER_HEIGHT = 240;
 const VIEWPORT_MARGIN = 12;
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, onRefresh }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, accounts = NO_ACCOUNTS, account, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, allowedEfforts, onEffortChange, onRefresh }: ChatModelControlProps) {
+  const currentAccount = normalizeAccount(harness, account);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
@@ -78,7 +90,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // Optimistic selection: the row the user just picked highlights and drives
   // the effort ladder at once, while the host is still switching. Cleared when
   // the props catch up or when the host's disable window ends.
-  const [pending, setPending] = useState<{ harness: Harness; model: string | null } | null>(null);
+  const [pending, setPending] = useState<{ harness: Harness; model: string | null; account: string | null } | null>(null);
   // The level the user last chose here, until the host confirms it. `sent`
   // is false while the host is still switching models — the level waits and
   // goes out the instant the switch settles, provided the pick landed. The
@@ -107,7 +119,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
       setInFlight(false);
       // The request settled. Only a pick the host adopted may carry the queue;
       // a failed switch must not apply the level to the model just left.
-      const landed = !pending || (pending.harness === harness && pending.model === model);
+      const landed = !pending || (pending.harness === harness && pending.model === model && pending.account === currentAccount);
       setPending(null);
       if (!queued) return;
       if (!queued.sent) {
@@ -123,16 +135,16 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         setQueued(null);
       }
     }
-  }, [disabled, inFlight, pending, queued, harness, model, effort, onEffortChange]);
+  }, [disabled, inFlight, pending, queued, harness, model, currentAccount, effort, onEffortChange]);
   // The props caught up with the optimistic state. A host that applied the
   // change without ever going busy (the Welcome draft) has nothing of ours
   // outstanding any more; one still busy is confirming early, and stays in
   // flight until it settles.
   useEffect(() => {
-    if (!pending || pending.harness !== harness || pending.model !== model) return;
+    if (!pending || pending.harness !== harness || pending.model !== model || pending.account !== currentAccount) return;
     setPending(null);
     if (!disabled) setInFlight(false);
-  }, [harness, model, pending, disabled]);
+  }, [harness, model, currentAccount, pending, disabled]);
   useEffect(() => {
     if (!queued?.sent || effort !== queued.value) return;
     setQueued(null);
@@ -215,6 +227,8 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // switches, else the host's own model.
   const activeHarness = pending?.harness ?? harness;
   const activeModel = pending ? pending.model : model;
+  const activeAccount = pending ? pending.account : currentAccount;
+  const activeAccountLabel = accountLabel(accounts, activeHarness, activeAccount);
   const current = chatAdapters.find(adapter => adapter.id === activeHarness);
   const currentModel = current?.models.find(option => option.id === (activeModel ?? current.defaultModel));
   const modelLabel = cleanModelLabel(currentModel?.label ?? activeModel ?? "Default");
@@ -222,7 +236,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // MiMo V2.5"), and prefixing the harness again read as a stutter:
   // "OpenCode · OpenCode Go · MiMo V2.5". When the model label already opens
   // with the harness label, it carries the whole pill by itself.
-  const harnessName = harnessLabel(activeHarness);
+  const harnessName = activeAccountLabel ? `${harnessLabel(activeHarness)} · ${activeAccountLabel}` : harnessLabel(activeHarness);
   const compactLabel = modelLabel.toLowerCase().startsWith(harnessName.toLowerCase())
     ? modelLabel
     : `${harnessName} · ${modelLabel}`;
@@ -254,11 +268,11 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const switchInFlight = !!disabled && inFlight;
   const effortDisabled = !!disabled && !inFlight;
   const effortProps = { levels: effortLevels, value: effortValue, onChange: onEffortChange ? changeEffort : undefined, disabled: effortDisabled, harness: activeHarness, modelLabel };
-  const pickModel = (nextHarness: Harness, nextModel: string | null) => {
+  const pickModel = (nextHarness: Harness, nextModel: string | null, nextAccount: string | null) => {
     if (switchInFlight) return;
     setInFlight(true);
-    if (effortSurface) setPending({ harness: nextHarness, model: nextModel });
-    onChange(nextHarness, nextModel);
+    if (effortSurface) setPending({ harness: nextHarness, model: nextModel, account: nextAccount });
+    onChange(nextHarness, nextModel, nextAccount);
     // A surface that does effort keeps the popover open so thinking can be set
     // for the new model in the same open; a plain picker closes on pick.
     if (!effortSurface) setOpen(false);
@@ -266,7 +280,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
   return <div ref={wrapper} className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-[12px] text-foreground/90 enabled:hover:bg-accent")} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-label={`${roleLabel} model: ${harnessLabel(activeHarness)} ${modelLabel}`}>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-[12px] text-foreground/90 enabled:hover:bg-accent")} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-label={`${roleLabel} model: ${harnessName} ${modelLabel}`}>
       <HarnessMark harness={activeHarness} size={14} />
       <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
       <ChevronDown size={compact ? 14 : 12} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180", disabled && "opacity-40")} aria-hidden="true" />
@@ -310,29 +324,35 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         <div className={cn("flex min-h-0 flex-1 @max-[410px]/model-picker:flex-col", !twoPane && "flex-col", fit && fit.maxHeight < MIN_POPOVER_HEIGHT && "min-h-24 shrink-0")}>
         <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border @max-[410px]/model-picker:max-h-44 @max-[410px]/model-picker:w-full @max-[410px]/model-picker:border-r-0 @max-[410px]/model-picker:border-b", switchInFlight && "cursor-progress")}>
           {chatAdapters
-            .map(adapter => {
+            // The user's own login first, then one group per extra account on
+            // the same harness, sharing its catalog.
+            .flatMap(adapter => [
+              { adapter, account: null as string | null, label: adapter.label },
+              ...accounts.filter(choice => choice.harness === adapter.id).map(choice => ({ adapter, account: choice.id as string | null, label: `${adapter.label} · ${choice.label}` })),
+            ])
+            .map(({ adapter, account: groupAccount, label }) => {
               const catalog = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }];
-              const groupMatches = matchesQuery(adapter.label);
+              const groupMatches = matchesQuery(label);
               const models = catalog.filter(option => groupMatches || matchesQuery(option.label));
-              return { adapter, models };
+              return { adapter, groupAccount, label, models };
             })
             .filter(group => group.models.length > 0)
-            .map(({ adapter, models }, index) => (
-              <div key={adapter.id}>
+            .map(({ adapter, groupAccount, label, models }, index) => (
+              <div key={`${adapter.id}:${groupAccount ?? ""}`} role="group" aria-label={label}>
                 {/* Group header: a small-caps label, quiet enough to read as a
                     section marker rather than another row competing with the
                     models beneath it. An unavailable harness is dimmed and
                     flagged, its rows shown but greyed. */}
                 <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", index > 0 && "mt-1 border-t border-border/60")}>
                   <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
-                  <span className={cn("text-[11px] font-medium uppercase tracking-[0.12em]", adapter.available ? "text-muted-foreground" : "text-muted-foreground")}>{adapter.label}</span>
+                  <span className={cn("text-[11px] font-medium uppercase tracking-[0.12em]", adapter.available ? "text-muted-foreground" : "text-muted-foreground")}>{label}</span>
                   {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">thinking</span>}
                   {!adapter.available && <span className="ml-auto text-[11px] text-muted-foreground">unavailable</span>}
                 </div>
                 {models.map(option => {
-                  const selected = adapter.id === activeHarness && (option.id ? option.id === activeModel : !activeModel);
+                  const selected = adapter.id === activeHarness && groupAccount === activeAccount && (option.id ? option.id === activeModel : !activeModel);
                   const selectable = adapter.available && option.available !== false && option.compatible !== false;
-                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => pickModel(adapter.id as Harness, option.id || null)} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
+                  return <button key={`${adapter.id}:${groupAccount ?? ""}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => pickModel(adapter.id as Harness, option.id || null, groupAccount)} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-foreground">{cleanModelLabel(option.label)}</span>
                     {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase text-muted-foreground">preview</span>}
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}

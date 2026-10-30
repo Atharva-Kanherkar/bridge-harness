@@ -102,6 +102,7 @@ import { ContextRing } from "./components/ContextRing";
 import { ContextLensDialog } from "./components/ContextLensDialog";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, modelLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
+import { accountChoices, type AccountChoice } from "./providerAccounts";
 import { useComposerSuggestion } from "./useComposerSuggestion";
 import { ComposerSlashMenu } from "./components/ComposerSlashMenu";
 import { ComposerSuggestionStatus } from "./components/ComposerSuggestionStatus";
@@ -295,6 +296,8 @@ function AppContent() {
   const [agentShortcutIndex, setAgentShortcutIndex] = useState(0);
   const [agentShortcutDismissed, setAgentShortcutDismissed] = useState(false);
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
+  // Extra Claude Code and Codex sign-ins, offered as their own picker groups.
+  const [providerAccounts, setProviderAccounts] = useState<AccountChoice[]>([]);
   const [busy, setBusy] = useState(false);
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [pinnedAgents, togglePinnedAgent] = usePinnedAgents();
@@ -564,6 +567,7 @@ function AppContent() {
     setPermissionPolicy(config.permissionPolicy);
     const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
+    setProviderAccounts(accountChoices(config.harnesses));
   }), []);
   // The first reload can fail because a browser tab's daemon was not up yet.
   // When it attaches, load again and drop an error that only said so.
@@ -2298,7 +2302,7 @@ function AppContent() {
       if (!alreadyLocked) newChatPendingRef.current = false;
     }
   }
-  async function changeChatModel(harness: Harness, model: string | null) {
+  async function changeChatModel(harness: Harness, model: string | null, account: string | null) {
     if (!session) return;
     setBusy(true); setError(undefined);
     // The switch can take seconds (the outgoing provider may be asked for a
@@ -2307,7 +2311,8 @@ function AppContent() {
     // A null model means the adapter's default; "Switching to Automatic…"
     // names nothing, so the harness carries the label instead.
     setModelSwitch({ sessionId: session.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
-    try { setState(await bridgeApi.updateChatModel(session.id, harness, model)); }
+    // Explicit either way: the harness id is the user's own login.
+    try { setState(await bridgeApi.updateChatModel(session.id, harness, model, undefined, account ?? harness)); }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); setModelSwitch(null); }
   }
@@ -3537,7 +3542,7 @@ function AppContent() {
                     inputRef={composerRef}
                     leading={contextRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
+                      ? <ChatModelControl adapters={adapters} accounts={providerAccounts} account={session.account ?? null} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model, account) => void changeChatModel(harness, model, account)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                     accessControl={accessControl}
                     footer={<ComposerContextStrip
@@ -3638,9 +3643,11 @@ function AppContent() {
         adapters={adapters}
         harness={draftSettings.settings?.model.harness ?? resolveDraftHarnessModel().harness}
         model={draftSettings.settings?.model.model ?? null}
+        accounts={providerAccounts}
+        account={draftSettings.settings?.model.account ?? null}
         effort={draftSettings.settings?.effort ?? undefined}
         onSelectEffort={effort => patchDraft({effort:{value:effort}})}
-        onSelectModel={(harness, model) => patchDraft({model:{harness,model},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model).filter(value => draftSettings.settings?.target.kind !== "agent" || WORKER_EFFORTS.includes(value)),draftSettings.settings?.effort) ?? null}})}
+        onSelectModel={(harness, model, account) => patchDraft({model:{harness,model,...(account ? {account} : {})},effort:{value:carryEffort(supportedEffortLevelsOf(adapters,harness,model).filter(value => draftSettings.settings?.target.kind !== "agent" || WORKER_EFFORTS.includes(value)),draftSettings.settings?.effort) ?? null}})}
         slashCommands={slashCommands}
         suggestionSettings={suggestionSettings}
         canStartChat={adaptersReady}
@@ -3803,7 +3810,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
 
 const NEW_CHAT_VOICE_OWNER = "new-chat";
 
-function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
+function Welcome({ adapters, accounts, account, harness, model, slashCommands, suggestionSettings, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, harnessShortcutFailure, onDraftChange, onNewWorkspace, onHealthChange, workspaces, workspace, projectName, worktree, sessionKind, onSelectSessionKind, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl, agents, selectedAgent, onSelectAgent, defaultsNotice, onOpenAgents, onVoiceSetup }: {
   onOpenAgents: () => void;
   agents: AgentDefinition[];
   selectedAgent: AgentDefinition | null;
@@ -3817,7 +3824,9 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
   model: string | null;
   effort?: string;
   onSelectEffort: (effort: string) => void;
-  onSelectModel: (harness: Harness, model: string | null) => void;
+  onSelectModel: (harness: Harness, model: string | null, account: string | null) => void;
+  accounts: readonly AccountChoice[];
+  account: string | null;
   busy: boolean;
   canStartChat: boolean;
   onStartChat: (text?: string, attachments?: ComposerAttachment[]) => Promise<boolean>;
@@ -4004,7 +4013,7 @@ function Welcome({ adapters, harness, model, slashCommands, suggestionSettings, 
       disabled={busy}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} accounts={agent ? undefined : accounts} account={account} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} allowedEfforts={agent ? WORKER_EFFORTS : undefined} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       accessControl={accessControl}
       trailing={workspace && !agent ? <SessionModeToggle value={sessionKind} onChange={onSelectSessionKind} disabled={busy || !canStartChat} describedBy={sessionModeHintId} /> : undefined}
       footer={workspaces.length > 0 ? <ComposerContextStrip
