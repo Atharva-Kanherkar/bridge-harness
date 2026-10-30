@@ -40,6 +40,7 @@ CREATE TABLE pages(
     source_excerpt TEXT,
     path TEXT,
     content_hash TEXT,
+    projected_seq INTEGER,
     body TEXT NOT NULL DEFAULT '',
     body_hash TEXT NOT NULL,
     seq INTEGER NOT NULL DEFAULT 0,

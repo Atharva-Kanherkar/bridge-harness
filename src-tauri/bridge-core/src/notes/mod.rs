@@ -9,5 +9,7 @@
 
 pub mod doc;
 pub mod ids;
+pub mod markdown;
+pub mod projector;
 pub mod service;
 pub mod store;

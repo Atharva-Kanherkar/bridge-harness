@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use super::doc::{self, key, PageDoc, PropsPatch};
 use super::ids::{new_id, Hlc};
-use super::store;
+use super::{projector, store};
 use crate::BridgeError;
 
 pub const KINDS: [&str; 4] = ["note", "idea", "task", "question"];
@@ -29,8 +29,6 @@ const PREVIEW_CHARS: usize = 280;
 pub type ChangeListener = Arc<dyn Fn(&NotePageChanged) + Send + Sync>;
 /// Answers whether a Bridge workspace (project) id exists.
 pub type ProjectCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
-/// Mirrors a page to disk after a change; returns the path and content hash.
-pub type Mirror = Arc<dyn Fn(&Note, &str) -> Option<(String, String)> + Send + Sync>;
 
 pub fn agent_actor(harness: &str, session_id: &str) -> String {
     format!("agent:{harness}:{session_id}")
@@ -103,7 +101,6 @@ pub struct NotesService {
     root: PathBuf,
     project_exists: ProjectCheck,
     listener: Mutex<Option<ChangeListener>>,
-    mirror: Mutex<Option<Mirror>>,
 }
 
 impl NotesService {
@@ -126,7 +123,6 @@ impl NotesService {
             root,
             project_exists,
             listener: Mutex::new(None),
-            mirror: Mutex::new(None),
         })
     }
 
@@ -140,10 +136,6 @@ impl NotesService {
 
     pub fn set_listener(&self, listener: ChangeListener) {
         *self.listener.lock().unwrap() = Some(listener);
-    }
-
-    pub fn set_mirror(&self, mirror: Mirror) {
-        *self.mirror.lock().unwrap() = Some(mirror);
     }
 
     /// Run `read` against the database. For queries and the job queue; page
@@ -370,12 +362,13 @@ impl NotesService {
     pub fn rebuild_index(&self) -> Result<usize, BridgeError> {
         let db = self.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
-        let paths: Vec<(String, Option<String>, Option<String>)> = {
-            let mut statement = transaction.prepare("SELECT id, path, content_hash FROM pages")?;
-            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<_, _>>()?;
+        let paths: Vec<(String, Option<String>, Option<String>, Option<i64>)> = {
+            let mut statement = transaction.prepare("SELECT id, path, content_hash, projected_seq FROM pages")?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect::<Result<_, _>>()?;
             rows
         };
         transaction.execute("DELETE FROM pages", [])?;
+        let files = projector::find_files(&self.root);
         let pages: Vec<String> = {
             let mut statement = transaction.prepare("SELECT DISTINCT page_id FROM page_updates ORDER BY page_id")?;
             let rows = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
@@ -389,8 +382,14 @@ impl NotesService {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             upsert_index(&transaction, page, &live, seq, &actor, &stamp_time(&hlc), &self.space)?;
-            if let Some((_, path, hash)) = paths.iter().find(|(id, _, _)| id == page) {
-                transaction.execute("UPDATE pages SET path=?2, content_hash=?3 WHERE id=?1", params![page, path, hash])?;
+            if let Some((_, path, hash, projected)) = paths.iter().find(|(id, _, _, _)| id == page) {
+                transaction.execute("UPDATE pages SET path=?2, content_hash=?3, projected_seq=?4 WHERE id=?1", params![page, path, hash, projected])?;
+            } else if let Some((path, hash)) = files.get(page) {
+                // The index was lost with its paths; the files still name their pages.
+                transaction.execute(
+                    "UPDATE pages SET path=?2, content_hash=?3, projected_seq=?4 WHERE id=?1",
+                    params![page, path.to_string_lossy(), hash, seq],
+                )?;
             }
         }
         transaction.commit()?;
@@ -448,33 +447,37 @@ impl NotesService {
                 None => (current_seq, false),
             };
             transaction.commit()?;
-            let (note, body) = db.query_row(&format!("SELECT {NOTE_COLUMNS}, body FROM pages WHERE id=?1"), params![page_id], |row| {
-                Ok((note_from_row(row)?, row.get::<_, String>(19)?))
-            })?;
-            (note, seq, changed, body)
+            let (note, body, hash, deleted) = db.query_row(
+                &format!("SELECT {NOTE_COLUMNS}, body, content_hash FROM pages WHERE id=?1"),
+                params![page_id],
+                |row| Ok((note_from_row(row)?, row.get::<_, String>(19)?, row.get::<_, Option<String>>(20)?, row.get::<_, Option<String>>(18)?.is_some())),
+            )?;
+            (note, seq, changed, (body, hash, deleted))
         };
         if !changed {
             return Ok((note, seq, false));
         }
-        let note = self.mirror_page(note, &body)?;
+        let (body, hash, deleted) = body;
+        let note = self.mirror_page(note, &body, hash.as_deref(), deleted, seq)?;
         if let Some(listener) = self.listener.lock().unwrap().clone() {
             listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
         }
         Ok((note, seq, true))
     }
 
-    fn mirror_page(&self, note: Note, body: &str) -> Result<Note, BridgeError> {
-        let Some(mirror) = self.mirror.lock().unwrap().clone() else {
-            return Ok(note);
-        };
-        let Some((path, hash)) = mirror(&note, body) else {
+    fn mirror_page(&self, note: Note, body: &str, previous_hash: Option<&str>, deleted: bool, seq: i64) -> Result<Note, BridgeError> {
+        let input = projector::MirrorInput { note: &note, body, deleted, previous_path: note.path.as_deref(), previous_hash };
+        let Some(mirrored) = projector::mirror(&self.root, &input) else {
             return Ok(note);
         };
         self.with_db(|db| {
-            db.execute("UPDATE pages SET path=?2, content_hash=?3 WHERE id=?1", params![note.id, path, hash])?;
+            db.execute(
+                "UPDATE pages SET path=?2, content_hash=?3, projected_seq=?4 WHERE id=?1",
+                params![note.id, mirrored.path, mirrored.hash, seq],
+            )?;
             Ok(())
         })?;
-        Ok(Note { path: Some(path), ..note })
+        Ok(Note { path: mirrored.path, ..note })
     }
 
     /// The device this service stamps changes with.
