@@ -1962,6 +1962,7 @@ function AppContent() {
         tag="storage"
         session={storageSession}
         adapters={adapters}
+        accounts={providerAccounts}
         events={agentEvents}
         pendingMessages={storagePending}
         queuedFollowUpCount={queuedFollowUps(storageSession.id, state.events).length}
@@ -1972,9 +1973,9 @@ function AppContent() {
         onChangeEffort={async effort => {
           setState(await bridgeApi.updateChatModel(storageSession.id, storageSession.harness, storageSession.model ?? null, effort));
         }}
-        onChangeModel={async (harness, model) => {
+        onChangeModel={async (harness, model, account) => {
           setModelSwitch({ sessionId: storageSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
-          try { setState(await bridgeApi.updateChatModel(storageSession.id, harness, model)); }
+          try { setState(await bridgeApi.updateChatModel(storageSession.id, harness, model, undefined, account ?? harness)); }
           finally { setModelSwitch(null); }
         }}
         onResolve={async (eventId, decision, optionId) => {
@@ -3272,6 +3273,7 @@ function AppContent() {
           {asideSession && asideSession.id !== session.id && <AsideChat
             session={asideSession}
             adapters={adapters}
+            accounts={providerAccounts}
             events={agentEvents}
             pendingMessages={asidePending}
             queuedFollowUpCount={queuedFollowUps(asideSession.id, state.events).length}
@@ -3295,7 +3297,7 @@ function AppContent() {
             onChangeEffort={async effort => {
               setState(await bridgeApi.updateChatModel(asideSession.id, asideSession.harness, asideSession.model ?? null, effort));
             }}
-            onChangeModel={async (harness, model) => {
+            onChangeModel={async (harness, model, account) => {
               // Same path the main chat's control uses, bound to the aside
               // session so the switch never touches the chat underneath —
               // and narrated the same way, inside the aside's conversation.
@@ -3303,7 +3305,9 @@ function AppContent() {
               setAsideLifecycle(current => current && { ...current, phase: "switching", error: undefined });
               setModelSwitch({ sessionId: asideSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
               try {
-                setState(await bridgeApi.updateChatModel(asideSession.id, harness, model));
+                // Explicit either way, as in the main composer: the harness id
+                // is the user's own login.
+                setState(await bridgeApi.updateChatModel(asideSession.id, harness, model, undefined, account ?? harness));
                 setAsideLifecycle(current => current && { ...current, phase: "ready", error: undefined });
               } catch (e) {
                 setAsideLifecycle(current => current && { ...current, phase: "failed", error: errorMessage(e) });
