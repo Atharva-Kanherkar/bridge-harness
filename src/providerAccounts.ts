@@ -102,9 +102,24 @@ export function suggestedFolder(harness: "claude" | "codex", id: string): string
 /** The command that signs the account in, run once in a terminal. Uses the
  *  provider's own variable, never HOME, so the Keychain login stays put. */
 export function loginCommand(harness: "claude" | "codex", account: Pick<ProviderAccount, "homePath" | "shadowHomePath">): string {
-  if (harness === "claude") return `mkdir -p ${account.homePath} && CLAUDE_CONFIG_DIR=${account.homePath} claude auth login`;
-  const home = account.shadowHomePath || account.homePath || "~/.codex";
+  if (harness === "claude") {
+    const home = shellPath(account.homePath ?? "");
+    return `mkdir -p ${home} && CLAUDE_CONFIG_DIR=${home} claude auth login`;
+  }
+  const home = shellPath(account.shadowHomePath || account.homePath || "~/.codex");
   return `mkdir -p ${home} && CODEX_HOME=${home} codex login`;
+}
+
+const SHELL_SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+/** A folder as one shell word. A leading `~/` stays outside the quotes so the
+ *  shell still expands it, in arguments and in `VAR=~/…` alike. */
+export function shellPath(path: string): string {
+  if (path === "~") return path;
+  const home = path.startsWith("~/") ? "~/" : "";
+  const rest = path.slice(home.length);
+  if (!rest) return path;
+  return home + (SHELL_SAFE.test(rest) ? rest : `'${rest.replace(/'/g, "'\\''")}'`);
 }
 
 /** Folder rules the backend enforces, checked before saving. */

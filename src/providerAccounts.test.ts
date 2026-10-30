@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessConfig } from "./types";
 import {
-  accountChoices, accountIdFromLabel, accountLabel, accountsOf, folderError, loginCommand, normalizeAccount, suggestedFolder, supportsAccounts,
+  accountChoices, accountIdFromLabel, accountLabel, accountsOf, folderError, loginCommand, normalizeAccount, shellPath, suggestedFolder, supportsAccounts,
 } from "./providerAccounts";
 
 const config = (id: string, advanced: unknown, enabled = true) =>
@@ -55,6 +55,17 @@ describe("provider accounts", () => {
     expect(loginCommand("claude", { homePath: "~/.claude_personal" })).toBe("mkdir -p ~/.claude_personal && CLAUDE_CONFIG_DIR=~/.claude_personal claude auth login");
     expect(loginCommand("codex", { shadowHomePath: "~/.codex_personal" })).toBe("mkdir -p ~/.codex_personal && CODEX_HOME=~/.codex_personal codex login");
     expect(loginCommand("codex", { homePath: "/srv/codex" })).toBe("mkdir -p /srv/codex && CODEX_HOME=/srv/codex codex login");
+  });
+
+  it("quotes folders the shell would split or interpret", () => {
+    expect(loginCommand("codex", { homePath: "/tmp/Bridge Accounts/codex" }))
+      .toBe("mkdir -p '/tmp/Bridge Accounts/codex' && CODEX_HOME='/tmp/Bridge Accounts/codex' codex login");
+    expect(loginCommand("claude", { homePath: "~/Library/Application Support/Claude Work" }))
+      .toBe("mkdir -p ~/'Library/Application Support/Claude Work' && CLAUDE_CONFIG_DIR=~/'Library/Application Support/Claude Work' claude auth login");
+    expect(shellPath("~/a;rm -rf $HOME `x` & y")).toBe("~/'a;rm -rf $HOME `x` & y'");
+    expect(shellPath("/tmp/it's")).toBe("'/tmp/it'\\''s'");
+    expect(shellPath("~/.claude_work")).toBe("~/.claude_work");
+    expect(shellPath("~")).toBe("~");
   });
 
   it("checks folders the way the backend does", () => {
