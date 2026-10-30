@@ -176,7 +176,7 @@ fn start(provider: &str, cwd: &str) -> (Box<dyn AdapterRuntime>, BufReader<Child
         read_only_sandbox: None,
         briefing: None,
         interactive: false,
-        account_home: None,
+        account: None,
         on_progress: None,
     };
     match provider {

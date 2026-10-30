@@ -1299,13 +1299,26 @@ async fn set_opencode_provider_api_key(
     provider_id: String,
     api_key: String,
     directory: Option<String>,
+    account: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let core = state.inner().clone();
     blocking("OpenCode authentication", move || {
-        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory)
+        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory, account)
     })
     .await
+}
+
+/// Save an extra account's API key in the macOS Keychain (Cursor accounts).
+#[tauri::command]
+async fn set_account_api_key(
+    harness: String,
+    account: String,
+    api_key: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Account key", move || api::set_account_api_key(&core, &harness, &account, &api_key)).await
 }
 
 #[tauri::command]
@@ -3065,6 +3078,7 @@ pub fn run() -> i32 {
             reset_harness_config,
             refresh_opencode_catalog,
             set_opencode_provider_api_key,
+            set_account_api_key,
             remove_opencode_provider_auth,
             save_agent_config,
             delete_agent_config,

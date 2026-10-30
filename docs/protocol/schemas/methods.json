@@ -1325,6 +1325,13 @@
       "resultDeferred": "bridge_core::opencode_adapter::OpenCodeCatalog"
     },
     {
+      "command": "set_account_api_key",
+      "domain": "config",
+      "method": "config/set_account_api_key",
+      "paramsSchema": "set-account-api-key-params.json",
+      "resultSchema": "config-state.json"
+    },
+    {
       "command": "save_agent_config",
       "domain": "config",
       "method": "config/save_agent_config",

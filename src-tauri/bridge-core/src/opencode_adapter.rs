@@ -196,7 +196,7 @@ pub fn resume_with_settings(
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
             interactive: request.interactive,
-            account_home: request.account_home,
+            account: request.account,
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
@@ -268,6 +268,8 @@ fn launch(
         // instead of a generic exit.
         .stderr(Stdio::piped());
     crate::build_cache::apply(&mut command, std::path::Path::new(request.cwd));
+    // An extra account runs its own server on its own data folder.
+    crate::provider_accounts::apply_account(&mut command, request.account);
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = request.on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
@@ -1702,11 +1704,21 @@ pub fn discover(
     settings: &OpenCodeSettings,
     directory: &str,
 ) -> Result<OpenCodeCatalog, BridgeError> {
+    discover_for(settings, directory, None)
+}
+
+/// [`discover`] as an extra account sees it: its own data folder, its own
+/// connected providers.
+pub fn discover_for(
+    settings: &OpenCodeSettings,
+    directory: &str,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) -> Result<OpenCodeCatalog, BridgeError> {
     let executable = resolve_executable(settings)?;
     let version = ensure_supported_version(&executable)?;
     let api = ServerApi::of(&version);
     if api == ServerApi::V2 {
-        return with_control_server(&executable, directory, api, |client, base_url| {
+        return with_control_server_for(&executable, directory, api, account, |client, base_url| {
             let get = |path: &str, action: &'static str| {
                 client
                     .get(format!("{base_url}{path}"))
@@ -1732,7 +1744,7 @@ pub fn discover(
             .map_err(BridgeError::Adapter)
         });
     }
-    with_control_server(&executable, directory, api, |client, base_url| {
+    with_control_server_for(&executable, directory, api, account, |client, base_url| {
         let providers = checked_json(
             client
                 .get(endpoint(base_url, "/provider", directory))
@@ -1764,6 +1776,18 @@ pub fn set_provider_api_key(
     provider_id: &str,
     api_key: &str,
 ) -> Result<OpenCodeCatalog, BridgeError> {
+    set_provider_api_key_for(settings, directory, provider_id, api_key, None)
+}
+
+/// Connect a provider key inside an extra account's data folder: a private
+/// OpenCode server for that folder stores it, so Bridge never holds it.
+pub fn set_provider_api_key_for(
+    settings: &OpenCodeSettings,
+    directory: &str,
+    provider_id: &str,
+    api_key: &str,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+) -> Result<OpenCodeCatalog, BridgeError> {
     validate_provider_id(provider_id)?;
     if api_key.trim().is_empty() {
         return Err(BridgeError::Invalid(
@@ -1772,7 +1796,7 @@ pub fn set_provider_api_key(
     }
     let executable = resolve_executable(settings)?;
     let api = ServerApi::of(&ensure_supported_version(&executable)?);
-    with_control_server(&executable, directory, api, |client, base_url| {
+    with_control_server_for(&executable, directory, api, account, |client, base_url| {
         if api == ServerApi::V2 {
             let integration_id = v2_integration_for(client, base_url, provider_id)?;
             return checked_status(
@@ -1796,7 +1820,7 @@ pub fn set_provider_api_key(
         )?;
         Ok(())
     })?;
-    discover(settings, directory)
+    discover_for(settings, directory, account)
 }
 
 pub fn remove_provider_auth(
@@ -1914,6 +1938,16 @@ fn with_control_server<T>(
     api: ServerApi,
     action: impl FnOnce(&Client, &str) -> Result<T, BridgeError>,
 ) -> Result<T, BridgeError> {
+    with_control_server_for(executable, directory, api, None, action)
+}
+
+fn with_control_server_for<T>(
+    executable: &Path,
+    directory: &str,
+    api: ServerApi,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
+    action: impl FnOnce(&Client, &str) -> Result<T, BridgeError>,
+) -> Result<T, BridgeError> {
     let port = reserve_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let password = uuid::Uuid::new_v4().to_string();
@@ -1930,6 +1964,7 @@ fn with_control_server<T>(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    crate::provider_accounts::apply_account(&mut command, account);
     crate::adapters::configure_process_group(&mut command);
     let child = command.spawn()?;
     let ledger = crate::process_ledger::record_launch("opencode.control", directory, child.id());
@@ -3215,7 +3250,7 @@ mod tests {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
-                account_home: None,
+                account: None,
                 on_progress: None,
             },
             &OpenCodeSettings {
@@ -3361,7 +3396,7 @@ mod tests {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: false,
-                account_home: None,
+                account: None,
                 on_progress: None,
             },
             &OpenCodeSettings {

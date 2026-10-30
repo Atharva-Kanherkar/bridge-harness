@@ -1078,15 +1078,15 @@ mod start_model_tests {
     }
 }
 
-/// The provider home of the extra account a root chat signs in with, made
-/// ready to launch from (`provider_accounts`). `None` is the user's own login.
-/// A chat whose account was removed from Settings is refused with a message
+/// The extra account a root chat signs in with, made ready to launch
+/// (`provider_accounts`). `None` is the user's own login. A chat whose account
+/// was removed from Settings, or has no key yet, is refused with a message
 /// that names it, rather than quietly billed to another login.
-fn launch_account_home(
+fn launch_account(
     core: &BridgeCore,
     session_id: &str,
     adapter_id: &str,
-) -> Result<Option<PathBuf>, BridgeError> {
+) -> Result<Option<crate::provider_accounts::AccountLaunch>, BridgeError> {
     use rusqlite::OptionalExtension;
     let account = {
         let db = core.db.lock().unwrap();
@@ -1096,7 +1096,8 @@ fn launch_account_home(
             .flatten();
         id.map(|id| agent_config::account(&db, adapter_id, &id)).transpose()?
     };
-    // Off the database lock: a Codex shadow home is linked on disk first.
+    // Off the database lock: a shadow home or data overlay is linked on disk,
+    // and a key is read from the Keychain.
     account
         .map(|account| {
             crate::provider_accounts::prepare_launch(
@@ -1110,7 +1111,7 @@ fn launch_account_home(
 
 #[cfg(test)]
 mod account_launch_tests {
-    use super::launch_account_home;
+    use super::launch_account;
     use crate::{agent_config, runtime::BridgeCore};
     use rusqlite::params;
     use serde_json::json;
@@ -1145,13 +1146,16 @@ mod account_launch_tests {
         chat(&core, "claude-chat", "claude", Some("personal"));
         chat(&core, "codex-chat", "codex", Some("personal"));
 
-        assert_eq!(launch_account_home(&core, "own", "claude").unwrap(), None, "no account keeps the user's own login");
-        assert_eq!(launch_account_home(&core, "claude-chat", "claude").unwrap(), Some(claude_home));
-        assert_eq!(launch_account_home(&core, "codex-chat", "codex").unwrap(), Some(shadow.clone()));
+        let value = |session: &str, harness: &str, variable: &str| {
+            launch_account(&core, session, harness).unwrap().and_then(|launch| launch.value(variable).map(std::path::PathBuf::from))
+        };
+        assert!(launch_account(&core, "own", "claude").unwrap().is_none(), "no account keeps the user's own login");
+        assert_eq!(value("claude-chat", "claude", "CLAUDE_CONFIG_DIR"), Some(claude_home));
+        assert_eq!(value("codex-chat", "codex", "CODEX_HOME"), Some(shadow.clone()));
         assert_eq!(std::fs::read_link(shadow.join("sessions")).unwrap(), shared.join("sessions"), "the shadow home is linked before launch");
 
         set_accounts(&core, "claude", json!([]));
-        let error = launch_account_home(&core, "claude-chat", "claude").unwrap_err().to_string();
+        let error = launch_account(&core, "claude-chat", "claude").unwrap_err().to_string();
         assert!(error.contains("Claude Code account \"personal\" is no longer in Settings"), "{error}");
     }
 }
@@ -1354,7 +1358,7 @@ pub fn start_session(
         checkpoint_context.is_some(),
         false,
     );
-    let account_home = launch_account_home(state, &session_id, adapter_id)?;
+    let account_launch = launch_account(state, &session_id, adapter_id)?;
     let start_fresh = |instructions: &str| {
         state.adapter_registry.start(
             dispatch_id,
@@ -1367,7 +1371,7 @@ pub fn start_session(
                 interactive,
                 read_only_sandbox: None,
                 briefing: None,
-                account_home: account_home.as_deref(),
+                account: account_launch.as_ref(),
                 on_progress: None,
             },
         )
@@ -1402,7 +1406,7 @@ pub fn start_session(
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
-                    account_home: account_home.as_deref(),
+                    account: account_launch.as_ref(),
                     on_progress: None,
                 },
             ) {
@@ -1966,7 +1970,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             phase,
         });
     };
-    let account_home = launch_account_home(state, &session_id, adapter_id)?;
+    let account_launch = launch_account(state, &session_id, adapter_id)?;
     let start_fresh = |instructions: &str| {
         registry.start(
             &launch_adapter_id,
@@ -1979,7 +1983,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                 interactive,
                 read_only_sandbox: None,
                 briefing: None,
-                account_home: account_home.as_deref(),
+                account: account_launch.as_ref(),
                 on_progress: Some(&on_startup_progress),
             },
         )
@@ -2012,7 +2016,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
-                    account_home: account_home.as_deref(),
+                    account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -2083,7 +2087,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
                     interactive,
                     read_only_sandbox: None,
                     briefing: None,
-                    account_home: account_home.as_deref(),
+                    account: account_launch.as_ref(),
                     on_progress: Some(&on_startup_progress),
                 },
             ) {
@@ -5910,7 +5914,7 @@ pub fn launch_worker_outcome(
                         read_only_sandbox: read_only_sandbox.as_ref(),
                         briefing: None,
                         interactive: false,
-                        account_home: None,
+                        account: None,
                         on_progress: None,
                     },
                 )
@@ -5937,7 +5941,7 @@ pub fn launch_worker_outcome(
                                 read_only_sandbox: read_only_sandbox.as_ref(),
                                 briefing: None,
                                 interactive: false,
-                                account_home: None,
+                                account: None,
                                 on_progress: None,
                             },
                         )
@@ -5957,7 +5961,7 @@ pub fn launch_worker_outcome(
                             read_only_sandbox: read_only_sandbox.as_ref(),
                             briefing: None,
                             interactive: false,
-                            account_home: None,
+                            account: None,
                             on_progress: None,
                         },
                     )
@@ -5978,7 +5982,7 @@ pub fn launch_worker_outcome(
                     read_only_sandbox: read_only_sandbox.as_ref(),
                     briefing: None,
                     interactive: false,
-                    account_home: None,
+                    account: None,
                     on_progress: None,
                 },
             )

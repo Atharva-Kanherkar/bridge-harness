@@ -756,7 +756,11 @@ pub fn dispatch(
         }
         MethodName::SetOpencodeProviderApiKey => {
             let p: wire::SetOpencodeProviderApiKeyParams = decode(method, params)?;
-            reply(api::set_opencode_provider_api_key(core, &p.provider_id, &p.api_key, p.directory))
+            reply(api::set_opencode_provider_api_key(core, &p.provider_id, &p.api_key, p.directory, p.account))
+        }
+        MethodName::SetAccountApiKey => {
+            let p: wire::SetAccountApiKeyParams = decode(method, params)?;
+            reply(api::set_account_api_key(core, &p.harness, &p.account, &p.api_key))
         }
         MethodName::RemoveOpencodeProviderAuth => {
             let p: wire::RemoveOpencodeProviderAuthParams = decode(method, params)?;

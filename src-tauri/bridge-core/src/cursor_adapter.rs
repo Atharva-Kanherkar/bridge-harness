@@ -1219,19 +1219,29 @@ fn launch(
     cwd: &str,
     model: Option<&str>,
     instructions: Option<&str>,
+    account: Option<&crate::provider_accounts::AccountLaunch>,
     on_progress: Option<crate::adapters::StartupProgress<'_>>,
 ) -> Result<(StartedAdapter, CursorProfile), BridgeError> {
-    let key = configured_key();
+    // An extra account brings its own key, which wins over any inherited one;
+    // the account's other changes (blanking an inherited auth token) ride
+    // along in the same launch.
+    let key = match account {
+        Some(account) => account.value(KEY_VARIABLES[0]).map(str::to_owned),
+        None => configured_key(),
+    };
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Spawning);
     }
-    let session = AcpSession::connect(launch_for(
+    let mut spawn = launch_for(
         &profile.executable,
         Path::new(cwd),
         key.as_deref(),
         crate::acp_session::DEFAULT_HANDSHAKE_TIMEOUT,
-    ))
-    .map_err(|error| launch_error(&error, key.as_deref()))?;
+    );
+    for (name, value) in crate::provider_accounts::account_env(account) {
+        spawn = spawn.env(name, value);
+    }
+    let session = AcpSession::connect(spawn).map_err(|error| launch_error(&error, key.as_deref()))?;
     let established_profile = profile_after_session(profile, &session);
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Handshake);
@@ -1635,6 +1645,7 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
             request.cwd,
             request.model,
             request.instructions,
+            request.account,
             request.on_progress,
         )?;
         *self.probe.write().unwrap() = Some(CachedProbe {
@@ -2795,7 +2806,7 @@ mod tests {
             read_only_sandbox: None,
             briefing,
             interactive: false,
-            account_home: None,
+            account: None,
             on_progress: None,
         };
         let Err(error) = adapter.start(request(Some(WriteMode::ReadOnly), None)) else {
@@ -2839,6 +2850,7 @@ mod tests {
             &profile,
             workspace.path().to_str().expect("a utf-8 workspace path"),
             Some("claude-4.5-sonnet"),
+            None,
             None,
             None,
         )
@@ -2901,6 +2913,7 @@ mod tests {
             Some("cursor-fast"),
             None,
             None,
+            None,
         ) else {
             panic!("a model the session never advertised must not start one");
         };
@@ -2925,7 +2938,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
-            account_home: None,
+            account: None,
             on_progress: None,
         }) else {
             panic!("a harness that does not resume must not pretend to");

@@ -15,6 +15,11 @@
 //! Accounts live in the harness's `advanced.accounts`. No account means the
 //! user's own login, exactly as before; the harness id is reserved for it, as
 //! T3 reserves the driver kind for its default instance.
+//!
+//! Which agents take accounts, and how each keeps an account's login apart,
+//! is one table: [`DRIVERS`]. T3 lets every driver run several instances; an
+//! agent joins here with one entry and one [`apply_account`] call where its
+//! adapter builds the process.
 
 use crate::BridgeError;
 use serde::{Deserialize, Serialize};
@@ -24,6 +29,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use zeroize::Zeroizing;
 
 const MAX_ID_CHARS: usize = 64;
 const MAX_LABEL_CHARS: usize = 64;
@@ -67,17 +73,98 @@ pub struct ProviderAccount {
     pub shadow_home_path: String,
 }
 
-/// Whether `harness` can carry accounts at all.
-pub fn supports_accounts(harness: &str) -> bool {
-    matches!(harness, "claude" | "codex")
+/// How an agent keeps an account's login apart from the user's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountLogin {
+    /// The CLI reads its login from the folder named by `variable`. The user's
+    /// own login lives in the inherited value, else `default` under HOME.
+    Folder {
+        variable: &'static str,
+        default: &'static str,
+        layout: FolderLayout,
+    },
+    /// The CLI takes an API key in `variable`. Used where the CLI keeps its own
+    /// login somewhere a folder cannot separate; the key stays in the macOS
+    /// Keychain ([`crate::account_secrets`]).
+    ApiKey { variable: &'static str },
 }
 
-/// The variable an account's home is handed to the provider through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderLayout {
+    /// The account's folder is the whole home.
+    Direct,
+    /// Codex: a separate home, or a shadow home that links a shared one and
+    /// keeps its own login.
+    CodexShadow,
+    /// A data home of which only `private` belongs to the agent; every other
+    /// entry links to the user's own, so commands the agent runs still find
+    /// their usual data.
+    DataOverlay { private: &'static str },
+}
+
+/// One agent's account support: T3 Code's driver metadata, reduced to what a
+/// Bridge launch needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountDriver {
+    pub harness: &'static str,
+    pub label: &'static str,
+    pub login: AccountLogin,
+    /// Inherited variables that would outrank or redirect the account's own
+    /// login. An account launch removes them.
+    pub overrides: &'static [&'static str],
+}
+
+/// Every agent that takes accounts. Adding one is an entry here plus an
+/// [`apply_account`] call in its adapter.
+pub const DRIVERS: [AccountDriver; 4] = [
+    AccountDriver {
+        harness: "claude",
+        label: "Claude Code",
+        login: AccountLogin::Folder { variable: "CLAUDE_CONFIG_DIR", default: ".claude", layout: FolderLayout::Direct },
+        overrides: &CLAUDE_ACCOUNT_OVERRIDES,
+    },
+    AccountDriver {
+        harness: "codex",
+        label: "Codex",
+        login: AccountLogin::Folder { variable: "CODEX_HOME", default: ".codex", layout: FolderLayout::CodexShadow },
+        overrides: &[],
+    },
+    AccountDriver {
+        harness: "opencode",
+        label: "OpenCode",
+        // OpenCode keeps its logins (and threads) in `<data home>/opencode`.
+        // It has no variable of its own for that folder.
+        login: AccountLogin::Folder {
+            variable: "XDG_DATA_HOME",
+            default: ".local/share",
+            layout: FolderLayout::DataOverlay { private: "opencode" },
+        },
+        overrides: &["OPENCODE_API_KEY", "OPENCODE_AUTH_CONTENT"],
+    },
+    AccountDriver {
+        harness: "cursor",
+        label: "Cursor",
+        // Cursor keeps its CLI login in one global Keychain item
+        // (`cursor-access-token`), whatever CURSOR_CONFIG_DIR says.
+        login: AccountLogin::ApiKey { variable: "CURSOR_API_KEY" },
+        overrides: &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+    },
+];
+
+pub fn driver(harness: &str) -> Option<&'static AccountDriver> {
+    DRIVERS.iter().find(|driver| driver.harness == harness)
+}
+
+/// Whether `harness` can carry accounts at all.
+pub fn supports_accounts(harness: &str) -> bool {
+    driver(harness).is_some()
+}
+
+/// The variable a folder-based account's folder is handed through.
 pub fn home_variable(harness: &str) -> Option<&'static str> {
-    match harness {
-        "claude" => Some("CLAUDE_CONFIG_DIR"),
-        "codex" => Some("CODEX_HOME"),
-        _ => None,
+    match driver(harness)?.login {
+        AccountLogin::Folder { variable, .. } => Some(variable),
+        AccountLogin::ApiKey { .. } => None,
     }
 }
 
@@ -153,20 +240,30 @@ fn validate(harness: &str, account: &ProviderAccount) -> Result<(), BridgeError>
             )));
         }
     }
-    match harness {
-        "claude" => {
+    let driver = driver(harness).ok_or_else(|| invalid(format!("{harness} does not support extra accounts")))?;
+    match driver.login {
+        AccountLogin::Folder { layout: FolderLayout::CodexShadow, variable, .. } => {
+            if account.home_path.is_empty() && account.shadow_home_path.is_empty() {
+                return Err(invalid(format!("account {id} needs a {variable} folder")));
+            }
+        }
+        AccountLogin::Folder { variable, .. } => {
             if account.home_path.is_empty() {
-                return Err(invalid(format!("account {id} needs a CLAUDE_CONFIG_DIR folder")));
+                return Err(invalid(format!("account {id} needs a {variable} folder")));
             }
             if !account.shadow_home_path.is_empty() {
                 return Err(invalid(format!(
-                    "account {id}: Claude has no shared-home arrangement; remove shadowHomePath"
+                    "account {id}: {} has no shared-home arrangement; remove shadowHomePath",
+                    driver.label
                 )));
             }
         }
-        _ => {
-            if account.home_path.is_empty() && account.shadow_home_path.is_empty() {
-                return Err(invalid(format!("account {id} needs a CODEX_HOME folder")));
+        AccountLogin::ApiKey { .. } => {
+            if !account.home_path.is_empty() || !account.shadow_home_path.is_empty() {
+                return Err(invalid(format!(
+                    "account {id}: {} accounts sign in with an API key, not a folder",
+                    driver.label
+                )));
             }
         }
     }
@@ -195,6 +292,7 @@ pub struct HostHomes {
     pub home: PathBuf,
     pub claude_config_dir: Option<PathBuf>,
     pub codex_home: Option<PathBuf>,
+    pub xdg_data_home: Option<PathBuf>,
 }
 
 impl HostHomes {
@@ -208,23 +306,38 @@ impl HostHomes {
             home: non_empty("HOME").unwrap_or_else(|| PathBuf::from("/")),
             claude_config_dir: non_empty("CLAUDE_CONFIG_DIR"),
             codex_home: non_empty("CODEX_HOME"),
+            xdg_data_home: non_empty("XDG_DATA_HOME"),
         }
     }
+
+    /// The inherited value of a folder variable, if the user set one.
+    fn inherited(&self, variable: &str) -> Option<&Path> {
+        match variable {
+            "CLAUDE_CONFIG_DIR" => self.claude_config_dir.as_deref(),
+            "CODEX_HOME" => self.codex_home.as_deref(),
+            "XDG_DATA_HOME" => self.xdg_data_home.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// A folder-based login's folder: the account's, else the inherited
+/// variable, else the default under HOME. Inherited variables are not
+/// shell-expanded, so a literal `~` stays literal, as it would for the CLI.
+fn folder_home(variable: &str, default: &str, account: Option<&ProviderAccount>, host: &HostHomes) -> PathBuf {
+    let configured = account.map(|account| account.home_path.as_str()).unwrap_or("");
+    if !configured.is_empty() {
+        return normalize(&expand_home_path(configured, &host.home));
+    }
+    host.inherited(variable)
+        .map(normalize)
+        .unwrap_or_else(|| host.home.join(default))
 }
 
 /// The Claude config directory a chat runs in: the account's folder, else the
 /// inherited `CLAUDE_CONFIG_DIR`, else `~/.claude`.
 pub fn claude_home(account: Option<&ProviderAccount>, host: &HostHomes) -> PathBuf {
-    let configured = account.map(|account| account.home_path.as_str()).unwrap_or("");
-    if !configured.is_empty() {
-        return normalize(&expand_home_path(configured, &host.home));
-    }
-    // Inherited variables are not shell-expanded either, so a literal `~`
-    // stays literal, as it would for Claude Code itself.
-    host.claude_config_dir
-        .as_deref()
-        .map(normalize)
-        .unwrap_or_else(|| host.home.join(".claude"))
+    folder_home("CLAUDE_CONFIG_DIR", ".claude", account, host)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,31 +395,95 @@ pub fn continuation_key(
     account: Option<&ProviderAccount>,
     host: &HostHomes,
 ) -> Option<String> {
-    match harness {
-        "claude" => Some(format!("claude:home:{}", claude_home(account, host).display())),
-        "codex" => Some(codex_home_layout(account, host).continuation_key),
-        _ => None,
+    let driver = driver(harness)?;
+    Some(match driver.login {
+        AccountLogin::Folder { layout: FolderLayout::CodexShadow, .. } => codex_home_layout(account, host).continuation_key,
+        AccountLogin::Folder { variable, default, .. } => {
+            format!("{harness}:home:{}", folder_home(variable, default, account, host).display())
+        }
+        // T3's default: an instance resumes only its own threads.
+        AccountLogin::ApiKey { .. } => {
+            format!("{harness}:instance:{}", account.map_or(harness, |account| account.id.as_str()))
+        }
+    })
+}
+
+/// What a launch on an account changes in the agent's environment: the
+/// variables it sets and the inherited ones it removes. A value may be an API
+/// key, so `Debug` names the variables and never shows a value.
+pub struct AccountLaunch {
+    harness: &'static str,
+    set: Vec<(&'static str, Zeroizing<String>)>,
+    removed: &'static [&'static str],
+}
+
+impl AccountLaunch {
+    pub fn harness(&self) -> &str {
+        self.harness
+    }
+
+    /// Variables the launch sets, with their values.
+    pub fn set(&self) -> impl Iterator<Item = (&'static str, &str)> + '_ {
+        self.set.iter().map(|(name, value)| (*name, value.as_str()))
+    }
+
+    /// Inherited variables the launch removes.
+    pub fn removed(&self) -> &'static [&'static str] {
+        self.removed
+    }
+
+    pub fn value(&self, variable: &str) -> Option<&str> {
+        self.set.iter().find(|(name, _)| *name == variable).map(|(_, value)| value.as_str())
     }
 }
 
-/// Make an account's home ready and return what its provider variable is set
-/// to. Codex shadow homes are linked to their shared home first.
+impl std::fmt::Debug for AccountLaunch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccountLaunch")
+            .field("harness", &self.harness)
+            .field("set", &self.set.iter().map(|(name, _)| *name).collect::<Vec<_>>())
+            .field("removed", &self.removed)
+            .finish()
+    }
+}
+
+/// Make an account ready to launch: link a Codex shadow home or an OpenCode
+/// data overlay, or fetch a saved API key.
 pub fn prepare_launch(
     harness: &str,
     account: &ProviderAccount,
     host: &HostHomes,
-) -> Result<PathBuf, BridgeError> {
-    match harness {
-        "claude" => Ok(claude_home(Some(account), host)),
-        "codex" => {
+) -> Result<AccountLaunch, BridgeError> {
+    let driver = driver(harness).ok_or_else(|| invalid(format!("{harness} does not support extra accounts")))?;
+    let value = match driver.login {
+        AccountLogin::Folder { layout: FolderLayout::CodexShadow, variable, .. } => {
             let layout = codex_home_layout(Some(account), host);
             materialize_codex_shadow_home(&layout)?;
-            layout
+            let home = layout
                 .effective_home_path
-                .ok_or_else(|| invalid(format!("account {} has no CODEX_HOME folder", account.id)))
+                .ok_or_else(|| invalid(format!("account {} has no {variable} folder", account.id)))?;
+            (variable, Zeroizing::new(home.to_string_lossy().into_owned()))
         }
-        other => Err(invalid(format!("{other} does not support extra accounts"))),
-    }
+        AccountLogin::Folder { layout: FolderLayout::DataOverlay { private }, variable, default } => {
+            let overlay = folder_home(variable, default, Some(account), host);
+            let base = folder_home(variable, default, None, host);
+            materialize_data_overlay(&base, &overlay, private)?;
+            (variable, Zeroizing::new(overlay.to_string_lossy().into_owned()))
+        }
+        AccountLogin::Folder { variable, default, .. } => {
+            (variable, Zeroizing::new(folder_home(variable, default, Some(account), host).to_string_lossy().into_owned()))
+        }
+        AccountLogin::ApiKey { variable } => {
+            let key = crate::account_secrets::read(harness, &account.id)?.ok_or_else(|| {
+                invalid(format!(
+                    "The {} account \"{}\" has no API key yet. Add one in Settings, Coding agents, {}.",
+                    driver.label, account.label, driver.label
+                ))
+            })?;
+            (variable, key)
+        }
+    };
+    Ok(AccountLaunch { harness: driver.harness, set: vec![value], removed: driver.overrides })
 }
 
 /// Inherited variables that would take a Claude account chat off the login
@@ -329,7 +506,7 @@ pub const CLAUDE_ACCOUNT_OVERRIDES: [&str; 8] = [
 
 /// Whether an account launch on `harness` removes the inherited `variable`.
 pub fn overridden_by_account(harness: &str, variable: &str) -> bool {
-    harness == "claude" && CLAUDE_ACCOUNT_OVERRIDES.contains(&variable)
+    driver(harness).is_some_and(|driver| driver.overrides.contains(&variable))
 }
 
 /// What a launch reads for `key`: the inherited value, unless an account
@@ -348,17 +525,34 @@ pub fn launch_variable(
     }
 }
 
-/// Point a provider launch at an account's home. Only the provider's own
-/// variable changes: Claude keeps `HOME`, since moving it would hide the
-/// Keychain login (T3 `makeClaudeEnvironment`). Inherited credentials that
-/// would outrank the account's own login are removed.
-pub fn apply_account_home(command: &mut std::process::Command, harness: &str, home: Option<&Path>) {
-    if let (Some(variable), Some(home)) = (home_variable(harness), home) {
-        command.env(variable, home);
-        for name in CLAUDE_ACCOUNT_OVERRIDES.into_iter().filter(|name| overridden_by_account(harness, name)) {
-            command.env_remove(name);
-        }
+/// Point a provider launch at an account. Only the agent's own variable is
+/// set: Claude keeps `HOME`, since moving it would hide the Keychain login (T3
+/// `makeClaudeEnvironment`). Inherited variables that would outrank or
+/// redirect the account's login are removed first, so an account's own
+/// `CURSOR_API_KEY` replaces an inherited one.
+pub fn apply_account(command: &mut std::process::Command, account: Option<&AccountLaunch>) {
+    let Some(account) = account else { return };
+    for name in account.removed() {
+        command.env_remove(name);
     }
+    for (name, value) in account.set() {
+        command.env(name, value);
+    }
+}
+
+/// [`apply_account`] for a launch held as a plain variable map (Cursor's
+/// agent-protocol client), which can only set: a removed variable is set
+/// empty, which every CLI here reads as unset.
+pub fn account_env(account: Option<&AccountLaunch>) -> Vec<(&'static str, String)> {
+    let Some(account) = account else { return Vec::new() };
+    let mut env: Vec<(&'static str, String)> = account
+        .removed()
+        .iter()
+        .filter(|name| account.value(name).is_none())
+        .map(|name| (*name, String::new()))
+        .collect();
+    env.extend(account.set().map(|(name, value)| (name, value.to_owned())));
+    env
 }
 
 /// T3 `materializeCodexShadowHome`: link every shared entry into the shadow
@@ -534,6 +728,50 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// Link every entry of the user's data home into an account's overlay except
+/// the agent's own `private` folder, which stays real so the account keeps its
+/// own logins and threads. An entry the overlay already holds for real (a tool
+/// wrote it there) is left alone: nothing here deletes data.
+pub fn materialize_data_overlay(base: &Path, overlay: &Path, private: &str) -> Result<(), BridgeError> {
+    let fs_error = |operation: &str, path: &Path, error: io::Error| {
+        invalid(format!("Account data folder: could not {operation} {}: {error}", path.display()))
+    };
+    let base_real = resolve(base).map_err(|e| fs_error("resolve", base, e))?;
+    let overlay_real = resolve(overlay).map_err(|e| fs_error("resolve", overlay, e))?;
+    if overlay_real.starts_with(&base_real) || base_real.starts_with(&overlay_real) {
+        return Err(invalid(format!(
+            "Account data folder {} must be different from your data home {}, and neither may contain the other",
+            overlay.display(),
+            base.display()
+        )));
+    }
+    let lock = shadow_home_lock(&overlay_real);
+    let _setup = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    fs::create_dir_all(base).map_err(|e| fs_error("create", base, e))?;
+    let private_dir = overlay.join(private);
+    fs::create_dir_all(&private_dir).map_err(|e| fs_error("create", &private_dir, e))?;
+    for entry in fs::read_dir(base).map_err(|e| fs_error("read", base, e))? {
+        let name = entry.map_err(|e| fs_error("read", base, e))?.file_name();
+        let text = name.to_string_lossy();
+        if text == private || text == ".DS_Store" {
+            continue;
+        }
+        let target = base.join(&name);
+        let link = overlay.join(&name);
+        match link_state(&link).map_err(|e| fs_error("inspect", &link, e))? {
+            LinkState::NotSymlink => {}
+            LinkState::Missing => create_link(&target, &link).map_err(|e| fs_error("link", &link, e))?,
+            LinkState::Symlink(existing) => {
+                if normalize(&link.parent().unwrap_or(overlay).join(existing)) != target {
+                    remove_if_present(fs::remove_file(&link)).map_err(|e| fs_error("remove", &link, e))?;
+                    create_link(&target, &link).map_err(|e| fs_error("link", &link, e))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The setup lock for one shadow home, shared by every launch in this process.
 fn shadow_home_lock(shadow: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -588,11 +826,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 fn harness_label(harness: &str) -> &str {
-    match harness {
-        "claude" => "Claude Code",
-        "codex" => "Codex",
-        other => other,
-    }
+    driver(harness).map_or(harness, |driver| driver.label)
 }
 
 fn invalid(message: impl Into<String>) -> BridgeError {
@@ -605,7 +839,15 @@ mod tests {
     use serde_json::json;
 
     fn host(home: &Path) -> HostHomes {
-        HostHomes { home: home.to_path_buf(), claude_config_dir: None, codex_home: None }
+        HostHomes { home: home.to_path_buf(), claude_config_dir: None, codex_home: None, xdg_data_home: None }
+    }
+
+    /// A folder account's launch, or none for an agent without accounts.
+    fn folder_launch(harness: &str, folder: Option<&Path>) -> Option<AccountLaunch> {
+        let folder = folder?;
+        supports_accounts(harness).then(|| {
+            prepare_launch(harness, &account("acct", &folder.display().to_string(), ""), &host(Path::new("/home/ada"))).unwrap()
+        })
     }
 
     fn account(id: &str, home: &str, shadow: &str) -> ProviderAccount {
@@ -681,17 +923,19 @@ mod tests {
 
     #[test]
     fn rejects_accounts_on_unsupported_harness() {
-        let error = accounts("opencode", &json!({"accounts": [{"id": "a", "label": "A", "homePath": "~/.o"}]}));
+        let error = accounts("grok", &json!({"accounts": [{"id": "a", "label": "A", "homePath": "~/.o"}]}));
         assert!(error.unwrap_err().to_string().contains("does not support extra accounts"));
         // An absent key is not an account list, for any harness.
-        assert!(accounts("opencode", &json!({"visibleModels": []})).unwrap().is_empty());
+        assert!(accounts("grok", &json!({"visibleModels": []})).unwrap().is_empty());
         assert_eq!(normalize_choice("claude", Some("claude")), None);
         assert_eq!(normalize_choice("claude", Some("  ")), None);
         assert_eq!(normalize_choice("claude", None), None);
         assert_eq!(normalize_choice("claude", Some(" personal ")), Some("personal".into()));
         assert_eq!(home_variable("claude"), Some("CLAUDE_CONFIG_DIR"));
         assert_eq!(home_variable("codex"), Some("CODEX_HOME"));
-        assert_eq!(home_variable("opencode"), None);
+        assert_eq!(home_variable("opencode"), Some("XDG_DATA_HOME"));
+        assert_eq!(home_variable("cursor"), None, "Cursor accounts sign in with a key");
+        assert_eq!(home_variable("grok"), None);
     }
 
     #[test]
@@ -708,8 +952,8 @@ mod tests {
             Some("claude:home:/home/ada/.claude_personal")
         );
         assert_ne!(continuation_key("claude", None, &host), continuation_key("claude", Some(&personal), &host));
-        assert_eq!(continuation_key("opencode", None, &host), None);
-        assert_eq!(prepare_launch("claude", &personal, &host).unwrap(), PathBuf::from("/home/ada/.claude_personal"));
+        assert_eq!(continuation_key("grok", None, &host), None);
+        assert_eq!(prepare_launch("claude", &personal, &host).unwrap().value("CLAUDE_CONFIG_DIR"), Some("/home/ada/.claude_personal"));
     }
 
     #[test]
@@ -853,7 +1097,7 @@ mod tests {
     fn apply_account_home_sets_only_the_provider_variable() {
         let envs = |harness: &str, home: Option<&Path>| {
             let mut command = std::process::Command::new("true");
-            apply_account_home(&mut command, harness, home);
+            apply_account(&mut command, folder_launch(harness, home).as_ref());
             command
                 .get_envs()
                 .map(|(key, value)| (key.to_string_lossy().into_owned(), value.map(|v| v.to_string_lossy().into_owned())))
@@ -870,7 +1114,7 @@ mod tests {
         assert_eq!(removed, expected, "HOME and everything else is left alone");
         assert_eq!(envs("codex", Some(home)), vec![("CODEX_HOME".into(), Some("/home/ada/.claude_personal".into()))]);
         assert!(envs("claude", None).is_empty(), "no account inherits the user's own login");
-        assert!(envs("opencode", Some(home)).is_empty());
+        assert!(envs("grok", Some(home)).is_empty());
     }
 
     #[test]
@@ -887,7 +1131,7 @@ mod tests {
                 .env("CLAUDE_CODE_USE_BEDROCK", "1")
                 .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9/inherited-proxy")
                 .env("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer inherited-header");
-            apply_account_home(&mut command, harness, account);
+            apply_account(&mut command, folder_launch(harness, account).as_ref());
             String::from_utf8(command.output().unwrap().stdout).unwrap()
         };
         let with_account = run("claude", Some(home.path()));
@@ -973,7 +1217,7 @@ mod tests {
                 command.env("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer SYNTHETIC-INHERITED-BEARER");
             }
             if account {
-                apply_account_home(&mut command, "claude", Some(folder.path()));
+                apply_account(&mut command, folder_launch("claude", Some(folder.path())).as_ref());
             }
             let mut child = command.spawn().unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -1091,13 +1335,129 @@ mod tests {
     }
 
     #[test]
+    fn the_driver_table_names_every_supported_agent() {
+        let harnesses: Vec<_> = DRIVERS.iter().map(|driver| driver.harness).collect();
+        assert_eq!(harnesses, ["claude", "codex", "opencode", "cursor"]);
+        for driver in DRIVERS {
+            assert!(crate::agent_config::VALID_HARNESS_IDS.contains(&driver.harness), "{} is not a harness", driver.harness);
+            assert!(supports_accounts(driver.harness));
+        }
+        assert!(!supports_accounts("grok") && !supports_accounts("pi") && !supports_accounts("bridge"));
+        assert!(overridden_by_account("cursor", "CURSOR_AUTH_TOKEN"));
+        assert!(overridden_by_account("opencode", "OPENCODE_API_KEY"));
+        assert!(!overridden_by_account("codex", "OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn opencode_and_cursor_accounts_validate_by_login_kind() {
+        let check = |harness: &str, account: Value| accounts(harness, &json!({"accounts": [account]}));
+        assert_eq!(check("opencode", json!({"id": "go", "label": "Go", "homePath": "~/.opencode_go"})).unwrap().len(), 1);
+        assert!(check("opencode", json!({"id": "go", "label": "Go"})).unwrap_err().to_string().contains("XDG_DATA_HOME"));
+        assert!(check("opencode", json!({"id": "go", "label": "Go", "homePath": "~/.o", "shadowHomePath": "~/.s"})).unwrap_err().to_string().contains("no shared-home"));
+        assert_eq!(check("cursor", json!({"id": "work", "label": "Work"})).unwrap().len(), 1);
+        assert!(check("cursor", json!({"id": "work", "label": "Work", "homePath": "~/.cursor_work"})).unwrap_err().to_string().contains("API key"));
+        assert!(check("cursor", json!({"id": "cursor", "label": "Mine"})).unwrap_err().to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn an_opencode_overlay_keeps_its_data_private_and_links_the_rest() {
+        let home = tempfile::tempdir().unwrap();
+        let base = home.path().join(".local/share");
+        write(&base.join("opencode/opencode.db"), "the user's own logins");
+        write(&base.join("mise/installs/node"), "22");
+        fs::create_dir_all(base.join("uv")).unwrap();
+        let mut host = host(home.path());
+        host.xdg_data_home = None;
+        let go = account("go", "~/.opencode_go", "");
+        let launch = prepare_launch("opencode", &go, &host).unwrap();
+        let overlay = home.path().join(".opencode_go");
+        assert_eq!(launch.value("XDG_DATA_HOME"), Some(overlay.to_str().unwrap()));
+        assert_eq!(launch.removed(), ["OPENCODE_API_KEY", "OPENCODE_AUTH_CONTENT"]);
+        // The account's own OpenCode data is real and empty; never the user's.
+        assert!(fs::symlink_metadata(overlay.join("opencode")).unwrap().is_dir());
+        assert!(!overlay.join("opencode/opencode.db").exists());
+        // Everything else is the user's, so mise and uv keep working in tools.
+        assert_eq!(fs::read_link(overlay.join("mise")).unwrap(), base.join("mise"));
+        assert_eq!(fs::read_to_string(overlay.join("mise/installs/node")).unwrap(), "22");
+        assert_eq!(fs::read_link(overlay.join("uv")).unwrap(), base.join("uv"));
+        // Idempotent; a new entry in the data home is linked next time; a real
+        // entry a tool wrote into the overlay is left alone.
+        fs::create_dir_all(base.join("pnpm")).unwrap();
+        write(&overlay.join("tool-local/state"), "kept");
+        fs::create_dir_all(base.join("tool-local")).unwrap();
+        prepare_launch("opencode", &go, &host).unwrap();
+        assert_eq!(fs::read_link(overlay.join("pnpm")).unwrap(), base.join("pnpm"));
+        assert_eq!(fs::read_to_string(overlay.join("tool-local/state")).unwrap(), "kept");
+        // An inherited XDG_DATA_HOME is the data home it links to.
+        let custom = home.path().join("data");
+        fs::create_dir_all(custom.join("gh")).unwrap();
+        host.xdg_data_home = Some(custom.clone());
+        prepare_launch("opencode", &account("work", "~/.opencode_work", ""), &host).unwrap();
+        assert_eq!(fs::read_link(home.path().join(".opencode_work/gh")).unwrap(), custom.join("gh"));
+    }
+
+    #[test]
+    fn an_opencode_overlay_that_aliases_the_data_home_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let base = home.path().join(".local/share");
+        write(&base.join("opencode/opencode.db"), "the user's own logins");
+        let alias = home.path().join("alias");
+        std::os::unix::fs::symlink(&base, &alias).unwrap();
+        for folder in ["~/alias", "~/.local/share", "~/.local/share/opencode-go", "~/.local"] {
+            let error = prepare_launch("opencode", &account("go", folder, ""), &host(home.path())).unwrap_err().to_string();
+            assert!(error.contains("must be different"), "{folder}: {error}");
+        }
+        assert_eq!(fs::read_to_string(base.join("opencode/opencode.db")).unwrap(), "the user's own logins");
+        assert!(!base.join("opencode-go").exists());
+    }
+
+    #[test]
+    fn a_cursor_account_launch_hands_over_its_key_and_hides_it() {
+        crate::account_secrets::save("cursor", "work-launch", "key_cursor_work").unwrap();
+        let work = ProviderAccount { id: "work-launch".into(), label: "Work".into(), home_path: String::new(), shadow_home_path: String::new() };
+        let launch = prepare_launch("cursor", &work, &host(Path::new("/home/ada"))).unwrap();
+        assert_eq!(launch.value("CURSOR_API_KEY"), Some("key_cursor_work"));
+        let debug = format!("{launch:?}");
+        assert!(debug.contains("CURSOR_API_KEY") && !debug.contains("key_cursor_work"), "{debug}");
+        // The plain-map form blanks an inherited auth token and sets the key once.
+        let env = account_env(Some(&launch));
+        assert_eq!(env, vec![("CURSOR_AUTH_TOKEN", String::new()), ("CURSOR_API_KEY", "key_cursor_work".to_owned())]);
+        // A process sees the account's key, never an inherited one.
+        let mut command = std::process::Command::new("/usr/bin/env");
+        command.env("CURSOR_API_KEY", "inherited").env("CURSOR_AUTH_TOKEN", "inherited-token");
+        apply_account(&mut command, Some(&launch));
+        let seen = String::from_utf8(command.output().unwrap().stdout).unwrap();
+        assert!(seen.lines().any(|line| line == "CURSOR_API_KEY=key_cursor_work"), "{seen}");
+        assert!(!seen.contains("inherited"), "{seen}");
+        crate::account_secrets::delete("cursor", "work-launch").unwrap();
+    }
+
+    #[test]
+    fn a_cursor_account_without_a_key_names_where_to_add_one() {
+        let personal = ProviderAccount { id: "no-key-yet".into(), label: "Personal".into(), home_path: String::new(), shadow_home_path: String::new() };
+        let error = prepare_launch("cursor", &personal, &host(Path::new("/home/ada"))).unwrap_err().to_string();
+        assert!(error.contains("Cursor account \"Personal\" has no API key yet") && error.contains("Settings"), "{error}");
+    }
+
+    #[test]
+    fn continuation_keys_follow_the_login_kind() {
+        let host = host(Path::new("/home/ada"));
+        let go = account("go", "~/.opencode_go", "");
+        assert_eq!(continuation_key("opencode", None, &host).as_deref(), Some("opencode:home:/home/ada/.local/share"));
+        assert_eq!(continuation_key("opencode", Some(&go), &host).as_deref(), Some("opencode:home:/home/ada/.opencode_go"));
+        let work = ProviderAccount { id: "work".into(), label: "Work".into(), home_path: String::new(), shadow_home_path: String::new() };
+        assert_eq!(continuation_key("cursor", None, &host).as_deref(), Some("cursor:instance:cursor"));
+        assert_eq!(continuation_key("cursor", Some(&work), &host).as_deref(), Some("cursor:instance:work"));
+    }
+
+    #[test]
     fn prepare_launch_materializes_a_codex_shadow_home() {
         let home = tempfile::tempdir().unwrap();
         let host = host(home.path());
         let shadow = account("personal", "", "~/.codex_personal");
-        let path = prepare_launch("codex", &shadow, &host).unwrap();
+        let path = PathBuf::from(prepare_launch("codex", &shadow, &host).unwrap().value("CODEX_HOME").unwrap());
         assert_eq!(path, home.path().join(".codex_personal"));
         assert_eq!(fs::read_link(path.join("sessions")).unwrap(), home.path().join(".codex/sessions"));
-        assert!(prepare_launch("opencode", &shadow, &host).is_err());
+        assert!(prepare_launch("grok", &shadow, &host).is_err());
     }
 }

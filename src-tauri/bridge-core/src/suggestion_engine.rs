@@ -351,7 +351,7 @@ fn start_warm_session(core: &Arc<BridgeCore>, provider: &str, model: &str) -> Re
             read_only_sandbox: None,
             briefing: None,
             interactive: false,
-            account_home: None,
+            account: None,
             on_progress: None,
         },
     );

@@ -4929,7 +4929,16 @@ pub fn save_harness_config(
         .then(|| agent_config::opencode_settings(Some(&config)))
         .transpose()?;
     let accounts_may_change = crate::provider_accounts::supports_accounts(&config.id);
+    // Keys of accounts this save removes, deleted once the save lands.
+    let dropped_keys = keyed_accounts(core, &config.id).map(|before| {
+        let after: Vec<String> = crate::provider_accounts::accounts(&config.id, &config.advanced)
+            .map(|accounts| accounts.into_iter().map(|account| account.id).collect())
+            .unwrap_or_default();
+        before.into_iter().filter(|id| !after.contains(id)).collect::<Vec<_>>()
+    });
+    let harness = config.id.clone();
     let next = agent_config::save_harness(&core.db.lock().unwrap(), config)?;
+    forget_account_keys(&harness, dropped_keys.unwrap_or_default());
     if let Some(settings) = opencode_settings {
         let directory = opencode_directory(None)?;
         let _ = core.adapter_registry.refresh_opencode(settings, &directory);
@@ -4945,7 +4954,9 @@ pub fn reset_harness_config(
     core: &Arc<BridgeCore>,
     id: &str,
 ) -> Result<agent_config::ConfigState, BridgeError> {
+    let dropped_keys = keyed_accounts(core, id).unwrap_or_default();
     let next = agent_config::reset_harness(&core.db.lock().unwrap(), id)?;
+    forget_account_keys(id, dropped_keys);
     if crate::provider_accounts::supports_accounts(id) {
         core.events.publish(crate::events::CoreEvent::StateChanged);
     }
@@ -4967,13 +4978,69 @@ pub fn refresh_opencode_catalog(
     core.adapter_registry.refresh_opencode(settings, &directory)
 }
 
+/// The stored accounts of a harness whose accounts sign in with a saved key,
+/// or `None` for any other harness.
+fn keyed_accounts(core: &Arc<BridgeCore>, harness: &str) -> Option<Vec<String>> {
+    let driver = crate::provider_accounts::driver(harness)?;
+    if !matches!(driver.login, crate::provider_accounts::AccountLogin::ApiKey { .. }) {
+        return None;
+    }
+    let db = core.db.lock().unwrap();
+    let advanced = agent_config::state(&db).ok()?.harnesses.into_iter().find(|item| item.id == harness)?.advanced;
+    Some(crate::provider_accounts::accounts(harness, &advanced).ok()?.into_iter().map(|account| account.id).collect())
+}
+
+fn forget_account_keys(harness: &str, ids: Vec<String>) {
+    for id in ids {
+        // A key that cannot be removed is reported by the next save; the
+        // account itself is already gone.
+        let _ = crate::account_secrets::delete(harness, &id);
+    }
+}
+
+/// Save the API key of an extra account on an agent whose accounts sign in
+/// with a key. The key goes to the macOS Keychain, never into settings.
+pub fn set_account_api_key(
+    core: &Arc<BridgeCore>,
+    harness: &str,
+    account: &str,
+    api_key: &str,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let driver = crate::provider_accounts::driver(harness)
+        .ok_or_else(|| BridgeError::Invalid(format!("{harness} does not support extra accounts")))?;
+    if !matches!(driver.login, crate::provider_accounts::AccountLogin::ApiKey { .. }) {
+        return Err(BridgeError::Invalid(format!(
+            "{} accounts sign in inside their own folder, not with a key saved by Bridge",
+            driver.label
+        )));
+    }
+    let db = core.db.lock().unwrap();
+    agent_config::account(&db, harness, account)?;
+    crate::account_secrets::save(harness, account, api_key)?;
+    agent_config::state(&db)
+}
+
 pub fn set_opencode_provider_api_key(
     core: &Arc<BridgeCore>,
     provider_id: &str,
     api_key: &str,
     directory: Option<String>,
+    account: Option<String>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let directory = opencode_directory(directory)?;
+    // An extra account keeps its key in its own data folder, so a private
+    // OpenCode server for that folder stores it. The global catalog, which
+    // describes the user's own login, is left alone.
+    if let Some(id) = crate::provider_accounts::normalize_choice("opencode", account.as_deref()) {
+        let record = agent_config::account(&core.db.lock().unwrap(), "opencode", &id)?;
+        let launch = crate::provider_accounts::prepare_launch(
+            "opencode",
+            &record,
+            &crate::provider_accounts::HostHomes::from_env(),
+        )?;
+        let settings = core.adapter_registry.opencode_settings()?;
+        return opencode_adapter::set_provider_api_key_for(&settings, &directory, provider_id, api_key, Some(&launch));
+    }
     let save = || core.adapter_registry
         .set_opencode_provider_api_key(&directory, provider_id, api_key);
     if provider_id == "opencode-go" {
@@ -5956,6 +6023,35 @@ mod tests {
         let roots = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: String::new(), offset: 0, root_session_id: None }).unwrap();
         assert_eq!(roots.chats[0].id, "kept");
         assert!(!fixture.chat_worktree.exists());
+    }
+
+    #[test]
+    fn account_keys_are_saved_for_key_agents_only_and_go_with_the_account() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let harness = |id: &str| {
+            crate::agent_config::state(&core.db.lock().unwrap()).unwrap().harnesses.into_iter().find(|item| item.id == id).unwrap()
+        };
+        let mut cursor = harness("cursor");
+        cursor.advanced = serde_json::json!({"accounts": [{"id": "api-work", "label": "Work"}, {"id": "api-team", "label": "Team"}]});
+        super::save_harness_config(&core, cursor.clone()).unwrap();
+
+        assert!(super::set_account_api_key(&core, "cursor", "api-gone", "key").unwrap_err().to_string().contains("no longer in Settings"));
+        assert!(super::set_account_api_key(&core, "claude", "x", "key").unwrap_err().to_string().contains("their own folder"));
+        assert!(super::set_account_api_key(&core, "grok", "x", "key").unwrap_err().to_string().contains("does not support"));
+        super::set_account_api_key(&core, "cursor", "api-work", "key_work").unwrap();
+        super::set_account_api_key(&core, "cursor", "api-team", "key_team").unwrap();
+        let stored = serde_json::to_string(&harness("cursor").advanced).unwrap();
+        assert!(!stored.contains("key_work"), "a key never enters the settings record: {stored}");
+
+        // Removing an account deletes its key; the other stays.
+        cursor.advanced = serde_json::json!({"accounts": [{"id": "api-team", "label": "Team"}]});
+        super::save_harness_config(&core, cursor).unwrap();
+        assert_eq!(crate::account_secrets::read("cursor", "api-work").unwrap(), None);
+        assert!(crate::account_secrets::read("cursor", "api-team").unwrap().is_some());
+        // Resetting the harness deletes them all.
+        super::reset_harness_config(&core, "cursor").unwrap();
+        assert_eq!(crate::account_secrets::read("cursor", "api-team").unwrap(), None);
     }
 
     /// Putting a conversation away should not require first resolving its
