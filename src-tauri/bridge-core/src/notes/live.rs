@@ -1,20 +1,23 @@
 //! The production side of notes: the maintenance loop and the live backend.
 //!
-//! One thread per host drains `model_jobs` (Structure and Turn into tasks,
-//! queued only when someone asked) and imports edits made to mirrored files
-//! outside Bridge. Model turns run through `title_jobs_live::one_hidden_turn`:
+//! Two threads per host: one drains `model_jobs` (Structure and Turn into
+//! tasks, queued only when someone asked); the other retries Markdown mirrors
+//! and imports edits made to mirrored files outside Bridge. Model turns run through `title_jobs_live::one_hidden_turn`:
 //! tool-less, no `sessions` row, spend recorded on the job.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use rusqlite::params;
 use uuid::Uuid;
 
 use super::jobs::{self, ModelBackend, ProjectChoice};
 use super::projector;
-use super::service::ProjectCheck;
+use super::service::{NotesService, ProjectCheck};
 use crate::runtime::BridgeCore;
 use crate::title_jobs::Generation;
 
@@ -77,29 +80,113 @@ impl ModelBackend for LiveBackend {
     }
 }
 
-/// Started once per host beside the other maintenance loops.
-pub fn start_note_maintenance(core: Arc<BridgeCore>) {
-    super::tool::install(&core);
-    let _ = std::thread::Builder::new().name("notes".into()).spawn(move || {
-        let owner = format!("notes-{}", Uuid::new_v4());
-        let backend = LiveBackend::new(core.clone());
-        let mut last_import = Instant::now() - IMPORT_EVERY;
-        loop {
-            if last_import.elapsed() >= IMPORT_EVERY {
-                if let Err(error) = projector::reconcile(&core.notes) {
-                    eprintln!("[notes] mirror retry failed: {error}");
-                }
-                if let Err(error) = projector::import_changes(&core.notes) {
-                    eprintln!("[notes] import failed: {error}");
-                }
-                last_import = Instant::now();
+/// Stops the maintenance threads; production never does.
+pub struct Maintenance {
+    stop: Arc<AtomicBool>,
+}
+
+impl Maintenance {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The maintenance loops, on two threads: file upkeep (retry mirrors, import
+/// outside edits) every `every`, and model jobs. Separate because one model
+/// turn can take minutes, and imports must not wait behind it: open pages
+/// and the notes tools read what is on disk.
+pub(crate) fn spawn_loops(notes: Arc<NotesService>, backend: Arc<dyn ModelBackend + Send + Sync>, every: Duration) -> Maintenance {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (files, flag) = (notes.clone(), stop.clone());
+    let _ = std::thread::Builder::new().name("notes-files".into()).spawn(move || {
+        while !flag.load(Ordering::SeqCst) {
+            if let Err(error) = projector::reconcile(&files) {
+                eprintln!("[notes] mirror retry failed: {error}");
             }
-            match jobs::drain_once(&core.notes, &backend, &owner) {
+            if let Err(error) = projector::import_changes(&files) {
+                eprintln!("[notes] import failed: {error}");
+            }
+            std::thread::sleep(every);
+        }
+    });
+    let flag = stop.clone();
+    let _ = std::thread::Builder::new().name("notes-jobs".into()).spawn(move || {
+        let owner = format!("notes-{}", Uuid::new_v4());
+        while !flag.load(Ordering::SeqCst) {
+            match jobs::drain_once(&notes, backend.as_ref(), &owner) {
                 Ok(Some(_)) => continue,
                 Ok(None) => {}
                 Err(error) => eprintln!("[notes] job failed: {error}"),
             }
-            std::thread::sleep(POLL);
+            std::thread::sleep(POLL.min(every));
         }
     });
+    Maintenance { stop }
+}
+
+/// Started once per host beside the other maintenance loops.
+pub fn start_note_maintenance(core: Arc<BridgeCore>) {
+    super::tool::install(&core);
+    let backend = Arc::new(LiveBackend::new(core.clone()));
+    let _ = spawn_loops(core.notes.clone(), backend, IMPORT_EVERY);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::notes::jobs::{enqueue, STRUCTURE};
+    use crate::notes::service::tests::service;
+    use crate::notes::service::PERSON;
+    use std::sync::mpsc;
+    use std::sync::Mutex;
+
+    /// A model that holds its turn until released.
+    struct HeldBackend {
+        entered: Mutex<mpsc::Sender<()>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl ModelBackend for HeldBackend {
+        fn can_generate(&self, _harness: &str) -> bool {
+            true
+        }
+        fn default_choice(&self) -> Option<(String, Option<String>)> {
+            None
+        }
+        fn projects(&self) -> Vec<ProjectChoice> {
+            Vec::new()
+        }
+        fn generate(&self, _harness: &str, _model: Option<&str>, _instructions: &str, _prompt: &str) -> Result<Generation, String> {
+            let _ = self.entered.lock().unwrap().send(());
+            let _ = self.release.lock().unwrap().recv_timeout(Duration::from_secs(30));
+            Err("released".into())
+        }
+    }
+
+    #[test]
+    fn file_imports_continue_while_a_model_job_is_in_flight() {
+        let (_dir, notes) = service();
+        let notes = Arc::new(notes);
+        let page = notes.capture("first line\n", PERSON).unwrap();
+        notes.with_db(|db| enqueue(db, notes.space(), &page.id, STRUCTURE, Some("claude"), None)).unwrap();
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let backend = Arc::new(HeldBackend { entered: Mutex::new(entered_tx), release: Mutex::new(release_rx) });
+        let maintenance = spawn_loops(notes.clone(), backend, Duration::from_millis(50));
+        entered.recv_timeout(Duration::from_secs(10)).expect("the model job started");
+
+        // While the model turn is held, someone edits the file.
+        let path = notes.read(&page.id).unwrap().note.path.unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("first line\n", "first line\nedited during the job\n")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut imported = false;
+        while Instant::now() < deadline && !imported {
+            imported = notes.read(&page.id).unwrap().markdown.contains("edited during the job");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let _ = release.send(());
+        maintenance.stop();
+        assert!(imported, "the outside edit waited for the model turn");
+    }
 }
