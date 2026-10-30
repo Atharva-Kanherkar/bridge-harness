@@ -167,6 +167,18 @@ fn apply_import(
         notes.update(update, FILE_IMPORT)?;
         touched = true;
     }
+    // The project link, through the same validated update. An id that names
+    // no project is left out rather than failing the rest of the import.
+    if front.project != base.workspace_id {
+        let change = match &front.project {
+            Some(workspace) => UpdateNote { id: id.to_owned(), workspace_id: Some(workspace.clone()), ..Default::default() },
+            None => UpdateNote { id: id.to_owned(), clear_workspace: true, ..Default::default() },
+        };
+        match notes.update(change, FILE_IMPORT) {
+            Ok(_) => touched = true,
+            Err(error) => eprintln!("[notes] kept the project of {id}: {error}"),
+        }
+    }
     Ok(touched)
 }
 
@@ -330,6 +342,30 @@ mod tests {
         import_changes(&notes).unwrap();
         let page = notes.read(&note.id).unwrap();
         assert_eq!((page.note.title.as_deref(), page.note.state.as_str()), (Some("Renamed in vim"), "done"));
+    }
+
+    #[test]
+    fn project_frontmatter_is_imported() {
+        let (_dir, notes) = service();
+        let note = notes.capture("assign me\n", PERSON).unwrap();
+        let path = PathBuf::from(note.path.clone().unwrap());
+        let edit_file = |from: &str, to: &str| {
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains(from), "{text}");
+            std::fs::write(&path, text.replace(from, to)).unwrap();
+        };
+        edit_file("project: null", "project: \"ws-known\"");
+        import_changes(&notes).unwrap();
+        assert_eq!(notes.read(&note.id).unwrap().note.workspace_id.as_deref(), Some("ws-known"));
+        edit_file("project: \"ws-known\"", "project: null");
+        import_changes(&notes).unwrap();
+        assert_eq!(notes.read(&note.id).unwrap().note.workspace_id, None);
+        // An unknown project is not assigned, and the rest of the edit still lands.
+        edit_file("project: null", "project: \"ws-missing\"");
+        edit_file("assign me\n", "assign me, edited\n");
+        import_changes(&notes).unwrap();
+        let page = notes.read(&note.id).unwrap();
+        assert_eq!((page.note.workspace_id, page.markdown.as_str()), (None, "assign me, edited\n"));
     }
 
     #[test]
