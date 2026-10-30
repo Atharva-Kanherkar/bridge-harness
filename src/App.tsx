@@ -3290,7 +3290,7 @@ function AppContent() {
       /> : view === "notes" ? <Suspense fallback={<PanelLoading label="Opening notes…"/>}><NotesScreen
         adapters={adapters}
         workspaces={state.workspaces}
-        sessions={state.sessions}
+        sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
         onStartChat={startChatFromNote}
