@@ -181,3 +181,56 @@ with `{"sessionId":…,"harness":"claude","account":"personal"}`.
 - Per-account sign-in status, model catalogues, usage meters, and limits.
 - Workers, titles, suggestions, and other background jobs run on the user's
   own login.
+
+## Extension: one driver table, OpenCode and Cursor
+
+T3 Code supports several instances of every driver (`supportsMultipleInstances`
+defaults to true), each with its own environment and driver config, and a
+default continuation key of `<driver>:instance:<id>`. Bridge ports that as one
+account-driver table, so a new agent is one entry plus one call in its adapter.
+
+| Agent | How an account keeps its own login | Sign-in | Threads continue |
+| --- | --- | --- | --- |
+| Claude Code | `CLAUDE_CONFIG_DIR` folder | `claude auth login` in that folder | within one folder |
+| Codex | `CODEX_HOME` folder or shadow home | `codex login` in that folder | within one shared home |
+| OpenCode (Go) | `XDG_DATA_HOME` folder whose `opencode/` is private and every other entry links to the real data home, so commands the agent runs see the user's usual data | in app: Bridge hands the key to a private OpenCode server for that folder; OpenCode stores it, Bridge does not | within one folder |
+| Cursor | its own API key as `CURSOR_API_KEY` (Cursor keeps the CLI login in one global Keychain item, so a folder cannot isolate it) | in app: the key goes to the macOS Keychain under Bridge's own service, never into settings | only within one account |
+
+### Functional behavior
+- `advanced.accounts` is accepted on `claude`, `codex`, `opencode` and `cursor`;
+  any other harness is rejected.
+- OpenCode accounts need a folder and no shadow; Cursor accounts take no folder.
+- An OpenCode account launch sets `XDG_DATA_HOME` to the overlay folder and
+  removes inherited `OPENCODE_API_KEY`. The overlay keeps `opencode/` real and
+  links every other entry of the user's data home; it is refused when it
+  resolves to, inside, or around the user's data home.
+- A Cursor account launch sets `CURSOR_API_KEY` from the Keychain and blanks
+  inherited `CURSOR_AUTH_TOKEN`. A Cursor account with no saved key fails to
+  start with a message that says where to add it.
+- `config/set_account_api_key {harness, account, apiKey}` saves a Cursor key;
+  it refuses folder-based agents and unknown accounts. Removing an account
+  deletes its saved key.
+- `config/set_opencode_provider_api_key` takes an optional `account` and then
+  connects the key inside that account's folder.
+- The launch reports secrets by variable name only; no key appears in Debug
+  output, errors, or the settings record.
+- Claude and Codex behave exactly as before.
+
+### UI
+- Settings → Coding agents → OpenCode and Cursor get the same Accounts group.
+  OpenCode asks for a name, a folder and an optional OpenCode Go key; Cursor
+  asks for a name and an API key. Each saved account can replace its key.
+- The model picker, aside and new-chat draft offer OpenCode and Cursor
+  accounts like the others.
+
+### Tests
+- `provider_accounts::tests::the_driver_table_names_every_supported_agent`
+- `provider_accounts::tests::opencode_and_cursor_accounts_validate_by_login_kind`
+- `provider_accounts::tests::an_opencode_overlay_keeps_its_data_private_and_links_the_rest`
+- `provider_accounts::tests::an_opencode_overlay_that_aliases_the_data_home_is_refused`
+- `provider_accounts::tests::a_cursor_account_launch_hands_over_its_key_and_hides_it`
+- `provider_accounts::tests::a_cursor_account_without_a_key_names_where_to_add_one`
+- `provider_accounts::tests::continuation_keys_follow_the_login_kind`
+- `account_secrets::tests::saved_keys_round_trip_and_removal_deletes_them`
+- `providerAccounts.test.ts` — OpenCode and Cursor choices, labels, sign-in hints.
+- `ProviderAccountsSettings.test.tsx` — OpenCode account with a Go key; Cursor account with an API key; replacing a key.
