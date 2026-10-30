@@ -206,6 +206,7 @@ fn validate_harness(config: &HarnessConfig) -> Result<(), BridgeError> {
             "advanced harness configuration must be a JSON object".into(),
         ));
     }
+    crate::provider_accounts::accounts(&config.id, &config.advanced)?;
     if config.id == "opencode" {
         opencode_settings(Some(config))?;
     }
@@ -675,6 +676,23 @@ mod tests {
         assert_eq!(permission_policy(&db).unwrap(), PermissionPolicy::default());
         assert!(!permission_policy(&db).unwrap().auto_approve_provider_permissions);
         assert!(!state(&db).unwrap().permission_policy.auto_approve_provider_permissions);
+    }
+
+    #[test]
+    fn save_harness_validates_accounts() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut claude = state(&db).unwrap().harnesses.into_iter().find(|item| item.id == "claude").unwrap();
+        claude.advanced = json!({"accounts": [{"id": "personal", "label": "Personal", "homePath": "~/.claude_personal"}]});
+        let saved = save_harness(&db, claude.clone()).unwrap();
+        let stored = saved.harnesses.iter().find(|item| item.id == "claude").unwrap();
+        assert_eq!(stored.advanced["accounts"][0]["id"], "personal");
+
+        claude.advanced = json!({"accounts": [{"id": "claude", "label": "Mine", "homePath": "~/.claude"}]});
+        assert!(save_harness(&db, claude).unwrap_err().to_string().contains("reserved"));
+
+        let mut opencode = state(&db).unwrap().harnesses.into_iter().find(|item| item.id == "opencode").unwrap();
+        opencode.advanced = json!({"accounts": [{"id": "a", "label": "A", "homePath": "~/.o"}]});
+        assert!(save_harness(&db, opencode).unwrap_err().to_string().contains("does not support extra accounts"));
     }
 
     fn custom_agent(id: &str, name: &str, role: &str) -> AgentDefinition {

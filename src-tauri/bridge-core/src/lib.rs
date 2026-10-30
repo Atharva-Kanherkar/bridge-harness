@@ -115,6 +115,7 @@ pub mod orchestrator;
 pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
+pub mod provider_accounts;
 pub mod provider_limit;
 pub mod policy_replay;
 pub mod project_onboarding;
