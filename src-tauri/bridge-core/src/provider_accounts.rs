@@ -371,24 +371,30 @@ pub fn materialize_codex_shadow_home(layout: &CodexHomeLayout) -> Result<(), Bri
         return Ok(());
     };
     let shared = layout.shared_home_path.as_path();
-    if shared == shadow {
-        return Err(invalid(format!(
-            "Codex shadow home {} must be different from the shared home {}",
-            shadow.display(),
-            shared.display()
-        )));
-    }
     let fs_error = |operation: &str, path: &Path, error: io::Error| {
         invalid(format!(
             "Codex shadow home: could not {operation} {}: {error}",
             path.display()
         ))
     };
+    // Compare where the folders really are, not how they are spelled, before
+    // touching either: a shadow that resolves to the shared home, inside it,
+    // or around it would have setup replace the shared home's own entries
+    // with links to themselves.
+    let shared_real = resolve(shared).map_err(|e| fs_error("resolve", shared, e))?;
+    let shadow_real = resolve(shadow).map_err(|e| fs_error("resolve", shadow, e))?;
+    if shadow_real.starts_with(&shared_real) || shared_real.starts_with(&shadow_real) {
+        return Err(invalid(format!(
+            "Codex shadow home {} must be different from the shared home {}, and neither may contain the other",
+            shadow.display(),
+            shared.display()
+        )));
+    }
     // Two chats starting on one new account would both find a link missing,
     // and the second `symlink` would fail. Launches in this process take
     // turns; another process racing it is met by `create_link` and the
     // NotFound-tolerant removals below.
-    let lock = shadow_home_lock(shadow);
+    let lock = shadow_home_lock(&shadow_real);
     let _setup = lock.lock().unwrap_or_else(PoisonError::into_inner);
     fs::create_dir_all(shared).map_err(|e| fs_error("create", shared, e))?;
     fs::create_dir_all(shadow).map_err(|e| fs_error("create", shadow, e))?;
@@ -503,6 +509,27 @@ fn ensure_symlink(shared: &Path, shadow: &Path, name: &str) -> Result<(), LinkEr
                 create()?;
             }
             Ok(())
+        }
+    }
+}
+
+/// Where `path` really is: its deepest existing ancestor resolved through
+/// symlinks, with the missing rest appended, so nothing has to exist (or be
+/// created) to ask.
+fn resolve(path: &Path) -> io::Result<PathBuf> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    loop {
+        match fs::canonicalize(existing) {
+            Ok(real) => return Ok(missing.iter().rev().fold(real, |path, part| path.join(part))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                    return Err(error);
+                };
+                missing.push(name.to_owned());
+                existing = parent;
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -1032,6 +1059,35 @@ mod tests {
         fs::write(&file, "x").unwrap();
         assert!(create_link(&target, &file).is_err());
         remove_if_present(fs::remove_file(dir.path().join("gone"))).unwrap();
+    }
+
+    #[test]
+    fn a_shadow_that_aliases_the_shared_home_is_refused_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("codex");
+        write(&shared.join(".sqlite-maintenance.lock"), "held");
+        write(&shared.join("config.toml"), "model = \"x\"\n");
+        let lock_is_intact = || {
+            assert!(fs::symlink_metadata(shared.join(".sqlite-maintenance.lock")).unwrap().file_type().is_file());
+            assert_eq!(fs::read_to_string(shared.join(".sqlite-maintenance.lock")).unwrap(), "held");
+            assert!(fs::symlink_metadata(shared.join("config.toml")).unwrap().file_type().is_file());
+        };
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&shared, &alias).unwrap();
+        let through_alias = root.path().join("through");
+        std::os::unix::fs::symlink(&shared, &through_alias).unwrap();
+        for shadow in [
+            alias.clone(),                    // a symlink to the shared home
+            through_alias.join("personal"),   // inside it, through a symlinked parent
+            shared.join("personal"),          // inside it, plainly
+            root.path().to_path_buf(),        // around it
+        ] {
+            let error = materialize_codex_shadow_home(&overlay(&shared, &shadow)).unwrap_err().to_string();
+            assert!(error.contains("must be different"), "{}: {error}", shadow.display());
+            lock_is_intact();
+        }
+        assert!(!shared.join("personal").exists(), "a refused setup creates nothing");
+        assert_eq!(resolve(&through_alias.join("a/b")).unwrap(), fs::canonicalize(&shared).unwrap().join("a/b"));
     }
 
     #[test]
