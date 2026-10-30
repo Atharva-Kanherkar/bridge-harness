@@ -8,8 +8,12 @@
 //! `testing/feat-notes-backend.md`.
 
 pub mod doc;
+pub mod guards;
 pub mod ids;
+pub mod jobs;
 pub mod markdown;
 pub mod projector;
 pub mod service;
 pub mod store;
+pub mod structure;
+pub mod tasks;

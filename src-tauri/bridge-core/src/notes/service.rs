@@ -9,14 +9,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use bridge_protocol::messages::{Note, NoteAppend, NoteEditResult, NotePage, NotePageChanged, NoteTextEdit, StructuredView};
+use bridge_protocol::messages::{Note, NoteAppend, NoteEditResult, NotePage, NotePageChanged, NoteTextEdit, NotesSettings, StructuredView};
 use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 
 use super::doc::{self, key, PageDoc, PropsPatch};
 use super::ids::{new_id, Hlc};
-use super::{projector, store};
+use super::{jobs, projector, store};
 use crate::BridgeError;
 
 pub const KINDS: [&str; 4] = ["note", "idea", "task", "question"];
@@ -98,7 +98,7 @@ pub struct NotesService {
     clock: Mutex<Hlc>,
     device: String,
     space: String,
-    root: PathBuf,
+    root: Mutex<PathBuf>,
     project_exists: ProjectCheck,
     listener: Mutex<Option<ChangeListener>>,
 }
@@ -115,19 +115,67 @@ impl NotesService {
         let space = store::personal_space(&connection)?;
         let newest = store::newest_stamp(&connection, &device)?;
         let root = store::get_setting(&connection, "root")?.map(PathBuf::from).unwrap_or(default_root);
+        jobs::recover(&connection)?;
         Ok(Self {
             clock: Mutex::new(Hlc::resume(device.clone(), newest.as_deref())),
             db: Mutex::new(connection),
             device,
             space,
-            root,
+            root: Mutex::new(root),
             project_exists,
             listener: Mutex::new(None),
         })
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    pub fn root(&self) -> PathBuf {
+        self.root.lock().unwrap().clone()
+    }
+
+    pub fn settings(&self) -> Result<NotesSettings, BridgeError> {
+        let auto = self.with_db(|db| store::get_setting(db, "auto_structure"))?;
+        Ok(NotesSettings { auto_structure: auto.as_deref() == Some("true"), root: self.root().to_string_lossy().into_owned() })
+    }
+
+    /// Change settings. A new root applies to pages mirrored from now on;
+    /// files already written stay where they are.
+    pub fn save_settings(&self, auto_structure: Option<bool>, root: Option<String>) -> Result<NotesSettings, BridgeError> {
+        if let Some(root) = root.as_deref().map(str::trim).filter(|root| !root.is_empty()) {
+            let path = PathBuf::from(root);
+            if !path.is_absolute() {
+                return Err(invalid("the notes folder must be an absolute path"));
+            }
+            std::fs::create_dir_all(&path)?;
+            self.with_db(|db| store::set_setting(db, "root", root))?;
+            *self.root.lock().unwrap() = path;
+        }
+        if let Some(auto) = auto_structure {
+            self.with_db(|db| store::set_setting(db, "auto_structure", if auto { "true" } else { "false" }))?;
+        }
+        self.settings()
+    }
+
+    /// Queue an opt-in model pass on a page.
+    pub fn request_pass(&self, id: &str, kind: &str, harness: Option<&str>, model: Option<&str>) -> Result<String, BridgeError> {
+        self.check_live(id)?;
+        self.with_db(|db| jobs::enqueue(db, &self.space, id, kind, harness, model))
+    }
+
+    /// Make one structured item its own note, quoting where it came from.
+    pub fn split_item(&self, id: &str, item_index: usize, actor: &str) -> Result<Note, BridgeError> {
+        let page = self.read(id)?;
+        let view = page.structured.ok_or_else(|| invalid("this note has no structured view yet"))?;
+        let item = view.items.get(item_index).ok_or_else(|| invalid("no such item"))?;
+        self.create(
+            CreatePage {
+                title: Some(item.title.clone()),
+                content: Some(item.excerpt.clone()),
+                kind: Some(item.kind.clone()),
+                source_id: Some(id.to_owned()),
+                state: Some("inbox".into()),
+                ..Default::default()
+            },
+            actor,
+        )
     }
 
     pub fn space(&self) -> &str {
@@ -149,10 +197,14 @@ impl NotesService {
         if body.trim().is_empty() {
             return Err(invalid("a note needs some text"));
         }
-        self.create(
+        let note = self.create(
             CreatePage { content: Some(body.to_owned()), state: Some("inbox".into()), ..Default::default() },
             actor,
-        )
+        )?;
+        if self.settings()?.auto_structure {
+            self.request_pass(&note.id, jobs::STRUCTURE, None, None)?;
+        }
+        Ok(note)
     }
 
     pub fn create(&self, page: CreatePage, actor: &str) -> Result<Note, BridgeError> {
@@ -368,7 +420,7 @@ impl NotesService {
             rows
         };
         transaction.execute("DELETE FROM pages", [])?;
-        let files = projector::find_files(&self.root);
+        let files = projector::find_files(&self.root());
         let pages: Vec<String> = {
             let mut statement = transaction.prepare("SELECT DISTINCT page_id FROM page_updates ORDER BY page_id")?;
             let rows = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
@@ -467,7 +519,7 @@ impl NotesService {
 
     fn mirror_page(&self, note: Note, body: &str, previous_hash: Option<&str>, deleted: bool, seq: i64) -> Result<Note, BridgeError> {
         let input = projector::MirrorInput { note: &note, body, deleted, previous_path: note.path.as_deref(), previous_hash };
-        let Some(mirrored) = projector::mirror(&self.root, &input) else {
+        let Some(mirrored) = projector::mirror(&self.root(), &input) else {
             return Ok(note);
         };
         self.with_db(|db| {
