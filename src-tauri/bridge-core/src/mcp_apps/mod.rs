@@ -15,6 +15,7 @@
 pub mod catalog;
 pub mod guard;
 pub mod lint;
+pub mod notes_tools;
 pub mod server;
 pub mod spec;
 pub mod tool;
@@ -99,6 +100,8 @@ pub fn helper_binary() -> Option<PathBuf> {
 pub struct ServerLaunch {
     pub command: PathBuf,
     pub args: Vec<String>,
+    /// Extra environment for the server process: a chat's notes URL and token.
+    pub env: Vec<(String, String)>,
 }
 
 impl ServerLaunch {
@@ -106,16 +109,35 @@ impl ServerLaunch {
         helper_binary().map(|command| Self {
             command,
             args: vec![HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         })
+    }
+
+    /// The server for one chat. With a session it also carries that chat's
+    /// notes URL and token, which turn on the notes tools.
+    pub fn for_session(session_id: Option<&str>) -> Option<Self> {
+        let mut launch = Self::resolve()?;
+        if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+            launch.env = crate::notes::tool::launch_env(session_id);
+        }
+        Some(launch)
+    }
+
+    fn env_object(&self) -> Value {
+        Value::Object(self.env.iter().map(|(key, value)| (key.clone(), Value::String(value.clone()))).collect())
     }
 
     /// Claude Agent SDK `mcpServers` entry.
     pub fn claude_entry(&self) -> Value {
-        json!({
+        let mut entry = json!({
             "type": "stdio",
             "command": self.command.to_string_lossy(),
             "args": self.args,
-        })
+        });
+        if !self.env.is_empty() {
+            entry["env"] = self.env_object();
+        }
+        entry
     }
 
     /// Codex `-c` overrides. Values are TOML: the path is a basic string, the
@@ -128,20 +150,29 @@ impl ServerLaunch {
         };
         let args: Vec<String> = self.args.iter().map(|arg| toml_string(arg)).collect();
         let name = tool::SERVER_NAME;
-        vec![
+        let mut overrides = vec![
             format!(
                 "mcp_servers.{name}.command={}",
                 toml_string(&self.command.to_string_lossy())
             ),
             format!("mcp_servers.{name}.args=[{}]", args.join(",")),
-        ]
+        ];
+        if !self.env.is_empty() {
+            let pairs: Vec<String> = self.env.iter().map(|(key, value)| format!("{key}={}", toml_string(value))).collect();
+            overrides.push(format!("mcp_servers.{name}.env={{{}}}", pairs.join(",")));
+        }
+        overrides
     }
 
     /// OpenCode `mcp` entry, merged into `OPENCODE_CONFIG_CONTENT`.
     pub fn opencode_entry(&self) -> Value {
         let mut command = vec![self.command.to_string_lossy().into_owned()];
         command.extend(self.args.iter().cloned());
-        json!({"type": "local", "command": command, "enabled": true})
+        let mut entry = json!({"type": "local", "command": command, "enabled": true});
+        if !self.env.is_empty() {
+            entry["environment"] = self.env_object();
+        }
+        entry
     }
 }
 
@@ -163,7 +194,7 @@ pub fn merge_opencode_config(existing: Option<&str>, launch: &ServerLaunch) -> S
 pub fn serve_stdio() -> std::io::Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    server::VisualServer::default().serve(stdin.lock(), stdout.lock())
+    server::VisualServer::with_notes(notes_tools::NotesLink::from_env()).serve(stdin.lock(), stdout.lock())
 }
 
 #[cfg(test)]
@@ -174,7 +205,34 @@ mod tests {
         ServerLaunch {
             command: PathBuf::from("/Applications/Bridge \"Beta\".app/Contents/MacOS/bridged"),
             args: vec![HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         }
+    }
+
+    #[test]
+    fn launch_entries_carry_notes_env_for_all_three_harnesses() {
+        let base = crate::notes::tool::serve_listener().unwrap();
+        let chat = ServerLaunch { env: crate::notes::tool::launch_env("chat-7"), ..launch() };
+        let token = crate::notes::tool::token_for("chat-7");
+        let url = format!("{base}/notes-tool/chat-7");
+
+        let claude = chat.claude_entry();
+        assert_eq!(claude["env"]["BRIDGE_NOTES_URL"], url.as_str());
+        assert_eq!(claude["env"]["BRIDGE_NOTES_TOKEN"], token.as_str());
+
+        let codex = chat.codex_overrides();
+        assert_eq!(codex.len(), 3);
+        assert_eq!(codex[2], format!(r#"mcp_servers.bridge.env={{BRIDGE_NOTES_URL="{url}",BRIDGE_NOTES_TOKEN="{token}"}}"#));
+
+        let opencode: Value = serde_json::from_str(&merge_opencode_config(None, &chat)).unwrap();
+        assert_eq!(opencode["mcp"]["bridge"]["environment"]["BRIDGE_NOTES_URL"], url.as_str());
+        assert_eq!(opencode["mcp"]["bridge"]["environment"]["BRIDGE_NOTES_TOKEN"], token.as_str());
+
+        // Without a session (a background job), nothing extra is passed.
+        assert!(launch().claude_entry().get("env").is_none());
+        assert_eq!(launch().codex_overrides().len(), 2);
+        let plain: Value = serde_json::from_str(&merge_opencode_config(None, &launch())).unwrap();
+        assert!(plain["mcp"]["bridge"].get("environment").is_none());
     }
 
     #[test]

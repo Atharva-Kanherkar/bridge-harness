@@ -2787,6 +2787,7 @@ mod tests {
         // refusal happens at the boundary — the way OpenCode refuses one.
         let adapter = CursorAdapter::with_probe(Ok(probed_profile()));
         let request = |write_mode, briefing| StartRequest {
+            session_id: None,
             cwd: "/workspace",
             model: None,
             effort: None,
@@ -2914,6 +2915,7 @@ mod tests {
         let adapter = CursorAdapter::with_probe(Ok(probed_profile()));
         assert!(!adapter.supports_native_resume());
         let Err(error) = adapter.resume(ResumeRequest {
+            session_id: None,
             provider_session_id: "cursor-session",
             fork: false,
             cwd: "/workspace",

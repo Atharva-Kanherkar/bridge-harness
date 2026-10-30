@@ -262,7 +262,7 @@ impl BridgeCore {
         let Some(purpose) = purpose else {
             return self.create_chat(harness, model, title);
         };
-        if !crate::storage_agent::is_known_purpose(purpose) {
+        if !crate::storage_agent::is_known_purpose(purpose) && !crate::notes::agent::is_known_purpose(purpose) {
             return Err(BridgeError::Invalid(format!("unknown chat purpose {purpose:?}")));
         }
         let id = self.create_chat_id(harness, model, title)?;
@@ -2827,6 +2827,7 @@ mod tests {
             .query_row("SELECT purpose FROM sessions WHERE title='Storage'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(purpose.as_deref(), Some("storage"));
+        core.create_purposed_chat(&Harness::Claude, None, Some("Notes"), Some("notes")).unwrap();
         assert!(core
             .create_purposed_chat(&Harness::Claude, None, None, Some("anything"))
             .is_err());

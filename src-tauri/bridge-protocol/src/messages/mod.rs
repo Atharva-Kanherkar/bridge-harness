@@ -42,6 +42,7 @@ mod meter;
 mod usage_overview;
 mod voice;
 mod models;
+mod notes;
 mod projects;
 mod routing;
 mod sessions;
@@ -76,6 +77,7 @@ pub use meter::*;
 pub use usage_overview::*;
 pub use voice::*;
 pub use models::*;
+pub use notes::*;
 pub use projects::*;
 pub use routing::*;
 pub use sessions::*;
@@ -326,6 +328,19 @@ typed_methods![
     (ScanDirectory, ScanDirectoryParams, DiskListing),
     (DeletePaths, DeletePathsParams, DiskDeleteResult),
     (EmptyTrash, _, EmptyTrashResult),
+    // notes
+    (ListNotes, ListNotesParams, NotesList),
+    (ReadPage, ReadPageParams, NotePage),
+    (CaptureNote, CaptureNoteParams, Note),
+    (CreatePage, CreatePageParams, Note),
+    (EditPage, EditPageParams, NoteEditResult),
+    (UpdateNote, UpdateNoteParams, Note),
+    (DeleteNote, DeleteNoteParams, UnitResult),
+    (StructureNote, StructureNoteParams, NoteJobQueued),
+    (ExtractTasks, ExtractTasksParams, NoteJobQueued),
+    (SplitItem, SplitItemParams, Note),
+    (GetNotesSettings, _, NotesSettings),
+    (SaveNotesSettings, SaveNotesSettingsParams, NotesSettings),
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
@@ -513,6 +528,27 @@ impl TypedMethod {
             Self::params_schema_fields(method)?
                 .into_iter()
                 .map(|(name, _)| name)
+                .collect(),
+        )
+    }
+
+    /// The params fields a request must send: the schema's `required` list.
+    /// Every other field may be omitted, so a transport that takes flat
+    /// arguments must accept it as optional.
+    pub fn params_required_fields(method: MethodName) -> Option<Vec<String>> {
+        let name = TypedMethod::for_method(method).params?;
+        let (_, schema) = payload_schemas()
+            .into_iter()
+            .find(|(candidate, _)| *candidate == name)
+            .unwrap_or_else(|| panic!("{name} has no schema"));
+        Some(
+            schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
                 .collect(),
         )
     }

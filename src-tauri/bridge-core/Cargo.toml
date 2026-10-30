@@ -15,7 +15,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
 portable-pty = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
 chrono = { workspace = true }
 # IANA zones for usage day buckets: a fixed offset is wrong for any window
 # that crosses a DST boundary, and the caller names the zone it lives in.
@@ -54,6 +54,14 @@ tar = "0.4"
 flate2 = "1"
 bzip2 = "0.6"
 tempfile = { workspace = true }
+# Notes pages are Yjs documents (CRDTs): concurrent edits from a person and an
+# agent merge, and the update log is what a later sync service exchanges.
+yrs = "0.28"
+# Turns a person's full-text save into minimal text edits on the page doc.
+similar = "2.7"
+# Per-chat tokens for the notes tools: HMAC of the session id under a
+# per-process secret, so the core verifies a call without storing tokens.
+hmac = "0.12"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"

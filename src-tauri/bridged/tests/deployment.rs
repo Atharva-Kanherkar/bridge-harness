@@ -78,6 +78,7 @@ fn a_pinned_deployment_is_reported_and_enforced_at_harness_start() {
         .start(
             "opencode",
             bridge_core::adapters::StartRequest {
+                session_id: None,
                 cwd: "/tmp",
                 model: None,
                 effort: None,

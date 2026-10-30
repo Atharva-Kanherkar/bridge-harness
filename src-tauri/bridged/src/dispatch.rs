@@ -575,6 +575,51 @@ pub fn dispatch(
             reply(api::delete_paths(core, &p))
         }
         MethodName::EmptyTrash => reply(api::empty_trash(core)),
+        MethodName::ListNotes => {
+            let p: wire::ListNotesParams = decode(method, params)?;
+            reply(api::list_notes(core, &p))
+        }
+        MethodName::ReadPage => {
+            let p: wire::ReadPageParams = decode(method, params)?;
+            reply(api::read_page(core, &p))
+        }
+        MethodName::CaptureNote => {
+            let p: wire::CaptureNoteParams = decode(method, params)?;
+            reply(api::capture_note(core, &p))
+        }
+        MethodName::CreatePage => {
+            let p: wire::CreatePageParams = decode(method, params)?;
+            reply(api::create_page(core, &p))
+        }
+        MethodName::EditPage => {
+            let p: wire::EditPageParams = decode(method, params)?;
+            reply(api::edit_page(core, &p))
+        }
+        MethodName::UpdateNote => {
+            let p: wire::UpdateNoteParams = decode(method, params)?;
+            reply(api::update_note(core, &p))
+        }
+        MethodName::DeleteNote => {
+            let p: wire::DeleteNoteParams = decode(method, params)?;
+            reply(api::delete_note(core, &p))
+        }
+        MethodName::StructureNote => {
+            let p: wire::StructureNoteParams = decode(method, params)?;
+            reply(api::structure_note(core, &p))
+        }
+        MethodName::ExtractTasks => {
+            let p: wire::ExtractTasksParams = decode(method, params)?;
+            reply(api::extract_tasks(core, &p))
+        }
+        MethodName::SplitItem => {
+            let p: wire::SplitItemParams = decode(method, params)?;
+            reply(api::split_item(core, &p))
+        }
+        MethodName::SaveNotesSettings => {
+            let p: wire::SaveNotesSettingsParams = decode(method, params)?;
+            reply(api::save_notes_settings(core, &p))
+        }
+        MethodName::GetNotesSettings => reply(api::get_notes_settings(core)),
         MethodName::ArchiveChat => {
             let p: wire::ArchiveChatParams = decode(method, params)?;
             reply(api::archive_chat(core, &p.session_id))

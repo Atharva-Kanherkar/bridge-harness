@@ -275,6 +275,7 @@ impl Daemon {
         bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
         bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
         bridge_core::title_jobs_live::start_title_maintenance(core.clone());
+        bridge_core::notes::live::start_note_maintenance(core.clone());
         bridge_core::live_turn::start_queued_input_maintenance(core.clone());
         bridge_core::live_turn::start_worktree_maintenance(core.clone());
         bridge_core::live_turn::start_history_snapshot_maintenance(core.clone());

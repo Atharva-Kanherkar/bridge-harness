@@ -593,6 +593,9 @@ pub type StartupProgress<'a> = &'a dyn Fn(StartupPhase);
 
 #[derive(Clone, Copy)]
 pub struct StartRequest<'a> {
+    /// The Bridge session this process serves, when there is one. Lets an
+    /// interactive chat's tool server act for that chat (the notes tools).
+    pub session_id: Option<&'a str>,
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
@@ -619,6 +622,7 @@ pub struct StartRequest<'a> {
 impl std::fmt::Debug for StartRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StartRequest")
+            .field("session_id", &self.session_id)
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
@@ -634,6 +638,9 @@ impl std::fmt::Debug for StartRequest<'_> {
 
 #[derive(Clone, Copy)]
 pub struct ResumeRequest<'a> {
+    /// See [`StartRequest::session_id`]. A resumed or forked chat keeps its
+    /// notes tools only if this is carried.
+    pub session_id: Option<&'a str>,
     pub provider_session_id: &'a str,
     /// Fork `provider_session_id` into a NEW thread instead of resuming it in
     /// place. Codex-only (`thread/fork`); other adapters ignore it — which is
@@ -657,6 +664,7 @@ pub struct ResumeRequest<'a> {
 impl std::fmt::Debug for ResumeRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResumeRequest")
+            .field("session_id", &self.session_id)
             .field("provider_session_id", &self.provider_session_id)
             .field("fork", &self.fork)
             .field("cwd", &self.cwd)
@@ -669,6 +677,25 @@ impl std::fmt::Debug for ResumeRequest<'_> {
             .field("interactive", &self.interactive)
             .field("on_progress", &self.on_progress.map(|_| "<fn>"))
             .finish()
+    }
+}
+
+impl<'a> ResumeRequest<'a> {
+    /// The launch a resume makes: every start field, the Bridge session
+    /// included. Adapters resume through this so no field is dropped.
+    pub fn as_start(&self) -> StartRequest<'a> {
+        StartRequest {
+            session_id: self.session_id,
+            cwd: self.cwd,
+            model: self.model,
+            effort: self.effort,
+            instructions: self.instructions,
+            write_mode: self.write_mode,
+            read_only_sandbox: self.read_only_sandbox,
+            briefing: self.briefing,
+            interactive: self.interactive,
+            on_progress: self.on_progress,
+        }
     }
 }
 
@@ -1977,6 +2004,37 @@ impl HarnessAdapter for ClaudeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_requests_carry_the_bridge_session_into_launches() {
+        let request = ResumeRequest {
+            session_id: Some("chat-1"),
+            provider_session_id: "provider-thread",
+            fork: true,
+            cwd: "/tmp/chat",
+            model: Some("m"),
+            effort: None,
+            instructions: None,
+            write_mode: Some(WriteMode::Full),
+            read_only_sandbox: None,
+            briefing: None,
+            interactive: true,
+            on_progress: None,
+        };
+        let start = request.as_start();
+        assert_eq!(start.session_id, Some("chat-1"));
+        assert!(start.interactive);
+        assert_eq!((start.cwd, start.model, start.write_mode), ("/tmp/chat", Some("m"), Some(WriteMode::Full)));
+        crate::notes::tool::serve_listener().unwrap();
+        let env = crate::notes::tool::launch_env(start.session_id.unwrap());
+        assert!(env.iter().any(|(key, value)| key == crate::notes::tool::ENV_URL && value.ends_with("/chat-1")));
+        // Every adapter resumes through `as_start`, so none can drop the session.
+        for source in [include_str!("claude_adapter.rs"), include_str!("codex_adapter.rs"), include_str!("opencode_adapter.rs")] {
+            let resume = &source[source.find("pub fn resume").expect("a resume entry point")..];
+            let body = &resume[..resume.find("\n}\n").unwrap()];
+            assert!(body.contains("request.as_start()"), "{body}");
+        }
+    }
     use crate::model::ModelCatalogDiagnostics;
 
     fn descriptor_completes_during_catalog_refresh(

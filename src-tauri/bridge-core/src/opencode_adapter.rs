@@ -187,17 +187,7 @@ pub fn resume_with_settings(
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
     launch(
-        StartRequest {
-            cwd: request.cwd,
-            model: request.model,
-            effort: request.effort,
-            instructions: request.instructions,
-            write_mode: request.write_mode,
-            read_only_sandbox: request.read_only_sandbox,
-            briefing: request.briefing,
-            interactive: request.interactive,
-            on_progress: request.on_progress,
-        },
+        request.as_start(),
         Some(request.provider_session_id),
         settings,
         false,
@@ -249,7 +239,7 @@ fn launch(
     // whatever inline config the user already passes OpenCode.
     let visualize = (!completion_only
         && crate::mcp_apps::attaches_to(request.interactive, request.write_mode, request.read_only_sandbox, request.briefing))
-        .then(crate::mcp_apps::ServerLaunch::resolve)
+        .then(|| crate::mcp_apps::ServerLaunch::for_session(request.session_id.filter(|_| request.interactive)))
         .flatten();
     if let Some(config) = chat_config_content(
         visualize.as_ref(),
@@ -684,6 +674,20 @@ fn permission_rules(write_mode: Option<WriteMode>) -> Value {
             rules.push(json!({"permission":"external_directory", "pattern":"*", "action":"ask"}));
         }
         None | Some(WriteMode::Full) => {}
+    }
+    // Bridge's notes write tools. OpenCode names MCP tools `<server>_<tool>`
+    // and matches permissions by that name, so the catch-all `allow` above
+    // would let Ask change a person's notes without asking.
+    let notes_action = match write_mode {
+        Some(WriteMode::ReadOnly) => Some("deny"),
+        Some(WriteMode::Shared | WriteMode::Isolated) => Some("ask"),
+        None | Some(WriteMode::Full) => None,
+    };
+    if let Some(action) = notes_action {
+        for tool in crate::notes::tool::WRITE_TOOLS {
+            let permission = format!("{}_{tool}", crate::mcp_apps::tool::SERVER_NAME);
+            rules.push(json!({"permission": permission, "pattern":"*", "action": action}));
+        }
     }
     Value::Array(rules)
 }
@@ -3206,6 +3210,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let started = start_with_settings(
             StartRequest {
+                session_id: None,
                 cwd: directory.path().to_str().unwrap(),
                 model: Some(&model),
                 effort: None,
@@ -3351,6 +3356,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut started = start_with_settings(
             StartRequest {
+                session_id: None,
                 cwd: directory.path().to_str().unwrap(),
                 model: Some("opencode-go/glm-5.2"),
                 effort: None,
@@ -3422,6 +3428,33 @@ mod tests {
     }
 
     #[test]
+    fn ask_mode_asks_before_notes_writes_in_both_api_versions() {
+        // OpenCode applies the last matching rule; MCP tools match by their
+        // `<server>_<tool>` name.
+        fn resolve_v1(rules: &Value, tool: &str) -> String {
+            rules.as_array().unwrap().iter().rev()
+                .find(|rule| rule["permission"] == "*" || rule["permission"] == tool)
+                .map(|rule| rule["action"].as_str().unwrap().to_owned()).unwrap()
+        }
+        fn resolve_v2(rules: &Value, tool: &str) -> String {
+            rules.as_array().unwrap().iter().rev()
+                .find(|rule| rule["action"] == "*" || rule["action"] == tool)
+                .map(|rule| rule["effect"].as_str().unwrap().to_owned()).unwrap()
+        }
+        for tool in ["bridge_notes_create", "bridge_notes_edit", "bridge_notes_append", "bridge_notes_set"] {
+            for (mode, expected) in [(Some(WriteMode::Shared), "ask"), (Some(WriteMode::Isolated), "ask"), (Some(WriteMode::ReadOnly), "deny"), (Some(WriteMode::Full), "allow")] {
+                let v1 = permission_rules(mode);
+                let v2 = crate::opencode_v2::permission_rules(&v1);
+                assert_eq!(resolve_v1(&v1, tool), expected, "{tool} {mode:?} v1");
+                assert_eq!(resolve_v2(&v2, tool), expected, "{tool} {mode:?} v2");
+            }
+        }
+        for tool in ["bridge_notes_search", "bridge_notes_read", "bridge_visualize"] {
+            assert_eq!(resolve_v1(&permission_rules(Some(WriteMode::Shared)), tool), "allow", "{tool} reads freely");
+        }
+    }
+
+    #[test]
     fn auth_probe_reports_signed_in_for_any_nonempty_store_without_reading_contents() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("auth.json"), "{not valid json").unwrap();
@@ -3488,6 +3521,7 @@ mod model_variant_tests {
         let launch = crate::mcp_apps::ServerLaunch {
             command: std::path::PathBuf::from("/Applications/Bridge.app/Contents/MacOS/bridged"),
             args: vec![crate::mcp_apps::HELPER_FLAG.to_owned()],
+            env: Vec::new(),
         };
         let content: serde_json::Value = serde_json::from_str(
             &chat_config_content(Some(&launch), Some(r#"{"theme":"system"}"#)).unwrap(),

@@ -44,6 +44,8 @@ pub enum SlashDispatch {
     Find { query: String },
     /// Bridge-handled: save an about-me pin to `account:local`.
     Pin { body: String },
+    /// Bridge-handled: save the text to the Notes Inbox as typed. No model turn.
+    Note { body: String },
     /// Bridge-handled: list active `account:local` pins.
     Pins,
     /// Bridge-handled: tombstone an `account:local` pin.
@@ -90,6 +92,12 @@ pub fn list_commands_for_project(
         SlashCommand {
             name: "find".into(),
             description: "Find a past chat from what you remember about it".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "note".into(),
+            description: "Save your words to the Notes Inbox exactly as typed".into(),
             harness: "bridge".into(),
             kind: "builtin".into(),
         },
@@ -259,6 +267,9 @@ pub fn dispatch_for_project(
                 query: args.unwrap_or("").to_string(),
             };
         }
+        "note" => {
+            return SlashDispatch::Note { body: raw_argument(text, name) };
+        }
         "pin" => {
             return SlashDispatch::Pin {
                 body: args.unwrap_or("").to_string(),
@@ -378,6 +389,23 @@ fn expand_inline_commands(
     Some(expanded)
 }
 
+/// Everything after `/<name>` and one delimiter, verbatim: `/note` saves the
+/// person's words exactly, indentation and trailing newlines included. Empty
+/// when nothing but whitespace follows.
+fn raw_argument(text: &str, name: &str) -> String {
+    let start = text.trim_start();
+    let after = start.get(1 + name.len()..).unwrap_or_default();
+    let after = after
+        .strip_prefix("\r\n")
+        .or_else(|| after.strip_prefix(|c: char| c == ' ' || c == '\t' || c == '\n'))
+        .unwrap_or(after);
+    if after.trim().is_empty() {
+        String::new()
+    } else {
+        after.to_owned()
+    }
+}
+
 /// True when Bridge handles the slash locally and must never auto-switch harness.
 pub fn is_bridge_local(name: &str) -> bool {
     matches!(
@@ -393,6 +421,7 @@ pub fn is_bridge_local(name: &str) -> bool {
             | "recall"
             | "find"
             | "pin"
+            | "note"
             | "pins"
             | "unpin"
     )
@@ -961,5 +990,33 @@ mod tests {
             assert!(!is_forwardable_builtin("claude", name));
             assert!(!is_forwardable_builtin("codex", name));
         }
+    }
+
+    #[test]
+    fn note_captures_without_a_model_turn() {
+        let available = std::collections::HashSet::from(["claude".to_string()]);
+        assert!(matches!(
+            dispatch("/note buy a domain for the side project", "claude", &available),
+            SlashDispatch::Note { body } if body == "buy a domain for the side project"
+        ));
+        assert!(matches!(dispatch("/note", "codex", &available), SlashDispatch::Note { body } if body.is_empty()));
+        // Bridge-local: never forwarded to a provider and never switches harness.
+        assert!(is_bridge_local("note"));
+        assert!(list_commands(&available).iter().any(|command| command.name == "note" && command.harness == "bridge"));
+        assert!(!crate::session_input::requires_idle_session(&SlashDispatch::Note { body: "x".into() }));
+    }
+
+    #[test]
+    fn note_keeps_the_raw_text_after_the_command() {
+        let available = std::collections::HashSet::new();
+        let body = |input: &str| match dispatch(input, "claude", &available) {
+            SlashDispatch::Note { body } => body,
+            other => panic!("expected a note, got {other:?}"),
+        };
+        assert_eq!(body("/note     def foo():\n        pass\n"), "    def foo():\n        pass\n");
+        assert_eq!(body("/note\n- one\n- two\n"), "- one\n- two\n");
+        assert_eq!(body("/note\r\nline"), "line");
+        assert_eq!(body("  /NOTE keep  trailing  "), "keep  trailing  ");
+        assert_eq!(body("/note   \n  "), "", "whitespace only is no note");
     }
 }

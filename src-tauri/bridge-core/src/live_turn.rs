@@ -109,6 +109,9 @@ fn compile_purposed_session_prompt(
     if let Some(brief) = crate::storage_agent::section(purpose) {
         compiler = compiler.stable_section(crate::storage_agent::SECTION_ID, brief);
     }
+    if let Some(brief) = crate::notes::agent::section(purpose) {
+        compiler = compiler.stable_section(crate::notes::agent::SECTION_ID, brief);
+    }
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
     }
@@ -310,6 +313,18 @@ mod prompt_section_tests {
         assert!(storage.stable_prefix.contains("```storage-plan"));
         assert!(storage.stable_prefix.contains(crate::storage_agent::SECTION_ID));
         assert_ne!(plain.metadata.prefix_hash, storage.metadata.prefix_hash);
+    }
+
+    #[test]
+    fn a_notes_chat_carries_its_brief_as_a_stable_section() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let stack = prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
+        let plain = compile_purposed_session_prompt(&stack, "", None, None).unwrap();
+        let notes = compile_purposed_session_prompt(&stack, "", None, Some(crate::notes::agent::PURPOSE)).unwrap();
+        assert!(!plain.stable_prefix.contains("notes-context"));
+        assert!(notes.stable_prefix.contains("```notes-context"));
+        assert!(notes.stable_prefix.contains(crate::notes::agent::SECTION_ID));
+        assert!(!notes.stable_prefix.contains(crate::storage_agent::SECTION_ID));
     }
 
     fn directive(role: delegation::WorkerRole) -> delegation::DelegationRequest {
@@ -1280,6 +1295,7 @@ pub fn start_session(
         state.adapter_registry.start(
             dispatch_id,
             adapters::StartRequest {
+                session_id: Some(session_id.as_str()),
                 cwd: &path,
                 model: chosen_model.as_deref(),
                 effort: chosen_effort_name,
@@ -1312,6 +1328,7 @@ pub fn start_session(
             match state.adapter_registry.resume(
                 dispatch_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider_id,
                     fork: false,
                     cwd: &path,
@@ -1889,6 +1906,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
         registry.start(
             &launch_adapter_id,
             adapters::StartRequest {
+                session_id: Some(session_id.as_str()),
                 cwd: &launch_cwd,
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
@@ -1919,6 +1937,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             match registry.resume(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider,
                     fork: true,
                     cwd: &launch_cwd,
@@ -1989,6 +2008,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             match registry.resume(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider,
                     fork: false,
                     cwd: &launch_cwd,
@@ -5815,6 +5835,7 @@ pub fn launch_worker_outcome(
                 state.adapter_registry.resume(
                     &dispatch_id,
                     adapters::ResumeRequest {
+                        session_id: None,
                         provider_session_id,
                         fork: false,
                         cwd: &reservation.path,
@@ -5843,6 +5864,7 @@ pub fn launch_worker_outcome(
                         state.adapter_registry.start(
                             &dispatch_id,
                             adapters::StartRequest {
+                                session_id: None,
                                 cwd: &reservation.path,
                                 model: Some(model.as_str()),
                                 effort: Some(&effort),
@@ -5862,6 +5884,7 @@ pub fn launch_worker_outcome(
                     state.adapter_registry.start(
                         &dispatch_id,
                         adapters::StartRequest {
+                            session_id: None,
                             cwd: &reservation.path,
                             model: Some(model.as_str()),
                             effort: Some(&effort),
@@ -5882,6 +5905,7 @@ pub fn launch_worker_outcome(
             .start(
                 &dispatch_id,
                 adapters::StartRequest {
+                    session_id: None,
                     cwd: &reservation.path,
                     model: Some(model.as_str()),
                     effort: Some(&effort),
@@ -10639,6 +10663,26 @@ fn prepare_input(
             if let Some(scope_key) = changed_scope {
                 core.events.publish(CoreEvent::MemoryChanged { scope_key });
             }
+            emit_local_assistant(core, &session_id, &session_harness, &text)?;
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::Note { body } => {
+            // Your words, saved exactly as typed (credentials were already
+            // replaced with markers upstream). No model is called.
+            let text = if body.trim().is_empty() {
+                "Usage: /note <text>. Saves your words to the Notes Inbox exactly as typed. No model is called.".to_string()
+            } else {
+                match core.notes.capture(&body, crate::notes::service::PERSON) {
+                    Ok(note) => {
+                        let mut reply = format!("Saved to your Notes Inbox: \"{}\"", crate::notes::guards::clip(note.preview.lines().next().unwrap_or_default(), 60));
+                        if !sanitized_input.interceptions.is_empty() {
+                            reply.push_str(". A credential in it was replaced with a marker.");
+                        }
+                        reply
+                    }
+                    Err(error) => error.to_string(),
+                }
+            };
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
