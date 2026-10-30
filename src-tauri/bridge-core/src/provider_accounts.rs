@@ -309,22 +309,27 @@ pub fn prepare_launch(
     }
 }
 
-/// Inherited variables Claude Code prefers over the login in its config
-/// folder. Any of them would run a chat labelled with an account on some
-/// other credential, so an account launch drops them all. Codex reads its
-/// login from `CODEX_HOME` alone and needs no such list.
-pub const CLAUDE_CREDENTIAL_OVERRIDES: [&str; 6] = [
+/// Inherited variables that would take a Claude account chat off the login
+/// in its config folder: credentials Claude Code prefers over that login, and
+/// an endpoint or headers that would send the request (with the account's own
+/// token, or an inherited `Authorization`) somewhere else. An account launch
+/// drops them all. Generic `HTTPS_PROXY` settings stay: they tunnel TLS and
+/// never see the token. Codex reads its login from `CODEX_HOME` alone and
+/// needs no such list.
+pub const CLAUDE_ACCOUNT_OVERRIDES: [&str; 8] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
 ];
 
 /// Whether an account launch on `harness` removes the inherited `variable`.
 pub fn overridden_by_account(harness: &str, variable: &str) -> bool {
-    harness == "claude" && CLAUDE_CREDENTIAL_OVERRIDES.contains(&variable)
+    harness == "claude" && CLAUDE_ACCOUNT_OVERRIDES.contains(&variable)
 }
 
 /// What a launch reads for `key`: the inherited value, unless an account
@@ -350,7 +355,7 @@ pub fn launch_variable(
 pub fn apply_account_home(command: &mut std::process::Command, harness: &str, home: Option<&Path>) {
     if let (Some(variable), Some(home)) = (home_variable(harness), home) {
         command.env(variable, home);
-        for name in CLAUDE_CREDENTIAL_OVERRIDES.into_iter().filter(|name| overridden_by_account(harness, name)) {
+        for name in CLAUDE_ACCOUNT_OVERRIDES.into_iter().filter(|name| overridden_by_account(harness, name)) {
             command.env_remove(name);
         }
     }
@@ -832,7 +837,7 @@ mod tests {
         let set: Vec<_> = claude.iter().filter(|(_, value)| value.is_some()).cloned().collect();
         assert_eq!(set, vec![("CLAUDE_CONFIG_DIR".into(), Some("/home/ada/.claude_personal".into()))]);
         let mut removed: Vec<_> = claude.iter().filter(|(_, value)| value.is_none()).map(|(key, _)| key.clone()).collect();
-        let mut expected: Vec<String> = CLAUDE_CREDENTIAL_OVERRIDES.iter().map(|name| (*name).to_owned()).collect();
+        let mut expected: Vec<String> = CLAUDE_ACCOUNT_OVERRIDES.iter().map(|name| (*name).to_owned()).collect();
         removed.sort();
         expected.sort();
         assert_eq!(removed, expected, "HOME and everything else is left alone");
@@ -852,12 +857,14 @@ mod tests {
                 .env("ANTHROPIC_API_KEY", "sk-ant-inherited")
                 .env("CLAUDE_CODE_OAUTH_TOKEN", "inherited-oauth")
                 .env("ANTHROPIC_AUTH_TOKEN", "inherited-bearer")
-                .env("CLAUDE_CODE_USE_BEDROCK", "1");
+                .env("CLAUDE_CODE_USE_BEDROCK", "1")
+                .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9/inherited-proxy")
+                .env("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer inherited-header");
             apply_account_home(&mut command, harness, account);
             String::from_utf8(command.output().unwrap().stdout).unwrap()
         };
         let with_account = run("claude", Some(home.path()));
-        for name in CLAUDE_CREDENTIAL_OVERRIDES {
+        for name in CLAUDE_ACCOUNT_OVERRIDES {
             assert!(!with_account.lines().any(|line| line.starts_with(&format!("{name}="))), "{name} survived:\n{with_account}");
         }
         assert!(with_account.contains(&format!("CLAUDE_CONFIG_DIR={}", home.path().display())));
@@ -866,6 +873,106 @@ mod tests {
         assert!(own.contains("ANTHROPIC_API_KEY=sk-ant-inherited") && own.contains("CLAUDE_CODE_OAUTH_TOKEN=inherited-oauth"));
         // Codex reads its login from CODEX_HOME alone.
         assert!(run("codex", Some(home.path())).contains("ANTHROPIC_API_KEY=sk-ant-inherited"));
+    }
+
+    /// A listener that records each request's head and answers `reply`.
+    fn recorder(reply: &'static [u8]) -> (u16, Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut head = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => head.extend_from_slice(&buffer[..read]),
+                    }
+                }
+                log.lock().unwrap().push(String::from_utf8_lossy(&head).into_owned());
+                let _ = stream.write_all(reply);
+            }
+        });
+        (port, seen)
+    }
+
+    /// Runs the real `claude` (skipped when it is not installed) with
+    /// synthetic credentials only: a throwaway HOME and config folder holding
+    /// a fake subscription login, an inherited proxy endpoint and
+    /// `Authorization` header pointing at a local recorder, and a stand-in
+    /// HTTPS proxy that sees only which host traffic is tunnelled to.
+    #[test]
+    fn an_account_launch_never_reaches_an_inherited_endpoint() {
+        if std::process::Command::new("claude").arg("--version").output().is_err() {
+            eprintln!("skipping: claude is not installed");
+            return;
+        }
+        const UNAUTHORIZED: &[u8] = b"HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 70\r\nconnection: close\r\n\r\n{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"x\"}}";
+        const NO_TUNNEL: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+        // Each run ends after its first messages request fails (no retries),
+        // so what the recorders hold afterwards is everything it sent.
+        let run = |account: bool, inherited_header: bool| {
+            let (home, folder) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let expires = (std::time::SystemTime::now() + std::time::Duration::from_secs(86_400))
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+            fs::write(
+                folder.path().join(".credentials.json"),
+                format!("{{\"claudeAiOauth\":{{\"accessToken\":\"sk-ant-oat01-SYNTHETIC-ACCOUNT\",\"refreshToken\":\"sk-ant-ort01-SYNTHETIC\",\"expiresAt\":{expires},\"scopes\":[\"user:inference\",\"user:profile\"],\"subscriptionType\":\"max\"}}}}"),
+            ).unwrap();
+            let (endpoint_port, endpoint) = recorder(UNAUTHORIZED);
+            let (proxy_port, proxy) = recorder(NO_TUNNEL);
+            let mut command = std::process::Command::new("claude");
+            command
+                .args(["-p", "hi", "--max-turns", "1"])
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", home.path())
+                .env("CLAUDE_CONFIG_DIR", folder.path())
+                .env("HTTPS_PROXY", format!("http://127.0.0.1:{proxy_port}"))
+                .env("NO_PROXY", "127.0.0.1,localhost")
+                .env("DISABLE_TELEMETRY", "1")
+                .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+                .env("CLAUDE_CODE_MAX_RETRIES", "0")
+                // What the daemon inherited from the user's shell.
+                .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{endpoint_port}"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if inherited_header {
+                command.env("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer SYNTHETIC-INHERITED-BEARER");
+            }
+            if account {
+                apply_account_home(&mut command, "claude", Some(folder.path()));
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while std::time::Instant::now() < deadline && child.try_wait().unwrap().is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            assert!(child.try_wait().unwrap().is_some(), "claude did not finish within a minute");
+            let _ = child.wait();
+            let seen = (endpoint.lock().unwrap().clone(), proxy.lock().unwrap().clone());
+            seen
+        };
+        // Controls: without the account launch the inherited endpoint wins,
+        // carrying the inherited header, or with only a base URL the account's
+        // own token. That is what makes the account runs a real check.
+        for (header, token) in [(true, "Bearer SYNTHETIC-INHERITED-BEARER"), (false, "Bearer sk-ant-oat01-SYNTHETIC-ACCOUNT")] {
+            let (endpoint, _) = run(false, header);
+            assert!(
+                endpoint.iter().any(|head| head.starts_with("POST /v1/messages") && head.contains(token)),
+                "the control run should send {token} to the inherited endpoint: {endpoint:?}"
+            );
+            // The account launch goes to Anthropic, tunnelled, and never to
+            // the inherited endpoint with either token.
+            let (endpoint, proxy) = run(true, header);
+            assert!(proxy.iter().any(|head| head.starts_with("CONNECT api.anthropic.com:443")), "{proxy:?}");
+            assert!(endpoint.is_empty(), "an account launch reached the inherited endpoint: {endpoint:?}");
+        }
     }
 
     #[test]
