@@ -227,6 +227,7 @@ pub fn import_changes(notes: &NotesService) -> Result<usize, BridgeError> {
         // Bridge has now seen this file; the merged result may overwrite it.
         let set_hash = |value: &str| notes.with_db(|db| Ok(db.execute("UPDATE pages SET content_hash=?2 WHERE id=?1", params![id, value])?));
         set_hash(&file_hash(&contents))?;
+        let file_body = body.clone();
         let applied = apply_import(notes, &id, &page, front, body, projected_seq);
         let touched = match applied {
             Ok(touched) => touched,
@@ -235,6 +236,13 @@ pub fn import_changes(notes: &NotesService) -> Result<usize, BridgeError> {
                 return Err(error);
             }
         };
+        if !touched && notes.read(&id).is_ok_and(|now| now.markdown == file_body) {
+            // Nothing to write: the file already says what the page says, so
+            // it now stands for the page's current version. Without this the
+            // next outside edit merges against an older base and re-inserts
+            // text the page already has.
+            notes.with_db(|db| Ok(db.execute("UPDATE pages SET projected_seq=seq WHERE id=?1", params![id])?))?;
+        }
         changed += usize::from(touched);
     }
     Ok(changed)
@@ -366,6 +374,24 @@ mod tests {
         import_changes(&notes).unwrap();
         let page = notes.read(&note.id).unwrap();
         assert_eq!((page.note.workspace_id, page.markdown.as_str()), (None, "assign me, edited\n"));
+    }
+
+    #[test]
+    fn accepting_a_matching_body_advances_the_import_base() {
+        let (_dir, notes) = service();
+        let note = notes.create(CreatePage { content: Some("top\n".into()), ..Default::default() }, PERSON).unwrap();
+        let path = PathBuf::from(note.path.clone().unwrap());
+        let original = std::fs::read_to_string(&path).unwrap();
+        // The person types the same line an agent is about to append.
+        std::fs::write(&path, original.replace("top\n", "top\nagent line\n")).unwrap();
+        notes.edit(EditPage { id: note.id.clone(), append: Some(NoteAppend { content: "agent line\n".into(), position: "end".into() }), ..Default::default() }, "agent:claude:s1").unwrap();
+        import_changes(&notes).unwrap();
+        assert_eq!(notes.read(&note.id).unwrap().markdown, "top\nagent line\n");
+        // A later outside edit must merge against what the accepted file represents.
+        let accepted = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, accepted.replace("top\nagent line\n", "top\nagent line\nexternal line\n")).unwrap();
+        import_changes(&notes).unwrap();
+        assert_eq!(notes.read(&note.id).unwrap().markdown, "top\nagent line\nexternal line\n");
     }
 
     #[test]
