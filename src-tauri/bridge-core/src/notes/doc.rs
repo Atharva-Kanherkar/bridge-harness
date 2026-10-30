@@ -26,25 +26,65 @@ pub const PROPS: &str = "props";
 /// Updates between snapshots of one page.
 pub const SNAPSHOT_EVERY: i64 = 500;
 
-/// A page's properties as the doc holds them.
+/// A page's properties as the doc holds them. Everything the index needs to
+/// rebuild a page lives here, so `pages` can be reconstructed from the log.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Props {
+    pub space_id: Option<String>,
     pub title: Option<String>,
     pub kind: Option<String>,
     pub tags: Vec<String>,
     pub workspace_id: Option<String>,
     pub state: Option<String>,
+    pub parent_id: Option<String>,
+    pub source_id: Option<String>,
+    pub session_ids: Vec<String>,
+    pub source_excerpt: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: Option<String>,
+    pub deleted_at: Option<String>,
 }
 
-/// A change to properties. `None` leaves a key alone; `Some(None)` clears it.
+/// Property keys, as stored in `Y.Map("props")`. List values are JSON arrays.
+pub mod key {
+    pub const SPACE: &str = "spaceId";
+    pub const TITLE: &str = "title";
+    pub const KIND: &str = "kind";
+    pub const TAGS: &str = "tags";
+    pub const WORKSPACE: &str = "workspaceId";
+    pub const STATE: &str = "state";
+    pub const PARENT: &str = "parentId";
+    pub const SOURCE: &str = "sourceId";
+    pub const SESSIONS: &str = "sessionIds";
+    pub const EXCERPT: &str = "sourceExcerpt";
+    pub const CREATED_BY: &str = "createdBy";
+    pub const CREATED_AT: &str = "createdAt";
+    pub const DELETED_AT: &str = "deletedAt";
+}
+
+/// A change to properties: each key set to a value, or cleared with `None`.
 #[derive(Debug, Clone, Default)]
-pub struct PropsPatch {
-    pub title: Option<Option<String>>,
-    pub kind: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub workspace_id: Option<Option<String>>,
-    pub state: Option<String>,
+pub struct PropsPatch(pub Vec<(&'static str, Option<String>)>);
+
+impl PropsPatch {
+    pub fn set(mut self, key: &'static str, value: impl Into<String>) -> Self {
+        self.0.push((key, Some(value.into())));
+        self
+    }
+    pub fn clear(mut self, key: &'static str) -> Self {
+        self.0.push((key, None));
+        self
+    }
+    pub fn maybe(mut self, key: &'static str, value: Option<String>) -> Self {
+        self.0.push((key, value));
+        self
+    }
+    /// A list value; an empty list clears the key.
+    pub fn list(self, key: &'static str, values: &[String]) -> Self {
+        let encoded = (!values.is_empty()).then(|| serde_json::to_string(values).unwrap_or_else(|_| "[]".into()));
+        self.maybe(key, encoded)
+    }
 }
 
 pub struct PageDoc {
@@ -92,16 +132,25 @@ impl PageDoc {
     pub fn props(&self) -> Props {
         let map = self.doc.get_or_insert_map(PROPS);
         let txn = self.doc.transact();
-        let string = |key: &str| match map.get(&txn, key) {
+        let string = |name: &str| match map.get(&txn, name) {
             Some(Out::Any(Any::String(value))) => Some(value.to_string()),
             _ => None,
         };
+        let list = |name: &str| string(name).and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
         Props {
-            title: string("title"),
-            kind: string("kind"),
-            tags: string("tags").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default(),
-            workspace_id: string("workspaceId"),
-            state: string("state"),
+            space_id: string(key::SPACE),
+            title: string(key::TITLE),
+            kind: string(key::KIND),
+            tags: list(key::TAGS),
+            workspace_id: string(key::WORKSPACE),
+            state: string(key::STATE),
+            parent_id: string(key::PARENT),
+            source_id: string(key::SOURCE),
+            session_ids: list(key::SESSIONS),
+            source_excerpt: string(key::EXCERPT),
+            created_by: string(key::CREATED_BY),
+            created_at: string(key::CREATED_AT),
+            deleted_at: string(key::DELETED_AT),
         }
     }
 
@@ -140,39 +189,40 @@ impl PageDoc {
     }
 
     pub fn set_props(&self, patch: &PropsPatch) -> Result<Option<Vec<u8>>, BridgeError> {
-        let current = self.props();
-        self.change(|txn, _, map| {
-            let mut set = |key: &str, value: Option<String>, was: Option<String>| {
-                if value == was {
-                    return;
+        self.edit(None, patch)
+    }
+
+    /// Change the body (when `body` is given) and properties in one transaction.
+    pub fn edit(&self, body: Option<&str>, patch: &PropsPatch) -> Result<Option<Vec<u8>>, BridgeError> {
+        let current = body.map(|_| self.body());
+        self.change(|txn, text, map| {
+            if let (Some(next), Some(current)) = (body, current.as_deref()) {
+                if next != current {
+                    apply_text_diff(txn, text, current, next);
                 }
-                match value {
-                    Some(value) => {
-                        map.insert(txn, key, In::from(value));
-                    }
-                    None => {
-                        map.remove(txn, key);
-                    }
-                }
-            };
-            if let Some(title) = &patch.title {
-                set("title", title.clone(), current.title.clone());
             }
-            if let Some(kind) = &patch.kind {
-                set("kind", Some(kind.clone()), current.kind.clone());
-            }
-            if let Some(tags) = &patch.tags {
-                let encode = |tags: &[String]| serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
-                let was = (!current.tags.is_empty()).then(|| encode(&current.tags));
-                set("tags", (!tags.is_empty()).then(|| encode(tags)), was);
-            }
-            if let Some(workspace) = &patch.workspace_id {
-                set("workspaceId", workspace.clone(), current.workspace_id.clone());
-            }
-            if let Some(state) = &patch.state {
-                set("state", Some(state.clone()), current.state.clone());
-            }
+            apply_props(txn, map, patch);
         })
+    }
+}
+
+fn apply_props(txn: &mut TransactionMut, map: &yrs::MapRef, patch: &PropsPatch) {
+    for (name, value) in &patch.0 {
+        let was = match map.get(&*txn, name) {
+            Some(Out::Any(Any::String(current))) => Some(current.to_string()),
+            _ => None,
+        };
+        if *value == was {
+            continue;
+        }
+        match value {
+            Some(value) => {
+                map.insert(txn, *name, In::from(value.clone()));
+            }
+            None => {
+                map.remove(txn, name);
+            }
+        }
     }
 }
 
@@ -283,7 +333,7 @@ mod tests {
         let (_dir, db) = db();
         let page = PageDoc::new();
         log(&db, "p1", page.set_body("helo wrld, a typo stays").unwrap());
-        log(&db, "p1", page.set_props(&PropsPatch { title: Some(Some("Launch".into())), kind: Some("idea".into()), tags: Some(vec!["launch".into(), "q4".into()]), workspace_id: Some(None), state: Some("inbox".into()) }).unwrap());
+        log(&db, "p1", page.set_props(&PropsPatch::default().set(key::TITLE, "Launch").set(key::KIND, "idea").list(key::TAGS, &["launch".into(), "q4".into()]).clear(key::WORKSPACE).set(key::STATE, "inbox")).unwrap());
         log(&db, "p1", page.insert_body(page.body().len(), "\n- one more line ✨").unwrap());
         let (replayed, seq) = load_page(&db, "p1", None).unwrap();
         assert_eq!(seq, 3);
@@ -348,6 +398,6 @@ mod tests {
         let base_seq = log(&db, "p1", live.set_body("same words").unwrap());
         assert!(merge_save(&db, "p1", base_seq, "same words").unwrap().is_none());
         assert!(live.set_props(&PropsPatch::default()).unwrap().is_none());
-        assert!(live.set_props(&PropsPatch { state: None, title: Some(None), ..Default::default() }).unwrap().is_none());
+        assert!(live.set_props(&PropsPatch::default().clear(key::TITLE).list(key::TAGS, &[])).unwrap().is_none());
     }
 }

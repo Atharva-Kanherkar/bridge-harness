@@ -9,4 +9,5 @@
 
 pub mod doc;
 pub mod ids;
+pub mod service;
 pub mod store;
