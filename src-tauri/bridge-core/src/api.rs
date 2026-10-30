@@ -6801,3 +6801,118 @@ pub fn get_chat_settings(core: &Arc<BridgeCore>, session_id: &str) -> Result<wir
 pub fn update_chat_options(core: &Arc<BridgeCore>, params: &wire::UpdateChatOptionsParams) -> Result<wire::ChatSessionSettings, BridgeError> {
     crate::chat_defaults::update_options(core,params)
 }
+
+// ---- notes ---------------------------------------------------------------
+// Bridge Notes. Every write goes through `NotesService`, the one write path;
+// a person's calls arrive here with actor `person`, agents arrive through the
+// notes tools with their own actor (see `notes::tool`).
+
+fn notes_list_filter(params: &wire::ListNotesParams) -> crate::notes::service::ListFilter {
+    crate::notes::service::ListFilter {
+        query: params.query.clone(),
+        tags: params.tags.clone(),
+        kind: params.kind.clone(),
+        state: params.state.clone(),
+        parent_id: params.parent_id.clone(),
+        include_archived: params.include_archived,
+        limit: None,
+    }
+}
+
+/// Pages, model jobs worth showing, and the folder pages are mirrored to.
+/// Imports outside edits first, so a list reflects the files on disk.
+pub fn list_notes(core: &Arc<BridgeCore>, params: &wire::ListNotesParams) -> Result<wire::NotesList, BridgeError> {
+    if let Err(error) = crate::notes::projector::import_changes(&core.notes) {
+        eprintln!("[notes] import before list failed: {error}");
+    }
+    Ok(wire::NotesList {
+        notes: core.notes.list(&notes_list_filter(params))?,
+        jobs: core.notes.with_db(crate::notes::jobs::recent)?,
+        root: core.notes.root().to_string_lossy().into_owned(),
+    })
+}
+
+pub fn read_page(core: &Arc<BridgeCore>, params: &wire::ReadPageParams) -> Result<wire::NotePage, BridgeError> {
+    core.notes.read(&params.id)
+}
+
+pub fn capture_note(core: &Arc<BridgeCore>, params: &wire::CaptureNoteParams) -> Result<wire::Note, BridgeError> {
+    core.notes.capture(&params.body, crate::notes::service::PERSON)
+}
+
+pub(crate) fn notes_create_page(params: &wire::CreatePageParams) -> crate::notes::service::CreatePage {
+    crate::notes::service::CreatePage {
+        title: params.title.clone(),
+        content: params.content.clone(),
+        parent_id: params.parent_id.clone(),
+        kind: params.kind.clone(),
+        tags: params.tags.clone(),
+        workspace_id: params.workspace_id.clone(),
+        ..Default::default()
+    }
+}
+
+pub fn create_page(core: &Arc<BridgeCore>, params: &wire::CreatePageParams) -> Result<wire::Note, BridgeError> {
+    core.notes.create(notes_create_page(params), crate::notes::service::PERSON)
+}
+
+pub(crate) fn notes_edit_page(params: &wire::EditPageParams) -> crate::notes::service::EditPage {
+    crate::notes::service::EditPage {
+        id: params.id.clone(),
+        base_seq: params.base_seq,
+        text: params.text.clone(),
+        edits: params.edits.clone(),
+        append: params.append.clone(),
+        allow_deleting_children: params.allow_deleting_children,
+    }
+}
+
+pub fn edit_page(core: &Arc<BridgeCore>, params: &wire::EditPageParams) -> Result<wire::NoteEditResult, BridgeError> {
+    core.notes.edit(notes_edit_page(params), crate::notes::service::PERSON)
+}
+
+pub(crate) fn notes_update_note(params: &wire::UpdateNoteParams) -> crate::notes::service::UpdateNote {
+    crate::notes::service::UpdateNote {
+        id: params.id.clone(),
+        title: params.title.clone(),
+        kind: params.kind.clone(),
+        tags: params.tags.clone(),
+        workspace_id: params.workspace_id.clone(),
+        clear_workspace: params.clear_workspace,
+        state: params.state.clone(),
+        add_session_id: params.add_session_id.clone(),
+    }
+}
+
+pub fn update_note(core: &Arc<BridgeCore>, params: &wire::UpdateNoteParams) -> Result<wire::Note, BridgeError> {
+    core.notes.update(notes_update_note(params), crate::notes::service::PERSON)
+}
+
+pub fn delete_note(core: &Arc<BridgeCore>, params: &wire::DeleteNoteParams) -> Result<wire::UnitResult, BridgeError> {
+    core.notes.delete(&params.id, crate::notes::service::PERSON)?;
+    Ok(wire::UnitResult(()))
+}
+
+/// Queue the opt-in Structure pass. Nothing runs until someone asks.
+pub fn structure_note(core: &Arc<BridgeCore>, params: &wire::StructureNoteParams) -> Result<wire::NoteJobQueued, BridgeError> {
+    let job_id = core.notes.request_pass(&params.id, crate::notes::jobs::STRUCTURE, params.harness.as_deref(), params.model.as_deref())?;
+    Ok(wire::NoteJobQueued { job_id })
+}
+
+/// Queue the opt-in Turn into tasks pass on the chosen (or default) harness.
+pub fn extract_tasks(core: &Arc<BridgeCore>, params: &wire::ExtractTasksParams) -> Result<wire::NoteJobQueued, BridgeError> {
+    let job_id = core.notes.request_pass(&params.id, crate::notes::jobs::TASKS, params.harness.as_deref(), params.model.as_deref())?;
+    Ok(wire::NoteJobQueued { job_id })
+}
+
+pub fn split_item(core: &Arc<BridgeCore>, params: &wire::SplitItemParams) -> Result<wire::Note, BridgeError> {
+    core.notes.split_item(&params.id, params.item_index as usize, crate::notes::service::PERSON)
+}
+
+pub fn get_notes_settings(core: &Arc<BridgeCore>) -> Result<wire::NotesSettings, BridgeError> {
+    core.notes.settings()
+}
+
+pub fn save_notes_settings(core: &Arc<BridgeCore>, params: &wire::SaveNotesSettingsParams) -> Result<wire::NotesSettings, BridgeError> {
+    core.notes.save_settings(params.auto_structure, params.root.clone())
+}

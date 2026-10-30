@@ -1059,6 +1059,90 @@
       "resultSchema": "empty-trash-result.json"
     },
     {
+      "command": "list_notes",
+      "domain": "notes",
+      "method": "notes/list_notes",
+      "paramsSchema": "list-notes-params.json",
+      "resultSchema": "notes-list.json"
+    },
+    {
+      "command": "read_page",
+      "domain": "notes",
+      "method": "notes/read_page",
+      "paramsSchema": "read-page-params.json",
+      "resultSchema": "note-page.json"
+    },
+    {
+      "command": "capture_note",
+      "domain": "notes",
+      "method": "notes/capture_note",
+      "paramsSchema": "capture-note-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "create_page",
+      "domain": "notes",
+      "method": "notes/create_page",
+      "paramsSchema": "create-page-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "edit_page",
+      "domain": "notes",
+      "method": "notes/edit_page",
+      "paramsSchema": "edit-page-params.json",
+      "resultSchema": "note-edit-result.json"
+    },
+    {
+      "command": "update_note",
+      "domain": "notes",
+      "method": "notes/update_note",
+      "paramsSchema": "update-note-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "delete_note",
+      "domain": "notes",
+      "method": "notes/delete_note",
+      "paramsSchema": "delete-note-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "structure_note",
+      "domain": "notes",
+      "method": "notes/structure_note",
+      "paramsSchema": "structure-note-params.json",
+      "resultSchema": "note-job-queued.json"
+    },
+    {
+      "command": "extract_tasks",
+      "domain": "notes",
+      "method": "notes/extract_tasks",
+      "paramsSchema": "extract-tasks-params.json",
+      "resultSchema": "note-job-queued.json"
+    },
+    {
+      "command": "split_item",
+      "domain": "notes",
+      "method": "notes/split_item",
+      "paramsSchema": "split-item-params.json",
+      "resultSchema": "note.json"
+    },
+    {
+      "command": "get_notes_settings",
+      "domain": "notes",
+      "method": "notes/get_notes_settings",
+      "paramsSchema": null,
+      "resultSchema": "notes-settings.json"
+    },
+    {
+      "command": "save_notes_settings",
+      "domain": "notes",
+      "method": "notes/save_notes_settings",
+      "paramsSchema": "save-notes-settings-params.json",
+      "resultSchema": "notes-settings.json"
+    },
+    {
       "command": "summary",
       "domain": "usage",
       "method": "usage/summary",

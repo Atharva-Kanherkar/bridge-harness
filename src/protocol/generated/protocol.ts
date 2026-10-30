@@ -158,6 +158,18 @@ export type BridgeMethod =
   | "storage/scan_directory"
   | "storage/delete_paths"
   | "storage/empty_trash"
+  | "notes/list_notes"
+  | "notes/read_page"
+  | "notes/capture_note"
+  | "notes/create_page"
+  | "notes/edit_page"
+  | "notes/update_note"
+  | "notes/delete_note"
+  | "notes/structure_note"
+  | "notes/extract_tasks"
+  | "notes/split_item"
+  | "notes/get_notes_settings"
+  | "notes/save_notes_settings"
   | "usage/summary"
   | "usage/list_price_overrides"
   | "usage/set_price_override"
@@ -414,6 +426,18 @@ export const BRIDGE_METHODS = [
   { method: "storage/scan_directory", domain: "storage", command: "scan_directory" },
   { method: "storage/delete_paths", domain: "storage", command: "delete_paths" },
   { method: "storage/empty_trash", domain: "storage", command: "empty_trash" },
+  { method: "notes/list_notes", domain: "notes", command: "list_notes" },
+  { method: "notes/read_page", domain: "notes", command: "read_page" },
+  { method: "notes/capture_note", domain: "notes", command: "capture_note" },
+  { method: "notes/create_page", domain: "notes", command: "create_page" },
+  { method: "notes/edit_page", domain: "notes", command: "edit_page" },
+  { method: "notes/update_note", domain: "notes", command: "update_note" },
+  { method: "notes/delete_note", domain: "notes", command: "delete_note" },
+  { method: "notes/structure_note", domain: "notes", command: "structure_note" },
+  { method: "notes/extract_tasks", domain: "notes", command: "extract_tasks" },
+  { method: "notes/split_item", domain: "notes", command: "split_item" },
+  { method: "notes/get_notes_settings", domain: "notes", command: "get_notes_settings" },
+  { method: "notes/save_notes_settings", domain: "notes", command: "save_notes_settings" },
   { method: "usage/summary", domain: "usage", command: "summary" },
   { method: "usage/list_price_overrides", domain: "usage", command: "list_price_overrides" },
   { method: "usage/set_price_override", domain: "usage", command: "set_price_override" },
@@ -539,6 +563,7 @@ export type BridgeNotification =
   | "connectors/card_ready"
   | "connectors/item_resolved"
   | "connectors/inbox_changed"
+  | "notes/page_changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -561,6 +586,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "connectors/card_ready", delivery: "transient" },
   { notification: "connectors/item_resolved", delivery: "transient" },
   { notification: "connectors/inbox_changed", delivery: "transient" },
+  { notification: "notes/page_changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -726,6 +752,18 @@ export interface BridgeMethodParams {
   "storage/scan_directory": ScanDirectoryParams;
   "storage/delete_paths": DeletePathsParams;
   "storage/empty_trash": undefined;
+  "notes/list_notes": ListNotesParams;
+  "notes/read_page": ReadPageParams;
+  "notes/capture_note": CaptureNoteParams;
+  "notes/create_page": CreatePageParams;
+  "notes/edit_page": EditPageParams;
+  "notes/update_note": UpdateNoteParams;
+  "notes/delete_note": DeleteNoteParams;
+  "notes/structure_note": StructureNoteParams;
+  "notes/extract_tasks": ExtractTasksParams;
+  "notes/split_item": SplitItemParams;
+  "notes/get_notes_settings": undefined;
+  "notes/save_notes_settings": SaveNotesSettingsParams;
   "sessions/archive_chat": ArchiveChatParams;
   "config/get_worker_settings": GetWorkerSettingsParams;
   "config/save_worker_settings": SaveWorkerSettingsParams;
@@ -1003,6 +1041,18 @@ export interface BridgeMethodResults {
   "storage/scan_directory": DiskListing;
   "storage/delete_paths": DiskDeleteResult;
   "storage/empty_trash": EmptyTrashResult;
+  "notes/list_notes": NotesList;
+  "notes/read_page": NotePage;
+  "notes/capture_note": Note;
+  "notes/create_page": Note;
+  "notes/edit_page": NoteEditResult;
+  "notes/update_note": Note;
+  "notes/delete_note": UnitResult;
+  "notes/structure_note": NoteJobQueued;
+  "notes/extract_tasks": NoteJobQueued;
+  "notes/split_item": Note;
+  "notes/get_notes_settings": NotesSettings;
+  "notes/save_notes_settings": NotesSettings;
   "usage/summary": UsageSummaryResult;
   "usage/list_price_overrides": ListUsagePriceOverridesResult;
   "usage/set_price_override": ListUsagePriceOverridesResult;
@@ -2020,6 +2070,49 @@ export interface ModelProfileDraft {
   selectionMode?: ProfileSelectionMode | null;
 }
 
+export interface Note {
+  createdAt: string;
+  createdBy: string;
+  id: string;
+  kind: string;
+  lastActor: string;
+  parentId?: string | null;
+  path?: string | null;
+  preview: string;
+  seq: number;
+  sessionIds: string[];
+  sourceExcerpt?: string | null;
+  sourceId?: string | null;
+  spaceId: string;
+  state: string;
+  tags: string[];
+  title?: string | null;
+  updatedAt: string;
+  workspaceId?: string | null;
+}
+
+export interface NoteAppend {
+  content: string;
+  position?: string;
+}
+
+export interface NoteJob {
+  createdAt: string;
+  detail?: string | null;
+  harness?: string | null;
+  id: string;
+  kind: string;
+  model?: string | null;
+  pageId: string;
+  status: string;
+  updatedAt: string;
+}
+
+export interface NoteTextEdit {
+  newStr: string;
+  oldStr: string;
+}
+
 export type Params = Record<string, unknown> | unknown[];
 
 export interface PermissionPolicy {
@@ -2465,7 +2558,26 @@ export type StateOperation = "close" | "reopen";
 
 export type StoredHarnessId = string;
 
+export interface StructuredItem {
+  excerpt: string;
+  kind: string;
+  title: string;
+}
+
 export type StructuredJson = Record<string, unknown> | unknown[];
+
+export interface StructuredView {
+  createdAt: string;
+  harness?: string | null;
+  items: StructuredItem[];
+  kind: string;
+  model?: string | null;
+  stale: boolean;
+  summary: string;
+  tags: string[];
+  title: string;
+  workspaceId?: string | null;
+}
 
 export type SuggestionFallbackReason = "unknown_model" | "unauthorized" | "rate_limited";
 
@@ -4182,6 +4294,107 @@ export interface DiskDeleteResult {
 export interface EmptyTrashResult {
   detail?: string | null;
   emptied: boolean;
+}
+
+export interface ListNotesParams {
+  includeArchived?: boolean;
+  kind?: string | null;
+  parentId?: string | null;
+  query?: string | null;
+  state?: string | null;
+  tags?: string[];
+}
+
+export interface NotesList {
+  jobs: NoteJob[];
+  notes: Note[];
+  root: string;
+}
+
+export interface ReadPageParams {
+  id: string;
+}
+
+export interface NotePage {
+  markdown: string;
+  note: Note;
+  seq: number;
+  structured?: StructuredView | null;
+  tasks: Note[];
+}
+
+export interface CaptureNoteParams {
+  body: string;
+}
+
+export interface CreatePageParams {
+  content?: string | null;
+  kind?: string | null;
+  parentId?: string | null;
+  tags?: string[];
+  title?: string | null;
+  workspaceId?: string | null;
+}
+
+export interface EditPageParams {
+  allowDeletingChildren?: boolean;
+  append?: NoteAppend | null;
+  baseSeq?: number | null;
+  edits?: NoteTextEdit[];
+  id: string;
+  text?: string | null;
+}
+
+export interface NoteEditResult {
+  note: Note;
+  seq: number;
+  warnings: string[];
+}
+
+export interface UpdateNoteParams {
+  addSessionId?: string | null;
+  clearWorkspace?: boolean;
+  id: string;
+  kind?: string | null;
+  state?: string | null;
+  tags?: string[] | null;
+  title?: string | null;
+  workspaceId?: string | null;
+}
+
+export interface DeleteNoteParams {
+  id: string;
+}
+
+export interface StructureNoteParams {
+  harness?: string | null;
+  id: string;
+  model?: string | null;
+}
+
+export interface NoteJobQueued {
+  jobId: string;
+}
+
+export interface ExtractTasksParams {
+  harness?: string | null;
+  id: string;
+  model?: string | null;
+}
+
+export interface SplitItemParams {
+  id: string;
+  itemIndex: number;
+}
+
+export interface NotesSettings {
+  autoStructure: boolean;
+  root: string;
+}
+
+export interface SaveNotesSettingsParams {
+  autoStructure?: boolean | null;
+  root?: string | null;
 }
 
 export interface ArchiveChatParams {

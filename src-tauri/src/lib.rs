@@ -921,6 +921,78 @@ async fn empty_trash(state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protoco
 }
 
 #[tauri::command]
+async fn list_notes(query: Option<String>, tags: Vec<String>, kind: Option<String>, state: Option<String>, parent_id: Option<String>, include_archived: bool, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesList, BridgeError> {
+    let core = core.inner().clone();
+    blocking("list notes", move || api::list_notes(&core, &bridge_protocol::messages::ListNotesParams { query, tags, kind, state, parent_id, include_archived })).await
+}
+
+#[tauri::command]
+async fn read_page(id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotePage, BridgeError> {
+    let core = core.inner().clone();
+    blocking("read page", move || api::read_page(&core, &bridge_protocol::messages::ReadPageParams { id })).await
+}
+
+#[tauri::command]
+async fn capture_note(body: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("capture note", move || api::capture_note(&core, &bridge_protocol::messages::CaptureNoteParams { body })).await
+}
+
+#[tauri::command]
+async fn create_page(title: Option<String>, content: Option<String>, parent_id: Option<String>, kind: Option<String>, tags: Vec<String>, workspace_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("create page", move || api::create_page(&core, &bridge_protocol::messages::CreatePageParams { title, content, parent_id, kind, tags, workspace_id })).await
+}
+
+#[tauri::command]
+async fn edit_page(id: String, base_seq: Option<i64>, text: Option<String>, edits: Vec<bridge_protocol::messages::NoteTextEdit>, append: Option<bridge_protocol::messages::NoteAppend>, allow_deleting_children: bool, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteEditResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("edit page", move || api::edit_page(&core, &bridge_protocol::messages::EditPageParams { id, base_seq, text, edits, append, allow_deleting_children })).await
+}
+
+#[tauri::command]
+async fn update_note(id: String, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: bool, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, title, kind, tags, workspace_id, clear_workspace, state, add_session_id })).await
+}
+
+#[tauri::command]
+async fn delete_note(id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::UnitResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("delete note", move || api::delete_note(&core, &bridge_protocol::messages::DeleteNoteParams { id })).await
+}
+
+#[tauri::command]
+async fn structure_note(id: String, harness: Option<String>, model: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteJobQueued, BridgeError> {
+    let core = core.inner().clone();
+    blocking("structure note", move || api::structure_note(&core, &bridge_protocol::messages::StructureNoteParams { id, harness, model })).await
+}
+
+#[tauri::command]
+async fn extract_tasks(id: String, harness: Option<String>, model: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteJobQueued, BridgeError> {
+    let core = core.inner().clone();
+    blocking("extract tasks", move || api::extract_tasks(&core, &bridge_protocol::messages::ExtractTasksParams { id, harness, model })).await
+}
+
+#[tauri::command]
+async fn split_item(id: String, item_index: u32, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+    let core = core.inner().clone();
+    blocking("split item", move || api::split_item(&core, &bridge_protocol::messages::SplitItemParams { id, item_index })).await
+}
+
+#[tauri::command]
+async fn get_notes_settings(core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesSettings, BridgeError> {
+    let core = core.inner().clone();
+    blocking("notes settings", move || api::get_notes_settings(&core)).await
+}
+
+#[tauri::command]
+async fn save_notes_settings(auto_structure: Option<bool>, root: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesSettings, BridgeError> {
+    let core = core.inner().clone();
+    blocking("save notes settings", move || api::save_notes_settings(&core, &bridge_protocol::messages::SaveNotesSettingsParams { auto_structure, root })).await
+}
+
+#[tauri::command]
 async fn sweep_worktrees(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::SweepOutcome, BridgeError> {
@@ -2880,6 +2952,7 @@ fn setup_embedded(
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
     bridge_core::title_jobs_live::start_title_maintenance(core.clone());
+    bridge_core::notes::live::start_note_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_worktree_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
@@ -3026,6 +3099,18 @@ pub fn run() -> i32 {
             scan_directory,
             delete_paths,
             empty_trash,
+            list_notes,
+            read_page,
+            capture_note,
+            create_page,
+            edit_page,
+            update_note,
+            delete_note,
+            structure_note,
+            extract_tasks,
+            split_item,
+            get_notes_settings,
+            save_notes_settings,
             sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,

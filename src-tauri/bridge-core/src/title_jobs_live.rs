@@ -92,7 +92,7 @@ impl TitleBackend for LiveBackend {
     }
 }
 
-fn one_hidden_turn(
+pub(crate) fn one_hidden_turn(
     registry: &AdapterRegistry,
     scratch: &std::path::Path,
     harness: &str,
