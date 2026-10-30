@@ -686,6 +686,20 @@ fn permission_rules(write_mode: Option<WriteMode>) -> Value {
         }
         None | Some(WriteMode::Full) => {}
     }
+    // Bridge's notes write tools. OpenCode names MCP tools `<server>_<tool>`
+    // and matches permissions by that name, so the catch-all `allow` above
+    // would let Ask change a person's notes without asking.
+    let notes_action = match write_mode {
+        Some(WriteMode::ReadOnly) => Some("deny"),
+        Some(WriteMode::Shared | WriteMode::Isolated) => Some("ask"),
+        None | Some(WriteMode::Full) => None,
+    };
+    if let Some(action) = notes_action {
+        for tool in crate::notes::tool::WRITE_TOOLS {
+            let permission = format!("{}_{tool}", crate::mcp_apps::tool::SERVER_NAME);
+            rules.push(json!({"permission": permission, "pattern":"*", "action": action}));
+        }
+    }
     Value::Array(rules)
 }
 
@@ -3422,6 +3436,33 @@ mod tests {
         assert!(has_rule(&read_only, "edit", "deny"));
         let isolated = permission_rules(Some(WriteMode::Isolated));
         assert!(has_rule(&isolated, "edit", "ask"));
+    }
+
+    #[test]
+    fn ask_mode_asks_before_notes_writes_in_both_api_versions() {
+        // OpenCode applies the last matching rule; MCP tools match by their
+        // `<server>_<tool>` name.
+        fn resolve_v1(rules: &Value, tool: &str) -> String {
+            rules.as_array().unwrap().iter().rev()
+                .find(|rule| rule["permission"] == "*" || rule["permission"] == tool)
+                .map(|rule| rule["action"].as_str().unwrap().to_owned()).unwrap()
+        }
+        fn resolve_v2(rules: &Value, tool: &str) -> String {
+            rules.as_array().unwrap().iter().rev()
+                .find(|rule| rule["action"] == "*" || rule["action"] == tool)
+                .map(|rule| rule["effect"].as_str().unwrap().to_owned()).unwrap()
+        }
+        for tool in ["bridge_notes_create", "bridge_notes_edit", "bridge_notes_append", "bridge_notes_set"] {
+            for (mode, expected) in [(Some(WriteMode::Shared), "ask"), (Some(WriteMode::Isolated), "ask"), (Some(WriteMode::ReadOnly), "deny"), (Some(WriteMode::Full), "allow")] {
+                let v1 = permission_rules(mode);
+                let v2 = crate::opencode_v2::permission_rules(&v1);
+                assert_eq!(resolve_v1(&v1, tool), expected, "{tool} {mode:?} v1");
+                assert_eq!(resolve_v2(&v2, tool), expected, "{tool} {mode:?} v2");
+            }
+        }
+        for tool in ["bridge_notes_search", "bridge_notes_read", "bridge_visualize"] {
+            assert_eq!(resolve_v1(&permission_rules(Some(WriteMode::Shared)), tool), "allow", "{tool} reads freely");
+        }
     }
 
     #[test]
