@@ -187,18 +187,7 @@ pub fn resume_with_settings(
     settings: &OpenCodeSettings,
 ) -> Result<StartedOpenCode, BridgeError> {
     launch(
-        StartRequest {
-            session_id: None,
-            cwd: request.cwd,
-            model: request.model,
-            effort: request.effort,
-            instructions: request.instructions,
-            write_mode: request.write_mode,
-            read_only_sandbox: request.read_only_sandbox,
-            briefing: request.briefing,
-            interactive: request.interactive,
-            on_progress: request.on_progress,
-        },
+        request.as_start(),
         Some(request.provider_session_id),
         settings,
         false,

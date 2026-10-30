@@ -1328,6 +1328,7 @@ pub fn start_session(
             match state.adapter_registry.resume(
                 dispatch_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider_id,
                     fork: false,
                     cwd: &path,
@@ -1936,6 +1937,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             match registry.resume(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider,
                     fork: true,
                     cwd: &launch_cwd,
@@ -2006,6 +2008,7 @@ fn start_chat_claimed(core: &Arc<BridgeCore>, session_id: String) -> Result<Brid
             match registry.resume(
                 &launch_adapter_id,
                 adapters::ResumeRequest {
+                    session_id: Some(session_id.as_str()),
                     provider_session_id: provider,
                     fork: false,
                     cwd: &launch_cwd,
@@ -5832,6 +5835,7 @@ pub fn launch_worker_outcome(
                 state.adapter_registry.resume(
                     &dispatch_id,
                     adapters::ResumeRequest {
+                        session_id: None,
                         provider_session_id,
                         fork: false,
                         cwd: &reservation.path,

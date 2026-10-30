@@ -147,18 +147,7 @@ pub fn start(request: StartRequest<'_>) -> Result<StartedClaude, BridgeError> {
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> {
     launch(
-        StartRequest {
-            session_id: None,
-            cwd: request.cwd,
-            model: request.model,
-            effort: request.effort,
-            instructions: request.instructions,
-            write_mode: request.write_mode,
-            read_only_sandbox: request.read_only_sandbox,
-            briefing: request.briefing,
-            interactive: request.interactive,
-            on_progress: request.on_progress,
-        },
+        request.as_start(),
         Some(request.provider_session_id),
     )
 }
@@ -1518,6 +1507,7 @@ mod tests {
         started.runtime.stop(ShutdownReason::AppShutdown);
 
         let mut resumed = resume(ResumeRequest {
+            session_id: None,
             fork: false,
             cwd,
             model: None,
