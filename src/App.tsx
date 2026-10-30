@@ -118,6 +118,8 @@ import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
+import { NotesCopilot } from "./components/notes/NotesCopilot";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
@@ -150,7 +152,7 @@ const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
 const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
-import type { NoteChatRequest } from "./components/NotesScreen";
+import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
@@ -462,6 +464,8 @@ function AppContent() {
   const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
   const [storageChatId, setStorageChatId] = useState(readStorageChatId);
   const [storageChatStarting, setStorageChatStarting] = useState(false);
+  const [notesChatId, setNotesChatId] = useState(readNotesChatId);
+  const [notesChatStarting, setNotesChatStarting] = useState(false);
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
@@ -1198,6 +1202,8 @@ function AppContent() {
   );
   const storageSession = useMemo(() => storageChatId ? state.sessions.find(candidate => candidate.id === storageChatId) : undefined, [storageChatId, state.sessions]);
   const storagePending = useMemo(() => pending.filter(item => item.sessionId === storageChatId), [pending, storageChatId]);
+  const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
+  const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
@@ -2006,6 +2012,71 @@ function AppContent() {
         onRetryCompaction={() => retryCompaction(storageSession.id)}
         onPromote={() => openSession(storageSession.id)}
       />}
+    />,
+  };
+
+  // The Notes page's standing chat, the same way: reuse it while it lives,
+  // else start a direct `notes` purpose chat and remember it.
+  async function askNotes(prompt: string): Promise<void> {
+    if (notesSession) { await deliverPrompt(notesSession, prompt); return; }
+    if (newChatPendingRef.current) return;
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+    newChatPendingRef.current = true;
+    setNotesChatStarting(true);
+    setError(undefined);
+    try {
+      const { harness, model } = resolveDraftHarnessModel();
+      const next = await bridgeApi.createChat(harness, model, NOTES_CHAT_TITLE, NOTES_CHAT_PURPOSE);
+      const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
+      if (!created) throw new Error("Bridge created the notes chat but did not return its session");
+      setState(next);
+      writeNotesChatId(created.id);
+      setNotesChatId(created.id);
+      await deliverPrompt(created, prompt);
+    } finally {
+      newChatPendingRef.current = false;
+      setNotesChatStarting(false);
+    }
+  }
+  const notesCopilot: NotesCopilotHost = {
+    render: page => <NotesCopilot
+      page={page}
+      projectName={page?.note.workspaceId ? state.workspaces.find(workspace => workspace.id === page.note.workspaceId)?.title : null}
+      starting={notesChatStarting}
+      onAsk={message => void askNotes(message).catch(e => setError(errorMessage(e)))}
+      renderChat={notesSession && (brief => <AsideChat
+        docked
+        tag="notes"
+        session={notesSession}
+        adapters={adapters}
+        events={agentEvents}
+        pendingMessages={notesPending}
+        queuedFollowUpCount={queuedFollowUps(notesSession.id, state.events).length}
+        working={!!notesSession.activeTurnId || notesSession.status === "working"}
+        suggestionSettings={suggestionSettings}
+        modelSwitch={modelSwitch?.sessionId === notesSession.id ? modelSwitch : null}
+        onSend={(text, attachments) => deliverPrompt(notesSession, brief(text), attachments)}
+        onChangeEffort={async effort => {
+          setState(await bridgeApi.updateChatModel(notesSession.id, notesSession.harness, notesSession.model ?? null, effort));
+        }}
+        onChangeModel={async (harness, model) => {
+          setModelSwitch({ sessionId: notesSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
+          try { setState(await bridgeApi.updateChatModel(notesSession.id, harness, model)); }
+          finally { setModelSwitch(null); }
+        }}
+        onResolve={async (eventId, decision, optionId) => {
+          const result = await bridgeApi.resolveApproval(notesSession.id, eventId, decision, optionId);
+          await reload();
+          return result;
+        }}
+        onAnswerQuestion={async (eventId, action, answers) => {
+          const result = await bridgeApi.resolveQuestion(notesSession.id, eventId, action, answers);
+          await reload();
+          return result;
+        }}
+        onRetryCompaction={() => retryCompaction(notesSession.id)}
+        onPromote={() => openSession(notesSession.id)}
+      />)}
     />,
   };
 
@@ -3225,6 +3296,7 @@ function AppContent() {
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
         onError={setError}
+        copilot={notesCopilot}
       /></Suspense> : view === "memory" ? <MemoryDialog
         open
         initialBody={memoryDraft}
