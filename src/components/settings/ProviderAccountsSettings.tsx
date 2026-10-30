@@ -147,6 +147,9 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
   // can move to the other account and keep its thread. Others cannot.
   const [shared, setShared] = useState(true);
   const [key, setKey] = useState("");
+  // A required key starts empty; say so only once the field has been used,
+  // while Add stays disabled either way.
+  const [keyTouched, setKeyTouched] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const account: ProviderAccount = !usesFolder
@@ -155,9 +158,10 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
       ? { id, label: name.trim(), shadowHomePath: folder.trim() }
       : { id, label: name.trim(), homePath: folder.trim() };
   const command = loginCommand(harness, account);
+  const missingKey = !!provider.key?.required && !key.trim();
   const error = (name.trim() ? null : "Give the account a name.")
     ?? (usesFolder ? folderError(folder) : null)
-    ?? (provider.key?.required && !key.trim() ? `Paste the ${provider.key.label}.` : null);
+    ?? (missingKey && keyTouched ? `Paste the ${provider.key?.label}.` : null);
   const description = usesFolder
     ? `Each account signs in from its own folder. Your own ${label} login is not changed.`
     : `Each account signs in with its own API key. Your own ${label} login is not changed.`;
@@ -184,7 +188,7 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
       {provider.key && <div className="grid gap-1.5">
         <div className="flex flex-wrap items-center gap-3">
           <span className="w-36 shrink-0 text-[12px] text-muted-foreground">{provider.key.required ? "API key" : "API key (optional)"}</span>
-          <Field label={provider.key.label} type="password" value={key} disabled={disabled} mono placeholder="Paste the key" width="w-72" onChange={setKey} />
+          <Field label={provider.key.label} type="password" value={key} disabled={disabled} mono placeholder="Paste the key" width="w-72" onChange={value => { setKey(value); setKeyTouched(true); }} />
         </div>
         <span className="text-[11px] text-muted-foreground">{provider.key.help}</span>
       </div>}
@@ -201,7 +205,7 @@ function AddAccountForm({ harness, label, accounts, disabled, onAdd, onCancel }:
       {error && <p role="alert" className="text-[12px] text-destructive">{error}</p>}
       <div className="flex items-center justify-end gap-2">
         <TextButton disabled={disabled} onClick={onCancel}>Cancel</TextButton>
-        <PrimaryButton disabled={disabled || !!error} onClick={() => void onAdd(account, key.trim())}>Add account</PrimaryButton>
+        <PrimaryButton disabled={disabled || !!error || missingKey} onClick={() => void onAdd(account, key.trim())}>Add account</PrimaryButton>
       </div>
     </div>
   </SettingsBlockRow>;

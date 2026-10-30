@@ -122,6 +122,9 @@ describe("ProviderAccountsSettings", () => {
     await act(async () => view.button("Add account")!.click());
     expect(view.container.querySelector('input[aria-label="Account folder"]')).toBeNull();
     expect(submit(view.container).disabled, "Cursor needs a key").toBe(true);
+    expect(view.container.querySelector('[role="alert"]'), "no complaint before the field is used").toBeNull();
+    await view.type("Cursor API key", "x");
+    await view.type("Cursor API key", "");
     expect(view.container.querySelector('[role="alert"]')!.textContent).toContain("Paste the Cursor API key");
     await view.type("Cursor API key", "key_cursor_synthetic");
     await act(async () => submit(view.container).click());
