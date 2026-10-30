@@ -39,6 +39,8 @@ const DOCK_COMMANDS: &[Command] = &[
 const GO_COMMANDS: &[Command] = &[
     Command("open-recall", "Search This Chat", "CmdOrCtrl+K"),
     Command("open-projects", "Projects", "Shift+CmdOrCtrl+P"),
+    Command("open-notes", "Notes", "Shift+CmdOrCtrl+O"),
+    Command("capture-note", "Capture a Note", "Alt+CmdOrCtrl+N"),
 ];
 const CHAT_COMMANDS: &[Command] = &[
     Command("next-chat", "Next Chat", "Alt+CmdOrCtrl+Down"),

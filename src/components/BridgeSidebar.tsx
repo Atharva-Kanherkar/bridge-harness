@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive, Check, Clock, Bot,
- Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ Copy, AtSign, MoreHorizontal, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitFork, GitPullRequest, Home, Library, NotebookPen, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -439,6 +439,9 @@ export type BridgeSidebarProps = {
   onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
   onOpenMemory: () => void;
+  /** Bridge Notes: capture, pages and tasks. Not workspace-gated either. */
+  onOpenNotes?: () => void;
+  notesActive?: boolean;
   /** Token and cost usage across harnesses. */
   onOpenUsage?: () => void;
   /** Drawn at the end of the bottom rail, after Gitplace: the usage dot. */
@@ -476,6 +479,7 @@ export function BridgeSidebar({
   activeSessionId,
   projectsActive,
   memoryActive = false,
+  notesActive = false,
   marketplaceActive,
   usageActive = false,
   gitplaceActive = false,
@@ -496,6 +500,7 @@ export function BridgeSidebar({
   onOpenAgentFleet,
   onOpenMissionControl,
   onOpenMemory,
+  onOpenNotes,
   onOpenUsage,
   railTrailing,
   onOpenGitplace,
@@ -809,6 +814,7 @@ export function BridgeSidebar({
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
+          {onOpenNotes && <ActionRow icon={NotebookPen} label="Notes" chord="open-notes" onClick={onOpenNotes} active={notesActive} />}
           {/* A terminal for every stream of work: named for what it is. */}
           <ActionRow icon={TerminalSquare} label="Terminals" onClick={onOpenAgentFleet} active={agentFleetActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />

@@ -25,7 +25,23 @@ describe("the keymap", () => {
   it("matches a chord against its own stroke and nothing adjacent", () => {
     expect(matchShortcut(stroke({ key: "n", metaKey: true }))?.shortcut.id).toBe("new-chat");
     expect(matchShortcut(stroke({ key: "n" }))).toBeUndefined();
-    expect(matchShortcut(stroke({ key: "n", altKey: true, metaKey: true }))).toBeUndefined();
+    expect(matchShortcut(stroke({ key: "n", altKey: true }))).toBeUndefined();
+    // ⌥⌘N is a chord of its own (capture a note), never a new chat.
+    expect(matchShortcut(stroke({ key: "˜", code: "KeyN", altKey: true, metaKey: true }))?.shortcut.id).toBe("capture-note");
+  });
+
+  it("gives every single-key chord to exactly one command", () => {
+    for (const shortcut of SHORTCUTS.filter(item => !item.digits && item.chord.key)) {
+      const { chord } = shortcut;
+      const own = stroke({ key: chord.key!, code: chord.code ?? "", metaKey: !!chord.meta, altKey: !!chord.alt, shiftKey: !!chord.shift });
+      expect(matchShortcut(own)?.shortcut.id, `${shortcut.id} owns its chord`).toBe(shortcut.id);
+    }
+  });
+
+  it("captures a note mid-sentence but opens Notes only outside a text field", () => {
+    expect(matchShortcut(stroke({ key: "˜", code: "KeyN", altKey: true, metaKey: true }), true)?.shortcut.id).toBe("capture-note");
+    expect(matchShortcut(stroke({ key: "O", metaKey: true, shiftKey: true }))?.shortcut.id).toBe("open-notes");
+    expect(matchShortcut(stroke({ key: "O", metaKey: true, shiftKey: true }), true)).toBeUndefined();
   });
 
   it("treats shift as part of the chord rather than noise", () => {
