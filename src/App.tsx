@@ -149,6 +149,8 @@ import { useBridgeServerState } from "./serverState";
 const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
+const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
+import type { NoteChatRequest } from "./components/NotesScreen";
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
@@ -265,6 +267,8 @@ function AppContent() {
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
+  // Bumped by `capture-note`: Notes opens with its capture box focused.
+  const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
@@ -1924,6 +1928,22 @@ function AppContent() {
     return undefined;
   }
 
+  // Start a task (or any page) from Notes: a direct chat with no project, or a
+  // chat in the chosen project, on the chosen harness, with the brief as its
+  // first message. Notes stays open; the row then offers Open chat.
+  async function startChatFromNote({ message, workspaceId, harness }: NoteChatRequest): Promise<string | undefined> {
+    const adapter = adapters.find(candidate => candidate.id === harness);
+    const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
+    const draft: NewChatDraft = workspaceId
+      ? { workspaceId, overrides: { model } }
+      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null } } };
+    return submitNewChatDraft(draft, message);
+  }
+  // The harness every Notes picker preselects: the app's chat default, not
+  // whichever chat happens to be open.
+  const notesDefaultHarness = (modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters)?.adapter?.id : undefined)
+    ?? adapters.find(adapter => adapter.available)?.id ?? null;
+
   // The Storage page's standing chat: reuse it while it lives, else start a
   // direct chat (no project, a private scratch dir) and remember it.
   async function askStorage(prompt: string): Promise<void> {
@@ -2915,6 +2935,13 @@ function AppContent() {
       case "open-projects":
         setView("projects");
         return;
+      case "open-notes":
+        setView("notes");
+        return;
+      case "capture-note":
+        setView("notes");
+        setNoteCaptureRequest(value => value + 1);
+        return;
       case "open-settings":
         setView("settings");
         return;
@@ -3057,7 +3084,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3109,6 +3136,7 @@ function AppContent() {
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
       memoryActive={view === "memory"}
+      notesActive={view === "notes"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
       gitplaceActive={view === "gitplace"}
@@ -3129,6 +3157,7 @@ function AppContent() {
       onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
+      onOpenNotes={() => setView("notes")}
       onOpenUsage={() => setView("usage")}
       onOpenGitplace={() => setView("gitplace")}
       railTrailing={usageDot}
@@ -3187,7 +3216,16 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "memory" ? <MemoryDialog
+      /> : view === "notes" ? <Suspense fallback={<PanelLoading label="Opening notes…"/>}><NotesScreen
+        adapters={adapters}
+        workspaces={state.workspaces}
+        sessions={state.sessions}
+        defaultHarness={notesDefaultHarness}
+        captureRequest={noteCaptureRequest}
+        onStartChat={startChatFromNote}
+        onOpenChat={openSession}
+        onError={setError}
+      /></Suspense> : view === "memory" ? <MemoryDialog
         open
         initialBody={memoryDraft}
         adapters={adapters}

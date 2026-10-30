@@ -1,0 +1,329 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bridgeApi } from "../api";
+import { mockListNotes, mockNotesAgentWrite, mockReadPage, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
+import type { AdapterDescriptor, Session, Workspace } from "../types";
+import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
+
+let host: HTMLDivElement;
+let root: Root;
+beforeEach(() => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  resetMockNotes();
+  setMockNotesPassDelay(5);
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+});
+afterEach(() => {
+  act(() => root.unmount());
+  host.remove();
+  vi.restoreAllMocks();
+});
+
+const adapter = (id: string, available = true) => ({ id, label: id, available, authState: "authenticated", capabilities: [], models: [{ id: `${id}-model`, label: id }], defaultModel: `${id}-model` }) as unknown as AdapterDescriptor;
+const ADAPTERS = [adapter("codex"), adapter("claude"), adapter("cursor")];
+const WORKSPACES = [
+  { id: "demo-1", title: "Bridge", status: "ready", dirtyFiles: 0 },
+  { id: "demo-2", title: "Landing site", status: "ready", dirtyFiles: 0 },
+] as unknown as Workspace[];
+const SESSIONS = [{ id: "session-1w", title: "Research sync engines", label: "chat", harness: "claude" }] as unknown as Session[];
+
+function props(overrides: Partial<NotesScreenProps> = {}): NotesScreenProps {
+  return {
+    adapters: ADAPTERS, workspaces: WORKSPACES, sessions: SESSIONS, defaultHarness: "claude", pollMs: 20,
+    onStartChat: vi.fn(async () => "session-new"), onOpenChat: vi.fn(), onError: vi.fn(),
+    ...overrides,
+  };
+}
+
+async function render(overrides: Partial<NotesScreenProps> = {}) {
+  const given = props(overrides);
+  await act(async () => { root.render(<NotesScreen {...given} />); });
+  await settle();
+  return given;
+}
+const settle = async (ms = 0) => { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); };
+
+const buttons = (scope: ParentNode = host) => [...scope.querySelectorAll("button")];
+const button = (label: string, scope: ParentNode = host) => buttons(scope).find(node => node.getAttribute("aria-label") === label || node.textContent?.trim() === label);
+const click = async (node: Element | undefined) => {
+  if (!node) throw new Error("nothing to click");
+  await act(async () => { node.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  await settle();
+};
+const field = <T extends HTMLElement>(label: string) => host.querySelector<T>(`[aria-label="${label}"]`)!;
+const typeInto = async (node: HTMLTextAreaElement | HTMLInputElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(node), "value")!.set!;
+  await act(async () => { setter.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); });
+};
+const choose = async (node: HTMLSelectElement, value: string) => {
+  await act(async () => { node.value = value; node.dispatchEvent(new Event("change", { bubbles: true })); });
+  await settle();
+};
+const press = async (node: HTMLElement, key: string, init: KeyboardEventInit = {}) => {
+  let prevented = false;
+  await act(async () => { prevented = !node.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })); });
+  return prevented;
+};
+const blur = async (node: HTMLElement) => { await act(async () => { node.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); await settle(); };
+const rowTitles = () => [...host.querySelectorAll("ul[aria-label='Notes'] li button")].map(node => node.textContent ?? "");
+const openNote = async (title: string) => click(buttons(host.querySelector("ul[aria-label='Notes']")!).find(node => node.textContent?.includes(title)));
+const words = () => field<HTMLTextAreaElement>("Your words");
+
+const ONBOARDING = "need to fix the onbaording flow";
+
+describe("capture", () => {
+  it("saves exactly what was typed and clears the box before the save returns", async () => {
+    const structure = vi.spyOn(bridgeApi, "structureNote");
+    const tasks = vi.spyOn(bridgeApi, "extractNoteTasks");
+    let release!: () => void;
+    const real = bridgeApi.captureNote;
+    vi.spyOn(bridgeApi, "captureNote").mockImplementation(body => new Promise(resolve => { release = () => resolve(real(body)); }));
+    await render();
+    const box = field<HTMLTextAreaElement>("Capture a note");
+    const typed = "  teh idea:\n\tkeep my typos  \n";
+    await typeInto(box, typed);
+    expect(await press(box, "Enter")).toBe(true);
+    expect(box.value).toBe("");
+    expect(host.querySelector("ul[aria-label='Notes'] li[aria-busy='true']")?.textContent).toContain("Saving…");
+    await act(async () => { release(); });
+    await settle();
+    expect(bridgeApi.captureNote).toHaveBeenCalledWith(typed);
+    expect(rowTitles()[0]).toContain("teh idea:");
+    await openNote("teh idea:");
+    expect(words().value).toBe(typed);
+    expect(structure).not.toHaveBeenCalled();
+    expect(tasks).not.toHaveBeenCalled();
+  });
+
+  it("keeps Shift+Enter as a newline and ignores an empty capture", async () => {
+    const capture = vi.spyOn(bridgeApi, "captureNote");
+    await render();
+    const box = field<HTMLTextAreaElement>("Capture a note");
+    await typeInto(box, "line one");
+    expect(await press(box, "Enter", { shiftKey: true })).toBe(false);
+    await typeInto(box, "   \n ");
+    await press(box, "Enter");
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("hands the text back when the capture fails", async () => {
+    vi.spyOn(bridgeApi, "captureNote").mockRejectedValue(new Error("disk full"));
+    const given = await render();
+    const box = field<HTMLTextAreaElement>("Capture a note");
+    await typeInto(box, "keep me");
+    await press(box, "Enter");
+    await settle();
+    expect(box.value).toBe("keep me");
+    expect(given.onError).toHaveBeenCalledWith("disk full");
+  });
+
+  it("focuses the box when asked from anywhere", async () => {
+    await render({ captureRequest: 1 });
+    expect(document.activeElement).toBe(field("Capture a note"));
+  });
+});
+
+describe("Your words", () => {
+  it("shows the page byte for byte and saves edits with the seq they came from", async () => {
+    const edit = vi.spyOn(bridgeApi, "editNotePage");
+    await render();
+    await openNote(ONBOARDING);
+    const page = mockReadPage(mockIdOf(ONBOARDING));
+    expect(words().value).toBe(page.markdown);
+    await typeInto(words(), `${page.markdown}\nmore`);
+    expect(field("Save status").textContent).toBe("Unsaved");
+    await settle(900);
+    expect(edit).toHaveBeenCalledWith({ id: page.note.id, text: `${page.markdown}\nmore`, baseSeq: page.seq });
+    expect(field("Save status").textContent).toBe("Saved");
+    expect(mockReadPage(page.note.id).markdown).toBe(`${page.markdown}\nmore`);
+  });
+
+  it("reloads on an agent write, and keeps unsaved typing through one", async () => {
+    await render();
+    await openNote(ONBOARDING);
+    const id = mockIdOf(ONBOARDING);
+    mockNotesAgentWrite(id, "agent line one");
+    await settle(60);
+    expect(words().value).toContain("agent line one");
+
+    const before = words().value;
+    await typeInto(words(), `MINE ${before}`);
+    mockNotesAgentWrite(id, "agent line two");
+    await settle(60);
+    expect(words().value).toBe(`MINE ${before}`);
+    expect(host.textContent).toContain("This page changed while you were typing");
+    await blur(words());
+    await settle(20);
+    expect(words().value).toBe(`MINE ${before}\nagent line two`);
+    expect(mockReadPage(id).markdown).toBe(`MINE ${before}\nagent line two`);
+    expect(host.textContent).not.toContain("This page changed while you were typing");
+  });
+
+  it("names the agent and chat that wrote a page, which stays editable", async () => {
+    await render();
+    await openNote("Local-first sync libraries");
+    expect(host.textContent).toContain("Written by Claude in Research sync engines");
+    expect(host.querySelector("ul[aria-label='Notes'] [aria-label='Agent']")).not.toBeNull();
+    await typeInto(words(), "# Mine now\n");
+    await blur(words());
+    expect(mockReadPage(mockIdOf("Local-first sync libraries")).markdown).toBe("# Mine now\n");
+  });
+});
+
+describe("Structure", () => {
+  it("adds a second view with quotes, leaves your words alone, and goes stale on an edit", async () => {
+    await render();
+    await openNote(ONBOARDING);
+    const original = words().value;
+    await click(button("Structure"));
+    const picker = host.querySelector("[aria-label='Structure options']")!;
+    expect(field<HTMLSelectElement>("Harness").value).toBe("claude");
+    expect([...field<HTMLSelectElement>("Harness").options].map(option => option.value)).toEqual(["claude", "codex"]);
+    await click(button("Structure", picker));
+    await settle(80);
+    const view = host.querySelector("section[aria-label='Structured view']")!;
+    expect(view.textContent).toContain("Split into note");
+    expect([...view.querySelectorAll("blockquote")].map(quote => quote.textContent)).toContain("- add a skip button");
+    await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent === "Your words"));
+    expect(words().value).toBe(original);
+
+    await typeInto(words(), `${original}\nnew thought`);
+    await blur(words());
+    await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent?.startsWith("Structured")));
+    expect(host.textContent).toContain("Your words changed since this was built.");
+    expect(button("Re-structure")).toBeDefined();
+  });
+
+  it("splits an item into its own note", async () => {
+    await render();
+    await openNote(ONBOARDING);
+    await click(button("Structure"));
+    await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
+    await settle(80);
+    await click(button('Split "add a skip button" into a note'));
+    await settle(60);
+    expect(host.textContent).toContain('Saved "add a skip button" as its own note.');
+    expect(rowTitles().some(title => title.includes("add a skip button"))).toBe(true);
+  });
+
+  it("shows why a pass failed", async () => {
+    await render();
+    await click(button("New page"));
+    await click(button("Structure"));
+    await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
+    await settle(120);
+    expect(host.querySelector("[role='alert']")?.textContent).toBe("Structure couldn't run: There is nothing to structure yet.");
+  });
+
+  it("explains why nothing can run when no harness is signed in, and capture still works", async () => {
+    await render({ adapters: [adapter("claude", false), adapter("cursor")] });
+    await openNote(ONBOARDING);
+    await click(button("Turn into tasks"));
+    const picker = host.querySelector("[aria-label='Turn into tasks options']")!;
+    expect(picker.textContent).toContain("No harness can run this: sign in to Claude, Codex or OpenCode.");
+    expect(button("Turn into tasks", picker)).toBeUndefined();
+    const box = field<HTMLTextAreaElement>("Capture a note");
+    await typeInto(box, "still works");
+    await press(box, "Enter");
+    await settle();
+    expect(rowTitles()[0]).toContain("still works");
+  });
+});
+
+describe("tasks and Start", () => {
+  async function withTasks(overrides: Partial<NotesScreenProps> = {}) {
+    const given = await render(overrides);
+    await openNote(ONBOARDING);
+    await click(button("Turn into tasks"));
+    await click(button("Turn into tasks", host.querySelector("[aria-label='Turn into tasks options']")!));
+    await settle(80);
+    return given;
+  }
+
+  it("lists tasks with their quotes", async () => {
+    await withTasks();
+    const tasks = host.querySelector("section[aria-label='Tasks']")!;
+    expect([...tasks.querySelectorAll("blockquote")].map(quote => quote.textContent)).toEqual([
+      "need to fix the onbaording flow, ppl drop at step 3", "- add a skip button", "- shorter copy on the welcome screen",
+    ]);
+  });
+
+  it("starts a direct chat with No project, then a chat in a project, and offers Open chat", async () => {
+    const given = await withTasks();
+    await click(button("Start add a skip button"));
+    const picker = host.querySelector("[aria-label='Start a chat']")!;
+    const project = picker.querySelector<HTMLSelectElement>("[aria-label='Project']")!;
+    expect(project.value).toBe("");
+    expect([...project.options].map(option => option.textContent)).toEqual(["No project", "Bridge", "Landing site"]);
+    expect(picker.querySelector<HTMLSelectElement>("[aria-label='Chat harness']")!.value).toBe("claude");
+    await click(button("Start", picker));
+    await settle(60);
+    expect(given.onStartChat).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: null, harness: "claude" }));
+    const brief = vi.mocked(given.onStartChat).mock.calls[0][0].message;
+    expect(brief.startsWith("add a skip button")).toBe(true);
+    expect(brief).toContain('> - add a skip button');
+    expect(brief).toContain("need to fix the onbaording flow");
+    const task = mockReadPage(mockIdOf(ONBOARDING)).tasks.find(item => item.title === "add a skip button")!;
+    expect(task).toMatchObject({ state: "doing", sessionIds: ["session-new"] });
+    const row = host.querySelector("li[aria-label='add a skip button']")!;
+    await click(button("Open chat", row));
+    expect(given.onOpenChat).toHaveBeenCalledWith("session-new");
+
+    await click(button("Start shorter copy on the welcome screen"));
+    const second = host.querySelector("[aria-label='Start a chat']")!;
+    await choose(second.querySelector<HTMLSelectElement>("[aria-label='Project']")!, "demo-2");
+    await choose(second.querySelector<HTMLSelectElement>("[aria-label='Chat harness']")!, "cursor");
+    await click(button("Start", second));
+    await settle(60);
+    expect(given.onStartChat).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: "demo-2", harness: "cursor" }));
+    expect(button("Open chat", host.querySelector("li[aria-label='shorter copy on the welcome screen']")!)).toBeDefined();
+  });
+
+  it("preselects the page's project when it has one", async () => {
+    await withTasks();
+    await choose(field<HTMLSelectElement>("Project"), "demo-1");
+    await click(button("Start add a skip button"));
+    expect(host.querySelector<HTMLSelectElement>("[aria-label='Start a chat'] [aria-label='Project']")!.value).toBe("demo-1");
+  });
+
+  it("deletes a page with its tasks after saying how many go", async () => {
+    await withTasks();
+    await click(button("Delete note"));
+    expect(host.querySelector("[role='alertdialog']")?.textContent).toContain("Delete this note and its 3 tasks?");
+    await click(button("Delete", host.querySelector("[role='alertdialog']")!));
+    await settle(60);
+    expect(rowTitles().some(title => title.includes("onbaording"))).toBe(false);
+    expect(host.querySelector("textarea[aria-label='Your words']")).toBeNull();
+  });
+});
+
+describe("projects stay optional", () => {
+  it("lists every project plus No project, and links or clears one", async () => {
+    const update = vi.spyOn(bridgeApi, "updateNote");
+    await render();
+    await openNote(ONBOARDING);
+    const project = field<HTMLSelectElement>("Project");
+    expect([...project.options].map(option => option.textContent)).toEqual(["No project", "Bridge", "Landing site"]);
+    await choose(project, "demo-2");
+    expect(update).toHaveBeenLastCalledWith({ id: mockIdOf(ONBOARDING), workspaceId: "demo-2" });
+    await choose(field<HTMLSelectElement>("Project"), "");
+    expect(update).toHaveBeenLastCalledWith({ id: mockIdOf(ONBOARDING), clearWorkspace: true });
+  });
+
+  it("disables nothing when there are no projects", async () => {
+    await render({ workspaces: [] });
+    await openNote(ONBOARDING);
+    expect([...field<HTMLSelectElement>("Project").options].map(option => option.textContent)).toEqual(["No project"]);
+    for (const label of ["Structure", "Turn into tasks", "Start a chat"]) expect((button(label) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+function mockIdOf(text: string): string {
+  const note = mockListNotes({ includeArchived: true }).notes.find(item => !item.parentId && `${item.title ?? ""}\n${item.preview}`.includes(text));
+  if (!note) throw new Error(`no note with ${text}`);
+  return note.id;
+}
