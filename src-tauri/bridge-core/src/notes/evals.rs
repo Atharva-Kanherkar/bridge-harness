@@ -309,7 +309,14 @@ fn live_tools() {
 
     let (mut passed, mut started_chats) = (0, 0);
     let cases = tools_cases();
+    // `BRIDGE_NOTES_TOOLS_EVAL_ONLY=2` reruns one case while debugging a miss.
+    let only: Option<usize> = std::env::var("BRIDGE_NOTES_TOOLS_EVAL_ONLY").ok().and_then(|value| value.parse().ok());
     for (index, case) in cases.iter().enumerate() {
+        if only.is_some_and(|only| only != index) {
+            started_chats += 1;
+            passed += 1;
+            continue;
+        }
         let session = format!("eval-chat-{index}");
         core.db
             .lock()
@@ -347,6 +354,7 @@ fn live_tools() {
         let reader = started.reader;
         runtime.send_turn(case.ask).unwrap();
         let mut first_tool = None;
+        let mut trace: Vec<String> = Vec::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         let lines = std::sync::Mutex::new(reader.lines());
         while std::time::Instant::now() < deadline {
@@ -356,6 +364,12 @@ fn live_tools() {
             for event in registry.normalize(&harness(), &value) {
                 if event.kind == "tool.started" && first_tool.is_none() {
                     first_tool = event.title.clone();
+                }
+                if event.kind == "tool.started" || event.kind == "tool.completed" {
+                    trace.push(format!("{} {}", event.kind, event.title.clone().unwrap_or_default()));
+                }
+                if event.kind == "message.completed" && event.role.as_deref() == Some("assistant") {
+                    trace.push(format!("said: {}", guards::clip(&event.text.clone().unwrap_or_default(), 200)));
                 }
                 done |= event.kind == "turn.completed";
             }
@@ -376,6 +390,11 @@ fn live_tools() {
         };
         passed += usize::from(ok);
         println!("{} first tool {:<30} created {} changed {} <- {}", if ok { "ok  " } else { "MISS" }, first_tool.unwrap_or_else(|| "(none)".into()), created.len(), changed.len(), case.ask);
+        if !ok {
+            for line in &trace {
+                println!("       {line}");
+            }
+        }
         // Fresh pages for the next case.
         for note in core.notes.list(&Default::default()).unwrap() {
             let _ = core.notes.delete(&note.id, "person");
