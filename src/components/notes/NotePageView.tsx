@@ -79,8 +79,9 @@ export function NotePageView(props: NotePageViewProps) {
   const update = async (patch: Parameters<typeof bridgeApi.updateNote>[0]) => {
     try { await bridgeApi.updateNote(patch); onChanged(); } catch (error) { fail(error); }
   };
+  // Passes and chats read the stored page, so everything typed goes first.
   const run = async (kind: "structure" | "tasks", harness: string) => {
-    draft.flush();
+    if (!(await draft.flush())) return;
     try {
       if (kind === "structure") { await bridgeApi.structureNote(note.id, harness); setView("structured"); }
       else await bridgeApi.extractNoteTasks(note.id, harness);
@@ -94,6 +95,7 @@ export function NotePageView(props: NotePageViewProps) {
       onChanged();
     } catch (error) { fail(error); }
   };
+  const startSaved = async (target: Note, choice: StartChoice) => (await draft.flush()) && onStart(target, choice);
   const remove = async () => {
     try { await bridgeApi.deleteNote(note.id); onDeleted(); } catch (error) { fail(error); }
   };
@@ -160,7 +162,7 @@ export function NotePageView(props: NotePageViewProps) {
           {close => <PassPicker label="Turn into tasks" what="Finds the work this page asks for and adds each piece as a task below, quoting the words it came from. Existing tasks are kept." adapters={adapters} defaultHarness={defaultHarness} onRun={harness => { close(); void run("tasks", harness); }} />}
         </PopoverAction>
         <PopoverAction label="Start a chat" panelLabel="Start a chat" align="end" busy={startingId === note.id} busyLabel="Starting…">
-          {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? parent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void onStart(note, choice).then(started => { if (started) close(); })} />}
+          {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? parent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
         </PopoverAction>
         {note.sessionIds.length > 0 && <Pill onClick={() => onOpenChat(note.sessionIds[note.sessionIds.length - 1])}>Open chat</Pill>}
       </div>
@@ -172,7 +174,7 @@ export function NotePageView(props: NotePageViewProps) {
       {notice && <p role="status" className="m-0 mt-3 text-[13px] text-muted-foreground">{notice}</p>}
 
       {view === "words"
-        ? <YourWords title={note.title} text={draft.text} changedUnderneath={draft.changedUnderneath} onChange={draft.setText} onLeave={draft.flush} />
+        ? <YourWords title={note.title} text={draft.text} changedUnderneath={draft.changedUnderneath} onChange={draft.setText} onLeave={() => void draft.flush()} />
         : <StructuredPanel view={page.structured ?? null} busy={busy(structureJob)} onSplit={index => void split(index)} />}
 
       <NoteTasks
@@ -183,7 +185,7 @@ export function NotePageView(props: NotePageViewProps) {
         defaultHarness={defaultHarness}
         pageWorkspaceId={note.workspaceId ?? null}
         startingId={startingId}
-        onStart={onStart}
+        onStart={startSaved}
         onOpenChat={onOpenChat}
         onOpen={task => onOpenPage(task.id)}
         onSetState={(task, state) => void update({ id: task.id, state })}

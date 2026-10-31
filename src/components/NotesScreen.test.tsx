@@ -245,6 +245,34 @@ describe("Structure", () => {
     expect(button("Re-structure")?.getAttribute("aria-label")).toBe("Structure");
   });
 
+  it("runs Structure on the latest words, after the save in flight and the typing since", async () => {
+    const realEdit = bridgeApi.editNotePage;
+    let release!: () => void;
+    const edit = vi.spyOn(bridgeApi, "editNotePage")
+      .mockImplementationOnce(params => new Promise(resolve => { release = () => resolve(realEdit(params)); }))
+      .mockImplementation(params => realEdit(params));
+    let structuredText = "";
+    const realStructure = bridgeApi.structureNote;
+    const structure = vi.spyOn(bridgeApi, "structureNote").mockImplementation((id, harness) => {
+      structuredText = mockReadPage(id).markdown;
+      return realStructure(id, harness);
+    });
+    await render();
+    await openNote(ONBOARDING);
+    const original = (await editWords()).value;
+    await typeInto(words(), `${original}\nfirst thought`);
+    await blur(words());
+    await typeInto(await editWords(), `${original}\nfirst thought\nLATEST THOUGHT`);
+    await click(button("Structure"));
+    await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
+    expect(structure).not.toHaveBeenCalled();
+    await act(async () => { release(); });
+    await settle(30);
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(structure).toHaveBeenCalledTimes(1);
+    expect(structuredText).toContain("LATEST THOUGHT");
+  });
+
   it("splits an item into its own note", async () => {
     await render();
     await openNote(ONBOARDING);
@@ -328,6 +356,18 @@ describe("tasks and Start", () => {
     await settle(60);
     expect(given.onStartChat).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: "demo-2", harness: "cursor" }));
     expect(button("Open chat", host.querySelector("li[aria-label='shorter copy on the welcome screen']")!)).toBeDefined();
+  });
+
+  it("starts a chat with the latest words, even before they autosave", async () => {
+    const given = await render();
+    await openNote(ONBOARDING);
+    const original = (await editWords()).value;
+    await typeInto(words(), `${original}\nLATEST CHAT REQUIREMENT`);
+    await click(button("Start a chat"));
+    await click(button("Start", host.querySelector("[aria-label='Start a chat']")!));
+    await settle(60);
+    expect(given.onStartChat).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(given.onStartChat).mock.calls[0][0].message).toContain("LATEST CHAT REQUIREMENT");
   });
 
   it("preselects the page's project when it has one", async () => {

@@ -19,8 +19,9 @@ export interface NoteDraft {
   /** The page changed under unsaved typing; the typing merges on save. */
   changedUnderneath: boolean;
   setText: (text: string) => void;
-  /** Save now if there is anything to save. */
-  flush: () => void;
+  /** Save now, and resolve once everything typed so far is stored: the save in
+   *  flight, then whatever was typed during it. False when a save failed. */
+  flush: () => Promise<boolean>;
   /** A fresh read of the page: adopted unless the person has unsaved typing. */
   load: (page: NotePage) => void;
 }
@@ -30,6 +31,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
   const base = useRef({ text: initial.markdown, seq: initial.seq });
   const draft = useRef(initial.markdown);
   const saving = useRef(false);
+  const inflight = useRef<Promise<boolean> | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const [text, setTextState] = useState(initial.markdown);
   const [status, setStatus] = useState<DraftStatus>("saved");
@@ -39,9 +41,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
 
   const show = useCallback((next: string) => { draft.current = next; setTextState(next); }, []);
 
-  const save = useCallback(async () => {
-    clearTimeout(timer.current);
-    if (saving.current || draft.current === base.current.text) return;
+  const saveOnce = useCallback(async (): Promise<boolean> => {
     saving.current = true;
     setStatus("saving");
     const sent = draft.current;
@@ -55,15 +55,37 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
       show(next);
       setChangedUnderneath(false);
       callbacks.current.onSaved(page);
+      return true;
     } catch (error) {
       callbacks.current.onError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       saving.current = false;
       const pending = draft.current !== base.current.text;
       setStatus(pending ? "unsaved" : "saved");
-      if (pending) timer.current = setTimeout(() => void save(), AUTOSAVE_MS);
+      if (pending) timer.current = setTimeout(() => void saveRef.current(), AUTOSAVE_MS);
     }
   }, [id, show]);
+
+  const save = useCallback((): Promise<boolean> => {
+    clearTimeout(timer.current);
+    if (inflight.current) return inflight.current;
+    if (draft.current === base.current.text) return Promise.resolve(true);
+    const run = saveOnce().finally(() => { inflight.current = null; });
+    inflight.current = run;
+    return run;
+  }, [saveOnce]);
+  const saveRef = useRef(save);
+  saveRef.current = save;
+
+  const flush = useCallback(async (): Promise<boolean> => {
+    // A save can end with newer typing still pending; keep going until the
+    // stored text is the text on screen.
+    while (inflight.current || draft.current !== base.current.text) {
+      if (!(await save())) return false;
+    }
+    return true;
+  }, [save]);
 
   const setText = useCallback((next: string) => {
     draft.current = next;
@@ -93,5 +115,5 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
     }
   }, [id]);
 
-  return { text, status, changedUnderneath, setText, flush: () => void save(), load };
+  return { text, status, changedUnderneath, setText, flush, load };
 }
