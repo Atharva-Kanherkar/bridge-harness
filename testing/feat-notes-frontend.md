@@ -93,3 +93,17 @@ Phase 1 frontend for Bridge Notes. Locked before implementation; derived from th
 
 ## Manual / cURL Tests
 - N/A for cURL: no new wire surface. Screenshots in the PR: dark, light, the two views, Turn into tasks, the Start picker with "No project", an agent-written page.
+
+## Design revision (after first review)
+
+The first build worked but read as a form, not a page. The behavior above stands; the presentation changes to this, within Graphite & Paper (achromatic chrome, tokens only, color only for status):
+
+- **Page, Notion-style.** A sticky top bar with a breadcrumb (Notes / parent / page), the save status, an "Ask AI" toggle and a "More" menu (Copy file path, Delete page). A centered column with a large wrapping title, then property rows (label left, value right, no boxed controls): Status, Type, Project ("Empty" when unset), Tags, and "Written by" with the harness mark and the chat name, which opens that chat.
+- **Your words reads as a page.** Rendered Markdown with the line breaks you typed kept; clicking it opens the Markdown source in place, and leaving it returns to the rendered page. An empty page opens straight into the source editor.
+- **Actions are quiet pills** (Structure, Turn into tasks, Start a chat) beside a Your words | Structured segmented switch. No decorative icons; the harness marks are the only glyphs that identify an agent.
+- **Pickers are popovers** anchored to their button, with option rows (check for the chosen one) instead of native selects: the pass picker (Run on: harness rows with marks, default noted) and the Start picker (Where: No project plus every project; Run on: every available harness). Status, Type and Project are popover menus too.
+- **Tasks read like a to-do list.** A status glyph (open ring, doing half ring, done check) that toggles done, the title, the quote on a second line, and quiet Start and Open chat actions.
+- **List.** A composer-style capture box, a search field, All / Inbox / Tasks text tabs, and rows with title, one preview line, age, and the harness mark for agent-written pages.
+- **Notes chat** opens from "Ask AI" (remembered per window) as a right panel with plain suggestion rows instead of colored tiles.
+
+Test updates follow the new controls (listbox options instead of selects, More menu for Delete, click-to-edit for Your words); every behavior in the sections above keeps its test.
