@@ -120,6 +120,24 @@ describe("Notes in the App", () => {
     expect(pass?.textContent).toBe("Claude");
   });
 
+  it("starts a No project chat when worktrees are a saved default", async () => {
+    const view = await bridgeApi.getChatDefaults();
+    await bridgeApi.saveChatDefaults({ defaults: { ...view.application.defaults, createWorktree: true }, expectedRevision: view.application.revision });
+    await mountApp();
+    const create = vi.spyOn(bridgeApi, "createConfiguredChat");
+    const submit = vi.spyOn(bridgeApi, "submitInput");
+    await openNotes();
+    await newPage("Plan the offsite");
+    await click(byLabel("Start a chat"));
+    const picker = container.querySelector("[aria-label='Start a chat']")!;
+    expect(picker.querySelector("[role='listbox'][aria-label='Project'] [aria-selected='true'] [data-option-label]")?.textContent).toBe("No project");
+    await click(byLabel("Start", picker));
+    await wait(200);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({ workspaceId: null, overrides: { target: { kind: "direct" }, createWorktree: false } });
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   it("starts a chat for a note titled like a command, and the brief reaches the chat", async () => {
     await mountApp();
     const submit = vi.spyOn(bridgeApi, "submitInput");

@@ -1953,7 +1953,9 @@ function AppContent() {
     const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
     const draft: NewChatDraft = workspaceId
       ? { workspaceId, overrides: { model } }
-      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null } } };
+      // A direct chat has no repository to branch, whatever the saved defaults
+      // say about worktrees.
+      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false } };
     return submitNewChatDraft(draft, message);
   }
   // The harness every Notes picker preselects: the saved application chat
