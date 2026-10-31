@@ -67,7 +67,9 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState<NotePage | null>(null);
-  const [pending, setPending] = useState<{ key: string; body: string }[]>([]);
+  // Captures on their way to the core. A failed one stays here, with its
+  // words, until it is retried or discarded: nothing typed is ever dropped.
+  const [pending, setPending] = useState<{ key: string; body: string; failed?: string }[]>([]);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(readChatOpen);
   const [focusCapture, setFocusCapture] = useState(0);
@@ -139,19 +141,24 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     } catch (error) { fail(error); }
   }, [fail, select]);
 
-  const capture = async (body: string) => {
-    const key = crypto.randomUUID();
-    setPending(current => [{ key, body }, ...current]);
+  const send = async (key: string, body: string) => {
     try {
       await bridgeApi.captureNote(body);
-      await refreshList();
-      return true;
-    } catch (error) {
-      fail(error);
-      return false;
-    } finally {
       setPending(current => current.filter(item => item.key !== key));
+      await refreshList();
+    } catch (error) {
+      setPending(current => current.map(item => item.key === key ? { ...item, failed: message(error) } : item));
+      fail(error);
     }
+  };
+  const capture = (body: string) => {
+    const key = crypto.randomUUID();
+    setPending(current => [{ key, body }, ...current]);
+    void send(key, body);
+  };
+  const retry = (key: string, body: string) => {
+    setPending(current => current.map(item => item.key === key ? { key, body } : item));
+    void send(key, body);
   };
 
   const createPage = async () => {
@@ -204,9 +211,15 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         </div>
       </div>
       <ul aria-label="Notes" className="m-0 min-h-0 flex-1 list-none space-y-px overflow-y-auto px-2 py-2">
-        {filter !== "tasks" && pending.map(item => <li key={item.key} aria-busy="true" className="rounded-lg px-2.5 py-2">
+        {filter !== "tasks" && pending.map(item => <li key={item.key} aria-busy={!item.failed} data-capture={item.failed ? "failed" : "saving"} className="rounded-lg px-2.5 py-2">
           <p className="m-0 truncate text-[13.5px] font-medium text-foreground">{noteDisplayTitle({ title: null, preview: item.body })}</p>
-          <p className="m-0 mt-0.5 text-[12px] text-faint">Saving…</p>
+          {item.failed
+            ? <div className="mt-1 flex items-center gap-1 text-[12px]">
+              <span className="min-w-0 flex-1 truncate text-destructive" title={item.failed}>Couldn't save</span>
+              <button type="button" onClick={() => retry(item.key, item.body)} className="rounded-md px-1.5 py-0.5 text-foreground transition-colors hover:bg-accent">Retry</button>
+              <button type="button" onClick={() => setPending(current => current.filter(other => other.key !== item.key))} className="rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Discard</button>
+            </div>
+            : <p className="m-0 mt-0.5 text-[12px] text-faint">Saving…</p>}
         </li>)}
         {visible.map(note => <li key={note.id}>
           <NoteRow note={note} active={note.id === selectedId} parent={note.parentId ? byId.get(note.parentId) : undefined} project={workspaces.find(workspace => workspace.id === note.workspaceId)?.title} onOpen={() => void open(note.id)} />
@@ -247,7 +260,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   </div>;
 }
 
-function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCapture: (body: string) => Promise<boolean> }) {
+function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCapture: (body: string) => void }) {
   const [text, setText] = useState("");
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (focusRequest) box.current?.focus(); }, [focusRequest]);
@@ -255,8 +268,9 @@ function NotesCapture({ focusRequest, onCapture }: { focusRequest?: number; onCa
     const body = text;
     if (!body.trim()) return;
     setText("");
-    // Exactly what was typed, cleared at once; a failure hands it back.
-    void onCapture(body).then(saved => { if (!saved) setText(current => current || body); });
+    // Exactly what was typed, cleared at once. A failure stays in the list
+    // with Retry, so the box is free for the next thought.
+    onCapture(body);
   };
   return <div className="shrink-0 px-3 pt-3">
     <div className="rounded-2xl bg-card px-3 pb-2 pt-2.5 shadow-sm ring-1 ring-border transition-shadow focus-within:ring-2 focus-within:ring-ring">

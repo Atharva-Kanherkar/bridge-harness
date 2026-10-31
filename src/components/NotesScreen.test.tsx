@@ -124,15 +124,42 @@ describe("capture", () => {
     expect(capture).not.toHaveBeenCalled();
   });
 
-  it("hands the text back when the capture fails", async () => {
+  it("keeps a failed capture in the list with Retry and Discard", async () => {
     vi.spyOn(bridgeApi, "captureNote").mockRejectedValue(new Error("disk full"));
     const given = await render();
     const box = field<HTMLTextAreaElement>("Capture a note");
     await typeInto(box, "keep me");
     await press(box, "Enter");
     await settle();
-    expect(box.value).toBe("keep me");
+    const failed = host.querySelector("ul[aria-label='Notes'] li[data-capture='failed']")!;
+    expect(failed.textContent).toContain("keep me");
+    expect(failed.textContent).toContain("Couldn't save");
     expect(given.onError).toHaveBeenCalledWith("disk full");
+    await click(button("Discard", failed));
+    expect(host.querySelector("li[data-capture='failed']")).toBeNull();
+  });
+
+  it("keeps a failed capture recoverable while the next one is typed", async () => {
+    const real = bridgeApi.captureNote;
+    let fail!: (error: Error) => void;
+    vi.spyOn(bridgeApi, "captureNote")
+      .mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }))
+      .mockImplementation(body => real(body));
+    await render();
+    const box = field<HTMLTextAreaElement>("Capture a note");
+    await typeInto(box, "thought A");
+    await press(box, "Enter");
+    await typeInto(box, "thought B, half typed");
+    await act(async () => { fail(new Error("offline")); });
+    await settle();
+    expect(box.value).toBe("thought B, half typed");
+    const failed = host.querySelector("ul[aria-label='Notes'] li[data-capture='failed']")!;
+    expect(failed.textContent).toContain("thought A");
+    await click(button("Retry", failed));
+    await settle();
+    expect(host.querySelector("li[data-capture='failed']")).toBeNull();
+    expect(mockListNotes().notes.some(note => note.preview === "thought A")).toBe(true);
+    expect(box.value).toBe("thought B, half typed");
   });
 
   it("focuses the box when asked from anywhere", async () => {
