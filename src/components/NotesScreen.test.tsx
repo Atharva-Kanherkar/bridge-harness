@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
-import { mockListNotes, mockNotesAgentWrite, mockReadPage, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
+import { mockCreatePage, mockListNotes, mockNotesAgentWrite, mockReadPage, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
 import type { AdapterDescriptor, Session, Workspace } from "../types";
 import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
 
@@ -70,7 +70,7 @@ const press = async (node: HTMLElement, key: string, init: KeyboardEventInit = {
 };
 const blur = async (node: HTMLElement) => { await act(async () => { node.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); await settle(); };
 const rowTitles = () => [...host.querySelectorAll("ul[aria-label='Notes'] li button")].map(node => node.textContent ?? "");
-const openNote = async (title: string) => click(buttons(host.querySelector("ul[aria-label='Notes']")!).find(node => node.textContent?.includes(title)));
+const openNote = async (title: string) => click(buttons(host.querySelector("ul[aria-label='Notes']")!).find(node => node.textContent?.startsWith(title)));
 const words = () => field<HTMLTextAreaElement>("Your words");
 /** Your words opens rendered; a click puts its Markdown in the editor. */
 const editWords = async () => {
@@ -190,6 +190,26 @@ describe("list", () => {
     await settle();
     expect(rowTitles()).toHaveLength(1);
     expect(rowTitles()[0]).toContain("Local-first sync libraries");
+  });
+});
+
+describe("pages under pages", () => {
+  it("lists a page an agent wrote under another page, in All, in search and on its parent", async () => {
+    await render();
+    const parentId = mockIdOf(ONBOARDING);
+    mockCreatePage({ title: "Onboarding research", content: "what other apps do at step 3", parentId });
+    await settle(60);
+    expect(rowTitles().some(title => title.includes("Onboarding research") && title.includes("from need to fix"))).toBe(true);
+    await typeInto(field<HTMLInputElement>("Search notes"), "Onboarding research");
+    await settle(250);
+    expect(rowTitles()).toHaveLength(1);
+    await typeInto(field<HTMLInputElement>("Search notes"), "");
+    await settle(60);
+    await openNote(ONBOARDING);
+    const pages = host.querySelector("section[aria-label='Pages']")!;
+    expect(pages.textContent).toContain("Onboarding research");
+    await click(buttons(pages).find(node => node.textContent?.startsWith("Onboarding research")));
+    expect(host.querySelector("article")?.getAttribute("aria-label")).toBe("Onboarding research");
   });
 });
 

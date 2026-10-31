@@ -211,7 +211,10 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     }
   };
 
-  const visible = notes.filter(note => filter === "tasks" ? note.kind === "task" : !note.parentId && (filter === "all" || note.state === "inbox"));
+  // A task lives under its page; any other page under a page (one an agent
+  // wrote from the open page, say) is listed like a top-level one.
+  const childTask = (note: Note) => !!note.parentId && note.kind === "task";
+  const visible = notes.filter(note => filter === "tasks" ? note.kind === "task" : !childTask(note) && (filter === "all" || note.state === "inbox"));
   const parent = page?.note.parentId ? byId.get(page.note.parentId) ?? null : null;
 
   return <div className="flex h-full min-h-0 bg-background">
@@ -258,6 +261,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         defaultHarness={defaultHarness}
         chatTitle={chatTitle}
         parent={parent}
+        childPages={notes.filter(note => note.parentId === page.note.id && note.kind !== "task")}
         startingId={startingId}
         chatOpen={chatOpen}
         onToggleChat={copilot ? toggleChat : undefined}

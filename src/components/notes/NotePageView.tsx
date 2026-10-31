@@ -49,8 +49,10 @@ export interface NotePageViewProps {
   sessions: Session[];
   defaultHarness: string | null;
   chatTitle: (sessionId: string) => string | undefined;
-  /** Set when this page is a task: the page it came from. */
+  /** The page this one sits under, if any. */
   parent?: Note | null;
+  /** Pages (not tasks) that sit under this one. */
+  childPages?: Note[];
   startingId: string | null;
   /** The Notes chat panel, when the host offers one. */
   chatOpen?: boolean;
@@ -67,7 +69,7 @@ export interface NotePageViewProps {
 }
 
 export function NotePageView(props: NotePageViewProps) {
-  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, startingId, chatOpen, onToggleChat, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
+  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, childPages = [], startingId, chatOpen, onToggleChat, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
   const { note } = page;
   const draft = useNoteDraft(page, onSaved, onError);
   const [view, setView] = useState<"words" | "structured">("words");
@@ -176,6 +178,21 @@ export function NotePageView(props: NotePageViewProps) {
       {view === "words"
         ? <YourWords title={note.title} text={draft.text} changedUnderneath={draft.changedUnderneath} onChange={draft.setText} onLeave={() => void draft.flush()} />
         : <StructuredPanel view={page.structured ?? null} busy={busy(structureJob)} onSplit={index => void split(index)} />}
+
+      {childPages.length > 0 && <section aria-label="Pages" className="mt-12">
+        <div className="flex items-baseline gap-2 border-b border-border pb-2">
+          <h3 className="m-0 text-[13px] font-semibold text-foreground">Pages</h3>
+          <span className="text-[12px] text-muted-foreground">{childPages.length}</span>
+        </div>
+        <ul className="m-0 list-none divide-y divide-border p-0">
+          {childPages.map(child => <li key={child.id}>
+            <button type="button" onClick={() => onOpenPage(child.id)} className="flex w-full items-baseline gap-3 py-2.5 text-left">
+              <span className="min-w-0 flex-1 truncate text-[14px] text-foreground hover:underline hover:decoration-border hover:underline-offset-4">{noteDisplayTitle(child)}</span>
+              <span className="shrink-0 text-[12px] text-faint">{relativeTime(child.updatedAt)}</span>
+            </button>
+          </li>)}
+        </ul>
+      </section>}
 
       <NoteTasks
         tasks={page.tasks}
