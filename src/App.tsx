@@ -271,6 +271,7 @@ function AppContent() {
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
   // Bumped by `capture-note`: Notes opens with its capture box focused.
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
+  const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
@@ -755,6 +756,16 @@ function AppContent() {
   }, [selectedSessionId, view, paradigm]);
   useEffect(() => {
     if (view !== "memory") setMemoryDraft(null);
+  }, [view]);
+  // Read each time Notes opens, so a default changed in Settings is the one
+  // the pickers start from.
+  useEffect(() => {
+    if (view !== "notes") return;
+    let current = true;
+    bridgeApi.getChatDefaults()
+      .then(defaults => { if (current) setNotesChatDefault(defaults.application.defaults.model?.harness ?? null); })
+      .catch(() => { if (current) setNotesChatDefault(null); });
+    return () => { current = false; };
   }, [view]);
 
   // Re-applies the remembered zoom level and answers pinch gestures. The chords
@@ -1945,10 +1956,10 @@ function AppContent() {
       : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null } } };
     return submitNewChatDraft(draft, message);
   }
-  // The harness every Notes picker preselects: the app's chat default, not
-  // whichever chat happens to be open.
-  const notesDefaultHarness = (modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters)?.adapter?.id : undefined)
-    ?? adapters.find(adapter => adapter.available)?.id ?? null;
+  // The harness every Notes picker preselects: the saved application chat
+  // default (Settings, Chat defaults), the same one the core's note passes
+  // fall back to. With none saved, each picker starts on its first choice.
+  const notesDefaultHarness = adapters.some(adapter => adapter.available && adapter.id === notesChatDefault) ? notesChatDefault : null;
 
   // The Storage page's standing chat: reuse it while it lives, else start a
   // direct chat (no project, a private scratch dir) and remember it.

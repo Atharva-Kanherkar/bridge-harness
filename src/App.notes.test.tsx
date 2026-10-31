@@ -106,6 +106,20 @@ afterEach(() => {
 });
 
 describe("Notes in the App", () => {
+  it("preselects the saved application chat default in every picker", async () => {
+    const view = await bridgeApi.getChatDefaults();
+    await bridgeApi.saveChatDefaults({ defaults: { ...view.application.defaults, model: { harness: "claude", model: "claude-opus-5-5" } }, expectedRevision: view.application.revision });
+    await mountApp();
+    await openNotes();
+    await newPage("Defaults check");
+    await click(byLabel("Start a chat"));
+    expect(selectedHarness(container.querySelector("[aria-label='Start a chat']")!)).toBe("Claude");
+    await click(byLabel("Start a chat"));
+    await click(byLabel("Structure"));
+    const pass = container.querySelector("[aria-label='Structure options'] [role='listbox'] [role='option'][aria-selected='true'] [data-option-label]");
+    expect(pass?.textContent).toBe("Claude");
+  });
+
   it("starts a chat for a note titled like a command, and the brief reaches the chat", async () => {
     await mountApp();
     const submit = vi.spyOn(bridgeApi, "submitInput");
