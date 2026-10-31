@@ -59,3 +59,20 @@ export function noteDisplayTitle(note: Pick<Note, "title" | "preview">): string 
   if (!line) return "Untitled";
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
+
+/** Markdown as one line of plain text, for a list preview. */
+export function plainPreview(markdown: string): string {
+  return markdown
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/gm, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|~~|`)/g, "")
+    .replace(/(^|\s)[*_](\S[^*_]*\S|\S)[*_](?=\s|$|[.,;:!?])/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** A quoted line without the list marker it was typed with. */
+export function quoteText(excerpt: string): string {
+  return excerpt.trim().replace(/^(?:[-*+]|\d+[.)])\s+/, "");
+}

@@ -977,6 +977,17 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 .md th { background: var(--color-muted); font-weight: 600; }
 
+/* Notes renders Your words as a page: a reading scale, and the line breaks a
+   person typed are kept, since a capture is often one thought per line. */
+.note-md .md {
+  font-size: 16px;
+  line-height: 1.75;
+}
+.note-md .md p { margin: 0.5em 0; white-space: pre-line; }
+.note-md .md h1 { font-size: 1.6em; margin-top: 1.3em; }
+.note-md .md h2 { font-size: 1.3em; margin-top: 1.2em; }
+.note-md .md h3 { font-size: 1.1em; }
+
 /* ── Code ───────────────────────────────────────────────────────────────── */
 
 .code-block {

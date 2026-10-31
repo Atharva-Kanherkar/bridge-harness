@@ -27,7 +27,7 @@ const click = (label: string) => act(() => {
 it("offers only page-free asks with no page open, and sends them bare", () => {
   const onAsk = vi.fn();
   act(() => root.render(<NotesCopilot page={null} onAsk={onAsk} />));
-  expect(host.textContent).toContain("Open a page and it sees that page too.");
+  expect(host.textContent).toContain("Open a page and it reads that page too.");
   expect(host.textContent).not.toContain("Summarize this page");
   click("Find a note");
   expect(splitNotesContext(onAsk.mock.calls[0][0]).context).toBeNull();

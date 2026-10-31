@@ -1,14 +1,13 @@
-// The two small choices Notes asks for before it hands work to an agent:
-// which harness runs a Structure or Turn into tasks pass, and where a chat
-// started from a note goes. Both render inline under the control that opened
-// them, so nothing is portalled out of the page's scroll.
+// The two choices Notes asks for before it hands work to an agent: which
+// harness runs a Structure or Turn into tasks pass, and where a chat started
+// from a note goes. Each is a popover on the action that needs it.
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import type { AdapterDescriptor, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
-// clsx rather than cn: tailwind-merge does not know the text-ui and
-// text-caption sizes, and drops them beside a text color.
-import { clsx } from "clsx";
+import { HarnessMark } from "../harnessMarks";
+import { MenuDivider, MenuLabel, Option, OptionList, Pill, Popover, PrimaryButton } from "./NotesUi";
 
 /** Harnesses that can run a note pass: hidden, tool-less generations. */
 export const PASS_HARNESSES = ["claude", "codex", "opencode"];
@@ -25,47 +24,67 @@ export function chatHarnesses(adapters: AdapterDescriptor[]): AdapterDescriptor[
 const preselect = (choices: AdapterDescriptor[], preferred: string | null | undefined) =>
   (choices.find(adapter => adapter.id === preferred) ?? choices[0])?.id ?? "";
 
-const PANEL = "mt-2 rounded-xl border border-border bg-card p-3 text-caption shadow-sm";
-const SELECT = "h-8 min-w-0 rounded-lg border border-border bg-background px-2 text-ui text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
-const PRIMARY = "inline-flex h-8 items-center rounded-lg bg-primary px-3 text-ui font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40";
-const QUIET = "inline-flex h-8 items-center rounded-lg px-3 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+function HarnessOptions({ label, choices, value, defaultHarness, onChange }: { label: string; choices: AdapterDescriptor[]; value: string; defaultHarness: string | null; onChange: (id: string) => void }) {
+  return <OptionList label={label}>
+    {choices.map(adapter => <Option
+      key={adapter.id}
+      selected={value === adapter.id}
+      onSelect={() => onChange(adapter.id)}
+      leading={<HarnessMark harness={adapter.id} size={14} />}
+      hint={adapter.id === defaultHarness ? "Default" : undefined}
+    >{harnessLabel(adapter.id)}</Option>)}
+  </OptionList>;
+}
 
-export function HarnessPicker({ label, what, adapters, defaultHarness, onRun, onCancel }: {
-  /** The action's name, used for the Run button and the panel's label. */
+/** A pill that opens a popover; `children` renders inside it with a close. */
+export function PopoverAction({ label, triggerLabel, busyLabel, busy = false, panelLabel, align, width, children }: {
+  label: ReactNode;
+  /** The trigger's accessible name, when its text alone is ambiguous. */
+  triggerLabel?: string;
+  busyLabel?: string;
+  busy?: boolean;
+  panelLabel: string;
+  align?: "start" | "end";
+  width?: string;
+  children: (close: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
+  return <div className="relative">
+    <Pill aria-label={triggerLabel} aria-expanded={open} aria-haspopup="dialog" active={open} disabled={busy} onClick={() => setOpen(current => !current)}>
+      {busy && <Spinner className="size-3.5" />}{busy ? busyLabel : label}
+    </Pill>
+    <Popover open={open} onClose={close} label={panelLabel} align={align} width={width}>{children(close)}</Popover>
+  </div>;
+}
+
+export function PassPicker({ label, what, adapters, defaultHarness, onRun }: {
+  /** The action's name, used for the Run button. */
   label: string;
   /** One line on what the pass does. */
   what: string;
   adapters: AdapterDescriptor[];
   defaultHarness: string | null;
   onRun: (harness: string) => void;
-  onCancel: () => void;
 }) {
   const choices = passHarnesses(adapters);
   const [harness, setHarness] = useState(() => preselect(choices, defaultHarness));
-  return <div role="group" aria-label={`${label} options`} className={PANEL}>
-    <p className="m-0 text-muted-foreground">{what}</p>
+  return <>
+    <p className="m-0 px-2.5 pb-1 pt-1.5 text-[12px] leading-relaxed text-muted-foreground">{what}</p>
     {choices.length === 0
-      ? <div className="mt-2 flex items-center justify-between gap-2">
-        <p role="status" className="m-0 text-foreground">{NO_PASS_HARNESS}</p>
-        <button type="button" onClick={onCancel} className={QUIET}>Close</button>
-      </div>
-      : <div className="mt-2 flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-2 text-muted-foreground">
-          Run on
-          <select aria-label="Harness" value={harness} onChange={event => setHarness(event.target.value)} className={SELECT}>
-            {choices.map(adapter => <option key={adapter.id} value={adapter.id}>{harnessLabel(adapter.id)}{adapter.id === defaultHarness ? " (default)" : ""}</option>)}
-          </select>
-        </label>
-        <span className="flex-1" />
-        <button type="button" onClick={onCancel} className={QUIET}>Cancel</button>
-        <button type="button" onClick={() => onRun(harness)} className={PRIMARY}>{label}</button>
-      </div>}
-  </div>;
+      ? <p role="status" className="m-0 px-2.5 pb-2 pt-1 text-[13px] text-foreground">{NO_PASS_HARNESS}</p>
+      : <>
+        <MenuDivider />
+        <MenuLabel>Run on</MenuLabel>
+        <HarnessOptions label="Harness" choices={choices} value={harness} defaultHarness={defaultHarness} onChange={setHarness} />
+        <div className="flex justify-end px-1 pb-0.5 pt-2"><PrimaryButton onClick={() => onRun(harness)}>{label}</PrimaryButton></div>
+      </>}
+  </>;
 }
 
 export interface StartChoice { workspaceId: string | null; harness: string }
 
-export function StartPicker({ subject = "task", adapters, workspaces, defaultHarness, suggestedWorkspaceId, busy = false, onStart, onCancel }: {
+export function StartPicker({ subject = "task", adapters, workspaces, defaultHarness, suggestedWorkspaceId, busy = false, onStart }: {
   /** What goes with the chat as its first message. */
   subject?: "task" | "note";
   adapters: AdapterDescriptor[];
@@ -75,32 +94,25 @@ export function StartPicker({ subject = "task", adapters, workspaces, defaultHar
   suggestedWorkspaceId: string | null;
   busy?: boolean;
   onStart: (choice: StartChoice) => void;
-  onCancel: () => void;
 }) {
   const choices = chatHarnesses(adapters);
   const known = workspaces.some(workspace => workspace.id === suggestedWorkspaceId);
-  const [workspaceId, setWorkspaceId] = useState(known ? suggestedWorkspaceId ?? "" : "");
+  const [workspaceId, setWorkspaceId] = useState<string | null>(known ? suggestedWorkspaceId : null);
   const [harness, setHarness] = useState(() => preselect(choices, defaultHarness));
-  return <div role="group" aria-label="Start a chat" className={PANEL}>
-    <div className="flex flex-wrap items-center gap-2">
-      <label className="flex min-w-0 items-center gap-2 text-muted-foreground">
-        Project
-        <select aria-label="Project" value={workspaceId} onChange={event => setWorkspaceId(event.target.value)} className={clsx(SELECT, "max-w-56")}>
-          <option value="">No project</option>
-          {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.title}</option>)}
-        </select>
-      </label>
-      <label className="flex items-center gap-2 text-muted-foreground">
-        Harness
-        <select aria-label="Chat harness" value={harness} onChange={event => setHarness(event.target.value)} className={SELECT}>
-          {choices.map(adapter => <option key={adapter.id} value={adapter.id}>{harnessLabel(adapter.id)}{adapter.id === defaultHarness ? " (default)" : ""}</option>)}
-        </select>
-      </label>
-      <span className="flex-1" />
-      <button type="button" onClick={onCancel} className={QUIET}>Cancel</button>
-      <button type="button" disabled={busy || !harness} onClick={() => onStart({ workspaceId: workspaceId || null, harness })} className={PRIMARY}>{busy ? "Starting…" : "Start"}</button>
+  return <>
+    <MenuLabel>Where</MenuLabel>
+    <OptionList label="Project" className="max-h-44 overflow-y-auto">
+      <Option selected={workspaceId === null} onSelect={() => setWorkspaceId(null)} hint="Direct chat">No project</Option>
+      {workspaces.map(workspace => <Option key={workspace.id} selected={workspaceId === workspace.id} onSelect={() => setWorkspaceId(workspace.id)}>{workspace.title}</Option>)}
+    </OptionList>
+    <MenuDivider />
+    <MenuLabel>Run on</MenuLabel>
+    {choices.length
+      ? <HarnessOptions label="Chat harness" choices={choices} value={harness} defaultHarness={defaultHarness} onChange={setHarness} />
+      : <p role="status" className="m-0 px-2.5 pb-1 text-[13px] text-foreground">No harness can start a chat: sign in to one in Settings.</p>}
+    <div className="flex items-center gap-2 px-2.5 pb-0.5 pt-2.5">
+      <p className="m-0 min-w-0 flex-1 text-[11px] leading-snug text-muted-foreground">The {subject} goes with it as the first message.</p>
+      <PrimaryButton disabled={busy || !harness} onClick={() => onStart({ workspaceId, harness })}>{busy ? "Starting…" : "Start"}</PrimaryButton>
     </div>
-    {choices.length === 0 && <p role="status" className="m-0 mt-2 text-foreground">No harness can start a chat: sign in to one in Settings.</p>}
-    <p className="m-0 mt-2 text-muted-foreground">{workspaceId ? "Starts a chat in this project." : "Starts a direct chat with no project."} The {subject} goes with it as the first message.</p>
-  </div>;
+  </>;
 }

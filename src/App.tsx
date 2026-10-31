@@ -2039,8 +2039,9 @@ function AppContent() {
     }
   }
   const notesCopilot: NotesCopilotHost = {
-    render: page => <NotesCopilot
+    render: (page, onClose) => <NotesCopilot
       page={page}
+      onClose={onClose}
       projectName={page?.note.workspaceId ? state.workspaces.find(workspace => workspace.id === page.note.workspaceId)?.title : null}
       starting={notesChatStarting}
       onAsk={message => void askNotes(message).catch(e => setError(errorMessage(e)))}

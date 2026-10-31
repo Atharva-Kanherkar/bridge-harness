@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noteDisplayTitle, rebaseDraft } from "./notesDraft";
+import { noteDisplayTitle, plainPreview, quoteText, rebaseDraft } from "./notesDraft";
 
 describe("rebaseDraft", () => {
   const sent = "alpha\nbeta\ngamma\n";
@@ -40,5 +40,17 @@ describe("noteDisplayTitle", () => {
     expect(noteDisplayTitle({ title: null, preview: "\n# Heading here\nmore" })).toBe("Heading here");
     expect(noteDisplayTitle({ title: "", preview: "   \n" })).toBe("Untitled");
     expect(noteDisplayTitle({ title: null, preview: "x".repeat(120) })).toHaveLength(80);
+  });
+});
+
+describe("plainPreview and quoteText", () => {
+  it("reads Markdown as one plain line", () => {
+    expect(plainPreview("# Sync\n\nThree worth a look:\n\n1. **Yjs**: CRDTs, see [docs](https://x.y)\n- `code` and _soft_ ~~gone~~")).toBe("Sync Three worth a look: Yjs: CRDTs, see docs code and soft gone");
+    expect(plainPreview("plain words, kept")).toBe("plain words, kept");
+  });
+  it("drops the list marker a quote was typed with", () => {
+    expect(quoteText("- add a skip button")).toBe("add a skip button");
+    expect(quoteText("2. second")).toBe("second");
+    expect(quoteText("need to - keep dashes")).toBe("need to - keep dashes");
   });
 });

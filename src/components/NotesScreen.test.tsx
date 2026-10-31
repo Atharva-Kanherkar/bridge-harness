@@ -72,6 +72,20 @@ const blur = async (node: HTMLElement) => { await act(async () => { node.dispatc
 const rowTitles = () => [...host.querySelectorAll("ul[aria-label='Notes'] li button")].map(node => node.textContent ?? "");
 const openNote = async (title: string) => click(buttons(host.querySelector("ul[aria-label='Notes']")!).find(node => node.textContent?.includes(title)));
 const words = () => field<HTMLTextAreaElement>("Your words");
+/** Your words opens rendered; a click puts its Markdown in the editor. */
+const editWords = async () => {
+  const page = host.querySelector("[aria-label='Edit your words']");
+  if (page) await click(page);
+  return words();
+};
+const optionLabels = (list: Element) => [...list.querySelectorAll("[role='option'] [data-option-label]")].map(node => node.textContent);
+const selectedLabel = (list: Element) => list.querySelector("[role='option'][aria-selected='true'] [data-option-label]")?.textContent;
+const pick = async (list: Element, label: string) => click([...list.querySelectorAll("[role='option']")].find(node => node.querySelector("[data-option-label]")?.textContent === label));
+/** A page property: open its menu and hand back the listbox. */
+const property = async (label: string) => {
+  await click(button(label, host.querySelector("article dl")!));
+  return host.querySelector(`[aria-label='${label} choices'] [role='listbox']`)!;
+};
 
 const ONBOARDING = "need to fix the onbaording flow";
 
@@ -94,7 +108,7 @@ describe("capture", () => {
     expect(bridgeApi.captureNote).toHaveBeenCalledWith(typed);
     expect(rowTitles()[0]).toContain("teh idea:");
     await openNote("teh idea:");
-    expect(words().value).toBe(typed);
+    expect((await editWords()).value).toBe(typed);
     expect(structure).not.toHaveBeenCalled();
     expect(tasks).not.toHaveBeenCalled();
   });
@@ -133,12 +147,12 @@ describe("Your words", () => {
     await render();
     await openNote(ONBOARDING);
     const page = mockReadPage(mockIdOf(ONBOARDING));
-    expect(words().value).toBe(page.markdown);
+    expect((await editWords()).value).toBe(page.markdown);
     await typeInto(words(), `${page.markdown}\nmore`);
     expect(field("Save status").textContent).toBe("Unsaved");
     await settle(900);
     expect(edit).toHaveBeenCalledWith({ id: page.note.id, text: `${page.markdown}\nmore`, baseSeq: page.seq });
-    expect(field("Save status").textContent).toBe("Saved");
+    expect(field("Save status").textContent).toBe("Edited just now");
     expect(mockReadPage(page.note.id).markdown).toBe(`${page.markdown}\nmore`);
   });
 
@@ -148,7 +162,7 @@ describe("Your words", () => {
     const id = mockIdOf(ONBOARDING);
     mockNotesAgentWrite(id, "agent line one");
     await settle(60);
-    expect(words().value).toContain("agent line one");
+    expect((await editWords()).value).toContain("agent line one");
 
     const before = words().value;
     await typeInto(words(), `MINE ${before}`);
@@ -158,7 +172,7 @@ describe("Your words", () => {
     expect(host.textContent).toContain("This page changed while you were typing");
     await blur(words());
     await settle(20);
-    expect(words().value).toBe(`MINE ${before}\nagent line two`);
+    expect((await editWords()).value).toBe(`MINE ${before}\nagent line two`);
     expect(mockReadPage(id).markdown).toBe(`MINE ${before}\nagent line two`);
     expect(host.textContent).not.toContain("This page changed while you were typing");
   });
@@ -167,8 +181,12 @@ describe("Your words", () => {
     await render();
     await openNote("Local-first sync libraries");
     expect(host.textContent).toContain("Written by Claude in Research sync engines");
-    expect(host.querySelector("ul[aria-label='Notes'] [aria-label='Agent']")).not.toBeNull();
-    await typeInto(words(), "# Mine now\n");
+    // Rendered as a page, without its leading heading repeating the title.
+    const rendered = host.querySelector(".note-md")!;
+    expect(rendered.querySelector("strong")?.textContent).toBe("Yjs");
+    expect([...rendered.querySelectorAll("h1")].map(heading => heading.textContent)).not.toContain("Local-first sync libraries");
+    expect(host.querySelector("ul[aria-label='Notes'] [aria-current] svg[data-harness='claude']")).not.toBeNull();
+    await typeInto(await editWords(), "# Mine now\n");
     await blur(words());
     expect(mockReadPage(mockIdOf("Local-first sync libraries")).markdown).toBe("# Mine now\n");
   });
@@ -178,24 +196,26 @@ describe("Structure", () => {
   it("adds a second view with quotes, leaves your words alone, and goes stale on an edit", async () => {
     await render();
     await openNote(ONBOARDING);
-    const original = words().value;
+    const original = (await editWords()).value;
+    await blur(words());
     await click(button("Structure"));
     const picker = host.querySelector("[aria-label='Structure options']")!;
-    expect(field<HTMLSelectElement>("Harness").value).toBe("claude");
-    expect([...field<HTMLSelectElement>("Harness").options].map(option => option.value)).toEqual(["claude", "codex"]);
+    const harnesses = picker.querySelector("[role='listbox'][aria-label='Harness']")!;
+    expect(selectedLabel(harnesses)).toBe("Claude");
+    expect(optionLabels(harnesses)).toEqual(["Claude", "Codex"]);
     await click(button("Structure", picker));
     await settle(80);
     const view = host.querySelector("section[aria-label='Structured view']")!;
     expect(view.textContent).toContain("Split into note");
-    expect([...view.querySelectorAll("blockquote")].map(quote => quote.textContent)).toContain("- add a skip button");
+    expect([...view.querySelectorAll("blockquote")].map(quote => quote.textContent)).toContain("add a skip button");
     await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent === "Your words"));
-    expect(words().value).toBe(original);
+    expect((await editWords()).value).toBe(original);
 
     await typeInto(words(), `${original}\nnew thought`);
     await blur(words());
     await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent?.startsWith("Structured")));
     expect(host.textContent).toContain("Your words changed since this was built.");
-    expect(button("Re-structure")).toBeDefined();
+    expect(button("Re-structure")?.getAttribute("aria-label")).toBe("Structure");
   });
 
   it("splits an item into its own note", async () => {
@@ -248,7 +268,7 @@ describe("tasks and Start", () => {
     await withTasks();
     const tasks = host.querySelector("section[aria-label='Tasks']")!;
     expect([...tasks.querySelectorAll("blockquote")].map(quote => quote.textContent)).toEqual([
-      "need to fix the onbaording flow, ppl drop at step 3", "- add a skip button", "- shorter copy on the welcome screen",
+      "need to fix the onbaording flow, ppl drop at step 3", "add a skip button", "shorter copy on the welcome screen",
     ]);
   });
 
@@ -256,16 +276,16 @@ describe("tasks and Start", () => {
     const given = await withTasks();
     await click(button("Start add a skip button"));
     const picker = host.querySelector("[aria-label='Start a chat']")!;
-    const project = picker.querySelector<HTMLSelectElement>("[aria-label='Project']")!;
-    expect(project.value).toBe("");
-    expect([...project.options].map(option => option.textContent)).toEqual(["No project", "Bridge", "Landing site"]);
-    expect(picker.querySelector<HTMLSelectElement>("[aria-label='Chat harness']")!.value).toBe("claude");
+    const project = picker.querySelector("[role='listbox'][aria-label='Project']")!;
+    expect(selectedLabel(project)).toBe("No project");
+    expect(optionLabels(project)).toEqual(["No project", "Bridge", "Landing site"]);
+    expect(selectedLabel(picker.querySelector("[role='listbox'][aria-label='Chat harness']")!)).toBe("Claude");
     await click(button("Start", picker));
     await settle(60);
     expect(given.onStartChat).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: null, harness: "claude" }));
     const brief = vi.mocked(given.onStartChat).mock.calls[0][0].message;
     expect(brief.startsWith("add a skip button")).toBe(true);
-    expect(brief).toContain('> - add a skip button');
+    expect(brief).toContain("> - add a skip button");
     expect(brief).toContain("need to fix the onbaording flow");
     const task = mockReadPage(mockIdOf(ONBOARDING)).tasks.find(item => item.title === "add a skip button")!;
     expect(task).toMatchObject({ state: "doing", sessionIds: ["session-new"] });
@@ -275,8 +295,8 @@ describe("tasks and Start", () => {
 
     await click(button("Start shorter copy on the welcome screen"));
     const second = host.querySelector("[aria-label='Start a chat']")!;
-    await choose(second.querySelector<HTMLSelectElement>("[aria-label='Project']")!, "demo-2");
-    await choose(second.querySelector<HTMLSelectElement>("[aria-label='Chat harness']")!, "cursor");
+    await pick(second.querySelector("[role='listbox'][aria-label='Project']")!, "Landing site");
+    await pick(second.querySelector("[role='listbox'][aria-label='Chat harness']")!, "Cursor");
     await click(button("Start", second));
     await settle(60);
     expect(given.onStartChat).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: "demo-2", harness: "cursor" }));
@@ -285,14 +305,16 @@ describe("tasks and Start", () => {
 
   it("preselects the page's project when it has one", async () => {
     await withTasks();
-    await choose(field<HTMLSelectElement>("Project"), "demo-1");
+    await pick(await property("Project"), "Bridge");
+    await settle(60);
     await click(button("Start add a skip button"));
-    expect(host.querySelector<HTMLSelectElement>("[aria-label='Start a chat'] [aria-label='Project']")!.value).toBe("demo-1");
+    expect(selectedLabel(host.querySelector("[aria-label='Start a chat'] [role='listbox'][aria-label='Project']")!)).toBe("Bridge");
   });
 
   it("deletes a page with its tasks after saying how many go", async () => {
     await withTasks();
-    await click(button("Delete note"));
+    await click(button("More"));
+    await click(button("Delete page"));
     expect(host.querySelector("[role='alertdialog']")?.textContent).toContain("Delete this note and its 3 tasks?");
     await click(button("Delete", host.querySelector("[role='alertdialog']")!));
     await settle(60);
@@ -306,18 +328,19 @@ describe("projects stay optional", () => {
     const update = vi.spyOn(bridgeApi, "updateNote");
     await render();
     await openNote(ONBOARDING);
-    const project = field<HTMLSelectElement>("Project");
-    expect([...project.options].map(option => option.textContent)).toEqual(["No project", "Bridge", "Landing site"]);
-    await choose(project, "demo-2");
+    const project = await property("Project");
+    expect(optionLabels(project)).toEqual(["No project", "Bridge", "Landing site"]);
+    await pick(project, "Landing site");
     expect(update).toHaveBeenLastCalledWith({ id: mockIdOf(ONBOARDING), workspaceId: "demo-2" });
-    await choose(field<HTMLSelectElement>("Project"), "");
+    await settle(60);
+    await pick(await property("Project"), "No project");
     expect(update).toHaveBeenLastCalledWith({ id: mockIdOf(ONBOARDING), clearWorkspace: true });
   });
 
   it("disables nothing when there are no projects", async () => {
     await render({ workspaces: [] });
     await openNote(ONBOARDING);
-    expect([...field<HTMLSelectElement>("Project").options].map(option => option.textContent)).toEqual(["No project"]);
+    expect(optionLabels(await property("Project"))).toEqual(["No project"]);
     for (const label of ["Structure", "Turn into tasks", "Start a chat"]) expect((button(label) as HTMLButtonElement).disabled).toBe(false);
   });
 });
