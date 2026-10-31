@@ -90,8 +90,17 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     setSelectedId(id);
     if (!id) setPage(null);
   }, []);
+  // List reads overlap too (a search typed while a refresh is out); only the
+  // newest one may replace what is shown.
+  const listRequest = useRef(0);
   const refreshList = useCallback(async () => {
-    try { setList(await bridgeApi.listNotes({ query: queryRef.current.trim() || null })); } catch (error) { fail(error); }
+    const ticket = ++listRequest.current;
+    try {
+      const next = await bridgeApi.listNotes({ query: queryRef.current.trim() || null });
+      if (ticket === listRequest.current) setList(next);
+    } catch (error) {
+      if (ticket === listRequest.current) fail(error);
+    }
   }, [fail]);
   // Reads of the same page can overlap (several live updates in a row). Only
   // the newest request applies, and never a version older than the one shown.

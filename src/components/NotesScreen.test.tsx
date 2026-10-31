@@ -168,6 +168,31 @@ describe("capture", () => {
   });
 });
 
+describe("list", () => {
+  it("shows the results of the newest search when an older one answers last", async () => {
+    await render();
+    const realList = bridgeApi.listNotes;
+    const held: { query: string; resolve: () => void }[] = [];
+    vi.spyOn(bridgeApi, "listNotes").mockImplementation(async params => {
+      const result = await realList(params);
+      await new Promise<void>(resolve => held.push({ query: params?.query ?? "", resolve }));
+      return result;
+    });
+    const search = field<HTMLInputElement>("Search notes");
+    await typeInto(search, "onbaording");
+    await settle(250);
+    await typeInto(search, "sync");
+    await settle(250);
+    expect(held.map(item => item.query)).toEqual(["onbaording", "sync"]);
+    await act(async () => { held[1].resolve(); });
+    await settle();
+    await act(async () => { held[0].resolve(); });
+    await settle();
+    expect(rowTitles()).toHaveLength(1);
+    expect(rowTitles()[0]).toContain("Local-first sync libraries");
+  });
+});
+
 describe("Your words", () => {
   it("shows the page byte for byte and saves edits with the seq they came from", async () => {
     const edit = vi.spyOn(bridgeApi, "editNotePage");
