@@ -2017,10 +2017,12 @@ function AppContent() {
 
   // The Notes page's standing chat, the same way: reuse it while it lives,
   // else start a direct `notes` purpose chat and remember it.
-  async function askNotes(prompt: string): Promise<void> {
-    if (notesSession) { await deliverPrompt(notesSession, prompt); return; }
-    if (newChatPendingRef.current) return;
-    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+  // Resolves to whether the prompt reached the chat, so the panel knows the
+  // page it carried has been seen.
+  async function askNotes(prompt: string): Promise<boolean> {
+    if (notesSession) { await deliverPrompt(notesSession, prompt); return true; }
+    if (newChatPendingRef.current) return false;
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return false; }
     newChatPendingRef.current = true;
     setNotesChatStarting(true);
     setError(undefined);
@@ -2033,6 +2035,7 @@ function AppContent() {
       writeNotesChatId(created.id);
       setNotesChatId(created.id);
       await deliverPrompt(created, prompt);
+      return true;
     } finally {
       newChatPendingRef.current = false;
       setNotesChatStarting(false);
@@ -2044,8 +2047,8 @@ function AppContent() {
       onClose={onClose}
       projectName={page?.note.workspaceId ? state.workspaces.find(workspace => workspace.id === page.note.workspaceId)?.title : null}
       starting={notesChatStarting}
-      onAsk={message => void askNotes(message).catch(e => setError(errorMessage(e)))}
-      renderChat={notesSession && (brief => <AsideChat
+      onAsk={message => askNotes(message).catch(e => { setError(errorMessage(e)); return false; })}
+      renderChat={notesSession && (send => <AsideChat
         docked
         tag="notes"
         session={notesSession}
@@ -2056,7 +2059,7 @@ function AppContent() {
         working={!!notesSession.activeTurnId || notesSession.status === "working"}
         suggestionSettings={suggestionSettings}
         modelSwitch={modelSwitch?.sessionId === notesSession.id ? modelSwitch : null}
-        onSend={(text, attachments) => deliverPrompt(notesSession, brief(text), attachments)}
+        onSend={(text, attachments) => send(text, message => deliverPrompt(notesSession, message, attachments))}
         onChangeEffort={async effort => {
           setState(await bridgeApi.updateChatModel(notesSession.id, notesSession.harness, notesSession.model ?? null, effort));
         }}

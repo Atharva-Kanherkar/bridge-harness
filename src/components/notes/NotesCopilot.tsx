@@ -1,7 +1,8 @@
 // The Notes page's AI panel: one standing `notes` purpose chat, opened from
 // "Ask AI" beside the page. Each message carries the open page as a
-// `notes-context` fence, but only when the page changed since the last
-// message, so the agent always reads current text and the chat never repeats it.
+// `notes-context` fence, but only when the page changed since the last message
+// that was delivered, so the agent always reads current text and the chat never
+// repeats it. A send that fails or is refused carries the page again next time.
 
 import { useRef, useState, type ReactNode } from "react";
 import { ArrowUp, X } from "lucide-react";
@@ -22,22 +23,26 @@ export function NotesCopilot({ page, projectName, starting = false, onAsk, onClo
   page: NotePage | null;
   projectName?: string | null;
   starting?: boolean;
-  /** Ask in the notes chat, starting it if there is none. */
-  onAsk: (message: string) => void;
+  /** Ask in the notes chat, starting it if there is none. Resolves to whether
+   *  the message was handed to the chat. */
+  onAsk: (message: string) => Promise<boolean>;
   onClose?: () => void;
-  /** The chat, once the notes chat exists. `brief` folds the page on. */
-  renderChat?: (brief: (text: string) => string) => ReactNode;
+  /** The chat, once the notes chat exists. `send` folds the page on and calls
+   *  `deliver` with the message; a rejection leaves the page unsent. */
+  renderChat?: (send: (text: string, deliver: (message: string) => Promise<unknown>) => Promise<void>) => ReactNode;
 }) {
   const lastContext = useRef("");
-  const brief = (text: string) => {
+  const send = async (text: string, deliver: (message: string) => Promise<unknown>) => {
     const context = page ? notesContext({ note: page.note, markdown: page.markdown, projectName }) : "";
-    if (!context || context === lastContext.current) return text.trim();
-    lastContext.current = context;
-    return withNotesContext(text, context);
+    const fold = !!context && context !== lastContext.current;
+    await deliver(fold ? withNotesContext(text, context) : text.trim());
+    if (fold) lastContext.current = context;
   };
-  const ask = (text: string) => onAsk(brief(text));
+  const ask = (text: string) => void send(text, async message => {
+    if (!(await onAsk(message))) throw new Error("not sent");
+  }).catch(() => undefined);
   const asks = NOTES_QUICK_ASKS.filter(item => page || !item.needsPage);
-  const chat = renderChat?.(brief);
+  const chat = renderChat?.(send);
 
   return <div className="flex h-full min-h-0 flex-col">
     <header className="flex h-12 shrink-0 items-center gap-2 px-4">
