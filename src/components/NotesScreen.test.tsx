@@ -213,6 +213,23 @@ describe("pages under pages", () => {
   });
 });
 
+describe("archive", () => {
+  it("finds and restores an archived page", async () => {
+    await render();
+    await openNote(ONBOARDING);
+    await pick(await property("Status"), "Archived");
+    await settle(60);
+    expect(rowTitles().some(title => title.startsWith(ONBOARDING))).toBe(false);
+    await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent === "Archived"));
+    expect(rowTitles().some(title => title.startsWith(ONBOARDING))).toBe(true);
+    await openNote(ONBOARDING);
+    await pick(await property("Status"), "Open");
+    await settle(60);
+    await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent === "All"));
+    expect(rowTitles().some(title => title.startsWith(ONBOARDING))).toBe(true);
+  });
+});
+
 describe("Your words", () => {
   it("shows the page byte for byte and saves edits with the seq they came from", async () => {
     const edit = vi.spyOn(bridgeApi, "editNotePage");

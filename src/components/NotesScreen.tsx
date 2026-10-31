@@ -26,8 +26,8 @@ import type { StartChoice } from "./notes/NotePickers";
 
 export const JOB_POLL_MS = 1500;
 
-type Filter = "all" | "inbox" | "tasks";
-const FILTERS: [Filter, string][] = [["all", "All"], ["inbox", "Inbox"], ["tasks", "Tasks"]];
+type Filter = "all" | "inbox" | "tasks" | "archived";
+const FILTERS: [Filter, string][] = [["all", "All"], ["inbox", "Inbox"], ["tasks", "Tasks"], ["archived", "Archived"]];
 
 export interface NoteChatRequest { message: string; workspaceId: string | null; harness: string }
 
@@ -96,7 +96,8 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const refreshList = useCallback(async () => {
     const ticket = ++listRequest.current;
     try {
-      const next = await bridgeApi.listNotes({ query: queryRef.current.trim() || null });
+      // Archived pages come too, for the Archived tab; the others leave them out.
+      const next = await bridgeApi.listNotes({ query: queryRef.current.trim() || null, includeArchived: true });
       if (ticket === listRequest.current) setList(next);
     } catch (error) {
       if (ticket === listRequest.current) fail(error);
@@ -214,7 +215,11 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   // A task lives under its page; any other page under a page (one an agent
   // wrote from the open page, say) is listed like a top-level one.
   const childTask = (note: Note) => !!note.parentId && note.kind === "task";
-  const visible = notes.filter(note => filter === "tasks" ? note.kind === "task" : !childTask(note) && (filter === "all" || note.state === "inbox"));
+  const visible = notes.filter(note => {
+    if (filter === "archived") return note.state === "archived";
+    if (note.state === "archived") return false;
+    return filter === "tasks" ? note.kind === "task" : !childTask(note) && (filter === "all" || note.state === "inbox");
+  });
   const parent = page?.note.parentId ? byId.get(page.note.parentId) ?? null : null;
 
   return <div className="flex h-full min-h-0 bg-background">
@@ -230,7 +235,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         </div>
       </div>
       <ul aria-label="Notes" className="m-0 min-h-0 flex-1 list-none space-y-px overflow-y-auto px-2 py-2">
-        {filter !== "tasks" && pending.map(item => <li key={item.key} aria-busy={!item.failed} data-capture={item.failed ? "failed" : "saving"} className="rounded-lg px-2.5 py-2">
+        {(filter === "all" || filter === "inbox") && pending.map(item => <li key={item.key} aria-busy={!item.failed} data-capture={item.failed ? "failed" : "saving"} className="rounded-lg px-2.5 py-2">
           <p className="m-0 truncate text-[13.5px] font-medium text-foreground">{noteDisplayTitle({ title: null, preview: item.body })}</p>
           {item.failed
             ? <div className="mt-1 flex items-center gap-1 text-[12px]">
@@ -244,7 +249,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
           <NoteRow note={note} active={note.id === selectedId} parent={note.parentId ? byId.get(note.parentId) : undefined} project={workspaces.find(workspace => workspace.id === note.workspaceId)?.title} onOpen={() => void open(note.id)} />
         </li>)}
         {list && !visible.length && !pending.length && <li className="px-3 py-8 text-center text-[12.5px] leading-relaxed text-muted-foreground">
-          {query ? "No notes match." : filter === "tasks" ? "No tasks yet. Open a page and choose Turn into tasks." : filter === "inbox" ? "The Inbox is empty." : "Nothing here yet. Type above and press Enter."}
+          {query ? "No notes match." : filter === "tasks" ? "No tasks yet. Open a page and choose Turn into tasks." : filter === "inbox" ? "The Inbox is empty." : filter === "archived" ? "Nothing archived. Set a page's status to Archived to put it here." : "Nothing here yet. Type above and press Enter."}
         </li>}
       </ul>
       <NotesFooter root={list?.root} onNewPage={() => void createPage()} onError={fail} />
