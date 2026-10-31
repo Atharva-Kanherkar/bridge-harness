@@ -16,6 +16,8 @@ const clip = (text: string, limit: number) => text.length > limit ? `${text.slic
 const quote = (text: string) => text.trimEnd().split("\n").map(line => `> ${line}`.trimEnd()).join("\n");
 
 export interface TaskBriefInput {
+  /** A task from Turn into tasks, or any page started as a chat. */
+  kind?: "task" | "note";
   title: string;
   /** The task page's body: its detail and "Done when". */
   body: string;
@@ -25,9 +27,11 @@ export interface TaskBriefInput {
   parentTitle?: string | null;
 }
 
-/** The first message of a chat started from a note. */
-export function taskBrief({ title, body, excerpt, parentTitle }: TaskBriefInput): string {
-  const parts = [title.trim()];
+/** The first message of a chat started from a note. It opens with a label,
+ *  never the title: the composer and the core both read a leading `/`, `$`,
+ *  `#` or `@` as a command, and a note can be titled anything. */
+export function taskBrief({ kind = "task", title, body, excerpt, parentTitle }: TaskBriefInput): string {
+  const parts = [`${kind === "task" ? "Task" : "Note"}: ${title.trim()}`];
   const detail = body.trim();
   if (detail && detail !== title.trim()) parts.push(clip(detail, BRIEF_BODY_CHARS));
   if (excerpt?.trim()) parts.push(`${parentTitle?.trim() ? `From my note "${parentTitle.trim()}"` : "From my notes"}:\n${quote(excerpt)}`);

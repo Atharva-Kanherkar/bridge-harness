@@ -425,7 +425,7 @@ describe("tasks and Start", () => {
     await settle(60);
     expect(given.onStartChat).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: null, harness: "claude" }));
     const brief = vi.mocked(given.onStartChat).mock.calls[0][0].message;
-    expect(brief.startsWith("add a skip button")).toBe(true);
+    expect(brief.startsWith("Task: add a skip button")).toBe(true);
     expect(brief).toContain("> - add a skip button");
     expect(brief).toContain("need to fix the onbaording flow");
     const task = mockReadPage(mockIdOf(ONBOARDING)).tasks.find(item => item.title === "add a skip button")!;

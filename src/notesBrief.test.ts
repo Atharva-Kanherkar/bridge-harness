@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { actorLabel, notesContext, splitNotesContext, taskBrief, withNotesContext } from "./notesBrief";
+import { parseAgentMention } from "./agentMention";
+import { parseFindCommand } from "./chatSearch";
+import { parseHarnessShortcut } from "./harnessShortcut";
 import type { Note } from "./types";
 
 const note = (over: Partial<Note> = {}): Note => ({
@@ -10,11 +13,26 @@ const note = (over: Partial<Note> = {}): Note => ({
 describe("taskBrief", () => {
   it("carries the task, its quote, the page it came from and the define-done ask", () => {
     const brief = taskBrief({ title: "Add a skip button", body: "Add a skip button to step 3.\n\nDone when: step 3 can be skipped.", excerpt: "- add a skip button\n- on step 3", parentTitle: "Onboarding" });
-    expect(brief.startsWith("Add a skip button\n\nAdd a skip button to step 3.")).toBe(true);
+    expect(brief.startsWith("Task: Add a skip button\n\nAdd a skip button to step 3.")).toBe(true);
     expect(brief).toContain("Done when: step 3 can be skipped.");
     expect(brief).toContain('From my note "Onboarding":\n> - add a skip button\n> - on step 3');
     expect(brief).toContain("say in one line what done means");
     expect(brief).toContain("Ask me only about ambiguity that would change the outcome");
+  });
+
+  it("never starts with something the composer or core would run", () => {
+    // The composer reads a leading / $ # or @ as a command, and so does the
+    // core's slash dispatch, so a note's title must never open the message.
+    for (const title of ["/find syntax", "$codex hi", "#reviewer go", "@session:abc", "/note buy milk", "  /compact now"]) {
+      for (const kind of ["task", "note"] as const) {
+        const brief = taskBrief({ kind, title, body: "do it" });
+        expect(brief.trimStart()[0], `${kind}: ${title}`).toMatch(/[A-Za-z]/);
+        expect(parseFindCommand(brief)).toBeNull();
+        expect(parseHarnessShortcut(brief)).toBeNull();
+        expect(parseAgentMention(brief)).toBeNull();
+        expect(brief).toContain(title.trim());
+      }
+    }
   });
 
   it("leaves out what it does not have", () => {

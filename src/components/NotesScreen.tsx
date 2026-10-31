@@ -198,7 +198,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     try {
       const full = await bridgeApi.readNotePage(target.id);
       const parent = target.parentId ? (page?.note.id === target.parentId ? page.note : byId.get(target.parentId)) : null;
-      const brief = taskBrief({ title: noteDisplayTitle({ title: target.title, preview: full.markdown }), body: full.markdown, excerpt: target.sourceExcerpt, parentTitle: parent ? noteDisplayTitle(parent) : null });
+      const brief = taskBrief({ kind: target.kind === "task" ? "task" : "note", title: noteDisplayTitle({ title: target.title, preview: full.markdown }), body: full.markdown, excerpt: target.sourceExcerpt, parentTitle: parent ? noteDisplayTitle(parent) : null });
       const sessionId = await onStartChat({ message: brief, workspaceId: choice.workspaceId, harness: choice.harness });
       if (!sessionId) return false;
       await bridgeApi.updateNote({ id: target.id, addSessionId: sessionId, ...(target.kind === "task" && target.state === "open" ? { state: "doing" } : {}) });
