@@ -107,3 +107,20 @@ The first build worked but read as a form, not a page. The behavior above stands
 - **Notes chat** opens from "Ask AI" (remembered per window) as a right panel with plain suggestion rows instead of colored tiles.
 
 Test updates follow the new controls (listbox options instead of selects, More menu for Delete, click-to-edit for Your words); every behavior in the sections above keeps its test.
+
+## Review fixes (PR #872 review 5721585438)
+
+Each item has a regression test that failed before its fix.
+
+1. **Typing during a save merges hunk by hunk.** `rebaseDraft` replays every separate change from the sent text onto the merged text (line hunks, then characters inside a line both sides touched), so disjoint edits on both sides all survive; only a span both sides changed keeps the person's version. Test: `notesDraft.test.ts` "keeps separate concurrent edits on both sides".
+2. **A failed capture is never lost.** It stays in the list as a failed row with Retry and Discard, and whatever was typed since stays in the box. (Replaces "puts the text back in the box".) Test: `NotesScreen.test.tsx` "keeps a failed capture recoverable while the next one is typed".
+3. **Actions wait for the draft.** Structure, Turn into tasks and Start await a flush that drains the in-flight save and any typing after it, and stop if saving fails. Tests: "runs Structure on the latest words" and "starts a chat with the latest words".
+4. **Page reads never go backward.** A page read applies only if it is the newest request for that page and its seq is not older than the page shown; the draft ignores older seqs. Test: "ignores an older page read that resolves last".
+5. **Only the newest list request applies.** Test: "shows the results of the newest search".
+6. **Child pages are reachable.** Non-task pages under a page show in All and search (with "from <parent>") and in a Pages section on their parent. Test: "lists a page an agent wrote under another page".
+7. **Archived pages can be found.** An Archived tab lists them; restoring the status brings them back. Test: "finds and restores an archived page".
+8. **The Notes chat marks the page as sent only after the message is delivered.** A failed or refused send carries the page again next time. Test: `NotesCopilot.test.tsx` "carries the page again after a send that did not go through".
+9. **Note briefs cannot be read as commands.** Both the composer and the core read a leading `/`, `$`, `#` or `@` as a command, so a brief starts with a fixed label ("Task:" or "Note:"), never the title. Tests: `notesBrief.test.ts` "never starts with something the composer or core would run"; `App.notes.test.tsx` "starts a chat for a note titled like a command".
+10. **Pickers preselect the saved application chat default** (`config/get_chat_defaults`), read each time Notes opens. Test: `App.notes.test.tsx` "preselects the saved application chat default".
+11. **No project launches never ask for a worktree**, even with `createWorktree` saved as a default. Test: `App.notes.test.tsx` "starts a No project chat when worktrees are a saved default".
+12. **CI:** `src/mcp-apps/visual/generated/visual.html` regenerated after the stylesheet change (`check:visual`).
