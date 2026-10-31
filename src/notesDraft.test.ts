@@ -28,6 +28,36 @@ describe("rebaseDraft", () => {
     expect(rebaseDraft(sent, "alpha\nBETA\ngamma\n", "alpha\nbeta (agent)\ngamma\n")).toEqual({ text: "alpha\nBETA (agent)\ngamma\n", overlap: false });
   });
 
+  it("keeps separate concurrent edits on both sides", () => {
+    // The reviewer's case: the person changes the first and last lines while
+    // an agent changes only the middle one.
+    const base = "alpha!\nbeta\ngamma\n";
+    expect(rebaseDraft(base, "ALPHA!\nbeta\nGAMMA\n", "alpha!\nBETA\ngamma\n")).toEqual({ text: "ALPHA!\nBETA\nGAMMA\n", overlap: false });
+    // Two edits inside one line, around the agent's.
+    expect(rebaseDraft("one two three\n", "ONE two THREE\n", "one TWO three\n")).toEqual({ text: "ONE TWO THREE\n", overlap: false });
+    // Agent edits on both sides of the person's.
+    expect(rebaseDraft("a\nb\nc\nd\ne\n", "a\nb\nC!\nd\ne\n", "A\nb\nc\nd\nE\n")).toEqual({ text: "A\nb\nC!\nd\nE\n", overlap: false });
+  });
+
+  it("keeps every edit when the two sides change different lines", () => {
+    // Seeded so a failure reproduces: the person edits even lines, the agent
+    // odd ones, including neighbours and inserted lines.
+    let seed = 7;
+    const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    for (let round = 0; round < 300; round += 1) {
+      const base = Array.from({ length: 2 + Math.floor(random() * 10) }, (_, index) => `line ${index} ${"x".repeat(Math.floor(random() * 4))}\n`);
+      const edit = (parity: number, mark: string) => base.map((line, index) => index % 2 === parity && random() < 0.6 ? (random() < 0.3 ? `${line}${mark} added\n` : `${mark} ${line}`) : line);
+      const mine = edit(0, "M");
+      const theirs = edit(1, "T");
+      const expected = base.map((_, index) => (index % 2 === 0 ? mine : theirs)[index]).join("");
+      expect(rebaseDraft(base.join(""), mine.join(""), theirs.join("")), `round ${round}`).toEqual({ text: expected, overlap: false });
+    }
+  });
+
+  it("keeps the agent's other edits when one span conflicts", () => {
+    expect(rebaseDraft("a\nb\nc\n", "a\nmine\nc\n", "A\ntheirs\nc\n")).toEqual({ text: "A\nmine\nc\n", overlap: true });
+  });
+
   it("keeps the person's draft when both changed the same span", () => {
     const draft = "alpha\nBETA\ngamma\n";
     expect(rebaseDraft(sent, draft, "alpha\nbXta\ngamma\n")).toEqual({ text: draft, overlap: true });
