@@ -118,6 +118,8 @@ import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { readStorageChatId, STORAGE_CHAT_PURPOSE, STORAGE_CHAT_TITLE, writeStorageChatId } from "./storageChat";
+import { NOTES_CHAT_PURPOSE, NOTES_CHAT_TITLE, readNotesChatId, writeNotesChatId } from "./notesChat";
+import { NotesCopilot } from "./components/notes/NotesCopilot";
 import { StorageCopilot, type StorageCopilotHost } from "./components/settings/StorageCopilot";
 import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
@@ -149,6 +151,8 @@ import { useBridgeServerState } from "./serverState";
 const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
+const NotesScreen = lazy(() => import("./components/NotesScreen").then(module => ({ default: module.NotesScreen })));
+import type { NoteChatRequest, NotesCopilotHost } from "./components/NotesScreen";
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
@@ -265,6 +269,9 @@ function AppContent() {
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
+  // Bumped by `capture-note`: Notes opens with its capture box focused.
+  const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
+  const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
@@ -458,6 +465,8 @@ function AppContent() {
   const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
   const [storageChatId, setStorageChatId] = useState(readStorageChatId);
   const [storageChatStarting, setStorageChatStarting] = useState(false);
+  const [notesChatId, setNotesChatId] = useState(readNotesChatId);
+  const [notesChatStarting, setNotesChatStarting] = useState(false);
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
@@ -747,6 +756,16 @@ function AppContent() {
   }, [selectedSessionId, view, paradigm]);
   useEffect(() => {
     if (view !== "memory") setMemoryDraft(null);
+  }, [view]);
+  // Read each time Notes opens, so a default changed in Settings is the one
+  // the pickers start from.
+  useEffect(() => {
+    if (view !== "notes") return;
+    let current = true;
+    bridgeApi.getChatDefaults()
+      .then(defaults => { if (current) setNotesChatDefault(defaults.application.defaults.model?.harness ?? null); })
+      .catch(() => { if (current) setNotesChatDefault(null); });
+    return () => { current = false; };
   }, [view]);
 
   // Re-applies the remembered zoom level and answers pinch gestures. The chords
@@ -1194,6 +1213,8 @@ function AppContent() {
   );
   const storageSession = useMemo(() => storageChatId ? state.sessions.find(candidate => candidate.id === storageChatId) : undefined, [storageChatId, state.sessions]);
   const storagePending = useMemo(() => pending.filter(item => item.sessionId === storageChatId), [pending, storageChatId]);
+  const notesSession = useMemo(() => notesChatId ? state.sessions.find(candidate => candidate.id === notesChatId) : undefined, [notesChatId, state.sessions]);
+  const notesPending = useMemo(() => pending.filter(item => item.sessionId === notesChatId), [pending, notesChatId]);
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id), [pending, session?.id]);
   const conversationStarted = useMemo(() => {
     if (!session) return false;
@@ -1924,6 +1945,24 @@ function AppContent() {
     return undefined;
   }
 
+  // Start a task (or any page) from Notes: a direct chat with no project, or a
+  // chat in the chosen project, on the chosen harness, with the brief as its
+  // first message. Notes stays open; the row then offers Open chat.
+  async function startChatFromNote({ message, workspaceId, harness }: NoteChatRequest): Promise<string | undefined> {
+    const adapter = adapters.find(candidate => candidate.id === harness);
+    const model = { harness, model: adapter?.defaultModel ?? adapter?.models[0]?.id ?? null };
+    const draft: NewChatDraft = workspaceId
+      ? { workspaceId, overrides: { model } }
+      // A direct chat has no repository to branch, whatever the saved defaults
+      // say about worktrees.
+      : { workspaceId: null, overrides: { target: { kind: "direct" }, model, effort: { value: null }, createWorktree: false } };
+    return submitNewChatDraft(draft, message);
+  }
+  // The harness every Notes picker preselects: the saved application chat
+  // default (Settings, Chat defaults), the same one the core's note passes
+  // fall back to. With none saved, each picker starts on its first choice.
+  const notesDefaultHarness = adapters.some(adapter => adapter.available && adapter.id === notesChatDefault) ? notesChatDefault : null;
+
   // The Storage page's standing chat: reuse it while it lives, else start a
   // direct chat (no project, a private scratch dir) and remember it.
   async function askStorage(prompt: string): Promise<void> {
@@ -1986,6 +2025,75 @@ function AppContent() {
         onRetryCompaction={() => retryCompaction(storageSession.id)}
         onPromote={() => openSession(storageSession.id)}
       />}
+    />,
+  };
+
+  // The Notes page's standing chat, the same way: reuse it while it lives,
+  // else start a direct `notes` purpose chat and remember it.
+  // Resolves to whether the prompt reached the chat, so the panel knows the
+  // page it carried has been seen.
+  async function askNotes(prompt: string): Promise<boolean> {
+    if (notesSession) { await deliverPrompt(notesSession, prompt); return true; }
+    if (newChatPendingRef.current) return false;
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return false; }
+    newChatPendingRef.current = true;
+    setNotesChatStarting(true);
+    setError(undefined);
+    try {
+      const { harness, model } = resolveDraftHarnessModel();
+      const next = await bridgeApi.createChat(harness, model, NOTES_CHAT_TITLE, NOTES_CHAT_PURPOSE);
+      const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
+      if (!created) throw new Error("Bridge created the notes chat but did not return its session");
+      setState(next);
+      writeNotesChatId(created.id);
+      setNotesChatId(created.id);
+      await deliverPrompt(created, prompt);
+      return true;
+    } finally {
+      newChatPendingRef.current = false;
+      setNotesChatStarting(false);
+    }
+  }
+  const notesCopilot: NotesCopilotHost = {
+    render: (page, onClose) => <NotesCopilot
+      page={page}
+      onClose={onClose}
+      projectName={page?.note.workspaceId ? state.workspaces.find(workspace => workspace.id === page.note.workspaceId)?.title : null}
+      starting={notesChatStarting}
+      onAsk={message => askNotes(message).catch(e => { setError(errorMessage(e)); return false; })}
+      renderChat={notesSession && (send => <AsideChat
+        docked
+        tag="notes"
+        session={notesSession}
+        adapters={adapters}
+        events={agentEvents}
+        pendingMessages={notesPending}
+        queuedFollowUpCount={queuedFollowUps(notesSession.id, state.events).length}
+        working={!!notesSession.activeTurnId || notesSession.status === "working"}
+        suggestionSettings={suggestionSettings}
+        modelSwitch={modelSwitch?.sessionId === notesSession.id ? modelSwitch : null}
+        onSend={(text, attachments) => send(text, message => deliverPrompt(notesSession, message, attachments))}
+        onChangeEffort={async effort => {
+          setState(await bridgeApi.updateChatModel(notesSession.id, notesSession.harness, notesSession.model ?? null, effort));
+        }}
+        onChangeModel={async (harness, model) => {
+          setModelSwitch({ sessionId: notesSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
+          try { setState(await bridgeApi.updateChatModel(notesSession.id, harness, model)); }
+          finally { setModelSwitch(null); }
+        }}
+        onResolve={async (eventId, decision, optionId) => {
+          const result = await bridgeApi.resolveApproval(notesSession.id, eventId, decision, optionId);
+          await reload();
+          return result;
+        }}
+        onAnswerQuestion={async (eventId, action, answers) => {
+          const result = await bridgeApi.resolveQuestion(notesSession.id, eventId, action, answers);
+          await reload();
+          return result;
+        }}
+        onRetryCompaction={() => retryCompaction(notesSession.id)}
+        onPromote={() => openSession(notesSession.id)}
+      />)}
     />,
   };
 
@@ -2915,6 +3023,13 @@ function AppContent() {
       case "open-projects":
         setView("projects");
         return;
+      case "open-notes":
+        setView("notes");
+        return;
+      case "capture-note":
+        setView("notes");
+        setNoteCaptureRequest(value => value + 1);
+        return;
       case "open-settings":
         setView("settings");
         return;
@@ -3057,7 +3172,7 @@ function AppContent() {
     onComplete={finishAgentOnboarding}
     onError={setError}
   />{error && <TransientAlert title="Setup failed" message={error} variant="error" action={isCodexVersionError(error) ? { label: "Update Codex", onClick: startCodexUpdate } : undefined} onDismiss={() => setError(undefined)} className="z-[60]" />}{codexUpdateOverlays}</div>;
-  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
+  const chromeTitle = view === "automations" ? "Scheduled tasks" : view === "archives" ? "Archived chats" : view === "saved-setups" ? "Agents" : view === "briefing-settings" ? "Daily briefing" : view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "notes" ? "Notes" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "gitplace" ? "Gitplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session ? chatName(session) : "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -3109,6 +3224,7 @@ function AppContent() {
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
       memoryActive={view === "memory"}
+      notesActive={view === "notes"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
       gitplaceActive={view === "gitplace"}
@@ -3129,6 +3245,7 @@ function AppContent() {
       onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
+      onOpenNotes={() => setView("notes")}
       onOpenUsage={() => setView("usage")}
       onOpenGitplace={() => setView("gitplace")}
       railTrailing={usageDot}
@@ -3187,7 +3304,17 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "memory" ? <MemoryDialog
+      /> : view === "notes" ? <Suspense fallback={<PanelLoading label="Opening notes…"/>}><NotesScreen
+        adapters={adapters}
+        workspaces={state.workspaces}
+        sessions={visibleSessions}
+        defaultHarness={notesDefaultHarness}
+        captureRequest={noteCaptureRequest}
+        onStartChat={startChatFromNote}
+        onOpenChat={openSession}
+        onError={setError}
+        copilot={notesCopilot}
+      /></Suspense> : view === "memory" ? <MemoryDialog
         open
         initialBody={memoryDraft}
         adapters={adapters}

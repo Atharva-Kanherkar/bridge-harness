@@ -8,6 +8,7 @@ import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFi
 import { StoragePlanCard } from "./StoragePlanCard";
 import { useInViewport } from "./useInViewport";
 import { SNAPSHOT_FENCE, splitSnapshot } from "../diskSpace";
+import { NOTES_CONTEXT_FENCE, splitNotesContext } from "../notesBrief";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
@@ -171,17 +172,22 @@ const MENTION = /(@[\w~@./-]+)/g;
 export function MentionText({ text }: { text: string }) {
   // A Storage chat folds what the page measured onto the end of a message.
   // The person wrote the question, not the numbers, so the numbers fold away.
+  // The Notes chat does the same with the open page.
   const { text: prose, snapshot } = splitSnapshot(text);
-  if (snapshot === null) return <TextRun text={text} />;
-  return <>
-    <TextRun text={prose} />
-    <details className="mt-1.5 text-caption text-muted-foreground">
-      <summary className="cursor-pointer list-none select-none rounded-full border border-border px-2 py-0.5 text-[11px] marker:hidden hover:text-foreground">
-        <span aria-hidden="true" className="mr-1 inline-block size-1.5 rounded-full bg-ctx-1 align-middle" />Storage page snapshot
-      </summary>
-      <pre aria-label={SNAPSHOT_FENCE} className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{snapshot}</pre>
-    </details>
-  </>;
+  if (snapshot !== null) return <><TextRun text={prose} /><FoldedContext label="Storage page snapshot" fence={SNAPSHOT_FENCE} series="bg-ctx-1" body={snapshot} /></>;
+  const { text: asked, context } = splitNotesContext(text);
+  if (context !== null) return <><TextRun text={asked} /><FoldedContext label="Notes page" fence={NOTES_CONTEXT_FENCE} series="bg-ctx-2" body={context} /></>;
+  return <TextRun text={text} />;
+}
+
+/** What a page attached to a message, folded into a chip the person can open. */
+function FoldedContext({ label, fence, series, body }: { label: string; fence: string; series: string; body: string }) {
+  return <details className="mt-1.5 text-caption text-muted-foreground">
+    <summary className="cursor-pointer list-none select-none rounded-full border border-border px-2 py-0.5 text-[11px] marker:hidden hover:text-foreground">
+      <span aria-hidden="true" className={`mr-1 inline-block size-1.5 rounded-full align-middle ${series}`} />{label}
+    </summary>
+    <pre aria-label={fence} className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{body}</pre>
+  </details>;
 }
 
 function TextRun({ text }: { text: string }) {
