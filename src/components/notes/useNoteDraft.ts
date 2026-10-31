@@ -97,7 +97,8 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
   }, [save]);
 
   const load = useCallback((page: NotePage) => {
-    if (page.note.id !== id || saving.current || page.seq === base.current.seq) return;
+    // Only newer versions: a late read of an older one must not roll back.
+    if (page.note.id !== id || saving.current || page.seq <= base.current.seq) return;
     if (draft.current === base.current.text) {
       base.current = { text: page.markdown, seq: page.seq };
       show(page.markdown);

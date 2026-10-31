@@ -204,6 +204,30 @@ describe("Your words", () => {
     expect(host.textContent).not.toContain("This page changed while you were typing");
   });
 
+  it("ignores an older page read that resolves last", async () => {
+    await render();
+    await openNote(ONBOARDING);
+    const id = mockIdOf(ONBOARDING);
+    const realRead = bridgeApi.readNotePage;
+    const held: { resolve: () => void }[] = [];
+    vi.spyOn(bridgeApi, "readNotePage").mockImplementation(async pageId => {
+      const page = await realRead(pageId);
+      await new Promise<void>(resolve => held.push({ resolve }));
+      return page;
+    });
+    mockNotesAgentWrite(id, "agent line one");
+    await settle(60);
+    mockNotesAgentWrite(id, "agent line two");
+    await settle(60);
+    expect(held).toHaveLength(2);
+    await act(async () => { held[1].resolve(); });
+    await settle();
+    await act(async () => { held[0].resolve(); });
+    await settle();
+    vi.restoreAllMocks();
+    expect((await editWords()).value).toContain("agent line two");
+  });
+
   it("names the agent and chat that wrote a page, which stays editable", async () => {
     await render();
     await openNote("Local-first sync libraries");

@@ -93,17 +93,24 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const refreshList = useCallback(async () => {
     try { setList(await bridgeApi.listNotes({ query: queryRef.current.trim() || null })); } catch (error) { fail(error); }
   }, [fail]);
+  // Reads of the same page can overlap (several live updates in a row). Only
+  // the newest request applies, and never a version older than the one shown.
+  const pageRequest = useRef(0);
+  const showPage = useCallback((next: NotePage, ticket: number) => {
+    if (ticket !== pageRequest.current || selected.current !== next.note.id) return;
+    setPage(current => current?.note.id === next.note.id && current.seq > next.seq ? current : next);
+  }, []);
   const refreshPage = useCallback(async () => {
     const id = selected.current;
     if (!id) return;
+    const ticket = ++pageRequest.current;
     try {
-      const next = await bridgeApi.readNotePage(id);
-      if (selected.current === id) setPage(next);
+      showPage(await bridgeApi.readNotePage(id), ticket);
     } catch {
       // Deleted elsewhere: close it.
-      if (selected.current === id) select(null);
+      if (selected.current === id && ticket === pageRequest.current) select(null);
     }
-  }, [select]);
+  }, [select, showPage]);
   const refreshAll = useCallback(async () => { await Promise.all([refreshList(), refreshPage()]); }, [refreshList, refreshPage]);
 
   useEffect(() => {
@@ -135,11 +142,11 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const open = useCallback(async (id: string) => {
     select(id);
     setPage(current => current?.note.id === id ? current : null);
+    const ticket = ++pageRequest.current;
     try {
-      const next = await bridgeApi.readNotePage(id);
-      if (selected.current === id) setPage(next);
+      showPage(await bridgeApi.readNotePage(id), ticket);
     } catch (error) { fail(error); }
-  }, [fail, select]);
+  }, [fail, select, showPage]);
 
   const send = async (key: string, body: string) => {
     try {
