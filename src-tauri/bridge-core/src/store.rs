@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 67;
+const LATEST_SCHEMA_VERSION: i64 = 68;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -743,6 +743,9 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             // The title job's queue: one row per chat that needs a better name,
             // with its attempts, outcome and spend.
             67 => crate::title_jobs::install_store(&transaction)?,
+            // The extra Claude or Codex account a chat signs in with; null is
+            // the user's own login. See `provider_accounts`.
+            68 => add_column_if_missing(&transaction, "sessions", "account", "TEXT")?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -2974,9 +2977,9 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
     let sessions = query(db, "WITH RECURSIVE archived(id) AS (
              SELECT id FROM sessions WHERE archived_at IS NOT NULL
              UNION SELECT s.id FROM sessions s JOIN archived a ON s.parent_session_id=a.id
-         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
+         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd,s.fork_parent_session_id,s.fork_parent_entry_id,s.account FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
          WHERE NOT EXISTS(SELECT 1 FROM archived a WHERE a.id=s.id)
-         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)? }))?;
+         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)?, fork_parent_session_id:r.get(22)?, fork_parent_entry_id:r.get(23)?, account:r.get(24)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
@@ -4340,6 +4343,21 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn schema_68_records_the_account_a_chat_signs_in_with() {
+        let db = open(Path::new(":memory:")).unwrap();
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('sessions')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "account"));
+        let version: i64 = db.query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 68);
+    }
 
     fn observability_db() -> Connection {
         let db = open(Path::new(":memory:")).unwrap();

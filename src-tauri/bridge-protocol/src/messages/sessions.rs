@@ -519,6 +519,12 @@ pub struct UpdateChatModelParams {
     /// Omitted preserves the current value when the target model supports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// The extra Claude or Codex account to sign in with, by its id in the
+    /// harness's `advanced.accounts`; the harness id is the user's own login.
+    /// Omitted keeps the chat's account on the same harness and uses the
+    /// user's own login on another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1101,6 +1107,7 @@ mod tests {
             harness: HarnessId::parse("opencode").unwrap(),
             model: Some("kimi-k2.5".into()),
             effort: Some("high".into()),
+            account: None,
         };
         let wire = serde_json::to_value(&update).unwrap();
         assert_eq!(
@@ -1108,6 +1115,12 @@ mod tests {
             json!({"sessionId": "s-1", "harness": "opencode", "model": "kimi-k2.5", "effort": "high"})
         );
         assert_eq!(round_trip(&update), update);
+        let personal = UpdateChatModelParams { harness: HarnessId::parse("claude").unwrap(), account: Some("personal".into()), ..update };
+        assert_eq!(
+            serde_json::to_value(&personal).unwrap(),
+            json!({"sessionId": "s-1", "harness": "claude", "model": "kimi-k2.5", "effort": "high", "account": "personal"})
+        );
+        assert_eq!(round_trip(&personal), personal);
 
         let session = CreateWorkspaceSessionParams {
             workspace_id: "w-1".into(),

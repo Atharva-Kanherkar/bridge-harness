@@ -342,6 +342,7 @@ fn live_tools() {
                 read_only_sandbox: None,
                 briefing: None,
                 interactive: true,
+                account: None,
                 on_progress: None,
             },
         );

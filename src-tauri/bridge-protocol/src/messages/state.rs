@@ -127,6 +127,10 @@ pub struct Session {
     /// are what distinguishes a fork from a delegated worker.
     pub fork_parent_session_id: Option<String>,
     pub fork_parent_entry_id: Option<String>,
+    /// The extra Claude or Codex account this chat signs in with, by its id in
+    /// the harness's `advanced.accounts`. Null is the user's own login.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// Mirrors `bridge_core::model::BridgeEvent` — the audit/event feed rows.
@@ -445,6 +449,7 @@ mod tests {
                 cwd: Some("/repos/demo".into()),
                 fork_parent_session_id: None,
                 fork_parent_entry_id: None,
+                account: None,
             }],
             events: vec![BridgeEvent {
                 id: JsSafeI64::new(9).unwrap(),

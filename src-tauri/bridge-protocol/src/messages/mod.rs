@@ -406,6 +406,7 @@ typed_methods![
     (RefreshOpencodeCatalog, RefreshOpencodeCatalogParams, _),
     (SetOpencodeProviderApiKey, SetOpencodeProviderApiKeyParams, _),
     (RemoveOpencodeProviderAuth, RemoveOpencodeProviderAuthParams, _),
+    (SetAccountApiKey, SetAccountApiKeyParams, ConfigState),
     (SaveAgentConfig, SaveAgentConfigParams, ConfigState),
     (DeleteAgentConfig, DeleteAgentConfigParams, ConfigState),
     (SetDefaultAgent, SetDefaultAgentParams, ConfigState),

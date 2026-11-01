@@ -127,7 +127,21 @@ describe("AsideChat", () => {
     await act(async () => { pill.click(); });
     const opus = [...dialog().querySelectorAll("button")].find(button => button.textContent?.includes("Opus"))!;
     await act(async () => { opus.click(); });
-    expect(onChangeModel).toHaveBeenCalledWith("claude", "opus");
+    expect(onChangeModel).toHaveBeenCalledWith("claude", "opus", null);
+  });
+
+  it("shows the aside's account and lets it switch back to the user's own login", async () => {
+    const onChangeModel = vi.fn();
+    const accounts = [{ harness: "claude" as const, id: "personal", label: "Personal" }];
+    await mount({ working: false, onChangeModel, accounts, session: { ...aside, account: "personal" } });
+    const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude · Personal Sonnet"]')!;
+    expect(pill.textContent).toContain("Personal");
+    await act(async () => { pill.click(); });
+    const group = (label: string) => dialog().querySelector<HTMLElement>(`[role="group"][aria-label="${label}"]`)!;
+    expect(group("Claude · Personal").querySelector('[aria-selected="true"]')!.textContent).toContain("Sonnet");
+    const own = [...group("Claude").querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
+    await act(async () => { own.click(); });
+    expect(onChangeModel).toHaveBeenCalledWith("claude", "opus", null);
   });
 
   it("sets supported thinking levels for the aside independently", async () => {

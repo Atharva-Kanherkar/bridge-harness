@@ -613,6 +613,11 @@ pub struct StartRequest<'a> {
     /// job. Decides attachments such as `visualize`. A separate axis from
     /// `write_mode`: configured chats carry an explicit write authority too.
     pub interactive: bool,
+    /// The extra account this chat signs in with: the variables to set and to
+    /// remove, prepared by [`crate::provider_accounts::prepare_launch`].
+    /// `None` inherits the user's own login. Adapters without accounts ignore
+    /// it; the others hand it to [`crate::provider_accounts::apply_account`].
+    pub account: Option<&'a crate::provider_accounts::AccountLaunch>,
     /// See [`StartupProgress`].
     pub on_progress: Option<StartupProgress<'a>>,
 }
@@ -631,6 +636,7 @@ impl std::fmt::Debug for StartRequest<'_> {
             .field("read_only_sandbox", &self.read_only_sandbox)
             .field("briefing", &self.briefing)
             .field("interactive", &self.interactive)
+            .field("account", &self.account)
             .field("on_progress", &self.on_progress.map(|_| "<fn>"))
             .finish()
     }
@@ -657,6 +663,8 @@ pub struct ResumeRequest<'a> {
     pub briefing: Option<&'a BriefingRuntimePolicy>,
     /// See [`StartRequest::interactive`].
     pub interactive: bool,
+    /// See [`StartRequest::account`].
+    pub account: Option<&'a crate::provider_accounts::AccountLaunch>,
     /// See [`StartupProgress`].
     pub on_progress: Option<StartupProgress<'a>>,
 }
@@ -675,6 +683,7 @@ impl std::fmt::Debug for ResumeRequest<'_> {
             .field("read_only_sandbox", &self.read_only_sandbox)
             .field("briefing", &self.briefing)
             .field("interactive", &self.interactive)
+            .field("account", &self.account)
             .field("on_progress", &self.on_progress.map(|_| "<fn>"))
             .finish()
     }
@@ -694,6 +703,7 @@ impl<'a> ResumeRequest<'a> {
             read_only_sandbox: self.read_only_sandbox,
             briefing: self.briefing,
             interactive: self.interactive,
+            account: self.account,
             on_progress: self.on_progress,
         }
     }
@@ -2019,6 +2029,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             interactive: true,
+            account: None,
             on_progress: None,
         };
         let start = request.as_start();

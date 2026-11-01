@@ -80,6 +80,7 @@ impl ClaudeSearchModel {
                 read_only_sandbox: None,
                 briefing: Some(&policy),
                 interactive: false,
+                account: None,
                 on_progress: None,
             },
         );
