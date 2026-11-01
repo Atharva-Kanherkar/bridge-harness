@@ -6,7 +6,7 @@
 //! held, and settles the row with its outcome, detail and spend. A row left
 //! `running` by a crash goes back to `pending` when the store opens.
 
-use bridge_protocol::messages::NoteJob;
+use bridge_protocol::messages::{NoteJob, NotePassProgress};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -34,8 +34,12 @@ pub trait ModelBackend {
     /// The application's default chat harness and model, if one is set.
     fn default_choice(&self) -> Option<(String, Option<String>)>;
     fn projects(&self) -> Vec<ProjectChoice>;
-    fn generate(&self, harness: &str, model: Option<&str>, instructions: &str, prompt: &str) -> Result<Generation, String>;
+    /// Run one turn; `on_text` hears the reply so far as it streams.
+    fn generate(&self, harness: &str, model: Option<&str>, instructions: &str, prompt: &str, on_text: &dyn Fn(&str)) -> Result<Generation, String>;
 }
+
+/// At most one progress event per this long while a reply streams.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
 
 fn stamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -230,7 +234,26 @@ pub fn drain_once(notes: &NotesService, backend: &dyn ModelBackend, owner: &str)
         STRUCTURE => (structure::INSTRUCTIONS, structure::prompt(&page.markdown, &projects, &tags)),
         _ => (tasks::INSTRUCTIONS, tasks::prompt(&page.markdown, &projects)),
     };
-    let generation = match backend.generate(&harness, model.as_deref(), instructions, &prompt) {
+    // The reply streams to open pages as `notes/pass_progress`, throttled,
+    // and once more in full; only the settled job is stored.
+    let progress = |text: &str| notes.report_progress(&NotePassProgress { job_id: job.id.clone(), page_id: job.page_id.clone(), kind: job.kind.clone(), text: text.to_owned() });
+    let last = std::cell::Cell::new(None::<std::time::Instant>);
+    let sent = std::cell::RefCell::new(String::new());
+    let on_text = |text: &str| {
+        if last.get().is_some_and(|at| at.elapsed() < PROGRESS_EVERY) {
+            return;
+        }
+        last.set(Some(std::time::Instant::now()));
+        text.clone_into(&mut sent.borrow_mut());
+        progress(text);
+    };
+    let generated = backend.generate(&harness, model.as_deref(), instructions, &prompt, &on_text);
+    if let Ok(generation) = &generated {
+        if *sent.borrow() != generation.text {
+            progress(&generation.text);
+        }
+    }
+    let generation = match generated {
         Ok(generation) => generation,
         Err(detail) => {
             fail(detail, Some(&harness), model.as_deref(), None, true)?;
@@ -255,7 +278,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::notes::service::tests::service;
     use crate::notes::service::PERSON;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     /// A backend with canned replies, recording what it was asked.
     #[derive(Default)]
@@ -283,9 +306,15 @@ pub(crate) mod tests {
         fn projects(&self) -> Vec<ProjectChoice> {
             self.projects.clone()
         }
-        fn generate(&self, harness: &str, model: Option<&str>, _instructions: &str, prompt: &str) -> Result<Generation, String> {
+        fn generate(&self, harness: &str, model: Option<&str>, _instructions: &str, prompt: &str, on_text: &dyn Fn(&str)) -> Result<Generation, String> {
             self.calls.lock().unwrap().push((harness.to_owned(), model.map(str::to_owned), prompt.to_owned()));
             let reply = self.replies.lock().unwrap().remove(0)?;
+            // Stream it in thirds, the way a model would.
+            for end in [reply.len() / 3, reply.len() * 2 / 3] {
+                if reply.is_char_boundary(end) && end > 0 {
+                    on_text(&reply[..end]);
+                }
+            }
             Ok(Generation { text: reply, tokens: 120, spend_microusd: 300 })
         }
     }
@@ -372,5 +401,26 @@ pub(crate) mod tests {
         assert_eq!(detail.as_deref(), Some("deadline exceeded"));
         assert_eq!(spend, 300, "only the generation that returned text cost anything");
         assert!(notes.read(&page.id).unwrap().structured.is_none());
+    }
+
+    #[test]
+    fn drain_once_streams_progress_then_settles() {
+        let (_dir, notes) = service();
+        let seen = Arc::new(Mutex::new(Vec::<NotePassProgress>::new()));
+        let sink = seen.clone();
+        notes.set_progress_listener(Arc::new(move |progress: &NotePassProgress| sink.lock().unwrap().push(progress.clone())));
+        let page = notes.capture("ship the beta, then write the post", PERSON).unwrap();
+        let job = notes.with_db(|db| enqueue(db, notes.space(), &page.id, STRUCTURE, Some("claude"), None)).unwrap();
+        let reply = r#"{"title": "Beta and post", "kind": "task", "tags": [], "summary": "Ship the beta, then write the post.", "items": [], "project": null}"#;
+        drain_once(&notes, &FakeBackend::replying(vec![Ok(reply.into())]), "owner").unwrap();
+
+        let seen = seen.lock().unwrap();
+        // The first third goes out at once, the rest inside the throttle
+        // window is dropped, and the full reply always closes the stream.
+        assert_eq!(seen.first().map(|progress| progress.text.as_str()), Some(&reply[..reply.len() / 3]));
+        assert_eq!(seen.last().map(|progress| progress.text.as_str()), Some(reply));
+        assert!(seen.windows(2).all(|pair| pair[1].text.starts_with(&pair[0].text)));
+        assert!(seen.iter().all(|progress| progress.job_id == job && progress.page_id == page.id && progress.kind == STRUCTURE));
+        assert_eq!(job_row(&notes, &job).0, "done");
     }
 }

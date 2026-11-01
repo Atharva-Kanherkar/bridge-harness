@@ -117,6 +117,9 @@ notifications![
     // A notes page changed: who changed it and its new sequence. Transient: a
     // client that missed it rereads the page, whose `seq` is authoritative.
     (NotesPageChanged, "notes/page_changed", Transient),
+    // A Structure or Turn into tasks reply so far, while it streams. Transient:
+    // the settled job and its stored result are the truth.
+    (NotesPassProgress, "notes/pass_progress", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent

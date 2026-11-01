@@ -171,6 +171,9 @@ export type BridgeMethod =
   | "notes/page_history"
   | "notes/read_version"
   | "notes/restore_version"
+  | "notes/put_asset_part"
+  | "notes/finish_asset"
+  | "notes/read_asset"
   | "notes/get_notes_settings"
   | "notes/save_notes_settings"
   | "usage/summary"
@@ -443,6 +446,9 @@ export const BRIDGE_METHODS = [
   { method: "notes/page_history", domain: "notes", command: "page_history" },
   { method: "notes/read_version", domain: "notes", command: "read_version" },
   { method: "notes/restore_version", domain: "notes", command: "restore_version" },
+  { method: "notes/put_asset_part", domain: "notes", command: "put_asset_part" },
+  { method: "notes/finish_asset", domain: "notes", command: "finish_asset" },
+  { method: "notes/read_asset", domain: "notes", command: "read_asset" },
   { method: "notes/get_notes_settings", domain: "notes", command: "get_notes_settings" },
   { method: "notes/save_notes_settings", domain: "notes", command: "save_notes_settings" },
   { method: "usage/summary", domain: "usage", command: "summary" },
@@ -572,6 +578,7 @@ export type BridgeNotification =
   | "connectors/item_resolved"
   | "connectors/inbox_changed"
   | "notes/page_changed"
+  | "notes/pass_progress"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -595,6 +602,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "connectors/item_resolved", delivery: "transient" },
   { notification: "connectors/inbox_changed", delivery: "transient" },
   { notification: "notes/page_changed", delivery: "transient" },
+  { notification: "notes/pass_progress", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -773,6 +781,9 @@ export interface BridgeMethodParams {
   "notes/page_history": PageHistoryParams;
   "notes/read_version": ReadVersionParams;
   "notes/restore_version": RestoreVersionParams;
+  "notes/put_asset_part": PutAssetPartParams;
+  "notes/finish_asset": FinishAssetParams;
+  "notes/read_asset": ReadAssetParams;
   "notes/get_notes_settings": undefined;
   "notes/save_notes_settings": SaveNotesSettingsParams;
   "sessions/archive_chat": ArchiveChatParams;
@@ -1066,6 +1077,9 @@ export interface BridgeMethodResults {
   "notes/page_history": NoteHistory;
   "notes/read_version": NoteVersionPage;
   "notes/restore_version": NoteEditResult;
+  "notes/put_asset_part": NoteAssetPart;
+  "notes/finish_asset": NoteAsset;
+  "notes/read_asset": NoteAssetData;
   "notes/get_notes_settings": NotesSettings;
   "notes/save_notes_settings": NotesSettings;
   "usage/summary": UsageSummaryResult;
@@ -4440,6 +4454,37 @@ export interface NoteVersionPage {
 export interface RestoreVersionParams {
   id: string;
   seq: number;
+}
+
+export interface PutAssetPartParams {
+  data: string;
+  uploadId?: string | null;
+}
+
+export interface NoteAssetPart {
+  size: number;
+  uploadId: string;
+}
+
+export interface FinishAssetParams {
+  mime: string;
+  uploadId: string;
+}
+
+export interface NoteAsset {
+  mime: string;
+  path: string;
+  size: number;
+}
+
+export interface ReadAssetParams {
+  path: string;
+}
+
+export interface NoteAssetData {
+  data: string;
+  mime: string;
+  path: string;
 }
 
 export interface NotesSettings {

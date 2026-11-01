@@ -486,6 +486,12 @@ impl BridgeCore {
                 events.publish(crate::events::CoreEvent::NotesPageChanged(change.clone()));
             }));
         }
+        {
+            let events = events.clone();
+            notes.set_progress_listener(Arc::new(move |progress: &bridge_protocol::messages::NotePassProgress| {
+                events.publish(crate::events::CoreEvent::NotesPassProgress(progress.clone()));
+            }));
+        }
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),

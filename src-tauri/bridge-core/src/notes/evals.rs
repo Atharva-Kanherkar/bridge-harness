@@ -33,7 +33,7 @@ fn registry() -> Arc<crate::adapters::AdapterRegistry> {
 
 fn generate(registry: &crate::adapters::AdapterRegistry, model: Option<&str>, instructions: &str, prompt: &str) -> Result<Generation, String> {
     let scratch = std::env::temp_dir().join("bridge-notes-eval");
-    crate::title_jobs_live::one_hidden_turn(registry, &scratch, &harness(), model, instructions, prompt)
+    crate::title_jobs_live::one_hidden_turn(registry, &scratch, &harness(), model, instructions, prompt, None)
 }
 
 fn projects() -> Vec<ProjectChoice> {

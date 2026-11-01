@@ -9,14 +9,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use bridge_protocol::messages::{Note, NoteAppend, NoteEditResult, NoteHistory, NotePage, NotePageChanged, NoteTextEdit, NoteVersion, NoteVersionPage, NotesSettings, StructuredView};
+use bridge_protocol::messages::{Note, NoteAppend, NoteEditResult, NoteHistory, NotePage, NotePageChanged, NotePassProgress, NoteTextEdit, NoteVersion, NoteVersionPage, NotesSettings, StructuredView};
 use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 
 use super::doc::{self, key, PageDoc, PropsPatch};
 use super::ids::{new_id, Hlc};
-use super::{jobs, projector, store};
+use super::{assets, jobs, projector, store};
 use crate::BridgeError;
 
 pub const KINDS: [&str; 4] = ["note", "idea", "task", "question"];
@@ -27,6 +27,8 @@ const PREVIEW_CHARS: usize = 280;
 
 /// Called after every committed change.
 pub type ChangeListener = Arc<dyn Fn(&NotePageChanged) + Send + Sync>;
+/// Hears a model pass's reply as it streams.
+pub type ProgressListener = Arc<dyn Fn(&NotePassProgress) + Send + Sync>;
 /// Answers whether a Bridge workspace (project) id exists.
 pub type ProjectCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
@@ -129,6 +131,8 @@ pub struct NotesService {
     root: Mutex<PathBuf>,
     project_exists: ProjectCheck,
     listener: Mutex<Option<ChangeListener>>,
+    progress_listener: Mutex<Option<ProgressListener>>,
+    uploads: assets::Uploads,
     /// Held for a whole file import, so two importers (the poll and a list)
     /// never merge the same outside edit twice.
     import_lock: Mutex<()>,
@@ -158,6 +162,8 @@ impl NotesService {
             root: Mutex::new(root),
             project_exists,
             listener: Mutex::new(None),
+            progress_listener: Mutex::new(None),
+            uploads: assets::Uploads::default(),
             import_lock: Mutex::new(()),
             projection_lock: Mutex::new(()),
         };
@@ -279,6 +285,21 @@ impl NotesService {
 
     pub fn set_listener(&self, listener: ChangeListener) {
         *self.listener.lock().unwrap() = Some(listener);
+    }
+
+    pub fn set_progress_listener(&self, listener: ProgressListener) {
+        *self.progress_listener.lock().unwrap() = Some(listener);
+    }
+
+    /// Pass on a model pass's reply so far. Stores nothing.
+    pub fn report_progress(&self, progress: &NotePassProgress) {
+        if let Some(listener) = self.progress_listener.lock().unwrap().clone() {
+            listener(progress);
+        }
+    }
+
+    pub(crate) fn uploads(&self) -> &assets::Uploads {
+        &self.uploads
     }
 
     /// Run `read` against the database. For queries and the job queue; page
@@ -635,9 +656,13 @@ impl NotesService {
             return Ok(Some(note));
         }
         let input = projector::MirrorInput { note: &note, body: &body, deleted, previous_path: note.path.as_deref(), previous_hash: hash.as_deref() };
-        let Some(mirrored) = projector::mirror(&self.root(), &input) else {
+        let root = self.root();
+        let Some(mirrored) = projector::mirror(&root, &input) else {
             return Ok(Some(note));
         };
+        if !deleted {
+            assets::mirror_referenced(self, &body, &root);
+        }
         self.with_db(|db| {
             db.execute(
                 "UPDATE pages SET path=?2, content_hash=?3, projected_seq=?4 WHERE id=?1",

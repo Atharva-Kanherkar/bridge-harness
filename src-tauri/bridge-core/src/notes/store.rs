@@ -16,7 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::ids::new_id;
 use crate::BridgeError;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 pub const FILE_NAME: &str = "notes.db";
 
 const SCHEMA_V1: &str = "
@@ -102,6 +102,20 @@ CREATE TABLE notes_settings(
 );
 ";
 
+/// v2: page assets (images), stored once per space by content hash.
+const SCHEMA_V2: &str = "
+CREATE TABLE assets(
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    hash TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    bytes BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(space_id, hash)
+);
+";
+
 /// Open (or create) `notes.db` at `path` and bring it to [`SCHEMA_VERSION`].
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -138,6 +152,7 @@ fn migrate(connection: &mut Connection) -> Result<(), BridgeError> {
         let transaction = connection.transaction()?;
         match version {
             1 => transaction.execute_batch(SCHEMA_V1)?,
+            2 => transaction.execute_batch(SCHEMA_V2)?,
             _ => unreachable!("every version up to SCHEMA_VERSION has an arm"),
         }
         transaction.execute(

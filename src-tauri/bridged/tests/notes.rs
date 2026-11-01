@@ -145,6 +145,20 @@ fn notes_methods_round_trip_through_the_daemon() {
     let strict = client.call(24, "notes/restore_version", json!({"id": id, "seq": first, "extra": 1}));
     assert!(strict.get("error").is_some(), "{strict}");
 
+    // An image in two parts ("PNG-" then "bytes"), stored and read back.
+    let part = client.call(30, "notes/put_asset_part", json!({"data": "UE5HLQ=="}));
+    let upload = part["result"]["uploadId"].as_str().unwrap_or_else(|| panic!("{part}")).to_owned();
+    let part = client.call(31, "notes/put_asset_part", json!({"uploadId": upload, "data": "Ynl0ZXM="}));
+    assert_eq!(part["result"]["size"], json!(9), "{part}");
+    let asset = client.call(32, "notes/finish_asset", json!({"uploadId": upload, "mime": "image/png"}));
+    let path = asset["result"]["path"].as_str().unwrap_or_else(|| panic!("{asset}")).to_owned();
+    assert!(path.starts_with("assets/") && path.ends_with(".png"), "{asset}");
+    let read = client.call(33, "notes/read_asset", json!({"path": path}));
+    assert_eq!(read["result"]["data"], json!("UE5HLWJ5dGVz"), "{read}");
+    assert_eq!(read["result"]["mime"], json!("image/png"));
+    let refused = client.call(34, "notes/read_asset", json!({"path": "assets/../notes.db"}));
+    assert!(refused.get("error").is_some(), "{refused}");
+
     // `cursor` cannot run note passes, so the daemon's live loop settles this
     // job as failed without ever starting a model turn on the test machine.
     let queued = client.call(10, "notes/structure_note", json!({"id": id, "harness": "cursor"}));

@@ -999,6 +999,24 @@ async fn restore_version(id: String, seq: i64, core: State<'_, Arc<BridgeCore>>)
 }
 
 #[tauri::command]
+async fn put_asset_part(upload_id: Option<String>, data: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteAssetPart, BridgeError> {
+    let core = core.inner().clone();
+    blocking("put asset part", move || api::put_asset_part(&core, &bridge_protocol::messages::PutAssetPartParams { upload_id, data })).await
+}
+
+#[tauri::command]
+async fn finish_asset(upload_id: String, mime: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteAsset, BridgeError> {
+    let core = core.inner().clone();
+    blocking("finish asset", move || api::finish_asset(&core, &bridge_protocol::messages::FinishAssetParams { upload_id, mime })).await
+}
+
+#[tauri::command]
+async fn read_asset(path: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteAssetData, BridgeError> {
+    let core = core.inner().clone();
+    blocking("read asset", move || api::read_asset(&core, &bridge_protocol::messages::ReadAssetParams { path })).await
+}
+
+#[tauri::command]
 async fn get_notes_settings(core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesSettings, BridgeError> {
     let core = core.inner().clone();
     blocking("notes settings", move || api::get_notes_settings(&core)).await
@@ -3144,6 +3162,9 @@ pub fn run() -> i32 {
             page_history,
             read_version,
             restore_version,
+            put_asset_part,
+            finish_asset,
+            read_asset,
             get_notes_settings,
             save_notes_settings,
             sweep_worktrees,
