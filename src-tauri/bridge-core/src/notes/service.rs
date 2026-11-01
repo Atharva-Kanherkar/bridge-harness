@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use super::doc::{self, key, PageDoc, PropsPatch};
 use super::ids::{new_id, Hlc};
-use super::{assets, jobs, projector, store};
+use super::{assets, jobs, links, projector, store};
 use crate::BridgeError;
 
 pub const KINDS: [&str; 4] = ["note", "idea", "task", "question"];
@@ -103,6 +103,8 @@ pub struct EditPage {
 #[derive(Debug, Clone, Default)]
 pub struct UpdateNote {
     pub id: String,
+    pub parent_id: Option<String>,
+    pub clear_parent: bool,
     pub title: Option<String>,
     pub kind: Option<String>,
     pub tags: Option<Vec<String>>,
@@ -339,7 +341,8 @@ impl NotesService {
         let id = new_id();
         let body = page.content.unwrap_or_default();
         let space = self.space.clone();
-        let (note, _, _) = self.write(&id, actor, |doc| {
+        let (note, _, _) = self.write_with(&id, actor, |db, doc, _| {
+            if let Some(parent) = &page.parent_id { validate_parent(db, &space, &id, parent)?; }
             let patch = PropsPatch::default()
                 .set(key::SPACE, space)
                 .maybe(key::TITLE, title)
@@ -431,11 +434,34 @@ impl NotesService {
         if let Some(workspace) = &update.workspace_id {
             self.check_project(workspace)?;
         }
-        let (note, _, _) = self.write(&update.id, actor, |live| {
+        if update.clear_parent && update.parent_id.is_some() {
+            return Err(invalid("parentId and clearParent are mutually exclusive"));
+        }
+        let mut rename = None;
+        let (note, _, _) = self.write_with(&update.id, actor, |db, live, _| {
             let props = live.props();
+            if props.deleted_at.is_some() { return Err(invalid("note not found")); }
+            // Validation and property changes share the database write lock, so
+            // concurrent moves cannot both validate into a cycle.
+            if let Some(parent) = &update.parent_id {
+                validate_parent(db, &self.space, &update.id, parent)?;
+            }
             let mut patch = PropsPatch::default();
+            if update.clear_parent {
+                patch = patch.clear(key::PARENT);
+            } else if let Some(parent) = &update.parent_id {
+                patch = patch.set(key::PARENT, parent);
+            }
+            if (update.clear_parent || update.parent_id.is_some()) && props.state.as_deref() == Some("inbox") && update.state.is_none() {
+                patch = patch.set(key::STATE, "open");
+            }
             if let Some(title) = update.title {
                 let title = title.trim().to_owned();
+                if let Some(old) = props.title.as_deref().filter(|old| !title.is_empty() && *old != title) {
+                    let mut stmt = db.prepare("SELECT DISTINCT p.id FROM pages p JOIN page_links l ON l.from_page_id=p.id AND l.space_id=p.space_id WHERE p.space_id=?1 AND p.deleted_at IS NULL AND (l.to_page_id=?2 OR (l.kind='wiki' AND lower(l.target_title)=lower(?3)))")?;
+                    let incoming = stmt.query_map(params![self.space, update.id, old], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                    rename = Some((old.to_owned(), title.clone(), incoming));
+                }
                 patch = patch.maybe(key::TITLE, (!title.is_empty()).then_some(title));
             }
             if let Some(kind) = update.kind {
@@ -461,6 +487,19 @@ impl NotesService {
             }
             live.set_props(&patch)
         })?;
+        if let Some((old, new, incoming)) = rename {
+            for id in incoming {
+                self.write(&id, actor, |live| {
+                    if live.props().deleted_at.is_some() { return Ok(None); }
+                    let body = live.body();
+                    let rewritten = links::rewrite_links_on_rename(&body, &update.id, &old, &new);
+                    if rewritten == body { return Ok(None); }
+                    live.edit(Some(&rewritten), &PropsPatch::default())
+                })?;
+            }
+            // A self-link can change the renamed page again during propagation.
+            return Ok(self.read(&update.id)?.note);
+        }
         Ok(note)
     }
 
@@ -492,14 +531,23 @@ impl NotesService {
                 "SELECT {NOTE_COLUMNS} FROM pages WHERE parent_id=?1 AND kind='task' AND deleted_at IS NULL ORDER BY created_at, id"
             ))?;
             let tasks = statement.query_map(params![id], note_from_row)?.collect::<Result<_, _>>()?;
-            Ok(NotePage { seq: note.seq, note, markdown: body, structured, tasks })
+            let backlinks = links::read_backlinks(db, &note.space_id, id)?;
+            Ok(NotePage { seq: note.seq, note, markdown: body, structured, tasks, backlinks })
         })
     }
 
     pub fn list(&self, filter: &ListFilter) -> Result<Vec<Note>, BridgeError> {
         self.with_db(|db| {
-            let mut sql = format!("SELECT {NOTE_COLUMNS} FROM pages WHERE deleted_at IS NULL AND space_id=?1");
+            let query = filter.query.as_deref().map(str::trim).filter(|q| !q.is_empty());
+            let fts = query.and_then(links::fts_query);
             let mut args: Vec<rusqlite::types::Value> = vec![self.space.clone().into()];
+            // FTS5 weights include the two UNINDEXED identity columns.
+            let mut sql = if let Some(fts) = &fts {
+                args.push(fts.clone().into());
+                format!("SELECT {NOTE_COLUMNS} FROM pages JOIN (SELECT page_id, bm25(pages_fts, 0.0, 0.0, 5.0, 1.0, 2.0) AS rank FROM pages_fts WHERE pages_fts MATCH ?2) search ON search.page_id=pages.id WHERE deleted_at IS NULL AND space_id=?1")
+            } else {
+                format!("SELECT {NOTE_COLUMNS} FROM pages WHERE deleted_at IS NULL AND space_id=?1")
+            };
             let mut bind = |sql: &mut String, clause: &str, value: String| {
                 args.push(value.into());
                 sql.push_str(&clause.replace('?', &format!("?{}", args.len())));
@@ -507,7 +555,7 @@ impl NotesService {
             if !filter.include_archived && filter.state.as_deref() != Some("archived") {
                 sql.push_str(" AND state<>'archived'");
             }
-            if let Some(query) = filter.query.as_deref().map(str::trim).filter(|query| !query.is_empty()) {
+            if let Some(query) = query.filter(|_| fts.is_none()) {
                 let pattern = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
                 bind(&mut sql, " AND (title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')", pattern);
             }
@@ -523,7 +571,7 @@ impl NotesService {
             if let Some(parent) = &filter.parent_id {
                 bind(&mut sql, " AND parent_id=?", parent.clone());
             }
-            sql.push_str(&format!(" ORDER BY updated_at DESC, id DESC LIMIT {}", filter.limit.unwrap_or(500).min(2000)));
+            sql.push_str(&format!(" ORDER BY {}updated_at DESC, id DESC LIMIT {}", if fts.is_some() { "search.rank, " } else { "" }, filter.limit.unwrap_or(500).min(2000)));
             let mut statement = db.prepare(&sql)?;
             let notes = statement.query_map(rusqlite::params_from_iter(args.iter()), note_from_row)?.collect::<Result<_, _>>()?;
             Ok(notes)
@@ -539,6 +587,8 @@ impl NotesService {
             let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect::<Result<_, _>>()?;
             rows
         };
+        transaction.execute("DELETE FROM pages_fts", [])?;
+        transaction.execute("DELETE FROM page_links", [])?;
         transaction.execute("DELETE FROM pages", [])?;
         let files = projector::find_files(&self.root());
         let pages: Vec<String> = {
@@ -760,7 +810,30 @@ fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor:
             props.deleted_at,
         ],
     )?;
+    links::sync_fts(db, page_id)?;
+    links::sync_page_links(db, page_id)?;
     Ok(())
+}
+
+/// Bound both malformed existing trees and proposed cycles; reject moves
+/// whose ancestry cannot be verified rather than silently accepting them.
+fn validate_parent(db: &Connection, space: &str, id: &str, parent: &str) -> Result<(), BridgeError> {
+    let mut next = Some(parent.to_owned());
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..64 {
+        let Some(current) = next else { return Ok(()); };
+        if current == id || !seen.insert(current.clone()) {
+            return Err(invalid("a page cannot be its own ancestor"));
+        }
+        let row: Option<(Option<String>, String)> = db.query_row(
+            "SELECT parent_id, kind FROM pages WHERE id=?1 AND space_id=?2 AND deleted_at IS NULL",
+            params![current, space], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let (ancestor, kind) = row.ok_or_else(|| invalid("parent page not found"))?;
+        if kind == "task" { return Err(invalid("a task cannot be a parent page")); }
+        next = ancestor;
+    }
+    if next.is_none() { Ok(()) } else { Err(invalid("parent ancestry exceeds 64 pages")) }
 }
 
 fn read_structured(db: &Connection, page_id: &str, current_hash: &str) -> Result<Option<StructuredView>, BridgeError> {
@@ -858,6 +931,174 @@ pub(crate) mod tests {
 
     fn edit(id: &str) -> EditPage {
         EditPage { id: id.into(), ..Default::default() }
+    }
+
+    fn page(notes: &NotesService, title: &str, body: &str) -> Note {
+        notes.create(CreatePage { title: Some(title.into()), content: Some(body.into()), ..Default::default() }, PERSON).unwrap()
+    }
+
+    fn search(notes: &NotesService, query: &str) -> Vec<Note> {
+        notes.list(&ListFilter { query: Some(query.into()), ..Default::default() }).unwrap()
+    }
+
+    #[test]
+    fn fts5_search_ranks_title_and_stems_words() {
+        let (_dir, notes) = service();
+        let title = page(&notes, "Running", "ordinary text");
+        let body = page(&notes, "Body hit", "running");
+        assert_eq!(search(&notes, "runs").iter().map(|n| &n.id).collect::<Vec<_>>(), [&title.id, &body.id]);
+        assert_eq!(search(&notes, "ru").len(), 2);
+        assert!(search(&notes, "running OR missing").is_empty());
+        let tagged = notes.create(CreatePage { title: Some("Tagged".into()), tags: vec!["deployment".into()], ..Default::default() }, PERSON).unwrap();
+        assert_eq!(search(&notes, "depl")[0].id, tagged.id);
+        let punctuation = page(&notes, "Punctuation", "100%_!");
+        assert_eq!(search(&notes, "%_!")[0].id, punctuation.id);
+        notes.edit(EditPage { id: body.id.clone(), text: Some("replaced".into()), ..Default::default() }, FILE_IMPORT).unwrap();
+        assert_eq!(search(&notes, "runs").len(), 1);
+        notes.delete(&title.id, PERSON).unwrap();
+        assert!(search(&notes, "runs").is_empty());
+    }
+
+    #[test]
+    fn wiki_links_and_page_tags_populate_backlinks_and_resolve_late_pages() {
+        let (_dir, notes) = service();
+        let source = page(&notes, "Source", "See [[Future Page|the plan]] and `[[Hidden]]`.");
+        let target = page(&notes, "Future Page", "[[Future Page]]");
+        let back = notes.read(&target.id).unwrap().backlinks;
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].page_id, source.id);
+        assert_eq!(back[0].excerpt, "See the plan and `Hidden`.");
+        let tagged = page(&notes, "Child link", &format!("<page url=\"bridge://p/{}\">Future Page</page>", target.id));
+        assert_eq!(notes.read(&target.id).unwrap().backlinks.len(), 2);
+        assert!(notes.read(&target.id).unwrap().backlinks.iter().any(|b| b.page_id == tagged.id && b.kind == "page"));
+        let derived_source = page(&notes, "Derived source", "[[Derived title]]");
+        let derived = notes.capture("# Derived title\nbody", PERSON).unwrap();
+        assert_eq!(notes.read(&derived.id).unwrap().backlinks[0].page_id, derived_source.id);
+        notes.delete(&source.id, PERSON).unwrap();
+        assert_eq!(notes.read(&target.id).unwrap().backlinks.len(), 1);
+        // A title can be assigned after the page itself exists.
+        let late = notes.capture("No title yet", PERSON).unwrap();
+        let late_source = page(&notes, "Late source", "[[Assigned title]]");
+        notes.update(UpdateNote { id: late.id.clone(), title: Some("Assigned title".into()), ..Default::default() }, PERSON).unwrap();
+        assert_eq!(notes.read(&late.id).unwrap().backlinks[0].page_id, late_source.id);
+    }
+
+    #[test]
+    fn renaming_a_page_updates_wiki_links_and_page_tags_in_backlinked_pages() {
+        let (_dir, notes) = service();
+        let target = page(&notes, "Launch Plan", "target");
+        let source = page(&notes, "Source", &format!("[[Launch Plan]] [[launch plan|the plan]]\r\n<page url=\"bridge://p/{}\">Launch Plan</page>\n`[[Launch Plan]]`", target.id));
+        let actor = "agent:opencode:rename";
+        notes.update(UpdateNote { id: target.id.clone(), title: Some("Q4 & Launch".into()), ..Default::default() }, actor).unwrap();
+        let source = notes.read(&source.id).unwrap();
+        assert_eq!(source.markdown, format!("[[Q4 & Launch]] [[Q4 & Launch|the plan]]\r\n<page url=\"bridge://p/{}\">Q4 &amp; Launch</page>\n`[[Launch Plan]]`", target.id));
+        assert_eq!(source.note.last_actor, actor);
+        assert_eq!(notes.history(&source.note.id).unwrap().versions.len(), 2);
+        let mirror = std::fs::read_to_string(source.note.path.unwrap()).unwrap();
+        assert!(mirror.ends_with(&source.markdown));
+        assert_eq!(notes.read(&target.id).unwrap().backlinks.len(), 2);
+    }
+
+    #[test]
+    fn reparenting_a_page_moves_it_and_refuses_cycles() {
+        let (_dir, notes) = service();
+        let a = page(&notes, "A", "a");
+        let b = notes.capture("b", PERSON).unwrap();
+        let moved = notes.update(UpdateNote { id: b.id.clone(), parent_id: Some(a.id.clone()), ..Default::default() }, PERSON).unwrap();
+        assert_eq!(moved.parent_id.as_deref(), Some(a.id.as_str()));
+        assert_eq!(moved.state, "open");
+        assert!(matches!(notes.update(UpdateNote { id: a.id.clone(), parent_id: Some(b.id.clone()), ..Default::default() }, PERSON), Err(BridgeError::Invalid(_))));
+        for parent in [a.id.clone(), "missing".into()] {
+            assert!(notes.update(UpdateNote { id: a.id.clone(), parent_id: Some(parent), ..Default::default() }, PERSON).is_err());
+        }
+        let task = notes.create(CreatePage { kind: Some("task".into()), ..Default::default() }, PERSON).unwrap();
+        assert!(notes.update(UpdateNote { id: b.id.clone(), parent_id: Some(task.id), ..Default::default() }, PERSON).is_err());
+        let deleted = page(&notes, "Deleted", "");
+        notes.delete(&deleted.id, PERSON).unwrap();
+        assert!(notes.update(UpdateNote { id: b.id.clone(), parent_id: Some(deleted.id), ..Default::default() }, PERSON).is_err());
+        let root = notes.update(UpdateNote { id: b.id.clone(), clear_parent: true, ..Default::default() }, PERSON).unwrap();
+        assert_eq!(root.parent_id, None);
+        assert!(notes.update(UpdateNote { id: b.id.clone(), clear_parent: true, parent_id: Some(a.id), ..Default::default() }, PERSON).is_err());
+        let inbox = notes.capture("promote", PERSON).unwrap();
+        assert_eq!(notes.update(UpdateNote { id: inbox.id, clear_parent: true, ..Default::default() }, PERSON).unwrap().state, "open");
+    }
+
+    #[test]
+    fn imported_files_refresh_search_links_and_attributed_renames() {
+        let (_dir, notes) = service();
+        let target = page(&notes, "Target", "target body");
+        let source = page(&notes, "Source", "initial");
+        let path = source.path.as_deref().unwrap();
+        let file = std::fs::read_to_string(path).unwrap();
+        std::fs::write(path, file.replace("initial", "imported [[Target]]")).unwrap();
+        assert_eq!(projector::import_changes(&notes).unwrap(), 1);
+        assert_eq!(search(&notes, "import")[0].id, source.id);
+        assert_eq!(notes.read(&target.id).unwrap().backlinks[0].page_id, source.id);
+        let target_path = target.path.as_deref().unwrap();
+        let file = std::fs::read_to_string(target_path).unwrap();
+        std::fs::write(target_path, file.replace("title: \"Target\"", "title: \"Renamed\"")).unwrap();
+        projector::import_changes(&notes).unwrap();
+        let source = notes.read(&source.id).unwrap();
+        assert_eq!(source.markdown, "imported [[Renamed]]");
+        assert_eq!(source.note.last_actor, FILE_IMPORT);
+    }
+
+    #[test]
+    fn parent_guard_rejects_foreign_corrupt_and_excessively_deep_trees() {
+        let (_dir, notes) = service();
+        let child = page(&notes, "Child", "");
+        let parent = page(&notes, "Parent", "");
+        notes.with_db(|db| {
+            db.execute("INSERT INTO spaces VALUES('foreign', 'Other', 'team', 'now')", [])?;
+            db.execute("UPDATE pages SET space_id='foreign' WHERE id=?1", [&parent.id])?;
+            Ok(())
+        }).unwrap();
+        assert!(notes.update(UpdateNote { id: child.id.clone(), parent_id: Some(parent.id.clone()), ..Default::default() }, PERSON).is_err());
+        notes.with_db(|db| {
+            db.execute("UPDATE pages SET space_id=?2, parent_id=id WHERE id=?1", params![parent.id, notes.space])?;
+            Ok(())
+        }).unwrap();
+        assert!(notes.update(UpdateNote { id: child.id.clone(), parent_id: Some(parent.id.clone()), ..Default::default() }, PERSON).is_err());
+        notes.with_db(|db| { db.execute("UPDATE pages SET parent_id=NULL WHERE id=?1", [&parent.id])?; Ok(()) }).unwrap();
+        let mut previous = parent.id;
+        for n in 0..64 {
+            previous = notes.create(CreatePage { title: Some(format!("Level {n}")), parent_id: Some(previous), ..Default::default() }, PERSON).unwrap().id;
+        }
+        assert!(notes.update(UpdateNote { id: child.id, parent_id: Some(previous), ..Default::default() }, PERSON).is_err());
+    }
+
+    #[test]
+    fn concurrent_parent_moves_cannot_create_a_cycle() {
+        let (_dir, notes) = service();
+        let a = page(&notes, "A", "");
+        let b = page(&notes, "B", "");
+        let notes = Arc::new(notes);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [(a.id.clone(), b.id.clone()), (b.id, a.id)].into_iter().map(|(id, parent)| {
+            let notes = notes.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                notes.update(UpdateNote { id, parent_id: Some(parent), ..Default::default() }, PERSON).is_ok()
+            })
+        }).collect();
+        assert_eq!(workers.into_iter().map(|w| w.join().unwrap()).filter(|ok| *ok).count(), 1);
+    }
+
+    #[test]
+    fn rebuild_index_restores_fts_and_backlinks() {
+        let (_dir, notes) = service();
+        let source = page(&notes, "Source", "[[Target]]");
+        let target = page(&notes, "Target", "searchable");
+        let before = notes.read(&target.id).unwrap().backlinks;
+        notes.with_db(|db| { db.execute("DELETE FROM page_links", [])?; db.execute("DELETE FROM pages_fts", [])?; Ok(()) }).unwrap();
+        notes.rebuild_index().unwrap();
+        assert_eq!(search(&notes, "search")[0].id, target.id);
+        let after = notes.read(&target.id).unwrap().backlinks;
+        assert_eq!(after[0].page_id, source.id);
+        assert_eq!(after[0].excerpt, before[0].excerpt);
+        notes.rebuild_index().unwrap();
+        assert_eq!(notes.read(&target.id).unwrap().backlinks, after);
     }
 
     #[test]
@@ -1057,7 +1298,9 @@ pub(crate) mod tests {
         assert_eq!(ids(ListFilter { query: Some("launch PLAN".into()), ..Default::default() }), vec![launch.id.clone()]);
         assert_eq!(ids(ListFilter { query: Some("100%".into()), ..Default::default() }), vec![launch.id.clone()]);
         assert_eq!(ids(ListFilter { query: Some("sync_e".into()), ..Default::default() }), vec![idea.id.clone()]);
-        assert!(ids(ListFilter { query: Some("sync%e".into()), ..Default::default() }).is_empty());
+        // Punctuation separates FTS tokens; it is never passed through as
+        // LIKE wildcards or FTS operators.
+        assert_eq!(ids(ListFilter { query: Some("sync%e".into()), ..Default::default() }), vec![idea.id.clone()]);
         assert_eq!(ids(ListFilter { tags: vec!["#Launch".into()], ..Default::default() }), vec![launch.id.clone()]);
         assert_eq!(ids(ListFilter { kind: Some("task".into()), ..Default::default() }), vec![task.id.clone()]);
         assert_eq!(ids(ListFilter { parent_id: Some(launch.id.clone()), ..Default::default() }), vec![task.id.clone()]);

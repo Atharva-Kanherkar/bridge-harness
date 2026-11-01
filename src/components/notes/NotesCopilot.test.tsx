@@ -18,7 +18,7 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 const page = (seq: number, markdown = "# Launch\nship it\n"): NotePage => ({
   note: { id: "n1", spaceId: "personal", kind: "note", state: "open", tags: [], sessionIds: [], title: "Launch", createdAt: "", updatedAt: "", createdBy: "person", lastActor: "person", preview: markdown, seq },
-  markdown, seq, structured: null, tasks: [],
+  markdown, seq, structured: null, tasks: [], backlinks: [],
 });
 const click = (label: string) => act(() => {
   [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === label)!.dispatchEvent(new MouseEvent("click", { bubbles: true }));

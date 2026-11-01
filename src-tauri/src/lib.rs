@@ -951,9 +951,9 @@ async fn edit_page(id: String, base_seq: Option<i64>, text: Option<String>, edit
 }
 
 #[tauri::command]
-async fn update_note(id: String, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+async fn update_note(id: String, parent_id: Option<String>, clear_parent: Option<bool>, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
     let core = core.inner().clone();
-    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, title, kind, tags, workspace_id, clear_workspace, state, add_session_id })).await
+    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, parent_id, clear_parent: clear_parent.unwrap_or(false), title, kind, tags, workspace_id, clear_workspace, state, add_session_id })).await
 }
 
 #[tauri::command]

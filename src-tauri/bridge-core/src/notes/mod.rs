@@ -16,6 +16,7 @@ pub mod guards;
 pub mod ids;
 pub mod jobs;
 pub mod live;
+pub mod links;
 pub mod markdown;
 pub mod projector;
 pub mod service;

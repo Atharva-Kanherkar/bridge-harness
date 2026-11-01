@@ -16,7 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::ids::new_id;
 use crate::BridgeError;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 pub const FILE_NAME: &str = "notes.db";
 
 const SCHEMA_V1: &str = "
@@ -116,6 +116,25 @@ CREATE TABLE assets(
 );
 ";
 
+/// v3: rebuildable full-text search and the page link graph.
+const SCHEMA_V3: &str = "
+CREATE VIRTUAL TABLE pages_fts USING fts5(
+    page_id UNINDEXED, space_id UNINDEXED, title, body, tags,
+    tokenize = 'porter unicode61'
+);
+CREATE TABLE page_links(
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    from_page_id TEXT NOT NULL,
+    to_page_id TEXT,
+    target_title TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('wiki', 'page')),
+    excerpt TEXT NOT NULL,
+    PRIMARY KEY(space_id, from_page_id, kind, target_title)
+);
+CREATE INDEX idx_page_links_to ON page_links(space_id, to_page_id);
+CREATE INDEX idx_page_links_title ON page_links(space_id, lower(target_title));
+";
+
 /// Open (or create) `notes.db` at `path` and bring it to [`SCHEMA_VERSION`].
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     if let Some(parent) = path.parent() {
@@ -153,6 +172,10 @@ fn migrate(connection: &mut Connection) -> Result<(), BridgeError> {
         match version {
             1 => transaction.execute_batch(SCHEMA_V1)?,
             2 => transaction.execute_batch(SCHEMA_V2)?,
+            3 => {
+                transaction.execute_batch(SCHEMA_V3)?;
+                super::links::backfill(&transaction)?;
+            }
             _ => unreachable!("every version up to SCHEMA_VERSION has an arm"),
         }
         transaction.execute(
@@ -224,6 +247,34 @@ mod tests {
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             .unwrap();
         statement.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn v1_and_v2_migrate_to_v3_with_fts_and_link_backfill() {
+        for version in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(FILE_NAME);
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(SCHEMA_V1).unwrap();
+            if version == 2 { db.execute_batch(SCHEMA_V2).unwrap(); }
+            db.execute_batch("CREATE TABLE notes_schema_version(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)").unwrap();
+            db.execute("INSERT INTO notes_schema_version VALUES(?1, 'then')", [version]).unwrap();
+            db.execute("INSERT INTO spaces VALUES('space', 'Personal', 'personal', 'then')", []).unwrap();
+            for (id, title, body) in [("source", "Source", "[[Target]]"), ("target", "Target", "running"), ("deleted", "Deleted", "[[Target]]")] {
+                db.execute("INSERT INTO pages(id,space_id,title,body,body_hash,state,created_by,last_actor,created_at,updated_at,deleted_at) VALUES(?1,'space',?2,?3,'hash','open','person','person','then','then',?4)", params![id, title, body, (id == "deleted").then_some("then")]).unwrap();
+            }
+            drop(db);
+            let db = open(&path).unwrap();
+            let schema: i64 = db.query_row("SELECT max(version) FROM notes_schema_version", [], |r| r.get(0)).unwrap();
+            assert_eq!(schema, 3);
+            let hits: String = db.query_row("SELECT page_id FROM pages_fts WHERE pages_fts MATCH 'runs'", [], |r| r.get(0)).unwrap();
+            assert_eq!(hits, "target");
+            let backlinks = super::super::links::read_backlinks(&db, "space", "target").unwrap();
+            assert_eq!(backlinks.len(), 1);
+            assert_eq!(backlinks[0].page_id, "source");
+            assert!(tables(&db).contains(&"assets".into()));
+            assert_eq!(db.query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        }
     }
 
     #[test]
