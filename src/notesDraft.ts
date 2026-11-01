@@ -9,7 +9,7 @@
 import type { Note } from "./types";
 
 /** Base tokens `[start, end)` replaced by `tokens`. */
-interface Hunk { start: number; end: number; tokens: string[] }
+export interface Hunk { start: number; end: number; tokens: string[] }
 
 /** Past this many edits a diff stops looking for the smallest script and
  *  reports one hunk over the changed region, which only makes a merge more
@@ -17,7 +17,7 @@ interface Hunk { start: number; end: number; tokens: string[] }
 const MAX_EDITS = 2000;
 
 /** Myers' diff of two token lists, as replacement hunks over `a`. */
-function diff(a: string[], b: string[]): Hunk[] {
+export function diff(a: string[], b: string[]): Hunk[] {
   let head = 0;
   while (head < a.length && head < b.length && a[head] === b[head]) head += 1;
   let endA = a.length;
@@ -79,7 +79,8 @@ function apply(base: string[], hunks: Hunk[], from: number, to: number): string 
   return out + base.slice(at, to).join("");
 }
 
-const lines = (text: string) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+/** Lines with their line breaks, so joining them gives the text back. */
+export const lines = (text: string) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 const words = (text: string) => text.match(/\s+|[^\s]+/g) ?? [];
 
 /** Three-way merge of token lists: every change on either side that the other

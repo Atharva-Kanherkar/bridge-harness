@@ -168,6 +168,9 @@ export type BridgeMethod =
   | "notes/structure_note"
   | "notes/extract_tasks"
   | "notes/split_item"
+  | "notes/page_history"
+  | "notes/read_version"
+  | "notes/restore_version"
   | "notes/get_notes_settings"
   | "notes/save_notes_settings"
   | "usage/summary"
@@ -436,6 +439,9 @@ export const BRIDGE_METHODS = [
   { method: "notes/structure_note", domain: "notes", command: "structure_note" },
   { method: "notes/extract_tasks", domain: "notes", command: "extract_tasks" },
   { method: "notes/split_item", domain: "notes", command: "split_item" },
+  { method: "notes/page_history", domain: "notes", command: "page_history" },
+  { method: "notes/read_version", domain: "notes", command: "read_version" },
+  { method: "notes/restore_version", domain: "notes", command: "restore_version" },
   { method: "notes/get_notes_settings", domain: "notes", command: "get_notes_settings" },
   { method: "notes/save_notes_settings", domain: "notes", command: "save_notes_settings" },
   { method: "usage/summary", domain: "usage", command: "summary" },
@@ -762,6 +768,9 @@ export interface BridgeMethodParams {
   "notes/structure_note": StructureNoteParams;
   "notes/extract_tasks": ExtractTasksParams;
   "notes/split_item": SplitItemParams;
+  "notes/page_history": PageHistoryParams;
+  "notes/read_version": ReadVersionParams;
+  "notes/restore_version": RestoreVersionParams;
   "notes/get_notes_settings": undefined;
   "notes/save_notes_settings": SaveNotesSettingsParams;
   "sessions/archive_chat": ArchiveChatParams;
@@ -1051,6 +1060,9 @@ export interface BridgeMethodResults {
   "notes/structure_note": NoteJobQueued;
   "notes/extract_tasks": NoteJobQueued;
   "notes/split_item": Note;
+  "notes/page_history": NoteHistory;
+  "notes/read_version": NoteVersionPage;
+  "notes/restore_version": NoteEditResult;
   "notes/get_notes_settings": NotesSettings;
   "notes/save_notes_settings": NotesSettings;
   "usage/summary": UsageSummaryResult;
@@ -2111,6 +2123,16 @@ export interface NoteJob {
 export interface NoteTextEdit {
   newStr: string;
   oldStr: string;
+}
+
+export interface NoteVersion {
+  actor: string;
+  added: number;
+  at: string;
+  bodyChanged: boolean;
+  removed: number;
+  seq: number;
+  title?: string | null;
 }
 
 export type Params = Record<string, unknown> | unknown[];
@@ -4385,6 +4407,32 @@ export interface ExtractTasksParams {
 export interface SplitItemParams {
   id: string;
   itemIndex: number;
+}
+
+export interface PageHistoryParams {
+  id: string;
+}
+
+export interface NoteHistory {
+  versions: NoteVersion[];
+}
+
+export interface ReadVersionParams {
+  id: string;
+  seq: number;
+}
+
+export interface NoteVersionPage {
+  actor: string;
+  at: string;
+  markdown: string;
+  seq: number;
+  title?: string | null;
+}
+
+export interface RestoreVersionParams {
+  id: string;
+  seq: number;
 }
 
 export interface NotesSettings {

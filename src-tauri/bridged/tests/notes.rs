@@ -131,6 +131,20 @@ fn notes_methods_round_trip_through_the_daemon() {
     assert_eq!(listed["result"]["notes"].as_array().unwrap().len(), 1);
     assert!(listed["result"]["root"].as_str().unwrap().ends_with("notes"));
 
+    // History lists the four changes so far; the capture's words come back.
+    let history = client.call(20, "notes/page_history", json!({"id": id}));
+    let versions = history["result"]["versions"].as_array().unwrap_or_else(|| panic!("{history}")).clone();
+    assert_eq!(versions.len(), 4, "{history}");
+    let first = versions.last().unwrap()["seq"].as_i64().unwrap();
+    let version = client.call(21, "notes/read_version", json!({"id": id, "seq": first}));
+    assert_eq!(version["result"]["markdown"], json!(typed));
+    let restored = client.call(22, "notes/restore_version", json!({"id": id, "seq": first}));
+    assert!(restored.get("error").is_none(), "{restored}");
+    let page = client.call(23, "notes/read_page", json!({"id": id}));
+    assert_eq!(page["result"]["markdown"], json!(typed));
+    let strict = client.call(24, "notes/restore_version", json!({"id": id, "seq": first, "extra": 1}));
+    assert!(strict.get("error").is_some(), "{strict}");
+
     // `cursor` cannot run note passes, so the daemon's live loop settles this
     // job as failed without ever starting a model turn on the test machine.
     let queued = client.call(10, "notes/structure_note", json!({"id": id, "harness": "cursor"}));
@@ -145,10 +159,10 @@ fn notes_methods_round_trip_through_the_daemon() {
     let gone = client.call(14, "notes/read_page", json!({"id": id}));
     assert!(gone.get("error").is_some());
 
-    // capture, append, save, update, delete: one change notification each.
-    let changes = client.page_changes(5);
+    // capture, append, save, update, restore, delete: one change notification each.
+    let changes = client.page_changes(6);
     let actors: Vec<&str> = changes.iter().map(|frame| frame["params"]["actor"].as_str().unwrap_or("")).collect();
-    assert_eq!(actors, vec!["person"; 5], "{changes:?}");
+    assert_eq!(actors, vec!["person"; 6], "{changes:?}");
     assert!(changes.iter().all(|frame| frame["params"]["pageId"] == json!(id)));
     assert!(fixture.path().join("notes.db").exists());
 

@@ -283,6 +283,62 @@ pub struct SplitItemParams {
     pub item_index: u32,
 }
 
+/// One stored version of a page, as its history lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteVersion {
+    pub seq: i64,
+    /// `person`, `agent:<harness>:<session>`, `file-import` or `model:<pass>:<model>`.
+    pub actor: String,
+    /// When the version was written (RFC 3339, from its clock stamp).
+    pub at: String,
+    /// False for a change to properties only (title, status, tags, project).
+    pub body_changed: bool,
+    /// Characters added and removed against the version before.
+    pub added: u32,
+    pub removed: u32,
+    pub title: Option<String>,
+}
+
+/// A page's versions, newest first, at most the newest 200.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteHistory {
+    pub versions: Vec<NoteVersion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageHistoryParams {
+    pub id: String,
+}
+
+/// A page as it was at one version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteVersionPage {
+    pub seq: i64,
+    pub actor: String,
+    pub at: String,
+    pub title: Option<String>,
+    pub markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadVersionParams {
+    pub id: String,
+    pub seq: i64,
+}
+
+/// Write a version's words back as a new change by the person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreVersionParams {
+    pub id: String,
+    pub seq: i64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveNotesSettingsParams {

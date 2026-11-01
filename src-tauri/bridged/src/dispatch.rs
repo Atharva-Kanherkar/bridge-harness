@@ -615,6 +615,18 @@ pub fn dispatch(
             let p: wire::SplitItemParams = decode(method, params)?;
             reply(api::split_item(core, &p))
         }
+        MethodName::PageHistory => {
+            let p: wire::PageHistoryParams = decode(method, params)?;
+            reply(api::page_history(core, &p))
+        }
+        MethodName::ReadVersion => {
+            let p: wire::ReadVersionParams = decode(method, params)?;
+            reply(api::read_version(core, &p))
+        }
+        MethodName::RestoreVersion => {
+            let p: wire::RestoreVersionParams = decode(method, params)?;
+            reply(api::restore_version(core, &p))
+        }
         MethodName::SaveNotesSettings => {
             let p: wire::SaveNotesSettingsParams = decode(method, params)?;
             reply(api::save_notes_settings(core, &p))

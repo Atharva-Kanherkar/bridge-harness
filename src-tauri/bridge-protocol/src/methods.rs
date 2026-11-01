@@ -221,6 +221,9 @@ methods![
     (StructureNote, "notes", "structure_note"),
     (ExtractTasks, "notes", "extract_tasks"),
     (SplitItem, "notes", "split_item"),
+    (PageHistory, "notes", "page_history"),
+    (ReadVersion, "notes", "read_version"),
+    (RestoreVersion, "notes", "restore_version"),
     (GetNotesSettings, "notes", "get_notes_settings"),
     (SaveNotesSettings, "notes", "save_notes_settings"),
     // token and cost usage

@@ -18,9 +18,9 @@ import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, Summ
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
-import type { Note, NoteEditResult, NotePage, NotePageChangedPayload, NotesList, NotesSettings } from "./types";
+import type { Note, NoteEditResult, NoteHistory, NotePage, NotePageChangedPayload, NotesList, NotesSettings, NoteVersionPage } from "./types";
 import type { CreatePageParams, EditPageParams, ListNotesParams, NoteJobQueued, SaveNotesSettingsParams, UpdateNoteParams } from "./protocol/generated/protocol";
-import { mockCaptureNote, mockCreatePage, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesSettings, mockReadPage, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged } from "./notesMock";
+import { mockCaptureNote, mockCreatePage, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesSettings, mockPageHistory, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
@@ -2437,6 +2437,18 @@ export const bridgeApi = {
   splitNoteItem: async (id: string, itemIndex: number): Promise<Note> => {
     if (hasBackend()) return call("notes/split_item", { id, itemIndex });
     return mockSplitItem({ id, itemIndex });
+  },
+  notePageHistory: async (id: string): Promise<NoteHistory> => {
+    if (hasBackend()) return call("notes/page_history", { id });
+    return mockPageHistory(id);
+  },
+  readNoteVersion: async (id: string, seq: number): Promise<NoteVersionPage> => {
+    if (hasBackend()) return call("notes/read_version", { id, seq });
+    return mockReadVersion(id, seq);
+  },
+  restoreNoteVersion: async (id: string, seq: number): Promise<NoteEditResult> => {
+    if (hasBackend()) return call("notes/restore_version", { id, seq });
+    return mockRestoreVersion(id, seq);
   },
   notesSettings: async (): Promise<NotesSettings> => {
     if (hasBackend()) return call("notes/get_notes_settings");

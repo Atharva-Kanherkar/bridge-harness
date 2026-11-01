@@ -105,6 +105,20 @@ test("shared and isolated modes accept edits without bypassing permissions", () 
   }
 });
 
+test("ask mode runs Bridge's read-only tools without a prompt Claude cannot show", () => {
+  // Bridge renders no Claude permission prompt, so a tool that needs one is
+  // refused outright. Bridge's own read-only tools change nothing and run;
+  // notes writes stay refused in Ask mode.
+  const bridge = { bridge: { type: "stdio", command: "/bin/bridged", args: ["--bridge-mcp-visualize"] } };
+  for (const mode of ["Shared", "Isolated"]) {
+    const options = permissionOptions(mode, false, bridge);
+    assert.equal(options.permissionMode, "acceptEdits");
+    assert.deepEqual(options.allowedTools, ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read"]);
+    assert.ok(!options.allowedTools.some(name => /create|edit|append|set/.test(name)));
+  }
+  assert.equal(permissionOptions("Shared", false, {}).allowedTools, undefined, "no bridge server, nothing to allow");
+});
+
 test("full and default modes intentionally enable permission bypass", () => {
   for (const mode of ["Full", undefined, "unknown"]) {
     const options = permissionOptions(mode);

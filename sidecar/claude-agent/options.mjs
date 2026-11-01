@@ -1,13 +1,21 @@
 import { briefingOptions, isBriefing } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
+/** The `bridge` server's tools that only read or display. */
+export const BRIDGE_READ_TOOLS = ["mcp__bridge__visualize", "mcp__bridge__notes_search", "mcp__bridge__notes_read"];
+
 export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
   switch (mode) {
     case "ReadOnly":
       return readOnlyOptions({ networkAllowed, mcpServers });
     case "Shared":
     case "Isolated":
-      return { permissionMode: "acceptEdits" };
+      // Bridge renders no Claude permission prompt, so anything that needs one
+      // is refused outright. Bridge's own read-only tools change nothing and
+      // run; notes writes stay refused until Bridge asks for them itself.
+      return mcpServers.bridge
+        ? { permissionMode: "acceptEdits", allowedTools: [...BRIDGE_READ_TOOLS] }
+        : { permissionMode: "acceptEdits" };
     case "Full":
     default:
       return {

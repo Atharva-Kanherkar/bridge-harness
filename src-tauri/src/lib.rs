@@ -981,6 +981,24 @@ async fn split_item(id: String, item_index: u32, core: State<'_, Arc<BridgeCore>
 }
 
 #[tauri::command]
+async fn page_history(id: String, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteHistory, BridgeError> {
+    let core = core.inner().clone();
+    blocking("page history", move || api::page_history(&core, &bridge_protocol::messages::PageHistoryParams { id })).await
+}
+
+#[tauri::command]
+async fn read_version(id: String, seq: i64, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteVersionPage, BridgeError> {
+    let core = core.inner().clone();
+    blocking("read version", move || api::read_version(&core, &bridge_protocol::messages::ReadVersionParams { id, seq })).await
+}
+
+#[tauri::command]
+async fn restore_version(id: String, seq: i64, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NoteEditResult, BridgeError> {
+    let core = core.inner().clone();
+    blocking("restore version", move || api::restore_version(&core, &bridge_protocol::messages::RestoreVersionParams { id, seq })).await
+}
+
+#[tauri::command]
 async fn get_notes_settings(core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::NotesSettings, BridgeError> {
     let core = core.inner().clone();
     blocking("notes settings", move || api::get_notes_settings(&core)).await
@@ -3109,6 +3127,9 @@ pub fn run() -> i32 {
             structure_note,
             extract_tasks,
             split_item,
+            page_history,
+            read_version,
+            restore_version,
             get_notes_settings,
             save_notes_settings,
             sweep_worktrees,
