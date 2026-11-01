@@ -396,11 +396,24 @@ describe("AgentConversation", () => {
   it("shows a skeleton while an existing chat's history loads, not the new-chat greeting", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={undefined} />);
     expect(html).toContain('aria-label="Loading conversation"');
-    expect(html).toContain("Loading conversation");
-    expect(html).toContain("Opening conversation");
+    expect(html).toContain('<span class="sr-only">Loading conversation</span>');
+    expect(html).toContain('data-skeleton-row="user"');
+    expect(html).toContain('data-skeleton-row="prose"');
+    expect(html).toContain('data-skeleton-row="tool"');
+    expect(html).toContain("skeleton-shimmer");
+    expect(html).toContain("max-w-conversation");
+    expect(html).not.toContain("Opening conversation");
+    expect(html).not.toContain("animate-spin");
     expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain('style="');
     expect(html).not.toContain("What should we");
+  });
+
+  it("lays the skeleton out with the compact transcript padding in a tile", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={undefined} density="compact" />);
+    expect(html).toContain('aria-label="Loading conversation"');
+    expect(html).toContain("px-3 pb-6 pt-3");
+    expect(html).not.toContain("sm:px-8");
   });
 
   it("keeps the greeting for a loaded-but-empty chat", () => {

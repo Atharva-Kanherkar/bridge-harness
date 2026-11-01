@@ -762,6 +762,45 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: page-enter 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* ── Conversation skeleton ──────────────────────────────────────────────────
+   Placeholder bars shaped like a transcript while an existing chat's history
+   loads. The whole block waits a beat before fading in, so a fast load never
+   flashes placeholders. Each bar carries one soft highlight that travels left
+   to right; rows stagger their delay so the sweep reads top to bottom. Under
+   reduced motion the global rule below leaves static bars. */
+@keyframes skeleton-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-skeleton-in {
+  animation: skeleton-in 0.24s ease-out 0.12s both;
+}
+
+@keyframes skeleton-sweep {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+
+.skeleton-shimmer {
+  background-color: color-mix(in srgb, var(--color-muted-foreground) 10%, transparent);
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in srgb, var(--color-foreground) 7%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  /* Longhands, not the shorthand: this rule is unlayered, so a shorthand would
+     reset the per-row `[animation-delay:…]` utility the stagger relies on. */
+  animation-name: skeleton-sweep;
+  animation-duration: 1.6s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-fill-mode: both;
+}
+
 /* ── GitHub pane ────────────────────────────────────────────────────────────
    A check that is still running used to spin a loader glyph on every row, so a
    red CI run read as a page full of jitter. Motion here says one thing only —
