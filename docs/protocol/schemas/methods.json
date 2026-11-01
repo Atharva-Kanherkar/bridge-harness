@@ -1129,6 +1129,27 @@
       "resultSchema": "note.json"
     },
     {
+      "command": "page_history",
+      "domain": "notes",
+      "method": "notes/page_history",
+      "paramsSchema": "page-history-params.json",
+      "resultSchema": "note-history.json"
+    },
+    {
+      "command": "read_version",
+      "domain": "notes",
+      "method": "notes/read_version",
+      "paramsSchema": "read-version-params.json",
+      "resultSchema": "note-version-page.json"
+    },
+    {
+      "command": "restore_version",
+      "domain": "notes",
+      "method": "notes/restore_version",
+      "paramsSchema": "restore-version-params.json",
+      "resultSchema": "note-edit-result.json"
+    },
+    {
       "command": "get_notes_settings",
       "domain": "notes",
       "method": "notes/get_notes_settings",

@@ -6909,6 +6909,20 @@ pub fn split_item(core: &Arc<BridgeCore>, params: &wire::SplitItemParams) -> Res
     core.notes.split_item(&params.id, params.item_index as usize, crate::notes::service::PERSON)
 }
 
+/// A page's versions, newest first, for its history.
+pub fn page_history(core: &Arc<BridgeCore>, params: &wire::PageHistoryParams) -> Result<wire::NoteHistory, BridgeError> {
+    core.notes.history(&params.id)
+}
+
+pub fn read_version(core: &Arc<BridgeCore>, params: &wire::ReadVersionParams) -> Result<wire::NoteVersionPage, BridgeError> {
+    core.notes.read_version(&params.id, params.seq)
+}
+
+/// The person restores a version's words as a new change.
+pub fn restore_version(core: &Arc<BridgeCore>, params: &wire::RestoreVersionParams) -> Result<wire::NoteEditResult, BridgeError> {
+    core.notes.restore_version(&params.id, params.seq, crate::notes::service::PERSON)
+}
+
 pub fn get_notes_settings(core: &Arc<BridgeCore>) -> Result<wire::NotesSettings, BridgeError> {
     core.notes.settings()
 }
