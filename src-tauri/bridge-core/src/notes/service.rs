@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use bridge_protocol::messages::{Note, NoteAppend, NoteEditResult, NotePage, NotePageChanged, NoteTextEdit, NotesSettings, StructuredView};
+use bridge_protocol::messages::{Note, NoteAppend, NoteEditResult, NoteHistory, NotePage, NotePageChanged, NoteTextEdit, NoteVersion, NoteVersionPage, NotesSettings, StructuredView};
 use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
@@ -36,6 +36,34 @@ pub fn agent_actor(harness: &str, session_id: &str) -> String {
 
 pub fn model_actor(pass: &str, model: &str) -> String {
     format!("model:{pass}:{model}")
+}
+
+/// History lists at most this many versions, the newest.
+const HISTORY_LIMIT: i64 = 200;
+
+/// Characters added and removed between two bodies. The diff has a deadline,
+/// so a huge rewrite reports a coarser (larger) count rather than stalling.
+fn changed_chars(before: &str, after: &str) -> (u32, u32) {
+    if before == after {
+        return (0, 0);
+    }
+    let diff = similar::TextDiff::configure().timeout(std::time::Duration::from_millis(50)).diff_chars(before, after);
+    let mut counts = (0u32, 0u32);
+    for change in diff.iter_all_changes() {
+        let chars = change.value().chars().count() as u32;
+        match change.tag() {
+            similar::ChangeTag::Insert => counts.0 += chars,
+            similar::ChangeTag::Delete => counts.1 += chars,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    counts
+}
+
+/// The wall time an HLC stamp (`<millis>-<counter>-<device>`) was taken at.
+fn hlc_time(hlc: &str) -> String {
+    let millis = hlc.split('-').next().and_then(|part| part.parse::<i64>().ok()).unwrap_or(0);
+    Utc.timestamp_millis_opt(millis).single().unwrap_or_default().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> BridgeError {
@@ -190,6 +218,59 @@ impl NotesService {
             },
             actor,
         )
+    }
+
+    /// The page's versions, newest first: who wrote each, when, and how many
+    /// characters it added and removed. Replays the log once, from the version
+    /// before the window, so a long history costs one pass.
+    pub fn history(&self, id: &str) -> Result<NoteHistory, BridgeError> {
+        self.check_live(id)?;
+        self.with_db(|db| {
+            let first: Option<i64> = db.query_row(
+                "SELECT MIN(seq) FROM (SELECT seq FROM page_updates WHERE page_id=?1 ORDER BY seq DESC LIMIT ?2)",
+                params![id, HISTORY_LIMIT],
+                |row| row.get(0),
+            )?;
+            let Some(first) = first else { return Ok(NoteHistory { versions: Vec::new() }) };
+            let (page, _) = doc::load_page(db, id, Some(first - 1))?;
+            let mut body = page.body();
+            let mut statement = db.prepare("SELECT seq, hlc, actor, update_bytes FROM page_updates WHERE page_id=?1 AND seq>=?2 ORDER BY seq")?;
+            let rows = statement.query_map(params![id, first], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Vec<u8>>(3)?)))?;
+            let mut versions = Vec::new();
+            for row in rows {
+                let (seq, hlc, actor, bytes) = row?;
+                page.apply(&bytes)?;
+                let next = page.body();
+                let (added, removed) = changed_chars(&body, &next);
+                versions.push(NoteVersion { seq, actor, at: hlc_time(&hlc), body_changed: next != body, added, removed, title: page.props().title });
+                body = next;
+            }
+            versions.reverse();
+            Ok(NoteHistory { versions })
+        })
+    }
+
+    /// The page as it was at `seq`.
+    pub fn read_version(&self, id: &str, seq: i64) -> Result<NoteVersionPage, BridgeError> {
+        self.check_live(id)?;
+        self.with_db(|db| {
+            let (hlc, actor): (String, String) = db
+                .query_row("SELECT hlc, actor FROM page_updates WHERE page_id=?1 AND seq=?2", params![id, seq], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?
+                .ok_or_else(|| invalid("no such version"))?;
+            let (page, _) = doc::load_page(db, id, Some(seq))?;
+            Ok(NoteVersionPage { seq, actor, at: hlc_time(&hlc), title: page.props().title, markdown: page.body() })
+        })
+    }
+
+    /// Write the words of version `seq` back as a new change. Properties stay
+    /// as they are; the log keeps every version, so a restore can be undone by
+    /// restoring again. It may drop a child tag added later: that is the
+    /// person's explicit choice.
+    pub fn restore_version(&self, id: &str, seq: i64, actor: &str) -> Result<NoteEditResult, BridgeError> {
+        let words = self.read_version(id, seq)?.markdown;
+        let (note, seq, changed) = self.write(id, actor, |live| live.set_body(&words))?;
+        Ok(NoteEditResult { note, seq, warnings: if changed { Vec::new() } else { vec!["nothing changed".to_owned()] } })
     }
 
     pub fn space(&self) -> &str {
@@ -988,5 +1069,84 @@ pub(crate) mod tests {
         assert_eq!(page_after.tasks.len(), 1);
         assert_eq!(page_after.note.session_ids, vec!["s1"]);
         assert!(notes.read(&gone.id).is_err());
+    }
+
+    #[test]
+    fn history_lists_body_changes_with_authors_and_counts() {
+        let (_dir, notes) = service();
+        let page = notes.capture("helo wrld", PERSON).unwrap();
+        let agent = agent_actor("claude", "s1");
+        notes.edit(EditPage { append: Some(NoteAppend { content: "from the agent".into(), position: "end".into() }), ..edit(&page.id) }, &agent).unwrap();
+        notes.update(UpdateNote { id: page.id.clone(), title: Some("Greeting".into()), ..Default::default() }, PERSON).unwrap();
+        let current = notes.read(&page.id).unwrap();
+        notes.edit(EditPage { text: Some("hello world\nfrom the agent".into()), base_seq: Some(current.seq), ..edit(&page.id) }, FILE_IMPORT).unwrap();
+
+        let history = notes.history(&page.id).unwrap().versions;
+        let actors: Vec<&str> = history.iter().map(|version| version.actor.as_str()).collect();
+        assert_eq!(actors, vec![FILE_IMPORT, PERSON, agent.as_str(), PERSON], "newest first");
+        let seqs: Vec<i64> = history.iter().map(|version| version.seq).collect();
+        assert!(seqs.windows(2).all(|pair| pair[0] > pair[1]));
+        let [import, title, append, capture] = &history[..] else { panic!("four versions") };
+        assert!(capture.body_changed && capture.added == 9 && capture.removed == 0, "{capture:?}");
+        assert_eq!((append.body_changed, append.added, append.removed), (true, 15, 0));
+        assert!(!title.body_changed, "a title change touches no words");
+        assert_eq!(title.title.as_deref(), Some("Greeting"));
+        assert_eq!((import.added, import.removed), (2, 0), "helo wrld -> hello world");
+        assert!(chrono::DateTime::parse_from_rfc3339(&capture.at).is_ok(), "{}", capture.at);
+    }
+
+    #[test]
+    fn history_window_is_the_newest_two_hundred() {
+        let (_dir, notes) = service();
+        let page = notes.capture("0", PERSON).unwrap();
+        for index in 1..=210 {
+            notes.edit(EditPage { append: Some(NoteAppend { content: format!("{index}"), position: "end".into() }), ..edit(&page.id) }, PERSON).unwrap();
+        }
+        let history = notes.history(&page.id).unwrap().versions;
+        assert_eq!(history.len(), 200);
+        assert_eq!(history[0].seq, notes.read(&page.id).unwrap().seq);
+        assert!(history.iter().all(|version| version.body_changed && version.added > 0), "counts hold across the window and snapshots");
+    }
+
+    #[test]
+    fn read_version_rebuilds_the_page_at_that_seq() {
+        let (_dir, notes) = service();
+        let page = notes.capture("first words", PERSON).unwrap();
+        let first = notes.read(&page.id).unwrap().seq;
+        notes.edit(EditPage { append: Some(NoteAppend { content: "agent line".into(), position: "end".into() }), ..edit(&page.id) }, &agent_actor("codex", "s2")).unwrap();
+        let version = notes.read_version(&page.id, first).unwrap();
+        assert_eq!((version.seq, version.actor.as_str(), version.markdown.as_str()), (first, PERSON, "first words"));
+        assert!(notes.read_version(&page.id, 999).is_err());
+        assert!(notes.read_version(&page.id, 0).is_err());
+    }
+
+    #[test]
+    fn restore_writes_the_old_body_as_a_new_person_version() {
+        let (_dir, notes) = service();
+        let page = notes.capture("my plan", PERSON).unwrap();
+        notes.update(UpdateNote { id: page.id.clone(), title: Some("Plan".into()), state: Some("open".into()), ..Default::default() }, PERSON).unwrap();
+        let mine = notes.read(&page.id).unwrap().seq;
+        let agent = agent_actor("claude", "s1");
+        notes.edit(EditPage { edits: vec![NoteTextEdit { old_str: "my plan".into(), new_str: "the agent's plan".into() }], ..edit(&page.id) }, &agent).unwrap();
+        notes.update(UpdateNote { id: page.id.clone(), state: Some("doing".into()), ..Default::default() }, PERSON).unwrap();
+
+        let restored = notes.restore_version(&page.id, mine, PERSON).unwrap();
+        assert!(restored.warnings.is_empty());
+        let now = notes.read(&page.id).unwrap();
+        assert_eq!(now.markdown, "my plan");
+        assert_eq!((now.note.title.as_deref(), now.note.state.as_str()), (Some("Plan"), "doing"), "only the words come back");
+        assert_eq!(now.note.last_actor, PERSON);
+        let history = notes.history(&page.id).unwrap().versions;
+        assert_eq!(history[0].actor, PERSON);
+        assert!(history.iter().any(|version| version.actor == agent), "the agent's version stays in history");
+
+        // Restoring the agent's version undoes the restore.
+        let agents = history.iter().find(|version| version.actor == agent).unwrap().seq;
+        notes.restore_version(&page.id, agents, PERSON).unwrap();
+        assert_eq!(notes.read(&page.id).unwrap().markdown, "the agent's plan");
+        assert_eq!(notes.restore_version(&page.id, agents, PERSON).unwrap().warnings, vec!["nothing changed"]);
+        assert!(notes.restore_version(&page.id, 999, PERSON).is_err());
+        notes.delete(&page.id, PERSON).unwrap();
+        assert!(notes.restore_version(&page.id, mine, PERSON).is_err());
     }
 }
