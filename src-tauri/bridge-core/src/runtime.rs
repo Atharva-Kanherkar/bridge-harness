@@ -144,6 +144,8 @@ pub struct BridgeCore {
     /// The notify-only live event channel; durable history stays in SQLite.
     /// See `events.rs` for the publish-after-commit rules.
     pub events: EventBus,
+    /// Bridge Notes: its own `notes.db`, one write path for people and agents.
+    pub notes: Arc<crate::notes::service::NotesService>,
     /// Sessions with an exclusive lifecycle operation in flight (adapter
     /// start, model switch), mapped to the operation name for error messages.
     /// Lifecycle flows span host-run blocking steps, so this claim — not the
@@ -373,6 +375,7 @@ impl BridgeCore {
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             steer_requested: Mutex::new(std::collections::HashSet::new()),
             events: EventBus::new(),
+            notes: Arc::new(crate::notes::service::NotesService::open(scratch, Arc::new(|_: &str| false)).unwrap()),
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
@@ -473,6 +476,16 @@ impl BridgeCore {
         #[cfg(target_os = "macos")]
         let browser_clone_orchestrator =
             build_clone_orchestrator(Arc::clone(&browser_clones))?;
+        let notes = Arc::new(crate::notes::service::NotesService::open(
+            &config.data_dir,
+            crate::notes::live::project_check(db_path.clone()),
+        )?);
+        {
+            let events = events.clone();
+            notes.set_listener(Arc::new(move |change: &bridge_protocol::messages::NotePageChanged| {
+                events.publish(crate::events::CoreEvent::NotesPageChanged(change.clone()));
+            }));
+        }
         let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(
             config.browser_extension_path,
             config.data_dir.join("browser-site-metrics.json"),
@@ -516,6 +529,7 @@ impl BridgeCore {
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             steer_requested: Mutex::new(std::collections::HashSet::new()),
             events,
+            notes,
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),

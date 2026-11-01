@@ -109,6 +109,8 @@ pub enum CoreEvent {
     ConnectorItemResolved { family: String, item_key: String, succeeded: bool },
     /// Refetch hint: one family's inbox changed.
     ConnectorInboxChanged { family: String },
+    /// A notes page changed, by whom, at which sequence.
+    NotesPageChanged(bridge_protocol::messages::NotePageChanged),
 }
 
 impl CoreEvent {
@@ -136,6 +138,7 @@ impl CoreEvent {
             CoreEvent::ConnectorCardReady { .. } => NotificationName::ConnectorCardReady,
             CoreEvent::ConnectorItemResolved { .. } => NotificationName::ConnectorItemResolved,
             CoreEvent::ConnectorInboxChanged { .. } => NotificationName::ConnectorInboxChanged,
+            CoreEvent::NotesPageChanged(_) => NotificationName::NotesPageChanged,
         }
     }
 
@@ -201,6 +204,7 @@ impl CoreEvent {
                 "family": family, "itemKey": item_key, "succeeded": succeeded,
             }),
             CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
+            CoreEvent::NotesPageChanged(change) => serde_json::to_value(change).expect("page change serializes"),
         }
     }
 
@@ -348,7 +352,8 @@ impl EventBus {
                 | CoreEvent::ConnectorItemArrived { .. }
                 | CoreEvent::ConnectorCardReady { .. }
                 | CoreEvent::ConnectorItemResolved { .. }
-                | CoreEvent::ConnectorInboxChanged { .. } => {}
+                | CoreEvent::ConnectorInboxChanged { .. }
+                | CoreEvent::NotesPageChanged(_) => {}
             }
         }
         let _ = self.sender.send(event);
@@ -482,6 +487,7 @@ mod tests {
                 succeeded: true,
             },
             CoreEvent::ConnectorInboxChanged { family: "slack".into() },
+            CoreEvent::NotesPageChanged(bridge_protocol::messages::NotePageChanged { page_id: "p1".into(), actor: "person".into(), seq: 3 }),
         ];
         for event in &events {
             assert_eq!(

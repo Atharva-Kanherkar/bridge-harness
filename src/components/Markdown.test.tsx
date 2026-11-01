@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileLinkContext, Markdown, MentionText, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
 import * as highlight from "./highlight";
+import { withNotesContext } from "../notesBrief";
 
 const mermaidMock = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -574,5 +575,13 @@ describe("storage agent blocks", () => {
     expect(html).toContain("Storage page snapshot");
     expect(html).toContain("<details");
     expect(html).not.toContain("```");
+  });
+
+  it("folds the Notes page a message carries into a chip", () => {
+    const html = renderToStaticMarkup(<MentionText text={withNotesContext("tidy this", "Open page: Launch (id n1, seq 3)\n---\n```js\nx\n```")} />);
+    expect(html.startsWith("tidy this")).toBe(true);
+    expect(html).toContain("Notes page");
+    expect(html).toContain('aria-label="notes-context"');
+    expect(html).not.toContain("````");
   });
 });

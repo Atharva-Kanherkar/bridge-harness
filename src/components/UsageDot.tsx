@@ -162,7 +162,18 @@ function adapterState(adapter?: AdapterDescriptor): "not_installed" | "signed_ou
   return "normal";
 }
 
-function ProviderSection({ snapshot, adapter, nowSeconds, onSignIn, onRefresh }: { snapshot: UsageOverviewSnapshot; adapter?: AdapterDescriptor; nowSeconds: number; onSignIn?: (provider: UsageProvider) => void; onRefresh?: () => void }) {
+/** A provider's read failure, with Refresh beside it so the fix the message
+ *  asks for never means leaving the card. */
+function ProviderError({ message, refreshing, onRefresh }: { message: string; refreshing: boolean; onRefresh?: () => void }) {
+  return <div className="mt-1 flex items-start gap-2">
+    <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted-foreground">{message}</p>
+    {onRefresh && <button type="button" onClick={onRefresh} disabled={refreshing} className="inline-flex min-h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-40">
+      <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />{refreshing ? "Refreshing" : "Refresh"}
+    </button>}
+  </div>;
+}
+
+function ProviderSection({ snapshot, adapter, nowSeconds, refreshing, onSignIn, onRefresh }: { snapshot: UsageOverviewSnapshot; adapter?: AdapterDescriptor; nowSeconds: number; refreshing: boolean; onSignIn?: (provider: UsageProvider) => void; onRefresh?: () => void }) {
   const provider = snapshot.provider as UsageProvider;
   const fresh = snapshotFresh(snapshot, nowSeconds);
   const state = adapterState(adapter);
@@ -177,10 +188,9 @@ function ProviderSection({ snapshot, adapter, nowSeconds, onSignIn, onRefresh }:
           : meta}
       </span>
     </div>
-    {snapshot.windows.length
-      ? snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} fresh={fresh} nowSeconds={nowSeconds} />)
-      : <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{snapshot.error ?? (state === "not_installed" ? `${harnessLabel(provider)} isn't installed. Add it in Settings → Harnesses.` : "No quota reported yet.")}</p>}
-    {snapshot.windows.length > 0 && snapshot.error && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{snapshot.error}</p>}
+    {snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} fresh={fresh} nowSeconds={nowSeconds} />)}
+    {snapshot.error ? <ProviderError message={snapshot.error} refreshing={refreshing} onRefresh={onRefresh} />
+      : !snapshot.windows.length && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{state === "not_installed" ? `${harnessLabel(provider)} isn't installed. Add it in Settings → Harnesses.` : "No quota reported yet."}</p>}
     <UsageResetRow snapshot={snapshot} onUpdated={onRefresh} compact />
   </section>;
 }
@@ -310,7 +320,7 @@ export const UsageDot = memo(function UsageDot({ overviews, adapters, refreshing
         <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-1">
           {error && <p role="alert" className="my-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[11px] leading-relaxed text-destructive">{error}</p>}
           {overviews == null && !error && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading usage</div>}
-          {snapshots.map(snapshot => <ProviderSection key={snapshot.provider} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} onSignIn={onSignIn} onRefresh={onRefresh} />)}
+          {snapshots.map(snapshot => <ProviderSection key={snapshot.provider} snapshot={snapshot} adapter={adapterFor(snapshot.provider)} nowSeconds={now} refreshing={refreshing} onSignIn={onSignIn} onRefresh={onRefresh} />)}
           {overviews != null && snapshots.length === 0 && <p className="py-5 text-center text-caption text-muted-foreground">No providers report usage yet.</p>}
         </div>
       </div>

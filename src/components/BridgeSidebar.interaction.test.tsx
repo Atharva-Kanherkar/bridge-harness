@@ -394,3 +394,19 @@ describe("mobile drawer scrim", () => {
     expect(aside?.className).toContain("-translate-x-full");
   });
 });
+
+describe("BridgeSidebar Notes row", () => {
+  it("sits after Projects, opens Notes, and shows where you are", () => {
+    const onOpenNotes = vi.fn();
+    mount({ onOpenNotes });
+    const rows = [...container.querySelectorAll<HTMLButtonElement>("nav[aria-label='Main navigation'] button")].map(button => button.getAttribute("aria-label"));
+    expect(rows.indexOf("Notes")).toBe(rows.indexOf("Projects") + 1);
+    const notes = container.querySelector<HTMLButtonElement>("button[aria-label='Notes']")!;
+    expect(notes.title).toContain("Notes");
+    expect(notes.getAttribute("aria-current")).toBeNull();
+    click(notes);
+    expect(onOpenNotes).toHaveBeenCalledTimes(1);
+    mount({ onOpenNotes, notesActive: true });
+    expect(container.querySelector("button[aria-label='Notes']")?.getAttribute("aria-current")).toBe("page");
+  });
+});

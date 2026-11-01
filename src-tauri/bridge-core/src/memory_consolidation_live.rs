@@ -209,6 +209,7 @@ fn one_bounded_turn(
     let started = core.adapter_registry.start(
         harness,
         StartRequest {
+            session_id: None,
             cwd: &cwd,
             model: Some(model),
             effort: None,

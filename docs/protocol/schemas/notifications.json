@@ -79,6 +79,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "notes/page_changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]

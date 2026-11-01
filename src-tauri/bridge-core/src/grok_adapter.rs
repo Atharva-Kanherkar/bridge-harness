@@ -1486,6 +1486,7 @@ mod tests {
 
         let worktree = tempfile::tempdir().unwrap();
         let started = adapter.start(StartRequest {
+            session_id: None,
             cwd: worktree.path().to_str().unwrap(),
             model: Some("grok-code"),
             effort: None,

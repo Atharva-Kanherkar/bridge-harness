@@ -354,6 +354,7 @@ impl PiAdapter {
             executable,
             directory.path(),
             StartRequest {
+                session_id: None,
                 cwd: &cwd,
                 model: None,
                 effort: None,
@@ -538,6 +539,7 @@ impl HarnessAdapter for PiAdapter {
         }
         self.launch(
             StartRequest {
+                session_id: None,
                 cwd: request.cwd,
                 model: request.model,
                 effort: request.effort,

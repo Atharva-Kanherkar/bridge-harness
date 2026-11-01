@@ -17,6 +17,8 @@ export type CommandId =
   | "next-chat"
   | "previous-chat"
   | "open-projects"
+  | "open-notes"
+  | "capture-note"
   | "open-settings"
   | "toggle-sidebar"
   | "toggle-fullscreen"
@@ -97,6 +99,10 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "next-chat", label: "Next chat", group: "Navigation", chord: { key: "ArrowDown", code: "ArrowDown", meta: true, alt: true }, menu: "Go", accelerator: "Alt+CmdOrCtrl+Down" },
   { id: "previous-chat", label: "Previous chat", group: "Navigation", chord: { key: "ArrowUp", code: "ArrowUp", meta: true, alt: true }, menu: "Go", accelerator: "Alt+CmdOrCtrl+Up" },
   { id: "open-projects", label: "Projects", group: "Navigation", chord: { key: "p", meta: true, shift: true }, menu: "Go", accelerator: "Shift+CmdOrCtrl+P" },
+  { id: "open-notes", label: "Notes", group: "Navigation", chord: { key: "o", meta: true, shift: true }, menu: "Go", accelerator: "Shift+CmdOrCtrl+O" },
+  // Held while typing: a thought arrives mid-sentence, in whatever box the
+  // hands are in. ⌥ rewrites the printed key on macOS, so N is matched by code.
+  { id: "capture-note", label: "Capture a note", group: "Navigation", chord: { key: "n", code: "KeyN", meta: true, alt: true }, whileTyping: true, menu: "Go", accelerator: "Alt+CmdOrCtrl+N" },
   { id: "open-settings", label: "Settings", group: "Navigation", chord: { key: ",", meta: true }, displayKey: ",", menu: "Bridge", accelerator: "CmdOrCtrl+," },
   { id: "toggle-sidebar", label: "Toggle the sidebar", group: "View", chord: { key: "b", meta: true }, menu: "View", accelerator: "CmdOrCtrl+B" },
   // ⌥⌘F rather than ⌃⌘F: the latter is macOS's own native-fullscreen binding,
