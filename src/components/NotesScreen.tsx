@@ -4,10 +4,10 @@
 //
 // The list and the open page re-read on every `notes/page_changed`, so a page
 // an agent writes appears live; the editor keeps unsaved typing and lets the
-// core merge it.
+// core merge it. The list collapses (`toggle-notes-list`) so the page can take the width.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Plus, Search, Settings2 } from "lucide-react";
+import { PanelLeft, Plus, Search, Settings2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { taskBrief } from "../notesBrief";
 import { noteDisplayTitle, plainPreview } from "../notesDraft";
@@ -39,6 +39,8 @@ export interface NotesCopilotHost {
 
 const CHAT_OPEN_KEY = "bridge.notes.chatOpen";
 const readChatOpen = () => { try { return localStorage.getItem(CHAT_OPEN_KEY) === "1"; } catch { return false; } };
+const LIST_OPEN_KEY = "bridge.notes.listOpen";
+const readListOpen = () => { try { return localStorage.getItem(LIST_OPEN_KEY) !== "0"; } catch { return true; } };
 
 export interface NotesScreenProps {
   adapters: AdapterDescriptor[];
@@ -48,6 +50,8 @@ export interface NotesScreenProps {
   defaultHarness: string | null;
   /** A new value focuses the capture box (`capture-note`). */
   captureRequest?: number;
+  /** A new value collapses or expands the notes list (`toggle-notes-list`). */
+  listToggleRequest?: number;
   /** Start a Bridge chat with `message` as its first turn; resolves to its id. */
   onStartChat: (request: NoteChatRequest) => Promise<string | undefined>;
   onOpenChat: (sessionId: string) => void;
@@ -61,7 +65,7 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 /** The harness that wrote a page, when an agent did. */
 const agentHarness = (note: Note) => /^agent:([^:]+):/.exec(note.lastActor)?.[1] ?? /^agent:([^:]+):/.exec(note.createdBy)?.[1];
 
-export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
+export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, captureRequest, listToggleRequest, onStartChat, onOpenChat, onError, copilot, pollMs = JOB_POLL_MS }: NotesScreenProps) {
   const [list, setList] = useState<NotesList | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -77,6 +81,12 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
     try { localStorage.setItem(CHAT_OPEN_KEY, current ? "0" : "1"); } catch { /* storage off */ }
     return !current;
   }), []);
+  const [listOpen, setListOpen] = useState(readListOpen);
+  const toggleList = useCallback(() => setListOpen(current => {
+    try { localStorage.setItem(LIST_OPEN_KEY, current ? "0" : "1"); } catch { /* storage off */ }
+    return !current;
+  }), []);
+  useEffect(() => { if (listToggleRequest) toggleList(); }, [listToggleRequest, toggleList]);
   const selected = useRef<string | null>(null);
   selected.current = selectedId;
   const queryRef = useRef("");
@@ -185,6 +195,14 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       await open(note.id);
     } catch (error) { fail(error); }
   };
+  // The `/` menu's Page: made under the open page, left closed.
+  const createChildPage = async (parentId: string) => {
+    try {
+      const note = await bridgeApi.createNotePage({ title: null, content: "", parentId });
+      await refreshList();
+      return { id: note.id, title: noteDisplayTitle(note) };
+    } catch (error) { fail(error); return null; }
+  };
 
   const notes = list?.notes ?? [];
   const byId = useMemo(() => new Map(notes.map(note => [note.id, note])), [notes]);
@@ -223,7 +241,11 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
   const parent = page?.note.parentId ? byId.get(page.note.parentId) ?? null : null;
 
   return <div className="flex h-full min-h-0 bg-background">
-    <aside aria-label="Notes list" className={clsx("min-h-0 w-full shrink-0 flex-col border-r border-border md:flex md:w-[18.5rem]", selectedId ? "hidden" : "flex")}>
+    <aside aria-label="Notes list" className={clsx("min-h-0 w-full shrink-0 flex-col border-r border-border md:w-[18.5rem]", selectedId ? "hidden" : "flex", listOpen ? "md:flex" : "md:hidden")}>
+      <div className="flex h-12 shrink-0 items-center gap-1 pl-4 pr-2">
+        <h2 className="m-0 flex-1 text-[13px] font-semibold text-foreground">Notes</h2>
+        <button type="button" aria-label="Hide the notes list" title={`Hide the notes list (${chordLabel("toggle-notes-list")})`} onClick={toggleList} className="hidden size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>
+      </div>
       <NotesCapture focusRequest={(captureRequest ?? 0) + focusCapture} onCapture={capture} />
       <div className="shrink-0 px-3 pt-3">
         <label className="flex h-8 items-center gap-2 rounded-lg bg-muted px-2.5 focus-within:ring-2 focus-within:ring-ring">
@@ -266,10 +288,15 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         defaultHarness={defaultHarness}
         chatTitle={chatTitle}
         parent={parent}
-        childPages={notes.filter(note => note.parentId === page.note.id && note.kind !== "task")}
+        // A child page the body links to shows as its block, not twice.
+        childPages={notes.filter(note => note.parentId === page.note.id && note.kind !== "task" && !page.markdown.includes(`bridge://p/${note.id}"`))}
         startingId={startingId}
         chatOpen={chatOpen}
         onToggleChat={copilot ? toggleChat : undefined}
+        listOpen={listOpen}
+        onToggleList={toggleList}
+        pageTitle={id => { const child = byId.get(id); return child ? noteDisplayTitle(child) : undefined; }}
+        onCreateChildPage={() => createChildPage(page.note.id)}
         onBack={() => select(null)}
         onOpenPage={id => void open(id)}
         onChanged={() => void refreshAll()}
@@ -278,7 +305,7 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         onOpenChat={onOpenChat}
         onDeleted={() => { select(null); void refreshList(); }}
         onError={onError}
-      /> : <EmptyPage loading={!!selectedId} chatOpen={chatOpen} onToggleChat={copilot ? toggleChat : undefined} onNewPage={() => void createPage()} onCapture={() => setFocusCapture(value => value + 1)} />}
+      /> : <EmptyPage loading={!!selectedId} chatOpen={chatOpen} onToggleChat={copilot ? toggleChat : undefined} onShowList={listOpen ? undefined : toggleList} onNewPage={() => void createPage()} onCapture={() => setFocusCapture(value => value + 1)} />}
     </main>
 
     {copilot && chatOpen && <aside aria-label="Notes agent panel" className="hidden min-h-0 w-[24rem] shrink-0 flex-col border-l border-border lg:flex">{copilot.render(page, toggleChat)}</aside>}
@@ -369,9 +396,10 @@ function NotesFooter({ root, onNewPage, onError }: { root?: string; onNewPage: (
   </div>;
 }
 
-function EmptyPage({ loading, chatOpen, onToggleChat, onNewPage, onCapture }: { loading: boolean; chatOpen: boolean; onToggleChat?: () => void; onNewPage: () => void; onCapture: () => void }) {
+function EmptyPage({ loading, chatOpen, onToggleChat, onShowList, onNewPage, onCapture }: { loading: boolean; chatOpen: boolean; onToggleChat?: () => void; onShowList?: () => void; onNewPage: () => void; onCapture: () => void }) {
   return <div className="flex h-full flex-col">
     <header className="flex h-12 shrink-0 items-center justify-end px-3">
+      {onShowList && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onShowList} className="mr-auto hidden size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
       {onToggleChat && <Pill aria-pressed={chatOpen} active={chatOpen} onClick={onToggleChat}>Ask AI</Pill>}
     </header>
     {loading

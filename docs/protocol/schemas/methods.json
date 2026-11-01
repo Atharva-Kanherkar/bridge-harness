@@ -1150,6 +1150,27 @@
       "resultSchema": "note-edit-result.json"
     },
     {
+      "command": "put_asset_part",
+      "domain": "notes",
+      "method": "notes/put_asset_part",
+      "paramsSchema": "put-asset-part-params.json",
+      "resultSchema": "note-asset-part.json"
+    },
+    {
+      "command": "finish_asset",
+      "domain": "notes",
+      "method": "notes/finish_asset",
+      "paramsSchema": "finish-asset-params.json",
+      "resultSchema": "note-asset.json"
+    },
+    {
+      "command": "read_asset",
+      "domain": "notes",
+      "method": "notes/read_asset",
+      "paramsSchema": "read-asset-params.json",
+      "resultSchema": "note-asset-data.json"
+    },
+    {
       "command": "get_notes_settings",
       "domain": "notes",
       "method": "notes/get_notes_settings",

@@ -88,7 +88,7 @@ impl TitleBackend for LiveBackend {
     }
 
     fn generate(&self, harness: &str, model: Option<&str>, instructions: &str, prompt: &str) -> Result<Generation, String> {
-        one_hidden_turn(&self.registry, &self.scratch, harness, model, instructions, prompt)
+        one_hidden_turn(&self.registry, &self.scratch, harness, model, instructions, prompt, None)
     }
 }
 
@@ -99,6 +99,7 @@ pub(crate) fn one_hidden_turn(
     model: Option<&str>,
     instructions: &str,
     prompt: &str,
+    on_text: Option<&dyn Fn(&str)>,
 ) -> Result<Generation, String> {
     std::fs::create_dir_all(scratch).map_err(|error| error.to_string())?;
     let cwd = scratch.to_string_lossy().to_string();
@@ -184,7 +185,11 @@ pub(crate) fn one_hidden_turn(
                 let Ok(value) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                if let Some(done) = turn.observe(registry.normalize(harness, &value)) {
+                let done = turn.observe(registry.normalize(harness, &value));
+                if let Some(on_text) = on_text {
+                    turn.report(on_text);
+                }
+                if let Some(done) = done {
                     break done;
                 }
             }
@@ -204,6 +209,8 @@ struct TurnText {
     started: bool,
     tokens: i64,
     spend_microusd: i64,
+    /// The text last passed to `report`'s callback.
+    reported: String,
 }
 
 impl TurnText {
@@ -248,6 +255,15 @@ impl TurnText {
         finished
     }
 
+    /// Hand the reply so far to `on_text`, when it changed since last time.
+    fn report(&mut self, on_text: &dyn Fn(&str)) {
+        let text: String = self.parts.iter().map(|(_, text)| text.as_str()).collect();
+        if text != self.reported {
+            on_text(&text);
+            self.reported = text;
+        }
+    }
+
     fn generation(&self) -> Generation {
         Generation {
             text: self.parts.iter().map(|(_, text)| text.as_str()).collect(),
@@ -287,6 +303,22 @@ mod tests {
         ]);
         assert_eq!(done, Some(Ok(())));
         assert_eq!(turn.generation(), Generation { text: "{\"titles\":[]}".into(), tokens: 940, spend_microusd: 1200 });
+    }
+
+    #[test]
+    fn a_turn_reports_its_text_each_time_it_grows() {
+        let seen = std::cell::RefCell::new(Vec::<String>::new());
+        let sink = |text: &str| seen.borrow_mut().push(text.to_owned());
+        let mut turn = TurnText::default();
+        turn.observe(vec![event("turn.started", None, None, None, json!({}))]);
+        turn.report(&sink);
+        turn.observe(vec![event("message.delta", Some("assistant"), Some("m1"), Some("{\"title\""), json!({}))]);
+        turn.report(&sink);
+        turn.observe(vec![event("usage.updated", None, None, None, json!({"usage": {"input_tokens": 1}}))]);
+        turn.report(&sink);
+        turn.observe(vec![event("message.delta", Some("assistant"), Some("m1"), Some(":\"x\"}"), json!({}))]);
+        turn.report(&sink);
+        assert_eq!(*seen.borrow(), vec!["{\"title\"".to_owned(), "{\"title\":\"x\"}".to_owned()]);
     }
 
     #[test]

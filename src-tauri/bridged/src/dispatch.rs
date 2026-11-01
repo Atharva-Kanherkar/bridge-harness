@@ -627,6 +627,18 @@ pub fn dispatch(
             let p: wire::RestoreVersionParams = decode(method, params)?;
             reply(api::restore_version(core, &p))
         }
+        MethodName::PutAssetPart => {
+            let p: wire::PutAssetPartParams = decode(method, params)?;
+            reply(api::put_asset_part(core, &p))
+        }
+        MethodName::FinishAsset => {
+            let p: wire::FinishAssetParams = decode(method, params)?;
+            reply(api::finish_asset(core, &p))
+        }
+        MethodName::ReadAsset => {
+            let p: wire::ReadAssetParams = decode(method, params)?;
+            reply(api::read_asset(core, &p))
+        }
         MethodName::SaveNotesSettings => {
             let p: wire::SaveNotesSettingsParams = decode(method, params)?;
             reply(api::save_notes_settings(core, &p))

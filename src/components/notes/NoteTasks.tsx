@@ -1,6 +1,7 @@
 // A page's tasks, drawn as a to-do list: what Turn into tasks found, each
 // quoting the words it came from, each a click away from a Bridge chat.
-// Starting asks where the chat goes; "No project" is always a choice.
+// Starting asks where the chat goes; "No project" is always a choice. While
+// Turn into tasks runs, the tasks it is writing show as drafts.
 
 import { noteDisplayTitle, quoteText } from "../../notesDraft";
 import type { AdapterDescriptor, Note, Session, Workspace } from "../../types";
@@ -8,8 +9,10 @@ import { HarnessMark } from "../harnessMarks";
 import { PopoverAction, StartPicker, type StartChoice } from "./NotePickers";
 import { StatusGlyph } from "./NotesUi";
 
-export function NoteTasks({ tasks, adapters, workspaces, sessions, defaultHarness, pageWorkspaceId, startingId, onStart, onOpenChat, onSetState, onOpen }: {
+export function NoteTasks({ tasks, drafts = [], adapters, workspaces, sessions, defaultHarness, pageWorkspaceId, startingId, onStart, onOpenChat, onSetState, onOpen }: {
   tasks: Note[];
+  /** Tasks a running Turn into tasks is writing, not stored yet. */
+  drafts?: { title: string; excerpt: string }[];
   adapters: AdapterDescriptor[];
   workspaces: Workspace[];
   sessions: Session[];
@@ -21,12 +24,14 @@ export function NoteTasks({ tasks, adapters, workspaces, sessions, defaultHarnes
   onSetState: (task: Note, state: string) => void;
   onOpen: (task: Note) => void;
 }) {
-  if (tasks.length === 0) return null;
+  if (tasks.length === 0 && drafts.length === 0) return null;
   const open = tasks.filter(task => task.state !== "done").length;
+  // A draft the page already has (a rerun) is not shown twice.
+  const fresh = drafts.filter(draft => !tasks.some(task => task.sourceExcerpt === draft.excerpt || noteDisplayTitle(task) === draft.title));
   return <section aria-label="Tasks" className="mt-12">
     <div className="flex items-baseline gap-2 border-b border-border pb-2">
       <h3 className="m-0 text-[13px] font-semibold text-foreground">Tasks</h3>
-      <span className="text-[12px] text-muted-foreground">{open ? `${open} of ${tasks.length} open` : "All done"}</span>
+      <span className="text-[12px] text-muted-foreground">{fresh.length ? "Finding tasks…" : open ? `${open} of ${tasks.length} open` : "All done"}</span>
     </div>
     <ul className="m-0 list-none divide-y divide-border p-0">
       {tasks.map(task => {
@@ -65,6 +70,13 @@ export function NoteTasks({ tasks, adapters, workspaces, sessions, defaultHarnes
           </div>
         </li>;
       })}
+      {fresh.map((draft, index) => <li key={`draft-${index}`} aria-label={`Draft: ${draft.title}`} data-draft="" className="flex items-start gap-3 py-2.5">
+        <span aria-hidden="true" className="mt-[7px] grid size-5 shrink-0 place-items-center"><span className="size-2 animate-pulse rounded-full bg-faint" /></span>
+        <div className="min-w-0 flex-1">
+          <p className="m-0 truncate text-[14px] leading-6 text-muted-foreground">{draft.title}</p>
+          {draft.excerpt && <blockquote className="m-0 line-clamp-2 text-[12.5px] leading-snug text-faint before:content-['“'] after:content-['”']">{quoteText(draft.excerpt)}</blockquote>}
+        </div>
+      </li>)}
     </ul>
   </section>;
 }

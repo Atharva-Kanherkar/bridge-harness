@@ -8,6 +8,7 @@
 //! `testing/feat-notes-backend.md`.
 
 pub mod agent;
+pub mod assets;
 pub mod doc;
 #[cfg(test)]
 mod evals;

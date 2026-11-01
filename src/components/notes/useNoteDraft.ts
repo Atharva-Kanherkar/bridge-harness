@@ -46,7 +46,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
     setStatus("saving");
     const sent = draft.current;
     try {
-      await bridgeApi.editNotePage({ id, text: sent, baseSeq: base.current.seq });
+      await bridgeApi.editNotePage({ id, text: sent, baseSeq: base.current.seq, allowDeletingChildren: true });
       const page = await bridgeApi.readNotePage(id);
       // Typing that happened during the round trip came from `sent`, which the
       // core never stored as a version; replay it onto the merged text.
@@ -112,7 +112,7 @@ export function useNoteDraft(initial: NotePage, onSaved: (page: NotePage) => voi
   useEffect(() => () => {
     clearTimeout(timer.current);
     if (!saving.current && draft.current !== base.current.text) {
-      void bridgeApi.editNotePage({ id, text: draft.current, baseSeq: base.current.seq }).catch(error => callbacks.current.onError(error instanceof Error ? error.message : String(error)));
+      void bridgeApi.editNotePage({ id, text: draft.current, baseSeq: base.current.seq, allowDeletingChildren: true }).catch(error => callbacks.current.onError(error instanceof Error ? error.message : String(error)));
     }
   }, [id]);
 

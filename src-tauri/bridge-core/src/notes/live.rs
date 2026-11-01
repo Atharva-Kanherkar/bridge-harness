@@ -75,8 +75,8 @@ impl ModelBackend for LiveBackend {
         .unwrap_or_default()
     }
 
-    fn generate(&self, harness: &str, model: Option<&str>, instructions: &str, prompt: &str) -> Result<Generation, String> {
-        crate::title_jobs_live::one_hidden_turn(&self.core.adapter_registry, &self.scratch, harness, model, instructions, prompt)
+    fn generate(&self, harness: &str, model: Option<&str>, instructions: &str, prompt: &str, on_text: &dyn Fn(&str)) -> Result<Generation, String> {
+        crate::title_jobs_live::one_hidden_turn(&self.core.adapter_registry, &self.scratch, harness, model, instructions, prompt, Some(on_text))
     }
 }
 
@@ -160,7 +160,7 @@ mod tests {
         fn projects(&self) -> Vec<ProjectChoice> {
             Vec::new()
         }
-        fn generate(&self, _harness: &str, _model: Option<&str>, _instructions: &str, _prompt: &str) -> Result<Generation, String> {
+        fn generate(&self, _harness: &str, _model: Option<&str>, _instructions: &str, _prompt: &str, _on_text: &dyn Fn(&str)) -> Result<Generation, String> {
             let _ = self.entered.lock().unwrap().send(());
             let _ = self.release.lock().unwrap().recv_timeout(Duration::from_secs(30));
             Err("released".into())

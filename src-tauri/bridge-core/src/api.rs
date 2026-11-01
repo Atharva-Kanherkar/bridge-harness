@@ -7042,6 +7042,21 @@ pub fn restore_version(core: &Arc<BridgeCore>, params: &wire::RestoreVersionPara
     core.notes.restore_version(&params.id, params.seq, crate::notes::service::PERSON)
 }
 
+/// `notes/put_asset_part`: one part of an image upload.
+pub fn put_asset_part(core: &Arc<BridgeCore>, params: &wire::PutAssetPartParams) -> Result<wire::NoteAssetPart, BridgeError> {
+    core.notes.put_asset_part(params.upload_id.as_deref(), &params.data)
+}
+
+/// `notes/finish_asset`: store an upload as a page asset.
+pub fn finish_asset(core: &Arc<BridgeCore>, params: &wire::FinishAssetParams) -> Result<wire::NoteAsset, BridgeError> {
+    core.notes.finish_asset(&params.upload_id, &params.mime)
+}
+
+/// `notes/read_asset`: a stored asset's bytes.
+pub fn read_asset(core: &Arc<BridgeCore>, params: &wire::ReadAssetParams) -> Result<wire::NoteAssetData, BridgeError> {
+    core.notes.read_asset(&params.path)
+}
+
 pub fn get_notes_settings(core: &Arc<BridgeCore>) -> Result<wire::NotesSettings, BridgeError> {
     core.notes.settings()
 }

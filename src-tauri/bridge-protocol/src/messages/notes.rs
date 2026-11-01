@@ -339,6 +339,69 @@ pub struct RestoreVersionParams {
     pub seq: i64,
 }
 
+/// Append one part of an image to an upload; without `uploadId` it starts one.
+/// Parts keep each request under the daemon's frame cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PutAssetPartParams {
+    #[serde(default)]
+    pub upload_id: Option<String>,
+    /// Base64 bytes.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAssetPart {
+    pub upload_id: String,
+    /// Bytes received so far.
+    pub size: u64,
+}
+
+/// Store an upload as a page asset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FinishAssetParams {
+    pub upload_id: String,
+    pub mime: String,
+}
+
+/// A stored asset; `path` (`assets/<hash>.<ext>`) is what a page links to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAsset {
+    pub path: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadAssetParams {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAssetData {
+    pub path: String,
+    pub mime: String,
+    /// Base64 bytes.
+    pub data: String,
+}
+
+/// Delivered as `notes/pass_progress` while a Structure or Turn into tasks
+/// pass runs: the model's reply so far. Nothing is stored until it settles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePassProgress {
+    pub job_id: String,
+    pub page_id: String,
+    /// `structure` or `tasks`.
+    pub kind: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveNotesSettingsParams {

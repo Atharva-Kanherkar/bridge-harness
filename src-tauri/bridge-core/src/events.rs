@@ -111,6 +111,8 @@ pub enum CoreEvent {
     ConnectorInboxChanged { family: String },
     /// A notes page changed, by whom, at which sequence.
     NotesPageChanged(bridge_protocol::messages::NotePageChanged),
+    /// A notes pass's reply so far.
+    NotesPassProgress(bridge_protocol::messages::NotePassProgress),
 }
 
 impl CoreEvent {
@@ -139,6 +141,7 @@ impl CoreEvent {
             CoreEvent::ConnectorItemResolved { .. } => NotificationName::ConnectorItemResolved,
             CoreEvent::ConnectorInboxChanged { .. } => NotificationName::ConnectorInboxChanged,
             CoreEvent::NotesPageChanged(_) => NotificationName::NotesPageChanged,
+            CoreEvent::NotesPassProgress(_) => NotificationName::NotesPassProgress,
         }
     }
 
@@ -205,6 +208,7 @@ impl CoreEvent {
             }),
             CoreEvent::ConnectorInboxChanged { family } => serde_json::json!({ "family": family }),
             CoreEvent::NotesPageChanged(change) => serde_json::to_value(change).expect("page change serializes"),
+            CoreEvent::NotesPassProgress(progress) => serde_json::to_value(progress).expect("pass progress serializes"),
         }
     }
 
@@ -353,7 +357,8 @@ impl EventBus {
                 | CoreEvent::ConnectorCardReady { .. }
                 | CoreEvent::ConnectorItemResolved { .. }
                 | CoreEvent::ConnectorInboxChanged { .. }
-                | CoreEvent::NotesPageChanged(_) => {}
+                | CoreEvent::NotesPageChanged(_)
+                | CoreEvent::NotesPassProgress(_) => {}
             }
         }
         let _ = self.sender.send(event);
@@ -488,6 +493,7 @@ mod tests {
             },
             CoreEvent::ConnectorInboxChanged { family: "slack".into() },
             CoreEvent::NotesPageChanged(bridge_protocol::messages::NotePageChanged { page_id: "p1".into(), actor: "person".into(), seq: 3 }),
+            CoreEvent::NotesPassProgress(bridge_protocol::messages::NotePassProgress { job_id: "j1".into(), page_id: "p1".into(), kind: "structure".into(), text: "{\"title\"".into() }),
         ];
         for event in &events {
             assert_eq!(

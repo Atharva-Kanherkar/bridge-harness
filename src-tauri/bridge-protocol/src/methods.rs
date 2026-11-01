@@ -224,6 +224,9 @@ methods![
     (PageHistory, "notes", "page_history"),
     (ReadVersion, "notes", "read_version"),
     (RestoreVersion, "notes", "restore_version"),
+    (PutAssetPart, "notes", "put_asset_part"),
+    (FinishAsset, "notes", "finish_asset"),
+    (ReadAsset, "notes", "read_asset"),
     (GetNotesSettings, "notes", "get_notes_settings"),
     (SaveNotesSettings, "notes", "save_notes_settings"),
     // token and cost usage

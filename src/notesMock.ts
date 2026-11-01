@@ -1,11 +1,12 @@
 // In-memory Bridge Notes for `bun run dev` and component tests: the same
 // shapes the core returns, a seq history per page so stale saves merge, and
-// fake Structure and Turn into tasks passes that finish after a short delay and
-// announce `notes/page_changed` the way the core does.
+// fake Structure and Turn into tasks passes that stream `notes/pass_progress`,
+// finish after a short delay and announce `notes/page_changed` the way the
+// core does, and images kept by path.
 
 import { rebaseDraft } from "./notesDraft";
 import type { CreatePageParams, EditPageParams, ListNotesParams, NoteJobQueued, SaveNotesSettingsParams, SplitItemParams, StructureNoteParams, UpdateNoteParams } from "./protocol/generated/protocol";
-import type { Note, NoteEditResult, NoteHistory, NoteJob, NotePage, NotePageChangedPayload, NotesList, NotesSettings, NoteVersionPage, StructuredView } from "./types";
+import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NoteJob, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage, StructuredView } from "./types";
 
 const ROOT = "/Users/you/Library/Application Support/Bridge/notes";
 const PERSON = "person";
@@ -26,6 +27,9 @@ let settings: NotesSettings = { autoStructure: false, root: ROOT };
 let passDelay = 700;
 let counter = 0;
 const listeners = new Set<(payload: NotePageChangedPayload) => void>();
+const progressListeners = new Set<(payload: NotePassProgressPayload) => void>();
+let uploads = new Map<string, string>();
+let assets = new Map<string, NoteAssetData>();
 
 const stamp = () => new Date(Date.now() + counter).toISOString();
 const nextId = (prefix: string) => `${prefix}-${(++counter).toString(36).padStart(4, "0")}`;
@@ -84,6 +88,8 @@ seed();
 
 /** Back to the seeded notes. Tests call this between cases. */
 export function resetMockNotes(): void {
+  uploads = new Map();
+  assets = new Map();
   counter = 0;
   listeners.clear();
   passDelay = 700;
@@ -166,7 +172,11 @@ export function mockEditPage(params: EditPageParams): NoteEditResult {
     next = next.replace(edit.oldStr, edit.newStr);
   }
   if (params.append) next = params.append.position === "start" ? `${params.append.content}${next}` : `${next}${params.append.content}`;
-  if (next !== current) commit(page, next, PERSON);
+    if (!params.allowDeletingChildren) {
+      const dropped = (current.match(/<(?:page|database)\b[^>]*>/g) ?? []).filter(tag => !next.includes(tag));
+      if (dropped.length) throw new Error(`this edit would delete ${dropped.length} child page or database tag(s): ${dropped.join(", ")}. Ask the person first, then retry with allowDeletingChildren.`);
+    }
+    if (next !== current) commit(page, next, PERSON);
   return { note: clone(page.note), seq: page.note.seq, warnings: [] };
 }
 
@@ -191,10 +201,26 @@ export function mockDeleteNote(id: string): void {
   announce(page, PERSON);
 }
 
-function queue(kind: "structure" | "tasks", params: StructureNoteParams, run: (page: MockPage) => string | null): NoteJobQueued {
+export function onMockNotesPassProgress(handler: (payload: NotePassProgressPayload) => void): () => void {
+  progressListeners.add(handler);
+  return () => { progressListeners.delete(handler); };
+}
+
+/** Queue a pass. `reply` is the model's whole reply, streamed in thirds
+ *  before `run` stores the result. */
+function queue(kind: "structure" | "tasks", params: StructureNoteParams, reply: (page: MockPage) => string, run: (page: MockPage) => string | null): NoteJobQueued {
   const page = live(params.id);
   const job: NoteJob = { id: nextId("job"), pageId: page.note.id, kind, status: "pending", harness: params.harness ?? "claude", model: params.model ?? null, detail: null, createdAt: stamp(), updatedAt: stamp() };
   jobs = [job, ...jobs];
+  for (const fraction of [1 / 3, 2 / 3]) {
+    setTimeout(() => {
+      if (page.deleted) return;
+      jobs = jobs.map(item => item.id === job.id && item.status === "pending" ? { ...item, status: "running" } : item);
+      const text = reply(page);
+      const payload = { jobId: job.id, pageId: page.note.id, kind, text: text.slice(0, Math.floor(text.length * fraction)) };
+      for (const listener of [...progressListeners]) listener(payload);
+    }, passDelay * fraction);
+  }
   setTimeout(() => {
     const settle = (status: string, detail: string | null) => { jobs = jobs.map(item => item.id === job.id ? { ...item, status, detail, updatedAt: stamp() } : item); };
     if (page.deleted) { settle("failed", "the note was deleted"); return; }
@@ -211,36 +237,40 @@ const lineTitle = (line: string) => {
   return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean;
 };
 
+function structureOf(page: MockPage) {
+  const body = page.history[page.history.length - 1];
+  const lines = body.split("\n").map(line => line.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  return {
+    title: lineTitle(lines[0]) || "Untitled",
+    kind: kindOf(body),
+    tags: page.note.tags.length ? page.note.tags : ["inbox"],
+    summary: `${lines.length} thought${lines.length === 1 ? "" : "s"}, starting with "${lineTitle(lines[0])}".`,
+    items: lines.slice(0, 12).map(line => ({ excerpt: line, title: lineTitle(line) || line, kind: kindOf(line) })),
+  };
+}
+
 export function mockStructureNote(params: StructureNoteParams): NoteJobQueued {
-  return queue("structure", params, page => {
-    const body = page.history[page.history.length - 1];
-    const lines = body.split("\n").map(line => line.trim()).filter(Boolean);
-    if (!lines.length) return "There is nothing to structure yet.";
+  const reply = (page: MockPage) => JSON.stringify({ ...structureOf(page), project: null });
+  return queue("structure", params, reply, page => {
+    const view = structureOf(page);
+    if (!view) return "There is nothing to structure yet.";
     page.structured = {
-      body,
-      view: {
-        title: lineTitle(lines[0]) || "Untitled",
-        kind: kindOf(body),
-        tags: page.note.tags.length ? page.note.tags : ["inbox"],
-        summary: `${lines.length} thought${lines.length === 1 ? "" : "s"}, starting with "${lineTitle(lines[0])}".`,
-        items: lines.slice(0, 12).map(line => ({ excerpt: line, title: lineTitle(line) || line, kind: kindOf(line) })),
-        harness: params.harness ?? "claude",
-        model: params.model ?? "claude-haiku-4-5",
-        createdAt: stamp(),
-        workspaceId: null,
-      },
+      body: page.history[page.history.length - 1],
+      view: { ...view, harness: params.harness ?? "claude", model: params.model ?? "claude-haiku-4-5", createdAt: stamp(), workspaceId: null },
     };
     announce(page, `model:structure:${params.model ?? "claude-haiku-4-5"}`);
     return null;
   });
 }
 
+const tasksOf = (page: MockPage) => page.history[page.history.length - 1].split("\n").map(line => line.trim()).filter(line => /^- /.test(line) || /\b(need to|todo)\b/i.test(line));
+
 export function mockExtractTasks(params: StructureNoteParams): NoteJobQueued {
-  return queue("tasks", params, page => {
-    const body = page.history[page.history.length - 1];
+  const reply = (page: MockPage) => JSON.stringify({ tasks: tasksOf(page).map(excerpt => ({ excerpt, title: lineTitle(excerpt), detail: "", doneWhen: "", project: null })) });
+  return queue("tasks", params, reply, page => {
     const existing = pages.filter(candidate => !candidate.deleted && candidate.note.parentId === page.note.id).map(candidate => candidate.note.sourceExcerpt);
-    const found = body.split("\n").map(line => line.trim()).filter(line => /^- /.test(line) || /\b(need to|todo)\b/i.test(line));
-    for (const excerpt of found) {
+    for (const excerpt of tasksOf(page)) {
       if (existing.includes(excerpt)) continue;
       const title = lineTitle(excerpt);
       make(`${title}.\n\nDone when: ${title.toLowerCase()} is shipped and checked.`, `model:tasks:${params.model ?? "claude-sonnet-5-5"}`, {
@@ -300,4 +330,43 @@ export function mockNotesSettings(): NotesSettings {
 export function mockSaveNotesSettings(params: SaveNotesSettingsParams): NotesSettings {
   settings = { autoStructure: params.autoStructure ?? settings.autoStructure, root: params.root?.trim() || settings.root };
   return clone(settings);
+}
+
+/** A stand-in for the core's content hash: 16 hex characters. */
+function mockHash(data: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (let index = 0; index < data.length; index += 1) {
+    a = Math.imul(a ^ data.charCodeAt(index), 16777619) >>> 0;
+    b = Math.imul(b ^ data.charCodeAt(index), 2246822519) >>> 0;
+  }
+  return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+}
+
+const MOCK_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg" };
+
+export function mockPutAssetPart(params: { uploadId?: string | null; data: string }): NoteAssetPart {
+  const uploadId = params.uploadId ?? nextId("upload");
+  if (params.uploadId && !uploads.has(params.uploadId)) throw new Error("that upload expired or never started; send it again");
+  // Parts are base64 of whole 3-byte groups except the last, so they join.
+  const data = (uploads.get(uploadId) ?? "") + params.data;
+  uploads.set(uploadId, data);
+  return { uploadId, size: Math.floor((data.replace(/=+$/, "").length * 3) / 4) };
+}
+
+export function mockFinishAsset(params: { uploadId: string; mime: string }): NoteAsset {
+  const data = uploads.get(params.uploadId);
+  if (data === undefined) throw new Error("that upload expired or never started; send it again");
+  const ext = MOCK_EXT[params.mime];
+  if (!ext) throw new Error(`${params.mime} is not an image Bridge stores (PNG, JPEG, GIF, WebP or SVG)`);
+  uploads.delete(params.uploadId);
+  const path = `assets/${mockHash(data)}.${ext}`;
+  assets.set(path, { path, mime: params.mime, data });
+  return { path, mime: params.mime, size: Math.floor((data.replace(/=+$/, "").length * 3) / 4) };
+}
+
+export function mockReadAsset(path: string): NoteAssetData {
+  const asset = assets.get(path);
+  if (!asset) throw new Error(`no asset at ${path}`);
+  return { ...asset };
 }
