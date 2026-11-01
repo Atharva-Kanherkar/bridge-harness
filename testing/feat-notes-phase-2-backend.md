@@ -12,8 +12,8 @@ Source: GitHub issue #879, the backend slice of #878. Frontend editor and sideba
 
 ### Full-text search
 - Index the live title, body, and tags on every write; remove deleted pages from `pages_fts`.
-- A non-empty query uses safely quoted FTS5 prefix tokens and `bm25(pages_fts, 5.0, 1.0, 2.0)`, then `pages.updated_at DESC`.
-- Title hits rank above body-only hits and Porter stemming works.
+- A non-empty query uses safely quoted FTS5 prefix tokens and `bm25(pages_fts, 0.0, 0.0, 5.0, 1.0, 2.0)`, then `pages.updated_at DESC`.
+- Title hits rank above body-only hits and Porter stemming works. The two initial zero weights account for the unindexed identity columns; the indexed title/body/tags weights remain 5/1/2.
 - A punctuation-only query with no FTS tokens falls back to the existing substring `LIKE` behavior.
 - `rebuild_index` reconstructs the ordinary page index, FTS index, and link graph consistently.
 
