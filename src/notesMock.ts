@@ -172,7 +172,11 @@ export function mockEditPage(params: EditPageParams): NoteEditResult {
     next = next.replace(edit.oldStr, edit.newStr);
   }
   if (params.append) next = params.append.position === "start" ? `${params.append.content}${next}` : `${next}${params.append.content}`;
-  if (next !== current) commit(page, next, PERSON);
+    if (!params.allowDeletingChildren) {
+      const dropped = (current.match(/<(?:page|database)\b[^>]*>/g) ?? []).filter(tag => !next.includes(tag));
+      if (dropped.length) throw new Error(`this edit would delete ${dropped.length} child page or database tag(s): ${dropped.join(", ")}. Ask the person first, then retry with allowDeletingChildren.`);
+    }
+    if (next !== current) commit(page, next, PERSON);
   return { note: clone(page.note), seq: page.note.seq, warnings: [] };
 }
 

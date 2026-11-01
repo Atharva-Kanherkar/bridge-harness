@@ -44,7 +44,10 @@ export async function uploadAsset(file: File): Promise<string> {
   }
   const asset = await bridgeApi.finishNoteAsset({ uploadId, mime: file.type });
   // The bytes are here already; no need to read them back.
-  if (typeof URL.createObjectURL === "function") cache.set(asset.path, Promise.resolve(URL.createObjectURL(file)));
+  if (!cache.has(asset.path) && typeof URL.createObjectURL === "function") {
+    const objectUrl = URL.createObjectURL(file);
+    if (objectUrl) cache.set(asset.path, Promise.resolve(objectUrl));
+  }
   return asset.path;
 }
 

@@ -16,22 +16,42 @@ export function editorCodec(editor: Editor): BlockCodec {
   const canon = new Map<string, string>();
   return {
     split: markdown => {
-      const text = markdown.replace(/\r\n?/g, "\n");
+      const ends: number[] = [];
+      let text = "";
+      for (let index = 0; index < markdown.length; index += 1) {
+        if (markdown[index] === "\r") {
+          text += "\n";
+          if (markdown[index + 1] === "\n") index += 1;
+        } else {
+          text += markdown[index];
+        }
+        ends.push(index + 1);
+      }
       let tokens: { type: string; raw: string }[];
       try { tokens = new manager.instance.Lexer(manager.instance.defaults).lex(text); } catch { return null; }
-      const blocks: string[] = [];
-      let lead = "";
+      const lengths: number[] = [];
+      let lead = 0;
       for (const token of tokens) {
         if (token.type === "space") {
-          if (blocks.length) blocks[blocks.length - 1] += token.raw;
-          else lead += token.raw;
+          if (lengths.length) lengths[lengths.length - 1] += token.raw.length;
+          else lead += token.raw.length;
           continue;
         }
-        blocks.push(lead + token.raw);
-        lead = "";
+        lengths.push(lead + token.raw.length);
+        lead = 0;
       }
-      if (lead) blocks.length ? (blocks[blocks.length - 1] += lead) : blocks.push(lead);
-      return blocks.join("") === text ? blocks : null;
+      if (lead) lengths.length ? (lengths[lengths.length - 1] += lead) : lengths.push(lead);
+      if (lengths.reduce((sum, length) => sum + length, 0) !== text.length) return null;
+      const blocks: string[] = [];
+      let from = 0;
+      let start = 0;
+      for (const length of lengths) {
+        from += length;
+        const end = from ? ends[from - 1] : 0;
+        blocks.push(markdown.slice(start, end));
+        start = end;
+      }
+      return blocks.join("") === markdown ? blocks : null;
     },
     canon: block => {
       const key = block.trim();

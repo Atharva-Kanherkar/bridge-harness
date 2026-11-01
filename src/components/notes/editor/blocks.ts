@@ -133,7 +133,7 @@ export const Toggle = Details.extend({
   },
   parseMarkdown: (token, helpers) => {
     const content = helpers.parseChildren(token.tokens ?? []);
-    return helpers.createNode("details", {}, [
+    return helpers.createNode("details", { open: !!token.open }, [
       helpers.createNode("detailsSummary", {}, helpers.parseInline(token.summary ?? [])),
       helpers.createNode("detailsContent", {}, content.length ? content : [helpers.createNode("paragraph")]),
     ]);
@@ -142,7 +142,7 @@ export const Toggle = Details.extend({
     const [summary, content] = (node.content ?? []) as JSONContent[];
     const title = summary ? helpers.renderChildren(summary.content ?? []) : "";
     const body = content ? helpers.renderChildren(content.content ?? [], "\n\n").replace(/\n+$/, "") : "";
-    return `<details>\n<summary>${title}</summary>\n\n${body}\n\n</details>`;
+    return `<details${node.attrs?.open ? " open" : ""}>\n<summary>${title}</summary>\n\n${body}\n\n</details>`;
   },
 });
 export { DetailsContent as ToggleContent, DetailsSummary as ToggleSummary };

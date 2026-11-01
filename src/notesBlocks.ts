@@ -49,16 +49,17 @@ export function keepUntouched(source: string, output: string, codec: BlockCodec)
   let text = "";
   written.forEach((block, index) => {
     const at = from[index];
-    const piece = at === null ? block : before[at];
+    const piece = at === null ? (source.includes("\r\n") ? block.replace(/\r?\n/g, "\r\n") : block) : before[at];
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
     if (index === written.length - 1) {
       // The page's last block keeps its own ending; a new last block ends the
       // way the page did.
-      text += at === before.length - 1 ? piece : trimEnd(piece) + (source.endsWith("\n") ? "\n" : "");
+      text += at === before.length - 1 ? piece : trimEnd(piece) + (source.endsWith("\r\n") ? "\r\n" : source.endsWith("\n") ? "\n" : "");
       return;
     }
     // A kept block followed by the block that followed it before keeps its
     // own spacing; any other seam gets one blank line.
-    text += at !== null && from[index + 1] === at + 1 ? piece : `${trimEnd(piece)}\n\n`;
+    text += at !== null && from[index + 1] === at + 1 ? piece : `${trimEnd(piece)}${eol}${eol}`;
   });
   return text;
 }
@@ -66,7 +67,7 @@ export function keepUntouched(source: string, output: string, codec: BlockCodec)
 /** A body that opens with its own title as a heading: the heading (with the
  *  blank lines after it) and the rest, so the title is not shown twice. */
 export function splitTitleHeading(text: string, title: string | null | undefined): { head: string; body: string } {
-  const heading = /^#[ \t]+(.+?)[ \t]*(?:\n[ \t]*)*(?:\n|$)/.exec(text);
+  const heading = /^#[ \t]+(.+?)[ \t]*(?:\r?\n[ \t]*)*(?:\r?\n|$)/.exec(text);
   if (!heading || !title?.trim() || heading[1].trim() !== title.trim()) return { head: "", body: text };
   return { head: heading[0], body: text.slice(heading[0].length) };
 }

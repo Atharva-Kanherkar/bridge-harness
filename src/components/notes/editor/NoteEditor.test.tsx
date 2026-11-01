@@ -10,6 +10,8 @@ let host: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect ??= () => new DOMRect(0, 0, 0, 0);
   resetMockNotes();
   host = document.createElement("div");
   document.body.append(host);
@@ -200,10 +202,24 @@ describe("NoteEditor", () => {
   });
 
   it("keeps a heading that repeats the title out of the editor, and in the text", async () => {
-    const { onChange } = await mount("# Launch\n\nBody\n", { title: "Launch" });
+    const { rerender, onChange } = await mount("# Launch\n\nBody\n", { title: "Launch" });
     expect(host.querySelector(".note-editor h1")).toBeNull();
     await typeAfter("Body", " more");
     await commit();
     expect(onChange).toHaveBeenLastCalledWith("# Launch\n\nBody more\n");
+
+    await rerender({ text: "# Launch\n\nBody more\n", title: "Renamed" });
+    expect(host.querySelector(".note-editor h1")?.textContent).toBe("Launch");
+    await typeAfter("Body more", "!");
+    await commit();
+    expect(onChange).toHaveBeenLastCalledWith("# Launch\n\nBody more!\n");
+  });
+
+  it("keeps untouched blocks with CRLF line endings and open details attributes", async () => {
+    const crlf = "First  with __bold__.\r\n\r\n<details open>\r\n<summary>More</summary>\r\n\r\nHidden\r\n\r\n</details>\r\n\r\nLast line\r\n";
+    const { onChange } = await mount(crlf);
+    await typeAfter("Last line", "!");
+    await commit();
+    expect(onChange).toHaveBeenLastCalledWith("First  with __bold__.\r\n\r\n<details open>\r\n<summary>More</summary>\r\n\r\nHidden\r\n\r\n</details>\r\n\r\nLast line!\r\n");
   });
 });

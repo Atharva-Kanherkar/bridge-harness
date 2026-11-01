@@ -169,9 +169,22 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
     onDestroy: () => commit(),
   }, []);
 
-  // A change from outside the editor.
+  // A change from outside the editor, or a title change that alters whether a
+  // leading `# Title` heading is hidden.
   useEffect(() => {
-    if (!editor || !codec.current || props.text === emitted.current) return;
+    if (!editor || !codec.current) return;
+    if (props.text === emitted.current) {
+      const current = split.current.head + (dirty.current ? markdown(editor) : source.current);
+      const nextSplit = splitTitleHeading(current, props.title);
+      if (nextSplit.head === split.current.head) return;
+      split.current = nextSplit;
+      source.current = nextSplit.body;
+      const { from, to } = editor.state.selection;
+      editor.commands.setContent(nextSplit.body, { contentType: "markdown", emitUpdate: false });
+      const size = editor.state.doc.content.size;
+      if (editor.isFocused) editor.commands.setTextSelection({ from: Math.min(from, size), to: Math.min(to, size) });
+      return;
+    }
     clearTimeout(timer.current);
     let next = props.text;
     if (dirty.current) {
@@ -179,7 +192,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
       next = rebaseDraft(emitted.current, mine, props.text).text;
       dirty.current = false;
     }
-    split.current = splitTitleHeading(next, latest.current.title);
+    split.current = splitTitleHeading(next, props.title);
     source.current = split.current.body;
     const { from, to } = editor.state.selection;
     editor.commands.setContent(split.current.body, { contentType: "markdown", emitUpdate: false });
@@ -187,7 +200,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
     if (editor.isFocused) editor.commands.setTextSelection({ from: Math.min(from, size), to: Math.min(to, size) });
     emitted.current = next;
     if (next !== props.text) latest.current.onChange(next);
-  }, [editor, props.text, markdown]);
+  }, [editor, props.text, props.title, markdown]);
 
   useEffect(() => () => clearTimeout(timer.current), []);
 

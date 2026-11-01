@@ -12,9 +12,20 @@ let host: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const store = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value); },
+      removeItem: (key: string) => { store.delete(key); },
+      clear: () => store.clear(),
+      key: () => null,
+      length: 0,
+    },
+  });
   resetMockNotes();
   setMockNotesPassDelay(5);
-  localStorage.removeItem("bridge.notes.listOpen");
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -304,7 +315,7 @@ describe("Your words", () => {
     expect(field("Save status").textContent).toBe("Unsaved");
     await settle(900);
     // The person's own list style and line breaks are kept; only the new block is new.
-    expect(edit).toHaveBeenCalledWith({ id: page.note.id, text: `${page.markdown}\n\nmore`, baseSeq: page.seq });
+    expect(edit).toHaveBeenCalledWith({ id: page.note.id, text: `${page.markdown}\n\nmore`, baseSeq: page.seq, allowDeletingChildren: true });
     expect(field("Save status").textContent).toBe("Edited just now");
     expect(mockReadPage(page.note.id).markdown).toBe(`${page.markdown}\n\nmore`);
   });
@@ -367,6 +378,21 @@ describe("Your words", () => {
     await leave();
     // The heading stays in the file; the words under it are yours now.
     expect(mockReadPage(mockIdOf("Local-first sync libraries")).markdown).toBe("# Local-first sync libraries\n\nMine now\n");
+  });
+
+  it("saves when the person removes a child page block from the page", async () => {
+    const id = mockIdOf(ONBOARDING);
+    const child = mockCreatePage({ title: "Subpage", content: "x", parentId: id });
+    bridgeApi.editNotePage({ id, append: { content: `\n\n<page url="bridge://p/${child.id}">Subpage</page>\n`, position: "end" } });
+    const onError = vi.fn();
+    await render({ onError });
+    await openNote(ONBOARDING);
+    expect(host.textContent).toContain("Subpage");
+    await write("just words now");
+    await leave();
+    await settle(30);
+    expect(onError).not.toHaveBeenCalled();
+    expect(mockReadPage(id).markdown).toBe("just words now\n");
   });
 });
 
