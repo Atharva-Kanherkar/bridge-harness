@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   mockCaptureNote, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesAgentWrite, mockReadPage,
-  mockStructureNote, onMockNotesPageChanged, resetMockNotes, setMockNotesPassDelay,
+  mockPageHistory, mockReadVersion, mockRestoreVersion, mockStructureNote, onMockNotesPageChanged, resetMockNotes, setMockNotesPassDelay,
 } from "./notesMock";
 
 beforeEach(() => { resetMockNotes(); vi.useFakeTimers(); setMockNotesPassDelay(10); });
@@ -62,5 +62,20 @@ describe("mock notes", () => {
     const note = mockCaptureNote("x");
     mockNotesAgentWrite(note.id, "y");
     expect(changes).toEqual(["person", "agent:claude:session-1w"]);
+  });
+});
+
+describe("mock history", () => {
+  it("records who wrote each version and restores one", () => {
+    const note = mockCaptureNote("first words");
+    mockNotesAgentWrite(note.id, "agent line");
+    const versions = mockPageHistory(note.id).versions;
+    expect(versions.map(version => version.actor)).toEqual(["agent:claude:session-1w", "person"]);
+    expect(versions[0]).toMatchObject({ bodyChanged: true, added: 11, removed: 0 });
+    expect(mockReadVersion(note.id, 1).markdown).toBe("first words");
+    expect(mockRestoreVersion(note.id, 1).warnings).toEqual([]);
+    expect(mockReadPage(note.id).markdown).toBe("first words");
+    expect(mockPageHistory(note.id).versions[0].actor).toBe("person");
+    expect(mockRestoreVersion(note.id, 1).warnings).toEqual(["nothing changed"]);
   });
 });

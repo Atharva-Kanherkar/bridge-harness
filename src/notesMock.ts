@@ -5,7 +5,7 @@
 
 import { rebaseDraft } from "./notesDraft";
 import type { CreatePageParams, EditPageParams, ListNotesParams, NoteJobQueued, SaveNotesSettingsParams, SplitItemParams, StructureNoteParams, UpdateNoteParams } from "./protocol/generated/protocol";
-import type { Note, NoteEditResult, NoteJob, NotePage, NotePageChangedPayload, NotesList, NotesSettings, StructuredView } from "./types";
+import type { Note, NoteEditResult, NoteHistory, NoteJob, NotePage, NotePageChangedPayload, NotesList, NotesSettings, NoteVersionPage, StructuredView } from "./types";
 
 const ROOT = "/Users/you/Library/Application Support/Bridge/notes";
 const PERSON = "person";
@@ -14,6 +14,8 @@ interface MockPage {
   note: Note;
   /** The body at each seq: `history[seq - 1]`. */
   history: string[];
+  /** Who wrote each seq, when, and the title then. */
+  log: { actor: string; at: string; title: string | null }[];
   structured?: { view: Omit<StructuredView, "stale">; body: string };
   deleted: boolean;
 }
@@ -44,6 +46,7 @@ function live(id: string): MockPage {
 function commit(page: MockPage, body: string, actor: string, props: Partial<Note> = {}) {
   page.history.push(body);
   page.note = { ...page.note, ...props, seq: page.history.length, preview: body.slice(0, 280), lastActor: actor, updatedAt: stamp() };
+  page.log.push({ actor, at: page.note.updatedAt, title: page.note.title ?? null });
   announce(page, actor);
 }
 
@@ -57,8 +60,10 @@ function make(body: string, actor: string, props: Partial<Note>): MockPage {
       ...props,
     },
     history: [body],
+    log: [],
     deleted: false,
   };
+  page.log.push({ actor, at: now, title: page.note.title ?? null });
   pages.unshift(page);
   announce(page, actor);
   return page;
@@ -251,6 +256,41 @@ export function mockSplitItem(params: SplitItemParams): Note {
   const item = page.structured?.view.items[params.itemIndex];
   if (!item) throw new Error("no such item");
   return clone(make(item.excerpt, PERSON, { title: item.title, kind: item.kind, sourceId: page.note.id }).note);
+}
+
+export function mockPageHistory(id: string): NoteHistory {
+  const page = live(id);
+  const versions = page.history.map((body, index) => {
+    const before = index ? page.history[index - 1] : "";
+    let head = 0;
+    while (head < before.length && head < body.length && before[head] === body[head]) head += 1;
+    let tail = 0;
+    while (tail < before.length - head && tail < body.length - head && before[before.length - 1 - tail] === body[body.length - 1 - tail]) tail += 1;
+    const entry = page.log[index];
+    return { seq: index + 1, actor: entry.actor, at: entry.at, bodyChanged: index === 0 ? body.length > 0 : body !== before, added: body.length - head - tail, removed: before.length - head - tail, title: entry.title };
+  });
+  return { versions: versions.reverse() };
+}
+
+export function mockReadVersion(id: string, seq: number): NoteVersionPage {
+  const page = live(id);
+  const markdown = page.history[seq - 1];
+  if (markdown === undefined) throw new Error("no such version");
+  const entry = page.log[seq - 1];
+  return { seq, actor: entry.actor, at: entry.at, title: entry.title, markdown };
+}
+
+export function mockRestoreVersion(id: string, seq: number): NoteEditResult {
+  const page = live(id);
+  const words = mockReadVersion(id, seq).markdown;
+  const changed = words !== page.history[page.history.length - 1];
+  if (changed) commit(page, words, PERSON);
+  return { note: clone(page.note), seq: page.note.seq, warnings: changed ? [] : ["nothing changed"] };
+}
+
+/** Back-date a version, so a test can lay out a history across time. */
+export function mockSetVersionTime(id: string, seq: number, at: string): void {
+  live(id).log[seq - 1].at = at;
 }
 
 export function mockNotesSettings(): NotesSettings {
