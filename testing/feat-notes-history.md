@@ -50,3 +50,21 @@ Anything that fails is fixed in this PR with a regression test, or reported as n
 
 ## Manual / cURL Tests
 - `bridge exec --json --data-dir <dir> --method notes/page_history --params '{"id":"<page>"}'` lists versions; `notes/restore_version` restores one.
+
+## Real-app results and the fix they call for
+
+Run on a fresh data dir through the browser client with real Claude and Codex chats:
+
+1. Pass: a Full-access Claude chat wrote "Top Local-First Sync Libraries"; it appeared live in an open Notes view after 57 s, written by that chat, with no card.
+2. Pass: edited it; History listed "You +31 −0" and "Claude … +1332 −0"; restoring brought the agent's words back.
+3. Fail: Ask mode has no working approval path for notes tools.
+   - Claude: Ask mode runs Claude Code with `permissionMode: "acceptEdits"` and no permission callback, so every tool that needs permission is refused with "Claude requested permissions to use mcp__bridge__notes_search, but you haven't granted it yet." No card appears, nothing is written, and even the read-only search is refused.
+   - Codex: asked for "my Bridge note", Codex chose its own Computer Use connector, and Bridge shows that connector's MCP approval as an unanswerable "Tool input required" card. Bridge Notes was never called; nothing was written.
+4. Pass: the docked Notes chat created "Child check" under the open page in 24 s.
+5. Pass: `/note buy a domain for the side project` in a chat landed in the Inbox, written by the person, with no model turn.
+6. Pass: Start with "No project" made a direct chat, Start with "Offsite demo" made a chat in that project; both tasks are `doing` with "Open chat".
+7. Pass: a real Structure pass (31 s, Haiku, $0.018 on `model_jobs`) ran as a hidden connector session; the chat list stayed at 7.
+
+**Fixed here:** in Ask mode the Claude sidecar allows the `bridge` server's read-only tools (`visualize`, `notes_search`, `notes_read`) without a prompt, since Bridge cannot show Claude's prompt and these change nothing. Notes writes stay refused in Ask mode. Test: `sidecar/claude-agent/test/options.mjs` "ask mode runs Bridge's read-only tools".
+
+**Not done (follow-up):** a real approval card for notes writes in Ask mode. Neither harness offers a path Bridge can render today: Claude has none, and Codex's MCP approvals render as unanswerable forms. The epic's original design fits: the core asks the person through Bridge's own approval card before a write from an Ask-mode chat, with the harness allowing the tool.
