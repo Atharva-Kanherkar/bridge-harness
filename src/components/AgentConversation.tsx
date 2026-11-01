@@ -967,7 +967,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // render through the normal path below so a turn that starts mid-fetch is
   // never hidden behind the skeleton.
   const historyPending = !!session && !preview && forestEntries === undefined;
-  if (historyPending && !visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton />;
+  if (historyPending && !visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton density={density} />;
   if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return empty ?? <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
   // A send is answered only by a user turn newer than the newest identical one
   // the chat already had when it was sent, so repeating "yes" or "continue"
@@ -1439,14 +1439,34 @@ function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: str
   return <Empty title={greeting.headline} copy={greeting.hint} parts={greeting.parts} />;
 }
 
-/// A quiet loading state for an existing chat. `forestEntries === undefined`
-/// means "not yet fetched"; `[]` means "fetched and empty" (a genuinely new
-/// chat) and keeps the greeting.
-function ChatHistorySkeleton() {
-  return <div role="status" aria-label="Loading conversation" className="absolute inset-0 grid place-items-center px-4">
-    <div className="inline-flex items-center gap-2 text-caption text-muted-foreground" aria-hidden="true">
-      <LoaderCircle size={12} className="animate-spin" />
-      <span>Opening conversation</span>
+/// Placeholder rows shaped like a transcript while an existing chat's history
+/// loads. `forestEntries === undefined` means "not yet fetched"; `[]` means
+/// "fetched and empty" (a genuinely new chat) and keeps the greeting. It sits
+/// in the transcript's own column and padding, so the real rows replace it in
+/// place. No copy: shimmer bars plus a screen-reader label.
+const SKELETON_ROWS: readonly { kind: "user" | "prose" | "tool"; bars: readonly string[]; delay: string }[] = [
+  { kind: "user", bars: ["w-2/5"], delay: "[animation-delay:0ms]" },
+  { kind: "prose", bars: ["w-full", "w-11/12", "w-3/5"], delay: "[animation-delay:90ms]" },
+  { kind: "tool", bars: ["w-1/3"], delay: "[animation-delay:180ms]" },
+  { kind: "prose", bars: ["w-10/12", "w-2/5"], delay: "[animation-delay:270ms]" },
+  { kind: "user", bars: ["w-1/3"], delay: "[animation-delay:360ms]" },
+  { kind: "prose", bars: ["w-full", "w-3/4"], delay: "[animation-delay:450ms]" },
+];
+
+function ChatHistorySkeleton({ density }: { density: "comfortable" | "compact" }) {
+  return <div role="status" aria-label="Loading conversation" className={cn("absolute inset-0 overflow-hidden animate-skeleton-in",
+    density === "compact" ? "px-3 pb-6 pt-3" : "px-4 py-5 pb-16 sm:px-8 sm:py-6")}>
+    <div className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5" aria-hidden="true">
+      {SKELETON_ROWS.map((row, index) => row.kind === "user"
+        ? <span key={index} data-skeleton-row="user" className={cn("skeleton-shimmer ml-auto block h-10 max-w-[85%] rounded-2xl", row.bars[0], row.delay)} />
+        : row.kind === "tool"
+          ? <span key={index} data-skeleton-row="tool" className="flex h-10 items-center gap-2.5 rounded-xl border border-border/70 px-3">
+            <span className={cn("skeleton-shimmer size-3.5 shrink-0 rounded", row.delay)} />
+            <span className={cn("skeleton-shimmer block h-2.5 rounded", row.bars[0], row.delay)} />
+          </span>
+          : <span key={index} data-skeleton-row="prose" className="flex flex-col gap-3 py-1">
+            {row.bars.map(width => <span key={width} className={cn("skeleton-shimmer block h-3 rounded", width, row.delay)} />)}
+          </span>)}
     </div>
     <span className="sr-only">Loading conversation</span>
   </div>;
