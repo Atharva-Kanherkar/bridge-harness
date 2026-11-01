@@ -17,6 +17,7 @@ import { Markdown } from "../Markdown";
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 import { PassPicker, PopoverAction, StartPicker, type StartChoice } from "./NotePickers";
+import { NoteHistoryDialog } from "./NoteHistoryDialog";
 import { NoteTasks } from "./NoteTasks";
 import { MenuDivider, Option, OptionList, Pill, Popover, StatusGlyph, useAutoGrow } from "./NotesUi";
 import { useNoteDraft, type DraftStatus } from "./useNoteDraft";
@@ -74,6 +75,7 @@ export function NotePageView(props: NotePageViewProps) {
   const draft = useNoteDraft(page, onSaved, onError);
   const [view, setView] = useState<"words" | "structured">("words");
   const [notice, setNotice] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => { draft.load(page); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -97,6 +99,12 @@ export function NotePageView(props: NotePageViewProps) {
       onChanged();
     } catch (error) { fail(error); }
   };
+  // A restore writes over the words, so anything typed is stored first and
+  // the restore merges on top of it like any other change.
+  const restore = async (seq: number) => {
+    if (!(await draft.flush())) return false;
+    try { await bridgeApi.restoreNoteVersion(note.id, seq); onChanged(); return true; } catch (error) { fail(error); return false; }
+  };
   const startSaved = async (target: Note, choice: StartChoice) => (await draft.flush()) && onStart(target, choice);
   const remove = async () => {
     try { await bridgeApi.deleteNote(note.id); onDeleted(); } catch (error) { fail(error); }
@@ -119,8 +127,10 @@ export function NotePageView(props: NotePageViewProps) {
       </nav>
       <span role="status" aria-label="Save status" className="shrink-0 px-2 text-[12px] text-muted-foreground">{draft.status === "saved" ? editedLabel(note.updatedAt) : STATUS_COPY[draft.status]}</span>
       {onToggleChat && <Pill aria-pressed={!!chatOpen} active={!!chatOpen} onClick={onToggleChat}>Ask AI</Pill>}
-      <MoreMenu note={note} taskCount={page.tasks.length} onDelete={() => void remove()} />
+      <MoreMenu note={note} taskCount={page.tasks.length} onHistory={() => setHistoryOpen(true)} onDelete={() => void remove()} />
     </header>
+
+    <NoteHistoryDialog page={page} open={historyOpen} chatTitle={chatTitle} onClose={() => setHistoryOpen(false)} onRestore={restore} />
 
     <article aria-label={noteDisplayTitle(note)} className="mx-auto w-full max-w-[44rem] flex-1 px-8 pb-24 pt-10">
       <TitleField note={note} onCommit={title => void update({ id: note.id, title })} />
@@ -272,7 +282,7 @@ function Author({ note, chatTitle, onOpenChat }: { note: Note; chatTitle: (id: s
   </Property>;
 }
 
-function MoreMenu({ note, taskCount, onDelete }: { note: Note; taskCount: number; onDelete: () => void }) {
+function MoreMenu({ note, taskCount, onHistory, onDelete }: { note: Note; taskCount: number; onHistory: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const close = () => { setOpen(false); setConfirming(false); };
@@ -291,8 +301,9 @@ function MoreMenu({ note, taskCount, onDelete }: { note: Note; taskCount: number
           </div>
         </div>
         : <>
+          <MenuButton onClick={() => { close(); onHistory(); }}>History</MenuButton>
           {note.path && <MenuButton onClick={() => { void navigator.clipboard?.writeText(note.path!); close(); }}>Copy file path</MenuButton>}
-          {note.path && <MenuDivider />}
+          <MenuDivider />
           <MenuButton destructive onClick={() => setConfirming(true)}>Delete page</MenuButton>
         </>}
     </Popover>

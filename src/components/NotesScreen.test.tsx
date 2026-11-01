@@ -230,6 +230,60 @@ describe("archive", () => {
   });
 });
 
+describe("history", () => {
+  const versionsList = () => document.querySelector("[aria-label='Versions list']")!;
+  const entryLabels = () => [...versionsList().querySelectorAll("button")].map(node => node.querySelector("span span.min-w-0")?.textContent);
+
+  it("shows who wrote each version and restores the agent's words", async () => {
+    await render();
+    await openNote("Local-first sync libraries");
+    const original = (await editWords()).value;
+    await typeInto(words(), original.replace("Three worth a look", "Two worth a look"));
+    await blur(words());
+    await settle(30);
+    await click(button("More"));
+    await click(button("History"));
+    await settle(30);
+    expect(entryLabels()).toEqual(["You", "Claude in Research sync engines"]);
+    expect(versionsList().querySelector("[aria-current='true']")?.textContent).toContain("Claude in Research sync engines");
+    const changes = document.querySelector("[aria-label='Changes']")!;
+    expect(changes.querySelector("[data-diff='removed']")?.textContent).toContain("Two worth a look");
+    expect(changes.querySelector("[data-diff='added']")?.textContent).toContain("Three worth a look");
+    await click(button("Restore this version", document));
+    await settle(60);
+    expect(document.querySelector("[aria-label='Versions list']")).toBeNull();
+    expect((await editWords()).value).toBe(original);
+    await blur(words());
+    await click(button("More"));
+    await click(button("History"));
+    await settle(30);
+    // The restore is the person's too, minutes after their edit: one run.
+    expect(entryLabels()).toEqual(["You", "Claude in Research sync engines"]);
+    expect(versionsList().querySelector("button")?.textContent).toContain("2 edits");
+  });
+
+  it("stores unsaved typing before a restore", async () => {
+    const edit = vi.spyOn(bridgeApi, "editNotePage");
+    const restore = vi.spyOn(bridgeApi, "restoreNoteVersion");
+    await render();
+    await openNote("Local-first sync libraries");
+    const original = (await editWords()).value;
+    await typeInto(words(), `${original}\nunsaved line`);
+    await blur(words());
+    await settle(30);
+    await typeInto(await editWords(), `${original}\nunsaved line\nand more`);
+    await click(button("More"));
+    await click(button("History"));
+    await settle(30);
+    await click(button("Restore this version", document));
+    await settle(60);
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(edit.mock.invocationCallOrder[1]).toBeLessThan(restore.mock.invocationCallOrder[0]);
+    expect((await editWords()).value).toBe(original);
+  });
+});
+
 describe("Your words", () => {
   it("shows the page byte for byte and saves edits with the seq they came from", async () => {
     const edit = vi.spyOn(bridgeApi, "editNotePage");
