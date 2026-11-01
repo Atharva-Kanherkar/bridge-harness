@@ -270,6 +270,8 @@ function AppContent() {
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
+  // Bumped by `toggle-notes-list` while Notes is open.
+  const [notesListToggle, setNotesListToggle] = useState(0);
   // Bumped by `capture-note`: Notes opens with its capture box focused.
   const [noteCaptureRequest, setNoteCaptureRequest] = useState(0);
   const [notesChatDefault, setNotesChatDefault] = useState<string | null>(null);
@@ -3036,6 +3038,9 @@ function AppContent() {
         setView("notes");
         setNoteCaptureRequest(value => value + 1);
         return;
+      case "toggle-notes-list":
+        if (view === "notes") setNotesListToggle(value => value + 1);
+        return;
       case "open-settings":
         setView("settings");
         return;
@@ -3316,6 +3321,7 @@ function AppContent() {
         sessions={visibleSessions}
         defaultHarness={notesDefaultHarness}
         captureRequest={noteCaptureRequest}
+        listToggleRequest={notesListToggle}
         onStartChat={startChatFromNote}
         onOpenChat={openSession}
         onError={setError}

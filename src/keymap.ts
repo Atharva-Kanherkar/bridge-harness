@@ -19,6 +19,7 @@ export type CommandId =
   | "open-projects"
   | "open-notes"
   | "capture-note"
+  | "toggle-notes-list"
   | "open-settings"
   | "toggle-sidebar"
   | "toggle-fullscreen"
@@ -103,6 +104,9 @@ export const SHORTCUTS: Shortcut[] = [
   // Held while typing: a thought arrives mid-sentence, in whatever box the
   // hands are in. ⌥ rewrites the printed key on macOS, so N is matched by code.
   { id: "capture-note", label: "Capture a note", group: "Navigation", chord: { key: "n", code: "KeyN", meta: true, alt: true }, whileTyping: true, menu: "Go", accelerator: "Alt+CmdOrCtrl+N" },
+  // Held while typing: the page editor is where the hands are when the list
+  // is in the way. Only the Notes view answers it.
+  { id: "toggle-notes-list", label: "Toggle the notes list", group: "View", chord: { key: "\\", code: "Backslash", meta: true }, whileTyping: true, displayKey: "\\" },
   { id: "open-settings", label: "Settings", group: "Navigation", chord: { key: ",", meta: true }, displayKey: ",", menu: "Bridge", accelerator: "CmdOrCtrl+," },
   { id: "toggle-sidebar", label: "Toggle the sidebar", group: "View", chord: { key: "b", meta: true }, menu: "View", accelerator: "CmdOrCtrl+B" },
   // ⌥⌘F rather than ⌃⌘F: the latter is macOS's own native-fullscreen binding,

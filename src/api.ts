@@ -18,9 +18,9 @@ import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, Summ
 import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryActivityEntry, MemoryInsightsResult, MemoryRecallStats } from "./types";
 import type { DiskDeleteResult, DiskEntry, DiskListing, DiskOverview, EmptyTrashResult } from "./types";
-import type { Note, NoteEditResult, NoteHistory, NotePage, NotePageChangedPayload, NotesList, NotesSettings, NoteVersionPage } from "./types";
+import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage } from "./types";
 import type { CreatePageParams, EditPageParams, ListNotesParams, NoteJobQueued, SaveNotesSettingsParams, UpdateNoteParams } from "./protocol/generated/protocol";
-import { mockCaptureNote, mockCreatePage, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesSettings, mockPageHistory, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged } from "./notesMock";
+import { mockCaptureNote, mockCreatePage, mockDeleteNote, mockEditPage, mockExtractTasks, mockFinishAsset, mockListNotes, mockNotesSettings, mockPageHistory, mockPutAssetPart, mockReadAsset, mockReadPage, mockReadVersion, mockRestoreVersion, mockSaveNotesSettings, mockSplitItem, mockStructureNote, mockUpdateNote, onMockNotesPageChanged, onMockNotesPassProgress } from "./notesMock";
 import { deriveRecallStats, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult, type ContextWindow, type ContextWindowsResult, type ForkSessionResult, type ResolveReferenceResult } from "./protocol/generated/protocol";
 import type { TurnImage, ArchivedChatsResult, AttributionSettings, DelegationNotifyLevel, DelegationNotifySettingsView, ChatSearchHit, ChatSearchSettings, ReviewerSettings, ReviewerSettingsResult, SearchChatsResult, WorkerSettings } from "./protocol/generated/protocol";
@@ -2467,6 +2467,18 @@ export const bridgeApi = {
     if (hasBackend()) return call("notes/restore_version", { id, seq });
     return mockRestoreVersion(id, seq);
   },
+  putNoteAssetPart: async (params: { uploadId: string | null; data: string }): Promise<NoteAssetPart> => {
+    if (hasBackend()) return call("notes/put_asset_part", params);
+    return mockPutAssetPart(params);
+  },
+  finishNoteAsset: async (params: { uploadId: string; mime: string }): Promise<NoteAsset> => {
+    if (hasBackend()) return call("notes/finish_asset", params);
+    return mockFinishAsset(params);
+  },
+  readNoteAsset: async (path: string): Promise<NoteAssetData> => {
+    if (hasBackend()) return call("notes/read_asset", { path });
+    return mockReadAsset(path);
+  },
   notesSettings: async (): Promise<NotesSettings> => {
     if (hasBackend()) return call("notes/get_notes_settings");
     return mockNotesSettings();
@@ -2478,6 +2490,10 @@ export const bridgeApi = {
   onNotesPageChanged: async (handler: (payload: NotePageChangedPayload) => void): Promise<UnlistenFn> => {
     if (hasBackend()) return subscribe<NotePageChangedPayload>("notes/page_changed", handler);
     return onMockNotesPageChanged(handler);
+  },
+  onNotesPassProgress: async (handler: (payload: NotePassProgressPayload) => void): Promise<UnlistenFn> => {
+    if (hasBackend()) return subscribe<NotePassProgressPayload>("notes/pass_progress", handler);
+    return onMockNotesPassProgress(handler);
   },
   listWorktrees: async (): Promise<WorktreeInventoryEntry[]> => {
     if (hasBackend()) return call("worktrees/list_worktrees");

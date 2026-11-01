@@ -1,18 +1,19 @@
 // One open page, drawn the way a page reads: a breadcrumb bar, a large title,
 // property rows, and Your words (the only text a person types and the only
-// text background AI never edits) rendered as a page until you click into it.
-// The opt-in Structured view sits beside it, and the page's tasks below.
-// Keyed by page id, so the draft starts fresh per page.
+// text background AI never edits) in a block editor. The opt-in Structured
+// view sits beside it, and the page's tasks below; both fill in live while
+// their pass streams. Keyed by page id, so the draft starts fresh per page.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, MoreHorizontal } from "lucide-react";
+import { ChevronRight, MoreHorizontal, PanelLeft } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../../connectorSurface";
 import { noteDisplayTitle, quoteText } from "../../notesDraft";
-import type { AdapterDescriptor, Note, NoteJob, NotePage, Session, StructuredView, Workspace } from "../../types";
+import { streamingStructure, streamingTasks, type StreamingStructure } from "../../notesPass";
+import type { AdapterDescriptor, Note, NoteJob, NotePage, NotePassProgressPayload, Session, StructuredView, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
+import { chordLabel } from "../../keymap";
 import { HarnessMark } from "../harnessMarks";
-import { Markdown } from "../Markdown";
 // clsx rather than cn: tailwind-merge does not know the text-ui and
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
@@ -20,6 +21,7 @@ import { PassPicker, PopoverAction, StartPicker, type StartChoice } from "./Note
 import { NoteHistoryDialog } from "./NoteHistoryDialog";
 import { NoteTasks } from "./NoteTasks";
 import { MenuDivider, Option, OptionList, Pill, Popover, StatusGlyph, useAutoGrow } from "./NotesUi";
+import { NoteEditor, type NoteEditorHandle } from "./editor/NoteEditor";
 import { useNoteDraft, type DraftStatus } from "./useNoteDraft";
 
 export const NOTE_KINDS = ["note", "idea", "task", "question"];
@@ -58,6 +60,13 @@ export interface NotePageViewProps {
   /** The Notes chat panel, when the host offers one. */
   chatOpen?: boolean;
   onToggleChat?: () => void;
+  /** The notes list beside the page, when it can collapse. */
+  listOpen?: boolean;
+  onToggleList?: () => void;
+  /** A page's current title, for child page blocks. */
+  pageTitle?: (id: string) => string | undefined;
+  /** Make a page under this one (the `/` menu's Page). */
+  onCreateChildPage?: () => Promise<{ id: string; title: string } | null>;
   onBack: () => void;
   onOpenPage: (id: string) => void;
   /** Something changed that the list and page should re-read. */
@@ -70,14 +79,29 @@ export interface NotePageViewProps {
 }
 
 export function NotePageView(props: NotePageViewProps) {
-  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, childPages = [], startingId, chatOpen, onToggleChat, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
+  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, childPages = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, onCreateChildPage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
   const { note } = page;
   const draft = useNoteDraft(page, onSaved, onError);
+  const editor = useRef<NoteEditorHandle>(null);
   const [view, setView] = useState<"words" | "structured">("words");
   const [notice, setNotice] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [progress, setProgress] = useState<Partial<Record<string, NotePassProgressPayload>>>({});
 
-  useEffect(() => { draft.load(page); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Typing the editor has not handed over yet goes to the draft first, so a
+  // fresh read never mistakes it for a page with nothing unsaved.
+  useEffect(() => { editor.current?.commit(); draft.load(page); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    void bridgeApi.onNotesPassProgress(payload => {
+      if (payload.pageId === note.id) setProgress(current => ({ ...current, [payload.kind]: payload }));
+    }).then(stop => { if (alive) unlisten = stop; else stop(); });
+    return () => { alive = false; unlisten?.(); };
+  }, [note.id]);
+  /** Everything typed, stored. Passes, chats and restores read the stored page. */
+  const flush = () => { editor.current?.commit(); return draft.flush(); };
 
   const fail = (error: unknown) => onError(error instanceof Error ? error.message : String(error));
   const update = async (patch: Parameters<typeof bridgeApi.updateNote>[0]) => {
@@ -85,7 +109,7 @@ export function NotePageView(props: NotePageViewProps) {
   };
   // Passes and chats read the stored page, so everything typed goes first.
   const run = async (kind: "structure" | "tasks", harness: string) => {
-    if (!(await draft.flush())) return;
+    if (!(await flush())) return;
     try {
       if (kind === "structure") { await bridgeApi.structureNote(note.id, harness); setView("structured"); }
       else await bridgeApi.extractNoteTasks(note.id, harness);
@@ -102,10 +126,10 @@ export function NotePageView(props: NotePageViewProps) {
   // A restore writes over the words, so anything typed is stored first and
   // the restore merges on top of it like any other change.
   const restore = async (seq: number) => {
-    if (!(await draft.flush())) return false;
+    if (!(await flush())) return false;
     try { await bridgeApi.restoreNoteVersion(note.id, seq); onChanged(); return true; } catch (error) { fail(error); return false; }
   };
-  const startSaved = async (target: Note, choice: StartChoice) => (await draft.flush()) && onStart(target, choice);
+  const startSaved = async (target: Note, choice: StartChoice) => (await flush()) && onStart(target, choice);
   const remove = async () => {
     try { await bridgeApi.deleteNote(note.id); onDeleted(); } catch (error) { fail(error); }
   };
@@ -113,10 +137,21 @@ export function NotePageView(props: NotePageViewProps) {
   const structureJob = latest(jobs, "structure");
   const tasksJob = latest(jobs, "tasks");
   const busy = (job?: NoteJob) => job?.status === "pending" || job?.status === "running";
+  /** The reply a running pass has streamed so far; none once its job settles. */
+  const streamed = (kind: "structure" | "tasks", job?: NoteJob) => {
+    const live = progress[kind];
+    if (!live) return null;
+    const settled = jobs.some(candidate => candidate.id === live.jobId && !busy(candidate));
+    const superseded = job && job.id !== live.jobId && busy(job);
+    return settled || superseded ? null : live.text;
+  };
+  const structureText = streamed("structure", structureJob);
+  const tasksText = streamed("tasks", tasksJob);
 
   return <div className="flex min-h-full flex-col">
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1 bg-background px-3">
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-[13px]">
+        {onToggleList && !listOpen && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onToggleList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
         <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
         {parent && <>
           <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
@@ -133,7 +168,7 @@ export function NotePageView(props: NotePageViewProps) {
     <NoteHistoryDialog page={page} open={historyOpen} chatTitle={chatTitle} onClose={() => setHistoryOpen(false)} onRestore={restore} />
 
     <article aria-label={noteDisplayTitle(note)} className="mx-auto w-full max-w-[44rem] flex-1 px-8 pb-24 pt-10">
-      <TitleField note={note} onCommit={title => void update({ id: note.id, title })} />
+      <TitleField note={note} onCommit={title => void update({ id: note.id, title })} onEnter={() => editor.current?.focus("start")} />
 
       <dl className="m-0 mt-5">
         <Property label="Status">
@@ -185,9 +220,21 @@ export function NotePageView(props: NotePageViewProps) {
       })}
       {notice && <p role="status" className="m-0 mt-3 text-[13px] text-muted-foreground">{notice}</p>}
 
-      {view === "words"
-        ? <YourWords title={note.title} text={draft.text} changedUnderneath={draft.changedUnderneath} onChange={draft.setText} onLeave={() => void draft.flush()} />
-        : <StructuredPanel view={page.structured ?? null} busy={busy(structureJob)} onSplit={index => void split(index)} />}
+      {/* Hidden rather than unmounted, so the editor keeps its place and undo. */}
+      <div hidden={view !== "words"} className="mt-6">
+        {draft.changedUnderneath && <p role="status" className="m-0 mb-4 rounded-lg bg-muted px-3 py-2 text-[13px] text-foreground">This page changed while you were typing. Your typing is kept and merges when it saves.</p>}
+        <NoteEditor
+          ref={editor}
+          text={draft.text}
+          title={note.title ?? null}
+          onChange={draft.setText}
+          onLeave={() => void draft.flush()}
+          pages={{ title: id => pageTitle?.(id), open: onOpenPage }}
+          onCreatePage={async () => onCreateChildPage ? (await flush()) ? onCreateChildPage() : null : null}
+          onError={onError}
+        />
+      </div>
+      {view === "structured" && <StructuredPanel view={page.structured ?? null} busy={busy(structureJob)} streaming={structureText === null ? null : streamingStructure(structureText)} onSplit={index => void split(index)} />}
 
       {childPages.length > 0 && <section aria-label="Pages" className="mt-12">
         <div className="flex items-baseline gap-2 border-b border-border pb-2">
@@ -206,6 +253,7 @@ export function NotePageView(props: NotePageViewProps) {
 
       <NoteTasks
         tasks={page.tasks}
+        drafts={tasksText === null ? [] : streamingTasks(tasksText)}
         adapters={adapters}
         workspaces={workspaces}
         sessions={sessions}
@@ -221,7 +269,7 @@ export function NotePageView(props: NotePageViewProps) {
   </div>;
 }
 
-function TitleField({ note, onCommit }: { note: Note; onCommit: (title: string) => void }) {
+function TitleField({ note, onCommit, onEnter }: { note: Note; onCommit: (title: string) => void; onEnter: () => void }) {
   const [title, setTitle] = useState(note.title ?? "");
   const [editing, setEditing] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -236,7 +284,7 @@ function TitleField({ note, onCommit }: { note: Note; onCommit: (title: string) 
     onFocus={() => setEditing(true)}
     onChange={event => setTitle(event.target.value.replace(/\n/g, " "))}
     onBlur={() => { setEditing(false); if (title.trim() !== (note.title ?? "")) onCommit(title); }}
-    onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
+    onKeyDown={event => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur(); onEnter(); } }}
     className="block w-full resize-none overflow-hidden bg-transparent text-[2.25rem] font-bold leading-[1.2] tracking-[-0.025em] text-foreground outline-none placeholder:text-foreground/25"
   />;
 }
@@ -314,52 +362,17 @@ function MenuButton({ destructive = false, onClick, children }: { destructive?: 
   return <button type="button" onClick={onClick} className={clsx("flex h-8 w-full items-center rounded-lg px-2.5 text-left text-[13px] transition-colors hover:bg-accent", destructive ? "text-destructive" : "text-foreground")}>{children}</button>;
 }
 
-/** Your words: the rendered page until clicked, then its Markdown in place. */
-function YourWords({ title, text, changedUnderneath, onChange, onLeave }: { title?: string | null; text: string; changedUnderneath: boolean; onChange: (text: string) => void; onLeave: () => void }) {
-  const [editing, setEditing] = useState(false);
-  const box = useRef<HTMLTextAreaElement>(null);
-  const writing = editing || !text.trim();
-  useAutoGrow(box, text, writing);
-  useEffect(() => {
-    const field = box.current;
-    if (!editing || !field) return;
-    field.focus();
-    field.setSelectionRange(field.value.length, field.value.length);
-  }, [editing]);
-  // A page that opens with its own title as a heading would say it twice.
-  const heading = /^#\s+(.+)\n*/.exec(text);
-  const shown = heading && title && heading[1].trim() === title.trim() ? text.slice(heading[0].length) : text;
-  return <div className="mt-6">
-    {changedUnderneath && <p role="status" className="m-0 mb-4 rounded-lg bg-muted px-3 py-2 text-[13px] text-foreground">This page changed while you were typing. Your typing is kept and merges when it saves.</p>}
-    {writing
-      ? <textarea
-        ref={box}
-        aria-label="Your words"
-        value={text}
-        onChange={event => onChange(event.target.value)}
-        onBlur={() => { onLeave(); setEditing(false); }}
-        spellCheck
-        placeholder="Write anything. Markdown works."
-        className="block min-h-32 w-full resize-none overflow-hidden bg-transparent text-[15px] leading-[1.75] text-foreground outline-none placeholder:text-faint"
-      />
-      : <div
-        role="button"
-        tabIndex={0}
-        aria-label="Edit your words"
-        title="Click to edit"
-        onClick={event => { if (!(event.target as HTMLElement).closest("a,button")) setEditing(true); }}
-        onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); setEditing(true); } }}
-        className="note-md -mx-3 cursor-text rounded-xl px-3 py-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <Markdown text={shown} />
-      </div>}
-  </div>;
-}
-
-function StructuredPanel({ view, busy, onSplit }: { view: StructuredView | null; busy: boolean; onSplit: (index: number) => void }) {
+function StructuredPanel({ view, busy, streaming, onSplit }: { view: StructuredView | null; busy: boolean; streaming: StreamingStructure | null; onSplit: (index: number) => void }) {
+  if (streaming?.title || streaming?.summary) return <StreamingPanel view={streaming} />;
+  if (busy) {
+    return <div role="status" className="mt-10 text-center">
+      <p className="m-0 inline-flex items-center gap-2 text-[15px] font-medium text-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Reading your words…</p>
+      <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-muted-foreground">The structured view fills in here as it is written. Your words stay exactly as they are.</p>
+    </div>;
+  }
   if (!view) {
     return <div className="mt-10 text-center">
-      <p className="m-0 text-[15px] font-medium text-foreground">{busy ? "Structuring…" : "No structured view yet"}</p>
+      <p className="m-0 text-[15px] font-medium text-foreground">No structured view yet</p>
       <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-muted-foreground">Structure is opt-in. Click Structure above and it builds a second view from your words, without changing them.</p>
     </div>;
   }
@@ -383,6 +396,30 @@ function StructuredPanel({ view, busy, onSplit }: { view: StructuredView | null;
           <blockquote className="m-0 mt-0.5 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(item.excerpt)}</blockquote>
         </div>
         <button type="button" aria-label={`Split "${item.title}" into a note`} onClick={() => onSplit(index)} className="shrink-0 rounded-full px-2.5 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Split into note</button>
+      </li>)}
+    </ol>}
+  </section>;
+}
+
+/** A Structure reply as it is written: each field once it can be read. */
+function StreamingPanel({ view }: { view: StreamingStructure }) {
+  const caret = <span aria-hidden="true" className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[2px] animate-pulse bg-foreground" />;
+  const writing = !view.items.length;
+  return <section aria-label="Structured view" aria-busy="true" className="mt-6">
+    <p role="status" className="m-0 mb-4 inline-flex items-center gap-2 text-[12px] text-muted-foreground"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-foreground" />Structuring…</p>
+    {view.title && <h2 className="m-0 text-[1.375rem] font-semibold leading-snug tracking-[-0.015em] text-foreground">{view.title}{!view.summary && caret}</h2>}
+    {(view.kind || view.tags.length > 0) && <p className="m-0 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+      {view.kind && <span className="text-foreground">{capital(view.kind)}</span>}
+      {view.tags.map(tag => <span key={tag}>#{tag}</span>)}
+    </p>}
+    {view.summary && <p className="m-0 mt-4 text-[15px] leading-[1.7] text-foreground">{view.summary}{writing && caret}</p>}
+    {view.items.length > 0 && <ol className="m-0 mt-6 list-none divide-y divide-border border-t border-border p-0">
+      {view.items.map((item, index) => <li key={index} className="flex items-start gap-3 py-3">
+        <span className="w-14 shrink-0 pt-0.5 text-[12px] text-muted-foreground">{capital(item.kind)}</span>
+        <div className="min-w-0 flex-1">
+          <p className="m-0 text-[14px] font-medium leading-6 text-foreground">{item.title}{index === view.items.length - 1 && caret}</p>
+          {item.excerpt && <blockquote className="m-0 mt-0.5 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(item.excerpt)}</blockquote>}
+        </div>
       </li>)}
     </ol>}
   </section>;

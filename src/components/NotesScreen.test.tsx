@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import { mockCreatePage, mockListNotes, mockNotesAgentWrite, mockReadPage, resetMockNotes, setMockNotesPassDelay } from "../notesMock";
 import type { AdapterDescriptor, Session, Workspace } from "../types";
+import type { Editor } from "@tiptap/core";
 import { NotesScreen, type NotesScreenProps } from "./NotesScreen";
 
 let host: HTMLDivElement;
@@ -13,6 +14,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   resetMockNotes();
   setMockNotesPassDelay(5);
+  localStorage.removeItem("bridge.notes.listOpen");
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -71,13 +73,14 @@ const press = async (node: HTMLElement, key: string, init: KeyboardEventInit = {
 const blur = async (node: HTMLElement) => { await act(async () => { node.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); }); await settle(); };
 const rowTitles = () => [...host.querySelectorAll("ul[aria-label='Notes'] li button")].map(node => node.textContent ?? "");
 const openNote = async (title: string) => click(buttons(host.querySelector("ul[aria-label='Notes']")!).find(node => node.textContent?.startsWith(title)));
-const words = () => field<HTMLTextAreaElement>("Your words");
-/** Your words opens rendered; a click puts its Markdown in the editor. */
-const editWords = async () => {
-  const page = host.querySelector("[aria-label='Edit your words']");
-  if (page) await click(page);
-  return words();
-};
+/** The page editor. */
+const editor = () => (host.querySelector(".note-editor") as HTMLElement & { editor: Editor }).editor;
+/** Your words as the editor shows them, in its Markdown. */
+const shown = () => editor().getMarkdown().replace(/\s+$/, "");
+/** Replace Your words with `markdown`, as if typed. */
+const write = async (markdown: string) => { await act(async () => { editor().commands.setContent(markdown, { contentType: "markdown" }); }); };
+/** Leave the editor: what was typed goes to the draft, which saves. */
+const leave = async () => { await act(async () => { editor().view.dom.dispatchEvent(new FocusEvent("blur")); }); await settle(); };
 const optionLabels = (list: Element) => [...list.querySelectorAll("[role='option'] [data-option-label]")].map(node => node.textContent);
 const selectedLabel = (list: Element) => list.querySelector("[role='option'][aria-selected='true'] [data-option-label]")?.textContent;
 const pick = async (list: Element, label: string) => click([...list.querySelectorAll("[role='option']")].find(node => node.querySelector("[data-option-label]")?.textContent === label));
@@ -108,7 +111,8 @@ describe("capture", () => {
     expect(bridgeApi.captureNote).toHaveBeenCalledWith(typed);
     expect(rowTitles()[0]).toContain("teh idea:");
     await openNote("teh idea:");
-    expect((await editWords()).value).toBe(typed);
+    expect(editor().getText()).toContain("teh idea:");
+    expect(mockReadPage(mockIdOf("teh idea:")).markdown).toBe(typed);
     expect(structure).not.toHaveBeenCalled();
     expect(tasks).not.toHaveBeenCalled();
   });
@@ -237,9 +241,9 @@ describe("history", () => {
   it("shows who wrote each version and restores the agent's words", async () => {
     await render();
     await openNote("Local-first sync libraries");
-    const original = (await editWords()).value;
-    await typeInto(words(), original.replace("Three worth a look", "Two worth a look"));
-    await blur(words());
+    const original = shown();
+    await write(original.replace("Three worth a look", "Two worth a look"));
+    await leave();
     await settle(30);
     await click(button("More"));
     await click(button("History"));
@@ -252,8 +256,8 @@ describe("history", () => {
     await click(button("Restore this version", document));
     await settle(60);
     expect(document.querySelector("[aria-label='Versions list']")).toBeNull();
-    expect((await editWords()).value).toBe(original);
-    await blur(words());
+    expect(shown()).toBe(original);
+    await leave();
     await click(button("More"));
     await click(button("History"));
     await settle(30);
@@ -267,11 +271,11 @@ describe("history", () => {
     const restore = vi.spyOn(bridgeApi, "restoreNoteVersion");
     await render();
     await openNote("Local-first sync libraries");
-    const original = (await editWords()).value;
-    await typeInto(words(), `${original}\nunsaved line`);
-    await blur(words());
+    const original = shown();
+    await write(`${original}\n\nunsaved line`);
+    await leave();
     await settle(30);
-    await typeInto(await editWords(), `${original}\nunsaved line\nand more`);
+    await write(`${original}\n\nunsaved line\n\nand more`);
     await click(button("More"));
     await click(button("History"));
     await settle(30);
@@ -280,43 +284,49 @@ describe("history", () => {
     expect(edit).toHaveBeenCalledTimes(2);
     expect(restore).toHaveBeenCalledTimes(1);
     expect(edit.mock.invocationCallOrder[1]).toBeLessThan(restore.mock.invocationCallOrder[0]);
-    expect((await editWords()).value).toBe(original);
+    expect(shown()).toBe(original);
   });
 });
 
 describe("Your words", () => {
-  it("shows the page byte for byte and saves edits with the seq they came from", async () => {
+  it("keeps the blocks you did not touch byte for byte and saves edits with the seq they came from", async () => {
     const edit = vi.spyOn(bridgeApi, "editNotePage");
     await render();
     await openNote(ONBOARDING);
     const page = mockReadPage(mockIdOf(ONBOARDING));
-    expect((await editWords()).value).toBe(page.markdown);
-    await typeInto(words(), `${page.markdown}\nmore`);
+    expect(editor().getText()).toContain("add a skip button");
+    // Opening and leaving changes nothing.
+    await leave();
+    await settle(900);
+    expect(edit).not.toHaveBeenCalled();
+    await write(`${shown()}\n\nmore`);
+    await settle(300);
     expect(field("Save status").textContent).toBe("Unsaved");
     await settle(900);
-    expect(edit).toHaveBeenCalledWith({ id: page.note.id, text: `${page.markdown}\nmore`, baseSeq: page.seq });
+    // The person's own list style and line breaks are kept; only the new block is new.
+    expect(edit).toHaveBeenCalledWith({ id: page.note.id, text: `${page.markdown}\n\nmore`, baseSeq: page.seq });
     expect(field("Save status").textContent).toBe("Edited just now");
-    expect(mockReadPage(page.note.id).markdown).toBe(`${page.markdown}\nmore`);
+    expect(mockReadPage(page.note.id).markdown).toBe(`${page.markdown}\n\nmore`);
   });
 
   it("reloads on an agent write, and keeps unsaved typing through one", async () => {
     await render();
     await openNote(ONBOARDING);
     const id = mockIdOf(ONBOARDING);
-    mockNotesAgentWrite(id, "agent line one");
+    mockNotesAgentWrite(id, "\nagent line one\n");
     await settle(60);
-    expect((await editWords()).value).toContain("agent line one");
+    expect(shown()).toContain("agent line one");
 
-    const before = words().value;
-    await typeInto(words(), `MINE ${before}`);
-    mockNotesAgentWrite(id, "agent line two");
+    const before = shown();
+    await write(`MINE ${before}`);
+    mockNotesAgentWrite(id, "\nagent line two\n");
     await settle(60);
-    expect(words().value).toBe(`MINE ${before}`);
+    expect(shown()).toBe(`MINE ${before}`);
     expect(host.textContent).toContain("This page changed while you were typing");
-    await blur(words());
+    await leave();
     await settle(20);
-    expect((await editWords()).value).toBe(`MINE ${before}\nagent line two`);
-    expect(mockReadPage(id).markdown).toBe(`MINE ${before}\nagent line two`);
+    expect(shown()).toMatch(/^MINE need to fix[\s\S]*agent line one[\s\S]*agent line two/);
+    expect(mockReadPage(id).markdown).toMatch(/^MINE need to fix[\s\S]*agent line one[\s\S]*agent line two/);
     expect(host.textContent).not.toContain("This page changed while you were typing");
   });
 
@@ -341,21 +351,96 @@ describe("Your words", () => {
     await act(async () => { held[0].resolve(); });
     await settle();
     vi.restoreAllMocks();
-    expect((await editWords()).value).toContain("agent line two");
+    expect(shown()).toContain("agent line two");
   });
 
   it("names the agent and chat that wrote a page, which stays editable", async () => {
     await render();
     await openNote("Local-first sync libraries");
     expect(host.textContent).toContain("Written by Claude in Research sync engines");
-    // Rendered as a page, without its leading heading repeating the title.
-    const rendered = host.querySelector(".note-md")!;
+    // Drawn as a page, without its leading heading repeating the title.
+    const rendered = host.querySelector(".note-editor")!;
     expect(rendered.querySelector("strong")?.textContent).toBe("Yjs");
     expect([...rendered.querySelectorAll("h1")].map(heading => heading.textContent)).not.toContain("Local-first sync libraries");
     expect(host.querySelector("ul[aria-label='Notes'] [aria-current] svg[data-harness='claude']")).not.toBeNull();
-    await typeInto(await editWords(), "# Mine now\n");
-    await blur(words());
-    expect(mockReadPage(mockIdOf("Local-first sync libraries")).markdown).toBe("# Mine now\n");
+    await write("Mine now");
+    await leave();
+    // The heading stays in the file; the words under it are yours now.
+    expect(mockReadPage(mockIdOf("Local-first sync libraries")).markdown).toBe("# Local-first sync libraries\n\nMine now\n");
+  });
+});
+
+describe("notes list", () => {
+  const list = () => host.querySelector("aside[aria-label='Notes list']")!;
+
+  it("collapses and expands from its buttons, remembers it, and follows the shortcut", async () => {
+    const given = await render();
+    expect(list().className).toContain("md:flex");
+    await click(button("Hide the notes list"));
+    expect(list().className).toContain("md:hidden");
+    expect(localStorage.getItem("bridge.notes.listOpen")).toBe("0");
+    await click(button("Show the notes list"));
+    expect(list().className).toContain("md:flex");
+
+    // ⌘\ reaches the screen as a new request number.
+    await act(async () => { root.render(<NotesScreen {...given} listToggleRequest={1} />); });
+    expect(list().className).toContain("md:hidden");
+    // Collapsed, an open page offers the list back from its header.
+    act(() => root.unmount());
+    root = createRoot(host);
+    await render();
+    expect(list().className).toContain("md:hidden");
+    await act(async () => { await bridgeApi.listNotes({}); });
+    await click(buttons(list()).find(node => node.textContent?.startsWith(ONBOARDING)));
+    await click(button("Show the notes list", host.querySelector("nav[aria-label='Breadcrumb']")!));
+    expect(list().className).toContain("md:flex");
+    expect(localStorage.getItem("bridge.notes.listOpen")).toBe("1");
+  });
+});
+
+describe("streaming passes", () => {
+  it("says it is reading, then fills the Structured tab while Structure runs", async () => {
+    setMockNotesPassDelay(300);
+    await render();
+    await openNote(ONBOARDING);
+    await click(button("Structure"));
+    await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
+    await settle(30);
+    expect(host.textContent).toContain("Reading your words…");
+    expect(host.textContent).not.toContain("Structure is opt-in");
+    await settle(150);
+    const live = host.querySelector("section[aria-label='Structured view'][aria-busy='true']");
+    expect(live?.querySelector("h2")?.textContent).toContain("need to fix the onbaording flow");
+    expect(live?.textContent).not.toContain("Split into note");
+    await settle(300);
+    expect(host.querySelector("section[aria-label='Structured view'][aria-busy='true']")).toBeNull();
+    expect(host.querySelector("section[aria-label='Structured view']")?.textContent).toContain("Split into note");
+  });
+
+  it("shows the tasks Turn into tasks is writing as drafts until it settles", async () => {
+    setMockNotesPassDelay(300);
+    await render();
+    await openNote(ONBOARDING);
+    await click(button("Turn into tasks"));
+    await click(button("Turn into tasks", host.querySelector("[aria-label='Turn into tasks options']")!));
+    await settle(250);
+    const drafts = [...host.querySelectorAll("section[aria-label='Tasks'] li[data-draft]")].map(item => item.getAttribute("aria-label"));
+    expect(drafts.length).toBeGreaterThan(0);
+    expect(drafts[0]).toContain("need to fix the onbaording flow");
+    expect(host.querySelector("section[aria-label='Tasks']")?.textContent).toContain("Finding tasks…");
+    await settle(300);
+    expect(host.querySelectorAll("li[data-draft]")).toHaveLength(0);
+    expect(host.querySelector("section[aria-label='Tasks']")?.textContent).toContain("add a skip button");
+  });
+
+  it("ignores progress for another page", async () => {
+    setMockNotesPassDelay(300);
+    await render();
+    await openNote("Local-first sync libraries");
+    await bridgeApi.structureNote(mockIdOf(ONBOARDING), "claude");
+    await settle(250);
+    expect(host.querySelector("section[aria-label='Structured view']")).toBeNull();
+    expect(host.querySelectorAll("li[data-draft]")).toHaveLength(0);
   });
 });
 
@@ -363,8 +448,7 @@ describe("Structure", () => {
   it("adds a second view with quotes, leaves your words alone, and goes stale on an edit", async () => {
     await render();
     await openNote(ONBOARDING);
-    const original = (await editWords()).value;
-    await blur(words());
+    const original = shown();
     await click(button("Structure"));
     const picker = host.querySelector("[aria-label='Structure options']")!;
     const harnesses = picker.querySelector("[role='listbox'][aria-label='Harness']")!;
@@ -376,10 +460,10 @@ describe("Structure", () => {
     expect(view.textContent).toContain("Split into note");
     expect([...view.querySelectorAll("blockquote")].map(quote => quote.textContent)).toContain("add a skip button");
     await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent === "Your words"));
-    expect((await editWords()).value).toBe(original);
+    expect(shown()).toBe(original);
 
-    await typeInto(words(), `${original}\nnew thought`);
-    await blur(words());
+    await write(`${original}\n\nnew thought`);
+    await leave();
     await click(buttons().find(node => node.getAttribute("role") === "tab" && node.textContent?.startsWith("Structured")));
     expect(host.textContent).toContain("Your words changed since this was built.");
     expect(button("Re-structure")?.getAttribute("aria-label")).toBe("Structure");
@@ -399,10 +483,10 @@ describe("Structure", () => {
     });
     await render();
     await openNote(ONBOARDING);
-    const original = (await editWords()).value;
-    await typeInto(words(), `${original}\nfirst thought`);
-    await blur(words());
-    await typeInto(await editWords(), `${original}\nfirst thought\nLATEST THOUGHT`);
+    const original = shown();
+    await write(`${original}\n\nfirst thought`);
+    await leave();
+    await write(`${original}\n\nfirst thought\n\nLATEST THOUGHT`);
     await click(button("Structure"));
     await click(button("Structure", host.querySelector("[aria-label='Structure options']")!));
     expect(structure).not.toHaveBeenCalled();
@@ -501,8 +585,8 @@ describe("tasks and Start", () => {
   it("starts a chat with the latest words, even before they autosave", async () => {
     const given = await render();
     await openNote(ONBOARDING);
-    const original = (await editWords()).value;
-    await typeInto(words(), `${original}\nLATEST CHAT REQUIREMENT`);
+    const original = shown();
+    await write(`${original}\n\nLATEST CHAT REQUIREMENT`);
     await click(button("Start a chat"));
     await click(button("Start", host.querySelector("[aria-label='Start a chat']")!));
     await settle(60);

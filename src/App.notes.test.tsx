@@ -52,7 +52,8 @@ const selectedHarness = (scope: Element) => scope.querySelector("[role='listbox'
 
 async function openNotes() {
   await click(byLabel("Notes", container.querySelector("nav[aria-label='Main navigation']")!));
-  await wait(50);
+  // The screen (and its editor) is a lazy chunk: wait for it, not a fixed time.
+  for (let tries = 0; tries < 100 && !container.querySelector("aside[aria-label='Notes list']"); tries += 1) await wait(50);
 }
 
 /** A page titled `title`, opened. */

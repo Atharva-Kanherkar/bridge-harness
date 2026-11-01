@@ -45,6 +45,9 @@ export type {
   AgentDefinition,
   Note,
   NoteEditResult,
+  NoteAsset,
+  NoteAssetData,
+  NoteAssetPart,
   NoteHistory,
   NoteJob,
   NotePage,
@@ -248,6 +251,8 @@ export interface MemoryChangedPayload { scopeKey: string }
 /** `notes/page_changed`: a page committed a change. A refetch hint; `actor`
  *  is `person`, `agent:<harness>:<session>`, `file-import` or `model:*`. */
 export interface NotePageChangedPayload { pageId: string; actor: string; seq: number }
+/** `notes/pass_progress`: a Structure or Turn into tasks reply so far. */
+export interface NotePassProgressPayload { jobId: string; pageId: string; kind: string; text: string }
 
 /** `session-startup` cold-start phase, observed at a real adapter launch
  *  boundary. Transient and best-effort: never replayed, never a timer. */
