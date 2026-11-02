@@ -65,8 +65,13 @@ export interface NotePageViewProps {
   onToggleList?: () => void;
   /** A page's current title, for child page blocks. */
   pageTitle?: (id: string) => string | undefined;
-  /** Make a page under this one (the `/` menu's Page). */
-  onCreateChildPage?: () => Promise<{ id: string; title: string } | null>;
+  /** Every page in the space, for the [[ suggestions. */
+  notes?: Note[];
+  /** Open the page titled so, making it when none exists. */
+  onOpenByTitle?: (title: string) => void;
+  /** Make a page: the `/` menu makes one under this one (null title), a
+   *  [[ menu makes one named so at the top level. */
+  onCreatePage?: (parentId: string | null, title: string | null) => Promise<{ id: string; title: string } | null>;
   onBack: () => void;
   onOpenPage: (id: string) => void;
   /** Something changed that the list and page should re-read. */
@@ -79,7 +84,7 @@ export interface NotePageViewProps {
 }
 
 export function NotePageView(props: NotePageViewProps) {
-  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, childPages = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, onCreateChildPage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
+  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, childPages = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, notes, onOpenByTitle, onCreatePage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
   const { note } = page;
   const draft = useNoteDraft(page, onSaved, onError);
   const editor = useRef<NoteEditorHandle>(null);
@@ -229,8 +234,14 @@ export function NotePageView(props: NotePageViewProps) {
           title={note.title ?? null}
           onChange={draft.setText}
           onLeave={() => void draft.flush()}
-          pages={{ title: id => pageTitle?.(id), open: onOpenPage }}
-          onCreatePage={async () => onCreateChildPage ? (await flush()) ? onCreateChildPage() : null : null}
+          pages={{
+            title: id => pageTitle?.(id),
+            open: onOpenPage,
+            openByTitle: onOpenByTitle,
+            pages: () => (notes ?? []).filter(candidate => candidate.kind !== "task").map(candidate => ({ id: candidate.id, title: noteDisplayTitle(candidate) })),
+            createByTitle: async title => (onCreatePage && (await flush())) ? onCreatePage(null, title) : null,
+          }}
+          onCreatePage={async title => onCreatePage ? (await flush()) ? onCreatePage(title === null ? note.id : null, title) : null : null}
           onError={onError}
         />
       </div>

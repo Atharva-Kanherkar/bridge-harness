@@ -662,8 +662,60 @@ describe("projects stay optional", () => {
   });
 });
 
-function mockIdOf(text: string): string {
-  const note = mockListNotes({ includeArchived: true }).notes.find(item => !item.parentId && `${item.title ?? ""}\n${item.preview}`.includes(text));
+describe("links between pages", () => {
+  const rename = async (from: string, to: string) => {
+    await openNote(from);
+    const title = field<HTMLTextAreaElement>("Title");
+    await typeInto(title, to);
+    await blur(title);
+    await settle(60);
+  };
+
+  it("renders the Backlinks section for a page others [[link]] to, and opens one", async () => {
+    await render();
+    await rename(ONBOARDING, "Onboarding");
+    await openNote("Local-first sync libraries");
+    await write(`${shown()}\n\nSee [[Onboarding]].\n`);
+    await leave();
+    await settle(60);
+    const onboarding = mockListNotes({ includeArchived: true }).notes.find(note => note.title === "Onboarding")!;
+    await openNote("Onboarding");
+    const backlinks = host.querySelector("section[aria-label='Backlinks']")!;
+    expect(backlinks).not.toBeNull();
+    expect(backlinks.textContent).toContain("Local-first sync libraries");
+    expect(backlinks.textContent).toContain("See Onboarding.");
+    await click(buttons(backlinks).find(node => node.textContent?.includes("Local-first sync libraries")));
+    expect(host.querySelector("article")?.getAttribute("aria-label")).toBe("Local-first sync libraries");
+    expect(backlinks.pageId ?? onboarding).toBeTruthy();
+  });
+
+  it("carries a rename into the [[ links]] other pages hold", async () => {
+    await render();
+    await rename(ONBOARDING, "Onboarding");
+    await openNote("Local-first sync libraries");
+    await write(`${shown()}\n\nSee [[Onboarding|the plan]].\n`);
+    await leave();
+    await settle(60);
+    await rename("Onboarding", "Inbox plan");
+    await settle(60);
+    const sync = mockReadPage(mockIdOf("Local-first sync libraries"));
+    expect(sync.markdown).toContain("[[Inbox plan|the plan]]");
+  });
+
+  it("opens an unresolved wiki link by making the page", async () => {
+    await render();
+    await openNote(ONBOARDING);
+    await write(`${shown()}\n\nLater: [[Unopened path]].\n`);
+    await settle(300);
+    const pill = [...host.querySelectorAll("button[aria-label='Open the page Unopened path']")][0]!;
+    await click(pill);
+    await settle(60);
+    expect(host.querySelector("article")?.getAttribute("aria-label")).toBe("Unopened path");
+    expect(rowTitles().some(title => title.includes("Unopened path"))).toBe(true);
+  });
+});
+
+function mockIdOf(text: string): string {  const note = mockListNotes({ includeArchived: true }).notes.find(item => !item.parentId && `${item.title ?? ""}\n${item.preview}`.includes(text));
   if (!note) throw new Error(`no note with ${text}`);
   return note.id;
 }

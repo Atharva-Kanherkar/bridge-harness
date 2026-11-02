@@ -195,17 +195,25 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
       await open(note.id);
     } catch (error) { fail(error); }
   };
-  // The `/` menu's Page: made under the open page, left closed.
-  const createChildPage = async (parentId: string) => {
+  // The `/` menu's Page: made under its parent, left closed. A [[ menu makes
+  // a page named so at the top level instead.
+  const createPageFor = useCallback(async (parentId: string | null, title: string | null) => {
     try {
-      const note = await bridgeApi.createNotePage({ title: null, content: "", parentId });
+      const note = await bridgeApi.createNotePage({ title, content: "", ...(parentId ? { parentId } : {}) });
       await refreshList();
       return { id: note.id, title: noteDisplayTitle(note) };
     } catch (error) { fail(error); return null; }
-  };
+  }, [fail, refreshList]);
 
   const notes = list?.notes ?? [];
   const byId = useMemo(() => new Map(notes.map(note => [note.id, note])), [notes]);
+  // A [[ link opens the page titled so, making it first when none is there.
+  const openByTitle = useCallback((title: string) => {
+    const key = title.trim().toLowerCase();
+    const found = notes.find(note => note.kind !== "task" && noteDisplayTitle(note).trim().toLowerCase() === key);
+    if (found) { void open(found.id); return; }
+    void bridgeApi.createNotePage({ title, content: "" }).then(note => { void open(note.id); void refreshList(); }, fail);
+  }, [notes, open, fail, refreshList]);
   const chatTitle = useCallback((sessionId: string) => {
     const session = sessions.find(candidate => candidate.id === sessionId);
     return session ? chatName(session) : undefined;
@@ -296,7 +304,9 @@ export function NotesScreen({ adapters, workspaces, sessions, defaultHarness, ca
         listOpen={listOpen}
         onToggleList={toggleList}
         pageTitle={id => { const child = byId.get(id); return child ? noteDisplayTitle(child) : undefined; }}
-        onCreateChildPage={() => createChildPage(page.note.id)}
+        notes={notes}
+        onOpenByTitle={openByTitle}
+        onCreatePage={createPageFor}
         onBack={() => select(null)}
         onOpenPage={id => void open(id)}
         onChanged={() => void refreshAll()}

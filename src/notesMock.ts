@@ -219,13 +219,13 @@ export function mockUpdateNote(params: UpdateNoteParams): Note {
   // A title the links followed takes them with it: decide who names the page
   // before the rename lands, so a duplicate title cannot claim a link.
   const newTitle = props.title ?? null;
-  const renaming = previousTitle != null && newTitle != null && newTitle !== "" && newTitle !== previousTitle;
-  const renameRequests = renaming ? renameRecipients(page.note.id, previousTitle) : [];
+  const rename = previousTitle && newTitle && newTitle !== previousTitle ? { from: previousTitle, to: newTitle } : null;
+  const renameRequests = rename ? renameRecipients(page.note.id, rename.from) : [];
   commit(page, page.history[page.history.length - 1], PERSON, props);
   for (const from of renameRequests) {
     const source = live(from);
     const body = source.history[source.history.length - 1];
-    const rewritten = renameBody(body, page.note.id, previousTitle, newTitle!, true);
+    const rewritten = renameBody(body, page.note.id, rename!.from, rename!.to, true);
     if (rewritten !== body) commit(source, rewritten, PERSON);
   }
   return clone(page.note);
