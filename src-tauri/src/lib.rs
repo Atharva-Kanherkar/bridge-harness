@@ -3802,10 +3802,14 @@ mod tests {
                         "{} takes different arguments than its contract names",
                         method.as_str()
                     );
+                    let required = bridge_protocol::TypedMethod::params_required_fields(method).unwrap_or_default();
                     for (argument, (_, schema)) in command.iter().zip(contract.iter()) {
-                        assert_eq!(
-                            rust_parameter_shape(method, &argument.name, &argument.kind),
-                            schema_parameter_shape(schema),
+                        assert!(
+                            command_parameter_shape_matches(
+                                rust_parameter_shape(method, &argument.name, &argument.kind),
+                                schema,
+                                required.contains(&argument.name),
+                            ),
                             "{} parameter {} has a different type from its contract",
                             method.as_str(),
                             argument.name
@@ -3818,6 +3822,30 @@ mod tests {
                 ),
             }
         }
+    }
+
+    // Serde defaults make a non-nullable scalar omittable on the wire. Tauri
+    // decodes each argument independently, so its native signature still needs
+    // Option<T>; the command then supplies the protocol's default.
+    fn command_parameter_shape_matches(native: ParameterShape, schema: &serde_json::Value, required: bool) -> bool {
+        let shape = schema_parameter_shape(schema);
+        native == shape || (!required && schema.get("default").is_some() && !matches!(shape, ParameterShape::Optional(_)) && native == ParameterShape::Optional(Box::new(shape)))
+    }
+
+    #[test]
+    fn signature_comparison_preserves_defaults_requiredness_and_boolean_types() {
+        let schema = serde_json::json!({"type": "boolean", "default": false});
+        let optional_bool = ParameterShape::Optional(Box::new(ParameterShape::Boolean));
+        assert!(command_parameter_shape_matches(optional_bool.clone(), &schema, false));
+        assert!(command_parameter_shape_matches(ParameterShape::Boolean, &schema, false));
+        assert!(!command_parameter_shape_matches(optional_bool.clone(), &schema, true));
+        assert!(!command_parameter_shape_matches(optional_bool, &serde_json::json!({"type": "boolean"}), false));
+        assert!(!command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::String)), &schema, false));
+        let method = bridge_protocol::MethodName::UpdateNote;
+        assert!(!bridge_protocol::TypedMethod::params_required_fields(method).unwrap().contains(&"clearParent".to_owned()));
+        let fields = bridge_protocol::TypedMethod::params_schema_fields(method).unwrap();
+        let clear_parent = &fields.iter().find(|(name, _)| name == "clearParent").unwrap().1;
+        assert_eq!(clear_parent["default"], false);
     }
 
     #[test]
