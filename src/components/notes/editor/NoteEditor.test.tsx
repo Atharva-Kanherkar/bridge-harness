@@ -6,6 +6,10 @@ import type { Editor } from "@tiptap/core";
 import { resetMockNotes } from "../../../notesMock";
 import { NoteEditor, HAND_OVER_MS, type NoteEditorHandle, type NoteEditorProps } from "./NoteEditor";
 
+// No core assets in jsdom: images draw from a fake url, which still exercises
+// the caption and the resize handles.
+vi.mock("./assets", async actual => ({ ...(await actual<typeof import("./assets")>()), assetUrl: async (source: string) => `blob:asset${source}` }));
+
 let host: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
@@ -295,5 +299,39 @@ describe("NoteEditor", () => {
     expect(pill).not.toBeNull();
     await act(async () => { pill!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     expect(given.pages.openByTitle).toHaveBeenCalledWith("Plans");
+  });
+
+  it("edits an image caption and round-trips a set width through its Markdown", async () => {
+    const { onChange } = await mount("Before\n\n![Old plan](assets/0123456789abcdef.png \"420\")\n\n![](assets/89abcdef01234567.png)\n");
+    const figure = host.querySelector("figure.note-image")!;
+    const caption = figure.querySelector("figcaption[aria-label='Caption']")!;
+    expect(caption.textContent).toBe("Old plan");
+    expect((figure.querySelector("img") as HTMLElement).style.width).toBe("420px");
+    expect([...host.querySelectorAll("figcaption[aria-label='Caption']")].filter(node => node.getAttribute("data-empty") === null).length).toBe(1);
+
+    // The caption is edited like text: retype it, leave, and only that image
+    // block's Markdown changes.
+    await act(async () => {
+      caption.textContent = "Old plan, revised";
+      caption.dispatchEvent(new Event("input", { bubbles: true }));
+      caption.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await settle();
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe("Before\n\n![Old plan, revised](assets/0123456789abcdef.png \"420\")\n\n![](assets/89abcdef01234567.png)\n");
+  });
+
+  it("resizes an image from its handles, clamping to at least 120px", async () => {
+    const { onChange } = await mount("Intro\n\n![Plan](assets/0123456789abcdef.png)\n");
+    const handle = host.querySelector<HTMLButtonElement>("button[aria-label='Resize from the right edge']")!;
+    // jsdom has no PointerEvent; MouseEvent with clientX does for our use.
+    const pointer = (type: string, target: EventTarget, x: number) => target.dispatchEvent(new MouseEvent(type, { clientX: x, bubbles: true, cancelable: true }));
+    await act(async () => { pointer("pointerdown", handle, 500); });
+    await act(async () => { pointer("pointermove", window, 700); });
+    await act(async () => { pointer("pointerup", window, 700); });
+    await settle();
+    await commit();
+    // jsdom offers no layout, so the drag clamps to the smallest width (120px).
+    expect(onChange.mock.calls[0][0]).toBe("Intro\n\n![Plan](assets/0123456789abcdef.png \"120\")\n");
   });
 });

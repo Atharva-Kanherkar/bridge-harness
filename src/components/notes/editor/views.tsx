@@ -1,6 +1,6 @@
 // How images, child pages and wiki links draw inside the editor.
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type FocusEvent } from "react";
 import Image from "@tiptap/extension-image";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
 import { FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert } from "lucide-react";
@@ -23,22 +23,95 @@ export interface EditorPages {
 }
 export const EditorPagesContext = createContext<EditorPages>({ title: () => undefined, open: () => undefined });
 
-function ImageView({ node, selected }: ReactNodeViewProps) {
+const IMAGE_MIN_PX = 120;
+
+/** The width the image's title holds ("420"), 0 or missing meaning natural. */
+export function imageWidthOf(title: unknown): number | null {
+  const parsed = title == null ? null : /^\d{1,4}$/.exec(String(title).trim());
+  return parsed ? Math.max(IMAGE_MIN_PX, Number(parsed[0])) : null;
+}
+
+/** The width a drag with a left or right handle lands on, clamped between
+ *  120px and the column the editor sits in. */
+export function draggedImageWidth(edge: "left" | "right", startX: number, width: number, x: number, available: number): number {
+  const wanted = edge === "left" ? width + (startX - x) : width + (x - startX);
+  return Math.round(Math.min(Math.max(wanted, IMAGE_MIN_PX), Math.max(IMAGE_MIN_PX, available)));
+}
+
+function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   const src = String(node.attrs.src ?? "");
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [live, setLive] = useState<number | null>(null);
+  const figure = useRef<HTMLElement>(null);
   useEffect(() => {
     let current = true;
     setFailed(false);
     assetUrl(src).then(next => { if (current) setUrl(next); }, () => { if (current) setFailed(true); });
     return () => { current = false; };
   }, [src]);
-  return <NodeViewWrapper as="figure" data-drag-handle="" className="note-image my-3">
-    {failed
-      ? <div className="rounded-lg bg-muted px-3 py-6 text-center text-[12.5px] text-muted-foreground">Couldn't load {src}</div>
-      : url
-        ? <img src={url} alt={String(node.attrs.alt ?? "")} title={node.attrs.title ?? undefined} draggable={false} className={clsx("mx-auto block max-h-[36rem] max-w-full rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")} />
-        : <div aria-busy="true" className="h-40 animate-pulse rounded-lg bg-muted" />}
+  const width = live ?? imageWidthOf(node.attrs.title);
+  const caption = String(node.attrs.alt ?? "");
+  const commitCaption = (event: FocusEvent<HTMLElement>) => {
+    const text = (event.currentTarget.textContent ?? "").replace(/\n/g, " ");
+    if (text !== caption) updateAttributes({ alt: text });
+  };
+  const beginDrag = (edge: "left" | "right") => (event: React.PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const image = figure.current?.querySelector("img");
+    if (!image) return;
+    const imageRect = image.getBoundingClientRect();
+    const start = {
+      edge,
+      x: event.clientX,
+      width: imageRect.width,
+      available: figure.current?.closest("article")?.clientWidth ?? imageRect.width,
+    };
+    let settled: number | null = null;
+    const move = (dragEvent: PointerEvent) => {
+      settled = draggedImageWidth(start.edge, start.x, start.width, dragEvent.clientX, start.available);
+      setLive(settled);
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      setLive(null);
+      if (settled != null) updateAttributes({ title: String(settled) });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+  };
+  const handle = clsx("absolute top-1/2 z-10 h-12 w-1.5 -translate-y-1/2 cursor-col-resize rounded-full bg-foreground/40 opacity-0 transition-opacity", selected ? "opacity-100" : "group-hover:opacity-100");
+  return <NodeViewWrapper as="figure" ref={figure} data-drag-handle="" className="note-image group relative mx-auto my-3 w-fit max-w-full">
+    <span className="relative block w-fit max-w-full">
+      {failed
+        ? <div className="rounded-lg bg-muted px-3 py-6 text-center text-[12.5px] text-muted-foreground">Couldn't load {src}</div>
+        : url
+          ? <img
+            src={url}
+            alt={caption}
+            draggable={false}
+            // The width is the one computed thing a utility cannot say.
+            style={width == null ? undefined : { width: `${width}px` }}
+            className={clsx("mx-auto block max-h-[36rem] max-w-full rounded-lg", selected && "ring-2 ring-ring ring-offset-2 ring-offset-background")}
+          />
+          : <div aria-busy="true" className="h-40 animate-pulse rounded-lg bg-muted" />}
+      {url && !failed && <>
+        <button type="button" contentEditable={false} aria-label="Resize from the left edge" onPointerDown={beginDrag("left")} className={clsx(handle, "left-0 -translate-x-1/2")} />
+        <button type="button" contentEditable={false} aria-label="Resize from the right edge" onPointerDown={beginDrag("right")} className={clsx(handle, "right-0 translate-x-1/2")} />
+      </>}
+    </span>
+    <figcaption
+      contentEditable
+      suppressContentEditableWarning
+      spellCheck="false"
+      aria-label="Caption"
+      onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
+      onBlur={commitCaption}
+      data-empty={caption ? undefined : ""}
+      className="mt-1.5 text-center text-[12.5px] leading-relaxed text-muted-foreground outline-none focus-visible:bg-card focus-visible:ring-1 focus-visible:ring-ring data-[empty]:hidden group-focus-within:data-[empty]:block"
+    >{caption}</figcaption>
   </NodeViewWrapper>;
 }
 
