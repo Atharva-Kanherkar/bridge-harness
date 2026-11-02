@@ -178,6 +178,52 @@ export const PageLink = Node.create({
   renderMarkdown: node => `<page url="bridge://p/${node.attrs?.id ?? ""}">${escapeHtml(String(node.attrs?.title ?? ""))}</page>`,
 });
 
+/** `[[Target]]` or `[[Target|Alias]]`, all on one line; the same grammar the
+ *  core reads, so links written elsewhere resolve here and back. */
+export const WIKI_LINK = /^\[\[([^\[\]\n|]+?)(?:\|([^\[\]\n]+?))?\]\]/;
+
+/** A wiki link, read from other pages and the chats: an inline pill the
+ *  editor draws over `[[…]]`, whatever page the title ends up on. */
+export const WikiLink = Node.create({
+  name: "wikiLink",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return { target: { default: "" }, alias: { default: null } };
+  },
+  parseHTML() {
+    return [{ tag: "span[data-type='wikiLink']", getAttrs: element => ({
+      target: element.getAttribute("data-wiki-target") ?? "",
+      alias: element.getAttribute("data-wiki-alias"),
+    }) }];
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    const target = String(node.attrs.target ?? "");
+    const alias = node.attrs.alias == null ? null : String(node.attrs.alias);
+    return ["span", mergeAttributes(HTMLAttributes, { "data-type": "wikiLink", "data-wiki-target": target, ...(alias ? { "data-wiki-alias": alias } : {}) }), alias ?? target];
+  },
+  markdownTokenizer: {
+    name: "wikiLink",
+    level: "inline",
+    start: (src: string) => src.indexOf("[["),
+    tokenize: (src: string) => {
+      const match = WIKI_LINK.exec(src);
+      const target = match?.[1].trim();
+      if (!match || !target) return undefined;
+      const alias = match[2]?.trim() ?? null;
+      return { type: "wikiLink", raw: match[0], target, alias: alias || null };
+    },
+  },
+  parseMarkdown: token => ({ type: "wikiLink", attrs: { target: token.target, alias: token.alias } }),
+  renderMarkdown: node => {
+    const target = String(node.attrs?.target ?? "");
+    const alias = node.attrs?.alias == null ? null : String(node.attrs.alias);
+    return alias ? `[[${target}|${alias}]]` : `[[${target}]]`;
+  },
+});
+
 // Markdown with no block here (a `<database>`, `<visual>` or `<chat>` tag, an
 // HTML block, a comment) is kept as it was written and shown as source, so
 // editing the page around it never drops or escapes it.

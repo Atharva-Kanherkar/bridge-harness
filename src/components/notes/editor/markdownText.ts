@@ -5,7 +5,7 @@
 // so the file reads the way the words were typed.
 
 import type { Editor, JSONContent } from "@tiptap/core";
-import { INLINE_MATH } from "./blocks";
+import { INLINE_MATH, WIKI_LINK } from "./blocks";
 
 const PUNCTUATION = /[!-/:-@[-`{-~]/;
 const WORD = /[\p{L}\p{N}]/u;
@@ -45,6 +45,13 @@ export function escapeText(text: string, lineStart: boolean): string {
         out += text.indexOf("~", index + 1) >= 0 || text.lastIndexOf("~", index - 1) >= 0 ? "\\~" : char;
         break;
       case "[":
+        // `[[` where a wiki link could be read would come back as one, so
+        // escape its opening brackets; anything else stays as typed.
+        if (WIKI_LINK.test(text.slice(index))) {
+          out += "\\[\\[";
+          index += 1;
+          break;
+        }
         out += /\]/.test(text.slice(index + 1)) ? "\\[" : char;
         break;
       case "<":

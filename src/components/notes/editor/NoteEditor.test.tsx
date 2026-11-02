@@ -222,4 +222,23 @@ describe("NoteEditor", () => {
     await commit();
     expect(onChange).toHaveBeenLastCalledWith("First  with __bold__.\r\n\r\n<details open>\r\n<summary>More</summary>\r\n\r\nHidden\r\n\r\n</details>\r\n\r\nLast line!\r\n");
   });
+
+  it("round-trips wiki links, with and without an alias, beside untouched blocks", async () => {
+    const before = "Before\n\nSee [[Plans]] then [[Crew|the crew]].\n\nAfter\n";
+    const { onChange } = await mount(before);
+    const dom = host.querySelector(".note-editor")!;
+    expect([...dom.querySelectorAll("span[data-type='wikiLink']")].map(node => node.textContent)).toEqual(["Plans", "the crew"]);
+    await commit();
+    expect(onChange).not.toHaveBeenCalled();
+    await typeAfter("Before", "!");
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe(before.replace("Before", "Before!"));
+  });
+
+  it("escapes brackets only where a wiki link could be misread", async () => {
+    const { onChange } = await mount("plain [1] stays\n");
+    await typeAfter("stays", " typed [[maybe]] else");
+    await commit();
+    expect(onChange.mock.calls[0][0]).toBe("plain \\[1] stays typed \\[\\[maybe]] else\n");
+  });
 });
