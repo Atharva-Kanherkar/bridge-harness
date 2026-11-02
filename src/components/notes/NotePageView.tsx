@@ -265,6 +265,31 @@ export function NotePageView(props: NotePageViewProps) {
         onOpen={task => onOpenPage(task.id)}
         onSetState={(task, state) => void update({ id: task.id, state })}
       />
+
+      {page.backlinks.length > 0 && <section aria-label="Backlinks" className="my-12">
+        <div className="flex items-baseline gap-2 border-b border-border pb-2">
+          <h3 className="m-0 text-[13px] font-semibold text-foreground">Backlinks</h3>
+          <span className="text-[12px] text-muted-foreground">{page.backlinks.length}</span>
+        </div>
+        <ul className="m-0 list-none divide-y divide-border p-0">
+          {page.backlinks.map((backlink, index) => <li key={`${backlink.pageId}-${index}`}>
+            <button
+              type="button"
+              onClick={() => onOpenPage(backlink.pageId)}
+              className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline gap-2">
+                  <span className="min-w-0 truncate text-[14px] text-foreground">{backlink.title || "Untitled"}</span>
+                  <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{capital(backlink.kind)}</span>
+                </span>
+                <blockquote className="m-0 mt-0.5 truncate text-[12.5px] text-muted-foreground before:content-['“'] after:content-['”']">{quoteText(backlink.excerpt)}</blockquote>
+              </span>
+              <span className="shrink-0 text-[12px] text-faint">{relativeTime(backlink.updatedAt)}</span>
+            </button>
+          </li>)}
+        </ul>
+      </section>}
     </article>
   </div>;
 }

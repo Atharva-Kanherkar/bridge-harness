@@ -26,6 +26,46 @@ describe("mock notes", () => {
     expect(() => mockUpdateNote({ id: child.id, clearParent: true, parentId: parent.id })).toThrow("mutually exclusive");
   });
 
+  it("finds backlinks from wiki links and page tags, quoting the link's line", () => {
+    const plan = mockCreatePage({ title: "Launch plan", content: "the plan" });
+    const wiki = mockCreatePage({ content: "See [[launch plan]] and go." });
+    const tagged = mockCreatePage({ title: "Rollout", content: `<page url="bridge://p/${plan.id}">Launch plan</page>` });
+    expect(mockReadPage(plan.id).backlinks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pageId: wiki.id, kind: "wiki", excerpt: "See launch plan and go." }),
+      expect.objectContaining({ pageId: tagged.id, kind: "page", excerpt: "Launch plan" }),
+    ]));
+
+    // Case aside, the link resolves, and code never becomes one.
+    const cased = mockCaptureNote("Plans: [[Launch plan|the launch]]!\ncode:\n\n```\n[[Launch plan]]\n```\n");
+    expect(mockReadPage(plan.id).backlinks.find(row => row.pageId === cased.id)).toMatchObject({ kind: "wiki", excerpt: "Plans: the launch!" });
+    expect(mockReadPage(plan.id).backlinks).toHaveLength(3);
+
+    // A title two pages can hold sends its link to the first one, and that
+    // page's rename alone carries the link.
+    const other = mockCreatePage({ title: "Launch plan", content: "duplicate" });
+    mockUpdateNote({ id: other.id, title: "Renamed" });
+    const rows = mockReadPage(plan.id).backlinks;
+    expect(rows.find(row => row.pageId === wiki.id)).toBeTruthy();
+  });
+
+  it("carries wiki links and page tags with a rename, and leaves code alone", () => {
+    const target = mockCreatePage({ title: "Old", content: "First." });
+    const source = mockCreatePage({ content: `[[old]] and [[old|mine]] plus <page url="bridge://p/${target.id}">Old</page>` });
+    mockUpdateNote({ id: target.id, title: "New Title!" });
+    expect(mockReadPage(source.id).markdown).toBe(`[[New Title!]] and [[New Title!|mine]] plus <page url="bridge://p/${target.id}">New Title!</page>`);
+
+    // The rename does not touch code blocks, and the next rename still moves
+    // the links that now name the new title.
+    const fenced = mockCaptureNote("code now\n```\n[[New Title!]]\n```\nstill itself");
+    mockUpdateNote({ id: target.id, title: "Part Two" });
+    expect(mockReadPage(source.id).markdown).toContain("[[Part Two]]");
+    expect(mockReadPage(fenced.id).markdown.includes("```\n[[New Title!]]\n```")).toBe(true);
+
+    // A title the wiki grammar cannot hold becomes a page tag, alias kept.
+    mockUpdateNote({ id: target.id, title: "Q4 | Launches" });
+    expect(mockReadPage(source.id).markdown).toBe(`<page url="bridge://p/${target.id}">Q4 | Launches</page> and <page url="bridge://p/${target.id}">mine</page> plus <page url="bridge://p/${target.id}">Q4 | Launches</page>`);
+  });
+
   it("merges a stale save with an agent write", () => {
     const note = mockCaptureNote("first line\n");
     const base = mockReadPage(note.id).seq;

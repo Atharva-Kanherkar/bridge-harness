@@ -4,8 +4,8 @@
 // finish after a short delay and announce `notes/page_changed` the way the
 // core does, and images kept by path.
 
-import { rebaseDraft } from "./notesDraft";
-import type { CreatePageParams, EditPageParams, ListNotesParams, NoteJobQueued, SaveNotesSettingsParams, SplitItemParams, StructureNoteParams, UpdateNoteParams } from "./protocol/generated/protocol";
+import { rebaseDraft, noteDisplayTitle } from "./notesDraft";
+import type { CreatePageParams, EditPageParams, ListNotesParams, NoteBacklink, NoteJobQueued, SaveNotesSettingsParams, SplitItemParams, StructureNoteParams, UpdateNoteParams } from "./protocol/generated/protocol";
 import type { Note, NoteAsset, NoteAssetData, NoteAssetPart, NoteEditResult, NoteHistory, NoteJob, NotePage, NotePageChangedPayload, NotePassProgressPayload, NotesList, NotesSettings, NoteVersionPage, StructuredView } from "./types";
 
 const ROOT = "/Users/you/Library/Application Support/Bridge/notes";
@@ -117,6 +117,15 @@ export function mockNotesAgentWrite(pageId: string | null, text: string, session
   return clone(page.note);
 }
 
+/** Every word of the query matches the start of a word in the title or body,
+ *  the way the core's FTS prefix queries read (`runs` finds `running`). */
+function searchHaystack(needle: string, text: string): boolean {
+  const words = needle.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const tokens = text.toLowerCase().split(/[^\p{L}\p{N}]+/u);
+  return words.every(word => tokens.some(token => token.startsWith(word)));
+}
+
 export function mockListNotes(params: ListNotesParams = {}): NotesList {
   const query = params.query?.trim().toLowerCase();
   const notes = pages
@@ -126,7 +135,7 @@ export function mockListNotes(params: ListNotesParams = {}): NotesList {
     .filter(page => !params.state || page.note.state === params.state)
     .filter(page => params.parentId === undefined || params.parentId === null || page.note.parentId === params.parentId)
     .filter(page => !params.tags?.length || params.tags.every(tag => page.note.tags.includes(tag)))
-    .filter(page => !query || `${page.note.title ?? ""}\n${page.history[page.history.length - 1]}`.toLowerCase().includes(query))
+    .filter(page => !query || searchHaystack(query, `${page.note.title ?? ""}\n${page.history[page.history.length - 1]}`))
     .map(page => clone(page.note));
   return { notes, jobs: clone(jobs), root: settings.root };
 }
@@ -136,7 +145,7 @@ export function mockReadPage(id: string): NotePage {
   const markdown = page.history[page.history.length - 1];
   const structured = page.structured ? { ...clone(page.structured.view), stale: page.structured.body !== markdown } : null;
   const tasks = pages.filter(candidate => !candidate.deleted && candidate.note.parentId === id && candidate.note.kind === "task").map(candidate => clone(candidate.note)).reverse();
-  return { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks, backlinks: [] };
+  return { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks, backlinks: backlinksOf(id) };
 }
 
 export function mockCaptureNote(body: string): Note {
@@ -199,6 +208,7 @@ export function mockUpdateNote(params: UpdateNoteParams): Note {
   }
   if (params.clearParent) props.parentId = null;
   if ((params.clearParent || params.parentId != null) && page.note.state === "inbox" && !params.state) props.state = "open";
+  const previousTitle = page.note.title ?? null;
   if (params.title !== undefined && params.title !== null) props.title = params.title.trim() || null;
   if (params.kind) props.kind = params.kind;
   if (params.tags) props.tags = params.tags;
@@ -206,7 +216,18 @@ export function mockUpdateNote(params: UpdateNoteParams): Note {
   if (params.workspaceId) props.workspaceId = params.workspaceId;
   if (params.clearWorkspace) props.workspaceId = null;
   if (params.addSessionId && !page.note.sessionIds.includes(params.addSessionId)) props.sessionIds = [...page.note.sessionIds, params.addSessionId];
+  // A title the links followed takes them with it: decide who names the page
+  // before the rename lands, so a duplicate title cannot claim a link.
+  const newTitle = props.title ?? null;
+  const renaming = previousTitle != null && newTitle != null && newTitle !== "" && newTitle !== previousTitle;
+  const renameRequests = renaming ? renameRecipients(page.note.id, previousTitle) : [];
   commit(page, page.history[page.history.length - 1], PERSON, props);
+  for (const from of renameRequests) {
+    const source = live(from);
+    const body = source.history[source.history.length - 1];
+    const rewritten = renameBody(body, page.note.id, previousTitle, newTitle!, true);
+    if (rewritten !== body) commit(source, rewritten, PERSON);
+  }
   return clone(page.note);
 }
 
@@ -215,6 +236,161 @@ export function mockDeleteNote(id: string): void {
   for (const task of pages.filter(candidate => candidate.note.parentId === id)) task.deleted = true;
   page.deleted = true;
   announce(page, PERSON);
+}
+
+// The link graph, the mock's side of the core's `links.rs`: `[[Target]]`, with
+// an optional `| alias`, and `<page url="bridge://p/id">` tags resolve between
+// pages, Markdown stays authoritative, and a rename rewrites only the link
+// byte ranges never the words around them.
+
+interface WikiSpan { start: number; end: number; target: string; alias: string | null; kind: "wiki" | "page"; opening: string }
+
+const linkKey = (title: string) => title.trim().toLowerCase();
+const escapeLinkText = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\r/g, "&#13;").replace(/\n/g, "&#10;");
+const unescapeLinkText = (text: string) => text.replace(/&(?:amp|lt|gt|quot|13|10);/g, character => ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&#13;": "\r", "&#10;": "\n" })[character] ?? character);
+
+/** A line that starts a list item, so indented code never starts inside one. */
+function listMarker(text: string): boolean {
+  const digits = /^[0-9]*/.exec(text)![0].length;
+  if (/^[+*-]/.test(text)) return text.length === 1 || /^[ \t\r\n]/.test(text.slice(1));
+  if (digits >= 1 && digits <= 9) {
+    const after = text.slice(digits + 1);
+    if (text.charAt(digits) === "." || text.charAt(digits) === ")") return after.length === 0 || /^[ \t\r\n]/.test(after);
+  }
+  return false;
+}
+
+/** Every line of code masked with spaces, keeping byte offsets so link ranges
+ *  line up with the file (the mock's `outside_code`). */
+function codeMask(body: string): string {
+  const lines = body.split("\n");
+  const masked: string[] = [];
+  let fence: { char: string; length: number } | null = null;
+  let blockStart = true;
+  let inCode = false;
+  let inList = false;
+  lines.forEach((line, index) => {
+    const width = line.length - line.trimStart().length;
+    const content = line.slice(width);
+    const blank = content.trim() === "";
+    const marker = content.charAt(0);
+    let count = 0;
+    while (count < content.length && content.charAt(count) === marker) count += 1;
+    const fenceLine = width <= 3 && (marker === "`" || marker === "~") && count >= 3;
+    let code: boolean;
+    if (fence) {
+      if (fenceLine && marker === fence.char && count >= fence.length && !content.slice(count).trim()) fence = null;
+      code = true;
+    } else if (fenceLine && (marker === "~" || !content.slice(count).includes("`"))) {
+      fence = { char: marker, length: count };
+      code = true;
+    } else {
+      code = !blank && width >= 4 && (blockStart || inCode) && !inList;
+    }
+    if (code) masked.push(" ".repeat(line.length));
+    else {
+      masked.push(line);
+      if (!blank && width < 4) inList = listMarker(content);
+    }
+    if (index < lines.length - 1) masked.push("\n");
+    inCode = code && fence === null && !fenceLine;
+    blockStart = blank || fenceLine || content.startsWith("#");
+  });
+  return masked.join("").replace(/`[^`\n]*`/g, span => " ".repeat(span.length));
+}
+
+/** Every `[[…]]` and `<page …>` the body holds, with the byte ranges they sit
+ *  at, the way `links.rs::parse` finds them. Code is never a link. */
+function linksOf(body: string): WikiSpan[] {
+  const masked = codeMask(body);
+  const found: WikiSpan[] = [];
+  const wiki = /\[\[([^\]\r\n]+?)\]\]/g;
+  for (const match of body.matchAll(wiki)) {
+    const start = match.index!;
+    // The mask turned code into spaces, so a match whose slice is now blank
+    // sat inside code.
+    if (masked.slice(start, start + match[0].length).trim() === "") continue;
+    const bar = match[1].indexOf("|");
+    const target = (bar >= 0 ? match[1].slice(0, bar) : match[1]).trim();
+    const alias = bar >= 0 ? match[1].slice(bar + 1).trim() || null : null;
+    if (!target) continue;
+    found.push({ start, end: start + match[0].length, target, alias, kind: "wiki", opening: "" });
+  }
+  const pageTag = /(<page\s+url="bridge:\/\/p\/([^"<>\s]+)"\s*>)([^\r\n]*?)<\/page>/g;
+  for (const match of body.matchAll(pageTag)) {
+    const start = match.index!;
+    if (masked.slice(start, start + match[0].length).trim() === "") continue;
+    if (!match[2].trim()) continue;
+    found.push({ start, end: start + match[0].length, target: match[2], alias: null, kind: "page", opening: match[1] });
+  }
+  return found;
+}
+
+/** `[[target]]` becomes the source's text without the double brackets, the way
+ *  the core quotes a link's line. */
+function excerptOf(body: string, link: WikiSpan): string {
+  const start = body.lastIndexOf("\n", link.start - 1) < 0 ? 0 : body.lastIndexOf("\n", link.start - 1) + 1;
+  const end = body.indexOf("\n", link.end) < 0 ? body.length : body.indexOf("\n", link.end);
+  const line = body
+    .slice(start, end)
+    .replace(/\[\[([^\]\r\n]+?)\]\]/g, (_, held: string) => (held.includes("|") ? held.slice(held.indexOf("|") + 1) : held))
+    .replace(/<page\s+url="bridge:\/\/p\/[^"<>\s]+"\s*>([^\r\n]*?)<\/page>/g, (_, held: string) => unescapeLinkText(held));
+  return [...line.trim()].filter(character => character.charCodeAt(0) > 31).slice(0, 200).join("");
+}
+
+/** Every backlink page `id` has, newest change first. */
+function backlinksOf(id: string): NoteBacklink[] {
+  const target = live(id).note;
+  const title = target.title?.trim().toLowerCase() ?? null;
+  const rows: NoteBacklink[] = [];
+  for (const page of [...pages].sort((a, b) => a.note.createdAt.localeCompare(b.note.createdAt))) {
+    if (page.deleted || page.note.id === id) continue;
+    const body = page.history[page.history.length - 1];
+    for (const link of linksOf(body)) {
+      const linked = link.kind === "page"
+        ? link.target === id
+        : title !== null && linkKey(link.target) === title;
+      if (!linked) continue;
+      rows.push({
+        pageId: page.note.id,
+        title: noteDisplayTitle({ title: page.note.title, preview: page.note.preview }),
+        kind: link.kind,
+        excerpt: excerptOf(body, link),
+        updatedAt: page.note.updatedAt,
+      });
+    }
+  }
+  return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.pageId.localeCompare(b.pageId) || a.kind.localeCompare(b.kind));
+}
+
+/** The pages that point at `renamed` with a wiki link through its old title:
+ *  the first page with that title is where `[[old]]` resolves. */
+function renameRecipients(id: string, oldTitle: string): string[] {
+  const key = linkKey(oldTitle);
+  const sources = pages.filter(page => !page.deleted && linksOf(page.history[page.history.length - 1]).some(link => link.kind === "wiki" && linkKey(link.target) === key));
+  const holder = pages.filter(page => !page.deleted && page.note.title != null && linkKey(page.note.title!) === key)
+    .sort((a, b) => a.note.createdAt.localeCompare(b.note.createdAt) || a.note.id.localeCompare(b.note.id))[0];
+  return holder && holder.note.id === id ? sources.map(source => source.note.id) : [];
+}
+
+/** What a rename does to one body: wiki links that resolved to this page move
+ *  with it (alias kept), page tags follow the id, and a title the wiki grammar
+ *  cannot hold becomes a page tag. */
+function renameBody(body: string, id: string, oldTitle: string, newTitle: string, wiki: boolean): string {
+  let result = body;
+  const safe = !newTitle.includes("[") && !newTitle.includes("]") && !newTitle.includes("|") && !/[\r\n]/.test(newTitle);
+  for (const link of linksOf(body).reverse()) {
+    let replacement: string | null = null;
+    if (wiki && link.kind === "wiki" && linkKey(link.target) === linkKey(oldTitle)) {
+      replacement = safe
+        ? link.alias ? `[[${newTitle}|${link.alias}]]` : `[[${newTitle}]]`
+        : `<page url="bridge://p/${id}">${escapeLinkText(link.alias ?? newTitle)}</page>`;
+    } else if (link.kind === "page" && link.target === id) {
+      replacement = `${link.opening}${escapeLinkText(newTitle)}</page>`;
+    }
+    if (replacement) result = result.slice(0, link.start) + replacement + result.slice(link.end);
+  }
+  return result;
 }
 
 export function onMockNotesPassProgress(handler: (payload: NotePassProgressPayload) => void): () => void {
