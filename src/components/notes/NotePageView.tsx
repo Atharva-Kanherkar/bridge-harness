@@ -52,10 +52,10 @@ export interface NotePageViewProps {
   sessions: Session[];
   defaultHarness: string | null;
   chatTitle: (sessionId: string) => string | undefined;
-  /** The page this one sits under, if any. */
-  parent?: Note | null;
   /** Pages (not tasks) that sit under this one. */
   childPages?: Note[];
+  /** The ancestor chain above this page, outermost first. */
+  ancestors?: Note[];
   startingId: string | null;
   /** The Notes chat panel, when the host offers one. */
   chatOpen?: boolean;
@@ -83,8 +83,23 @@ export interface NotePageViewProps {
   onError: (message: string) => void;
 }
 
+/** Where a page can be moved: every page besides tasks, itself and its
+ *  descendants (a cycle stops the walk). */
+function moveTargetsOf(notes: Note[] | undefined, self: string): Note[] {
+  const list = notes ?? [];
+  return list.filter(candidate => {
+    if (candidate.kind === "task" || candidate.id === self) return false;
+    let id: string | null = candidate.parentId ?? null;
+    for (let guard = 0; id && guard < 64; guard += 1) {
+      if (id === self || id === candidate.id) return false;
+      id = list.find(item => item.id === id)?.parentId ?? null;
+    }
+    return true;
+  });
+}
+
 export function NotePageView(props: NotePageViewProps) {
-  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, parent, childPages = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, notes, onOpenByTitle, onCreatePage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
+  const { page, jobs, adapters, workspaces, sessions, defaultHarness, chatTitle, childPages = [], ancestors = [], startingId, chatOpen, onToggleChat, listOpen, onToggleList, pageTitle, notes, onOpenByTitle, onCreatePage, onBack, onOpenPage, onChanged, onSaved, onStart, onOpenChat, onDeleted, onError } = props;
   const { note } = page;
   const draft = useNoteDraft(page, onSaved, onError);
   const editor = useRef<NoteEditorHandle>(null);
@@ -108,6 +123,7 @@ export function NotePageView(props: NotePageViewProps) {
   /** Everything typed, stored. Passes, chats and restores read the stored page. */
   const flush = () => { editor.current?.commit(); return draft.flush(); };
 
+  const startersParent = ancestors[ancestors.length - 1];
   const fail = (error: unknown) => onError(error instanceof Error ? error.message : String(error));
   const update = async (patch: Parameters<typeof bridgeApi.updateNote>[0]) => {
     try { await bridgeApi.updateNote(patch); onChanged(); } catch (error) { fail(error); }
@@ -158,16 +174,24 @@ export function NotePageView(props: NotePageViewProps) {
       <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-0.5 text-[13px]">
         {onToggleList && !listOpen && <button type="button" aria-label="Show the notes list" title={`Show the notes list (${chordLabel("toggle-notes-list")})`} onClick={onToggleList} className="mr-1 hidden size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:grid"><PanelLeft size={15} aria-hidden="true" /></button>}
         <button type="button" onClick={onBack} className="shrink-0 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Notes</button>
-        {parent && <>
-          <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
-          <button type="button" onClick={() => onOpenPage(parent.id)} className="min-w-0 max-w-48 truncate rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">{noteDisplayTitle(parent)}</button>
-        </>}
+        {ancestors.map(ancestor => <>
+          <ChevronRight key={`before-${ancestor.id}`} size={13} className="shrink-0 text-faint" aria-hidden="true" />
+          <button key={ancestor.id} type="button" onClick={() => onOpenPage(ancestor.id)} className="min-w-0 max-w-48 truncate rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">{noteDisplayTitle(ancestor)}</button>
+        </>)}
         <ChevronRight size={13} className="shrink-0 text-faint" aria-hidden="true" />
         <span aria-current="page" className="min-w-0 truncate px-1.5 text-foreground">{noteDisplayTitle({ title: note.title, preview: draft.text || note.preview })}</span>
       </nav>
       <span role="status" aria-label="Save status" className="shrink-0 px-2 text-[12px] text-muted-foreground">{draft.status === "saved" ? editedLabel(note.updatedAt) : STATUS_COPY[draft.status]}</span>
       {onToggleChat && <Pill aria-pressed={!!chatOpen} active={!!chatOpen} onClick={onToggleChat}>Ask AI</Pill>}
-      <MoreMenu note={note} taskCount={page.tasks.length} onHistory={() => setHistoryOpen(true)} onDelete={() => void remove()} />
+      <MoreMenu
+        note={note}
+        taskCount={page.tasks.length}
+        moveTargets={moveTargetsOf(notes, note.id)}
+        onPromote={note.state === "inbox" ? () => void update({ id: note.id, state: "open" }) : undefined}
+        onMove={parentId => void update({ id: note.id, ...(parentId ? { parentId } : { clearParent: true }) })}
+        onHistory={() => setHistoryOpen(true)}
+        onDelete={() => void remove()}
+      />
     </header>
 
     <NoteHistoryDialog page={page} open={historyOpen} chatTitle={chatTitle} onClose={() => setHistoryOpen(false)} onRestore={restore} />
@@ -214,7 +238,7 @@ export function NotePageView(props: NotePageViewProps) {
           {close => <PassPicker label="Turn into tasks" what="Finds the work this page asks for and adds each piece as a task below, quoting the words it came from. Existing tasks are kept." adapters={adapters} defaultHarness={defaultHarness} onRun={harness => { close(); void run("tasks", harness); }} />}
         </PopoverAction>
         <PopoverAction label="Start a chat" panelLabel="Start a chat" align="end" busy={startingId === note.id} busyLabel="Starting…">
-          {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? parent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
+          {close => <StartPicker subject="note" adapters={adapters} workspaces={workspaces} defaultHarness={defaultHarness} suggestedWorkspaceId={note.workspaceId ?? startersParent?.workspaceId ?? null} busy={startingId === note.id} onStart={choice => void startSaved(note, choice).then(started => { if (started) close(); })} />}
         </PopoverAction>
         {note.sessionIds.length > 0 && <Pill onClick={() => onOpenChat(note.sessionIds[note.sessionIds.length - 1])}>Open chat</Pill>}
       </div>
@@ -366,10 +390,19 @@ function Author({ note, chatTitle, onOpenChat }: { note: Note; chatTitle: (id: s
   </Property>;
 }
 
-function MoreMenu({ note, taskCount, onHistory, onDelete }: { note: Note; taskCount: number; onHistory: () => void; onDelete: () => void }) {
+function MoreMenu({ note, taskCount, moveTargets, onPromote, onMove, onHistory, onDelete }: {
+  note: Note;
+  taskCount: number;
+  moveTargets: Note[];
+  onPromote?: () => void;
+  onMove?: (parentId: string | null) => void;
+  onHistory: () => void;
+  onDelete: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const close = () => { setOpen(false); setConfirming(false); };
+  const [moving, setMoving] = useState(false);
+  const close = () => { setOpen(false); setConfirming(false); setMoving(false); };
   return <div className="relative">
     <button type="button" aria-label="More" aria-expanded={open} onClick={() => open ? close() : setOpen(true)} className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
       <MoreHorizontal size={16} aria-hidden="true" />
@@ -384,12 +417,21 @@ function MoreMenu({ note, taskCount, onHistory, onDelete }: { note: Note; taskCo
             <button type="button" onClick={() => { close(); onDelete(); }} className="inline-flex h-8 items-center rounded-full bg-destructive px-3.5 text-[13px] font-medium text-destructive-foreground hover:opacity-90">Delete</button>
           </div>
         </div>
-        : <>
-          <MenuButton onClick={() => { close(); onHistory(); }}>History</MenuButton>
-          {note.path && <MenuButton onClick={() => { void navigator.clipboard?.writeText(note.path!); close(); }}>Copy file path</MenuButton>}
-          <MenuDivider />
-          <MenuButton destructive onClick={() => setConfirming(true)}>Delete page</MenuButton>
-        </>}
+        : moving
+          ? <div aria-label="Move this page" className="p-1.5">
+            <p className="m-0 px-1 pb-1.5 pt-1 text-[11px] font-medium text-faint">Move {noteDisplayTitle(note)}</p>
+            {note.parentId != null && onMove && <MenuButton onClick={() => { onMove(null); close(); }}>Page top level</MenuButton>}
+            {moveTargets.map(target => <MenuButton key={target.id} onClick={() => { onMove?.(target.id); close(); }}>{noteDisplayTitle(target)}</MenuButton>)}
+            {!moveTargets.length && note.parentId == null && <p className="m-0 px-1.5 py-2 text-[12.5px] text-muted-foreground">No other page to move under.</p>}
+          </div>
+          : <>
+            <MenuButton onClick={() => { close(); onHistory(); }}>History</MenuButton>
+            {note.path && <MenuButton onClick={() => { void navigator.clipboard?.writeText(note.path!); close(); }}>Copy file path</MenuButton>}
+            {onPromote && <MenuButton onClick={() => { onPromote(); close(); }}>Promote to page</MenuButton>}
+            {onMove && <MenuButton onClick={() => setMoving(true)}>Move to…</MenuButton>}
+            <MenuDivider />
+            <MenuButton destructive onClick={() => setConfirming(true)}>Delete page</MenuButton>
+          </>}
     </Popover>
   </div>;
 }

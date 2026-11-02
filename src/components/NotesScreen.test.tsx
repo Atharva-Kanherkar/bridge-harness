@@ -101,7 +101,9 @@ const property = async (label: string) => {
   return host.querySelector(`[aria-label='${label} choices'] [role='listbox']`)!;
 };
 
+const clearSearch = async () => { await typeInto(field<HTMLInputElement>("Search notes"), ""); await settle(80); };
 const ONBOARDING = "need to fix the onbaording flow";
+const expandUnder = async (starts: string) => click(buttons().find(node => node.getAttribute("aria-label")?.startsWith("Expand the pages under") && node.getAttribute("aria-label")?.includes(starts)));
 
 describe("capture", () => {
   it("saves exactly what was typed and clears the box before the save returns", async () => {
@@ -214,7 +216,10 @@ describe("pages under pages", () => {
     const parentId = mockIdOf(ONBOARDING);
     mockCreatePage({ title: "Onboarding research", content: "what other apps do at step 3", parentId });
     await settle(60);
-    expect(rowTitles().some(title => title.includes("Onboarding research") && title.includes("from need to fix"))).toBe(true);
+    // Nested under its parent, closed until its chevron is pressed.
+    await expandUnder(ONBOARDING);
+    await settle(60);
+    expect(rowTitles().some(title => title.includes("Onboarding research"))).toBe(true);
     await typeInto(field<HTMLInputElement>("Search notes"), "Onboarding research");
     await settle(250);
     expect(rowTitles()).toHaveLength(1);
@@ -225,6 +230,56 @@ describe("pages under pages", () => {
     expect(pages.textContent).toContain("Onboarding research");
     await click(buttons(pages).find(node => node.textContent?.startsWith("Onboarding research")));
     expect(host.querySelector("article")?.getAttribute("aria-label")).toBe("Onboarding research");
+  });
+
+  it("keeps the tree collapsed and expanded across re-renders, remembering it", async () => {
+    await render();
+    const parentId = mockIdOf(ONBOARDING);
+    mockCreatePage({ title: "Onboarding research", content: "kept", parentId });
+    await settle(60);
+    expect(rowTitles().some(title => title.includes("Onboarding research"))).toBe(false);
+    await expandUnder(ONBOARDING);
+    expect(rowTitles().some(title => title.includes("Onboarding research"))).toBe(true);
+    expect(JSON.parse(localStorage.getItem("bridge.notes.expandedPages") ?? "[]")).toContain(parentId);
+    // Still expanded after the list re-reads on a page change.
+    await openNote(ONBOARDING);
+    await settle(120);
+    expect(rowTitles().some(title => title.includes("Onboarding research"))).toBe(true);
+    await expandUnder(ONBOARDING);
+    expect(rowTitles().some(title => title.includes("Onboarding research"))).toBe(false);
+  });
+
+  it("moves and promotes pages, listing neither itself nor its descendants", async () => {
+    await render();
+    const onboardId = mockIdOf(ONBOARDING);
+    await click(button("New page"));
+    const title = field<HTMLTextAreaElement>("Title");
+    await typeInto(title, "Holding page");
+    await blur(title);
+    await settle(60);
+    await openNote(ONBOARDING);
+    await click(button("More"));
+    await click(button("Move to…"));
+    const picker = host.querySelector("[aria-label='Move this page']")!;
+    const targets = [...picker.querySelectorAll("button")].map(node => node.textContent?.trim() ?? "");
+    expect(targets).toContain("Holding page");
+    expect(targets.some(label => label.startsWith(ONBOARDING))).toBe(false);
+    await click([...picker.querySelectorAll("button")].find(node => node.textContent?.trim() === "Holding page"));
+    await settle(60);
+    expect(mockReadPage(onboardId).note).toMatchObject({ parentId: mockIdOf("Holding page"), state: "open" });
+    // It now sits under its parent, one expansion away.
+    await click(button(`Expand the pages under Holding page`));
+    expect(rowTitles().some(label => label.startsWith(ONBOARDING))).toBe(true);
+
+    // Promote an inbox capture to a page.
+    const capture = await bridgeApi.captureNote("inbox thought");
+    await settle(60);
+    expect(capture.state).toBe("inbox");
+    await openNote("inbox thought");
+    await click(button("More"));
+    await click(button("Promote to page"));
+    await settle(60);
+    expect(mockReadPage(capture.id).note.state).toBe("open");
   });
 });
 
@@ -678,7 +733,6 @@ describe("links between pages", () => {
     await write(`${shown()}\n\nSee [[Onboarding]].\n`);
     await leave();
     await settle(60);
-    const onboarding = mockListNotes({ includeArchived: true }).notes.find(note => note.title === "Onboarding")!;
     await openNote("Onboarding");
     const backlinks = host.querySelector("section[aria-label='Backlinks']")!;
     expect(backlinks).not.toBeNull();
@@ -686,7 +740,6 @@ describe("links between pages", () => {
     expect(backlinks.textContent).toContain("See Onboarding.");
     await click(buttons(backlinks).find(node => node.textContent?.includes("Local-first sync libraries")));
     expect(host.querySelector("article")?.getAttribute("aria-label")).toBe("Local-first sync libraries");
-    expect(backlinks.pageId ?? onboarding).toBeTruthy();
   });
 
   it("carries a rename into the [[ links]] other pages hold", async () => {
