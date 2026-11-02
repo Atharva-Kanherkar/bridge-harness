@@ -122,17 +122,24 @@ CREATE VIRTUAL TABLE pages_fts USING fts5(
     page_id UNINDEXED, space_id UNINDEXED, title, body, tags,
     tokenize = 'porter unicode61'
 );
+CREATE TABLE pages_fts_map(
+    fts_rowid INTEGER PRIMARY KEY,
+    page_id TEXT NOT NULL UNIQUE
+);
+ALTER TABLE pages ADD COLUMN link_key TEXT;
+CREATE INDEX idx_pages_link_key ON pages(space_id, link_key);
 CREATE TABLE page_links(
     space_id TEXT NOT NULL REFERENCES spaces(id),
     from_page_id TEXT NOT NULL,
     to_page_id TEXT,
     target_title TEXT NOT NULL,
+    target_key TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('wiki', 'page')),
     excerpt TEXT NOT NULL,
     PRIMARY KEY(space_id, from_page_id, kind, target_title)
 );
 CREATE INDEX idx_page_links_to ON page_links(space_id, to_page_id);
-CREATE INDEX idx_page_links_title ON page_links(space_id, lower(target_title));
+CREATE INDEX idx_page_links_key ON page_links(space_id, target_key);
 ";
 
 /// Open (or create) `notes.db` at `path` and bring it to [`SCHEMA_VERSION`].

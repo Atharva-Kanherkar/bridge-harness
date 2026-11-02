@@ -141,6 +141,9 @@ pub struct NotesService {
     /// Held while mirroring, so projections follow commit order: each one
     /// reads the newest committed row and the hash the previous one wrote.
     projection_lock: Mutex<()>,
+    /// Held for a whole rename, from the title change to the last rewritten
+    /// backlink, so overlapping renames cannot rewrite links to a stale title.
+    rename_lock: Mutex<()>,
 }
 
 impl NotesService {
@@ -168,6 +171,7 @@ impl NotesService {
             uploads: assets::Uploads::default(),
             import_lock: Mutex::new(()),
             projection_lock: Mutex::new(()),
+            rename_lock: Mutex::new(()),
         };
         // Pages committed but never mirrored (a failed write, a crash between
         // commit and projection) get their files now.
@@ -437,6 +441,7 @@ impl NotesService {
         if update.clear_parent && update.parent_id.is_some() {
             return Err(invalid("parentId and clearParent are mutually exclusive"));
         }
+        let _rename = update.title.is_some().then(|| self.rename_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let mut rename = None;
         let (note, _, _) = self.write_with(&update.id, actor, |db, live, _| {
             let props = live.props();
@@ -458,8 +463,11 @@ impl NotesService {
             if let Some(title) = update.title {
                 let title = title.trim().to_owned();
                 if let Some(old) = props.title.as_deref().filter(|old| !title.is_empty() && *old != title) {
-                    let mut stmt = db.prepare("SELECT DISTINCT p.id FROM pages p JOIN page_links l ON l.from_page_id=p.id AND l.space_id=p.space_id WHERE p.space_id=?1 AND p.deleted_at IS NULL AND (l.to_page_id=?2 OR (l.kind='wiki' AND lower(l.target_title)=lower(?3)))")?;
-                    let incoming = stmt.query_map(params![self.space, update.id, old], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                    // Only links resolved to this page move with it; per source,
+                    // remember whether its `[[old]]` was one of them, since a
+                    // duplicate title can send that link to another page.
+                    let mut stmt = db.prepare("SELECT l.from_page_id, MAX(l.kind='wiki' AND l.target_key=?3) FROM page_links l JOIN pages p ON p.id=l.from_page_id AND p.space_id=l.space_id WHERE l.space_id=?1 AND l.to_page_id=?2 AND p.deleted_at IS NULL GROUP BY l.from_page_id")?;
+                    let incoming = stmt.query_map(params![self.space, update.id, links::link_key(old)], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
                     rename = Some((old.to_owned(), title.clone(), incoming));
                 }
                 patch = patch.maybe(key::TITLE, (!title.is_empty()).then_some(title));
@@ -488,11 +496,11 @@ impl NotesService {
             live.set_props(&patch)
         })?;
         if let Some((old, new, incoming)) = rename {
-            for id in incoming {
+            for (id, wiki) in incoming {
                 self.write(&id, actor, |live| {
                     if live.props().deleted_at.is_some() { return Ok(None); }
                     let body = live.body();
-                    let rewritten = links::rewrite_links_on_rename(&body, &update.id, &old, &new);
+                    let rewritten = links::rewrite_links_on_rename(&body, &update.id, &old, &new, wiki);
                     if rewritten == body { return Ok(None); }
                     live.edit(Some(&rewritten), &PropsPatch::default())
                 })?;
@@ -512,8 +520,28 @@ impl NotesService {
             Ok(ids)
         })?;
         let stamp = now();
-        for page in tasks.iter().map(String::as_str).chain(std::iter::once(id)) {
-            self.write(page, actor, |live| live.set_props(&PropsPatch::default().set(key::DELETED_AT, stamp.clone())))?;
+        // Each task is rechecked inside its own write: one moved elsewhere
+        // since the snapshot keeps its new home.
+        let tombstone_task = |task: &str| {
+            self.write(task, actor, |live| {
+                let props = live.props();
+                if props.deleted_at.is_some() || props.parent_id.as_deref() != Some(id) { return Ok(None); }
+                live.set_props(&PropsPatch::default().set(key::DELETED_AT, stamp.clone()))
+            })
+        };
+        for task in &tasks {
+            tombstone_task(task)?;
+        }
+        self.write(id, actor, |live| live.set_props(&PropsPatch::default().set(key::DELETED_AT, stamp.clone())))?;
+        // A task moved in before the parent's tombstone still goes with it; the
+        // tombstone now refuses further moves.
+        let late: Vec<String> = self.with_db(|db| {
+            let mut statement = db.prepare("SELECT id FROM pages WHERE parent_id=?1 AND kind='task' AND deleted_at IS NULL")?;
+            let ids = statement.query_map(params![id], |row| row.get(0))?.collect::<Result<_, _>>()?;
+            Ok(ids)
+        })?;
+        for task in &late {
+            tombstone_task(task)?;
         }
         Ok(())
     }
@@ -603,7 +631,7 @@ impl NotesService {
                 params![page],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            upsert_index(&transaction, page, &live, seq, &actor, &stamp_time(&hlc), &self.space)?;
+            upsert_index(&transaction, page, &live, seq, &actor, &stamp_time(&hlc), &self.space, false)?;
             if let Some((_, path, hash, projected)) = paths.iter().find(|(id, _, _, _)| id == page) {
                 transaction.execute("UPDATE pages SET path=?2, content_hash=?3, projected_seq=?4 WHERE id=?1", params![page, path, hash, projected])?;
             } else if let Some((path, hash)) = files.get(page) {
@@ -613,6 +641,14 @@ impl NotesService {
                     params![page, path.to_string_lossy(), hash, seq],
                 )?;
             }
+        }
+        let spaces: Vec<String> = {
+            let mut statement = transaction.prepare("SELECT DISTINCT space_id FROM pages")?;
+            let rows = statement.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?;
+            rows
+        };
+        for space in spaces {
+            links::resolve_space(&transaction, &space)?;
         }
         transaction.commit()?;
         Ok(pages.len())
@@ -663,7 +699,7 @@ impl NotesService {
                     let hlc = self.clock.lock().unwrap().now();
                     let seq = doc::append_update(&transaction, page_id, &bytes, actor, &hlc, &self.device)?;
                     doc::maybe_snapshot(&transaction, page_id, seq, &live)?;
-                    upsert_index(&transaction, page_id, &live, seq, actor, &now(), &self.space)?;
+                    upsert_index(&transaction, page_id, &live, seq, actor, &now(), &self.space, true)?;
                     (seq, true)
                 }
                 None => (current_seq, false),
@@ -676,7 +712,8 @@ impl NotesService {
             return Ok((note, seq, false));
         }
         let note = self.project(page_id)?.unwrap_or(note);
-        if let Some(listener) = self.listener.lock().unwrap().clone() {
+        let listener = self.listener.lock().unwrap().clone();
+        if let Some(listener) = listener {
             listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
         }
         Ok((note, seq, true))
@@ -727,7 +764,8 @@ impl NotesService {
     /// structured view), at the page's current sequence.
     pub fn announce(&self, page_id: &str, actor: &str) -> Result<(), BridgeError> {
         let seq: i64 = self.with_db(|db| Ok(db.query_row("SELECT seq FROM pages WHERE id=?1", params![page_id], |row| row.get(0))?))?;
-        if let Some(listener) = self.listener.lock().unwrap().clone() {
+        let listener = self.listener.lock().unwrap().clone();
+        if let Some(listener) = listener {
             listener(&NotePageChanged { page_id: page_id.to_owned(), actor: actor.to_owned(), seq });
         }
         Ok(())
@@ -774,7 +812,9 @@ pub(crate) fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
     })
 }
 
-fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor: &str, updated_at: &str, default_space: &str) -> Result<(), BridgeError> {
+/// `resolve` is false during a rebuild, which resolves each space once at the end.
+#[allow(clippy::too_many_arguments)]
+fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor: &str, updated_at: &str, default_space: &str, resolve: bool) -> Result<(), BridgeError> {
     let props = live.props();
     let body = live.body();
     let created_at = props.created_at.clone().unwrap_or_else(|| updated_at.to_owned());
@@ -811,7 +851,11 @@ fn upsert_index(db: &Connection, page_id: &str, live: &PageDoc, seq: i64, actor:
         ],
     )?;
     links::sync_fts(db, page_id)?;
-    links::sync_page_links(db, page_id)?;
+    if resolve {
+        links::sync_page_links(db, page_id)?;
+    } else {
+        links::write_outbound(db, page_id)?;
+    }
     Ok(())
 }
 
@@ -997,6 +1041,117 @@ pub(crate) mod tests {
         let mirror = std::fs::read_to_string(source.note.path.unwrap()).unwrap();
         assert!(mirror.ends_with(&source.markdown));
         assert_eq!(notes.read(&target.id).unwrap().backlinks.len(), 2);
+    }
+
+    fn rename(notes: &NotesService, id: &str, title: &str) {
+        notes.update(UpdateNote { id: id.into(), title: Some(title.into()), ..Default::default() }, PERSON).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_parent_keeps_a_task_moved_away_mid_delete() {
+        let (_dir, notes) = service();
+        let notes = Arc::new(notes);
+        let parent = page(&notes, "P", "");
+        let task = |title: &str| notes.create(CreatePage { title: Some(title.into()), kind: Some("task".into()), parent_id: Some(parent.id.clone()), ..Default::default() }, PERSON).unwrap();
+        let (t1, t2) = (task("T1"), task("T2"));
+        let q = page(&notes, "Q", "");
+        let (hook, moved, t2_id, q_id) = (Arc::clone(&notes), Arc::new(std::sync::atomic::AtomicBool::new(false)), t2.id.clone(), q.id.clone());
+        let t1_id = t1.id.clone();
+        notes.set_listener(Arc::new(move |change: &NotePageChanged| {
+            if change.page_id == t1_id && !moved.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                hook.update(UpdateNote { id: t2_id.clone(), parent_id: Some(q_id.clone()), ..Default::default() }, PERSON).unwrap();
+            }
+        }));
+        notes.delete(&parent.id, PERSON).unwrap();
+        assert!(notes.read(&t1.id).is_err());
+        assert_eq!(notes.read(&t2.id).unwrap().note.parent_id.as_deref(), Some(q.id.as_str()));
+    }
+
+    #[test]
+    fn renaming_a_duplicate_title_leaves_links_resolved_elsewhere() {
+        let (_dir, notes) = service();
+        let a = page(&notes, "Old", "older");
+        let b = page(&notes, "Old", "newer");
+        let source = page(&notes, "S", &format!("[[Old]] <page url=\"bridge://p/{}\">Old</page>", b.id));
+        rename(&notes, &b.id, "New");
+        assert_eq!(notes.read(&source.id).unwrap().markdown, format!("[[Old]] <page url=\"bridge://p/{}\">New</page>", b.id));
+        assert_eq!(notes.read(&a.id).unwrap().backlinks[0].page_id, source.id);
+    }
+
+    #[test]
+    fn overlapping_renames_leave_links_at_the_final_title() {
+        let (_dir, notes) = service();
+        let notes = Arc::new(notes);
+        let target = page(&notes, "Old", "");
+        let source = page(&notes, "S", "[[Old]]");
+        let (hook, target_id) = (Arc::clone(&notes), target.id.clone());
+        let second = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&second);
+        notes.set_listener(Arc::new(move |change: &NotePageChanged| {
+            let mut slot = slot.lock().unwrap();
+            if change.page_id == target_id && slot.is_none() {
+                let (notes, id) = (Arc::clone(&hook), target_id.clone());
+                *slot = Some(std::thread::spawn(move || rename(&notes, &id, "Final")));
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }));
+        rename(&notes, &target.id, "Mid");
+        let handle = second.lock().unwrap().take().unwrap();
+        handle.join().unwrap();
+        assert_eq!(notes.read(&source.id).unwrap().markdown, "[[Final]]");
+        assert_eq!(notes.read(&target.id).unwrap().backlinks[0].page_id, source.id);
+    }
+
+    #[test]
+    fn renaming_to_a_title_wiki_links_cannot_hold_keeps_the_backlink() {
+        let (_dir, notes) = service();
+        let target = page(&notes, "Old", "");
+        let source = page(&notes, "S", "[[Old|my alias]] [[Old]]");
+        rename(&notes, &target.id, "Research | Planning");
+        let tag = |text: &str| format!("<page url=\"bridge://p/{}\">{text}</page>", target.id);
+        assert_eq!(notes.read(&source.id).unwrap().markdown, format!("{} {}", tag("my alias"), tag("Research | Planning")));
+        assert_eq!(notes.read(&target.id).unwrap().backlinks[0].page_id, source.id);
+    }
+
+    #[test]
+    fn renames_leave_quoted_and_indented_code_alone() {
+        let (_dir, notes) = service();
+        let target = page(&notes, "Old", "");
+        let body = "> ~~~md\n> [[Old]]\n> ~~~\n\n    [[Old]]\n\n[[Old]]";
+        let source = page(&notes, "S", body);
+        rename(&notes, &target.id, "New");
+        assert_eq!(notes.read(&source.id).unwrap().markdown, "> ~~~md\n> [[Old]]\n> ~~~\n\n    [[Old]]\n\n[[New]]");
+    }
+
+    #[test]
+    fn unmatched_backticks_in_other_paragraphs_do_not_hide_links() {
+        let (_dir, notes) = service();
+        let target = page(&notes, "Old", "");
+        let source = page(&notes, "S", "An unmatched ` here.\n\n[[Old]]\n\nAnother unmatched ` here.");
+        assert_eq!(notes.read(&target.id).unwrap().backlinks[0].page_id, source.id);
+        rename(&notes, &target.id, "New");
+        assert!(notes.read(&source.id).unwrap().markdown.contains("[[New]]"));
+    }
+
+    #[test]
+    fn a_decomposed_title_finds_its_page() {
+        let (_dir, notes) = service();
+        let decomposed = "e\u{301}cole";
+        let page = page(&notes, decomposed, "");
+        assert_eq!(search(&notes, decomposed)[0].id, page.id);
+        assert_eq!(search(&notes, "école")[0].id, page.id);
+    }
+
+    #[test]
+    fn search_rows_are_replaced_by_rowid_not_scanned() {
+        let (_dir, notes) = service();
+        let plan: String = notes.with_db(|db| Ok(db.query_row("EXPLAIN QUERY PLAN DELETE FROM pages_fts WHERE rowid=(SELECT fts_rowid FROM pages_fts_map WHERE page_id='x')", [], |r| r.get(3))?)).unwrap();
+        // `0:=` is a rowid lookup; a scan of the UNINDEXED id has no constraint.
+        assert!(plan.ends_with("INDEX 0:="), "{plan}");
+        let a = page(&notes, "Alpha", "first");
+        notes.edit(EditPage { id: a.id.clone(), text: Some("second".into()), ..Default::default() }, PERSON).unwrap();
+        assert!(search(&notes, "first").is_empty());
+        assert_eq!(search(&notes, "second")[0].id, a.id);
     }
 
     #[test]
