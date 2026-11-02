@@ -218,7 +218,7 @@ fn live_tasks() {
     let cases = tasks_cases();
     let (mut ran, mut groups, mut matched, mut produced, mut relevant, mut empty_ok, mut empty_total, mut dropped, mut leaks, mut spend) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     for case in &cases {
-        let generation = match generate(&registry, model.as_deref(), tasks::INSTRUCTIONS, &tasks::prompt(case.page, &projects)) {
+        let generation = match generate(&registry, model.as_deref(), tasks::INSTRUCTIONS, &tasks::prompt(case.page, &projects, &[])) {
             Ok(generation) => generation,
             Err(detail) => {
                 println!("FAIL turn: {detail} <- {}", guards::clip(case.page, 50));

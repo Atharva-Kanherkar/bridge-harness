@@ -595,6 +595,8 @@ describe("tasks and Start", () => {
     const task = mockReadPage(mockIdOf(ONBOARDING)).tasks.find(item => item.title === "add a skip button")!;
     expect(task).toMatchObject({ state: "doing", sessionIds: ["session-new"] });
     const row = host.querySelector("li[aria-label='add a skip button']")!;
+    expect(button("Start add a skip button", row)).toBeUndefined();
+    expect(row.querySelector("[role='status']")?.textContent).toBe("Chat linked");
     await click(button("Open chat", row));
     expect(given.onOpenChat).toHaveBeenCalledWith("session-new");
 
@@ -608,6 +610,76 @@ describe("tasks and Start", () => {
     expect(button("Open chat", host.querySelector("li[aria-label='shorter copy on the welcome screen']")!)).toBeDefined();
   });
 
+  it("tracks a linked chat live and lets the person finish and reopen the task", async () => {
+    const given = await withTasks({ sessions: [{ ...SESSIONS[0], id: "session-new", status: "working" }] });
+    await click(button("Start add a skip button"));
+    await click(button("Start", host.querySelector("[aria-label='Start a chat']")!));
+    await settle(60);
+    const row = () => host.querySelector("li[aria-label='add a skip button']")!;
+    expect(row().querySelector("[role='status']")?.textContent).toBe("Running");
+    expect(button("Start add a skip button", row())).toBeUndefined();
+    for (const [status, label] of [["waiting", "Needs you"], ["ready", "Ready to review"], ["failed", "Failed"], ["stopped", "Stopped"], ["completed", "Finished"]] as const) {
+      await act(async () => { root.render(<NotesScreen {...given} sessions={[{ ...SESSIONS[0], id: "session-new", status }]} />); });
+      expect(row().querySelector("[role='status']")?.textContent).toBe(label);
+      expect(button("Open chat", row())).toBeDefined();
+    }
+    await click(button("Mark add a skip button done", row()));
+    await settle(60);
+    expect(row().querySelector("[role='status']")?.textContent).toBe("Done");
+    expect(mockReadPage(mockIdOf(ONBOARDING)).tasks.find(task => task.title === "add a skip button")?.state).toBe("done");
+    await click(button("Reopen add a skip button", row()));
+    await settle(60);
+    expect(row().querySelector("[role='status']")?.textContent).toBe("Finished");
+    expect(button("Start add a skip button", row())).toBeUndefined();
+    await click(button("add a skip button", row()));
+    expect(button("New chat")).toBeDefined();
+    expect(button("Start a chat")).toBeUndefined();
+  });
+
+  it("creates one chat for repeated Start clicks and allows retry after a failed start", async () => {
+    let finish!: (id: string | undefined) => void;
+    const onStartChat = vi.fn(() => new Promise<string | undefined>(resolve => { finish = resolve; }));
+    await withTasks({ onStartChat });
+    await click(button("Start add a skip button"));
+    const start = button("Start", host.querySelector("[aria-label='Start a chat']")!)!;
+    await act(async () => {
+      start.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      start.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await settle();
+    expect(onStartChat).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("li[aria-label='add a skip button'] [role='status']")?.textContent).toBe("Starting…");
+    await act(async () => { finish(undefined); });
+    await settle();
+    expect(mockReadPage(mockIdOf(ONBOARDING)).tasks.find(task => task.title === "add a skip button")?.sessionIds).toEqual([]);
+    await click(button("Start", host.querySelector("[aria-label='Start a chat']")!));
+    expect(onStartChat).toHaveBeenCalledTimes(2);
+    await click(button("Mark add a skip button done"));
+    await act(async () => { finish("session-new"); });
+    await settle(60);
+    expect(button("Start add a skip button")).toBeUndefined();
+    expect(button("Open chat", host.querySelector("li[aria-label='add a skip button']")!)).toBeDefined();
+    expect(mockReadPage(mockIdOf(ONBOARDING)).tasks.find(task => task.title === "add a skip button")?.state).toBe("done");
+  });
+
+  it("does not offer Start for an unlinked task marked done", async () => {
+    await withTasks();
+    await click(button("Mark add a skip button done"));
+    await settle(60);
+    expect(button("Start add a skip button")).toBeUndefined();
+    expect(host.querySelector("li[aria-label='add a skip button'] [role='status']")?.textContent).toBe("Done");
+    await click(button("Reopen add a skip button"));
+    await settle(60);
+    expect(button("Start add a skip button")).toBeDefined();
+    await click(button("Mark add a skip button done"));
+    await settle(60);
+    await click(button("add a skip button", host.querySelector("li[aria-label='add a skip button']")!));
+    expect(button("Start a chat")).toBeUndefined();
+    await pick(await property("Status"), "Archived");
+    await settle(60);
+    expect(button("Start a chat")).toBeUndefined();
+  });
+
   it("starts a chat with the latest words, even before they autosave", async () => {
     const given = await render();
     await openNote(ONBOARDING);
@@ -618,6 +690,18 @@ describe("tasks and Start", () => {
     await settle(60);
     expect(given.onStartChat).toHaveBeenCalledTimes(1);
     expect(vi.mocked(given.onStartChat).mock.calls[0][0].message).toContain("LATEST CHAT REQUIREMENT");
+  });
+
+  it("does not count archived tasks as completed", async () => {
+    await withTasks();
+    for (const task of mockReadPage(mockIdOf(ONBOARDING)).tasks) {
+      await act(async () => { await bridgeApi.updateNote({ id: task.id, state: "archived" }); });
+    }
+    await settle(60);
+    const tasks = host.querySelector("section[aria-label='Tasks']")!;
+    expect(tasks.textContent).toContain("No open tasks");
+    expect(tasks.textContent).not.toContain("All done");
+    expect(button("Start add a skip button", tasks)).toBeUndefined();
   });
 
   it("preselects the page's project when it has one", async () => {

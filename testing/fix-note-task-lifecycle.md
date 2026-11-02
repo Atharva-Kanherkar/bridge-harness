@@ -1,7 +1,7 @@
 # fix/note-task-lifecycle Test Contract
 
 ## Functional Behavior
-- Append work to a note and rerun Turn into tasks: add only new work. A different generated title for the same normalized source excerpt must reuse the existing task. A narrower verbatim phrase from an existing excerpt is also already covered.
+- Append work to a note and rerun Turn into tasks: add only new work. The extractor must explicitly identify an existing task by its supplied id when rephrasing already tracked work. Source quotations alone must never suppress a distinct new outcome, including one sharing an existing sentence. Missing or unknown identity decisions on reruns fail without creating tasks.
 - Keep existing task ids, edited titles and bodies, states, and linked chats, including done and archived tasks. Suppress repeated excerpt/title pairs within one reply. Separate outcomes may share a source sentence and must all survive their first extraction; distinct excerpts remain separate tasks.
 - Give extraction the existing task titles and excerpts so it can avoid proposing work already tracked.
 - Linked task rows show the latest chat's current status and Open chat, without Start. Starting, running, waiting, finished-turn, failed and stopped states are distinct. Marking done and reopening remain explicit user actions.
@@ -9,7 +9,7 @@
 - Repeated clicks while a task is starting create at most one chat. A failed start can be retried.
 
 ## Unit Tests
-- Rust notes::tasks regressions: rerun with rewritten titles after appending work; preserve started, done and archived task identities; duplicate excerpt/title pairs within a reply; separate outcomes sharing a sentence; distinct excerpts; existing-task prompt context.
+- Rust notes::tasks regressions: rerun with explicit existing-task identities and rewritten titles after appending work; missing/unknown identities; new outcomes sharing an existing sentence; preserve started, done and archived task identities; duplicate excerpt/title pairs within a reply; separate outcomes sharing a sentence; distinct excerpts; existing-task prompt context.
 - Note task status tests cover every SessionStatus, missing chat details, manual done and archived states, and latest linked chat selection.
 
 ## Integration / Functional Tests
