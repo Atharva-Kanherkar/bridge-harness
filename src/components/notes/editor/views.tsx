@@ -1,4 +1,4 @@
-// How images, child pages and callouts draw inside the editor.
+// How images, child pages and wiki links draw inside the editor.
 
 import { createContext, useContext, useEffect, useState } from "react";
 import Image from "@tiptap/extension-image";
@@ -8,12 +8,18 @@ import { FileText, Info, Lightbulb, MessageSquareWarning, OctagonAlert, Triangle
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 import { assetUrl } from "./assets";
-import { Callout, CALLOUT_KINDS, PageLink, type CalloutKind } from "./blocks";
+import { Callout, CALLOUT_KINDS, PageLink, WikiLink, type CalloutKind } from "./blocks";
 
 /** What the views need from the page around the editor. */
 export interface EditorPages {
   title: (id: string) => string | undefined;
   open: (id: string) => void;
+  /** Open the page titled so, creating it first when none has that title. */
+  openByTitle?: (title: string) => void;
+  /** The pages a [[ menu can suggest, newest first. */
+  pages?: () => { id: string; title: string }[];
+  /** Make a page titled so; null when it failed. */
+  createByTitle?: (title: string) => Promise<{ id: string; title: string } | null>;
 }
 export const EditorPagesContext = createContext<EditorPages>({ title: () => undefined, open: () => undefined });
 
@@ -59,6 +65,29 @@ function PageLinkView({ node, selected }: ReactNodeViewProps) {
 
 export const NotePageLink = PageLink.extend({
   addNodeView() { return ReactNodeViewRenderer(PageLinkView); },
+});
+
+function WikiLinkView({ node }: ReactNodeViewProps) {
+  const pages = useContext(EditorPagesContext);
+  const target = String(node.attrs.target ?? "");
+  const alias = node.attrs.alias == null ? null : String(node.attrs.alias);
+  return <NodeViewWrapper as="span" className="inline">
+    <button
+      type="button"
+      contentEditable={false}
+      title={`Open the page ${target}`}
+      aria-label={`Open the page ${target}`}
+      onClick={() => { if (target) pages.openByTitle?.(target); }}
+      className="inline-flex cursor-pointer items-baseline gap-1 rounded text-foreground align-baseline underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
+    >
+      <FileText size={13} strokeWidth={1.75} aria-hidden="true" className="relative top-[1px] shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">{alias ?? target}</span>
+    </button>
+  </NodeViewWrapper>;
+}
+
+export const NoteWikiLink = WikiLink.extend({
+  addNodeView() { return ReactNodeViewRenderer(WikiLinkView); },
 });
 
 const CALLOUT_LOOK: Record<CalloutKind, { label: string; icon: typeof Info; tone: string }> = {

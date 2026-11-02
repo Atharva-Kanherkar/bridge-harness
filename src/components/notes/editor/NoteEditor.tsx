@@ -19,8 +19,9 @@ import { MathPopover, type MathEdit } from "./math";
 import { installMinimalEscaping } from "./markdownText";
 import { SlashMenu, slashCommand, type BlockHost, type SlashMenuHandle, type SlashState } from "./slash";
 import { SelectionToolbar } from "./toolbar";
+import { WikiMenu, wikiCommand, type WikiMenuHandle, type WikiState } from "./wiki";
 import { BlockHandle } from "./handle";
-import { EditorPagesContext, NoteCallout, NoteImage, NotePageLink, type EditorPages } from "./views";
+import { EditorPagesContext, NoteCallout, NoteImage, NotePageLink, NoteWikiLink, type EditorPages } from "./views";
 
 export const HAND_OVER_MS = 250;
 
@@ -38,8 +39,9 @@ export interface NoteEditorProps {
   /** The editor lost focus, after handing over what was typed. */
   onLeave?: () => void;
   pages: EditorPages;
-  /** Make a page under this one; resolves to it, or null if it failed. */
-  onCreatePage: () => Promise<{ id: string; title: string } | null>;
+  /** Make a page titled so (null: untitled, the `/` menu's Page); resolves to
+   *  it, or null if it failed. */
+  onCreatePage: (title: string | null) => Promise<{ id: string; title: string } | null>;
   onError: (message: string) => void;
 }
 
@@ -63,6 +65,8 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
   const imageAt = useRef<number | null>(null);
   const slashMenu = useRef<SlashMenuHandle>(null);
   const [slash, setSlash] = useState<SlashState | null>(null);
+  const wikiMenu = useRef<WikiMenuHandle>(null);
+  const [wiki, setWiki] = useState<WikiState | null>(null);
   const [math, setMath] = useState<MathEdit | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
   const editorRef = useRef<Editor | null>(null);
@@ -122,13 +126,27 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
     pickImage: at => { imageAt.current = at; files.current?.click(); },
     editMath: (kind, at) => openMath(kind, at, "", false),
     createPage: at => {
-      void latest.current.onCreatePage().then(page => {
+      void latest.current.onCreatePage(null).then(page => {
         const editor = editorRef.current;
         if (!page || !editor) return;
         editor.chain().focus().insertContentAt(Math.min(at, editor.state.doc.content.size), { type: "pageLink", attrs: page }).run();
       });
     },
   });
+  const wikiHost = () => ({
+    pages: () => latest.current.pages.pages?.() ?? [],
+    createByTitle: async (title: string) => {
+      const page = await latest.current.onCreatePage(title);
+      return page ? { id: page.id, title: page.title } : null;
+    },
+  });
+
+  // Both menus share the keydown path; each answers only while its own menu
+  // is open.
+  const menuKeys = useCallback((event: KeyboardEvent) => {
+    if (wikiMenu.current?.onKeyDown(event)) return true;
+    return slashMenu.current?.onKeyDown(event) ?? false;
+  }, []);
 
   const editor = useEditor({
     content: split.current.body,
@@ -136,9 +154,10 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
     extensions: noteExtensions({
       image: NoteImage,
       pageLink: NotePageLink,
+      wikiLink: NoteWikiLink,
       callout: NoteCallout,
       onMathClick: (kind, latex, pos) => openMath(kind, pos, latex, true),
-      extra: [slashCommand(setSlash, event => slashMenu.current?.onKeyDown(event) ?? false, () => host.current)],
+      extra: [slashCommand(setSlash, menuKeys, () => host.current), wikiCommand(setWiki, menuKeys, wikiHost)],
     }),
     editorProps: {
       attributes: { class: "note-editor", "aria-label": "Your words", role: "textbox", "aria-multiline": "true", spellcheck: "true" },
@@ -241,6 +260,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
         openMath("inline", from, editor.state.doc.textBetween(from, to), false, { from, to });
       }} />}
       {slash && <SlashMenu ref={slashMenu} state={slash} />}
+      {wiki && <WikiMenu ref={wikiMenu} state={wiki} />}
       {math && <MathPopover key={`${math.pos}-${math.existing}`} edit={math} onSave={saveMath} onRemove={removeMath} onClose={() => { setMath(null); editor?.commands.focus(); }} />}
       <input
         ref={files}

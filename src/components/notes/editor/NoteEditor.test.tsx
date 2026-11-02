@@ -28,7 +28,18 @@ const handle = createRef<NoteEditorHandle>();
 
 async function mount(text: string, overrides: Partial<NoteEditorProps> = {}) {
   const onChange = vi.fn();
-  const props: NoteEditorProps = { text, title: null, onChange, pages: { title: () => undefined, open: vi.fn() }, onCreatePage: vi.fn(async () => ({ id: "child-1", title: "Child" })), onError: vi.fn(), ...overrides };
+  const props: NoteEditorProps = {
+    text, title: null, onChange,
+    pages: {
+      title: () => undefined,
+      open: vi.fn(),
+      openByTitle: vi.fn(),
+      pages: () => [{ id: "p-plans", title: "Plans" }, { id: "p-crew", title: "Crew notes" }],
+    },
+    onCreatePage: vi.fn(async (title: string | null) => ({ id: "child-1", title: title ?? "Child" })),
+    onError: vi.fn(),
+    ...overrides,
+  };
   await act(async () => { root.render(<NoteEditor ref={handle} {...props} />); });
   await settle();
   return { props, onChange, rerender: async (next: Partial<NoteEditorProps>) => { await act(async () => { root.render(<NoteEditor ref={handle} {...props} {...next} />); }); await settle(); } };
@@ -227,7 +238,7 @@ describe("NoteEditor", () => {
     const before = "Before\n\nSee [[Plans]] then [[Crew|the crew]].\n\nAfter\n";
     const { onChange } = await mount(before);
     const dom = host.querySelector(".note-editor")!;
-    expect([...dom.querySelectorAll("span[data-type='wikiLink']")].map(node => node.textContent)).toEqual(["Plans", "the crew"]);
+    expect([...dom.querySelectorAll("button[aria-label^='Open the page']")].map(node => node.textContent)).toEqual(["Plans", "the crew"]);
     await commit();
     expect(onChange).not.toHaveBeenCalled();
     await typeAfter("Before", "!");
@@ -240,5 +251,49 @@ describe("NoteEditor", () => {
     await typeAfter("stays", " typed [[maybe]] else");
     await commit();
     expect(onChange.mock.calls[0][0]).toBe("plain \\[1] stays typed \\[\\[maybe]] else\n");
+  });
+
+  it("opens the [[ menu on typing, filters pages, and inserts a link on Enter", async () => {
+    await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).not.toBeNull();
+    await typeAfter("[[", "pl");
+    await settle();
+    const options = [...document.querySelectorAll("[role='listbox'][aria-label='Page links'] [role='option']")].map(node => node.textContent);
+    expect(options).toEqual(["Plans", 'Make "pl"']);
+    await key("Enter");
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+    expect(editor().getMarkdown()).toContain("[[Plans]]");
+  });
+
+  it("closes the [[ menu on Escape without inserting anything", async () => {
+    await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Crew").run(); });
+    await settle();
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).not.toBeNull();
+    await key("Escape");
+    expect(document.querySelector("[role='listbox'][aria-label='Page links']")).toBeNull();
+    expect(editor().getMarkdown()).toContain("[[Crew");
+  });
+
+  it("offers to make the page when no existing title matches, and links to it", async () => {
+    const { props: given } = await mount("first\n");
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Fresh thoughts").run(); });
+    await settle();
+    const options = [...document.querySelectorAll("[role='listbox'][aria-label='Page links'] [role='option']")].map(node => node.textContent);
+    expect(options).toEqual(['Make "Fresh thoughts"']);
+    await key("Enter");
+    await settle();
+    expect(given.onCreatePage).toHaveBeenCalledWith("Fresh thoughts");
+    expect(editor().getMarkdown()).toContain("[[Fresh thoughts]]");
+  });
+
+  it("opens the page named in a wiki link when its pill is clicked", async () => {
+    const { props: given } = await mount("See [[Plans]] and continue\n");
+    const pill = [...host.querySelectorAll("button[aria-label]")].find(node => node.getAttribute("aria-label") === "Open the page Plans");
+    expect(pill).not.toBeNull();
+    await act(async () => { pill!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(given.pages.openByTitle).toHaveBeenCalledWith("Plans");
   });
 });
