@@ -1,7 +1,7 @@
 # fix/note-task-lifecycle Test Contract
 
 ## Functional Behavior
-- Append work to a note and rerun Turn into tasks: add only new work. A different generated title for the same normalized source excerpt must reuse the existing task.
+- Append work to a note and rerun Turn into tasks: add only new work. A different generated title for the same normalized source excerpt must reuse the existing task. A narrower verbatim phrase from an existing excerpt is also already covered.
 - Keep existing task ids, edited titles and bodies, states, and linked chats, including done and archived tasks. Suppress repeated excerpt/title pairs within one reply. Separate outcomes may share a source sentence and must all survive their first extraction; distinct excerpts remain separate tasks.
 - Give extraction the existing task titles and excerpts so it can avoid proposing work already tracked.
 - Linked task rows show the latest chat's current status and Open chat, without Start. Starting, running, waiting, finished-turn, failed and stopped states are distinct. Marking done and reopening remain explicit user actions.
