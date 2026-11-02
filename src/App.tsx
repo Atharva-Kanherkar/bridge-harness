@@ -11,7 +11,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { findReferences, insertMention, referenceAlias, removeReferenceToken, type ReferenceChipModel } from "./referenceChip";
 import type { ResolveReferenceResult } from "./protocol/generated/protocol";
-import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
+import { agentMentionQuery, agentShortcutCandidates, configuredAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { closestHarnessShortcut, harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { backendMode, bridgeApi } from "./api";
@@ -305,6 +305,7 @@ function AppContent() {
   const [agentShortcutIndex, setAgentShortcutIndex] = useState(0);
   const [agentShortcutDismissed, setAgentShortcutDismissed] = useState(false);
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
+  const [agentShortcutTargets, setAgentShortcutTargets] = useState<AgentDefinition[]>([]);
   // Extra Claude Code and Codex sign-ins, offered as their own picker groups.
   const [providerAccounts, setProviderAccounts] = useState<AccountChoice[]>([]);
   const [busy, setBusy] = useState(false);
@@ -576,6 +577,7 @@ function AppContent() {
     // publishes StateChanged precisely so the badge repaints, and another window
     // flipping the switch has to reach this one too.
     setPermissionPolicy(config.permissionPolicy);
+    setAgentShortcutTargets(config.agents);
     const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
     setProviderAccounts(accountChoices(config.harnesses));
@@ -1896,7 +1898,8 @@ function AppContent() {
         const reviewed = draftSettings.settings?.workspaceId === draft.workspaceId ? draftSettings.settings : undefined;
         const settings = await bridgeApi.resolveChatSettings({workspaceId:draft.workspaceId,overrides,expectedRevision:reviewed?.revision});
         const agent = settings.target.kind === "agent" ? settings.target : undefined;
-        if ((agent || parseAgentMention(text)) && (initialAttachments.length > 0 || !text)) {
+        const mention = configuredAgentMention(text, agentShortcutTargets);
+        if ((agent || mention) && (initialAttachments.length > 0 || !text)) {
           throw new Error("Agents need a text objective and workspace file references. Remove image attachments before sending to an agent.");
         }
         const result = await bridgeApi.createConfiguredChat({workspaceId:draft.workspaceId,overrides,expectedRevision:settings.revision,title:null});
@@ -1904,7 +1907,7 @@ function AppContent() {
         const created = next.sessions.find(item => item.id === result.sessionId);
         if (!created) throw new Error("The host did not return the created chat");
         setChatConfiguration({sessionId:result.sessionId,value:result.configuration});
-        const firstMessage = agent && !parseAgentMention(text) ? `#${agent.agentId} ${text}` : text;
+        const firstMessage = agent && !mention ? `#${agent.agentId} ${text}` : text;
         // Carry before selecting: the welcome-message effect fires on session-id
         // change, and the brief must be in the forest before the first cold start
         // compiles its prompt.
@@ -2589,7 +2592,8 @@ function AppContent() {
     const origin = draftOwnerRef.current;
     const selectedBrowserContexts = forcedText === undefined && session
       ? browserSelections.filter(context => context.sessionId === session.id) : [];
-    if (selectedBrowserContexts.length && /^(?:\/|\$[a-z]|#[a-z])/i.test(submittedText)) {
+    const agentMention = submittedText ? configuredAgentMention(submittedText, agentShortcutTargets) : null;
+    if (selectedBrowserContexts.length && (/^(?:\/|\$[a-z])/i.test(submittedText) || agentMention)) {
       setError("Remove the browser selection before using a command or shortcut. Browser edits are sent to the current task.");
       return;
     }
@@ -2653,7 +2657,6 @@ function AppContent() {
       }
     }
     if (!session) return;
-    const agentMention = submittedText ? parseAgentMention(submittedText) : null;
     if (agentMention) {
       if (sentAttachments.length > 0) {
         setError("Agent shortcuts do not accept image attachments. Put the file in the workspace and reference it with @ instead.");

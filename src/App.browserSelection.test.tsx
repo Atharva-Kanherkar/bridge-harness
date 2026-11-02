@@ -166,6 +166,30 @@ describe("browser selection delivery", () => {
     expect(container.textContent).toContain("Remove the browser selection before using a command or shortcut");
   });
 
+  it("sends a non-agent hashtag with the selected browser context", async () => {
+    selectElement();
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut");
+    const submit = vi.spyOn(bridgeApi, "submitInput").mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+    await send("#eng-alerts investigate issue #389 on this page");
+    await settle();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0][1]).toContain("#eng-alerts investigate issue #389 on this page");
+    expect(submit.mock.calls[0][1]).toContain("main > button");
+  });
+
+  it("retains selected browser context when a configured agent is addressed", async () => {
+    selectElement();
+    const submit = vi.spyOn(bridgeApi, "submitInput");
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut");
+    await send("#verifier review this page");
+    expect(submit).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(selectionChip()).not.toBeNull();
+    expect(composer()!.value).toBe("#verifier review this page");
+    expect(container.textContent).toContain("Remove the browser selection before using a command or shortcut");
+  });
+
   it("rejects a selection invalidated while prompt preparation is in flight", async () => {
     selectElement();
     const held = deferred<{ text: string; interceptions: [] }>();

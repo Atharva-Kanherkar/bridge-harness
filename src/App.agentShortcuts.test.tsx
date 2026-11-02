@@ -112,15 +112,49 @@ describe("agent shortcut composer", () => {
     expect(container.textContent).toContain("Verification agent (verification) was launched.");
   });
 
-  it("restores a rejected directive so it can be corrected", async () => {
-    vi.spyOn(bridgeApi, "dispatchAgentShortcut").mockRejectedValue(new Error("Unknown agent shortcut #ghost"));
-    const field = await setComposer("#ghost inspect the logs");
+  it.each([
+    "Please inspect issue #389",
+    "#389",
+    "#389 needs investigation",
+    "#eng-alerts has an update on issue #389",
+  ])("sends non-agent hash references as ordinary chat: %s", async text => {
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut");
+    const submit = vi.spyOn(bridgeApi, "submitInput").mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+    const field = await setComposer(text);
 
     await act(async () => field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
     await settle();
 
-    expect(field.value).toBe("#ghost inspect the logs");
-    expect(container.textContent).toContain("Unknown agent shortcut #ghost");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledWith("session-2", text, [], "steer");
+    expect(field.value).toBe("");
+  });
+
+  it("sends a non-agent hash reference with its image attachment", async () => {
+    const dispatch = vi.spyOn(bridgeApi, "dispatchAgentShortcut");
+    const submit = vi.spyOn(bridgeApi, "submitInput").mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+    const field = await setComposer("#389 needs investigation");
+    const file = new File(["image bytes"], "screenshot.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { items: { 0: { kind: "file", type: "image/png", getAsFile: () => file }, length: 1 } } });
+    await act(async () => field.dispatchEvent(paste));
+    await settle();
+    await act(async () => field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    await settle();
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledWith("session-2", "#389 needs investigation", [expect.objectContaining({ mediaType: "image/png" })], "steer");
+  });
+
+  it("restores a rejected directive so it can be corrected", async () => {
+    vi.spyOn(bridgeApi, "dispatchAgentShortcut").mockRejectedValue(new Error("Agent is unavailable"));
+    const field = await setComposer("#verifier inspect the logs");
+
+    await act(async () => field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    await settle();
+
+    expect(field.value).toBe("#verifier inspect the logs");
+    expect(container.textContent).toContain("Agent is unavailable");
   });
 
   it.each([
