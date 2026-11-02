@@ -11,6 +11,10 @@
         "null"
       ]
     },
+    "clearParent": {
+      "default": false,
+      "type": "boolean"
+    },
     "clearWorkspace": {
       "default": null,
       "type": [
@@ -22,6 +26,13 @@
       "type": "string"
     },
     "kind": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parentId": {
       "default": null,
       "type": [
         "string",

@@ -184,3 +184,41 @@ fn notes_methods_round_trip_through_the_daemon() {
     accept_loop.join().unwrap();
     daemon.shutdown(Duration::from_secs(5));
 }
+
+#[test]
+fn links_search_rename_and_parent_moves_round_trip_through_the_daemon() {
+    let fixture = tempfile::tempdir().unwrap();
+    seed(fixture.path());
+    let (daemon, listener) = Daemon::start(DaemonConfig {
+        data_dir: fixture.path().to_path_buf(), socket_path: None, health_addr: None,
+        browser_extension_path: fixture.path().join("no-extension"), handshake_timeout: Duration::from_millis(400),
+    }).unwrap();
+    let daemon = std::sync::Arc::new(daemon);
+    let server = daemon.clone();
+    let accept_loop = std::thread::spawn(move || bridged::serve(&server, listener).unwrap());
+    let mut client = Client::connect(&daemon.socket_path, &daemon.state.auth_token);
+    let source = client.call(1, "notes/create_page", json!({"title": "Source", "content": "[[Launch Plan|the plan]]"}));
+    let source = source["result"]["id"].as_str().unwrap().to_owned();
+    let target = client.call(2, "notes/create_page", json!({"title": "Launch Plan", "content": "running"}));
+    let target = target["result"]["id"].as_str().unwrap().to_owned();
+    let read = client.call(3, "notes/read_page", json!({"id": target}));
+    assert_eq!(read["result"]["backlinks"][0]["pageId"], source);
+    assert_eq!(read["result"]["backlinks"][0]["excerpt"], "the plan");
+    let rename = client.call(4, "notes/update_note", json!({"id": target, "title": "Q4 Launch Plan"}));
+    assert!(rename.get("error").is_none(), "{rename}");
+    let read = client.call(5, "notes/read_page", json!({"id": source}));
+    assert_eq!(read["result"]["markdown"], "[[Q4 Launch Plan|the plan]]");
+    let history = client.call(6, "notes/page_history", json!({"id": source}));
+    assert_eq!(history["result"]["versions"].as_array().unwrap().len(), 2);
+    let moved = client.call(7, "notes/update_note", json!({"id": source, "parentId": target}));
+    assert_eq!(moved["result"]["parentId"], target);
+    let cycle = client.call(8, "notes/update_note", json!({"id": target, "parentId": source}));
+    assert!(cycle.get("error").is_some(), "{cycle}");
+    let cleared = client.call(9, "notes/update_note", json!({"id": source, "clearParent": true}));
+    assert!(cleared["result"]["parentId"].is_null());
+    let search = client.call(10, "notes/list_notes", json!({"query": "runs"}));
+    assert_eq!(search["result"]["notes"][0]["id"], target);
+    daemon.state.shutting_down.store(true, Ordering::SeqCst);
+    accept_loop.join().unwrap();
+    daemon.shutdown(Duration::from_secs(5));
+}

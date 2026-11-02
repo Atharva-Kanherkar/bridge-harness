@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  mockCaptureNote, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesAgentWrite, mockReadPage,
+  mockCaptureNote, mockCreatePage, mockUpdateNote, mockDeleteNote, mockEditPage, mockExtractTasks, mockListNotes, mockNotesAgentWrite, mockReadPage,
   mockPageHistory, mockReadVersion, mockRestoreVersion, mockStructureNote, onMockNotesPageChanged, resetMockNotes, setMockNotesPassDelay,
 } from "./notesMock";
 
@@ -14,6 +14,16 @@ describe("mock notes", () => {
     expect(note.state).toBe("inbox");
     expect(mockReadPage(note.id).markdown).toBe(body);
     expect(mockListNotes().notes[0].id).toBe(note.id);
+  });
+
+  it("moves and promotes pages while refusing cycles", () => {
+    const parent = mockCreatePage({ title: "Parent" });
+    const child = mockCaptureNote("Child");
+    expect(mockReadPage(parent.id).backlinks).toEqual([]);
+    expect(mockUpdateNote({ id: child.id, parentId: parent.id })).toMatchObject({ parentId: parent.id, state: "open" });
+    expect(() => mockUpdateNote({ id: parent.id, parentId: child.id })).toThrow("ancestor");
+    expect(mockUpdateNote({ id: child.id, clearParent: true }).parentId).toBeNull();
+    expect(() => mockUpdateNote({ id: child.id, clearParent: true, parentId: parent.id })).toThrow("mutually exclusive");
   });
 
   it("merges a stale save with an agent write", () => {

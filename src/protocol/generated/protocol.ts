@@ -2127,6 +2127,14 @@ export interface NoteAppend {
   position?: string;
 }
 
+export interface NoteBacklink {
+  excerpt: string;
+  kind: string;
+  pageId: string;
+  title: string;
+  updatedAt: string;
+}
+
 export interface NoteJob {
   createdAt: string;
   detail?: string | null;
@@ -4359,6 +4367,7 @@ export interface ReadPageParams {
 }
 
 export interface NotePage {
+  backlinks: NoteBacklink[];
   markdown: string;
   note: Note;
   seq: number;
@@ -4396,9 +4405,11 @@ export interface NoteEditResult {
 
 export interface UpdateNoteParams {
   addSessionId?: string | null;
+  clearParent?: boolean;
   clearWorkspace?: boolean | null;
   id: string;
   kind?: string | null;
+  parentId?: string | null;
   state?: string | null;
   tags?: string[] | null;
   title?: string | null;

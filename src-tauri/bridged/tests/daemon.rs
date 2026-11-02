@@ -1039,16 +1039,25 @@ fn sigkill_of_a_live_daemon_frees_the_directory_and_preserves_state() {
     seed_data_dir(data_dir);
 
     // A real daemon process, killed for real: no in-process shortcuts.
+    // A file captures diagnostics without blocking startup on an unread pipe.
+    let stderr_path = data_dir.join("daemon-test.stderr");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_bridged"))
         .args(["--data-dir", data_dir.to_str().unwrap(), "--health-addr", "none"])
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::fs::File::create(&stderr_path).unwrap())
         .spawn()
         .unwrap();
     let socket_path = data_dir.join(bridged::SOCKET_FILE_NAME);
     let token_path = data_dir.join(TOKEN_FILE_NAME);
     let deadline = Instant::now() + Duration::from_secs(60);
     while !socket_path.exists() || !token_path.exists() {
-        assert!(Instant::now() < deadline, "the daemon process never came up");
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("daemon exited before startup ({status}): {}", std::fs::read_to_string(&stderr_path).unwrap_or_default());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the daemon process never came up: {}", std::fs::read_to_string(&stderr_path).unwrap_or_default());
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
     let token = std::fs::read_to_string(&token_path).unwrap().trim().to_owned();

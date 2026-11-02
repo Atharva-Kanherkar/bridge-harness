@@ -951,9 +951,9 @@ async fn edit_page(id: String, base_seq: Option<i64>, text: Option<String>, edit
 }
 
 #[tauri::command]
-async fn update_note(id: String, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
+async fn update_note(id: String, parent_id: Option<String>, clear_parent: Option<bool>, title: Option<String>, kind: Option<String>, tags: Option<Vec<String>>, workspace_id: Option<String>, clear_workspace: Option<bool>, state: Option<String>, add_session_id: Option<String>, core: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::Note, BridgeError> {
     let core = core.inner().clone();
-    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, title, kind, tags, workspace_id, clear_workspace, state, add_session_id })).await
+    blocking("update note", move || api::update_note(&core, &bridge_protocol::messages::UpdateNoteParams { id, parent_id, clear_parent: clear_parent.unwrap_or(false), title, kind, tags, workspace_id, clear_workspace, state, add_session_id })).await
 }
 
 #[tauri::command]
@@ -3802,10 +3802,14 @@ mod tests {
                         "{} takes different arguments than its contract names",
                         method.as_str()
                     );
+                    let required = bridge_protocol::TypedMethod::params_required_fields(method).unwrap_or_default();
                     for (argument, (_, schema)) in command.iter().zip(contract.iter()) {
-                        assert_eq!(
-                            rust_parameter_shape(method, &argument.name, &argument.kind),
-                            schema_parameter_shape(schema),
+                        assert!(
+                            command_parameter_shape_matches(
+                                rust_parameter_shape(method, &argument.name, &argument.kind),
+                                schema,
+                                required.contains(&argument.name),
+                            ),
                             "{} parameter {} has a different type from its contract",
                             method.as_str(),
                             argument.name
@@ -3818,6 +3822,30 @@ mod tests {
                 ),
             }
         }
+    }
+
+    // Serde defaults make a non-nullable scalar omittable on the wire. Tauri
+    // decodes each argument independently, so its native signature still needs
+    // Option<T>; the command then supplies the protocol's default.
+    fn command_parameter_shape_matches(native: ParameterShape, schema: &serde_json::Value, required: bool) -> bool {
+        let shape = schema_parameter_shape(schema);
+        native == shape || (!required && schema.get("default").is_some() && !matches!(shape, ParameterShape::Optional(_)) && native == ParameterShape::Optional(Box::new(shape)))
+    }
+
+    #[test]
+    fn signature_comparison_preserves_defaults_requiredness_and_boolean_types() {
+        let schema = serde_json::json!({"type": "boolean", "default": false});
+        let optional_bool = ParameterShape::Optional(Box::new(ParameterShape::Boolean));
+        assert!(command_parameter_shape_matches(optional_bool.clone(), &schema, false));
+        assert!(command_parameter_shape_matches(ParameterShape::Boolean, &schema, false));
+        assert!(!command_parameter_shape_matches(optional_bool.clone(), &schema, true));
+        assert!(!command_parameter_shape_matches(optional_bool, &serde_json::json!({"type": "boolean"}), false));
+        assert!(!command_parameter_shape_matches(ParameterShape::Optional(Box::new(ParameterShape::String)), &schema, false));
+        let method = bridge_protocol::MethodName::UpdateNote;
+        assert!(!bridge_protocol::TypedMethod::params_required_fields(method).unwrap().contains(&"clearParent".to_owned()));
+        let fields = bridge_protocol::TypedMethod::params_schema_fields(method).unwrap();
+        let clear_parent = &fields.iter().find(|(name, _)| name == "clearParent").unwrap().1;
+        assert_eq!(clear_parent["default"], false);
     }
 
     #[test]

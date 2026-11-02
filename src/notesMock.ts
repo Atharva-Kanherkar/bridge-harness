@@ -136,7 +136,7 @@ export function mockReadPage(id: string): NotePage {
   const markdown = page.history[page.history.length - 1];
   const structured = page.structured ? { ...clone(page.structured.view), stale: page.structured.body !== markdown } : null;
   const tasks = pages.filter(candidate => !candidate.deleted && candidate.note.parentId === id && candidate.note.kind === "task").map(candidate => clone(candidate.note)).reverse();
-  return { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks };
+  return { note: clone(page.note), markdown, seq: page.note.seq, structured, tasks, backlinks: [] };
 }
 
 export function mockCaptureNote(body: string): Note {
@@ -183,6 +183,22 @@ export function mockEditPage(params: EditPageParams): NoteEditResult {
 export function mockUpdateNote(params: UpdateNoteParams): Note {
   const page = live(params.id);
   const props: Partial<Note> = {};
+  if (params.clearParent && params.parentId != null) throw new Error("parentId and clearParent are mutually exclusive");
+  if (params.parentId != null) {
+    let parent: string | null = params.parentId;
+    const seen = new Set<string>([params.id]);
+    let depth = 0;
+    while (parent !== null) {
+      if (seen.has(parent) || depth++ >= 64) throw new Error("a page cannot be its own ancestor");
+      seen.add(parent);
+      const candidate: Note = live(parent).note;
+      if (candidate.kind === "task") throw new Error("a task cannot be a parent page");
+      parent = candidate.parentId ?? null;
+    }
+    props.parentId = params.parentId;
+  }
+  if (params.clearParent) props.parentId = null;
+  if ((params.clearParent || params.parentId != null) && page.note.state === "inbox" && !params.state) props.state = "open";
   if (params.title !== undefined && params.title !== null) props.title = params.title.trim() || null;
   if (params.kind) props.kind = params.kind;
   if (params.tags) props.tags = params.tags;

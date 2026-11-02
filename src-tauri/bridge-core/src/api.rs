@@ -6993,6 +6993,8 @@ pub fn edit_page(core: &Arc<BridgeCore>, params: &wire::EditPageParams) -> Resul
 pub(crate) fn notes_update_note(params: &wire::UpdateNoteParams) -> crate::notes::service::UpdateNote {
     crate::notes::service::UpdateNote {
         id: params.id.clone(),
+        parent_id: params.parent_id.clone(),
+        clear_parent: params.clear_parent,
         title: params.title.clone(),
         kind: params.kind.clone(),
         tags: params.tags.clone(),

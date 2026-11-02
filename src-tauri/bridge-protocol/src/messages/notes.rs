@@ -68,6 +68,17 @@ pub struct StructuredView {
     pub created_at: String,
 }
 
+/// One live page linking to a page, with its quoting line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteBacklink {
+    pub page_id: String,
+    pub title: String,
+    pub kind: String,
+    pub excerpt: String,
+    pub updated_at: String,
+}
+
 /// A page with its full body, its structured view and its tasks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +89,7 @@ pub struct NotePage {
     pub seq: i64,
     pub structured: Option<StructuredView>,
     pub tasks: Vec<Note>,
+    pub backlinks: Vec<NoteBacklink>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -231,6 +243,10 @@ pub struct EditPageParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateNoteParams {
     pub id: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub clear_parent: bool,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
