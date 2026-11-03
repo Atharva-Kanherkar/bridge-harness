@@ -55,7 +55,7 @@ function ImageView({ node, updateAttributes, selected }: ReactNodeViewProps) {
   // The title holds the width; a title that is words stays the image's own,
   // and that image keeps its natural size rather than lose it to a drag.
   const title = node.attrs.title == null ? "" : String(node.attrs.title);
-  const resizable = !title.trim() || imageWidthOf(title) != null;
+  const resizable = !title.trim() || /^\d{1,4}$/.test(title.trim());
   const width = live ?? (resizable ? imageWidthOf(title) : null);
   const caption = String(node.attrs.alt ?? "");
   // The browser edits the caption's text, so React never renders into it:

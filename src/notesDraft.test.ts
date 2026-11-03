@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linkablePages, noteDisplayTitle, pageTitled, plainPreview, quoteText, rebaseDraft } from "./notesDraft";
+import { linkChoices, linkablePages, noteDisplayTitle, pageTitled, plainPreview, quoteText, rebaseDraft } from "./notesDraft";
 import type { Note } from "./types";
 
 describe("rebaseDraft", () => {
@@ -98,6 +98,15 @@ describe("wiki link targets", () => {
 
   it("offers one page per title, the oldest holding it, untitled ones by their first line", () => {
     expect(linkablePages(notes).map(item => item.id)).toEqual(["a", "u", "t"]);
+  });
+
+  it("offers every named page, marking those another page wins to link by id", () => {
+    expect(linkChoices([...notes, note("blank", null, "2024-01-01")])).toEqual([
+      { id: "b", title: "Plans", byId: true },
+      { id: "a", title: "plans", byId: false },
+      { id: "u", title: "Roadmap", byId: false },
+      { id: "t", title: "Errand", byId: false },
+    ]);
   });
 
   it("resolves a title the way the core does, case and spacing aside", () => {

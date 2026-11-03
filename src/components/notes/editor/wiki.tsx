@@ -11,7 +11,12 @@ import { FileText, Plus } from "lucide-react";
 // text-caption sizes, and drops them beside a text color.
 import { clsx } from "clsx";
 
-export interface WikiPage { id: string; title: string }
+export interface WikiPage {
+  id: string;
+  title: string;
+  /** Another page wins `[[title]]`, so this one is linked by its id. */
+  byId?: boolean;
+}
 
 /** What a page link needs from the page around the editor. */
 export interface WikiHost {
@@ -23,6 +28,7 @@ export interface WikiChoice {
   target: string;
   /** The page an existing choice is, for titles `[[…]]` cannot hold. */
   id?: string;
+  byId?: boolean;
   /** Make the page at `target` before linking to it. */
   create: boolean;
 }
@@ -38,7 +44,7 @@ export function matchWikiChoices(pages: WikiPage[], query: string): WikiChoice[]
     const title = page.title.toLowerCase();
     return words.every(word => title.includes(word));
   });
-  const choices: WikiChoice[] = found.slice(0, WIKI_SHOWN).map(page => ({ target: page.title, id: page.id, create: false }));
+  const choices: WikiChoice[] = found.slice(0, WIKI_SHOWN).map(page => ({ target: page.title, id: page.id, byId: page.byId, create: false }));
   if (clean && !pages.some(page => page.title.trim().toLowerCase() === clean)) choices.push({ target: query.trim(), create: true });
   return choices;
 }
@@ -82,8 +88,9 @@ export function wikiCommand(onState: (state: WikiState | null) => void, onKey: (
         items: ({ query }) => matchWikiChoices(host().pages(), query),
         command: ({ editor, range, props }) => {
           editor.chain().focus().deleteRange(range).run();
-          // A page whose title `[[…]]` would misread links by its id instead.
-          if (props.id && !wikiSafe(props.target)) {
+          // A page `[[…]]` would not reach (a title it misreads, or one an
+          // older page holds) is linked by its id instead.
+          if (props.id && (props.byId || !wikiSafe(props.target))) {
             editor.chain().focus().insertContentAt(range.from, { type: "pageLink", attrs: { id: props.id, title: props.target } }).run();
             return;
           }

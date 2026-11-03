@@ -400,6 +400,23 @@ describe("NoteEditor", () => {
     expect(titled.querySelector("button[aria-label^='Resize']")).toBeNull();
   });
 
+  it("keeps the handles on an image whose width reads 0, drawn at its natural size", async () => {
+    await mount("Intro\n\n![](assets/0123456789abcdef.png \"0\")\n");
+    const image = host.querySelector("figure.note-image img") as HTMLElement;
+    expect(image.style.width).toBe("");
+    expect(image.getAttribute("title")).toBeNull();
+    expect(host.querySelector("button[aria-label='Resize from the right edge']")).not.toBeNull();
+  });
+
+  it("links a page that shares an older page's title by its id", async () => {
+    await mount("first\n", { pages: { title: () => undefined, open: vi.fn(), pages: () => [{ id: "p-new", title: "Notes", byId: true }, { id: "p-old", title: "Notes" }] } });
+    await act(async () => { editor().chain().setTextSelection(1).insertContent("[[Notes").run(); });
+    await settle();
+    await key("Enter");
+    await settle();
+    expect(editor().getMarkdown()).toContain('<page url="bridge://p/p-new">Notes</page>');
+  });
+
   it("selects only the caption on select all inside it", async () => {
     await mount("Intro words\n\n![Old plan](assets/0123456789abcdef.png)\n");
     const caption = host.querySelector<HTMLElement>("figcaption[aria-label='Caption']")!;

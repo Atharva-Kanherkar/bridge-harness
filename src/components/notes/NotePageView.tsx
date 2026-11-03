@@ -8,7 +8,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { ChevronRight, MoreHorizontal, PanelLeft } from "lucide-react";
 import { bridgeApi } from "../../api";
 import { relativeTime } from "../../connectorSurface";
-import { linkablePages, noteDisplayTitle, plainPreview, quoteText } from "../../notesDraft";
+import { linkChoices, noteDisplayTitle, quoteText } from "../../notesDraft";
 import { streamingStructure, streamingTasks, type StreamingStructure } from "../../notesPass";
 import type { AdapterDescriptor, Note, NoteJob, NotePage, NotePassProgressPayload, Session, StructuredView, Workspace } from "../../types";
 import { harnessLabel } from "../../utils";
@@ -170,8 +170,7 @@ export function NotePageView(props: NotePageViewProps) {
   const structureText = streamed("structure", structureJob);
   const tasksText = streamed("tasks", tasksJob);
   const moveTargets = useMemo(() => moveTargetsOf(notes, note.id), [notes, note.id]);
-  // A blank page has no name to link by; every other one does.
-  const linkTargets = useMemo(() => linkablePages(notes ?? []).filter(candidate => candidate.title?.trim() || plainPreview(candidate.preview)).map(candidate => ({ id: candidate.id, title: noteDisplayTitle(candidate) })), [notes]);
+  const linkTargets = useMemo(() => linkChoices(notes ?? []), [notes]);
 
   return <div className="flex min-h-full flex-col">
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1 bg-background px-3">

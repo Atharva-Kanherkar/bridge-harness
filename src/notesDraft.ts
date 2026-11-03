@@ -169,6 +169,15 @@ export function linkablePages(notes: Note[]): Note[] {
   return notes.filter(note => winners.has(note));
 }
 
+/** Every named page a `[[` menu offers, newest first; one another page wins
+ *  the title of is marked to be linked by its id. */
+export function linkChoices(notes: Note[]): { id: string; title: string; byId: boolean }[] {
+  const winners = new Set(linkablePages(notes));
+  return notes
+    .filter(note => note.title?.trim() || plainPreview(note.preview))
+    .map(note => ({ id: note.id, title: noteDisplayTitle(note), byId: !winners.has(note) }));
+}
+
 /** The page `[[title]]` opens, if any page goes by that title. */
 export function pageTitled(notes: Note[], title: string): Note | undefined {
   const key = linkKey(title);
